@@ -17,6 +17,7 @@
 > - **Nov 11, 2025** — ⚡ **CugaLite Mode**: Experience fast execution for simple API tasks! CugaLite automatically activates when your app has fewer than 25 tools, delivering up to 3x faster performance while maintaining high accuracy. Perfect for streamlined workflows and quick API operations.
 >
 >   ```toml
+>   
 >   # Enable in ./src/cuga/settings.toml
 >   lite_mode = true
 >   lite_mode_tool_threshold = 25
