@@ -566,6 +566,7 @@ evaluation = [
 dev = [
     { name = "beartype" },
     { name = "cugaviz" },
+    { name = "langchain-groq" },
     { name = "nltk" },
     { name = "pre-commit" },
     { name = "pytest" },
@@ -629,6 +630,7 @@ provides-extras = ["evaluation"]
 dev = [
     { name = "beartype" },
     { name = "cugaviz" },
+    { name = "langchain-groq", specifier = ">=0.3.8" },
     { name = "nltk" },
     { name = "pre-commit", specifier = ">=4.3.0" },
     { name = "pytest", specifier = ">=8.3.5" },
