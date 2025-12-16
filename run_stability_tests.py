@@ -554,8 +554,23 @@ def main():
             test_targets.append(full_target)
 
     if args.parallel:
-        print(f"Running {len(test_targets)} tests in parallel...")
-        with concurrent.futures.ThreadPoolExecutor() as executor:
+        # Limit concurrent workers on Windows due to slower subprocess spawning
+        # and resource constraints. Windows subprocess creation is significantly
+        # slower than Unix, so fewer concurrent tests reduces contention.
+        if platform.system() == "Windows":
+            # Use fewer workers on Windows (2-3) to avoid overwhelming the system
+            # Each test spawns multiple subprocesses, so too many concurrent tests
+            # can cause resource exhaustion and slow everything down
+            max_workers = min(3, len(test_targets))
+            print(
+                f"Running {len(test_targets)} tests in parallel (max {max_workers} concurrent on Windows)..."
+            )
+        else:
+            # On Unix/Linux, we can use more workers as subprocess spawning is faster
+            max_workers = min(8, len(test_targets))
+            print(f"Running {len(test_targets)} tests in parallel (max {max_workers} concurrent)...")
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
             # Submit all tests
             future_to_test = {
                 executor.submit(run_test_wrapper, args.method, target, run_timestamp): target
