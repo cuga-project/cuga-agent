@@ -1,8 +1,9 @@
 import asyncio
 import os
+import signal
 import subprocess
 
-from system_tests.e2e.base_test import BaseTestServerStream
+from system_tests.e2e.base_test import BaseTestServerStream, get_preexec_fn, kill_process_group, get_sigkill
 from cuga.config import settings
 
 
@@ -65,7 +66,7 @@ class BaseCRMTestServerStream(BaseTestServerStream):
             stderr=subprocess.STDOUT,
             text=True,
             env=os.environ.copy(),
-            preexec_fn=os.setsid,
+            preexec_fn=get_preexec_fn(),
         )
         print(f"Demo CRM process started with PID: {self.demo_process.pid}")
 
@@ -90,7 +91,7 @@ class BaseCRMTestServerStream(BaseTestServerStream):
         if self.demo_process:
             try:
                 if self.demo_process.poll() is None:
-                    os.killpg(os.getpgid(self.demo_process.pid), 15)
+                    kill_process_group(self.demo_process, signal.SIGTERM)
                     self.demo_process.wait(timeout=5)
                     print("Demo CRM process terminated gracefully.")
                 else:
@@ -99,7 +100,7 @@ class BaseCRMTestServerStream(BaseTestServerStream):
                 print("Demo CRM process did not terminate gracefully or was already gone.")
                 try:
                     if self.demo_process.poll() is None:
-                        os.killpg(os.getpgid(self.demo_process.pid), 9)
+                        kill_process_group(self.demo_process, get_sigkill())
                         self.demo_process.wait()
                 except (ProcessLookupError, OSError):
                     pass

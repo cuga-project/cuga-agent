@@ -48,6 +48,26 @@ jobs:
           TEST_RESULTS_FILE: test_results_python_${{ matrix.python-version }}.json
         run: uv run run_stability_tests.py --parallel --method local
 
+      - name: Check pass rate
+        if: always()
+        run: |
+          results_file="test_results_python_${{ matrix.python-version }}.json"
+          if [ ! -f "$results_file" ]; then
+            echo "❌ Test results file not found. Tests may have failed before completion."
+            exit 1
+          fi
+          python3 << EOF
+          import json
+          import sys
+          with open('$results_file', 'r') as f:
+              data = json.load(f)
+          pass_rate = data.get('pass_rate', 0)
+          if pass_rate < 88:
+              print(f"❌ Pass rate is {pass_rate}%, which is below the required 88%. Failing the job.")
+              sys.exit(1)
+          print(f"✅ Pass rate is {pass_rate}%, which meets the required 88% threshold.")
+          EOF
+
       - name: Upload test logs
         if: always()
         uses: actions/upload-artifact@v4
@@ -98,6 +118,23 @@ jobs:
           AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
           TEST_RESULTS_FILE: test_results_python_3.12_windows.json
         run: uv run run_stability_tests.py --parallel --method local
+
+      - name: Check pass rate
+        if: always()
+        shell: pwsh
+        run: |
+          $resultsFile = "test_results_python_3.12_windows.json"
+          if (-not (Test-Path $resultsFile)) {
+            Write-Host "❌ Test results file not found. Tests may have failed before completion."
+            exit 1
+          }
+          $results = Get-Content $resultsFile | ConvertFrom-Json
+          $passRate = $results.pass_rate
+          if ($passRate -lt 88) {
+            Write-Host "❌ Pass rate is ${passRate}%, which is below the required 88%. Failing the job."
+            exit 1
+          }
+          Write-Host "✅ Pass rate is ${passRate}%, which meets the required 88% threshold."
 
       - name: Upload test logs
         if: always()

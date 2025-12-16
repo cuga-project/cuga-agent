@@ -42,6 +42,57 @@ os.environ["CUGA_TEST_ENV"] = "true"
 os.environ["DYNACONF_ADVANCED_FEATURES__TRACKER_ENABLED"] = "true"
 
 
+def get_preexec_fn():
+    """Returns a cross-platform preexec_fn for subprocess.Popen.
+    On Unix systems, returns os.setsid to create a new process group.
+    On Windows, returns None as setsid is not available.
+    """
+    if hasattr(os, "setsid"):
+        return os.setsid
+    return None
+
+
+def get_sigkill():
+    """Returns SIGKILL signal value in a cross-platform way.
+    On Unix, returns signal.SIGKILL.
+    On Windows where SIGKILL doesn't exist, returns 9 (the numeric value).
+    """
+    return getattr(signal, "SIGKILL", 9)
+
+
+def kill_process_group(process, sig=None):
+    """Kills a process group in a cross-platform way.
+    On Unix, uses os.killpg to kill the process group.
+    On Windows, uses process.terminate() or process.kill() directly.
+
+    Args:
+        process: The subprocess.Popen process object
+        sig: Signal to send (signal.SIGTERM or signal.SIGKILL on Unix).
+             On Windows, None/TERM uses terminate(), KILL uses kill()
+    """
+    if process is None or process.poll() is not None:
+        return
+
+    if hasattr(os, "killpg") and hasattr(os, "getpgid"):
+        if sig is None:
+            sig = signal.SIGTERM
+        try:
+            os.killpg(os.getpgid(process.pid), sig)
+        except (ProcessLookupError, OSError):
+            pass
+    else:
+        is_kill = False
+        if sig is not None:
+            if hasattr(signal, "SIGKILL"):
+                is_kill = sig == signal.SIGKILL
+            else:
+                is_kill = sig == 9
+        if is_kill:
+            process.kill()
+        else:
+            process.terminate()
+
+
 class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
     """
     Base test class for FastAPI server's streaming endpoint.
@@ -298,7 +349,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
             env=os.environ.copy(),  # Pass the updated environment
-            preexec_fn=os.setsid,  # For proper process group management
+            preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print("Starting registry process...")
         self.registry_process = subprocess.Popen(
@@ -307,7 +358,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
             env=os.environ.copy(),  # Pass the updated environment
-            preexec_fn=os.setsid,  # For proper process group management
+            preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print(f"Registry process started with PID: {self.registry_process.pid}")
 
@@ -338,7 +389,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
             env=os.environ.copy(),  # Pass the updated environment
-            preexec_fn=os.setsid,  # For proper process group management
+            preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print(f"Demo server process started with PID: {self.demo_process.pid}")
 
@@ -379,7 +430,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             try:
                 if self.demo_process.poll() is None:  # Process is still running
                     # Send SIGTERM to the process group
-                    os.killpg(os.getpgid(self.demo_process.pid), signal.SIGTERM)
+                    kill_process_group(self.demo_process, signal.SIGTERM)
                     self.demo_process.wait(timeout=5)
                     print("Demo server process terminated gracefully.")
                 else:
@@ -388,7 +439,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 print("Demo server process did not terminate gracefully or was already gone.")
                 try:
                     if self.demo_process.poll() is None:
-                        os.killpg(os.getpgid(self.demo_process.pid), signal.SIGKILL)
+                        kill_process_group(self.demo_process, get_sigkill())
                         self.demo_process.wait()
                 except (ProcessLookupError, OSError):
                     pass  # Process was already gone
@@ -398,7 +449,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             try:
                 if self.registry_process.poll() is None:  # Process is still running
                     # Send SIGTERM to the process group
-                    os.killpg(os.getpgid(self.registry_process.pid), signal.SIGTERM)
+                    kill_process_group(self.registry_process, signal.SIGTERM)
                     self.registry_process.wait(timeout=5)
                     print("Registry process terminated gracefully.")
                 else:
@@ -407,7 +458,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 print("Registry process did not terminate gracefully or was already gone.")
                 try:
                     if self.registry_process.poll() is None:
-                        os.killpg(os.getpgid(self.registry_process.pid), signal.SIGKILL)
+                        kill_process_group(self.registry_process, get_sigkill())
                         self.registry_process.wait()
                 except (ProcessLookupError, OSError):
                     pass  # Process was already gone
@@ -417,7 +468,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             try:
                 if self.digital_sales_mcp_process.poll() is None:  # Process is still running
                     # Send SIGTERM to the process group
-                    os.killpg(os.getpgid(self.digital_sales_mcp_process.pid), signal.SIGTERM)
+                    kill_process_group(self.digital_sales_mcp_process, signal.SIGTERM)
                     self.digital_sales_mcp_process.wait(timeout=5)
                     print("Digital sales MCP process terminated gracefully.")
                 else:
@@ -426,7 +477,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 print("Digital sales MCP process did not terminate gracefully or was already gone.")
                 try:
                     if self.digital_sales_mcp_process.poll() is None:
-                        os.killpg(os.getpgid(self.digital_sales_mcp_process.pid), signal.SIGKILL)
+                        kill_process_group(self.digital_sales_mcp_process, get_sigkill())
                         self.digital_sales_mcp_process.wait()
                 except (ProcessLookupError, OSError):
                     pass  # Process was already gone
@@ -435,7 +486,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
         if self.memory_process:
             try:
                 if self.memory_process.poll() is None:
-                    os.killpg(os.getpgid(self.memory_process.pid), signal.SIGTERM)
+                    kill_process_group(self.memory_process, signal.SIGTERM)
                     self.memory_process.wait(timeout=5)
                     print("Memory service process terminated gracefully.")
                 else:
@@ -444,7 +495,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 print("Memory service did not terminate gracefully or was already gone.")
                 try:
                     if self.memory_process.poll() is None:
-                        os.killpg(os.getpgid(self.memory_process.pid), signal.SIGKILL)
+                        kill_process_group(self.memory_process, get_sigkill())
                         self.memory_process.wait()
                 except (ProcessLookupError, OSError):
                     pass  # Process was already gone
