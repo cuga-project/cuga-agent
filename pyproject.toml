@@ -30,6 +30,7 @@ dependencies = [
     "langchain-mcp-adapters>=0.1.9",
     "pyyaml>=6.0.3",
     "pymilvus>=2.6.4",
+    "tavily-python",
 ]
 
 [project.optional-dependencies]

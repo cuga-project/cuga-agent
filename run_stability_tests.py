@@ -157,19 +157,68 @@ def run_docker_test(test_full_path, run_timestamp):
 
 
 def kill_process_on_port(port):
-    """Kill any process listening on the given port."""
-    try:
-        # Find process using the port
-        result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
+    """Kill any process listening on the given port (cross-platform)."""
+    import platform
 
-        if result.stdout.strip():
-            pids = result.stdout.strip().split('\n')
-            for pid in pids:
-                if pid:
-                    print(f"  Killing process {pid} on port {port}")
-                    subprocess.run(["kill", "-9", pid], check=False)
-    except Exception as e:
-        print(f"  Warning: Could not kill process on port {port}: {e}")
+    if platform.system() == "Windows":
+        # Use psutil on Windows (more reliable than netstat)
+        try:
+            import psutil
+
+            killed_any = False
+            for proc in psutil.process_iter(['pid', 'name']):
+                try:
+                    connections = proc.net_connections()
+                    if connections:
+                        for conn in connections:
+                            if (
+                                hasattr(conn, 'laddr')
+                                and conn.laddr
+                                and conn.laddr.port == port
+                                and conn.status == 'LISTEN'
+                            ):
+                                print(
+                                    f"  Killing process {proc.info['pid']} ({proc.info['name']}) on port {port}"
+                                )
+                                proc.terminate()
+                                try:
+                                    proc.wait(timeout=2)
+                                except psutil.TimeoutExpired:
+                                    proc.kill()
+                                    proc.wait()
+                                killed_any = True
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    continue
+            if not killed_any:
+                # Port might not be in use, which is fine
+                pass
+        except ImportError:
+            # Fallback to netstat if psutil not available
+            try:
+                result = subprocess.run(["netstat", "-ano"], capture_output=True, text=True, check=False)
+                for line in result.stdout.split('\n'):
+                    if f":{port}" in line and "LISTENING" in line:
+                        parts = line.split()
+                        if len(parts) > 4:
+                            pid = parts[-1]
+                            subprocess.run(["taskkill", "/F", "/PID", pid], check=False, capture_output=True)
+            except Exception as e:
+                print(f"  Warning: Could not kill process on port {port}: {e}")
+        except Exception as e:
+            print(f"  Warning: Could not kill process on port {port}: {e}")
+    else:
+        # Unix/Linux: use lsof
+        try:
+            result = subprocess.run(["lsof", "-ti", f":{port}"], capture_output=True, text=True, check=False)
+
+            if result.stdout.strip():
+                pids = result.stdout.strip().split('\n')
+                for pid in pids:
+                    if pid:
+                        print(f"  Killing process {pid} on port {port}")
+                        subprocess.run(["kill", "-9", pid], check=False)
+        except Exception as e:
+            print(f"  Warning: Could not kill process on port {port}: {e}")
 
 
 def cleanup_ports(env_ports):

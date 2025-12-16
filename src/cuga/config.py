@@ -129,6 +129,7 @@ validators = [
     Validator("advanced_features.message_window_limit", default=20),
     Validator("advanced_features.max_input_length", default=50000),
     Validator("advanced_features.e2b_sandbox_mode", default="per-session"),
+    Validator("advanced_features.enable_web_search", default=False),
     Validator("features.chat", default=True),
     Validator("features.memory_provider", default="mem0"),
     Validator("playwright_args", default=[]),
