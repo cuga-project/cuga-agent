@@ -87,6 +87,7 @@ jobs:
   stability-tests-windows:
     name: Stability Tests Windows (Python 3.12)
     runs-on: windows-latest
+    timeout-minutes: 60
     strategy:
       fail-fast: false
 

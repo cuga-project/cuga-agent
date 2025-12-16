@@ -17,6 +17,17 @@ from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
 )
 from cuga.config import settings
 
+# Configure Windows event loop policy for better asyncio performance
+if platform.system() == "Windows":
+    # Use WindowsSelectorEventLoopPolicy for better I/O performance on Windows
+    # This avoids the slow ProactorEventLoopPolicy which can cause significant delays.
+    # The default ProactorEventLoopPolicy on Windows can cause tasks to take 0.1-2 seconds
+    # each, leading to extremely slow test execution. WindowsSelectorEventLoopPolicy
+    # uses select() instead of I/O completion ports, which is more efficient for
+    # the network I/O patterns used in these tests.
+    if hasattr(asyncio, "WindowsSelectorEventLoopPolicy"):
+        asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+
 # Define server and registry commands
 DEMO_COMMAND = ["uv", "run", "demo"]  # Assuming demo runs on port 7860 as per settings.toml
 REGISTRY_COMMAND = ["uv", "run", "registry"]  # Assuming default port for registry
