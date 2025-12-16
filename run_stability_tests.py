@@ -12,6 +12,21 @@ import uuid
 import json
 import glob
 from pathlib import Path
+import platform
+
+# Set UTF-8 encoding for stdout/stderr on Windows to handle Unicode characters
+if platform.system() == "Windows":
+    if sys.stdout.encoding != "utf-8":
+        try:
+            sys.stdout.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            # Python < 3.7 or reconfigure not available, use environment variable
+            os.environ["PYTHONIOENCODING"] = "utf-8"
+    if sys.stderr.encoding != "utf-8":
+        try:
+            sys.stderr.reconfigure(encoding="utf-8")
+        except (AttributeError, ValueError):
+            pass
 
 # Configuration
 IMAGE_NAME = "cuga-e2e-tests"
@@ -602,16 +617,37 @@ def main():
         # Windows defaults to cp1252 which can't encode all Unicode characters
         with open(results_file, "w", encoding="utf-8") as f:
             json.dump(results_json, f, indent=2, ensure_ascii=False)
-        print(f"\nResults saved to {results_file}")
+        try:
+            print(f"\nResults saved to {results_file}")
+        except UnicodeEncodeError:
+            print(f"\nResults saved to {results_file}")
     except Exception as e:
-        print(f"\nWarning: Could not save results to {results_file}: {e}")
+        # Safe error printing that handles encoding issues
+        error_msg = str(e)
+        try:
+            print(f"\nWarning: Could not save results to {results_file}: {error_msg}")
+        except UnicodeEncodeError:
+            # Fallback to ASCII-safe message
+            print(f"\nWarning: Could not save results to {results_file}: {repr(e)}")
 
     if not all_passed:
-        print(f"\n⚠️  WARNING: {failed_count} test(s) failed. This is reported as a warning, not a failure.")
+        # Use ASCII-safe characters for Windows compatibility
+        warning_msg = (
+            f"\nWARNING: {failed_count} test(s) failed. This is reported as a warning, not a failure."
+        )
+        try:
+            print(
+                f"\n⚠️  WARNING: {failed_count} test(s) failed. This is reported as a warning, not a failure."
+            )
+        except UnicodeEncodeError:
+            print(warning_msg)
         print("The workflow will continue to allow other Python versions to run.")
         sys.exit(0)  # Exit with 0 to allow workflow to continue
     else:
-        print("\n✅ All tests passed!")
+        try:
+            print("\n✅ All tests passed!")
+        except UnicodeEncodeError:
+            print("\nAll tests passed!")
 
 
 if __name__ == "__main__":

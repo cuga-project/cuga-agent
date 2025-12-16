@@ -121,6 +121,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
     def _kill_process_by_port(self, port: int, service_name: str = "service") -> bool:
         """
         Kill processes listening on a specific port.
+        Uses optimized methods per platform for better performance.
 
         Args:
             port: The port number to check
@@ -128,6 +129,71 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
 
         Returns:
             True if any processes were killed, False otherwise
+        """
+        killed_any = False
+
+        if platform.system() == "Windows":
+            # On Windows, use netstat + taskkill which is much faster than iterating all processes
+            try:
+                result = subprocess.run(
+                    ["netstat", "-ano"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                for line in result.stdout.split('\n'):
+                    if f":{port}" in line and "LISTENING" in line:
+                        parts = line.split()
+                        if len(parts) > 4:
+                            pid = parts[-1]
+                            try:
+                                # Validate PID is numeric before using it
+                                int(pid)  # Validate it's a number
+                                print(f"Killing {service_name} process {pid} on port {port}")
+                                subprocess.run(
+                                    ["taskkill", "/F", "/PID", pid],
+                                    capture_output=True,
+                                    timeout=5,
+                                    check=False,
+                                )
+                                killed_any = True
+                            except (ValueError, subprocess.TimeoutExpired):
+                                pass
+            except (subprocess.TimeoutExpired, FileNotFoundError, Exception) as e:
+                # Fallback to psutil if netstat fails
+                print(f"Warning: netstat failed, using fallback method: {e}")
+                killed_any = self._kill_process_by_port_psutil(port, service_name)
+        else:
+            # On Unix/Linux, use lsof which is fast
+            try:
+                result = subprocess.run(
+                    ["lsof", "-ti", f":{port}"],
+                    capture_output=True,
+                    text=True,
+                    timeout=5,
+                    check=False,
+                )
+                if result.stdout.strip():
+                    pids = result.stdout.strip().split('\n')
+                    for pid in pids:
+                        if pid:
+                            try:
+                                print(f"Killing {service_name} process {pid} on port {port}")
+                                subprocess.run(["kill", "-9", pid], timeout=5, check=False)
+                                killed_any = True
+                            except (subprocess.TimeoutExpired, ValueError):
+                                pass
+            except (subprocess.TimeoutExpired, FileNotFoundError):
+                # Fallback to psutil if lsof fails
+                killed_any = self._kill_process_by_port_psutil(port, service_name)
+
+        return killed_any
+
+    def _kill_process_by_port_psutil(self, port: int, service_name: str = "service") -> bool:
+        """
+        Fallback method using psutil (slower but more reliable).
+        Only used when platform-specific methods fail.
         """
         killed_any = False
         try:
@@ -157,7 +223,6 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                                     proc.wait()
                                 killed_any = True
                 except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
-                    # Process might have already terminated or we don't have permission
                     continue
         except Exception as e:
             print(f"Error while trying to kill {service_name} processes on port {port}: {e}")
