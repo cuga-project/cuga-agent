@@ -33,7 +33,7 @@ jobs:
       - name: Run stability tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
-          MODEL_NAMME: $${{ secrets.MODEL_NAME }}
+          MODEL_NAMME: ${{ secrets.MODEL_NAME }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
           AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
