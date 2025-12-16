@@ -195,7 +195,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                     error_msg = f"{process_name} process died with return code {process.returncode}"
                     if log_file and os.path.exists(log_file):
                         try:
-                            with open(log_file, 'r') as f:
+                            with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
                                 log_content = f.read()
                                 if log_content:
                                     # Get last 50 lines of log
@@ -229,7 +229,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                         error_msg += f"\n{process_name} process died with return code {process.returncode}"
                         if log_file and os.path.exists(log_file):
                             try:
-                                with open(log_file, 'r') as f:
+                                with open(log_file, 'r', encoding='utf-8', errors='replace') as f:
                                     log_content = f.read()
                                     if log_content:
                                         log_lines = log_content.split('\n')
@@ -270,7 +270,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                     log_path = os.path.join(self.test_log_dir, log_name)
                     if os.path.exists(log_path):
                         try:
-                            with open(log_path, 'w') as f:
+                            with open(log_path, 'w', encoding='utf-8') as f:
                                 f.write('')  # Truncate the file
                             print(f"Cleared log file: {log_path}")
                         except (OSError, PermissionError) as log_error:
@@ -294,7 +294,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             log_files.append(self.memory_log_file)
         for log_file in log_files:
             try:
-                with open(log_file, 'w') as f:
+                with open(log_file, 'w', encoding='utf-8') as f:
                     f.write('')  # Clear the file
                 print(f"Cleared log file: {log_file}")
             except (OSError, PermissionError) as e:
@@ -347,14 +347,16 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 os.environ[key] = value
                 print(f"  Set {key} = {value}")
 
-        # Open log files for writing
-        self.registry_log_handle = open(self.registry_log_file, 'w', buffering=1)  # Line buffered
-        self.demo_log_handle = open(self.demo_log_file, 'w', buffering=1)  # Line buffered
+        # Open log files for writing with UTF-8 encoding
+        self.registry_log_handle = open(
+            self.registry_log_file, 'w', encoding='utf-8', buffering=1
+        )  # Line buffered
+        self.demo_log_handle = open(self.demo_log_file, 'w', encoding='utf-8', buffering=1)  # Line buffered
         self.digital_sales_mcp_log_handle = open(
-            self.digital_sales_mcp_log_file, 'w', buffering=1
+            self.digital_sales_mcp_log_file, 'w', encoding='utf-8', buffering=1
         )  # Line buffered
         if self.enable_memory_service and self.memory_log_file:
-            self.memory_log_handle = open(self.memory_log_file, 'w', buffering=1)
+            self.memory_log_handle = open(self.memory_log_file, 'w', encoding='utf-8', buffering=1)
         print("Starting digital sales MCP process...")
         self.digital_sales_mcp_process = subprocess.Popen(
             DIGITAL_SALES_MCP_COMMAND,

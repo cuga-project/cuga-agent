@@ -392,7 +392,7 @@ def run_direct_service(
             log_path = os.path.abspath(log_file)
             log_dir = os.path.dirname(log_path)
             os.makedirs(log_dir, exist_ok=True)
-            log_handle = open(log_path, 'a')
+            log_handle = open(log_path, 'a', encoding='utf-8')
             kwargs['stdout'] = log_handle
             kwargs['stderr'] = subprocess.STDOUT
             logger.info(f"Redirecting {service_name} output to {log_path}")
