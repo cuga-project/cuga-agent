@@ -30,6 +30,11 @@ jobs:
       - name: Install dependencies
         run: uv sync --dev
 
+      - name: Copy huggingface examples
+        run: |
+          mkdir -p ./cuga_workspace
+          cp -r docs/examples/huggingface/* ./cuga_workspace/
+
       - name: Run stability tests
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -37,4 +42,12 @@ jobs:
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
           OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
           AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
-        run: uv run run_stability_tests.py --method local
+        run: uv run run_stability_tests.py --parallel --method local
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-python-${{ matrix.python-version }}
+          path: src/system_tests/e2e/logs/
+          retention-days: 7
