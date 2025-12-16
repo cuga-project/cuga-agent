@@ -365,6 +365,10 @@ def run_direct_service(
         env = os.environ.copy()
         env['FORCE_COLOR'] = '1'
 
+        # On Windows, set UTF-8 encoding to handle Unicode characters in subprocess output
+        if IS_WINDOWS:
+            env['PYTHONIOENCODING'] = 'utf-8'
+
         # Add any additional environment variables
         if env_vars:
             env.update(env_vars)
