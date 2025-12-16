@@ -3,7 +3,13 @@ import os
 import signal
 import subprocess
 
-from system_tests.e2e.base_test import BaseTestServerStream, get_preexec_fn, kill_process_group, get_sigkill
+from system_tests.e2e.base_test import (
+    BaseTestServerStream,
+    get_preexec_fn,
+    get_subprocess_env,
+    kill_process_group,
+    get_sigkill,
+)
 from cuga.config import settings
 
 
@@ -53,8 +59,8 @@ class BaseCRMTestServerStream(BaseTestServerStream):
                 os.environ[key] = value
                 print(f"  Set {key} = {value}")
 
-        # Open log file for writing
-        self.demo_log_handle = open(self.demo_log_file, 'w', buffering=1)
+        # Open log file for writing with UTF-8 encoding
+        self.demo_log_handle = open(self.demo_log_file, 'w', encoding='utf-8', buffering=1)
 
         # Start demo_crm which includes all necessary services
         demo_crm_command = ["uv", "run", "cuga", "start", "demo_crm"]
@@ -65,7 +71,7 @@ class BaseCRMTestServerStream(BaseTestServerStream):
             stdout=self.demo_log_handle,
             stderr=subprocess.STDOUT,
             text=True,
-            env=os.environ.copy(),
+            env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
             preexec_fn=get_preexec_fn(),
         )
         print(f"Demo CRM process started with PID: {self.demo_process.pid}")
