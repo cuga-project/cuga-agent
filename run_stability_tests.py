@@ -9,6 +9,9 @@ import socket
 import threading
 import time
 import uuid
+import json
+import glob
+from pathlib import Path
 
 # Configuration
 IMAGE_NAME = "cuga-e2e-tests"
@@ -231,6 +234,122 @@ def run_test_wrapper(method, test_full_path, run_timestamp):
         return run_local_test(test_full_path, run_timestamp)
 
 
+def generate_summary_report(results_dir: str = "test-results"):
+    """Generate a summary report from collected test results."""
+    results_path = Path(results_dir)
+    all_results = {}
+    total_passed = 0
+    total_failed = 0
+    total_tests = 0
+
+    # Collect results from all Python versions
+    if results_path.exists():
+        result_files = glob.glob(str(results_path / "test_results_python_*.json"))
+        if not result_files:
+            result_files = glob.glob(str(results_path / "**/test_results_python_*.json"), recursive=True)
+
+        for result_file in result_files:
+            # Extract Python version from filename: test_results_python_3.11.json -> 3.11
+            filename = Path(result_file).name
+            python_version = filename.replace("test_results_python_", "").replace(".json", "")
+            try:
+                with open(result_file, "r") as f:
+                    data = json.load(f)
+                    all_results[python_version] = data
+                    total_passed += data["passed"]
+                    total_failed += data["failed"]
+                    total_tests += data["total"]
+            except Exception as e:
+                print(f"Error reading {result_file}: {e}")
+                all_results[python_version] = {"total": 0, "passed": 0, "failed": 0, "pass_rate": 0}
+
+    # Calculate overall pass rate
+    overall_pass_rate = (total_passed / total_tests * 100) if total_tests > 0 else 0
+
+    # Generate report
+    if not all_results:
+        report = []
+        report.append("## 📊 Stability Test Results")
+        report.append("")
+        report.append("⚠️ No test results found. Tests may have failed before results could be saved.")
+        report.append("Please check individual job logs for details.")
+        summary_text = "\n".join(report)
+        summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+        if summary_file:
+            with open(summary_file, "w") as f:
+                f.write(summary_text)
+        print(summary_text)
+        return
+
+    report = []
+    report.append("## 📊 Stability Test Results")
+    report.append("")
+    report.append(
+        f"**Overall Pass Rate: {overall_pass_rate:.1f}%** ({total_passed}/{total_tests} tests passed)"
+    )
+    report.append("")
+
+    # Per-version breakdown
+    report.append("### Results by Python Version")
+    report.append("")
+    report.append("| Python Version | Passed | Failed | Total | Pass Rate |")
+    report.append("|---------------|--------|--------|-------|-----------|")
+
+    for version in sorted(all_results.keys()):
+        data = all_results[version]
+        status_emoji = "✅" if data["pass_rate"] >= 88 else "⚠️"
+        report.append(
+            f"| {status_emoji} {version} | {data['passed']} | {data['failed']} | {data['total']} | {data['pass_rate']:.1f}% |"
+        )
+
+    report.append("")
+
+    # Detailed breakdown if pass rate >= 88%
+    if overall_pass_rate >= 88:
+        report.append("### ✅ Detailed Test Results")
+        report.append("")
+
+        for version in sorted(all_results.keys()):
+            data = all_results[version]
+            report.append(f"#### Python {version}")
+            report.append("")
+
+            if data.get("tests"):
+                passed_tests = [t for t in data["tests"] if t["status"] == "PASS"]
+                failed_tests = [t for t in data["tests"] if t["status"] == "FAIL"]
+
+                if passed_tests:
+                    report.append("**✅ Passed Tests:**")
+                    for test in passed_tests:
+                        report.append(f"- ✅ {test['name']}")
+                    report.append("")
+
+                if failed_tests:
+                    report.append("**❌ Failed Tests:**")
+                    for test in failed_tests:
+                        report.append(f"- ❌ {test['name']}")
+                    report.append("")
+    else:
+        report.append("### ⚠️ Low Pass Rate")
+        report.append("")
+        report.append(f"Overall pass rate ({overall_pass_rate:.1f}%) is below the 88% threshold.")
+        report.append("Please review the individual job results above for details.")
+
+    report.append("---")
+    report.append("")
+    report.append("⚠️  Note: Tests are configured to report warnings instead of failures.")
+    report.append("Check individual job results above for detailed test outcomes.")
+
+    # Write to GitHub step summary
+    summary_text = "\n".join(report)
+    summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
+    if summary_file:
+        with open(summary_file, "w") as f:
+            f.write(summary_text)
+
+    print(summary_text)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Run stability tests.")
     parser.add_argument("--parallel", action="store_true", help="Run tests in parallel.")
@@ -244,7 +363,21 @@ def main():
         default="docker",
         help="Execution method: 'local' or 'docker'.",
     )
+    parser.add_argument(
+        "--generate-summary",
+        action="store_true",
+        help="Generate summary report from collected test results.",
+    )
+    parser.add_argument(
+        "--results-dir",
+        default="test-results",
+        help="Directory containing test result JSON files (for --generate-summary).",
+    )
     args = parser.parse_args()
+
+    if args.generate_summary:
+        generate_summary_report(args.results_dir)
+        return
 
     if args.clean and args.method == "docker":
         print("Stopping and removing all test containers (filtered by 'cuga_test_')...")
@@ -344,6 +477,27 @@ def main():
     print(f"Total tests: {len(results)}")
     print(f"Passed: {passed_count}")
     print(f"Failed: {failed_count}")
+
+    # Calculate pass rate
+    pass_rate = (passed_count / len(results) * 100) if len(results) > 0 else 0
+    print(f"Pass rate: {pass_rate:.1f}%")
+
+    # Output JSON results for workflow consumption
+    results_json = {
+        "total": len(results),
+        "passed": passed_count,
+        "failed": failed_count,
+        "pass_rate": round(pass_rate, 2),
+        "tests": [{"name": name, "status": "PASS" if success else "FAIL"} for name, success in results],
+    }
+
+    results_file = os.environ.get("TEST_RESULTS_FILE", "test_results.json")
+    try:
+        with open(results_file, "w") as f:
+            json.dump(results_json, f, indent=2)
+        print(f"\nResults saved to {results_file}")
+    except Exception as e:
+        print(f"\nWarning: Could not save results to {results_file}: {e}")
 
     if not all_passed:
         print(f"\n⚠️  WARNING: {failed_count} test(s) failed. This is reported as a warning, not a failure.")
