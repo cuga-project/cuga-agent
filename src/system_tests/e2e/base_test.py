@@ -98,7 +98,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
 
         return killed_any
 
-    async def wait_for_server(self, port: int, max_retries: int = 250, retry_interval: float = 0.5):
+    async def wait_for_server(self, port: int, max_retries: int = 350, retry_interval: float = 0.5):
         """
         Wait for a server to be ready by pinging its health endpoint.
 
