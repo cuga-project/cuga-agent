@@ -119,7 +119,7 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           MODEL_NAME: ${{ secrets.MODEL_NAME }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
-          OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.OPENAI_BASE_URL }}
           AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
           TEST_RESULTS_FILE: test_results_python_3.12_windows.json
           UV_NO_PROGRESS: 1

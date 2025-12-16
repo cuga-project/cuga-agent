@@ -558,10 +558,14 @@ def main():
         # and resource constraints. Windows subprocess creation is significantly
         # slower than Unix, so fewer concurrent tests reduces contention.
         if platform.system() == "Windows":
-            # Use fewer workers on Windows (2-3) to avoid overwhelming the system
-            # Each test spawns multiple subprocesses, so too many concurrent tests
-            # can cause resource exhaustion and slow everything down
-            max_workers = min(3, len(test_targets))
+            # Windows subprocess spawning is much slower than Unix, and concurrent
+            # execution causes significant resource contention. Even with limited
+            # workers, the overhead of managing multiple subprocesses simultaneously
+            # can make parallel execution slower than sequential on Windows.
+            # Use 2 workers as a compromise - allows some parallelism while
+            # minimizing contention. For best performance, consider running
+            # sequentially on Windows (remove --parallel flag).
+            max_workers = min(2, len(test_targets))
             print(
                 f"Running {len(test_targets)} tests in parallel (max {max_workers} concurrent on Windows)..."
             )
