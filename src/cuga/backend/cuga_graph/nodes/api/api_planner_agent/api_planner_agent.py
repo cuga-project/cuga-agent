@@ -28,15 +28,12 @@ class APIPlannerAgent(BaseAgent):
         self.name = "APIPlannerAgent"
 
         model_id = llm.model_id
-        if model_id and "oss" in model_id:
-            schema = APIPlannerOutputLiteNoHITL if not settings.features.thoughts else APIPlannerOutputLite
+        self.thoughts_enabled = not (model_id and "oss" in model_id) and settings.features.thoughts
+
+        if settings.advanced_features.api_planner_hitl:
+            schema = APIPlannerOutputLite if not self.thoughts_enabled else APIPlannerOutput
         else:
-            if settings.advanced_features.api_planner_hitl:
-                schema = APIPlannerOutputLite if not settings.features.thoughts else APIPlannerOutput
-            else:
-                schema = (
-                    APIPlannerOutputLiteNoHITL if not settings.features.thoughts else APIPlannerOutputNoHITL
-                )
+            schema = APIPlannerOutputLiteNoHITL if not self.thoughts_enabled else APIPlannerOutputNoHITL
 
         self.chain = BaseAgent.get_chain(prompt_template=prompt_template, llm=llm, schema=schema)
 
@@ -50,7 +47,7 @@ class APIPlannerAgent(BaseAgent):
         data["instructions"] = instructions_manager.get_instructions(self.name)
         res = await self.chain.ainvoke(data)
 
-        if not settings.features.thoughts:
+        if not self.thoughts_enabled:
             lite_res = res
             if settings.advanced_features.api_planner_hitl:
                 full_res = APIPlannerOutput(
