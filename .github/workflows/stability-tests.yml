@@ -64,10 +64,61 @@ jobs:
           path: test_results_python_${{ matrix.python-version }}.json
           retention-days: 7
 
+  stability-tests-windows:
+    name: Stability Tests Windows (Python 3.12)
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install uv and set the Python version
+        uses: astral-sh/setup-uv@v7
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Copy huggingface examples
+        run: |
+          New-Item -ItemType Directory -Force -Path ./cuga_workspace
+          Copy-Item -Recurse -Force docs/examples/huggingface/* ./cuga_workspace/
+
+      - name: Run stability tests
+        continue-on-error: true
+        id: test-run
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          MODEL_NAME: ${{ secrets.MODEL_NAME }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
+          AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+          TEST_RESULTS_FILE: test_results_python_3.12_windows.json
+        run: uv run run_stability_tests.py --parallel --method local
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-python-3.12-windows
+          path: src/system_tests/e2e/logs/
+          retention-days: 7
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-python-3.12-windows
+          path: test_results_python_3.12_windows.json
+          retention-days: 7
+
   summary:
     name: Test Summary
     runs-on: ubuntu-latest
-    needs: stability-tests
+    needs: [stability-tests, stability-tests-windows]
     if: always()
     steps:
       - name: Checkout code
