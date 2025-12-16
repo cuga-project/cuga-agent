@@ -745,7 +745,7 @@ def start(
                     env_vars={"DYNACONF_SERVER_PORTS__EMAIL_SINK": str(email_sink_port)},
                 )
                 logger.info("Email sink started, waiting for it to be ready...")
-                wait_for_tcp_port(email_sink_port, "Email sink", max_retries=20, retry_interval=0.5)
+                wait_for_tcp_port(email_sink_port, "Email sink", max_retries=60, retry_interval=0.5)
                 time.sleep(1)  # Extra buffer
 
                 # Start email MCP server (needs to know both ports)

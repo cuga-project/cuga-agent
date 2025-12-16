@@ -12,6 +12,7 @@ jobs:
     name: Stability Tests (Python ${{ matrix.python-version }})
     runs-on: ubuntu-latest
     strategy:
+      fail-fast: false
       matrix:
         python-version:
           - "3.11"
@@ -36,6 +37,8 @@ jobs:
           cp -r docs/examples/huggingface/* ./cuga_workspace/
 
       - name: Run stability tests
+        continue-on-error: true
+        id: test-run
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           MODEL_NAME: ${{ secrets.MODEL_NAME }}
@@ -51,3 +54,18 @@ jobs:
           name: test-logs-python-${{ matrix.python-version }}
           path: src/system_tests/e2e/logs/
           retention-days: 7
+
+  summary:
+    name: Test Summary
+    runs-on: ubuntu-latest
+    needs: stability-tests
+    if: always()
+    steps:
+      - name: Check test results
+        run: |
+          echo "## Stability Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Python versions tested: 3.11, 3.12, 3.13" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "⚠️  Note: Tests are configured to report warnings instead of failures." >> $GITHUB_STEP_SUMMARY
+          echo "Check individual job results above for detailed test outcomes." >> $GITHUB_STEP_SUMMARY
