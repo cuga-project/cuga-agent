@@ -31,4 +31,9 @@ jobs:
         run: uv sync --dev
 
       - name: Run stability tests
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
+          AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
         run: uv run run_stability_tests.py --method local
