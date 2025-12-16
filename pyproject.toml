@@ -99,6 +99,7 @@ dev = [
     "pytest>=8.3.5",
     "pytest-asyncio>=1.1.0",
     "cugaviz",
+    "langchain-groq>=0.3.8",
     "pre-commit>=4.3.0",
     "questionary>=2.1.1",
     "rich>=14.2.0",

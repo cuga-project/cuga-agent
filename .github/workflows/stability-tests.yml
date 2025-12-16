@@ -31,4 +31,4 @@ jobs:
         run: uv sync --dev
 
       - name: Run stability tests
-        run: uv run run_stability_tests.py --parallel --method local
+        run: uv run run_stability_tests.py --method local
