@@ -98,21 +98,54 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
 
         return killed_any
 
-    async def wait_for_server(self, port: int, max_retries: int = 600, retry_interval: float = 0.5):
+    async def wait_for_server(
+        self,
+        port: int,
+        max_retries: int = 600,
+        retry_interval: float = 0.5,
+        process: Optional[subprocess.Popen] = None,
+        log_file: Optional[str] = None,
+        process_name: str = "server",
+    ):
         """
         Wait for a server to be ready by pinging its health endpoint.
 
         Args:
             port: The port number the server is running on
-            max_retries: Maximum number of retry attempts (default: 120)
+            max_retries: Maximum number of retry attempts (default: 600)
             retry_interval: Time in seconds between retries (default: 0.5)
+            process: Optional subprocess.Popen object to check if process is still alive
+            log_file: Optional path to log file to read errors from if process dies
+            process_name: Name of the process for error messages (default: "server")
 
         Raises:
             TimeoutError: If the server doesn't become ready within max_retries attempts
+            RuntimeError: If the process has died before the server became ready
         """
         url = f"http://127.0.0.1:{port}/"
 
         for attempt in range(max_retries):
+            # Check if process has died (every 10 attempts to avoid too frequent checks)
+            if process is not None and attempt % 10 == 0 and attempt > 0:
+                if process.poll() is not None:
+                    error_msg = f"{process_name} process died with return code {process.returncode}"
+                    if log_file and os.path.exists(log_file):
+                        try:
+                            with open(log_file, 'r') as f:
+                                log_content = f.read()
+                                if log_content:
+                                    # Get last 50 lines of log
+                                    log_lines = log_content.split('\n')
+                                    last_lines = '\n'.join(log_lines[-50:])
+                                    error_msg += (
+                                        f"\n\nLast 50 lines of {process_name} log ({log_file}):\n{last_lines}"
+                                    )
+                                else:
+                                    error_msg += f"\n\nLog file {log_file} is empty."
+                        except Exception as e:
+                            error_msg += f"\n\nCould not read log file {log_file}: {e}"
+                    raise RuntimeError(error_msg)
+
             try:
                 async with httpx.AsyncClient(timeout=1.0) as client:
                     response = await client.get(url)
@@ -123,10 +156,24 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 if attempt < max_retries - 1:
                     await asyncio.sleep(retry_interval)
                 else:
-                    raise TimeoutError(
-                        f"Server did not become ready after {max_retries * retry_interval:.1f} seconds. "
+                    error_msg = (
+                        f"{process_name} did not become ready after {max_retries * retry_interval:.1f} seconds. "
                         f"Please check if the server started correctly on port {port}."
                     )
+                    # Check process status one last time
+                    if process is not None and process.poll() is not None:
+                        error_msg += f"\n{process_name} process died with return code {process.returncode}"
+                        if log_file and os.path.exists(log_file):
+                            try:
+                                with open(log_file, 'r') as f:
+                                    log_content = f.read()
+                                    if log_content:
+                                        log_lines = log_content.split('\n')
+                                        last_lines = '\n'.join(log_lines[-50:])
+                                        error_msg += f"\n\nLast 50 lines of {process_name} log ({log_file}):\n{last_lines}"
+                            except Exception as e:
+                                error_msg += f"\n\nCould not read log file {log_file}: {e}"
+                    raise TimeoutError(error_msg)
 
     def _create_log_files(self):
         """Create log files for demo and registry processes per test method in separate folders."""
@@ -276,7 +323,13 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             )
             print(f"Memory service process started with PID: {self.memory_process.pid}")
             # Ensure memory API is ready before services like the tracker try to use it
-            await self.wait_for_server(settings.server_ports.memory, max_retries=240)
+            await self.wait_for_server(
+                settings.server_ports.memory,
+                max_retries=240,
+                process=self.memory_process,
+                log_file=self.memory_log_file,
+                process_name="Memory service",
+            )
 
         print("Starting demo server process...")
         self.demo_process = subprocess.Popen(
@@ -291,10 +344,25 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
 
         # Give processes some time to start up
         print("Waiting for servers to initialize...")
-        await self.wait_for_server(settings.server_ports.registry)
+        await self.wait_for_server(
+            settings.server_ports.registry,
+            process=self.registry_process,
+            log_file=self.registry_log_file,
+            process_name="Registry server",
+        )
         if self.enable_memory_service:
-            await self.wait_for_server(settings.server_ports.memory)
-        await self.wait_for_server(settings.server_ports.demo)
+            await self.wait_for_server(
+                settings.server_ports.memory,
+                process=self.memory_process,
+                log_file=self.memory_log_file,
+                process_name="Memory service",
+            )
+        await self.wait_for_server(
+            settings.server_ports.demo,
+            process=self.demo_process,
+            log_file=self.demo_log_file,
+            process_name="Demo server",
+        )
         print("Server initialization wait complete.")
         print("--- Test environment setup complete ---")
 

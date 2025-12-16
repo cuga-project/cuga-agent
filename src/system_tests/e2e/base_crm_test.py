@@ -71,7 +71,12 @@ class BaseCRMTestServerStream(BaseTestServerStream):
 
         # Wait for servers to initialize
         print("Waiting for servers to initialize...")
-        await self.wait_for_server(settings.server_ports.demo)
+        await self.wait_for_server(
+            settings.server_ports.demo,
+            process=self.demo_process,
+            log_file=self.demo_log_file,
+            process_name="Demo CRM server",
+        )
         print("Server initialization wait complete.")
         print("--- CRM test environment setup complete ---")
 
