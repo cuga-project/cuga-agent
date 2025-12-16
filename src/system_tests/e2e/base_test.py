@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import platform
 import shutil
 import signal
 import subprocess
@@ -50,6 +51,18 @@ def get_preexec_fn():
     if hasattr(os, "setsid"):
         return os.setsid
     return None
+
+
+def get_subprocess_env():
+    """Returns environment dict for subprocess with UTF-8 encoding on Windows.
+    This ensures that subprocesses can handle Unicode characters (like emojis)
+    that FastAPI's dev server prints.
+    """
+    env = os.environ.copy()
+    # On Windows, set UTF-8 encoding to handle Unicode characters in subprocess output
+    if platform.system().lower().startswith("win"):
+        env["PYTHONIOENCODING"] = "utf-8"
+    return env
 
 
 def get_sigkill():
@@ -348,7 +361,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             stdout=self.digital_sales_mcp_log_handle,
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
-            env=os.environ.copy(),  # Pass the updated environment
+            env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
             preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print("Starting registry process...")
@@ -357,7 +370,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             stdout=self.registry_log_handle,
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
-            env=os.environ.copy(),  # Pass the updated environment
+            env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
             preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print(f"Registry process started with PID: {self.registry_process.pid}")
@@ -369,7 +382,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
                 stdout=self.memory_log_handle,
                 stderr=subprocess.STDOUT,  # Redirect stderr to stdout
                 text=True,
-                env=os.environ.copy(),
+                env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
                 preexec_fn=os.setsid,
             )
             print(f"Memory service process started with PID: {self.memory_process.pid}")
@@ -388,7 +401,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             stdout=self.demo_log_handle,
             stderr=subprocess.STDOUT,  # Redirect stderr to stdout (and thus to log file)
             text=True,
-            env=os.environ.copy(),  # Pass the updated environment
+            env=get_subprocess_env(),  # Pass the updated environment with UTF-8 encoding on Windows
             preexec_fn=get_preexec_fn(),  # For proper process group management
         )
         print(f"Demo server process started with PID: {self.demo_process.pid}")
