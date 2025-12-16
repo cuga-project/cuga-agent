@@ -167,7 +167,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
     async def wait_for_server(
         self,
         port: int,
-        max_retries: int = 600,
+        max_retries: int = None,
         retry_interval: float = 0.5,
         process: Optional[subprocess.Popen] = None,
         log_file: Optional[str] = None,
@@ -178,7 +178,7 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
 
         Args:
             port: The port number the server is running on
-            max_retries: Maximum number of retry attempts (default: 600)
+            max_retries: Maximum number of retry attempts (default: 600 on Unix, 1200 on Windows)
             retry_interval: Time in seconds between retries (default: 0.5)
             process: Optional subprocess.Popen object to check if process is still alive
             log_file: Optional path to log file to read errors from if process dies
@@ -188,6 +188,10 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
             TimeoutError: If the server doesn't become ready within max_retries attempts
             RuntimeError: If the process has died before the server became ready
         """
+        # Use longer timeout on Windows due to slower package installation and process startup
+        if max_retries is None:
+            max_retries = 1200 if platform.system() == "Windows" else 600
+
         url = f"http://127.0.0.1:{port}/"
 
         for attempt in range(max_retries):

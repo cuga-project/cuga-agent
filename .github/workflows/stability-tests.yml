@@ -101,6 +101,9 @@ jobs:
           python-version: "3.12"
 
       - name: Install dependencies
+        env:
+          UV_NO_PROGRESS: 1
+          UV_QUIET: 1
         run: uv sync --dev
 
       - name: Copy huggingface examples
@@ -118,6 +121,8 @@ jobs:
           OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
           AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
           TEST_RESULTS_FILE: test_results_python_3.12_windows.json
+          UV_NO_PROGRESS: 1
+          UV_QUIET: 1
         run: uv run run_stability_tests.py --parallel --method local
 
       - name: Check pass rate

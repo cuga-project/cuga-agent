@@ -129,7 +129,7 @@ def wait_for_tcp_port(
 
 
 def wait_for_server(
-    port: int, server_name: str = "Server", max_retries: int = 120, retry_interval: float = 0.5
+    port: int, server_name: str = "Server", max_retries: int = None, retry_interval: float = 0.5
 ):
     """
     Wait for a server to be ready by pinging its health endpoint.
@@ -137,12 +137,16 @@ def wait_for_server(
     Args:
         port: The port number the server is running on
         server_name: Name of the server for logging (default: "Server")
-        max_retries: Maximum number of retry attempts (default: 120)
+        max_retries: Maximum number of retry attempts (default: 120 on Unix, 300 on Windows)
         retry_interval: Time in seconds between retries (default: 0.5)
 
     Raises:
         TimeoutError: If the server doesn't become ready within max_retries attempts
     """
+    # Use longer timeout on Windows due to slower package installation and process startup
+    if max_retries is None:
+        max_retries = 300 if platform.system() == "Windows" else 120
+
     url = f"http://127.0.0.1:{port}/"
 
     for attempt in range(max_retries):
@@ -162,7 +166,7 @@ def wait_for_server(
                 )
 
 
-def wait_for_registry_server(port: int, max_retries: int = 120, retry_interval: float = 0.5):
+def wait_for_registry_server(port: int, max_retries: int = None, retry_interval: float = 0.5):
     """
     Wait for the registry server to be ready by pinging its health endpoint.
 
@@ -729,6 +733,18 @@ def start(
             else:
                 pass
 
+            # Determine if we should use cache
+            # Note: For local paths (--from ./docs/...), caching may not work reliably
+            # So we only enable cache in CI environments (GitHub Actions, etc.) where
+            # the environment is more controlled and packages are pre-installed
+            # In local test runs, we use --no-cache to ensure reliable package installation
+            use_cache = os.environ.get("CI") is not None
+
+            if use_cache:
+                logger.debug("Using uvx cache for faster startup in CI environment")
+            else:
+                logger.debug("Using --no-cache for reliable package installation")
+
             # Start email services if not disabled
             if not no_email:
                 # Get email service ports from environment or use defaults
@@ -737,15 +753,19 @@ def start(
                 logger.info(f"Starting email services - Sink: {email_sink_port}, MCP: {email_mcp_port}")
 
                 # Start email sink first
-                run_direct_service(
-                    "email-sink",
+                email_sink_cmd = ["uvx"]
+                if not use_cache:
+                    email_sink_cmd.append("--no-cache")
+                email_sink_cmd.extend(
                     [
-                        "uvx",
-                        "--no-cache",
                         "--from",
                         "./docs/examples/demo_apps/email_mcp/mail_sink",
                         "email_sink",
-                    ],
+                    ]
+                )
+                run_direct_service(
+                    "email-sink",
+                    email_sink_cmd,
                     env_vars={"DYNACONF_SERVER_PORTS__EMAIL_SINK": str(email_sink_port)},
                 )
                 logger.info("Email sink started, waiting for it to be ready...")
@@ -753,15 +773,19 @@ def start(
                 time.sleep(1)  # Extra buffer
 
                 # Start email MCP server (needs to know both ports)
-                run_direct_service(
-                    "email-mcp",
+                email_mcp_cmd = ["uvx"]
+                if not use_cache:
+                    email_mcp_cmd.append("--no-cache")
+                email_mcp_cmd.extend(
                     [
-                        "uvx",
-                        "--no-cache",
                         "--from",
                         "./docs/examples/demo_apps/email_mcp/mcp_server",
                         "email_mcp",
-                    ],
+                    ]
+                )
+                run_direct_service(
+                    "email-mcp",
+                    email_mcp_cmd,
                     env_vars={
                         "DYNACONF_SERVER_PORTS__EMAIL_SINK": str(email_sink_port),
                         "DYNACONF_SERVER_PORTS__EMAIL_MCP": str(email_mcp_port),
@@ -773,13 +797,16 @@ def start(
                 logger.info("Email services disabled (--no-email flag set)")
 
             # Start filesystem MCP server
-            filesystem_cmd = [
-                "uvx",
-                "--no-cache",
-                "--from",
-                "./docs/examples/demo_apps/file_system",
-                "filesystem-server",
-            ]
+            filesystem_cmd = ["uvx"]
+            if not use_cache:
+                filesystem_cmd.append("--no-cache")
+            filesystem_cmd.extend(
+                [
+                    "--from",
+                    "./docs/examples/demo_apps/file_system",
+                    "filesystem-server",
+                ]
+            )
             if read_only:
                 filesystem_cmd.append("--read-only")
             filesystem_cmd.append(workspace_path)
@@ -796,17 +823,21 @@ def start(
             crm_port = settings.server_ports.crm_api
             logger.info(f"Starting CRM server on port {crm_port}")
 
-            run_direct_service(
-                "crm-server",
+            crm_cmd = ["uvx"]
+            if not use_cache:
+                crm_cmd.append("--no-cache")
+            crm_cmd.extend(
                 [
-                    "uvx",
-                    "--no-cache",
                     "--from",
                     "./docs/examples/demo_apps/crm",
                     "crm-server",
                     "--port",
                     str(crm_port),
-                ],
+                ]
+            )
+            run_direct_service(
+                "crm-server",
+                crm_cmd,
                 env_vars={
                     "DYNACONF_SERVER_PORTS__CRM_API": str(crm_port),
                     "DYNACONF_CRM_DB_PATH": crm_db_path,
