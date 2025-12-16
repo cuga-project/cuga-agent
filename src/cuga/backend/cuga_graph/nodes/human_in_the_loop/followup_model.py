@@ -2,7 +2,7 @@ from typing import Optional, List, Any, Dict
 from enum import Enum
 
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from cuga.backend.cuga_graph.utils.nodes_names import ActionIds
 
@@ -65,8 +65,7 @@ class FollowUpAction(BaseModel):
         None, description="Color theme for the action (e.g., 'primary', 'warning', 'success')"
     )
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)
 
 
 def create_save_reuse_action():
@@ -141,5 +140,4 @@ class ActionResponse(BaseModel):
     response_time_ms: Optional[int] = Field(None, description="Time taken to respond in milliseconds")
     client_info: Optional[Dict[str, str]] = Field(None, description="Client browser/device information")
 
-    class Config:
-        use_enum_values = True
+    model_config = ConfigDict(use_enum_values=True)

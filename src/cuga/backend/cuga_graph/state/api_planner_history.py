@@ -1,5 +1,5 @@
 from typing import List, Optional, Union, Any, Literal
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 from enum import Enum
 from typing_extensions import Annotated
 
@@ -21,8 +21,7 @@ class VariableMetadata(BaseModel):
     preview: Optional[str] = None
 
     # Allow extra fields in metadata if any, though specific ones are defined
-    class Config:
-        extra = 'allow'
+    model_config = ConfigDict(extra='allow')
 
 
 class VariableSummaryEntry(BaseModel):
