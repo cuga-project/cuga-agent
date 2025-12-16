@@ -302,7 +302,7 @@ def generate_summary_report(results_dir: str = "test-results"):
             filename = Path(result_file).name
             python_version = filename.replace("test_results_python_", "").replace(".json", "")
             try:
-                with open(result_file, "r") as f:
+                with open(result_file, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     all_results[python_version] = data
                     total_passed += data["passed"]
@@ -325,7 +325,7 @@ def generate_summary_report(results_dir: str = "test-results"):
         summary_text = "\n".join(report)
         summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
         if summary_file:
-            with open(summary_file, "w") as f:
+            with open(summary_file, "w", encoding="utf-8") as f:
                 f.write(summary_text)
         print(summary_text)
         return
@@ -353,9 +353,65 @@ def generate_summary_report(results_dir: str = "test-results"):
 
     report.append("")
 
+    # Aggregate test results across all Python versions
+    test_status_by_name = {}  # test_name -> {versions: [list], all_passed: bool, any_failed: bool}
+
+    for version in sorted(all_results.keys()):
+        data = all_results[version]
+        if data.get("tests"):
+            for test in data["tests"]:
+                test_name = test["name"]
+                if test_name not in test_status_by_name:
+                    test_status_by_name[test_name] = {
+                        "versions": [],
+                        "all_passed": True,
+                        "any_failed": False,
+                    }
+                test_status_by_name[test_name]["versions"].append(
+                    {
+                        "version": version,
+                        "status": test["status"],
+                    }
+                )
+                if test["status"] == "FAIL":
+                    test_status_by_name[test_name]["all_passed"] = False
+                    test_status_by_name[test_name]["any_failed"] = True
+
+    # Overall test results summary
+    report.append("### Overall Test Results")
+    report.append("")
+
+    # Tests that passed in all versions
+    all_passed_tests = [name for name, info in test_status_by_name.items() if info["all_passed"]]
+    # Tests that failed in at least one version
+    any_failed_tests = [name for name, info in test_status_by_name.items() if info["any_failed"]]
+
+    if all_passed_tests:
+        report.append("**✅ Tests Passed in All Versions:**")
+        for test_name in sorted(all_passed_tests):
+            report.append(f"- ✅ {test_name}")
+        report.append("")
+
+    if any_failed_tests:
+        report.append("**❌ Tests Failed in At Least One Version:**")
+        for test_name in sorted(any_failed_tests):
+            # Show which versions passed/failed for this test
+            info = test_status_by_name[test_name]
+            version_statuses = []
+            for v in info["versions"]:
+                status_emoji = "✅" if v["status"] == "PASS" else "❌"
+                version_statuses.append(f"{status_emoji} {v['version']}")
+            versions_str = ", ".join(version_statuses)
+            report.append(f"- ❌ {test_name} ({versions_str})")
+        report.append("")
+
+    if not all_passed_tests and not any_failed_tests:
+        report.append("No test results available.")
+        report.append("")
+
     # Detailed breakdown if pass rate >= 88%
     if overall_pass_rate >= 88:
-        report.append("### ✅ Detailed Test Results")
+        report.append("### 📋 Detailed Test Results by Python Version")
         report.append("")
 
         for version in sorted(all_results.keys()):
@@ -393,7 +449,7 @@ def generate_summary_report(results_dir: str = "test-results"):
     summary_text = "\n".join(report)
     summary_file = os.environ.get("GITHUB_STEP_SUMMARY")
     if summary_file:
-        with open(summary_file, "w") as f:
+        with open(summary_file, "w", encoding="utf-8") as f:
             f.write(summary_text)
 
     print(summary_text)
@@ -542,8 +598,10 @@ def main():
 
     results_file = os.environ.get("TEST_RESULTS_FILE", "test_results.json")
     try:
-        with open(results_file, "w") as f:
-            json.dump(results_json, f, indent=2)
+        # Use UTF-8 encoding explicitly for cross-platform compatibility
+        # Windows defaults to cp1252 which can't encode all Unicode characters
+        with open(results_file, "w", encoding="utf-8") as f:
+            json.dump(results_json, f, indent=2, ensure_ascii=False)
         print(f"\nResults saved to {results_file}")
     except Exception as e:
         print(f"\nWarning: Could not save results to {results_file}: {e}")
