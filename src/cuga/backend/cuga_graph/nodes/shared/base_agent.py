@@ -140,6 +140,7 @@ JSON schema:
             model_id = llm.model_id
             logger.debug(f"Model ID: {model_id}")
             logger.debug(f"Schema: {schema}")
+            # For none gpt models this inteded for llama model to use required output schema fields
             if "gpt" not in model_id and (
                 schema == APIPlannerOutputLiteNoHITL
                 or schema == APIPlannerOutput

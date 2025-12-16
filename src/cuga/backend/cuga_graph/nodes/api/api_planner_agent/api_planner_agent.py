@@ -27,10 +27,16 @@ class APIPlannerAgent(BaseAgent):
         super().__init__()
         self.name = "APIPlannerAgent"
 
-        if settings.advanced_features.api_planner_hitl:
-            schema = APIPlannerOutputLite if not settings.features.thoughts else APIPlannerOutput
+        model_id = llm.model_id
+        if model_id and "oss" in model_id:
+            schema = APIPlannerOutputLiteNoHITL if not settings.features.thoughts else APIPlannerOutputLite
         else:
-            schema = APIPlannerOutputLiteNoHITL if not settings.features.thoughts else APIPlannerOutputNoHITL
+            if settings.advanced_features.api_planner_hitl:
+                schema = APIPlannerOutputLite if not settings.features.thoughts else APIPlannerOutput
+            else:
+                schema = (
+                    APIPlannerOutputLiteNoHITL if not settings.features.thoughts else APIPlannerOutputNoHITL
+                )
 
         self.chain = BaseAgent.get_chain(prompt_template=prompt_template, llm=llm, schema=schema)
 
