@@ -32,7 +32,7 @@ class FinalAnswerNode(BaseNode):
             state=state,
             agent=agent,
             name=name,
-            output_model=FinalAnswerOutput,
+            response_parser=FinalAnswerOutput,
         )
 
         state.sender = name

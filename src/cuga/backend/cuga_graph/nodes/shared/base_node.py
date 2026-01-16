@@ -1,5 +1,6 @@
 import functools
 import json
+import logging
 from abc import ABC, abstractmethod
 from typing import Dict, Callable, Awaitable, Optional
 
@@ -224,9 +225,13 @@ class BaseNode(ABC):
         response = await agent.run(state)
         state.messages.append(response)
 
-        parsed_output = response_parser(
-            **json.loads(response.content)
-        )
+        try:
+            parsed_output = response_parser(
+                **json.loads(response.content)
+            )
+        except json.JSONDecodeError:
+            logging.error(f"Failed to decode JSON from agent response: {response.content}")
+            raise
 
         if ENABLE_CHAT:
             chat_message = (
