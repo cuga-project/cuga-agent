@@ -20,7 +20,7 @@ class Memory:
     def __init__(self, memory_config=None):
         if not self._initialized:
             # Check if memory is enabled before initializing
-            if not settings.advanced_features.enable_memory:
+            if not settings.advanced_features.enable_memory and not settings.advanced_features.enable_fact:
                 raise RuntimeError(
                     "Memory is disabled in settings. Set enable_memory = true in settings.toml to use memory features."
                 )

@@ -19,7 +19,7 @@ def _sanitize_vector_store_config(raw: dict) -> dict:
 
 def get_config(namespace_id: str | None = None):
     # Check if memory is enabled
-    if not settings.advanced_features.enable_memory:
+    if not settings.advanced_features.enable_memory and not settings.advanced_features.enable_fact:
         raise RuntimeError(
             "Memory is disabled in settings. Set enable_memory = true in settings.toml to use memory features."
         )
@@ -133,18 +133,6 @@ def _resolve_milvus_config():
 
 
 # Backward compatible module-level variables
-<<<<<<< HEAD
-# Only initialize if memory is enabled
-if settings.advanced_features.enable_memory:
-    config = get_config()
-    milvus_config = settings.milvus
-    tips_extractor_config = get_tips_extractor_config().tips_extractor_config
-else:
-    config = None
-    milvus_config = None
-    tips_extractor_config = None
-=======
 config = get_config()
 milvus_config = _resolve_milvus_config()
 tips_extractor_config = get_tips_extractor_config().tips_extractor_config
->>>>>>> a2578ba (Initial commit for personalization)
