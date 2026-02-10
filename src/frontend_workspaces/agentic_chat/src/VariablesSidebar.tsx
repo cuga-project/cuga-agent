@@ -7,38 +7,111 @@ interface VariablesHistoryItem {
   title: string;
   timestamp: number;
   variables: Record<string, any>;
+  memories: Record<string, any[]>;
 }
 
 interface VariablesSidebarProps {
   variables: Record<string, any>;
+  memories?: Record<string, any[]>;
   history?: VariablesHistoryItem[];
   selectedAnswerId?: string | null;
   onSelectAnswer?: (answerId: string) => void;
+  mode?: "variables" | "memories";
+}
+
+interface MemoryFact {
+  id?: string;
+  category: string;
+  content: string;
+  key?: string | null;
+  value?: string | null;
 }
 
 const VariablesSidebar: React.FC<VariablesSidebarProps> = ({ 
   variables, 
+  memories = {},
   history = [],
   selectedAnswerId,
-  onSelectAnswer 
+  onSelectAnswer,
+  mode = "variables",
 }) => {
   const [isExpanded, setIsExpanded] = useState(true);
   const [selectedVariable, setSelectedVariable] = useState<any>(null);
   const variableKeys = Object.keys(variables);
 
-  console.log('VariablesSidebar render - variableKeys:', variableKeys.length, 'history:', history.length, 'selectedAnswerId:', selectedAnswerId);
+  const normalizeMemories = (memoriesValue: any): Record<string, any[]> => {
+    if (!memoriesValue || typeof memoriesValue !== "object" || Array.isArray(memoriesValue)) {
+      return {};
+    }
+    return memoriesValue as Record<string, any[]>;
+  };
 
-  if (variableKeys.length === 0 && history.length === 0) {
+  const extractMemoryFacts = (memoriesValue: any): MemoryFact[] => {
+    if (!memoriesValue || typeof memoriesValue !== "object" || Array.isArray(memoriesValue)) {
+      return [];
+    }
+
+    const facts: MemoryFact[] = [];
+    Object.entries(memoriesValue).forEach(([category, rawFacts]) => {
+      if (!Array.isArray(rawFacts)) {
+        return;
+      }
+
+      rawFacts.forEach((fact: any) => {
+        const content = typeof fact?.content === "string" ? fact.content : "";
+        if (!content) {
+          return;
+        }
+
+        facts.push({
+          id: typeof fact?.id === "string" ? fact.id : undefined,
+          category,
+          content,
+          key: typeof fact?.key === "string" ? fact.key : null,
+          value: typeof fact?.value === "string" ? fact.value : null,
+        });
+      });
+    });
+
+    return facts;
+  };
+
+  const currentMemories = normalizeMemories(memories);
+
+  const memoryFacts = extractMemoryFacts(currentMemories);
+  const countForActiveView = mode === "variables" ? variableKeys.length : memoryFacts.length;
+
+  console.log(
+    "VariablesSidebar render - variableKeys:",
+    variableKeys.length,
+    "memoryFacts:",
+    memoryFacts.length,
+    "history:",
+    history.length,
+    "mode:",
+    mode,
+    "selectedAnswerId:",
+    selectedAnswerId
+  );
+
+  if (variableKeys.length === 0 && memoryFacts.length === 0 && history.length === 0) {
     console.log('VariablesSidebar: No variables or history, not rendering');
     return null;
   }
 
-  // Always show sidebar if there's history, even if no current variables
-  const shouldShowSidebar = variableKeys.length > 0 || history.length > 0;
-
   const formatTimestamp = (timestamp: number) => {
     const date = new Date(timestamp);
     return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+  };
+
+  const getVariablesCountForHistoryItem = (item: VariablesHistoryItem): number => {
+    return Object.keys(item.variables || {}).length;
+  };
+
+  const getMemoriesCountForHistoryItem = (item: VariablesHistoryItem): number => {
+    const itemMemories = normalizeMemories(item.memories);
+    const itemMemoryFacts = extractMemoryFacts(itemMemories);
+    return itemMemoryFacts.length;
   };
 
   return (
@@ -64,10 +137,14 @@ const VariablesSidebar: React.FC<VariablesSidebarProps> = ({
             <>
               <div className="variables-sidebar-title">
                 <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                  <path d="M4 7h16M4 12h16M4 17h16"></path>
+                  {mode === "variables" ? (
+                    <path d="M4 7h16M4 12h16M4 17h16"></path>
+                  ) : (
+                    <path d="M12 3v18M3 12h18"></path>
+                  )}
                 </svg>
-                <span>Variables</span>
-                <span className="variables-count">{variableKeys.length}</span>
+                <span>{mode === "variables" ? "Variables" : "Memories"}</span>
+                <span className="variables-count">{countForActiveView}</span>
               </div>
               {history.length > 0 && (
                 <select
@@ -75,11 +152,11 @@ const VariablesSidebar: React.FC<VariablesSidebarProps> = ({
                   value={selectedAnswerId || ''}
                   onChange={(e) => onSelectAnswer && onSelectAnswer(e.target.value)}
                   onClick={(e) => e.stopPropagation()}
-                  title="Select which conversation turn to view variables from"
+                  title="Select which conversation turn to view"
                 >
                   {history.map((item) => (
                     <option key={item.id} value={item.id}>
-                      {item.title} - {Object.keys(item.variables).length} variable{Object.keys(item.variables).length !== 1 ? 's' : ''} ({formatTimestamp(item.timestamp)})
+                      {item.title} - {mode === "variables" ? getVariablesCountForHistoryItem(item) : getMemoriesCountForHistoryItem(item)} {mode === "variables" ? "variable" : "memory"}{(mode === "variables" ? getVariablesCountForHistoryItem(item) : getMemoriesCountForHistoryItem(item)) !== 1 ? "s" : ""} ({formatTimestamp(item.timestamp)})
                     </option>
                   ))}
                 </select>
@@ -97,12 +174,17 @@ const VariablesSidebar: React.FC<VariablesSidebarProps> = ({
               </div>
             )}
             <div className="variables-list">
-              {variableKeys.length === 0 && history.length > 0 ? (
+              {mode === "variables" && variableKeys.length === 0 && history.length > 0 ? (
                 <div className="no-variables-message">
                   <p>No variables in current turn.</p>
                   <p>Select a previous turn from the dropdown above to view its variables.</p>
                 </div>
-              ) : (
+              ) : mode === "memories" && memoryFacts.length === 0 ? (
+                <div className="no-variables-message">
+                  <p>No memories found in current turn.</p>
+                  <p>Ask a few questions so CUGA can store memory facts and show them here.</p>
+                </div>
+              ) : mode === "variables" ? (
                 variableKeys.map((varName) => {
                   const variable = variables[varName];
                   return (
@@ -131,6 +213,35 @@ const VariablesSidebar: React.FC<VariablesSidebarProps> = ({
                     </div>
                   );
                 })
+              ) : (
+                memoryFacts.map((memory, index) => {
+                  const popupValue = JSON.stringify(memory, null, 2);
+                  const memoryName = memory.key || memory.id || `memory_${index + 1}`;
+                  return (
+                    <div
+                      key={`${memory.category}-${memory.id || index}`}
+                      className="variable-item"
+                      onClick={() =>
+                        setSelectedVariable({
+                          name: memoryName,
+                          type: "memory",
+                          description: `${memory.category.replace(/_/g, " ")} memory fact`,
+                          value_preview: popupValue,
+                          count_items: 1,
+                        })
+                      }
+                    >
+                      <div className="variable-item-header">
+                        <code className="variable-name">{memoryName}</code>
+                        <span className="variable-type memory-type">{memory.category}</span>
+                      </div>
+                      <div className="variable-description">{memory.content}</div>
+                      <div className="variable-preview">
+                        {popupValue.substring(0, 80) + (popupValue.length > 80 ? "..." : "")}
+                      </div>
+                    </div>
+                  );
+                })
               )}
             </div>
           </div>
@@ -142,12 +253,12 @@ const VariablesSidebar: React.FC<VariablesSidebarProps> = ({
         <button
           className="variables-sidebar-floating-toggle"
           onClick={() => setIsExpanded(true)}
-          title="Show variables panel"
+          title="Show sidebar panel"
         >
           <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
             <polyline points="9 18 15 12 9 6"></polyline>
           </svg>
-          <span className="variables-floating-count">{variableKeys.length}</span>
+          <span className="variables-floating-count">{countForActiveView}</span>
         </button>
       )}
 
@@ -162,4 +273,3 @@ const VariablesSidebar: React.FC<VariablesSidebarProps> = ({
 };
 
 export default VariablesSidebar;
-

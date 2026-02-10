@@ -29,7 +29,11 @@ interface ChatInstance {
 }
 
 interface CustomChatProps {
-  onVariablesUpdate?: (variables: Record<string, any>, history: Array<any>) => void;
+  onVariablesUpdate?: (
+    variables: Record<string, any>,
+    memories: Record<string, any[]>,
+    history: Array<any>
+  ) => void;
   onFileAutocompleteOpen?: () => void;
   onFileHover?: (filePath: string | null) => void;
   onMessageSent?: (message: string) => void;
@@ -101,12 +105,13 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
   useEffect(() => {
     const handleVariablesUpdate = ((event: CustomEvent) => {
       console.log('[CustomChat] Received variablesUpdate event:', event.detail);
-      const { variables, history } = event.detail;
+      const { variables, memories, history } = event.detail;
       console.log('[CustomChat] Variables keys:', Object.keys(variables));
+      console.log('[CustomChat] Memories keys:', Object.keys(memories || {}));
       console.log('[CustomChat] History length:', history.length);
       if (onVariablesUpdate) {
         console.log('[CustomChat] Calling onVariablesUpdate callback');
-        onVariablesUpdate(variables, history);
+        onVariablesUpdate(variables, memories || {}, history);
       } else {
         console.warn('[CustomChat] onVariablesUpdate callback is not defined!');
       }
@@ -1211,4 +1216,3 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
     </div>
   );
 }
-

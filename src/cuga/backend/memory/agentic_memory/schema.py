@@ -11,6 +11,12 @@ class Fact(BaseModel):
         description='A complete sentence describing a fact about the user, their personal preferences,'
         ' upcoming plans, professional details, and other miscellaneous information.'
     )
+    category: str | None = Field(
+        default=None,
+        description='The category this fact belongs to (e.g., personal_details, professional_details, etc.)',
+    )
+    key: str | None = Field(default=None, description='Specific attribute name for this fact')
+    value: str | None = Field(default=None, description='The actual value of the fact')
     # Made optional to support use cases that can't handle metadata
     metadata: dict | None = Field(
         default=None, description='Arbitrary metadata which is related to the fact.'
@@ -42,12 +48,13 @@ class Run(BaseModel):
 fact_schema = CollectionSchema(
     fields=[
         # Keep it as an INT64 or else you won't be able to list all facts.
-        FieldSchema(name='id', is_primary=True, auto_id=True, dtype=DataType.INT64, max_length=128),
+        FieldSchema(name='id', is_primary=True, auto_id=True, dtype=DataType.INT64),
         FieldSchema(name='content', dtype=DataType.VARCHAR, max_length=512),
         FieldSchema(name='created_at', dtype=DataType.INT64),
         # milvus-lite does not support nullable values. Use a default value like '' in place of `None`
         FieldSchema(name='run_id', dtype=DataType.VARCHAR, max_length=128),
         FieldSchema(name='embedding', dtype=DataType.FLOAT_VECTOR, dim=384),
+        # metadata now stores category, key, value along with other metadata
         FieldSchema(name='metadata', dtype=DataType.JSON),
     ]
 )

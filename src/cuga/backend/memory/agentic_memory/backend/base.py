@@ -70,7 +70,11 @@ class BaseMemoryBackend(ABC):
         pass
 
     async def extract_facts_from_messages_async(
-        self, namespace_id: str, messages: list[Message], metadata: dict | None = None
+        self,
+        namespace_id: str,
+        messages: list[Message],
+        metadata: dict | None = None,
+        enable_conflict_resolution: bool = True,
     ) -> list[MemoryEvent]:
         pass
 

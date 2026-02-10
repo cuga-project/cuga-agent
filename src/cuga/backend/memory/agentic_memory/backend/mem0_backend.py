@@ -189,12 +189,17 @@ class Mem0MemoryBackend(BaseMemoryBackend):
             pass
 
     async def extract_facts_from_messages_async(
-        self, namespace_id: str, messages: list[Message], metadata: dict | None = None
+        self,
+        namespace_id: str,
+        messages: list[Message],
+        metadata: dict | None = None,
+        enable_conflict_resolution: bool = True,
     ) -> list[MemoryEvent]:
         memory = self._get_namespace(namespace_id=namespace_id)
+        user_id = (metadata or {}).get("user_id") or "default"
         results = memory.add(
-            [m.model_dump() for m in messages], metadata=metadata, user_id='default_user', infer=True
-        )
+            [m.model_dump() for m in messages], metadata=metadata, user_id=user_id, infer=True
+        )['results']
         updates = []
         for result in results:
             updates.append(
@@ -211,7 +216,7 @@ class Mem0MemoryBackend(BaseMemoryBackend):
 
     def delete_run(self, namespace_id: str, run_id: str):
         memory = self._get_namespace(namespace_id=namespace_id)
-        memory.delete_all(user_id='default_user', run_id=run_id)
+        memory.delete_all(user_id='default', run_id=run_id)
         with SQLiteManager() as db_manager:
             db_manager.delete_run(namespace_id=namespace_id, run_id=run_id)
 
@@ -244,7 +249,7 @@ class Mem0MemoryBackend(BaseMemoryBackend):
         metadata = {**parsed_extraction, "step": step}
         added_step = memory.add(
             parsed_extraction['summary'],
-            user_id='default_user',
+            user_id='default',
             metadata=metadata,
             run_id=run_id,
             infer=False,
@@ -260,7 +265,7 @@ class Mem0MemoryBackend(BaseMemoryBackend):
         memory = self._get_namespace(namespace_id=namespace_id)
         steps = [
             self._result_to_fact(step)
-            for step in memory.get_all(user_id='default_user', run_id=run_id)['results']
+            for step in memory.get_all(user_id='default', run_id=run_id)['results']
         ]
         sorted_steps = sorted(steps, key=lambda step: step.created_at)
 
@@ -273,12 +278,12 @@ class Mem0MemoryBackend(BaseMemoryBackend):
 
     def search_runs(self, namespace_id: str, query: str, filters: dict[str, str]) -> Run | None:
         memory = self._get_namespace(namespace_id=namespace_id)
-        results = memory.search(query=query, user_id='default_user', filters=filters)['results']
+        results = memory.search(query=query, user_id='default', filters=filters)['results']
         if len(results) > 0:
             run_id = results[0]['run_id']
             steps = [
                 self._result_to_fact(step)
-                for step in memory.get_all(user_id='default_user', run_id=run_id)['results']
+                for step in memory.get_all(user_id='default', run_id=run_id)['results']
             ]
             sorted_steps = sorted(steps, key=lambda step: step.created_at)
 

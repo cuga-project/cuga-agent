@@ -1,5 +1,12 @@
 The user's overall goal is: `USER_GOAL`: `{{sub_task}}`.
 
+{% if user_preferences_context %}
+Personalization context from memory (must influence planning decisions):
+"""
+{{user_preferences_context}}
+"""
+{% endif %}
+
 The history of actions so far is: `HISTORY_OF_ACTIONS`:
 """
 {{api_planner_history}}
@@ -23,4 +30,3 @@ Summary:
 """
 {{guidance}}
 """
-

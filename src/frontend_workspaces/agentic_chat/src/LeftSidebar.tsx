@@ -26,17 +26,19 @@ interface SavedFlow {
 
 interface LeftSidebarProps {
   globalVariables: Record<string, any>;
+  globalMemories: Record<string, any[]>;
   variablesHistory: Array<{
     id: string;
     title: string;
     timestamp: number;
     variables: Record<string, any>;
+    memories: Record<string, any[]>;
   }>;
   selectedAnswerId: string | null;
   onSelectAnswer: (id: string | null) => void;
   isCollapsed?: boolean;
-  activeTab?: "conversations" | "variables" | "savedflows";
-  onTabChange?: (tab: "conversations" | "variables" | "savedflows") => void;
+  activeTab?: "conversations" | "variables" | "memories" | "savedflows";
+  onTabChange?: (tab: "conversations" | "variables" | "memories" | "savedflows") => void;
   leftSidebarRef?: React.RefObject<{ addConversation: (title: string) => void }>;
 }
 
@@ -45,6 +47,7 @@ const ENABLE_SAVED_FLOWS = false;
 
 export function LeftSidebar({
   globalVariables,
+  globalMemories,
   variablesHistory,
   selectedAnswerId,
   onSelectAnswer,
@@ -62,8 +65,9 @@ export function LeftSidebar({
   // Debug logging for variables
   useEffect(() => {
     console.log('[LeftSidebar] globalVariables updated:', Object.keys(globalVariables).length, 'keys');
+    console.log('[LeftSidebar] globalMemories updated:', Object.keys(globalMemories).length, 'categories');
     console.log('[LeftSidebar] variablesHistory updated:', variablesHistory.length, 'items');
-  }, [globalVariables, variablesHistory]);
+  }, [globalVariables, globalMemories, variablesHistory]);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [selectedConversation, setSelectedConversation] = useState<string | null>(null);
   const [savedFlows, setSavedFlows] = useState<SavedFlow[]>([]);
@@ -234,6 +238,23 @@ export function LeftSidebar({
               </div>
             </div>
           </button>
+          <button
+            className={`sidebar-tab ${activeTab === "memories" ? "active" : ""}`}
+            onClick={() => onTabChange ? onTabChange("memories") : null}
+          >
+            <Brain size={16} />
+            <span>Memories</span>
+            <div
+              className="sidebar-tab-info-tooltip-wrapper"
+              onClick={(e) => e.stopPropagation()}
+              onMouseEnter={(e) => e.stopPropagation()}
+            >
+              <HelpCircle size={14} className="sidebar-info-icon" />
+              <div className="sidebar-tab-info-tooltip">
+                Memories are extracted user facts from prior turns. Click this tab to browse each stored memory item.
+              </div>
+            </div>
+          </button>
           {ENABLE_SAVED_FLOWS && (
             <button
               className={`sidebar-tab ${activeTab === "savedflows" ? "active" : ""}`}
@@ -299,9 +320,22 @@ export function LeftSidebar({
           <div className="variables-wrapper">
             <VariablesSidebar
               variables={globalVariables}
+              memories={globalMemories}
               history={variablesHistory}
               selectedAnswerId={selectedAnswerId}
               onSelectAnswer={onSelectAnswer}
+              mode="variables"
+            />
+          </div>
+        ) : activeTab === "memories" ? (
+          <div className="variables-wrapper">
+            <VariablesSidebar
+              variables={globalVariables}
+              memories={globalMemories}
+              history={variablesHistory}
+              selectedAnswerId={selectedAnswerId}
+              onSelectAnswer={onSelectAnswer}
+              mode="memories"
             />
           </div>
         ) : ENABLE_SAVED_FLOWS && activeTab === "savedflows" ? (
@@ -421,5 +455,3 @@ export function LeftSidebar({
     </div>
   );
 }
-
-

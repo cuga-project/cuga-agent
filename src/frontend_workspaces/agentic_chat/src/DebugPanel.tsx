@@ -14,6 +14,8 @@ interface AgentState {
   } | null;
   variables: Record<string, any>;
   variables_count: number;
+  memories?: Record<string, any[]>;
+  memories_count?: number;
   message?: string;
 }
 
@@ -55,6 +57,8 @@ export function DebugPanel({ threadId }: DebugPanelProps) {
           state: null,
           variables: {},
           variables_count: 0,
+          memories: {},
+          memories_count: 0,
           message: "Agent graph not initialized",
         });
         return;
@@ -172,6 +176,10 @@ export function DebugPanel({ threadId }: DebugPanelProps) {
                   <span className="debug-label">Variables Count:</span>
                   <span className="debug-value">{agentState.variables_count}</span>
                 </div>
+                <div className="debug-state-item">
+                  <span className="debug-label">Memories Count:</span>
+                  <span className="debug-value">{agentState.memories_count || 0}</span>
+                </div>
                 {agentState.state ? (
                   <>
                     <div className="debug-state-item">
@@ -216,6 +224,12 @@ export function DebugPanel({ threadId }: DebugPanelProps) {
                     <pre className="debug-json">{formatJSON(agentState.variables)}</pre>
                   </div>
                 )}
+                {agentState.memories && Object.keys(agentState.memories).length > 0 && (
+                  <div className="debug-state-item debug-variables">
+                    <span className="debug-label">Memories:</span>
+                    <pre className="debug-json">{formatJSON(agentState.memories)}</pre>
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -224,4 +238,3 @@ export function DebugPanel({ threadId }: DebugPanelProps) {
     </div>
   );
 }
-

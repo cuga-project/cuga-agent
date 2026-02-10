@@ -7,6 +7,8 @@ from cuga.backend.memory.agentic_memory.schema import Fact, Message, Namespace, 
 from cuga.backend.memory.agentic_memory.utils.exceptions import NamespaceNotFoundException
 from cuga.backend.memory.agentic_memory.llm.conflict_resolution.schema import MemoryEvent
 from cuga.config import settings
+import os
+from cuga.config import SETTINGS_TOML_PATH
 from typing import Literal
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -22,6 +24,25 @@ class MemoryClient:
 
     def __init__(self, config: MemoryConfig | None = None):
         """Initialize the Memory client."""
+        print(
+            "MemoryClient init: "
+            f"settings.features.memory_provider={settings.features.memory_provider}, "
+            f"SETTINGS_TOML_PATH={SETTINGS_TOML_PATH}, "
+            f"cwd={os.getcwd()}, "
+            f"DYNACONF_FEATURES__MEMORY_PROVIDER={os.getenv('DYNACONF_FEATURES__MEMORY_PROVIDER')}, "
+            f"FEATURES__MEMORY_PROVIDER={os.getenv('FEATURES__MEMORY_PROVIDER')}, "
+            f"DYNACONF_ENV={os.getenv('DYNACONF_ENV')}, "
+            f"ENV_FOR_DYNACONF={os.getenv('ENV_FOR_DYNACONF')}"
+        )
+        try:
+            print(
+                "MemoryClient dynaconf: "
+                f"current_env={getattr(settings, 'current_env', None)}, "
+                f"loaded_files={getattr(settings, '_loaded_files', None)}, "
+                f"features_dict={settings.as_dict().get('FEATURES')}"
+            )
+        except Exception as exc:
+            print(f"MemoryClient dynaconf: failed to read settings ({exc})")
         self.config = config or MemoryConfig(provider=settings.features.memory_provider)
         if self.config.provider == 'milvus':
             from cuga.backend.memory.agentic_memory.backend.milvus import MilvusMemoryBackend
@@ -103,13 +124,19 @@ class MemoryClient:
         return self.backend.delete_fact_by_id(namespace_id, fact_id)
 
     async def extract_facts_from_messages_async(
-        self, namespace_id: str, messages: list[Message], metadata: dict | None = None
+        self,
+        namespace_id: str,
+        messages: list[Message],
+        metadata: dict | None = None,
+        enable_conflict_resolution: bool = True,
     ) -> list[MemoryEvent]:
         """
         Extract facts from a list of messages and store them in the namespace.
         This is a background processing operation.
         """
-        return await self.backend.extract_facts_from_messages_async(namespace_id, messages, metadata)
+        return await self.backend.extract_facts_from_messages_async(
+            namespace_id, messages, metadata, enable_conflict_resolution
+        )
 
     def create_run(self, namespace_id: str, run_id: str | None = None) -> Run:
         """Create a new agentic workflow run."""

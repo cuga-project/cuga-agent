@@ -2,11 +2,6 @@
 max_num_messages = 2
 embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
 
-[milvus.fact_extraction]
-model = "watsonx/meta-llama/llama-3-405b-instruct"
-
-[milvus.conflict_resolution]
-model = "watsonx/meta-llama/llama-3-405b-instruct"
-
-[milvus.step_processing]
-model = "watsonx/meta-llama/llama-3-405b-instruct"
+# Model configurations for milvus components are now defined in model-specific files
+# (e.g., settings.openai.toml, settings.watsonx.toml) to allow proper overriding
+# based on the selected LLM provider.

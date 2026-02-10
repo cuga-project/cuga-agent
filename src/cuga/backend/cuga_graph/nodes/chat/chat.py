@@ -1,5 +1,6 @@
 import json
 import uuid
+import asyncio
 from typing import Literal, Optional, Dict, Callable
 
 from langchain_core.messages import HumanMessage, ToolCall, BaseMessage
@@ -13,7 +14,7 @@ from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
     create_flow_approve,
     create_new_flow_approve,
 )
-from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.state.agent_state import AgentState, load_user_preferences
 from cuga.backend.cuga_graph.utils.nodes_names import NodeNames, ActionIds
 
 from langgraph.types import Command
@@ -140,6 +141,65 @@ class ChatNode(BaseNode):
             state.input = tool.get("args").get("user_task")
             state.sender = "ChatAgent"
             return Command(update=state.model_dump(), goto=NodeNames.TASK_ANALYZER_AGENT)
+
+        # Handle user preferences if memory is enabled
+        if settings.advanced_features.enable_fact:
+            try:
+                from cuga.backend.memory.memory import Memory
+                from cuga.backend.memory.agentic_memory import NamespaceNotFoundException
+                from cuga.backend.memory.agentic_memory.schema import Message
+
+                memory = Memory()
+                # Use "memory" as the default namespace for preferences (same as ActivityTracker)
+                namespace_id = "memory"
+                # Normalize default user id to match memory storage conventions.
+                memory_user_id = (
+                    state.user_id
+                    if state.user_id and state.user_id not in {"default", ""}
+                    else "default"
+                )
+
+                # Ensure namespace exists (create if needed)
+                try:
+                    memory.get_namespace_details(namespace_id=namespace_id)
+                except NamespaceNotFoundException:
+                    logger.info(f"Creating namespace for preferences: {namespace_id}")
+                    memory.create_namespace(
+                        namespace_id=namespace_id, user_id=memory_user_id
+                    )
+
+                # 1. Extract and store facts with categorization (async, non-blocking)
+                if state.input:
+                    messages = [Message(role="user", content=state.input)]
+                    # Fire and forget - extract facts with categorization
+                    task = asyncio.create_task(
+                        memory.memory_client.extract_facts_from_messages_async(
+                            namespace_id=namespace_id,
+                            messages=messages,
+                            metadata={"user_id": memory_user_id},
+                            enable_conflict_resolution=False,
+                        )
+                    )
+                    def _log_task_result(done_task: asyncio.Task) -> None:
+                        try:
+                            done_task.result()
+                        except Exception:
+                            logger.exception("Categorized fact extraction task failed")
+                    task.add_done_callback(_log_task_result)
+                    logger.debug(f"Queued categorized fact extraction for user {state.user_id}")
+
+                # 2. Load relevant facts based on current utterance (synchronous)
+                state = load_user_preferences(state, memory, namespace_id, query=state.input)
+
+                if state.user_preferences:
+                    num_categories = len(state.user_preferences)
+                    total_facts = sum(len(facts) for facts in state.user_preferences.values())
+                    logger.info(f"Loaded {total_facts} facts in {num_categories} categories for user {state.user_id}")
+
+            except Exception as e:
+                logger.error(f"Error handling preferences in ChatNode: {e}")
+                # Don't fail the entire operation if preference handling fails
+                pass
 
         # If chat feature is disabled, go directly to task analyzer
         if not settings.features.chat:

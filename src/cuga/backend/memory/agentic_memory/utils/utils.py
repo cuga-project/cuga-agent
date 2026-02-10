@@ -28,7 +28,12 @@ def clean_llm_response(content: str) -> str:
 
 
 def get_milvus_client() -> MilvusClient:
-    return MilvusClient("memory.db")
+    # Resolve the Milvus URI from memory config so local DB files land under DBS_DIR
+    # (or a caller-provided env/config override), instead of the process cwd.
+    from cuga.backend.memory.agentic_memory.config import config as memory_config
+
+    milvus_uri = memory_config["vector_store"]["config"]["url"]
+    return MilvusClient(uri=milvus_uri)
 
 
 def get_chat_model(model_settings, max_tokens=None):

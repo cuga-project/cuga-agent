@@ -10,7 +10,7 @@ start_url = "https://opensource-demo.orangehrmlive.com/web/index.php/auth/login"
 
 [features]
 cuga_mode = "balanced"
-memory_provider = "mem0"
+memory_provider = "milvus"
 
 [advanced_features]
 web_arena_eval = false
@@ -138,3 +138,8 @@ oak_health_api = 8090  # cuga-oak-health OpenAPI (demo_health)
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
                  # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
                  # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)
+
+[memory]
+categorization_mode = "predefined"  # Options: "predefined", "dynamic", "hybrid"
+allow_dynamic_categories = false  # Allow LLM to create new categories (used in dynamic/hybrid modes)
+confirm_new_categories = false  # Require user confirmation for new categories

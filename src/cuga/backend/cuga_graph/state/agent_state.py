@@ -1,4 +1,4 @@
-from typing import Dict, List, Optional, Literal, Any
+from typing import Dict, List, Optional, Literal, Any, TYPE_CHECKING
 import json
 import inspect
 import traceback
@@ -22,6 +22,9 @@ from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decompositio
     TaskDecompositionPlan,
 )
 from cuga.config import settings
+
+if TYPE_CHECKING:
+    from cuga.backend.memory.memory import Memory
 
 
 class ToolCallRecord(BaseModel):
@@ -988,6 +991,9 @@ class AgentState(BaseModel):
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
+    user_preferences: Dict[str, Any] = Field(
+        default_factory=dict
+    )  # User preferences loaded from memory as key-value pairs
 
     @property
     def variables_manager(self) -> 'StateVariablesManager':
@@ -1028,3 +1034,117 @@ class AgentState(BaseModel):
 
     def format_subtask(self):
         return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, self.sub_task_app[:30])
+
+
+def load_user_preferences(
+    state: AgentState,
+    memory: 'Memory',
+    namespace_id: str,
+    query: Optional[str] = None
+) -> AgentState:
+    """Load relevant user preferences based on semantic search.
+    
+    This function retrieves user preferences from the memory system using semantic
+    search based on the user's current utterance. Facts are organized by category
+    for structured prompt injection.
+
+    Args:
+        state: The agent state to update with preferences
+        memory: Memory instance to retrieve preferences from
+        namespace_id: The namespace ID to search for preferences
+        query: User's current utterance for semantic matching (optional)
+
+    Returns:
+        Updated state with categorized preferences loaded into user_preferences field.
+        Dictionary keys are category names, values are lists of fact dictionaries.
+
+    Example:
+        >>> from cuga.backend.memory.memory import Memory
+        >>> memory = Memory()
+        >>> state = load_user_preferences(state, memory, "namespace_123", query="I want pizza")
+        >>> print(state.user_preferences)
+        {
+            'food': [{'id': '...', 'content': 'Likes pizza', 'key': 'food_preference', 'value': 'pizza'}],
+            'personal_details': [{'id': '...', 'content': 'Name is James', 'key': 'name', 'value': 'James'}]
+        }
+    """
+    # Only load preferences if user_id is available
+    if not state.user_id:
+        logger.debug("No user_id available, skipping preference loading")
+        return state
+
+    try:
+        # Retrieve preferences using semantic search, organized by category
+        preferences = memory.get_user_preferences(
+            namespace_id=namespace_id,
+            user_id=state.user_id,
+            query=query  # Pass user's utterance for semantic matching
+        )
+
+        # Update state with categorized preferences
+        state.user_preferences = preferences
+
+        if preferences:
+            num_categories = len(preferences)
+            total_facts = sum(len(facts) for facts in preferences.values())
+            logger.info(f"Loaded {total_facts} facts in {num_categories} categories for user {state.user_id}")
+        else:
+            logger.debug(f"No preferences found for user {state.user_id}")
+
+    except Exception as e:
+        logger.error(f"Error loading user preferences: {e}")
+        # Don't fail the entire operation if preference loading fails
+        state.user_preferences = {}
+
+    return state
+
+def format_user_preferences_for_prompt(preferences: Dict[str, List[Dict[str, Any]]]) -> str:
+    """Format categorized user preferences for prompt injection.
+    
+    This function takes the categorized preferences from state.user_preferences
+    and formats them into a human-readable string suitable for LLM prompts.
+    Facts are organized by category with clear headers.
+    
+    Args:
+        preferences: Dictionary with categories as keys and lists of facts as values
+                    Example: {
+                        "food": [{"content": "Likes pizza", "key": "food_preference", "value": "pizza"}],
+                        "personal_details": [{"content": "Name is Alice", "key": "name", "value": "Alice"}]
+                    }
+    
+    Returns:
+        Formatted string with preferences organized by category
+        
+    Example:
+        >>> prefs = {
+        ...     "food": [{"content": "Likes pizza"}],
+        ...     "personal_details": [{"content": "Name is Alice"}]
+        ... }
+        >>> print(format_user_preferences_for_prompt(prefs))
+        User Preferences:
+        
+        Food:
+          - Likes pizza
+        
+        Personal Details:
+          - Name is Alice
+    """
+    if not preferences:
+        return ""
+    
+    lines = ["User Preferences:"]
+    
+    for category, facts in preferences.items():
+        if not facts:
+            continue
+            
+        # Format category name: "food" -> "Food", "personal_details" -> "Personal Details"
+        category_display = category.replace('_', ' ').title()
+        lines.append(f"\n{category_display}:")
+        
+        for fact in facts:
+            content = fact.get('content', '')
+            if content:
+                lines.append(f"  - {content}")
+    
+    return '\n'.join(lines)

@@ -209,6 +209,20 @@ def format_time_custom():
     return f"{now.hour:02d}-{now.minute:02d}-{now.second:02d}"
 
 
+def _get_memories_for_ui(local_state: AgentState) -> Dict[str, List[Dict[str, Any]]]:
+    """Return memories directly from state.user_preferences for UI responses."""
+    if not settings.advanced_features.enable_fact:
+        return {}
+    return local_state.user_preferences if isinstance(local_state.user_preferences, dict) else {}
+
+
+def _build_variables_metadata_for_ui(local_state: AgentState) -> Dict[str, Dict[str, Any]]:
+    """Build variables metadata payload without synthetic memory injection."""
+    return local_state.variables_manager.get_all_variables_metadata(
+        include_value=False, include_value_preview=True
+    )
+
+
 async def manage_save_reuse_server():
     """Checks for, starts, or restarts the save_reuse server as a subprocess."""
     if not settings.features.save_reuse:
@@ -1039,6 +1053,8 @@ async def event_stream(
                         # Get variables metadata from state
                         # We need to get the latest state from the graph to ensure we have the variables
                         variables_metadata = {}
+                        memories = {}
+                        memories_count = 0
                         active_policies = []
                         if thread_id:
                             latest_state_values = run_agent.graph.get_state(
@@ -1047,8 +1063,10 @@ async def event_stream(
 
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
-                                variables_metadata = (
-                                    local_state.variables_manager.get_all_variables_metadata()
+                                variables_metadata = _build_variables_metadata_for_ui(local_state)
+                                memories = _get_memories_for_ui(local_state)
+                                memories_count = sum(
+                                    len(facts) for facts in memories.values() if isinstance(facts, list)
                                 )
 
                                 # Conversation history will be saved at the end with stream events
@@ -1087,6 +1105,8 @@ async def event_stream(
                                 {
                                     "data": event.answer,
                                     "variables": variables_metadata,
+                                    "memories": memories,
+                                    "memories_count": memories_count,
                                     "active_policies": active_policies,
                                 }
                             )
@@ -2232,15 +2252,17 @@ async def get_agent_state(
                         "state": None,
                         "variables": {},
                         "variables_count": 0,
+                        "memories": {},
+                        "memories_count": 0,
                         "chat_messages_count": 0,
                         "message": "No state found for this thread_id",
                     }
                 )
 
             local_state = AgentState(**state_snapshot.values)
-            variables_metadata = local_state.variables_manager.get_all_variables_metadata(
-                include_value=False, include_value_preview=True
-            )
+            variables_metadata = _build_variables_metadata_for_ui(local_state)
+            memories = _get_memories_for_ui(local_state)
+            memories_count = sum(len(facts) for facts in memories.values() if isinstance(facts, list))
 
             return JSONResponse(
                 {
@@ -2257,6 +2279,8 @@ async def get_agent_state(
                     },
                     "variables": variables_metadata,
                     "variables_count": len(variables_metadata),
+                    "memories": memories,
+                    "memories_count": memories_count,
                 }
             )
         except Exception as e:

@@ -138,6 +138,7 @@ validators = [
     Validator("advanced_features.execution_output_max_length", default=3500),
     Validator("features.chat", default=True),
     Validator("features.memory_provider", default="mem0"),
+    Validator("memory.categorization_mode", default="predefined"),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),
     Validator("storage.mode", default="local"),
@@ -194,6 +195,7 @@ default_llm = default_llm.split('#')[0].strip().strip('"').strip("'").strip()
 if not default_llm:
     default_llm = "settings.openai.toml"
 logger.info("loaded llm settings *{}*".format(default_llm))
+logger.info("Memory provider: {}".format(base_settings.features.memory_provider))
 
 # Resolve absolute config file paths
 models_file_path = os.path.join(MODELS_DIR, default_llm)
@@ -250,6 +252,17 @@ settings = Dynaconf(
     settings_files=settings_files,
     validators=validators,
 )
+
+# Dynaconf section replacement can drop keys from base [features] when mode files
+# provide partial [features] tables. Preserve global feature defaults (e.g.
+# memory_provider in settings.toml) while keeping mode-specific overrides.
+base_features = dict(base_settings.get("features", {}) or {})
+layered_features = dict(settings.get("features", {}) or {})
+if base_features:
+    merged_features = {**base_features, **layered_features}
+    # Keep memory provider authoritative from global settings/env.
+    merged_features["memory_provider"] = base_settings.features.memory_provider
+    settings.set("features", merged_features)
 
 # Add default enable format in each model configuration
 paths = get_all_paths(settings, "")

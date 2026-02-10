@@ -40,6 +40,12 @@ interface Step {
 // Color constant for highlighting important information
 const HIGHLIGHT_COLOR = "#4e00ec";
 
+const getMemoriesCount = (memories: Record<string, any[]>): number => {
+  return Object.values(memories).reduce((total, facts) => {
+    return total + (Array.isArray(facts) ? facts.length : 0);
+  }, 0);
+};
+
 interface CardManagerProps {
   chatInstance: ChatInstance;
   threadId?: string;
@@ -74,12 +80,14 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
   const [isStopped, setIsStopped] = useState(false);
   const [viewMode, setViewMode] = useState<"inplace" | "append">("inplace");
   const [globalVariables, setGlobalVariables] = useState<Record<string, any>>({});
+  const [globalMemories, setGlobalMemories] = useState<Record<string, any[]>>({});
   const [variablesHistory, setVariablesHistory] = useState<
     Array<{
       id: string;
       title: string;
       timestamp: number;
       variables: Record<string, any>;
+      memories: Record<string, any[]>;
     }>
   >([]);
   const [selectedAnswerId, setSelectedAnswerId] = useState<string | null>(null);
@@ -112,7 +120,9 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
               const parsed = JSON.parse(content);
               console.log("🎯 Parsed content:", parsed);
               console.log("🎯 Has variables:", !!parsed.variables);
+              console.log("🎯 Has memories:", !!parsed.memories);
               console.log("🎯 Variables keys:", parsed.variables ? Object.keys(parsed.variables) : []);
+              console.log("🎯 Memories keys:", parsed.memories ? Object.keys(parsed.memories) : []);
             } catch (e) {
               console.log("🎯 Failed to parse content as JSON");
             }
@@ -255,6 +265,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
       title: string;
       timestamp: number;
       variables: Record<string, any>;
+      memories: Record<string, any[]>;
     }> = [];
 
     let turnNumber = 0;
@@ -272,6 +283,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
       try {
         let parsedContent: any;
         let variables: Record<string, any> = {};
+        let memories: Record<string, any[]> = {};
 
         if (typeof step.content === "string") {
           try {
@@ -286,25 +298,44 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
               variables = parsedContent.variables;
               console.log("[Variables Debug] Found variables directly:", variables);
             }
+
+            if (parsedContent.memories && typeof parsedContent.memories === "object" && !Array.isArray(parsedContent.memories)) {
+              memories = parsedContent.memories;
+              console.log("[Variables Debug] Found memories:", memories);
+            }
           } catch (e) {
             console.log("[Variables Debug] Failed to parse JSON:", e);
           }
-        } else if (step.content && typeof step.content === "object" && "variables" in step.content) {
-          const contentWithVars = step.content as { variables?: Record<string, any> };
-          if (contentWithVars.variables) {
-            variables = contentWithVars.variables;
+        } else if (step.content && typeof step.content === "object") {
+          const contentWithState = step.content as {
+            variables?: Record<string, any>;
+            memories?: Record<string, any[]>;
+          };
+          if (contentWithState.variables) {
+            variables = contentWithState.variables;
             console.log("[Variables Debug] Found variables in object:", variables);
+          }
+          if (
+            contentWithState.memories &&
+            typeof contentWithState.memories === "object" &&
+            !Array.isArray(contentWithState.memories)
+          ) {
+            memories = contentWithState.memories;
+            console.log("[Variables Debug] Found memories in object:", memories);
           }
         }
 
-        // Only add to history if this step has variables
-        if (Object.keys(variables).length > 0) {
+        const memoriesCount = getMemoriesCount(memories);
+
+        // Only add to history if this step has variables or memories
+        if (Object.keys(variables).length > 0 || memoriesCount > 0) {
           console.log("[Variables Debug] Adding to history with", Object.keys(variables).length, "variables");
           newHistory.push({
             id: step.id,
             title: `Turn ${turnNumber}`,
             timestamp: step.timestamp,
             variables: variables,
+            memories: memories,
           });
           turnNumber++;
         } else {
@@ -315,42 +346,56 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
       }
     });
 
-    // Update history only if it actually changed
+    // Preserve previously captured history during in-flight runs and only merge
+    // newly completed Answer/FinalAnswerAgent entries.
     setVariablesHistory((prev) => {
-      // Check if history actually changed
-      if (prev.length !== newHistory.length) {
-        console.log("Variables history updated: length changed", prev.length, "->", newHistory.length);
-        return newHistory;
+      // No completed answers in this render cycle; keep existing sidebar data visible.
+      if (newHistory.length === 0) {
+        return prev;
       }
 
-      // Check if any entries are different
-      const hasChanges = prev.some((entry, index) => {
-        const newEntry = newHistory[index];
-        return (
-          !newEntry ||
-          entry.id !== newEntry.id ||
-          JSON.stringify(entry.variables) !== JSON.stringify(newEntry.variables)
-        );
+      const merged = [...prev];
+      let hasChanges = false;
+
+      newHistory.forEach((entry) => {
+        const existingIndex = merged.findIndex((item) => item.id === entry.id);
+        if (existingIndex === -1) {
+          merged.push(entry);
+          hasChanges = true;
+          return;
+        }
+
+        const existing = merged[existingIndex];
+        const entryChanged =
+          existing.title !== entry.title ||
+          existing.timestamp !== entry.timestamp ||
+          JSON.stringify(existing.variables) !== JSON.stringify(entry.variables) ||
+          JSON.stringify(existing.memories) !== JSON.stringify(entry.memories);
+
+        if (entryChanged) {
+          merged[existingIndex] = entry;
+          hasChanges = true;
+        }
       });
 
       if (hasChanges) {
-        console.log("Variables history updated: content changed");
+        console.log("Variables history updated: merged new entries", prev.length, "->", merged.length);
+        return merged;
       }
 
-      return hasChanges ? newHistory : prev;
+      return prev;
     });
 
     // Update selectedAnswerId based on available history
     setSelectedAnswerId((currentSelectedId) => {
-      // If we have new history from current steps, use that
+      // If this cycle produced completed Answer/FinalAnswerAgent entries, select latest.
       if (newHistory.length > 0) {
-        if (currentSelectedId && newHistory.find((e) => e.id === currentSelectedId)) {
-          // Keep current selection if it still exists in new history
+        const latestEntryId = newHistory[newHistory.length - 1].id;
+        if (currentSelectedId === latestEntryId) {
           return currentSelectedId;
         }
-        // Auto-select most recent from new history
         console.log("Auto-selecting most recent turn:", newHistory[newHistory.length - 1].title);
-        return newHistory[newHistory.length - 1].id;
+        return latestEntryId;
       }
 
       // No new history from current steps, check if we have existing history
@@ -376,12 +421,15 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
       const selected = variablesHistory.find((e) => e.id === selectedAnswerId);
       if (selected) {
         setGlobalVariables(selected.variables);
+        setGlobalMemories(selected.memories);
       }
     } else if (variablesHistory.length > 0) {
       // Default to most recent
       setGlobalVariables(variablesHistory[variablesHistory.length - 1].variables);
+      setGlobalMemories(variablesHistory[variablesHistory.length - 1].memories);
     } else {
       setGlobalVariables({});
+      setGlobalMemories({});
     }
   }, [selectedAnswerId, variablesHistory]);
 
@@ -390,11 +438,12 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
     const event = new CustomEvent("variablesUpdate", {
       detail: {
         variables: globalVariables,
+        memories: globalMemories,
         history: variablesHistory,
       },
     });
     window.dispatchEvent(event);
-  }, [globalVariables, variablesHistory]);
+  }, [globalVariables, globalMemories, variablesHistory]);
 
   // Toggle code preview expansion
   const toggleCodePreview = useCallback((stepId: string) => {

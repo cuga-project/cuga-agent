@@ -1,5 +1,5 @@
 from cuga.backend.memory.agentic_memory import MemoryClient, Fact, Run, RecordedFact, Namespace, MemoryEvent
-from typing import List, Dict, Optional, TYPE_CHECKING
+from typing import List, Dict, Optional, TYPE_CHECKING, Any
 import json
 from cuga.config import settings
 
@@ -145,6 +145,148 @@ class Memory:
         """Retrieve the list of runs in a namespace."""
         return self.memory_client.list_runs(namespace_id, limit)
 
+    # ========== User Preference Methods ==========
+
+    async def store_user_message_for_preferences(
+        self,
+        namespace_id: str,
+        message: str,
+        user_id: str,
+    ) -> List[MemoryEvent]:
+        """Store user message and extract facts with categorization.
+        
+        This method now uses categorization-aware extraction instead of
+        raw fact storage. Facts are categorized automatically by the LLM.
+
+        Args:
+            namespace_id: The namespace to store facts in
+            message: The raw user message
+            user_id: The user ID
+
+        Returns:
+            List of memory events from storing facts
+        """
+        from cuga.backend.memory.agentic_memory.schema import Message
+        
+        messages = [Message(role="user", content=message)]
+        return await self.memory_client.extract_facts_from_messages_async(
+            namespace_id=namespace_id,
+            messages=messages,
+            metadata={"user_id": user_id}
+        )
+
+    def get_user_preferences(
+        self,
+        namespace_id: str,
+        user_id: str,
+        query: Optional[str] = None,
+        limit: int = 20
+    ) -> Dict[str, List[Dict[str, Any]]]:
+        """Retrieve relevant facts using semantic search, organized by category.
+        
+        Args:
+            namespace_id: The namespace to search
+            user_id: The user ID
+            query: Semantic search query (user's current utterance)
+            limit: Maximum number of facts to retrieve
+            
+        Returns:
+            Dictionary with categories as keys, lists of facts as values
+            Example: {
+                "personal_details": [{"content": "Name is Alice", "key": "name", "value": "Alice"}],
+                "food": [{"content": "Likes pizza", "key": "food_preference", "value": "pizza"}]
+            }
+        """
+        filters = {"user_id": user_id}
+        
+        # Semantic search to get relevant facts
+        facts = self.search_for_facts(
+            namespace_id=namespace_id,
+            query=query,  # Use user's utterance for semantic matching
+            filters=filters,
+            limit=limit
+        )
+        
+        # Organize facts by category
+        categorized_preferences = {}
+        for fact in facts:
+            if fact.content:
+                category = fact.category or "misc"
+                
+                if category not in categorized_preferences:
+                    categorized_preferences[category] = []
+                
+                categorized_preferences[category].append({
+                    "id": fact.id,
+                    "content": fact.content,
+                    "key": getattr(fact, 'key', None),
+                    "value": getattr(fact, 'value', None),
+                })
+        
+        return categorized_preferences
+
+    def update_preference(
+        self, namespace_id: str, user_id: str, category: str, key: str, value: Any
+    ) -> List[MemoryEvent]:
+        """Update a specific user preference.
+
+        Args:
+            namespace_id: The namespace
+            user_id: The user ID
+            category: Preference category
+            key: Preference key
+            value: New value
+
+        Returns:
+            Memory events from the update
+        """
+        from datetime import datetime
+
+        # Delete existing preference with same key
+        existing = self.search_for_facts(
+            namespace_id=namespace_id,
+            filters={"type": "user_preference", "user_id": user_id, "category": category, "key": key},
+            limit=1,
+        )
+
+        for fact in existing:
+            self.memory_client.delete_fact_by_id(namespace_id, fact.id)
+
+        # Create new preference
+        content = f"User's {key.replace('_', ' ')} ({category.replace('_', ' ')}) is {value}"
+        metadata = {
+            "type": "user_preference",
+            "category": category,
+            "key": key,
+            "value": value,
+            "user_id": user_id,
+            "confidence": 1.0,
+            "source": "explicit",
+            "last_updated": datetime.utcnow().isoformat(),
+        }
+
+        return self.create_and_store_fact(
+            namespace_id=namespace_id, content=content, metadata=metadata, enable_conflict_resolution=False
+        )
+
+    def delete_preference(self, namespace_id: str, user_id: str, category: str, key: str) -> None:
+        """Delete a specific user preference.
+
+        Args:
+            namespace_id: The namespace
+            user_id: The user ID
+            category: Preference category
+            key: Preference key
+        """
+        facts = self.search_for_facts(
+            namespace_id=namespace_id,
+            filters={"type": "user_preference", "user_id": user_id, "category": category, "key": key},
+            limit=10,
+        )
+
+        for fact in facts:
+            self.memory_client.delete_fact_by_id(namespace_id, fact.id)
+
     def _get_user_id(self, state: "AgentState") -> str:
         """Extract or generate user ID for memory scoping"""
         # Use the pi field from AgentState
@@ -152,6 +294,6 @@ class Memory:
             pi_dict = json.loads(state.pi)
             state.user_id = str(f"{pi_dict["first_name"]}_{pi_dict["last_name"]}_{pi_dict["phone_number"]}")
         else:
-            state.user_id = "default_user"
+            state.user_id = "default"
         self.user_id = state.user_id
         return state.user_id

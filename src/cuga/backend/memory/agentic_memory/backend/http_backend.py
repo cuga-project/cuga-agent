@@ -300,7 +300,11 @@ class HTTPMemoryBackend(BaseMemoryBackend):
             raise APIRequestException(f'Unexpected {response.status_code} response: {response.text}')
 
     async def extract_facts_from_messages_async(
-        self, namespace_id: str, messages: list[Message], metadata: dict | None = None
+        self,
+        namespace_id: str,
+        messages: list[Message],
+        metadata: dict | None = None,
+        enable_conflict_resolution: bool = True,
     ) -> list[MemoryEvent]:
         """
         Extract facts from a list of messages and store them in the namespace.

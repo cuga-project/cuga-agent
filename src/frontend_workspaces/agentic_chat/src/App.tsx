@@ -57,18 +57,21 @@ class ErrorBoundary extends Component<
 
 export function App() {
   const [globalVariables, setGlobalVariables] = useState<Record<string, any>>({});
+  const [globalMemories, setGlobalMemories] = useState<Record<string, any[]>>({});
   const [variablesHistory, setVariablesHistory] = useState<Array<{
     id: string;
     title: string;
     timestamp: number;
     variables: Record<string, any>;
+    memories: Record<string, any[]>;
   }>>([]);
   const [selectedAnswerId, setSelectedAnswerId] = useState<string | null>(null);
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(true);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const [highlightedFile, setHighlightedFile] = useState<string | null>(null);
-  const [activeTab, setActiveTab] = useState<"conversations" | "variables" | "savedflows">("conversations");
+  const [activeTab, setActiveTab] = useState<"conversations" | "variables" | "memories" | "savedflows">("conversations");
   const [previousVariablesCount, setPreviousVariablesCount] = useState(0);
+  const [previousMemoriesCount, setPreviousMemoriesCount] = useState(0);
   const [previousHistoryLength, setPreviousHistoryLength] = useState(0);
   const [threadId, setThreadId] = useState<string>("");
   const leftSidebarRef = useRef<{ addConversation: (title: string) => void } | null>(null);
@@ -90,32 +93,44 @@ export function App() {
   const { isTourActive, hasSeenTour, startTour, completeTour, skipTour, resetTour } = useTour();
 
   // Handle variables updates from CustomChat
-  const handleVariablesUpdate = useCallback((variables: Record<string, any>, history: Array<any>) => {
+  const handleVariablesUpdate = useCallback((
+    variables: Record<string, any>,
+    memories: Record<string, any[]>,
+    history: Array<any>
+  ) => {
     console.log('[App] handleVariablesUpdate called');
     console.log('[App] Variables keys:', Object.keys(variables));
+    console.log('[App] Memories keys:', Object.keys(memories || {}));
     console.log('[App] History length:', history.length);
     console.log('[App] Previous variables count:', previousVariablesCount);
+    console.log('[App] Previous memories count:', previousMemoriesCount);
     console.log('[App] Previous history length:', previousHistoryLength);
 
     const currentVariablesCount = Object.keys(variables).length;
+    const currentMemoriesCount = Object.values(memories || {}).reduce((total, facts) => {
+      return total + (Array.isArray(facts) ? facts.length : 0);
+    }, 0);
     const currentHistoryLength = history.length;
 
     setGlobalVariables(variables);
+    setGlobalMemories(memories || {});
     setVariablesHistory(history);
 
     // Only switch to variables tab when there's new data (more variables or longer history)
     const hasNewVariables = currentVariablesCount > previousVariablesCount;
+    const hasNewMemories = currentMemoriesCount > previousMemoriesCount;
     const hasNewHistory = currentHistoryLength > previousHistoryLength;
 
-    if (hasNewVariables || hasNewHistory) {
+    if ((hasNewVariables || hasNewMemories || hasNewHistory) && activeTab !== "memories") {
       console.log('[App] Switching to variables tab - new data detected');
       setActiveTab("variables");
     }
 
     // Update previous counts
     setPreviousVariablesCount(currentVariablesCount);
+    setPreviousMemoriesCount(currentMemoriesCount);
     setPreviousHistoryLength(currentHistoryLength);
-  }, [previousVariablesCount, previousHistoryLength]);
+  }, [previousVariablesCount, previousMemoriesCount, previousHistoryLength, activeTab]);
 
   // Handle message sent from CustomChat
   const handleMessageSent = useCallback((message: string) => {
@@ -129,8 +144,7 @@ export function App() {
     } else {
       console.log('[App] leftSidebarRef.current is null');
     }
-    // Switch to conversations tab to show the new conversation
-    setActiveTab("conversations");
+    // Keep the current sidebar tab so variables/memories remain visible while in-flight.
   }, []);
 
   // Handle chat started state
@@ -207,6 +221,7 @@ export function App() {
           {hasStartedChat && (
             <LeftSidebar
               globalVariables={globalVariables}
+              globalMemories={globalMemories}
               variablesHistory={variablesHistory}
               selectedAnswerId={selectedAnswerId}
               onSelectAnswer={setSelectedAnswerId}

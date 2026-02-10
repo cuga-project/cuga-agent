@@ -208,6 +208,10 @@
   flex-shrink: 0;
 }
 
+.memory-type {
+  text-transform: capitalize;
+}
+
 .variable-description {
   font-size: 12px;
   color: #64748b;
@@ -342,4 +346,3 @@
   font-size: 12px;
   color: #94a3b8;
 }
-

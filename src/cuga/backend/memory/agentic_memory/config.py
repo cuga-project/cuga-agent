@@ -98,7 +98,42 @@ def get_tips_extractor_config():
     return Dynaconf(settings_files=[], environments=False, tips_extractor_config=tips_extractor_config_dict)
 
 
+def _resolve_milvus_config():
+    """
+    Resolve milvus configuration to handle nested model structures.
+
+    Model-specific files (settings.openai.toml, etc.) define configs as:
+    [memory.milvus.fact_extraction.model]
+
+    This function flattens the structure so code can access:
+    milvus_config.fact_extraction (instead of milvus_config.fact_extraction.model)
+    """
+    from dynaconf.utils.boxing import DynaBox
+
+    # Get the base milvus config from settings.memory.milvus
+    base_config = (
+        settings.memory.milvus
+        if hasattr(settings, 'memory') and hasattr(settings.memory, 'milvus')
+        else settings.milvus
+    )
+
+    # Create a new config dict to hold the flattened structure
+    resolved = {}
+
+    # Copy over any direct attributes (like max_num_messages, embedding_model)
+    for key, value in base_config.items():
+        if isinstance(value, dict) and 'model' in value:
+            # If the value has a 'model' sub-key, flatten it
+            resolved[key] = value['model']
+        else:
+            # Otherwise, keep it as-is
+            resolved[key] = value
+
+    return DynaBox(resolved)
+
+
 # Backward compatible module-level variables
+<<<<<<< HEAD
 # Only initialize if memory is enabled
 if settings.advanced_features.enable_memory:
     config = get_config()
@@ -108,3 +143,8 @@ else:
     config = None
     milvus_config = None
     tips_extractor_config = None
+=======
+config = get_config()
+milvus_config = _resolve_milvus_config()
+tips_extractor_config = get_tips_extractor_config().tips_extractor_config
+>>>>>>> a2578ba (Initial commit for personalization)
