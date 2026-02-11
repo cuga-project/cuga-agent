@@ -1,6 +1,7 @@
 import { ChatInstance, CustomSendMessageOptions, GenericItem, MessageRequest, StreamChunk } from "@carbon/ai-chat";
 import { fetchStreamingData, streamViaBackground } from "./StreamingWorkflow";
 import { setCardManagerState, resetCardManagerState } from "./renderUserDefinedResponse";
+import { randomUUID } from "./uuid";
 import { RESPONSE_USER_PROFILE } from "./constants";
 
 const WELCOME_TEXT = `<div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); border-radius: 8px; padding: 8px 12px; color: white; box-shadow: 0 4px 12px rgba(102, 126, 234, 0.3); margin: 8px 0; position: relative; overflow: hidden; width: 100%; min-width: 0;"><div style="position: absolute; top: -10px; right: -10px; width: 20px; height: 20px; background: rgba(255, 255, 255, 0.1); border-radius: 50%; animation: float 3s ease-in-out infinite;"></div><div style="position: relative; z-index: 2; display: flex; align-items: center; gap: 8px; width: 100%; min-width: 0; flex-wrap: wrap;"><div style="flex: 1; min-width: 0;"><h1 style="font-size: clamp(0.9rem, 2.5vw, 1.2rem); font-weight: 700; margin: 0 0 2px 0; background: linear-gradient(45deg, #fff, #e0e7ff); -webkit-background-clip: text; -webkit-text-fill-color: transparent; background-clip: text; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">👋 I'm CUGA</h1><p style="font-size: clamp(0.6rem, 2vw, 0.8rem); margin: 0; opacity: 0.9; font-weight: 300; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">Your Digital Agent</p></div><div style="text-align: right; min-width: 0; flex-shrink: 0;"><p style="margin: 0; font-size: clamp(0.5rem, 1.5vw, 0.7rem); font-weight: 500; opacity: 0.9; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;">✨ Just ask!</p></div></div></div><style>@keyframes float { 0%, 100% { transform: translateY(0px) rotate(0deg); } 50% { transform: translateY(-5px) rotate(180deg); } } @media (max-width: 200px) { .welcome-container { flex-direction: column !important; align-items: flex-start !important; gap: 4px !important; } .welcome-container .features { justify-content: flex-start !important; } }</style>`;
@@ -60,7 +61,7 @@ const WORD_DELAY = 40;
 
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 async function doFakeTextStreaming(instance: ChatInstance) {
-  const responseID = crypto.randomUUID();
+  const responseID = randomUUID();
   const words = TEXT.split(" ");
 
   words.forEach((word, index) => {

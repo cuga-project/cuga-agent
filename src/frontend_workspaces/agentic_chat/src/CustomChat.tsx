@@ -3,6 +3,7 @@ import { Send, RotateCcw, Bot, User, FileText, Database, Code, Terminal, Cpu, Gl
 import CardManager from "./CardManager";
 import { StopButton } from "./floating/stop_button";
 import { fetchStreamingData } from "./StreamingWorkflow";
+import { randomUUID } from "./uuid";
 import { DebugPanel } from "./DebugPanel";
 import { FollowupSuggestions } from "./FollowupSuggestions";
 import { exampleUtterances } from "./exampleUtterances";
@@ -66,7 +67,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
 
   // Initialize threadId on mount
   useEffect(() => {
-    const newThreadId = crypto.randomUUID();
+    const newThreadId = randomUUID();
     setThreadId(newThreadId);
     threadIdRef.current = newThreadId;
     if (onThreadIdChange) {
@@ -304,7 +305,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
       const currentThreadId = threadIdRef.current || threadId;
       if (!currentThreadId) {
         // If still empty, generate one now
-        const newThreadId = crypto.randomUUID();
+        const newThreadId = randomUUID();
         setThreadId(newThreadId);
         threadIdRef.current = newThreadId;
         console.log('[CustomChat] Generated new threadId:', newThreadId);
@@ -326,7 +327,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
 
   const handleRestart = async () => {
     // Reset backend
-    const newThreadId = crypto.randomUUID();
+    const newThreadId = randomUUID();
     setThreadId(newThreadId);
     threadIdRef.current = newThreadId;
     
