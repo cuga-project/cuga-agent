@@ -388,6 +388,23 @@ class CugaLiteNode(BaseNode):
                 goto=NodeNames.SUGGEST_HUMAN_ACTIONS,
             )
 
+        # Save trajectory to Kaizen if enabled
+        from cuga.backend.kaizen.kaizen_integration import KaizenIntegration
+        if KaizenIntegration.is_enabled() and state.chat_messages:
+            import asyncio as _asyncio
+            task_id = state.sub_task or tracker.task_id or "unknown"
+            success = not self._has_error(state.final_answer or "")
+            if settings.kaizen.async_save:
+                _asyncio.create_task(
+                    KaizenIntegration.save_trajectory(
+                        state.chat_messages, task_id, success
+                    )
+                )
+            else:
+                await KaizenIntegration.save_trajectory(
+                    state.chat_messages, task_id, success
+                )
+
         # Get metadata from state
         metadata = state.cuga_lite_metadata or {}
         initial_var_names = metadata.get("initial_var_names", [])

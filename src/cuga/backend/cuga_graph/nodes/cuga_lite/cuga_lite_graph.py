@@ -731,6 +731,25 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
 
+            # Fetch Kaizen guidelines if enabled
+            from cuga.backend.kaizen.kaizen_integration import KaizenIntegration
+            special_instructions_final = base_special_instructions
+            if KaizenIntegration.is_enabled():
+                task_description = ""
+                if state.sub_task:
+                    task_description = state.sub_task
+                elif state.chat_messages:
+                    for msg in state.chat_messages:
+                        if isinstance(msg, HumanMessage):
+                            task_description = msg.content
+                            break
+                if task_description:
+                    kaizen_guidelines = await KaizenIntegration.get_guidelines(task_description)
+                    if kaizen_guidelines:
+                        kaizen_section = f"\n\n## Kaizen Guidelines\n{kaizen_guidelines}"
+                        special_instructions_final = (special_instructions_final or "") + kaizen_section
+                        logger.info("Kaizen: Injected guidelines into system prompt")
+
             # Create prompt dynamically
             dynamic_prompt = prompt
 
@@ -746,7 +765,7 @@ def create_cuga_lite_graph(
                     or is_autonomous_subtask,
                     prompt_template=selected_prompt_template,
                     enable_find_tools=enable_find_tools,
-                    special_instructions=base_special_instructions,
+                    special_instructions=special_instructions_final,
                 )
 
             return Command(

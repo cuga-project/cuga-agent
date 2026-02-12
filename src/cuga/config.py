@@ -176,6 +176,13 @@ validators = [
     Validator("auth.iam_proxy_skip_verify", default=False),
     Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
+    # Kaizen integration
+    Validator("kaizen.enabled", default=False),
+    Validator("kaizen.url", default="http://127.0.0.1:8201/sse"),
+    Validator("kaizen.lite_mode_only", default=True),
+    Validator("kaizen.save_on_success", default=True),
+    Validator("kaizen.save_on_failure", default=True),
+    Validator("kaizen.async_save", default=True),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")
