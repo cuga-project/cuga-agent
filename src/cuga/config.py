@@ -139,6 +139,13 @@ validators = [
     Validator("features.memory_provider", default="mem0"),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),
+    # Kaizen integration
+    Validator("kaizen.enabled", default=False),
+    Validator("kaizen.url", default="http://127.0.0.1:8201/sse"),
+    Validator("kaizen.lite_mode_only", default=True),
+    Validator("kaizen.save_on_success", default=True),
+    Validator("kaizen.save_on_failure", default=True),
+    Validator("kaizen.async_save", default=True),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

@@ -83,3 +83,11 @@ graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
 memory = 8888
+
+[kaizen]
+enabled = true              # Master toggle for Kaizen integration
+url = "http://127.0.0.1:8201/sse"  # Kaizen MCP server SSE endpoint
+lite_mode_only = true        # Only activate Kaizen for CugaLite mode
+save_on_success = true       # Save trajectory on successful task completion
+save_on_failure = true       # Save trajectory on failed task completion
+async_save = true            # Fire-and-forget trajectory saving (non-blocking)
