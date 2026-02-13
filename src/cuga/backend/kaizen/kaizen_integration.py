@@ -73,19 +73,26 @@ class KaizenIntegration:
             return
 
         try:
+            logger.debug(
+                f"Kaizen: Converting {len(chat_messages)} chat_messages. "
+                f"Types: {[type(m).__name__ for m in chat_messages[:10]]}"
+            )
             openai_messages = cls._convert_messages(chat_messages)
             if not openai_messages:
                 logger.warning("Kaizen: No messages to save (empty trajectory)")
                 return
 
+            trajectory_json = json.dumps(openai_messages)
             logger.info(
                 f"Kaizen: Saving trajectory ({len(openai_messages)} messages, "
+                f"{len(trajectory_json)} chars, "
                 f"task_id={task_id[:80]}, success={success})"
             )
+            logger.debug(f"Kaizen: trajectory_data preview: {trajectory_json[:500]}")
             await cls._call_tool(
                 "save_trajectory",
                 {
-                    "trajectory_data": json.dumps(openai_messages),
+                    "trajectory_data": trajectory_json,
                     "task_id": task_id,
                 },
             )
@@ -104,17 +111,21 @@ class KaizenIntegration:
             List of dicts in OpenAI format: [{"role": "...", "content": "..."}]
         """
         result = []
-        for msg in chat_messages:
+        for i, msg in enumerate(chat_messages):
             if isinstance(msg, HumanMessage):
                 role = "user"
             elif isinstance(msg, AIMessage):
                 role = "assistant"
             else:
+                logger.debug(f"Kaizen: Skipping message {i} of type {type(msg).__name__}")
                 continue  # Skip system messages, tool messages, etc.
 
             content = msg.content if isinstance(msg.content, str) else str(msg.content)
             if content:  # Skip empty messages
                 result.append({"role": role, "content": content})
+            else:
+                logger.debug(f"Kaizen: Skipping empty {role} message {i}")
+        logger.debug(f"Kaizen: Converted {len(result)}/{len(chat_messages)} messages")
         return result
 
     @classmethod
