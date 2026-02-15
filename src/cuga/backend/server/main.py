@@ -1702,6 +1702,90 @@ async def save_agent_mode_config(request: Request):
         raise HTTPException(status_code=500, detail=f"Failed to save agent mode: {str(e)}")
 
 
+@app.get("/api/agents")
+async def get_agents_list():
+    """List configured agents (dashboard)."""
+    try:
+        tools_count = 0
+        try:
+            apps = await get_apps()
+            for app in apps:
+                apis = await get_apis(app.name)
+                tools_count += len(apis)
+        except Exception:
+            pass
+        logs_url = (
+            os.environ.get("CUGA_LOKI_LOGS_URL")
+            or os.environ.get("LOKI_URL")
+            or "https://grafana.com/docs/loki/latest/"
+        )
+        latest_version = None
+        latest_version_created_at = None
+        try:
+            from cuga.backend.server.config_store import get_latest_version
+
+            latest_version, latest_version_created_at = get_latest_version()
+        except Exception:
+            pass
+        agents = [
+            {
+                "id": "cuga-default",
+                "description": "Default CUGA agent with policy engine, tools, and chat.",
+                "tools_count": tools_count,
+                "logs_url": logs_url,
+                "latest_version": latest_version,
+                "latest_version_created_at": latest_version_created_at,
+            }
+        ]
+        return JSONResponse({"agents": agents})
+    except Exception as e:
+        logger.error(f"Failed to list agents: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/manage/config")
+async def get_manage_config(version: Optional[int] = None):
+    """Get agent config (latest or by version)."""
+    try:
+        from cuga.backend.server.config_store import load_config
+
+        config, ver = load_config(version)
+        if config is None:
+            return JSONResponse({"config": {}})
+        return JSONResponse({"config": config, "version": ver})
+    except Exception as e:
+        logger.error(f"Failed to load manage config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/manage/config")
+async def save_manage_config(request: Request):
+    """Save agent config as a new version."""
+    try:
+        from cuga.backend.server.config_store import save_config
+
+        data = await request.json()
+        config = data.get("config", data)
+        ver = save_config(config)
+        return JSONResponse({"status": "success", "version": ver})
+    except Exception as e:
+        logger.error(f"Failed to save manage config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/manage/config/history")
+async def get_manage_config_history():
+    """List config versions (newest first)."""
+    try:
+        from cuga.backend.server.config_store import list_versions
+
+        versions = list_versions()
+        return JSONResponse({"versions": versions})
+    except Exception as e:
+        logger.error(f"Failed to list config history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/workspace/tree")
 async def get_workspace_tree():
     """Endpoint to retrieve the workspace folder tree."""

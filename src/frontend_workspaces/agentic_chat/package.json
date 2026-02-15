@@ -7,7 +7,16 @@
   "module": "./src/App.tsx",
   "exports": {
     ".": {
-      "import": "./src/App.tsx"
+      "import": "./src/App.tsx",
+      "default": "./src/App.tsx"
+    },
+    "./CustomChat": {
+      "import": "./src/CustomChat.tsx",
+      "default": "./src/CustomChat.tsx"
+    },
+    "./PoliciesConfig": {
+      "import": "./src/PoliciesConfig.tsx",
+      "default": "./src/PoliciesConfig.tsx"
     }
   },
   "scripts": {

@@ -59,6 +59,8 @@ export default {
     alias: {
       react: reactPath,
       "react-dom": reactDomPath,
+      "agentic_chat/CustomChat": path.resolve(__dirname, "../agentic_chat/src/CustomChat.tsx"),
+      "agentic_chat/PoliciesConfig": path.resolve(__dirname, "../agentic_chat/src/PoliciesConfig.tsx"),
     },
   },
   optimization: {
@@ -160,6 +162,7 @@ export default {
     allowedHosts: "all",
     open: true,
     hot: true,
+    historyApiFallback: true,
     proxy: [
       {
         context: ['/api'],

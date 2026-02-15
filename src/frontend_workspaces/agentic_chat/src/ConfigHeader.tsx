@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Settings, Sidebar, Folder, BookOpen, Brain, Users, Wrench, Cpu, Shield, UserCog, Menu, X } from "lucide-react";
+import { Settings, Sidebar, Folder, BookOpen, Brain, Users, Wrench, Cpu, Shield, UserCog, Menu, X, Sliders } from "lucide-react";
 import "./ConfigHeader.css";
 import MemoryConfig from "./MemoryConfig";
 import KnowledgeConfig from "./KnowledgeConfig";
@@ -119,6 +119,15 @@ export function ConfigHeader({
               <Shield size={16} />
               <span>Policies</span>
             </button>
+            <a
+              href="/manage"
+              className="config-header-btn"
+              title="Manage agent config and versions"
+              style={{ textDecoration: "none", color: "inherit" }}
+            >
+              <Sliders size={16} />
+              <span>Manage</span>
+            </a>
             <button
               className="config-header-btn hidden-tab"
               disabled
