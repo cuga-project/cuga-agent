@@ -1,0 +1,1034 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>CugaSupervisor Design - Patterns & Architecture</title>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            line-height: 1.6;
+            color: #333;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            padding: 20px;
+        }
+        
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.3);
+            padding: 40px;
+        }
+        
+        h1 {
+            color: #667eea;
+            font-size: 2.5em;
+            margin-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 15px;
+        }
+        
+        h2 {
+            color: #764ba2;
+            font-size: 2em;
+            margin-top: 40px;
+            margin-bottom: 20px;
+            border-left: 5px solid #764ba2;
+            padding-left: 15px;
+        }
+        
+        h3 {
+            color: #555;
+            font-size: 1.5em;
+            margin-top: 30px;
+            margin-bottom: 15px;
+        }
+        
+        .pattern-section {
+            background: #f8f9fa;
+            border-radius: 8px;
+            padding: 25px;
+            margin: 30px 0;
+            border: 2px solid #e9ecef;
+        }
+        
+        .pattern-section h3 {
+            color: #667eea;
+            margin-top: 0;
+        }
+        
+        .mermaid {
+            background: white;
+            border-radius: 8px;
+            padding: 20px;
+            margin: 20px auto;
+            border: 1px solid #dee2e6;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            text-align: center;
+        }
+        
+        .mermaid svg {
+            margin: 0 auto;
+            display: block;
+        }
+        
+        .code-block {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            padding: 20px;
+            border-radius: 8px;
+            overflow-x: auto;
+            margin: 15px 0;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            font-size: 0.9em;
+            line-height: 1.8;
+            white-space: pre;
+            word-wrap: break-word;
+            tab-size: 4;
+        }
+        
+        .code-block strong {
+            color: #4ec9b0;
+            font-weight: bold;
+        }
+        
+        .code-block code {
+            display: block;
+            white-space: pre;
+            font-family: 'Consolas', 'Monaco', 'Courier New', monospace;
+            color: #d4d4d4;
+        }
+        
+        .code-block.yaml {
+            background: #1e1e1e;
+        }
+        
+        .code-block.python {
+            background: linear-gradient(135deg, #1e1e1e 0%, #2d2d2d 100%);
+            border: 2px solid #667eea;
+            box-shadow: 0 4px 16px rgba(102, 126, 234, 0.3);
+            position: relative;
+            padding-top: 40px;
+            margin-top: 20px;
+        }
+        
+        .code-block.python::before {
+            content: '🐍 Python';
+            position: absolute;
+            top: -14px;
+            left: 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 6px 18px;
+            border-radius: 6px;
+            font-size: 0.75em;
+            font-weight: 700;
+            box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+            z-index: 10;
+        }
+        
+        .code-block.python code {
+            color: #d4d4d4;
+        }
+        
+        .code-block.python code .keyword {
+            color: #569cd6;
+            font-weight: 600;
+        }
+        
+        .code-block.python code .string {
+            color: #ce9178;
+        }
+        
+        .code-block.python code .comment {
+            color: #6a9955;
+            font-style: italic;
+        }
+        
+        .code-block.python code .function {
+            color: #dcdcaa;
+        }
+        
+        .code-block.python code .class {
+            color: #4ec9b0;
+        }
+        
+        .code-block.toml {
+            background: #1e1e1e;
+        }
+        
+        .sdk-section {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 12px;
+            padding: 30px;
+            margin: 30px 0;
+            border: 2px solid #dee2e6;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .sdk-section h3 {
+            color: #667eea;
+            font-size: 1.6em;
+            margin-bottom: 20px;
+            padding-bottom: 10px;
+            border-bottom: 3px solid #667eea;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        
+        .sdk-section h3::before {
+            content: '✨';
+            font-size: 1.2em;
+        }
+        
+        .code-highlight {
+            background: linear-gradient(135deg, #667eea15 0%, #764ba215 100%);
+            padding: 2px 6px;
+            border-radius: 4px;
+            border-left: 3px solid #667eea;
+        }
+        
+        .highlight {
+            background: #fff3cd;
+            padding: 2px 6px;
+            border-radius: 3px;
+            font-weight: 500;
+        }
+        
+        .info-box {
+            background: #e7f3ff;
+            border-left: 4px solid #2196F3;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        
+        .warning-box {
+            background: #fff3cd;
+            border-left: 4px solid #ffc107;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        
+        .success-box {
+            background: #d4edda;
+            border-left: 4px solid #28a745;
+            padding: 15px;
+            margin: 20px 0;
+            border-radius: 4px;
+        }
+        
+        table {
+            width: 100%;
+            border-collapse: collapse;
+            margin: 20px 0;
+        }
+        
+        th, td {
+            padding: 12px;
+            text-align: left;
+            border-bottom: 1px solid #dee2e6;
+        }
+        
+        th {
+            background: #667eea;
+            color: white;
+            font-weight: 600;
+        }
+        
+        tr:hover {
+            background: #f8f9fa;
+        }
+        
+        .toc {
+            background: linear-gradient(135deg, #f8f9fa 0%, #e9ecef 100%);
+            border-radius: 12px;
+            padding: 30px;
+            margin: 30px 0;
+            border: 2px solid #dee2e6;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.1);
+        }
+        
+        .toc h3 {
+            color: #667eea;
+            margin-bottom: 25px;
+            font-size: 1.8em;
+            text-align: center;
+            border-bottom: 3px solid #667eea;
+            padding-bottom: 15px;
+        }
+        
+        .toc ul {
+            list-style: none;
+            padding-left: 0;
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(250px, 1fr));
+            gap: 15px;
+        }
+        
+        .toc > ul {
+            display: flex;
+            flex-direction: column;
+            gap: 12px;
+        }
+        
+        .toc li {
+            padding: 0;
+        }
+        
+        .toc a {
+            display: block;
+            color: #333;
+            text-decoration: none;
+            font-weight: 600;
+            padding: 14px 20px;
+            background: white;
+            border-radius: 8px;
+            border: 2px solid #dee2e6;
+            transition: all 0.3s ease;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.05);
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .toc a::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 0;
+            height: 100%;
+            width: 4px;
+            background: #667eea;
+            transform: scaleY(0);
+            transition: transform 0.3s ease;
+        }
+        
+        .toc a:hover {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border-color: #667eea;
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+        
+        .toc a:hover::before {
+            transform: scaleY(1);
+            background: white;
+        }
+        
+        .toc li ul {
+            margin-top: 10px;
+            padding-left: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .toc li ul li a {
+            padding: 10px 16px;
+            font-size: 0.9em;
+            font-weight: 500;
+            background: #f8f9fa;
+            border-color: #e9ecef;
+            margin-left: 20px;
+        }
+        
+        .toc li ul li a:hover {
+            background: linear-gradient(135deg, #764ba2 0%, #667eea 100%);
+        }
+        
+        .toc-icon {
+            display: inline-block;
+            margin-right: 10px;
+            font-size: 1.1em;
+        }
+        
+        .comparison-table {
+            margin: 30px 0;
+        }
+        
+        .badge {
+            display: inline-block;
+            padding: 4px 12px;
+            border-radius: 12px;
+            font-size: 0.85em;
+            font-weight: 600;
+            margin: 0 5px;
+        }
+        
+        .badge-primary {
+            background: #667eea;
+            color: white;
+        }
+        
+        .badge-success {
+            background: #28a745;
+            color: white;
+        }
+        
+        .badge-warning {
+            background: #ffc107;
+            color: #333;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎯 CugaSupervisor Design & Architecture</h1>
+        <p style="font-size: 1.2em; color: #666; margin-bottom: 30px;">
+            A comprehensive guide to the CugaSupervisor multi-agent orchestration system, including patterns, configurations, SDK usage, and visual flow diagrams.
+        </p>
+        
+        <div class="toc">
+            <h3>📑 Table of Contents</h3>
+            <ul>
+                <li><a href="#overview"><span class="toc-icon">📋</span> Overview</a></li>
+                <li>
+                    <a href="#patterns"><span class="toc-icon">🔄</span> Supervisor Patterns</a>
+                    <ul>
+                        <li><a href="#plan-upfront-pattern"><span class="toc-icon">📊</span> Plan Upfront Pattern</a></li>
+                        <li><a href="#conversational-pattern"><span class="toc-icon">💬</span> Conversational Pattern</a></li>
+                    </ul>
+                </li>
+                <li><a href="#strategies"><span class="toc-icon">⚙️</span> Execution Strategies</a></li>
+                <li><a href="#configurations"><span class="toc-icon">🔧</span> Configurations</a></li>
+                <li><a href="#sdk"><span class="toc-icon">💻</span> SDK Usage</a></li>
+                <li><a href="#yaml-examples"><span class="toc-icon">📄</span> YAML Examples</a></li>
+                <li><a href="#architecture"><span class="toc-icon">🏗️</span> Architecture Components</a></li>
+            </ul>
+        </div>
+        
+        <section id="overview">
+            <h2>📋 Overview</h2>
+            <p>
+                CugaSupervisor is a LangGraph subgraph system for orchestrating multiple CugaAgent instances. 
+                It enables coordination of specialized agents, each with their own tools, apps, and configurations.
+            </p>
+            
+            <div class="info-box">
+                <strong>Key Features:</strong>
+                <ul style="margin-top: 10px; padding-left: 20px;">
+                    <li>Two distinct patterns: <span class="highlight">Plan Upfront</span> and <span class="highlight">Conversational</span></li>
+                    <li>Plan Upfront supports Sequential or Parallel execution strategies</li>
+                    <li>Support for internal CugaAgent instances and external A2A protocol agents</li>
+                    <li>YAML-based configuration for easy setup</li>
+                    <li>SDK for programmatic usage</li>
+                    <li>Separate conversation history for supervisor and sub-agents</li>
+                </ul>
+            </div>
+        </section>
+        
+        <section id="patterns">
+            <h2>🔄 Supervisor Patterns</h2>
+            
+            <div class="pattern-section" id="plan-upfront-pattern">
+                <h3>1. Plan Upfront Pattern <span class="badge badge-primary">Plan & Execute</span></h3>
+                <p>
+                    The supervisor plans which agents to use and their tasks upfront in a single LLM call. 
+                    All agents execute with predefined tasks, and results are aggregated. Optional LLM calls between agent executions can pass context.
+                </p>
+                
+                <div class="mermaid">
+graph TD
+    Start([User Request]) --> Prepare[Prepare Agents]
+    Prepare --> Delegate[Delegate Task<br/>LLM Call: Select agents & plan tasks]
+    Delegate --> Execute[Execute Agents<br/>Sequential or Parallel]
+    Execute --> Aggregate[Aggregate Results]
+    Aggregate --> Finalize[Finalize & Update History]
+    Finalize --> End([Return Results])
+    
+    Delegate -.Single LLM Call.-> LLM[Supervisor Model<br/>Analyzes task<br/>Selects agents<br/>Plans all tasks upfront]
+    
+    Execute -->|Sequential| Seq[Agent 1 → Agent 2 → Agent 3<br/>All tasks predefined]
+    Execute -->|Parallel| Par[Agent 1, Agent 2, Agent 3<br/>Execute simultaneously<br/>All tasks predefined]
+    Seq --> Aggregate
+    Par --> Aggregate
+    
+    Seq -.Optional LLM.-> LLM2[Optional LLM Call<br/>Pass context between agents]
+    LLM2 -.Context.-> Seq
+    
+    style Start fill:#667eea,stroke:#333,stroke-width:2px,color:#fff
+    style End fill:#28a745,stroke:#333,stroke-width:2px,color:#fff
+    style Delegate fill:#ffc107,stroke:#333,stroke-width:2px
+    style LLM fill:#ff9800,stroke:#333,stroke-width:2px,color:#fff
+    style LLM2 fill:#ff9800,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5,color:#fff
+                </div>
+                
+                <div class="code-block"><strong>Flow:</strong>
+1. User sends request → Supervisor receives in supervisor_chat_messages
+2. Single LLM Call: Analyzes task, selects agents, and plans ALL tasks upfront (delegate_task node)
+   - LLM uses full conversation history from supervisor_chat_messages for context-aware planning
+   - Conversation context is included in the planning prompt
+3. Agents execute with predefined tasks:
+   - Sequential: One after another in order
+   - Parallel: All simultaneously
+4. Optional: LLM can be called between agent executions to pass context (e.g., Agent 1 result → LLM → Agent 2 with context)
+5. Results aggregated from all agents
+6. Final answer added to supervisor_chat_messages and returned to user
+
+<strong>Key Point:</strong> Main planning happens upfront. Optional LLM calls between agents for context passing.
+
+<strong>Chat Layer:</strong>
+- supervisor_chat_messages maintains full conversation history across turns
+- Planning LLM call (delegate_task) uses conversation context to make informed decisions
+- Each turn's conversation history is preserved for next turn
+- Final answers are appended to supervisor_chat_messages for persistence
+                </div>
+                
+                <h4>Execution Strategy Variations</h4>
+                
+                <div class="mermaid">
+graph LR
+    PlanUpfront[Plan Upfront Pattern] --> Sequential[Sequential Strategy<br/>Agents execute one by one<br/>Tasks predefined upfront]
+    PlanUpfront --> Parallel[Parallel Strategy<br/>Agents execute simultaneously<br/>Tasks predefined upfront]
+    
+    Sequential --> S1[Agent 1<br/>predefined task] -->|Optional LLM| LLM[LLM Call<br/>Pass context] --> S2[Agent 2<br/>predefined task + context] --> S3[Agent 3<br/>predefined task]
+    Parallel --> P1[Agent 1<br/>predefined task]
+    Parallel --> P2[Agent 2<br/>predefined task]
+    Parallel --> P3[Agent 3<br/>predefined task]
+    P1 --> Merge[Merge Results]
+    P2 --> Merge
+    P3 --> Merge
+    
+    style PlanUpfront fill:#667eea,stroke:#333,stroke-width:2px,color:#fff
+    style LLM fill:#ff9800,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5,color:#fff
+                </div>
+                
+                <div class="info-box">
+                    <strong>Use Cases:</strong> When you need to coordinate multiple agents with known responsibilities and tasks, 
+                    such as "Get customer data from CRM, then send email, then save to filesystem."
+                    <br><br>
+                    <strong>LLM Calls:</strong> 1 required (initial planning call). Optional LLM calls between agent executions for context passing.
+                    <br><br>
+                    <strong>Execution Strategies:</strong>
+                    <ul style="margin-top: 10px; padding-left: 20px;">
+                        <li><strong>Sequential:</strong> Agents execute one after another with predefined tasks. Optional LLM between agents to pass context.</li>
+                        <li><strong>Parallel:</strong> All agents execute simultaneously with predefined tasks (no LLM between agents).</li>
+                    </ul>
+                </div>
+                
+                <h4>Chat Layer in Plan Upfront</h4>
+                <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Supervisor
+    participant ChatHistory as supervisor_chat_messages
+    participant LLM as Planning LLM
+    participant Agents
+    
+    User->>Supervisor: "Get customer data and send email"
+    Supervisor->>ChatHistory: Store user message
+    Supervisor->>ChatHistory: Read full conversation history
+    ChatHistory-->>Supervisor: Full conversation context
+    Supervisor->>LLM: Planning call with conversation context<br/>"Conversation history: ...<br/>Current user request: ..."
+    LLM-->>Supervisor: Selected agents & tasks<br/>(context-aware decision)
+    Supervisor->>Agents: Execute with predefined tasks
+    Agents-->>Supervisor: Results
+    Supervisor->>ChatHistory: Append final answer
+    Supervisor-->>User: Response
+    
+    Note over ChatHistory: Persists across turns<br/>Maintains full conversation history
+                </div>
+                
+                <div class="code-block"><strong>Chat Layer Details:</strong>
+1. <strong>supervisor_chat_messages</strong>: Maintains full conversation history (separate from sub-agent chat messages)
+
+2. <strong>Planning Phase (delegate_task node)</strong>:
+   - Reads latest user message from supervisor_chat_messages
+   - Builds conversation context from all messages in supervisor_chat_messages
+   - Formats context as: "User: ...\nAssistant: ...\nCurrent user request: ..."
+   - Includes conversation context in planning prompt to LLM
+   - LLM uses full conversation history to make context-aware delegation decisions
+
+3. <strong>Context-Aware Planning</strong>:
+   - LLM sees previous conversation when deciding which agents to use
+   - Can understand references to previous messages (e.g., "send email with the data from earlier")
+   - Makes informed decisions based on conversation flow
+
+4. <strong>Persistence</strong>:
+   - Final answers are appended to supervisor_chat_messages
+   - Conversation history persists across turns via LangGraph checkpointer
+   - Each turn has access to full conversation history
+
+5. <strong>Separation</strong>:
+   - supervisor_chat_messages: Supervisor's conversation with user
+   - agent_chat_messages: Individual sub-agent conversations (separate)
+                </div>
+            </div>
+            
+            <div class="pattern-section" id="conversational-pattern">
+                <h3>2. Conversational Pattern <span class="badge badge-warning">Conversational with Delegation Tools</span></h3>
+                <p>
+                    The supervisor acts as a single agent with agent delegation tools. It writes Python code to call 
+                    agents dynamically, similar to how cuga_lite calls tools. This enables iterative, conversational workflows.
+                </p>
+                
+                <div class="mermaid">
+graph TD
+    Start([User Request]) --> Prepare[Prepare Agents & Prompt<br/>Create delegation tools]
+    Prepare --> CallModel[Call Model<br/>LLM generates code or answer]
+    CallModel -->|Code Found| Execute[Execute Agent Tool<br/>Run Python code]
+    Execute --> CallModel
+    CallModel -->|Final Answer| End([Return to User])
+    
+    Prepare -.Creates.-> Tools[delegate_to_crm_agent<br/>delegate_to_email_agent<br/>create_update_todos]
+    Execute -.Calls.-> Agent1[Agent 1 via Code]
+    Execute -.Calls.-> Agent2[Agent 2 via Code]
+    
+    CallModel -.LLM Call.-> LLM[Supervisor Model<br/>Generates Python code<br/>or final text answer]
+    
+    style Start fill:#667eea,stroke:#333,stroke-width:2px,color:#fff
+    style End fill:#28a745,stroke:#333,stroke-width:2px,color:#fff
+    style CallModel fill:#ff9800,stroke:#333,stroke-width:2px,color:#fff
+    style Execute fill:#2196F3,stroke:#333,stroke-width:2px,color:#fff
+                </div>
+                
+                <div class="code-block python">
+# Example: LLM generates code like this:
+customer_data = await delegate_to_crm_agent("Get customer information")
+print(customer_data)
+
+# Then in next cycle, uses the result:
+email_result = await delegate_to_email_agent(f"Send email with {customer_data}")
+print(email_result)
+                </div>
+                
+                <div class="warning-box">
+                    <strong>Important:</strong> Each <code>delegate_to_...</code> function must be executed in its own code block, 
+                    isolated from other code. Multiple agents should be called in separate execution cycles.
+                </div>
+                
+                <div class="info-box">
+                    <strong>Use Cases:</strong> When you need dynamic, iterative workflows where the supervisor decides 
+                    which agents to call based on intermediate results, similar to how a human would coordinate tasks.
+                </div>
+            </div>
+        </section>
+        
+        <section id="strategies">
+            <h2>⚙️ Execution Strategies (Plan Upfront Pattern)</h2>
+            <p>
+                Execution strategies determine how agents are executed in the Plan Upfront pattern. 
+                All tasks are planned upfront in a single LLM call - no dynamic decisions between executions.
+            </p>
+            
+            <div class="pattern-section">
+                <h3>1. Sequential Strategy <span class="badge badge-primary">One After Another</span></h3>
+                <p>Agents execute one after another in the order they were selected. All tasks are predefined upfront. Optional LLM calls between agent executions can pass context.</p>
+                
+                <div class="mermaid">
+graph TD
+    Start([Task]) --> Plan[LLM Call: Plan All Tasks<br/>Select agents & define all tasks]
+    Plan --> A1[Execute Agent 1<br/>predefined task]
+    A1 -->|Optional| LLM1[Optional LLM Call<br/>Pass context from Agent 1]
+    LLM1 -.Context.-> A2[Execute Agent 2<br/>predefined task + context]
+    A1 -.Direct.-> A2
+    A2 -->|Optional| LLM2[Optional LLM Call<br/>Pass context from Agent 1 & 2]
+    LLM2 -.Context.-> A3[Execute Agent 3<br/>predefined task + context]
+    A2 -.Direct.-> A3
+    A3 --> Aggregate[Aggregate All Results]
+    Aggregate --> End([Final Result])
+    
+    style Start fill:#667eea,stroke:#333,stroke-width:2px,color:#fff
+    style End fill:#28a745,stroke:#333,stroke-width:2px,color:#fff
+    style Plan fill:#ff9800,stroke:#333,stroke-width:2px,color:#fff
+    style LLM1 fill:#ff9800,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5,color:#fff
+    style LLM2 fill:#ff9800,stroke:#333,stroke-width:2px,stroke-dasharray: 5 5,color:#fff
+                </div>
+                
+                <div class="info-box">
+                    <strong>LLM Calls:</strong> 1 required (initial planning). Optional LLM calls between agent executions to pass context dynamically.
+                </div>
+            </div>
+            
+            <div class="pattern-section">
+                <h3>2. Parallel Strategy <span class="badge badge-success">All At Once</span></h3>
+                <p>All selected agents execute simultaneously with predefined tasks. No LLM calls between agents - all tasks are determined upfront.</p>
+                
+                <div class="mermaid">
+graph TD
+    Start([Task]) --> Plan[LLM Call: Plan All Tasks<br/>Select agents & define all tasks]
+    Plan --> Parallel[Execute All Agents<br/>In Parallel]
+    Parallel --> A1[Agent 1<br/>predefined task]
+    Parallel --> A2[Agent 2<br/>predefined task]
+    Parallel --> A3[Agent 3<br/>predefined task]
+    A1 --> Merge[Merge Results]
+    A2 --> Merge
+    A3 --> Merge
+    Merge --> End([Final Result])
+    
+    style Start fill:#667eea,stroke:#333,stroke-width:2px,color:#fff
+    style End fill:#28a745,stroke:#333,stroke-width:2px,color:#fff
+    style Plan fill:#ff9800,stroke:#333,stroke-width:2px,color:#fff
+                </div>
+                
+                <div class="info-box">
+                    <strong>LLM Calls:</strong> 1 only (initial planning). All tasks predefined.
+                </div>
+            </div>
+            
+            <table class="comparison-table">
+                <thead>
+                    <tr>
+                        <th>Strategy</th>
+                        <th>Description</th>
+                        <th>LLM Calls</th>
+                        <th>Use Case</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><strong>Sequential</strong></td>
+                        <td>Agents execute one after another with predefined tasks</td>
+                        <td>1 (planning only)</td>
+                        <td>When agents depend on previous results in a known order</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Parallel</strong></td>
+                        <td>All agents execute simultaneously with predefined tasks</td>
+                        <td>1 (planning only)</td>
+                        <td>When agents are independent and can run concurrently</td>
+                    </tr>
+                </tbody>
+            </table>
+        </section>
+        
+        <section id="configurations">
+            <h2>⚙️ Configurations</h2>
+            
+            <h3>Settings.toml Configuration</h3>
+            <div class="code-block toml">
+[supervisor]
+enabled = true
+config_path = "src/cuga/backend/tools_env/registry/config/supervisor_demo_crm.yaml"
+pattern = "conversational"  # "plan_upfront" or "conversational"
+strategy = "parallel"  # "sequential" or "parallel" (only for plan_upfront pattern)
+agent_approval = true  # Require user approval before executing sub-agents
+            </div>
+            
+            <div class="info-box">
+                <strong>Note:</strong> YAML configuration overrides <code>settings.toml</code> values. 
+                If both are present, YAML takes precedence.
+            </div>
+        </section>
+        
+        <section id="sdk">
+            <h2>💻 SDK Usage</h2>
+            <p style="font-size: 1.1em; color: #666; margin-bottom: 30px;">
+                The CugaSupervisor SDK provides a simple and powerful programmatic interface for creating and managing multi-agent systems.
+            </p>
+            
+            <div class="sdk-section">
+                <h3>Programmatic Creation</h3>
+                <p style="margin-bottom: 20px; color: #555;">
+                    Create supervisors and agents programmatically with full control over configuration and behavior.
+                </p>
+                <div class="code-block python">
+<span style="color: #569cd6;">from</span> <span style="color: #dcdcaa;">cuga.sdk</span> <span style="color: #569cd6;">import</span> <span style="color: #4ec9b0;">CugaSupervisor</span>, <span style="color: #4ec9b0;">CugaAgent</span>
+<span style="color: #569cd6;">from</span> <span style="color: #dcdcaa;">cuga.backend.tools_env.registry</span> <span style="color: #569cd6;">import</span> <span style="color: #4ec9b0;">ToolRegistry</span>
+
+<span style="color: #6a9955;"># Create supervisor</span>
+<span style="color: #dcdcaa;">supervisor</span> = <span style="color: #4ec9b0;">CugaSupervisor</span>(
+    <span style="color: #ce9178;">model_provider</span>=<span style="color: #ce9178;">"groq"</span>,
+    <span style="color: #ce9178;">model_name</span>=<span style="color: #ce9178;">"openai/gpt-oss-120b"</span>,
+    <span style="color: #ce9178;">description</span>=<span style="color: #ce9178;">"Supervisor for coordinating multiple agents"</span>
+)
+
+<span style="color: #6a9955;"># Add internal agents</span>
+<span style="color: #dcdcaa;">crm_agent</span> = <span style="color: #4ec9b0;">CugaAgent</span>(
+    <span style="color: #ce9178;">name</span>=<span style="color: #ce9178;">"crm_agent"</span>,
+    <span style="color: #ce9178;">description</span>=<span style="color: #ce9178;">"CRM specialist"</span>,
+    <span style="color: #ce9178;">tool_provider</span>=<span style="color: #4ec9b0;">ToolRegistry</span>.<span style="color: #dcdcaa;">get_tool_provider</span>(),
+    <span style="color: #ce9178;">apps</span>=[<span style="color: #ce9178;">"crm"</span>]
+)
+<span style="color: #dcdcaa;">supervisor</span>.<span style="color: #dcdcaa;">add_agent</span>(<span style="color: #dcdcaa;">crm_agent</span>)
+
+<span style="color: #6a9955;"># Add external A2A agent</span>
+<span style="color: #dcdcaa;">supervisor</span>.<span style="color: #dcdcaa;">add_agent</span>({
+    <span style="color: #ce9178;">"name"</span>: <span style="color: #ce9178;">"external_agent"</span>,
+    <span style="color: #ce9178;">"type"</span>: <span style="color: #ce9178;">"external"</span>,
+    <span style="color: #ce9178;">"description"</span>: <span style="color: #ce9178;">"External agent via A2A"</span>,
+    <span style="color: #ce9178;">"config"</span>: {
+        <span style="color: #ce9178;">"a2a_protocol"</span>: {
+            <span style="color: #ce9178;">"endpoint"</span>: <span style="color: #ce9178;">"http://localhost:8000"</span>,
+            <span style="color: #ce9178;">"transport"</span>: <span style="color: #ce9178;">"http"</span>
+        }
+    }
+})
+
+<span style="color: #6a9955;"># Execute task</span>
+<span style="color: #569cd6;">result</span> = <span style="color: #569cd6;">await</span> <span style="color: #dcdcaa;">supervisor</span>.<span style="color: #dcdcaa;">invoke</span>(<span style="color: #ce9178;">"Get customer data and send email"</span>)
+<span style="color: #dcdcaa;">print</span>(<span style="color: #dcdcaa;">result</span>.<span style="color: #dcdcaa;">answer</span>)
+
+<span style="color: #6a9955;"># Access variables</span>
+<span style="color: #dcdcaa;">variables</span> = <span style="color: #dcdcaa;">supervisor</span>.<span style="color: #dcdcaa;">variables_manager</span>.<span style="color: #dcdcaa;">get_variables_summary</span>()
+<span style="color: #dcdcaa;">print</span>(<span style="color: #dcdcaa;">variables</span>)
+                </div>
+            </div>
+            
+            <div class="sdk-section">
+                <h3>YAML-based Creation</h3>
+                <p style="margin-bottom: 20px; color: #555;">
+                    Load supervisor configuration from YAML files for quick setup and easy configuration management.
+                </p>
+                <div class="code-block python">
+<span style="color: #569cd6;">from</span> <span style="color: #dcdcaa;">cuga.sdk</span> <span style="color: #569cd6;">import</span> <span style="color: #4ec9b0;">CugaSupervisor</span>
+
+<span style="color: #6a9955;"># Load from YAML</span>
+<span style="color: #dcdcaa;">supervisor</span> = <span style="color: #4ec9b0;">CugaSupervisor</span>.<span style="color: #dcdcaa;">from_yaml</span>(<span style="color: #ce9178;">"config/supervisor_demo_crm.yaml"</span>)
+
+<span style="color: #6a9955;"># Execute task</span>
+<span style="color: #569cd6;">result</span> = <span style="color: #569cd6;">await</span> <span style="color: #dcdcaa;">supervisor</span>.<span style="color: #dcdcaa;">invoke</span>(<span style="color: #ce9178;">"Retrieve account details and send email"</span>)
+<span style="color: #dcdcaa;">print</span>(<span style="color: #dcdcaa;">result</span>.<span style="color: #dcdcaa;">answer</span>)
+                </div>
+            </div>
+            
+            <div class="info-box" style="margin-top: 30px;">
+                <strong>💡 Pro Tips:</strong>
+                <ul style="margin-top: 10px; padding-left: 20px;">
+                    <li>Use <span class="code-highlight">CugaSupervisor</span> for programmatic control and dynamic agent management</li>
+                    <li>Use <span class="code-highlight">from_yaml()</span> for quick setup and configuration-driven workflows</li>
+                    <li>Access <span class="code-highlight">variables_manager</span> to retrieve variables collected from sub-agents</li>
+                    <li>Combine both approaches: load base config from YAML, then add agents programmatically</li>
+                </ul>
+            </div>
+        </section>
+        
+        <section id="yaml-examples">
+            <h2>📄 YAML Configuration Examples</h2>
+            
+            <h3>Basic Configuration</h3>
+            <div class="code-block yaml">
+supervisor:
+  strategy: parallel  # sequential or parallel (only for plan_upfront pattern)
+  mode: conversational  # "plan_upfront" or "conversational"
+  model:
+    provider: groq
+    model_name: openai/gpt-oss-120b
+  description: "Supervisor for coordinating agents"
+
+agents:
+  - name: crm_agent
+    type: internal
+    description: "CRM specialist"
+    apps:
+      - crm
+    special_instructions: "Focus on customer data management"
+
+  - name: email_agent
+    type: internal
+    description: "Email specialist"
+    apps:
+      - email
+            </div>
+            
+            <h3>With External A2A Agent</h3>
+            <div class="code-block yaml">
+supervisor:
+  strategy: sequential
+  mode: plan_upfront
+  model:
+    provider: groq
+    model_name: openai/gpt-oss-120b
+
+agents:
+  - name: internal_agent
+    type: internal
+    apps:
+      - crm
+  
+  - name: external_agent
+    type: external
+    description: "External agent via A2A protocol"
+    config:
+      a2a_protocol:
+        endpoint: "http://localhost:8000"
+        transport: "http"  # http, sse, websocket, or stdio
+
+a2a:
+  protocol_version: "1.0"
+  communication:
+    type: http
+    timeout: 30
+    retry_policy:
+      max_retries: 3
+      backoff: exponential
+            </div>
+            
+            <h3>With MCP Servers</h3>
+            <div class="code-block yaml">
+supervisor:
+  mode: plan_upfront
+  strategy: parallel
+
+agents:
+  - name: filesystem_agent
+    type: internal
+    mcp_servers:
+      - name: filesystem
+        url: http://localhost:8112/sse
+    special_instructions: "Handle file operations"
+            </div>
+        </section>
+        
+        <section id="architecture">
+            <h2>🏗️ Architecture Components</h2>
+            
+            <div class="mermaid">
+graph TB
+    MainGraph[Main Graph] --> SupervisorNode[CugaSupervisorNode]
+    SupervisorNode --> Subgraph[CugaSupervisor Subgraph]
+    
+    Subgraph --> State[CugaSupervisorState]
+    State --> Chat[supervisor_chat_messages]
+    State --> Agents[available_agents]
+    State --> Results[agent_results]
+    State --> Vars[supervisor_variables]
+    
+    Subgraph --> Prepare[prepare_agents]
+    Subgraph --> Delegate[delegate_task]
+    Subgraph --> Execute[execute_agents]
+    Subgraph --> Finalize[finalize]
+    
+    Execute --> Internal[Internal CugaAgent]
+    Execute --> External[External A2A Agent]
+    
+    Internal --> Tools[Tools from Registry]
+    External --> A2A[A2A Protocol]
+    
+    style MainGraph fill:#667eea,stroke:#333,stroke-width:2px,color:#fff
+    style Subgraph fill:#764ba2,stroke:#333,stroke-width:2px,color:#fff
+    style State fill:#ff9800,stroke:#333,stroke-width:2px,color:#fff
+            </div>
+            
+            <h3>State Management</h3>
+            <table>
+                <thead>
+                    <tr>
+                        <th>Field</th>
+                        <th>Description</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    <tr>
+                        <td><code>supervisor_chat_messages</code></td>
+                        <td>Supervisor's conversation history (separate from sub-agents)</td>
+                    </tr>
+                    <tr>
+                        <td><code>available_agents</code></td>
+                        <td>Registry of available agents (internal and external)</td>
+                    </tr>
+                    <tr>
+                        <td><code>selected_agents</code></td>
+                        <td>Agents selected for current task execution</td>
+                    </tr>
+                    <tr>
+                        <td><code>agent_results</code></td>
+                        <td>Results from each agent execution</td>
+                    </tr>
+                    <tr>
+                        <td><code>agent_variables</code></td>
+                        <td>Variables from each sub-agent</td>
+                    </tr>
+                    <tr>
+                        <td><code>supervisor_variables</code></td>
+                        <td>Aggregated variables collected from sub-agents</td>
+                    </tr>
+                </tbody>
+            </table>
+            
+            <h3>LLM Call Flow: Plan Upfront Pattern</h3>
+            <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Supervisor
+    participant LLM as Supervisor LLM
+    participant Agent1
+    participant Agent2
+    
+    User->>Supervisor: Task Request
+    Supervisor->>LLM: Analyze task, select agents & plan ALL tasks
+    LLM-->>Supervisor: Selected agents: [Agent1, Agent2]<br/>Tasks: {Agent1: "task1", Agent2: "task2"}
+    Supervisor->>Agent1: Execute predefined task
+    Agent1-->>Supervisor: Result 1
+    Supervisor->>Agent2: Execute predefined task
+    Agent2-->>Supervisor: Result 2
+    Supervisor->>Supervisor: Aggregate results
+    Supervisor-->>User: Response (aggregated results)
+            </div>
+            
+            <div class="info-box">
+                <strong>Key Point:</strong> Only ONE LLM call for planning. No LLM calls between agent executions.
+            </div>
+        </section>
+        
+        <section>
+            <h2>🔄 Complete Flow: Conversational Pattern Example</h2>
+            <div class="mermaid">
+sequenceDiagram
+    participant User
+    participant Supervisor
+    participant LLM
+    participant CodeExecutor
+    participant CRM
+    participant Email
+    
+    User->>Supervisor: "Get customer data and send email"
+    Supervisor->>LLM: Generate code with delegation tools
+    LLM-->>Supervisor: ```python<br/>customer_data = await delegate_to_crm_agent("Get customer info")<br/>print(customer_data)```
+    Supervisor->>CodeExecutor: Execute code
+    CodeExecutor->>CRM: Delegate task
+    CRM-->>CodeExecutor: Customer data
+    CodeExecutor-->>Supervisor: Execution output + variables
+    Supervisor->>LLM: Generate next code (with customer_data variable)
+    LLM-->>Supervisor: ```python<br/>email_result = await delegate_to_email_agent(f"Send email with {customer_data}")<br/>print(email_result)```
+    Supervisor->>CodeExecutor: Execute code
+    CodeExecutor->>Email: Delegate task
+    Email-->>CodeExecutor: Email sent confirmation
+    CodeExecutor-->>Supervisor: Execution output
+    Supervisor->>LLM: Generate final answer
+    LLM-->>Supervisor: "I've retrieved the customer data and sent the email successfully."
+    Supervisor-->>User: Final answer
+            </div>
+        </section>
+        
+        <div class="success-box" style="margin-top: 40px;">
+            <strong>✅ Summary:</strong> CugaSupervisor provides two powerful patterns for multi-agent orchestration:
+            <ul style="margin-top: 10px; padding-left: 20px;">
+                <li><strong>Plan Upfront:</strong> Single LLM call plans all agent tasks upfront. Supports Sequential or Parallel execution. No LLM calls between agent executions.</li>
+                <li><strong>Conversational:</strong> Conversational pattern with dynamic agent delegation tools. LLM generates Python code to call agents iteratively.</li>
+            </ul>
+            The system supports both internal and external agents, flexible execution strategies, and comprehensive configuration options.
+        </div>
+    </div>
+    
+    <script>
+        mermaid.initialize({ 
+            startOnLoad: true,
+            theme: 'default',
+            themeVariables: {
+                primaryColor: '#667eea',
+                primaryTextColor: '#fff',
+                primaryBorderColor: '#333',
+                lineColor: '#333',
+                secondaryColor: '#764ba2',
+                tertiaryColor: '#f8f9fa'
+            }
+        });
+    </script>
+</body>
+</html>

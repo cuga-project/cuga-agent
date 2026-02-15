@@ -134,6 +134,24 @@ class TaskAnalyzer(BaseNode):
             print(response.json())
 
     @staticmethod
+    async def should_use_supervisor_mode(state: AgentState) -> bool:
+        """Determine if supervisor mode should be used.
+
+        Args:
+            state: Current agent state
+
+        Returns:
+            True if supervisor mode should be used
+        """
+        # Check if supervisor mode is enabled in settings
+        supervisor_mode = getattr(settings.supervisor, 'enabled', False)
+
+        if supervisor_mode:
+            logger.info("Supervisor mode enabled - routing to CugaSupervisor")
+            return True
+        return False
+
+    @staticmethod
     async def should_use_fast_mode_early(state: AgentState) -> bool:
         """Determine if fast mode (CugaLite) should be used before any LLM calls.
 
@@ -170,12 +188,17 @@ class TaskAnalyzer(BaseNode):
     @staticmethod
     async def node_handler(
         state: AgentState, agent: TaskAnalyzerAgent, name: str
-    ) -> Command[Literal['TaskDecompositionAgent', 'CugaLite', 'FinalAnswerAgent']]:
+    ) -> Command[Literal['TaskDecompositionAgent', 'CugaLite', 'CugaSupervisor', 'FinalAnswerAgent']]:
         # if not settings.features.chat:
         # state.variables_manager.reset()
 
         # Apply sliding window to message history at the start of task analysis
         state.apply_message_sliding_window()
+
+        # Check supervisor mode first (takes priority over fast mode)
+        if await TaskAnalyzer.should_use_supervisor_mode(state):
+            logger.info("Supervisor mode enabled - routing to CugaSupervisor")
+            return Command(update=state.model_dump(), goto="CugaSupervisor")
 
         if await TaskAnalyzer.should_use_fast_mode_early(state):
             logger.info("Fast mode enabled - checking tool threshold")

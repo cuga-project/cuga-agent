@@ -1633,9 +1633,125 @@ async def get_agent_state(request: Request):
 async def get_subagents_config():
     """Endpoint to retrieve sub-agents configuration."""
     try:
-        return JSONResponse({})
+        from cuga.config import settings
+        import os
+
+        # Check if supervisor is enabled
+        supervisor_enabled = getattr(settings.supervisor, 'enabled', False)
+
+        if not supervisor_enabled:
+            return JSONResponse(
+                {
+                    "mode": "single",
+                    "subAgents": [],
+                    "supervisorStrategy": "adaptive",
+                    "availableTools": [],
+                }
+            )
+
+        # Load supervisor config if available
+        supervisor_config_path = getattr(settings.supervisor, 'config_path', '')
+
+        if not supervisor_config_path:
+            return JSONResponse(
+                {
+                    "mode": "supervisor",
+                    "subAgents": [],
+                    "supervisorStrategy": "adaptive",
+                    "availableTools": [],
+                }
+            )
+
+        # Load YAML config
+        config_path = os.path.join(os.getcwd(), supervisor_config_path)
+        if not os.path.isabs(supervisor_config_path):
+            config_path = os.path.join(os.getcwd(), supervisor_config_path)
+
+        if not os.path.exists(config_path):
+            logger.warning(f"Supervisor config file not found: {config_path}")
+            return JSONResponse(
+                {
+                    "mode": "supervisor",
+                    "subAgents": [],
+                    "supervisorStrategy": "adaptive",
+                    "availableTools": [],
+                }
+            )
+
+        # Parse YAML to extract agent info
+        import yaml
+
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+
+        # Build sub-agents list for UI
+        sub_agents = []
+        for idx, agent_config in enumerate(config.get('agents', [])):
+            agent_name = agent_config.get('name', f'agent_{idx}')
+            agent_type = agent_config.get('type', 'internal')
+            description = agent_config.get('description', '')
+            special_instructions = agent_config.get('special_instructions', '')
+
+            # Get apps
+            apps = agent_config.get('apps', [])
+            assigned_apps = []
+            for app in apps:
+                app_name = app if isinstance(app, str) else app.get('name', '')
+                if app_name:
+                    assigned_apps.append(
+                        {
+                            'appName': app_name,
+                            'tools': [],  # Tools will be loaded dynamically by frontend
+                        }
+                    )
+
+            # Get MCP servers
+            mcp_servers = agent_config.get('mcp_servers', [])
+
+            # Determine source type
+            source_config = {"type": "direct"}
+
+            if agent_config.get('a2a_protocol', {}).get('enabled'):
+                source_config = {
+                    "type": "a2a",
+                    "url": agent_config.get('a2a_protocol', {}).get('url', ''),
+                    "name": agent_name,
+                }
+            elif mcp_servers:
+                # Use first MCP server for source config
+                mcp_server = mcp_servers[0] if isinstance(mcp_servers, list) else mcp_servers
+                source_config = {
+                    "type": "mcp",
+                    "url": mcp_server.get('url', '') if isinstance(mcp_server, dict) else '',
+                    "streamType": "sse",  # Default to SSE for MCP
+                }
+
+            sub_agents.append(
+                {
+                    "id": agent_name,
+                    "name": agent_name,
+                    "role": agent_type.capitalize(),
+                    "description": description or special_instructions,
+                    "enabled": True,
+                    "capabilities": [],
+                    "tools": [],
+                    "assignedApps": assigned_apps,
+                    "policies": [],
+                    "source": source_config,
+                }
+            )
+
+        return JSONResponse(
+            {
+                "mode": "supervisor" if supervisor_enabled else "single",
+                "subAgents": sub_agents,
+                "supervisorStrategy": "adaptive",  # We removed strategy config, so default to adaptive
+                "availableTools": [],
+            }
+        )
+
     except Exception as e:
-        logger.error(f"Failed to load sub-agents config: {e}")
+        logger.error(f"Failed to load sub-agents config: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to load sub-agents config: {str(e)}")
 
 

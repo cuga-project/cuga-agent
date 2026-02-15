@@ -88,9 +88,9 @@ export function ConfigHeader({
               <span>Memory</span>
             </button>
             <button
-              className="config-header-btn hidden-tab"
-              disabled
-              title="Configure sub-agents (Coming soon)"
+              className="config-header-btn"
+              onClick={() => setActiveModal("subagents")}
+              title="Configure sub-agents"
             >
               <Users size={16} />
               <span>Sub Agents</span>
@@ -221,8 +221,11 @@ export function ConfigHeader({
                 <span>Memory</span>
               </button>
               <button
-                className="mobile-menu-item hidden-tab"
-                disabled
+                className="mobile-menu-item"
+                onClick={() => {
+                  setActiveModal("subagents");
+                  closeMobileMenu();
+                }}
               >
                 <Users size={18} />
                 <span>Sub Agents</span>

@@ -1563,6 +1563,7 @@ class CugaAgent:
         action_response: Optional[Any] = None,
         user_context: Optional[str] = None,
         track_tool_calls: bool = False,
+        variables: Optional[Dict[str, Any]] = None,
     ) -> InvokeResult:
         """
         Invoke the agent with a message and get the response.
@@ -1577,6 +1578,8 @@ class CugaAgent:
             action_response: Optional ActionResponse for resuming after approval/interruption
             track_tool_calls: If True, tracks all tool calls with metadata (name, arguments,
                 result, operation_id, duration_ms, etc.) and returns them in result.tool_calls
+            variables: Optional dict of variables to make available in the agent's context.
+                Used when delegating from a supervisor to pass context to sub-agents.
 
         Returns:
             InvokeResult containing:
@@ -1736,6 +1739,17 @@ class CugaAgent:
             if user_context:
                 initial_state_dict["pi"] = user_context
 
+            # Inject variables if provided (from supervisor delegation)
+            if variables:
+                from cuga.backend.cuga_graph.state.agent_state import StateVariablesManager
+
+                var_manager = StateVariablesManager(existing_state)
+                for var_name, var_value in variables.items():
+                    var_manager.add_variable(
+                        var_value, name=var_name, description=f"Passed from supervisor: {var_name}"
+                    )
+                initial_state_dict["variables_storage"] = existing_state.variables_storage
+
             initial_state_pydantic = AgentState(**initial_state_dict)
             logger.debug(
                 f"Appended {len(new_messages)} new message(s) to existing conversation "
@@ -1752,6 +1766,18 @@ class CugaAgent:
                 "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
             }
             initial_state_pydantic = AgentState(**initial_state)
+
+            # Inject variables if provided (from supervisor delegation)
+            if variables:
+                from cuga.backend.cuga_graph.state.agent_state import StateVariablesManager
+
+                var_manager = StateVariablesManager(initial_state_pydantic)
+                for var_name, var_value in variables.items():
+                    var_manager.add_variable(
+                        var_value, name=var_name, description=f"Passed from supervisor: {var_name}"
+                    )
+                logger.debug(f"Injected {len(variables)} variables into new state: {list(variables.keys())}")
+
             logger.debug(f"Created new state for thread_id: {thread_id}")
 
         # Add policy system to config if available
@@ -1976,6 +2002,267 @@ class CugaAgent:
         """
         for tool in tools:
             self.add_tool(tool)
+
+
+class CugaSupervisor:
+    """
+    Supervisor for orchestrating multiple CugaAgent instances.
+
+    Supports both internal CugaAgent instances and external A2A agents.
+
+    Example (Programmatic):
+        from cuga import CugaAgent, CugaSupervisor
+        from cuga.backend.tools_env.registry import ToolRegistry
+
+        # Create supervisor with model configuration
+        supervisor = CugaSupervisor(
+            model_provider="groq",
+            model_name="openai/gpt-oss-120b",
+            description="Supervisor for coordinating multiple agents"
+        )
+
+        # Add internal agents
+        crm_agent = CugaAgent(
+            name="crm_agent",
+            description="CRM specialist",
+            tool_provider=ToolRegistry.get_tool_provider(),
+            apps=["crm"]
+        )
+        supervisor.add_agent("crm_agent", crm_agent)
+
+        # Add external A2A agent
+        supervisor.add_agent("external_agent", {
+            "name": "external_agent",
+            "type": "external",
+            "description": "External agent via A2A",
+            "config": {
+                "a2a_protocol": {
+                    "endpoint": "http://localhost:8000",
+                    "transport": "http"
+                }
+            }
+        })
+
+        # Execute task
+        result = await supervisor.invoke("Get customer data and send email")
+        print(result.answer)
+
+        # Access variables
+        variables = supervisor.variables_manager.get_variables_summary()
+        print(variables)
+
+    Example (YAML):
+        supervisor = await CugaSupervisor.from_yaml("supervisor_config.yaml")
+        result = await supervisor.invoke("Complex task requiring multiple agents")
+    """
+
+    def __init__(
+        self,
+        agents: Optional[Dict[str, Union[CugaAgent, Dict[str, Any]]]] = None,
+        model: Optional[BaseChatModel] = None,
+        description: Optional[str] = None,
+        callbacks: Optional[List[BaseCallbackHandler]] = None,
+    ):
+        """
+        Initialize supervisor.
+
+        Args:
+            agents: Dict mapping agent names to:
+                - CugaAgent instances (internal agents)
+                - Dict with A2A config (external agents)
+                If None, agents can be added later via add_agent()
+            model: Optional supervisor model override (BaseChatModel instance)
+            description: Optional supervisor description
+            callbacks: Optional callback handlers
+        """
+        self._agents = agents or {}
+        self._model = model
+        self._description = description
+        self._callbacks = callbacks
+        self._graph = None
+        self._compiled_graph = None
+        self._supervisor_state = None
+
+        # Initialize model from settings if not provided
+        if not self._model:
+            from cuga.config import settings
+
+            llm_manager = LLMManager()
+            self._model = llm_manager.get_model(settings.agent.code.model)
+            logger.info(f"Using default model: {self._model.__class__.__name__}")
+
+    @classmethod
+    async def from_yaml(cls, yaml_path: str) -> "CugaSupervisor":
+        """
+        Load supervisor configuration from YAML file.
+
+        Creates internal CugaAgent instances from YAML config.
+        External agents are configured for A2A connection.
+
+        Args:
+            yaml_path: Path to YAML configuration file
+
+        Returns:
+            CugaSupervisor instance
+        """
+        from cuga.supervisor_utils.supervisor_config import load_supervisor_config
+
+        config = await load_supervisor_config(yaml_path)
+
+        return cls(
+            agents=config.agents,
+            model=None,
+        )
+
+    @property
+    def graph(self):
+        """
+        Get the underlying LangGraph StateGraph (compiled).
+
+        Returns:
+            Compiled LangGraph graph
+        """
+        if self._compiled_graph is None:
+            from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
+                create_cuga_supervisor_graph,
+            )
+            from langgraph.checkpoint.memory import MemorySaver
+
+            # Create supervisor subgraph
+            supervisor_subgraph = create_cuga_supervisor_graph(
+                supervisor_model=self._model,
+                agents=self._agents,
+            )
+
+            # Compile with checkpointer
+            checkpointer = MemorySaver()
+            self._compiled_graph = supervisor_subgraph.compile(checkpointer=checkpointer)
+            logger.debug("Compiled supervisor graph with checkpointer")
+
+        return self._compiled_graph
+
+    async def invoke(
+        self,
+        message: Optional[str],
+        thread_id: Optional[str] = None,
+        action_response: Optional[Any] = None,
+    ) -> InvokeResult:
+        """
+        Invoke the supervisor with a message.
+
+        Args:
+            message: User message (string) or None to resume execution
+            thread_id: Thread ID (required for resume, auto-generated for new conversations)
+            action_response: Optional ActionResponse for resuming after approval/interruption
+
+        Returns:
+            InvokeResult containing answer and metadata
+        """
+        import uuid
+        from langchain_core.messages import HumanMessage
+
+        # Setup config
+        if not thread_id:
+            thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
+            logger.debug(f"Auto-generated thread_id: {thread_id}")
+
+        config = {"configurable": {"thread_id": thread_id}}
+        if self._callbacks:
+            config["callbacks"] = self._callbacks
+
+        # Handle resume case
+        if message is None or action_response is not None:
+            if not thread_id:
+                raise ValueError("thread_id is required when resuming execution")
+
+            if action_response:
+                self.graph.update_state(config, {"hitl_response": action_response})
+                logger.info(
+                    f"Resuming execution after HITL response (action_id: {action_response.action_id})"
+                )
+
+            result = await self.graph.ainvoke(None, config=config)
+        else:
+            # Normal invocation
+            from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
+                CugaSupervisorState,
+            )
+
+            initial_state = CugaSupervisorState(
+                supervisor_chat_messages=[HumanMessage(content=message)],
+                input=message,
+                thread_id=thread_id,
+                url="",  # Required by AgentState
+            )
+
+            result = await self.graph.ainvoke(initial_state, config=config)
+
+        # Store state for variables_manager access
+        self._supervisor_state = result if isinstance(result, dict) else result
+
+        # Extract final answer
+        final_answer = (
+            result.get("final_answer", "")
+            if isinstance(result, dict)
+            else getattr(result, "final_answer", "")
+        )
+        error_msg = None
+
+        if not final_answer and result.get("error"):
+            error_msg = result["error"]
+            final_answer = f"Error: {error_msg}"
+
+        # Get tool calls if available
+        tool_calls = (
+            result.get("tool_calls", []) if isinstance(result, dict) else getattr(result, "tool_calls", [])
+        )
+
+        return InvokeResult(
+            answer=final_answer,
+            tool_calls=tool_calls,
+            thread_id=thread_id,
+            error=error_msg,
+        )
+
+    @property
+    def variables_manager(self):
+        """Get supervisor's variables manager for accessing collected variables."""
+        if not self._supervisor_state:
+            raise ValueError("No supervisor state available. Invoke the supervisor first.")
+
+        # Use supervisor_variables_manager from state
+        if isinstance(self._supervisor_state, dict):
+            from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
+                CugaSupervisorState,
+            )
+
+            state = CugaSupervisorState(**self._supervisor_state)
+            return state.supervisor_variables_manager
+        else:
+            return self._supervisor_state.supervisor_variables_manager
+
+    def add_agent(self, name: str, agent: Union[CugaAgent, Dict[str, Any]]) -> None:
+        """
+        Add an agent to the supervisor.
+
+        Args:
+            name: Agent name/identifier
+            agent: CugaAgent instance (internal) or A2A config dict (external)
+        """
+        self._agents[name] = agent
+        # Reset graph so it gets recreated with new agent
+        self._graph = None
+        self._compiled_graph = None
+        logger.info(f"Added agent '{name}' - graph will be recreated on next invocation")
+
+    def remove_agent(self, name: str) -> None:
+        """Remove an agent from the supervisor."""
+        if name in self._agents:
+            del self._agents[name]
+            # Reset graph so it gets recreated without removed agent
+            self._graph = None
+            self._compiled_graph = None
+            logger.info(f"Removed agent '{name}' - graph will be recreated on next invocation")
 
 
 # Convenience function for quick usage

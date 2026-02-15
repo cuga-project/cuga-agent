@@ -338,38 +338,6 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
         </div>
 
         <div className="config-modal-content">
-          <div className="config-card">
-            <h3>Agent Mode Settings</h3>
-            <div className="config-form">
-              <div className="form-group">
-                <label>Execution Mode</label>
-                <select
-                  value={config.mode}
-                  onChange={(e) => setConfig({ ...config, mode: e.target.value as any })}
-                >
-                  <option value="supervisor">Supervisor (Multi-Agent)</option>
-                  <option value="single">Single Agent</option>
-                </select>
-                <small>Supervisor mode delegates tasks to specialized sub-agents</small>
-              </div>
-
-              {config.mode === "supervisor" && (
-                <div className="form-group">
-                  <label>Supervisor Strategy</label>
-                  <select
-                    value={config.supervisorStrategy}
-                    onChange={(e) => setConfig({ ...config, supervisorStrategy: e.target.value as any })}
-                  >
-                    <option value="sequential">Sequential</option>
-                    <option value="parallel">Parallel</option>
-                    <option value="adaptive">Adaptive</option>
-                  </select>
-                  <small>How the supervisor coordinates sub-agents</small>
-                </div>
-              )}
-            </div>
-          </div>
-
           {config.mode === "supervisor" && (
             <div className="config-card">
               <div className="section-header">

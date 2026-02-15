@@ -916,6 +916,9 @@ class AgentState(BaseModel):
     guidance: Optional[str] = None
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     chat_agent_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
+    supervisor_chat_messages: Optional[List[BaseMessage]] = Field(
+        default_factory=list
+    )  # Supervisor's conversation history
     api_intent_relevant_apps: Optional[List[AnalyzeTaskAppsOutput]] = None
     api_intent_relevant_apps_current: Optional[List[AnalyzeTaskAppsOutput]] = None
     shortlister_relevant_apps: Optional[List[str]] = None
@@ -1000,6 +1003,12 @@ class AgentState(BaseModel):
                 f"Applying sliding window: trimming chat_agent_messages from {len(self.chat_agent_messages)} to {limit}"
             )
             self.chat_agent_messages = self.chat_agent_messages[-limit:]
+
+        if self.supervisor_chat_messages and len(self.supervisor_chat_messages) > limit:
+            logger.info(
+                f"Applying sliding window: trimming supervisor_chat_messages from {len(self.supervisor_chat_messages)} to {limit}"
+            )
+            self.supervisor_chat_messages = self.supervisor_chat_messages[-limit:]
 
     def format_subtask(self):
         return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, self.sub_task_app[:30])

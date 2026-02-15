@@ -1,0 +1,37 @@
+supervisor:
+  strategy: adaptive
+  mode: delegation
+  model:
+    provider: openai
+    model_name: gpt-4o-mini
+  description: "Test supervisor for coordinating specialized agents"
+
+agents:
+  - name: sales_agent
+    type: internal
+    description: "Handles sales and CRM operations"
+    tools:
+      - name: get_accounts
+        type: langchain
+    special_instructions: "Focus on sales operations"
+
+  - name: data_agent
+    type: internal
+    description: "Handles data analysis"
+    tools:
+      - name: analyze_data
+        type: langchain
+    special_instructions: "Focus on data analysis"
+
+# A2A Protocol Configuration
+a2a:
+  protocol_version: "1.0"
+  communication:
+    type: http
+    timeout: 30
+    retry_policy:
+      max_retries: 3
+      backoff: exponential
+  message_format:
+    schema: json
+    validation: strict

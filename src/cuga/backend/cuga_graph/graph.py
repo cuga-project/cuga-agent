@@ -49,9 +49,14 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_node import CugaSupervisorNode
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
+    create_cuga_supervisor_graph,
+)
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.llm.models import LLMManager
 from cuga.config import settings
+from loguru import logger
 
 
 class DynamicAgentGraph:
@@ -81,6 +86,7 @@ class DynamicAgentGraph:
         self.api_shortlister = ApiShortlister(ShortlisterAgent.create())
         self.api_coder = ApiCoder(CodeAgent.create())
         self.cuga_lite = CugaLiteNode(langfuse_handler=langfuse_handler)
+        self.cuga_supervisor = CugaSupervisorNode(langfuse_handler=langfuse_handler)
         from cuga.config import settings
 
         self.langfuse_handler = langfuse_handler
@@ -188,6 +194,134 @@ class DynamicAgentGraph:
         # Add callback node to process results after subgraph
         graph.add_node("CugaLiteCallback", self.cuga_lite.callback_node)
 
+        # Add CugaSupervisor node so conditional edges from TaskAnalyzer validate.
+        # When supervisor is disabled, use a stub that routes to CugaLite (never taken at runtime).
+        if getattr(settings.supervisor, 'enabled', False):
+            graph.add_node(self.cuga_supervisor.name, self.cuga_supervisor.node)
+
+            # Load supervisor config from YAML if specified
+            supervisor_config_path = getattr(settings.supervisor, 'config_path', '')
+            agents = {}
+            supervisor_config = None  # Store loaded config for later use
+
+            if supervisor_config_path:
+                # Load from YAML file
+                import os
+                from cuga.supervisor_utils.supervisor_config import load_supervisor_config
+
+                config_path = os.path.join(os.getcwd(), supervisor_config_path)
+                if not os.path.isabs(supervisor_config_path):
+                    # Try relative to project root
+                    config_path = os.path.join(os.getcwd(), supervisor_config_path)
+
+                if os.path.exists(config_path):
+                    try:
+                        logger.info(f"Loading supervisor config from: {config_path}")
+                        supervisor_config = await load_supervisor_config(config_path)
+                        # Extract agents from config - load_supervisor_config returns SupervisorConfig with agents dict
+                        agents = supervisor_config.agents
+                        logger.info(f"Loaded {len(agents)} agents from supervisor config")
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to load supervisor config from {config_path}: {e}", exc_info=True
+                        )
+                else:
+                    logger.warning(f"Supervisor config file not found: {config_path}")
+
+            # If no config or config failed, create default 3-agent setup
+            if not agents:
+                from cuga.sdk import CugaAgent
+                from langchain_core.tools import tool
+
+                # Create default tools for demo
+                @tool
+                def get_customers() -> str:
+                    """Get customer data from CRM"""
+                    return "Customer data: C001, C002, C003"
+
+                @tool
+                def get_customer_details(customer_id: str) -> str:
+                    """Get detailed customer information"""
+                    return f"Customer {customer_id} details: Name, Email, Status"
+
+                @tool
+                def update_customer(customer_id: str, data: str) -> str:
+                    """Update customer information"""
+                    return f"Updated customer {customer_id} with {data}"
+
+                @tool
+                def send_email(to: str, subject: str, body: str = "") -> str:
+                    """Send email to recipient"""
+                    return f"Email sent to {to} with subject: {subject}"
+
+                @tool
+                def get_email_templates() -> str:
+                    """Get available email templates"""
+                    return "Available templates: welcome, followup, invoice"
+
+                @tool
+                def create_email_draft(to: str, subject: str) -> str:
+                    """Create email draft"""
+                    return f"Created draft email to {to} with subject: {subject}"
+
+                @tool
+                def read_file(path: str) -> str:
+                    """Read file content"""
+                    return f"Content of {path}: [file content here]"
+
+                @tool
+                def write_file(path: str, content: str) -> str:
+                    """Write content to file"""
+                    return f"Written {len(content)} bytes to {path}"
+
+                @tool
+                def list_files(directory: str = ".") -> str:
+                    """List files in directory"""
+                    return f"Files in {directory}: file1.txt, file2.txt"
+
+                # Create default agents with tools
+                agents = {
+                    "crm_agent": CugaAgent(
+                        tools=[get_customers, get_customer_details, update_customer],
+                        special_instructions="You are a CRM specialist. Focus on customer data management, account information, and sales operations.",
+                    ),
+                    "email_agent": CugaAgent(
+                        tools=[send_email, get_email_templates, create_email_draft],
+                        special_instructions="You are an email specialist. Focus on email communication, templates, and email campaigns.",
+                    ),
+                    "filesystem_agent": CugaAgent(
+                        tools=[read_file, write_file, list_files],
+                        special_instructions="You are a filesystem specialist. Focus on file operations, reading and writing files, and organizing documents.",
+                    ),
+                }
+
+            # Create supervisor model
+            supervisor_model_config = settings.agent.code.model.copy()
+            supervisor_model_config["streaming"] = False
+            supervisor_model = llm_manager.get_model(supervisor_model_config)
+
+            # Create supervisor subgraph
+            supervisor_subgraph = create_cuga_supervisor_graph(
+                supervisor_model=supervisor_model,
+                agents=agents,
+            )
+
+            # Compile and add as subgraph node
+            compiled_supervisor_subgraph = supervisor_subgraph.compile()
+            graph.add_node("CugaSupervisorSubgraph", compiled_supervisor_subgraph)
+            self.cuga_supervisor.set_subgraph(compiled_supervisor_subgraph)
+
+            # Add callback node to process results after supervisor subgraph
+            graph.add_node("CugaSupervisorCallback", self.cuga_supervisor.callback_node)
+        else:
+
+            async def _cuga_supervisor_stub(state, config=None):
+                from langgraph.types import Command
+
+                return Command(update=state.model_dump(), goto="CugaLite")
+
+            graph.add_node(self.cuga_supervisor.name, _cuga_supervisor_stub)
+
     def add_edges(self, graph):
         graph.add_edge(START, self.chat.chat_agent.name)
         graph.add_edge(
@@ -201,3 +335,7 @@ class DynamicAgentGraph:
 
         # CugaLite subgraph flow: CugaLiteSubgraph -> CugaLiteCallback
         graph.add_edge("CugaLiteSubgraph", "CugaLiteCallback")
+
+        # CugaSupervisor subgraph flow: CugaSupervisorSubgraph -> CugaSupervisorCallback
+        if getattr(settings.supervisor, 'enabled', False):
+            graph.add_edge("CugaSupervisorSubgraph", "CugaSupervisorCallback")

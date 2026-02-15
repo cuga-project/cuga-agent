@@ -173,6 +173,55 @@ def create_tool_approval_action(
     )
 
 
+def create_agent_approval_action(
+    agent_names: List[str],
+    tasks: Dict[str, str],
+    approval_message: str = None,
+) -> FollowUpAction:
+    """
+    Create an agent approval follow-up action for supervisor.
+
+    Args:
+        agent_names: List of agent names that will be executed
+        tasks: Dict mapping agent names to their tasks
+        approval_message: Custom message for the approval request
+
+    Returns:
+        FollowUpAction for agent approval
+    """
+    agents_str = (
+        ", ".join(agent_names)
+        if len(agent_names) <= 3
+        else f"{', '.join(agent_names[:3])} and {len(agent_names) - 3} more"
+    )
+
+    description = approval_message or f"The supervisor wants to execute the following agents: {agents_str}"
+
+    # Build task descriptions
+    task_descriptions = []
+    for agent_name in agent_names:
+        task = tasks.get(agent_name, "No specific task")
+        task_descriptions.append(f"- **{agent_name}**: {task}")
+
+    return FollowUpAction(
+        action_name="Approve Agent Execution",
+        action_id=ActionIds.AGENT_APPROVAL,
+        return_to="CugaSupervisor",
+        additional_data=AdditionalData(
+            tool={
+                "agent_names": agent_names,
+                "tasks": tasks,
+                "task_descriptions": "\n".join(task_descriptions),
+            }
+        ),
+        description=description,
+        type=ActionType.CONFIRMATION,
+        callback_url="/approve",
+        button_text="Approve & Execute Agents",
+        color="warning",
+    )
+
+
 class ActionResponse(BaseModel):
     """Model for responses to follow-up actions."""
 

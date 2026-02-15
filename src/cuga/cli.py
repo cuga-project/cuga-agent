@@ -499,6 +499,7 @@ def callback(
 
     - demo: Both registry and demo agent (runs directly)
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
+    - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
     - registry: The MCP registry service only (runs directly)
     - appworld: AppWorld environment and API servers (runs directly)
     - memory: The memory service (runs directly)
@@ -506,6 +507,7 @@ def callback(
     Examples:
       cuga start demo           # Start both registry and demo agent directly
       cuga start demo_crm       # Start CRM demo with all required services
+      cuga start demo_supervisor # Start CRM demo with supervisor multi-agent mode
       cuga start registry       # Start registry only
       cuga start appworld       # Start AppWorld servers
       cuga start memory         # Start memory service
@@ -518,10 +520,371 @@ def callback(
     signal.signal(signal.SIGTERM, signal_handler)
 
 
+def _start_demo_crm_services(
+    host: str,
+    sandbox: bool,
+    read_only: bool,
+    sample_memory_data: bool,
+    no_email: bool,
+    enable_supervisor: bool = False,
+):
+    """Shared startup logic for demo_crm and demo_supervisor services.
+
+    Args:
+        enable_supervisor: If True, enables CugaSupervisor multi-agent coordination.
+    """
+    service_label = "Supervisor Demo" if enable_supervisor else "CRM Demo"
+
+    try:
+        # Configure supervisor mode
+        if enable_supervisor:
+            os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
+            supervisor_config_path = os.path.join(
+                PACKAGE_ROOT, "backend", "tools_env", "registry", "config", "supervisor_demo_crm.yaml"
+            )
+            os.environ["DYNACONF_SUPERVISOR__CONFIG_PATH"] = supervisor_config_path
+            logger.info(f"Supervisor enabled with config: {supervisor_config_path}")
+        else:
+            os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "false"
+
+        # Check if cuga_workspace folder exists
+        workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
+        if not os.path.exists(workspace_path):
+            logger.warning(f"📁 Creating cuga_workspace directory at {workspace_path}")
+            os.makedirs(workspace_path, exist_ok=True)
+            logger.info("✅ cuga_workspace directory created")
+        else:
+            logger.info(f"✅ cuga_workspace directory found at {workspace_path}")
+
+        # Copy example workspace files (contacts, knowledge, playbook, email template)
+        copied_files = copy_workspace_example_files(workspace_path)
+        if copied_files:
+            logger.info(f"📦 Copied {len(copied_files)} example file(s) to workspace")
+
+        if sample_memory_data:
+            logger.info("📝 Generating sample CRM workspace files...")
+            created_files = create_demo_crm_sample_files(workspace_path)
+            for file_path in created_files:
+                logger.info(f"   • {file_path}")
+
+        # Set hardcoded policies for demo_crm
+        policies_content = """## Plan
+when using filesystem use the `./cuga_workspace` dir only
+when user asks questions about cuga then answer the question by first reading the filesystem information inside the file `./cuga_workspace/cuga_knowledge.md` then answer the question
+When user asks to use email templates assume it has <results> placehoder to replace with the results
+The email of my assistant is jane@example.com"""
+        os.environ["CUGA_POLICIES_CONTENT"] = policies_content
+        os.environ["CUGA_LOAD_POLICIES"] = "true"
+        logger.info(f"📋 Policies configured for {service_label}")
+
+        # Set default CRM DB path with cwd if not already set
+        if "DYNACONF_CRM_DB_PATH" not in os.environ:
+            # Default: ${workdir}/crm_tmp/crm_db_default
+            workdir = os.getcwd()
+            crm_db_path = os.path.join(workdir, "crm_tmp", "crm_db_default")
+            crm_db_path = os.path.abspath(crm_db_path)
+            os.environ["DYNACONF_CRM_DB_PATH"] = crm_db_path
+        else:
+            crm_db_path = os.path.abspath(os.environ["DYNACONF_CRM_DB_PATH"])
+
+        # Clean up CRM DB path before starting
+        if os.path.exists(crm_db_path):
+            logger.info(f"🧹 Cleaning up existing CRM DB at {crm_db_path}")
+            try:
+                os.remove(crm_db_path)
+                logger.info("✅ CRM DB cleaned up")
+            except Exception as e:
+                logger.warning(f"⚠️  Could not remove CRM DB: {e}")
+
+        # Ensure parent directory exists
+        parent_dir = os.path.dirname(crm_db_path)
+        if parent_dir:
+            os.makedirs(parent_dir, exist_ok=True)
+
+        # Clean up any existing processes on the ports we need
+        logger.info("🧹 Checking for existing processes on required ports...")
+
+        # Define ports with env var support
+        crm_port = int(os.environ.get("DYNACONF_SERVER_PORTS__CRM_API", "8007"))
+        fs_port = int(os.environ.get("DYNACONF_SERVER_PORTS__FILESYSTEM_MCP", "8112"))
+        email_sink_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_SINK", "1025"))
+        email_mcp_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_MCP", "8000"))
+
+        ports_to_clean = [
+            crm_port,
+            fs_port,
+            settings.server_ports.registry,
+            settings.server_ports.demo,
+        ]
+        if not no_email:
+            ports_to_clean.extend([email_sink_port, email_mcp_port])
+        kill_processes_by_port(ports_to_clean)
+
+        # Set environment variable for host
+        os.environ["CUGA_HOST"] = host
+
+        # If sandbox mode is enabled, update settings dynamically
+        if sandbox:
+            logger.info(
+                f"Starting {service_label} with remote sandbox mode enabled (features.local_sandbox=false)"
+            )
+            os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
+
+        # Determine if we should use cache
+        use_cache = True
+
+        if use_cache:
+            logger.debug("Using uvx cache for faster startup in CI environment")
+        else:
+            logger.debug("Using --no-cache for reliable package installation")
+
+        # Start email services if not disabled
+        if not no_email:
+            # Get email service ports from environment or use defaults
+            email_sink_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_SINK", "1025"))
+            email_mcp_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_MCP", "8000"))
+            logger.info(f"Starting email services - Sink: {email_sink_port}, MCP: {email_mcp_port}")
+
+            # Start email sink first
+            email_sink_cmd = ["uvx"]
+            if not use_cache:
+                email_sink_cmd.append("--no-cache")
+            email_sink_cmd.extend(
+                [
+                    "--from",
+                    "./docs/examples/demo_apps/email_mcp/mail_sink",
+                    "email_sink",
+                ]
+            )
+            run_direct_service(
+                "email-sink",
+                email_sink_cmd,
+                env_vars={"DYNACONF_SERVER_PORTS__EMAIL_SINK": str(email_sink_port)},
+            )
+            logger.info("Email sink started, waiting for it to be ready...")
+            wait_for_tcp_port(email_sink_port, "Email sink", max_retries=60, retry_interval=0.5)
+            time.sleep(1)  # Extra buffer
+
+            # Start email MCP server (needs to know both ports)
+            email_mcp_cmd = ["uvx"]
+            if not use_cache:
+                email_mcp_cmd.append("--no-cache")
+            email_mcp_cmd.extend(
+                [
+                    "--from",
+                    "./docs/examples/demo_apps/email_mcp/mcp_server",
+                    "email_mcp",
+                ]
+            )
+            run_direct_service(
+                "email-mcp",
+                email_mcp_cmd,
+                env_vars={
+                    "DYNACONF_SERVER_PORTS__EMAIL_SINK": str(email_sink_port),
+                    "DYNACONF_SERVER_PORTS__EMAIL_MCP": str(email_mcp_port),
+                },
+            )
+            logger.info("Email MCP server started")
+            time.sleep(2)
+        else:
+            logger.info("Email services disabled (--no-email flag set)")
+
+        # Start filesystem MCP server
+        filesystem_cmd = ["uvx"]
+        if not use_cache:
+            filesystem_cmd.append("--no-cache")
+        filesystem_cmd.extend(
+            [
+                "--from",
+                "./docs/examples/demo_apps/file_system",
+                "filesystem-server",
+            ]
+        )
+        if read_only:
+            filesystem_cmd.append("--read-only")
+        filesystem_cmd.append(workspace_path)
+        run_direct_service(
+            "filesystem-server",
+            filesystem_cmd,
+            env_vars={"DYNACONF_SERVER_PORTS__FILESYSTEM_MCP": str(fs_port)},
+        )
+        logger.info("Filesystem MCP server started")
+        time.sleep(2)
+
+        # Start CRM API server
+        # Pass port as command-line argument to avoid uvx environment variable issues
+        crm_port = settings.server_ports.crm_api
+        logger.info(f"Starting CRM server on port {crm_port}")
+
+        crm_cmd = ["uvx"]
+        if not use_cache:
+            crm_cmd.append("--no-cache")
+        crm_cmd.extend(
+            [
+                "--from",
+                "./docs/examples/demo_apps/crm",
+                "crm-server",
+                "--port",
+                str(crm_port),
+            ]
+        )
+        run_direct_service(
+            "crm-server",
+            crm_cmd,
+            env_vars={
+                "DYNACONF_SERVER_PORTS__CRM_API": str(crm_port),
+                "DYNACONF_CRM_DB_PATH": crm_db_path,
+            },
+        )
+        logger.info("CRM API server started")
+        wait_for_server(crm_port, "CRM API server")
+
+        # Start registry with CRM configuration
+        # Only set MCP_SERVERS_FILE if not already set (e.g., by tests)
+        if "MCP_SERVERS_FILE" not in os.environ:
+            config_file = "mcp_servers_hf.yaml" if no_email else "mcp_servers_crm.yaml"
+            os.environ["MCP_SERVERS_FILE"] = os.path.join(
+                PACKAGE_ROOT, "backend", "tools_env", "registry", "config", config_file
+            )
+        registry_process = run_direct_service(
+            "registry",
+            [
+                "uvicorn",
+                "cuga.backend.tools_env.registry.registry.api_registry_server:app",
+                "--host",
+                host,
+                "--port",
+                str(settings.server_ports.registry),
+            ],
+        )
+
+        # Check if registry failed to start
+        if registry_process is None or registry_process.poll() is not None:
+            logger.error("Registry service failed to start. Exiting.")
+            stop_direct_processes()
+            raise typer.Exit(1)
+
+        # Wait for registry to be ready
+        logger.info("Waiting for registry to start...")
+        try:
+            wait_for_registry_server(settings.server_ports.registry)
+        except TimeoutError as e:
+            logger.error(str(e))
+            stop_direct_processes()
+            raise typer.Exit(1)
+
+        # Double-check registry is still running after wait
+        if registry_process.poll() is not None:
+            logger.error("Registry service terminated during startup. Exiting.")
+            stop_direct_processes()
+            raise typer.Exit(1)
+
+        # Then start demo
+        demo_command = []
+        if sandbox:
+            demo_command = [
+                "uv",
+                "run",
+                "--group",
+                "sandbox",
+                "fastapi",
+                "dev",
+                os.path.join(PACKAGE_ROOT, "backend", "server", "main.py"),
+                "--host",
+                host,
+                "--no-reload",
+                "--port",
+                str(settings.server_ports.demo),
+            ]
+        else:
+            demo_command = [
+                "fastapi",
+                "dev",
+                os.path.join(PACKAGE_ROOT, "backend", "server", "main.py"),
+                "--host",
+                host,
+                "--no-reload",
+                "--port",
+                str(settings.server_ports.demo),
+            ]
+
+        demo_process = run_direct_service("demo", demo_command)
+
+        # Check if demo failed to start
+        if demo_process is None or demo_process.poll() is not None:
+            logger.error("Demo service failed to start. Exiting.")
+            stop_direct_processes()
+            raise typer.Exit(1)
+
+        # Wait for demo server to be ready (waiting for "Uvicorn running" message)
+        logger.info("Waiting for demo server to start...")
+        try:
+            wait_for_server(settings.server_ports.demo, "Demo server")
+        except TimeoutError as e:
+            logger.error(str(e))
+            stop_direct_processes()
+            raise typer.Exit(1)
+
+        # Double-check demo is still running after wait
+        if demo_process.poll() is not None:
+            logger.error("Demo service terminated during startup. Exiting.")
+            stop_direct_processes()
+            raise typer.Exit(1)
+
+        if direct_processes:
+            workspace_abs_path = os.path.abspath(workspace_path)
+
+            services_table = Table(show_header=False, box=None, padding=(0, 1))
+            services_table.add_column("Service", style="bold white", no_wrap=True)
+            services_table.add_column("URL", style="cyan")
+            if not no_email:
+                services_table.add_row("• Email Sink", f"smtp://localhost:{email_sink_port}")
+                services_table.add_row("• Email MCP Server", f"http://localhost:{email_mcp_port}/sse")
+            services_table.add_row("• Filesystem MCP Server", f"http://localhost:{fs_port}/sse")
+            services_table.add_row("• CRM API Server", f"http://localhost:{crm_port}")
+            services_table.add_row("• Registry Server", f"http://localhost:{settings.server_ports.registry}")
+            services_table.add_row("• Demo Server", f"http://localhost:{settings.server_ports.demo}")
+
+            filesystem_text = Text()
+            filesystem_text.append("  Read/Write allowed in:\n", style="bold white")
+            filesystem_text.append(f"  {workspace_abs_path}", style="yellow")
+
+            groups = [
+                Text("📦 Started Services:", style="bold green"),
+                services_table,
+                Text(),
+                Text("📁 Filesystem Access:", style="bold green"),
+                filesystem_text,
+            ]
+
+            if enable_supervisor:
+                groups.append(Text())
+                groups.append(Text("🤖 Supervisor: enabled (multi-agent coordination)", style="bold magenta"))
+
+            panel_content = Group(*groups)
+
+            console.print()
+            console.print(
+                Panel(
+                    panel_content,
+                    title=f"[bold yellow]✅ {service_label} services are running. Press Ctrl+C to stop[/bold yellow]",
+                    border_style="cyan",
+                    padding=(1, 2),
+                    expand=False,
+                )
+            )
+            wait_for_direct_processes()
+
+    except Exception as e:
+        logger.error(f"Error starting {service_label} services: {e}")
+        stop_direct_processes()
+        raise typer.Exit(1)
+
+
 # Helper function to validate service
 def validate_service(service: str):
     """Validate service name."""
-    valid_services = ["demo", "demo_crm", "registry", "appworld", "memory"]
+    valid_services = ["demo", "demo_crm", "demo_supervisor", "registry", "appworld", "memory"]
 
     if service not in valid_services:
         logger.error(f"Unknown service: {service}. Valid options are: {', '.join(valid_services)}")
@@ -532,7 +895,7 @@ def validate_service(service: str):
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo (registry + demo agent), demo_crm (CRM demo with email), registry (registry only), appworld (environment + api servers), or memory (memory service)",
+        help="Service to start: demo, demo_crm, demo_supervisor, registry, appworld, or memory",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -566,6 +929,7 @@ def start(
     Available services:
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
+      - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - registry: Starts only the registry service directly (uvicorn on port 8001)
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
       - memory: Starts the memory service directly (uvicorn on port 8888)
@@ -575,8 +939,8 @@ def start(
       cuga start demo --sandbox      # Start with remote sandbox (Docker/Podman)
       cuga start demo_crm            # Start CRM demo with all required services
       cuga start demo_crm --read-only  # Start CRM demo with read-only filesystem
-      cuga start demo_crm --sample-memory-data  # Seed workspace with sample memory data before CRM demo
       cuga start demo_crm --no-email  # Start CRM demo without email services
+      cuga start demo_supervisor     # Start CRM demo with supervisor multi-agent mode
       cuga start registry            # Start registry only
       cuga start appworld            # Start AppWorld servers
       cuga start memory              # Start memory service
@@ -690,343 +1054,15 @@ def start(
             raise typer.Exit(1)
         return
 
-    elif service == "demo_crm":
-        try:
-            # Check if cuga_workspace folder exists
-            workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
-            if not os.path.exists(workspace_path):
-                logger.warning(f"📁 Creating cuga_workspace directory at {workspace_path}")
-                os.makedirs(workspace_path, exist_ok=True)
-                logger.info("✅ cuga_workspace directory created")
-            else:
-                logger.info(f"✅ cuga_workspace directory found at {workspace_path}")
-
-            # Copy example workspace files (contacts, knowledge, playbook, email template)
-            copied_files = copy_workspace_example_files(workspace_path)
-            if copied_files:
-                logger.info(f"📦 Copied {len(copied_files)} example file(s) to workspace")
-
-            if sample_memory_data:
-                logger.info("📝 Generating sample CRM workspace files...")
-                created_files = create_demo_crm_sample_files(workspace_path)
-                for file_path in created_files:
-                    logger.info(f"   • {file_path}")
-
-            # Set hardcoded policies for demo_crm
-            policies_content = """## Plan
-when using filesystem use the `./cuga_workspace` dir only
-when user asks questions about cuga then answer the question by first reading the filesystem information inside the file `./cuga_workspace/cuga_knowledge.md` then answer the question
-When user asks to use email templates assume it has <results> placehoder to replace with the results
-The email of my assistant is jane@example.com"""
-            os.environ["CUGA_POLICIES_CONTENT"] = policies_content
-            os.environ["CUGA_LOAD_POLICIES"] = "true"
-            logger.info("📋 Policies configured for demo_crm")
-
-            # Set default CRM DB path with cwd if not already set
-            if "DYNACONF_CRM_DB_PATH" not in os.environ:
-                # Default: ${workdir}/crm_tmp/crm_db_default
-                workdir = os.getcwd()
-                crm_db_path = os.path.join(workdir, "crm_tmp", "crm_db_default")
-                crm_db_path = os.path.abspath(crm_db_path)
-                os.environ["DYNACONF_CRM_DB_PATH"] = crm_db_path
-            else:
-                crm_db_path = os.path.abspath(os.environ["DYNACONF_CRM_DB_PATH"])
-
-            # Clean up CRM DB path before starting
-            if os.path.exists(crm_db_path):
-                logger.info(f"🧹 Cleaning up existing CRM DB at {crm_db_path}")
-                try:
-                    os.remove(crm_db_path)
-                    logger.info("✅ CRM DB cleaned up")
-                except Exception as e:
-                    logger.warning(f"⚠️  Could not remove CRM DB: {e}")
-
-            # Ensure parent directory exists
-            parent_dir = os.path.dirname(crm_db_path)
-            if parent_dir:
-                os.makedirs(parent_dir, exist_ok=True)
-
-            # Clean up any existing processes on the ports we need
-            # Clean up any existing processes on the ports we need
-            logger.info("🧹 Checking for existing processes on required ports...")
-
-            # Define ports with env var support
-            crm_port = int(os.environ.get("DYNACONF_SERVER_PORTS__CRM_API", "8007"))
-            fs_port = int(os.environ.get("DYNACONF_SERVER_PORTS__FILESYSTEM_MCP", "8112"))
-            email_sink_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_SINK", "1025"))
-            email_mcp_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_MCP", "8000"))
-
-            ports_to_clean = [
-                crm_port,
-                fs_port,
-                settings.server_ports.registry,
-                settings.server_ports.demo,
-            ]
-            if not no_email:
-                ports_to_clean.extend([email_sink_port, email_mcp_port])
-            kill_processes_by_port(ports_to_clean)
-
-            # Set environment variable for host
-            os.environ["CUGA_HOST"] = host
-
-            # If sandbox mode is enabled, update settings dynamically
-            if sandbox:
-                logger.info(
-                    "Starting CRM demo with remote sandbox mode enabled (features.local_sandbox=false)"
-                )
-                os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
-            else:
-                pass
-
-            # Determine if we should use cache
-            # Note: For local paths (--from ./docs/...), caching may not work reliably
-            # So we only enable cache in CI environments (GitHub Actions, etc.) where
-            # the environment is more controlled and packages are pre-installed
-            # In local test runs, we use --no-cache to ensure reliable package installation
-            use_cache = True
-
-            if use_cache:
-                logger.debug("Using uvx cache for faster startup in CI environment")
-            else:
-                logger.debug("Using --no-cache for reliable package installation")
-
-            # Start email services if not disabled
-            if not no_email:
-                # Get email service ports from environment or use defaults
-                email_sink_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_SINK", "1025"))
-                email_mcp_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_MCP", "8000"))
-                logger.info(f"Starting email services - Sink: {email_sink_port}, MCP: {email_mcp_port}")
-
-                # Start email sink first
-                email_sink_cmd = ["uvx"]
-                if not use_cache:
-                    email_sink_cmd.append("--no-cache")
-                email_sink_cmd.extend(
-                    [
-                        "--from",
-                        "./docs/examples/demo_apps/email_mcp/mail_sink",
-                        "email_sink",
-                    ]
-                )
-                run_direct_service(
-                    "email-sink",
-                    email_sink_cmd,
-                    env_vars={"DYNACONF_SERVER_PORTS__EMAIL_SINK": str(email_sink_port)},
-                )
-                logger.info("Email sink started, waiting for it to be ready...")
-                wait_for_tcp_port(email_sink_port, "Email sink", max_retries=60, retry_interval=0.5)
-                time.sleep(1)  # Extra buffer
-
-                # Start email MCP server (needs to know both ports)
-                email_mcp_cmd = ["uvx"]
-                if not use_cache:
-                    email_mcp_cmd.append("--no-cache")
-                email_mcp_cmd.extend(
-                    [
-                        "--from",
-                        "./docs/examples/demo_apps/email_mcp/mcp_server",
-                        "email_mcp",
-                    ]
-                )
-                run_direct_service(
-                    "email-mcp",
-                    email_mcp_cmd,
-                    env_vars={
-                        "DYNACONF_SERVER_PORTS__EMAIL_SINK": str(email_sink_port),
-                        "DYNACONF_SERVER_PORTS__EMAIL_MCP": str(email_mcp_port),
-                    },
-                )
-                logger.info("Email MCP server started")
-                time.sleep(2)
-            else:
-                logger.info("Email services disabled (--no-email flag set)")
-
-            # Start filesystem MCP server
-            filesystem_cmd = ["uvx"]
-            if not use_cache:
-                filesystem_cmd.append("--no-cache")
-            filesystem_cmd.extend(
-                [
-                    "--from",
-                    "./docs/examples/demo_apps/file_system",
-                    "filesystem-server",
-                ]
-            )
-            if read_only:
-                filesystem_cmd.append("--read-only")
-            filesystem_cmd.append(workspace_path)
-            run_direct_service(
-                "filesystem-server",
-                filesystem_cmd,
-                env_vars={"DYNACONF_SERVER_PORTS__FILESYSTEM_MCP": str(fs_port)},
-            )
-            logger.info("Filesystem MCP server started")
-            time.sleep(2)
-
-            # Start CRM API server
-            # Pass port as command-line argument to avoid uvx environment variable issues
-            crm_port = settings.server_ports.crm_api
-            logger.info(f"Starting CRM server on port {crm_port}")
-
-            crm_cmd = ["uvx"]
-            if not use_cache:
-                crm_cmd.append("--no-cache")
-            crm_cmd.extend(
-                [
-                    "--from",
-                    "./docs/examples/demo_apps/crm",
-                    "crm-server",
-                    "--port",
-                    str(crm_port),
-                ]
-            )
-            run_direct_service(
-                "crm-server",
-                crm_cmd,
-                env_vars={
-                    "DYNACONF_SERVER_PORTS__CRM_API": str(crm_port),
-                    "DYNACONF_CRM_DB_PATH": crm_db_path,
-                },
-            )
-            logger.info("CRM API server started")
-            wait_for_server(crm_port, "CRM API server")
-
-            # Start registry with CRM configuration
-            # Only set MCP_SERVERS_FILE if not already set (e.g., by tests)
-            if "MCP_SERVERS_FILE" not in os.environ:
-                config_file = "mcp_servers_hf.yaml" if no_email else "mcp_servers_crm.yaml"
-                os.environ["MCP_SERVERS_FILE"] = os.path.join(
-                    PACKAGE_ROOT, "backend", "tools_env", "registry", "config", config_file
-                )
-            registry_process = run_direct_service(
-                "registry",
-                [
-                    "uvicorn",
-                    "cuga.backend.tools_env.registry.registry.api_registry_server:app",
-                    "--host",
-                    host,
-                    "--port",
-                    str(settings.server_ports.registry),
-                ],
-            )
-
-            # Check if registry failed to start
-            if registry_process is None or registry_process.poll() is not None:
-                logger.error("Registry service failed to start. Exiting.")
-                stop_direct_processes()
-                raise typer.Exit(1)
-
-            # Wait for registry to be ready
-            logger.info("Waiting for registry to start...")
-            try:
-                wait_for_registry_server(settings.server_ports.registry)
-            except TimeoutError as e:
-                logger.error(str(e))
-                stop_direct_processes()
-                raise typer.Exit(1)
-
-            # Double-check registry is still running after wait
-            if registry_process.poll() is not None:
-                logger.error("Registry service terminated during startup. Exiting.")
-                stop_direct_processes()
-                raise typer.Exit(1)
-
-            # Then start demo
-            demo_command = []
-            if sandbox:
-                demo_command = [
-                    "uv",
-                    "run",
-                    "--group",
-                    "sandbox",
-                    "fastapi",
-                    "dev",
-                    os.path.join(PACKAGE_ROOT, "backend", "server", "main.py"),
-                    "--host",
-                    host,
-                    "--no-reload",
-                    "--port",
-                    str(settings.server_ports.demo),
-                ]
-            else:
-                demo_command = [
-                    "fastapi",
-                    "dev",
-                    os.path.join(PACKAGE_ROOT, "backend", "server", "main.py"),
-                    "--host",
-                    host,
-                    "--no-reload",
-                    "--port",
-                    str(settings.server_ports.demo),
-                ]
-
-            demo_process = run_direct_service("demo", demo_command)
-
-            # Check if demo failed to start
-            if demo_process is None or demo_process.poll() is not None:
-                logger.error("Demo service failed to start. Exiting.")
-                stop_direct_processes()
-                raise typer.Exit(1)
-
-            # Wait for demo server to be ready (waiting for "Uvicorn running" message)
-            logger.info("Waiting for demo server to start...")
-            try:
-                wait_for_server(settings.server_ports.demo, "Demo server")
-            except TimeoutError as e:
-                logger.error(str(e))
-                stop_direct_processes()
-                raise typer.Exit(1)
-
-            # Double-check demo is still running after wait
-            if demo_process.poll() is not None:
-                logger.error("Demo service terminated during startup. Exiting.")
-                stop_direct_processes()
-                raise typer.Exit(1)
-
-            if direct_processes:
-                workspace_abs_path = os.path.abspath(workspace_path)
-
-                services_table = Table(show_header=False, box=None, padding=(0, 1))
-                services_table.add_column("Service", style="bold white", no_wrap=True)
-                services_table.add_column("URL", style="cyan")
-                if not no_email:
-                    services_table.add_row("• Email Sink", f"smtp://localhost:{email_sink_port}")
-                    services_table.add_row("• Email MCP Server", f"http://localhost:{email_mcp_port}/sse")
-                services_table.add_row("• Filesystem MCP Server", f"http://localhost:{fs_port}/sse")
-                services_table.add_row("• CRM API Server", f"http://localhost:{crm_port}")
-                services_table.add_row(
-                    "• Registry Server", f"http://localhost:{settings.server_ports.registry}"
-                )
-                services_table.add_row("• Demo Server", f"http://localhost:{settings.server_ports.demo}")
-
-                filesystem_text = Text()
-                filesystem_text.append("  Read/Write allowed in:\n", style="bold white")
-                filesystem_text.append(f"  {workspace_abs_path}", style="yellow")
-
-                content = Group(
-                    Text("📦 Started Services:", style="bold green"),
-                    services_table,
-                    Text(),
-                    Text("📁 Filesystem Access:", style="bold green"),
-                    filesystem_text,
-                )
-
-                console.print()
-                console.print(
-                    Panel(
-                        content,
-                        title="[bold yellow]✅ CRM Demo services are running. Press Ctrl+C to stop[/bold yellow]",
-                        border_style="cyan",
-                        padding=(1, 2),
-                        expand=False,
-                    )
-                )
-                wait_for_direct_processes()
-
-        except Exception as e:
-            logger.error(f"Error starting CRM demo services: {e}")
-            stop_direct_processes()
-            raise typer.Exit(1)
+    elif service in ("demo_crm", "demo_supervisor"):
+        _start_demo_crm_services(
+            host=host,
+            sandbox=sandbox,
+            read_only=read_only,
+            sample_memory_data=sample_memory_data,
+            no_email=no_email,
+            enable_supervisor=(service == "demo_supervisor"),
+        )
         return
 
     elif service == "registry":
@@ -1166,8 +1202,8 @@ def manage_service(action: str, service: str):
                     del direct_processes[service_name]
             if not stopped_any:
                 logger.info("Demo services are not running")
-        elif service == "demo_crm":
-            # Stop all CRM demo services
+        elif service in ("demo_crm", "demo_supervisor"):
+            # Stop all CRM/supervisor demo services
             stopped_any = False
             for service_name in ["email-sink", "email-mcp", "crm-api", "registry", "demo"]:
                 if service_name in direct_processes:
@@ -1178,7 +1214,7 @@ def manage_service(action: str, service: str):
                         stopped_any = True
                     del direct_processes[service_name]
             if not stopped_any:
-                logger.info("CRM demo services are not running")
+                logger.info(f"{service} services are not running")
         elif service == "registry":
             # Stop only registry for registry service
             if "registry" in direct_processes:
@@ -1224,7 +1260,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo (registry + demo agent), demo_crm (CRM demo services), registry (registry only), appworld (environment + api servers), or memory (memory service)",
+        help="Service to stop: demo, demo_crm, demo_supervisor, registry, appworld, or memory",
     ),
 ):
     """
@@ -1233,16 +1269,18 @@ def stop(
     Available services:
       - demo: Stops both registry and demo agent (direct processes)
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
+      - demo_supervisor: Same as demo_crm
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)
       - memory: Stops the memory service (direct process)
 
     Examples:
-      cuga stop demo       # Stop both registry and demo services
-      cuga stop demo_crm   # Stop all CRM demo services
-      cuga stop registry   # Stop only the registry service
-      cuga stop appworld   # Stop AppWorld servers
-      cuga stop memory     # Stop memory service
+      cuga stop demo             # Stop both registry and demo services
+      cuga stop demo_crm         # Stop all CRM demo services
+      cuga stop demo_supervisor  # Stop all supervisor demo services
+      cuga stop registry         # Stop only the registry service
+      cuga stop appworld         # Stop AppWorld servers
+      cuga stop memory           # Stop memory service
     """
     manage_service("stop", service)
 
@@ -1276,7 +1314,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo (registry + demo agent), demo_crm (CRM demo services), registry (registry only), appworld (environment + api servers), memory (memory service), or all (all services)",
+        help="Service to check status: demo, demo_crm, demo_supervisor, registry, appworld, memory, or all",
     ),
 ):
     """
@@ -1285,6 +1323,7 @@ def status(
     Available services:
       - demo: Shows status of both registry and demo agent (direct processes)
       - demo_crm: Shows status of all CRM demo services (email sink, email MCP, CRM API, registry, demo)
+      - demo_supervisor: Same as demo_crm
       - registry: Shows status of registry service only (direct process)
       - appworld: Shows status of both AppWorld environment and API servers (direct processes)
       - memory: Shows status of memory service (direct process)
@@ -1311,8 +1350,8 @@ def status(
                 logger.info(f"{service_name.capitalize()} service: Not running")
         return
 
-    elif service == "demo_crm":
-        # Show status of all CRM demo services
+    elif service in ("demo_crm", "demo_supervisor"):
+        # Show status of all CRM/supervisor demo services
         for service_name in ["email-sink", "email-mcp", "crm-api", "registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]

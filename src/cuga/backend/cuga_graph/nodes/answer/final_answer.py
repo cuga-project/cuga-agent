@@ -4,6 +4,7 @@ from typing import Literal, Dict, Callable
 
 from langchain_core.messages import AIMessage
 from langgraph.types import Command
+from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.final_answer_agent import FinalAnswerAgent
@@ -114,6 +115,36 @@ class FinalAnswerNode(BaseNode):
             state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
             tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
             return Command(update=state.model_dump(), goto=NodeNames.END)
+
+        # Handle supervisor callback - forward answer without regeneration (especially for lite mode)
+        if state.sender == NodeNames.CUGA_SUPERVISOR:
+            state.sender = name
+            # Use final_answer if available, otherwise use last_planner_answer
+            # For lite mode, the supervisor already generated the final answer
+            answer_to_forward = state.final_answer or state.last_planner_answer or ""
+            if answer_to_forward:
+                state.final_answer = answer_to_forward
+                final_answer_output = FinalAnswerOutput(
+                    thoughts=[],
+                    final_answer=answer_to_forward,
+                )
+                state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
+                tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
+                return Command(update=state.model_dump(), goto=NodeNames.END)
+            else:
+                # Fallback: if no answer found, still forward empty answer to avoid regeneration
+                logger.warning(
+                    "Supervisor callback: no final_answer or last_planner_answer found, forwarding empty answer"
+                )
+                state.final_answer = ""
+                final_answer_output = FinalAnswerOutput(
+                    thoughts=[],
+                    final_answer="",
+                )
+                state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
+                tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
+                return Command(update=state.model_dump(), goto=NodeNames.END)
+
         # Main processing: generate final answer
         await FinalAnswerNode._generate_final_answer(state, agent, name)
 

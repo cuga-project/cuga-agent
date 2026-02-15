@@ -52,6 +52,12 @@ force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
 execution_output_max_length = 3500  # Maximum characters to show in execution output (prevents token overflow)
 
+[supervisor]
+enabled = false  # Enable CugaSupervisor for multi-agent coordination
+config_path = "src/cuga/backend/tools_env/registry/config/supervisor_demo_crm.yaml"  # Path to supervisor YAML config (e.g., "config/supervisor_demo_crm.yaml"). If empty, uses default supervisor setup
+agent_approval = true  # Require user approval before executing any sub-agent (human-in-the-loop)
+pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and sends them in request metadata (A2A protocol extension)
+
 [policy]
 enabled = true  # Enable policy system (intent guards, playbooks, tool guides, tool approvals)
 collection_name = "cuga_policies"  # Milvus collection name for storing policies
