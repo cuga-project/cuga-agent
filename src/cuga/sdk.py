@@ -1633,6 +1633,8 @@ class CugaAgent:
         run_config = config or {}
         if "configurable" not in run_config:
             run_config["configurable"] = {}
+        if "recursion_limit" not in run_config:
+            run_config["recursion_limit"] = 135  # Match agent_loop.py to prevent unbounded recursion
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
@@ -1851,6 +1853,8 @@ class CugaAgent:
         run_config = config or {}
         if "configurable" not in run_config:
             run_config["configurable"] = {}
+        if "recursion_limit" not in run_config:
+            run_config["recursion_limit"] = 135  # Match agent_loop.py to prevent unbounded recursion
 
         # Handle resume case (message is None or action_response is provided)
         if message is None or action_response is not None:

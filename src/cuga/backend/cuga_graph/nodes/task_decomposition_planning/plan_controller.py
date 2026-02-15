@@ -71,6 +71,9 @@ class PlanControllerNode(BaseNode):
         # Final answer ifs
 
         if state.sender == "TaskDecompositionAgent":
+            # Reset iteration count when entering from task decomposition
+            state.plan_controller_iteration_count = 0
+
             # Add forced apps to api_intent_relevant_apps when arriving from task decomposition
             force_lite_apps = getattr(settings.advanced_features, 'force_lite_mode_apps', [])
             if force_lite_apps:
@@ -161,6 +164,21 @@ class PlanControllerNode(BaseNode):
 
         # Else is loop return
         logger.debug("returning from planner or api agent")
+
+        # Increment and check iteration count to prevent unbounded loops
+        state.plan_controller_iteration_count += 1
+        max_iterations = getattr(settings.advanced_features, 'max_plan_iterations', 15)
+        if state.plan_controller_iteration_count > max_iterations:
+            logger.warning(
+                f"PlanController exceeded max iterations ({max_iterations}). "
+                f"Forcing task conclusion to prevent unbounded loop."
+            )
+            state.last_planner_answer = (
+                f"Task execution stopped: exceeded maximum of {max_iterations} planning iterations. "
+                f"Partial progress: {state.sub_tasks_progress}"
+            )
+            return Command(update=state.model_dump(), goto="FinalAnswerAgent")
+
         if ignore_controller and state.last_planner_answer:
             state.messages.append(
                 AIMessage(

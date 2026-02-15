@@ -48,6 +48,7 @@ sub_task_keep_last_n = 5  # Number of most recent generated variables to keep wh
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
+max_plan_iterations = 15  # Maximum PlanController iterations before forcing task conclusion
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
 execution_output_max_length = 3500  # Maximum characters to show in execution output (prevents token overflow)

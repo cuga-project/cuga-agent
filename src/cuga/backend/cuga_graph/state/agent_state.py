@@ -969,6 +969,9 @@ class AgentState(BaseModel):
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
+    plan_controller_iteration_count: int = (
+        0  # Tracks PlanController loop iterations to prevent unbounded loops
+    )
 
     @property
     def variables_manager(self) -> 'StateVariablesManager':
