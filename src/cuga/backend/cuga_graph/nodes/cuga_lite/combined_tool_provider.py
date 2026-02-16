@@ -5,7 +5,7 @@ Provides tools from both runtime tracker tools and registry.
 First checks tracker for runtime tools, then falls back to registry.
 """
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Callable, Tuple
 import aiohttp
 import asyncio
 
@@ -196,16 +196,25 @@ class CombinedToolProvider(ToolProviderInterface):
     First checks tracker for runtime tools, then tries registry with try/catch.
     """
 
-    def __init__(self, app_names: Optional[List[str]] = None):
+    def __init__(
+        self,
+        app_names: Optional[List[str]] = None,
+        get_include_by_app: Optional[Callable[[], Tuple[Optional[Dict[str, List[str]]], int]]] = None,
+    ):
         """
         Initialize the combined tool provider.
 
         Args:
             app_names: Optional list of specific app names to load. If None, loads all.
+            get_include_by_app: Optional callable returning (include_by_app, version).
+                If provided, only tools whose name is in include_by_app[app_name] are returned
+                (when that list is non-empty). Version change clears the tools cache.
         """
         self.app_names = app_names
+        self.get_include_by_app = get_include_by_app
         self.apps: List[AppDefinition] = []
         self.tools_cache: Dict[str, List[StructuredTool]] = {}
+        self._last_include_version: int = -1
         self.initialized = False
 
     async def initialize(self):
@@ -262,23 +271,46 @@ class CombinedToolProvider(ToolProviderInterface):
             await self.initialize()
         return self.apps
 
+    def _filter_tools_by_include(
+        self, tools: List[StructuredTool], app_name: str, include_ids: List[str]
+    ) -> List[StructuredTool]:
+        if not include_ids:
+            return tools
+        include_set = set(include_ids)
+        out = []
+        for t in tools:
+            if t.name in include_set:
+                out.append(t)
+                continue
+            raw = t.name.replace(f"{app_name}_", "", 1) if t.name.startswith(f"{app_name}_") else t.name
+            if raw in include_set:
+                out.append(t)
+        return out
+
     async def get_tools(self, app_name: str) -> List[StructuredTool]:
         """
         Get tools for a specific application.
 
         First checks tracker for runtime tools, then tries registry.
-
-        Args:
-            app_name: Name of the application
-
-        Returns:
-            List of LangChain StructuredTool objects
+        If get_include_by_app is set, filters to only tools in the include list for this app.
         """
         if not self.initialized:
             await self.initialize()
 
+        if self.get_include_by_app:
+            include_by_app, version = self.get_include_by_app()
+            if version != self._last_include_version:
+                self._last_include_version = version
+                self.tools_cache.clear()
+
         if app_name in self.tools_cache:
-            return self.tools_cache[app_name]
+            cached = self.tools_cache[app_name]
+            if self.get_include_by_app:
+                include_by_app, _ = self.get_include_by_app()
+                include_ids = (include_by_app or {}).get(app_name) if include_by_app else None
+                if include_ids is not None and len(include_ids) > 0:
+                    return self._filter_tools_by_include(cached, app_name, include_ids)
+            return cached
 
         all_tools = []
 
@@ -343,6 +375,13 @@ class CombinedToolProvider(ToolProviderInterface):
                 logger.warning(f"Error getting tools from registry for {app_name}: {e}")
 
         self.tools_cache[app_name] = all_tools
+        if self.get_include_by_app:
+            include_by_app, _ = self.get_include_by_app()
+            include_ids = (include_by_app or {}).get(app_name) if include_by_app else None
+            if include_ids and len(include_ids) > 0:
+                all_tools = self._filter_tools_by_include(all_tools, app_name, include_ids)
+                logger.info(f"Loaded {len(all_tools)} tools for '{app_name}' (filtered by include)")
+                return all_tools
         logger.info(f"Loaded {len(all_tools)} tools for '{app_name}'")
         return all_tools
 

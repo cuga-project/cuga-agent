@@ -4,6 +4,11 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { App } from "agentic_chat";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
+import "./global.css";
+
+function RouteRoot({ children }: { children: React.ReactNode }) {
+  return <div className="route-root">{children}</div>;
+}
 
 function renderApp(): void {
   const rootElement = document.getElementById("root");
@@ -14,9 +19,9 @@ function renderApp(): void {
   root.render(
     <BrowserRouter>
       <Routes>
-        <Route path="/" element={<App />} />
-        <Route path="/manage" element={<ManageDashboard />} />
-        <Route path="/manage/:agentId" element={<ManagePage />} />
+        <Route path="/" element={<RouteRoot><App /></RouteRoot>} />
+        <Route path="/manage" element={<RouteRoot><ManageDashboard /></RouteRoot>} />
+        <Route path="/manage/:agentId" element={<RouteRoot><ManagePage /></RouteRoot>} />
       </Routes>
     </BrowserRouter>
   );

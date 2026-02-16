@@ -50,12 +50,19 @@ def get_config_filename():
     return resolved_path
 
 
+def _config_path_to_str():
+    try:
+        return str(get_config_filename())
+    except FileNotFoundError:
+        return None
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     global mcp_manager, registry
     config_file = get_config_filename()
     print(f"Using configuration file: {config_file}")
-    services = load_service_configs(config_file)
+    services = load_service_configs(str(config_file))
     mcp_manager = MCPManager(config=services)
     registry = ApiRegistry(client=mcp_manager)
     await registry.start_servers()
@@ -281,6 +288,27 @@ async def call_mcp_function(request: FunctionCallRequest, trajectory_path: Optio
         raise HTTPException(
             status_code=500, detail=f"Internal server error processing function call: {str(e)}"
         )
+
+
+@app.post("/reload")
+async def reload_config():
+    """Reload MCP config from file and reinitialize registry (for manager mode)."""
+    global mcp_manager, registry
+    config_path = _config_path_to_str()
+    if not config_path:
+        raise HTTPException(status_code=500, detail="MCP config file not found")
+    try:
+        services = load_service_configs(config_path)
+        new_manager = MCPManager(config=services)
+        new_registry = ApiRegistry(client=new_manager)
+        await new_registry.start_servers()
+        mcp_manager = new_manager
+        registry = new_registry
+        logger.info("Registry reloaded from %s", config_path)
+        return {"status": "ok", "config_file": config_path}
+    except Exception as e:
+        logger.exception("Reload failed: %s", e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/reset")

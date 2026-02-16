@@ -17,6 +17,11 @@ interface ConfigHeaderProps {
   workspaceOpen: boolean;
 }
 
+interface AgentContext {
+  agent_id: string;
+  config_version: number | null;
+}
+
 export function ConfigHeader({
   onToggleLeftSidebar,
   onToggleWorkspace,
@@ -26,6 +31,7 @@ export function ConfigHeader({
   const [activeModal, setActiveModal] = useState<string | null>(null);
   const [isMobileMenuOpen, setIsMobileMenuOpen] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
+  const [agentContext, setAgentContext] = useState<AgentContext | null>(null);
 
   useEffect(() => {
     const checkMobile = () => {
@@ -37,12 +43,24 @@ export function ConfigHeader({
     return () => window.removeEventListener('resize', checkMobile);
   }, []);
 
+  useEffect(() => {
+    fetch('/api/agent/context')
+      .then((res) => res.ok ? res.json() : null)
+      .then((data) => data && setAgentContext({ agent_id: data.agent_id ?? 'cuga-default', config_version: data.config_version ?? null }))
+      .catch(() => {});
+  }, []);
+
   const closeMobileMenu = () => setIsMobileMenuOpen(false);
   return (
     <div className="config-header">
       <div className="config-header-left">
         <Settings className="config-header-icon" />
         <span className="config-header-title">CUGA Agent</span>
+        {agentContext && (
+          <span className="config-header-agent-context" title={`Config v${agentContext.config_version ?? '—'}`}>
+            {agentContext.agent_id}{agentContext.config_version != null ? ` · v${agentContext.config_version}` : ''}
+          </span>
+        )}
       </div>
       <div className="config-header-buttons">
         {isMobile ? (

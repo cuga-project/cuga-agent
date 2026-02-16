@@ -109,6 +109,12 @@
   resize: vertical;
 }
 
+.tool-modal-field textarea.tool-modal-args {
+  min-height: 88px;
+  font-family: ui-monospace, monospace;
+  font-size: 13px;
+}
+
 .tool-modal-field small {
   display: block;
   font-size: 12px;

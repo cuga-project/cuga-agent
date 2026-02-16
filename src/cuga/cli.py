@@ -21,6 +21,7 @@ from rich.text import Text
 from cuga.config import PACKAGE_ROOT, TRAJECTORY_DATA_DIR, get_user_data_path, settings
 from cuga.configurations.instructions_manager import InstructionsManager
 from cuga.backend.cuga_graph.policy.cli import app as policy_app
+from cuga.backend.server.managed_mcp import ensure_managed_mcp_file_exists, get_managed_mcp_path
 
 instructions_manager = InstructionsManager()
 
@@ -884,7 +885,7 @@ The email of my assistant is jane@example.com"""
 # Helper function to validate service
 def validate_service(service: str):
     """Validate service name."""
-    valid_services = ["demo", "demo_crm", "demo_supervisor", "registry", "appworld", "memory"]
+    valid_services = ["demo", "demo_crm", "demo_supervisor", "manager", "registry", "appworld", "memory"]
 
     if service not in valid_services:
         logger.error(f"Unknown service: {service}. Valid options are: {', '.join(valid_services)}")
@@ -895,7 +896,7 @@ def validate_service(service: str):
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_crm, demo_supervisor, registry, appworld, or memory",
+        help="Service to start: demo, demo_crm, demo_supervisor, manager, registry, appworld, or memory",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -930,6 +931,7 @@ def start(
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
+      - manager: Manage-config mode: registry uses managed MCP YAML, policy filesync off, demo on 7860
       - registry: Starts only the registry service directly (uvicorn on port 8001)
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
       - memory: Starts the memory service directly (uvicorn on port 8888)
@@ -941,11 +943,76 @@ def start(
       cuga start demo_crm --read-only  # Start CRM demo with read-only filesystem
       cuga start demo_crm --no-email  # Start CRM demo without email services
       cuga start demo_supervisor     # Start CRM demo with supervisor multi-agent mode
+      cuga start manager             # Manager mode: managed MCP config, no policy filesync
       cuga start registry            # Start registry only
       cuga start appworld            # Start AppWorld servers
       cuga start memory              # Start memory service
     """
     validate_service(service)
+
+    if service == "manager":
+        try:
+            os.environ["CUGA_MANAGER_MODE"] = "true"
+            os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+            managed_path = ensure_managed_mcp_file_exists(get_managed_mcp_path())
+            os.environ["MCP_SERVERS_FILE"] = managed_path
+            logger.info("Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE=%s", managed_path)
+            kill_processes_by_port([settings.server_ports.registry, settings.server_ports.demo])
+            os.environ["CUGA_HOST"] = host
+            registry_process = run_direct_service(
+                "registry",
+                [
+                    "uvicorn",
+                    "cuga.backend.tools_env.registry.registry.api_registry_server:app",
+                    "--host",
+                    host,
+                    "--port",
+                    str(settings.server_ports.registry),
+                ],
+            )
+            if registry_process is None or registry_process.poll() is not None:
+                logger.error("Registry service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+            logger.info("Waiting for registry to start...")
+            wait_for_server(settings.server_ports.registry)
+            if registry_process.poll() is not None:
+                logger.error("Registry service terminated during startup. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+            demo_command = [
+                "fastapi",
+                "dev",
+                os.path.join(PACKAGE_ROOT, "backend", "server", "main.py"),
+                "--host",
+                host,
+                "--no-reload",
+                "--port",
+                str(settings.server_ports.demo),
+            ]
+            run_direct_service("demo", demo_command)
+            wait_for_server(settings.server_ports.demo)
+            if direct_processes:
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Service", style="bold white")
+                table.add_column("URL", style="cyan")
+                table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
+                table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
+                console.print()
+                console.print(
+                    Panel(
+                        table,
+                        title="[bold yellow]Manager mode. Press Ctrl+C to stop[/bold yellow]",
+                        border_style="cyan",
+                        padding=(1, 2),
+                    )
+                )
+                wait_for_direct_processes()
+        except Exception as e:
+            logger.error(f"Error starting manager services: {e}")
+            stop_direct_processes()
+            raise typer.Exit(1)
+        return
 
     # Handle direct execution services (demo and registry)
     if service == "demo":
@@ -1189,8 +1256,7 @@ def manage_service(action: str, service: str):
     validate_service(service)
 
     if action == "stop":
-        if service == "demo":
-            # Stop both registry and demo for demo service
+        if service in ("demo", "manager"):
             stopped_any = False
             for service_name in ["registry", "demo"]:
                 if service_name in direct_processes:
@@ -1201,7 +1267,7 @@ def manage_service(action: str, service: str):
                         stopped_any = True
                     del direct_processes[service_name]
             if not stopped_any:
-                logger.info("Demo services are not running")
+                logger.info("Demo/manager services are not running")
         elif service in ("demo_crm", "demo_supervisor"):
             # Stop all CRM/supervisor demo services
             stopped_any = False
@@ -1337,8 +1403,7 @@ def status(
       cuga status appworld     # Show status of AppWorld servers
       cuga status memory       # Show status of memory service
     """
-    if service == "demo":
-        # Show status of both registry and demo for demo service
+    if service in ("demo", "manager"):
         for service_name in ["registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]

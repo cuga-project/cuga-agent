@@ -2,7 +2,32 @@
   display: flex;
   flex-direction: column;
   gap: 8px;
-  margin-bottom: 12px;
+  margin-bottom: 8px;
+}
+
+.tools-config-list-footer {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.tools-config-list-footer .tools-config-add-btn {
+  width: auto;
+}
+
+.tools-config-more-btn {
+  background: none;
+  border: none;
+  color: #6366f1;
+  font-size: 13px;
+  cursor: pointer;
+  padding: 4px 0;
+}
+
+.tools-config-more-btn:hover {
+  text-decoration: underline;
+  color: #4f46e5;
 }
 
 .tools-config-empty {
@@ -51,6 +76,15 @@
 }
 
 .tools-config-url {
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 4px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tools-config-command {
   font-size: 12px;
   color: #64748b;
   margin-top: 4px;
@@ -116,4 +150,296 @@
   background: #f1f5f9;
   color: #475569;
   border-color: #94a3b8;
+}
+
+.tools-config-connected {
+  margin-top: 16px;
+  padding-top: 12px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.tools-config-connected-hint {
+  margin: 0 0 10px 0;
+  font-size: 11px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.tools-config-connected-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: #64748b;
+  margin: 0 0 8px 0;
+  display: flex;
+  align-items: center;
+}
+
+.tools-config-connected-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.tools-config-connected-app {
+  padding: 8px 10px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  font-size: 13px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.tools-config-connected-app-header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.tools-config-connected-app-name {
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.tools-config-connected-app-count {
+  font-size: 12px;
+  color: #64748b;
+}
+
+.tools-config-in-config-badge {
+  font-size: 10px;
+  font-weight: 500;
+  padding: 2px 6px;
+  border-radius: 4px;
+  background: #e0e7ff;
+  color: #4338ca;
+}
+
+.tools-config-connected-select-btn {
+  margin-left: auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: #475569;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.tools-config-connected-select-btn:hover {
+  background: #f1f5f9;
+  color: #334155;
+  border-color: #cbd5e1;
+}
+
+.tools-config-connected-tool-names {
+  width: 100%;
+  margin: 4px 0 0 0;
+  padding-left: 16px;
+  font-size: 12px;
+  color: #475569;
+  list-style: disc;
+}
+
+.tools-config-connected-tool-names li {
+  margin: 2px 0;
+}
+
+.tools-config-include-hint {
+  font-size: 11px;
+  color: #64748b;
+  margin-top: 2px;
+}
+
+.tools-config-modal-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.5);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 1000;
+}
+
+.tools-config-modal {
+  background: #fff;
+  border-radius: 10px;
+  box-shadow: 0 10px 40px rgba(0, 0, 0, 0.2);
+  max-width: 480px;
+  width: 90%;
+  max-height: 85vh;
+  display: flex;
+  flex-direction: column;
+}
+
+.tools-config-modal-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 14px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.tools-config-modal-header h4 {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #1e293b;
+}
+
+.tools-config-modal-new-hint {
+  margin: 0;
+  padding: 10px 14px;
+  font-size: 12px;
+  color: #64748b;
+  background: #f8fafc;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.tools-config-modal-new-hint strong {
+  color: #475569;
+}
+
+.tools-config-modal-close {
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  padding: 4px;
+  border-radius: 4px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.tools-config-modal-close:hover {
+  background: #f1f5f9;
+  color: #334155;
+}
+
+.tools-config-modal-body {
+  padding: 12px 14px;
+  overflow-y: auto;
+  flex: 1;
+}
+
+.tools-config-allow-all-row {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid #e2e8f0;
+}
+
+.tools-config-allow-all-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tools-config-allow-all-hint {
+  margin: 6px 0 0 24px;
+  font-size: 12px;
+  color: #64748b;
+  line-height: 1.4;
+}
+
+.tools-config-tools-checkbox-row {
+  margin-bottom: 10px;
+}
+
+.tools-config-tools-checkbox-row label {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  cursor: pointer;
+}
+
+.tools-config-tools-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tools-config-tools-list-item {
+  margin: 0;
+  padding: 4px 0;
+  border-bottom: 1px solid #f1f5f9;
+}
+
+.tools-config-tools-list-item:last-child {
+  border-bottom: none;
+}
+
+.tools-config-tools-list-item label {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.tools-config-tools-list-item input[type="checkbox"] {
+  margin-top: 3px;
+  flex-shrink: 0;
+}
+
+.tools-config-tool-id {
+  font-family: ui-monospace, monospace;
+  font-size: 12px;
+  color: #334155;
+  flex-shrink: 0;
+  min-width: 140px;
+}
+
+.tools-config-tool-desc {
+  color: #64748b;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.tools-config-modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 12px 14px;
+  border-top: 1px solid #e2e8f0;
+}
+
+.tools-config-btn-primary,
+.tools-config-btn-secondary {
+  padding: 8px 14px;
+  border-radius: 6px;
+  font-size: 13px;
+  font-weight: 500;
+  cursor: pointer;
+}
+
+.tools-config-btn-primary {
+  background: #2563eb;
+  color: #fff;
+  border: none;
+}
+
+.tools-config-btn-primary:hover {
+  background: #1d4ed8;
+}
+
+.tools-config-btn-secondary {
+  background: #f1f5f9;
+  color: #475569;
+  border: 1px solid #e2e8f0;
+}
+
+.tools-config-btn-secondary:hover {
+  background: #e2e8f0;
 }

@@ -142,6 +142,10 @@ class AppState:
             self.EXTENSION_PATH: Optional[str] = EXTENSION_DIR
         self.STATIC_DIR_FLOWS: str = STATIC_DIR_FLOWS_PATH
         self.save_reuse_process: Optional[asyncio.subprocess.Process] = None
+        self.agent_id: str = "cuga-default"
+        self.config_version: Optional[int] = None
+        self.tools_include_by_app: Optional[Dict[str, List[str]]] = None
+        self.tools_include_version: int = 0
         self.initialize_sdk()
 
     def initialize_sdk(self):
@@ -301,6 +305,50 @@ async def lifespan(app: FastAPI):
         app_state.policy_system = None
         app_state.policy_filesystem_sync = None
 
+    if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
+        try:
+            from cuga.backend.server.config_store import load_config
+            from cuga.backend.server.managed_mcp import get_managed_mcp_path, write_managed_mcp_yaml
+            from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+            config, version = load_config(None)
+            app_state.config_version = version
+            app_state.agent_id = "cuga-default"
+            tools_list = (config or {}).get("tools") or []
+            app_state.tools_include_by_app = {
+                t["name"]: t["include"]
+                for t in tools_list
+                if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
+            } or None
+            app_state.tools_include_version = version or 0
+            write_managed_mcp_yaml(config or {}, get_managed_mcp_path())
+            raw_policies = (config or {}).get("policies")
+            policies_list = (
+                raw_policies.get("policies", [])
+                if isinstance(raw_policies, dict) and "policies" in raw_policies
+                else raw_policies
+                if isinstance(raw_policies, list)
+                else []
+            )
+            if policies_list and app_state.policy_system and app_state.policy_system.storage:
+                await apply_policies_data_to_storage(
+                    app_state.policy_system.storage,
+                    policies_list,
+                    clear_existing=True,
+                    filesystem_sync=app_state.policy_filesystem_sync,
+                )
+                await app_state.policy_system.initialize()
+                logger.info("Manager mode: applied %s policies from config", len(policies_list))
+            registry_url = get_registry_base_url()
+            async with httpx.AsyncClient() as client:
+                r = await client.post(f"{registry_url}/reload", timeout=10.0)
+                r.raise_for_status()
+            logger.info(
+                "Manager mode: config loaded (version=%s), managed MCP written, registry reloaded", version
+            )
+        except Exception as e:
+            logger.warning("Manager mode startup: %s", e)
+
     # Start the save_reuse server if configured
 
     await manage_save_reuse_server()
@@ -339,8 +387,20 @@ async def lifespan(app: FastAPI):
         if settings.advanced_features.langfuse_tracing and CallbackHandler is not None
         else None
     )
+    from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
+
+    def _get_include_by_app():
+        return (
+            getattr(app_state, "tools_include_by_app", None),
+            getattr(app_state, "tools_include_version", 0),
+        )
+
+    tool_provider = CombinedToolProvider(get_include_by_app=_get_include_by_app)
     app_state.agent = DynamicAgentGraph(
-        None, langfuse_handler=langfuse_handler, policy_system=app_state.policy_system
+        None,
+        langfuse_handler=langfuse_handler,
+        policy_system=app_state.policy_system,
+        tool_provider=tool_provider,
     )
     await app_state.agent.build_graph()
 
@@ -1247,7 +1307,6 @@ async def get_policies_config():
 @app.post("/api/config/policies")
 async def save_policies_config(request: Request):
     """Endpoint to save policies configuration."""
-    # Return early if policies are disabled
     if not settings.policy.enabled:
         return JSONResponse(
             {"status": "error", "message": "Policy system is disabled in settings"},
@@ -1256,36 +1315,22 @@ async def save_policies_config(request: Request):
 
     try:
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
-        from cuga.backend.cuga_graph.policy.models import (
-            IntentGuard,
-            Playbook,
-            ToolGuide,
-            ToolApproval,
-            OutputFormatter,
-            IntentGuardResponse,
-            PlaybookStep,
-        )
+        from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
 
         data = await request.json()
         logger.info(f"Received policy save request with {len(data.get('policies', []))} policies")
         policies = data.get("policies", [])
 
-        # Use the policy system's storage if available, otherwise create a new one
-        # Storage will handle all embedding configuration internally
         if app_state.policy_system and app_state.policy_system.storage:
             storage = app_state.policy_system.storage
             logger.info("Using existing policy system storage")
         else:
-            # Get basic config from settings, storage will handle embedding config internally
             collection_name = settings.policy.collection_name
             milvus_host = settings.policy.milvus_host
             milvus_port = settings.policy.milvus_port
             milvus_uri = settings.policy.milvus_uri
-
-            # Embedding config - storage will auto-detect dimensions during initialization
             embedding_provider = os.getenv("POLICY_EMBEDDING_PROVIDER") or settings.policy.embedding_provider
             embedding_model = os.getenv("POLICY_EMBEDDING_MODEL") or settings.policy.embedding_model
-
             storage = PolicyStorage(
                 collection_name=collection_name,
                 host=milvus_host,
@@ -1293,7 +1338,6 @@ async def save_policies_config(request: Request):
                 milvus_uri=milvus_uri,
                 embedding_provider=embedding_provider,
                 embedding_model=embedding_model,
-                # embedding_dim will be auto-detected during initialize_async()
             )
             await storage.initialize_async()
             logger.info(
@@ -1301,143 +1345,12 @@ async def save_policies_config(request: Request):
                 f"embedding: {embedding_provider}, dim: {storage.embedding_dim})"
             )
 
-        # Clear existing policies (simple approach - in production, do incremental updates)
-        existing_policies = await storage.list_policies(enabled_only=False)
-        for policy_obj in existing_policies:
-            await storage.delete_policy(policy_obj.id)
-
-        # Add new policies
-        for policy_data in policies:
-            try:
-                policy_type = policy_data.get("policy_type")
-                logger.info(f"Processing policy: {policy_data.get('name')} (type: {policy_type})")
-                logger.info(f"Triggers data: {policy_data.get('triggers')}")
-
-                # Validate and log keyword trigger operators
-                for trigger in policy_data.get('triggers', []):
-                    if trigger.get('type') == 'keyword':
-                        operator = trigger.get('operator', 'NOT_SET')
-                        keywords = trigger.get('value', [])
-                        logger.info(f"  Keyword trigger: operator={operator}, keywords={keywords}")
-
-                if policy_type == "intent_guard":
-                    # Convert to IntentGuard model
-                    response_data = policy_data.get("response", {})
-                    policy = IntentGuard(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        triggers=policy_data["triggers"],
-                        intent_examples=policy_data.get("intent_examples", []),
-                        response=IntentGuardResponse(
-                            response_type=response_data.get("response_type", "natural_language"),
-                            content=response_data.get("content", ""),
-                        ),
-                        allow_override=policy_data.get("allow_override", False),
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                    )
-                    logger.info(f"Created IntentGuard policy with triggers: {policy.triggers}")
-                    # Validate keyword trigger operators after Pydantic parsing
-                    for trigger in policy.triggers:
-                        if hasattr(trigger, 'type') and trigger.type == 'keyword':
-                            operator = getattr(trigger, 'operator', 'NOT_SET')
-                            logger.info(
-                                f"  IntentGuard keyword trigger validated: operator={operator}, keywords={trigger.value}"
-                            )
-                elif policy_type == "playbook":
-                    # Convert to Playbook model
-                    steps_data = policy_data.get("steps", [])
-                    steps = [
-                        PlaybookStep(
-                            step_number=step["step_number"],
-                            instruction=step["instruction"],
-                            expected_outcome=step["expected_outcome"],
-                            tools_allowed=step.get("tools_allowed", []),
-                        )
-                        for step in steps_data
-                    ]
-
-                    policy = Playbook(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        triggers=policy_data["triggers"],
-                        markdown_content=policy_data.get("markdown_content", ""),
-                        steps=steps,
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                    )
-                    logger.info(f"Created Playbook policy with triggers: {policy.triggers}")
-                    # Validate keyword trigger operators after Pydantic parsing
-                    for trigger in policy.triggers:
-                        if hasattr(trigger, 'type') and trigger.type == 'keyword':
-                            operator = getattr(trigger, 'operator', 'NOT_SET')
-                            logger.info(
-                                f"  Playbook keyword trigger validated: operator={operator}, keywords={trigger.value}"
-                            )
-                elif policy_type == "tool_guide":
-                    # Convert to ToolGuide model
-                    policy = ToolGuide(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        triggers=policy_data["triggers"],
-                        target_tools=policy_data.get("target_tools", []),
-                        target_apps=policy_data.get("target_apps"),
-                        guide_content=policy_data.get("guide_content", ""),
-                        prepend=policy_data.get("prepend", False),
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                    )
-                elif policy_type == "tool_approval":
-                    # Convert to ToolApproval model
-                    policy = ToolApproval(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        triggers=policy_data["triggers"],
-                        required_tools=policy_data.get("required_tools", []),
-                        required_apps=policy_data.get("required_apps"),
-                        approval_message=policy_data.get("approval_message"),
-                        show_code_preview=policy_data.get("show_code_preview", True),
-                        auto_approve_after=policy_data.get("auto_approve_after"),
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                    )
-                elif policy_type == "output_formatter":
-                    # Convert to OutputFormatter model
-                    policy = OutputFormatter(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        triggers=policy_data["triggers"],
-                        format_type=policy_data.get("format_type", "markdown"),
-                        format_config=policy_data.get("format_config", ""),
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                        metadata=policy_data.get("metadata", {}),
-                    )
-                else:
-                    logger.warning(f"Unknown policy type: {policy_type}")
-                    continue
-
-                # Add to storage (embedding will be generated automatically)
-                await storage.add_policy(policy)
-                logger.info(f"Saved policy: {policy.id}")
-
-                # Save to filesystem if sync is enabled
-                if app_state.policy_filesystem_sync:
-                    try:
-                        app_state.policy_filesystem_sync.save_policy_to_file(policy)
-                        logger.debug(f"Saved policy '{policy.id}' to filesystem")
-                    except Exception as e:
-                        logger.warning(f"Failed to save policy to filesystem: {e}")
-
-            except Exception as e:
-                logger.error(f"Failed to save policy {policy_data.get('id')}: {e}")
-                logger.exception(e)
-                continue
+        await apply_policies_data_to_storage(
+            storage,
+            policies,
+            clear_existing=True,
+            filesystem_sync=app_state.policy_filesystem_sync,
+        )
 
         # Don't disconnect if using the policy system's storage
         if not (app_state.policy_system and app_state.policy_system.storage):
@@ -1479,11 +1392,12 @@ async def get_tools_list():
                 # Add app to apps list
                 apps_list.append({"name": app.name, "type": app_type, "tool_count": len(apis)})
 
-                # Add each tool with its app information
+                # Add each tool with its app information (id = operation_id for OpenAPI, tool name for MCP)
                 for tool_name, tool_def in apis.items():
                     tools_list.append(
                         {
                             "name": tool_name,
+                            "id": tool_def.get("operation_id", tool_name),
                             "app": app.name,
                             "app_type": app_type,
                             "description": tool_def.get("description", ""),
@@ -1859,15 +1773,43 @@ async def get_agents_list():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@app.get("/api/agent/context")
+async def get_agent_context():
+    """Return current agent id and config version for UI."""
+    return JSONResponse(
+        {
+            "agent_id": getattr(app_state, "agent_id", "cuga-default"),
+            "config_version": getattr(app_state, "config_version", None),
+        }
+    )
+
+
 @app.get("/api/manage/config")
 async def get_manage_config(version: Optional[int] = None):
-    """Get agent config (latest or by version)."""
+    """Get agent config (latest or by version). Merges command/args/transport from managed MCP YAML for MCP tools that lack them."""
     try:
         from cuga.backend.server.config_store import load_config
+        from cuga.backend.server.managed_mcp import get_managed_mcp_path, read_managed_mcp_servers
 
         config, ver = load_config(version)
         if config is None:
             return JSONResponse({"config": {}})
+        tools_list = config.get("tools") or []
+        if tools_list:
+            yaml_servers = read_managed_mcp_servers(get_managed_mcp_path())
+            for t in tools_list:
+                if (t.get("type") or "mcp").lower() != "mcp":
+                    continue
+                if t.get("command"):
+                    continue
+                name = t.get("name")
+                if not name or name not in yaml_servers:
+                    continue
+                existing = yaml_servers[name]
+                if isinstance(existing, dict):
+                    for key in ("command", "args", "transport", "description", "env"):
+                        if key in existing and key not in t:
+                            t[key] = existing[key]
         return JSONResponse({"config": config, "version": ver})
     except Exception as e:
         logger.error(f"Failed to load manage config: {e}")
@@ -1879,10 +1821,56 @@ async def save_manage_config(request: Request):
     """Save agent config as a new version."""
     try:
         from cuga.backend.server.config_store import save_config
+        from cuga.backend.server.managed_mcp import get_managed_mcp_path, write_managed_mcp_yaml
 
         data = await request.json()
         config = data.get("config", data)
         ver = save_config(config)
+        app_state.config_version = ver
+        tools_list = (config or {}).get("tools") or []
+        app_state.tools_include_by_app = {
+            t["name"]: t["include"]
+            for t in tools_list
+            if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
+        } or None
+        app_state.tools_include_version = ver or 0
+        llm_cfg = (config or {}).get("llm") or {}
+        if isinstance(llm_cfg, dict):
+            if "model" in llm_cfg and llm_cfg["model"]:
+                os.environ["MODEL_NAME"] = str(llm_cfg["model"])
+            if "temperature" in llm_cfg and llm_cfg["temperature"] is not None:
+                os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
+        raw_policies = (config or {}).get("policies")
+        policies_list = (
+            raw_policies.get("policies", [])
+            if isinstance(raw_policies, dict) and "policies" in raw_policies
+            else raw_policies
+            if isinstance(raw_policies, list)
+            else []
+        )
+        if raw_policies is not None and app_state.policy_system and app_state.policy_system.storage:
+            try:
+                from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+                await apply_policies_data_to_storage(
+                    app_state.policy_system.storage,
+                    policies_list,
+                    clear_existing=True,
+                    filesystem_sync=app_state.policy_filesystem_sync,
+                )
+                await app_state.policy_system.initialize()
+                logger.info("Applied %s policies from saved config", len(policies_list))
+            except Exception as policy_err:
+                logger.warning("Failed to apply policies from config: %s", policy_err)
+        if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
+            try:
+                write_managed_mcp_yaml(config, get_managed_mcp_path())
+                registry_url = get_registry_base_url()
+                async with httpx.AsyncClient() as client:
+                    r = await client.post(f"{registry_url}/reload", timeout=10.0)
+                    r.raise_for_status()
+            except Exception as reload_err:
+                logger.warning("Manager mode: write YAML/reload failed: %s", reload_err)
         return JSONResponse({"status": "success", "version": ver})
     except Exception as e:
         logger.error(f"Failed to save manage config: {e}")

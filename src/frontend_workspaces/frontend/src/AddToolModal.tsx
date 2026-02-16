@@ -12,10 +12,15 @@ interface AddToolModalProps {
 
 const emptyAuth: ToolAuth = { type: "none" };
 
+type McpConnectionMode = "url" | "command";
+
 export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
   const [name, setName] = useState("");
   const [type, setType] = useState<"mcp" | "openapi">("mcp");
+  const [mcpMode, setMcpMode] = useState<McpConnectionMode>("url");
   const [url, setUrl] = useState("");
+  const [command, setCommand] = useState("");
+  const [argsText, setArgsText] = useState("");
   const [description, setDescription] = useState("");
   const [authType, setAuthType] = useState<AuthType>("none");
   const [authKey, setAuthKey] = useState("");
@@ -26,6 +31,10 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
       setName(initial.name);
       setType(initial.type);
       setUrl(initial.url ?? "");
+      const hasCmd = !!(initial.command?.trim());
+      setMcpMode(hasCmd ? "command" : "url");
+      setCommand(initial.command ?? "");
+      setArgsText((initial.args ?? []).join("\n"));
       setDescription(initial.description ?? "");
       const auth = initial.auth ?? emptyAuth;
       setAuthType(auth.type === "none" || !auth.type ? "none" : auth.type);
@@ -39,12 +48,21 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
+    const isCommandMcp = type === "mcp" && mcpMode === "command";
+    const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
     const tool: ToolEntry = {
       name: name.trim() || (type === "mcp" ? "mcp" : "openapi"),
       type,
-      url: url.trim(),
+      url: isCommandMcp ? undefined : url.trim() || undefined,
       description: description.trim() || undefined,
     };
+    if (isCommandMcp) {
+      tool.command = command.trim();
+      tool.args = args.length ? args : undefined;
+      tool.transport = "stdio";
+    } else if (type === "mcp" && url.trim()) {
+      tool.transport = "sse";
+    }
     if (authType !== "none" && (needsKey ? authKey.trim() : true)) {
       tool.auth = {
         type: authType,
@@ -56,7 +74,12 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
     onClose();
   };
 
-  const valid = url.trim().length > 0;
+  const isCommandMcp = type === "mcp" && mcpMode === "command";
+  const valid = type === "openapi"
+    ? url.trim().length > 0
+    : isCommandMcp
+      ? command.trim().length > 0
+      : url.trim().length > 0;
 
   return (
     <div className="tool-modal-overlay" onClick={onClose}>
@@ -86,17 +109,51 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
                 <option value="openapi">OpenAPI service</option>
               </select>
             </div>
-            <div className="tool-modal-field">
-              <label>URL</label>
-              <input
-                type="text"
-                value={url}
-                onChange={(e) => setUrl(e.target.value)}
-                placeholder={type === "mcp" ? "http://localhost:8112/sse" : "http://localhost:8007/openapi.json"}
-                required
-              />
-              <small>{type === "mcp" ? "MCP server SSE or HTTP endpoint" : "OpenAPI spec URL"}</small>
-            </div>
+            {type === "mcp" && (
+              <div className="tool-modal-field">
+                <label>Connection</label>
+                <select value={mcpMode} onChange={(e) => setMcpMode(e.target.value as McpConnectionMode)}>
+                  <option value="url">URL (SSE)</option>
+                  <option value="command">Command (stdio)</option>
+                </select>
+              </div>
+            )}
+            {type === "mcp" && mcpMode === "command" ? (
+              <>
+                <div className="tool-modal-field">
+                  <label>Command</label>
+                  <input
+                    type="text"
+                    value={command}
+                    onChange={(e) => setCommand(e.target.value)}
+                    placeholder="e.g. npx"
+                  />
+                </div>
+                <div className="tool-modal-field">
+                  <label>Args (one per line)</label>
+                  <textarea
+                    value={argsText}
+                    onChange={(e) => setArgsText(e.target.value)}
+                    placeholder={"-y\n@modelcontextprotocol/server-filesystem\n./cuga_workspace"}
+                    rows={4}
+                    className="tool-modal-args"
+                  />
+                  <small>One argument per line (e.g. -y, package name, working directory)</small>
+                </div>
+              </>
+            ) : (
+              <div className="tool-modal-field">
+                <label>URL</label>
+                <input
+                  type="text"
+                  value={url}
+                  onChange={(e) => setUrl(e.target.value)}
+                  placeholder={type === "mcp" ? "http://localhost:8112/sse" : "http://localhost:8007/openapi.json"}
+                  required={type === "openapi" || mcpMode === "url"}
+                />
+                <small>{type === "mcp" ? "MCP server SSE or HTTP endpoint" : "OpenAPI spec URL"}</small>
+              </div>
+            )}
             <div className="tool-modal-field">
               <label>Description (optional)</label>
               <textarea

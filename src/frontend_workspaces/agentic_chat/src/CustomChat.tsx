@@ -35,9 +35,11 @@ interface CustomChatProps {
   onChatStarted?: (started: boolean) => void;
   onThreadIdChange?: (threadId: string) => void;
   initialChatStarted?: boolean;
+  /** When true, always show chat view (no welcome screen). Used on manage page. */
+  forceAdvancedMode?: boolean;
 }
 
-export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false }: CustomChatProps) {
+export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false }: CustomChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -54,16 +56,16 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
   const threadIdRef = useRef<string>("");
   const [showExampleUtterances, setShowExampleUtterances] = useState(true);
   const [hasStartedChat, setHasStartedChat] = useState(initialChatStarted);
+  const effectiveHasStartedChat = forceAdvancedMode || hasStartedChat;
   const [followupSuggestions, setFollowupSuggestions] = useState<string[]>([]);
   const [lastUserQuery, setLastUserQuery] = useState<string>("");
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set(['contacts.txt']));
 
-  // Notify parent when chat starts
   useEffect(() => {
     if (onChatStarted) {
-      onChatStarted(hasStartedChat);
+      onChatStarted(effectiveHasStartedChat);
     }
-  }, [hasStartedChat, onChatStarted]);
+  }, [effectiveHasStartedChat, onChatStarted]);
 
   // Initialize threadId on mount
   useEffect(() => {
@@ -348,16 +350,13 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
       console.error("Error calling reset endpoint:", error);
     }
 
-    // Clear messages and reset to welcome screen
     setMessages([]);
-    setHasStartedChat(false);
+    if (!forceAdvancedMode) setHasStartedChat(false);
     setIsProcessing(false);
     setInputValue("");
     setShowExampleUtterances(true);
     setFollowupSuggestions([]);
     setLastUserQuery("");
-    
-    // Create a fresh chat instance
     currentChatInstanceRef.current = createChatInstance();
   };
 
@@ -743,7 +742,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
 
   return (
     <div className="custom-chat-container">
-      {hasStartedChat && (
+      {effectiveHasStartedChat && (
         <div className="custom-chat-header">
           <div className="chat-header-left">
             <Bot size={20} />
@@ -760,7 +759,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
         </div>
       )}
 
-      {!hasStartedChat ? (
+      {!effectiveHasStartedChat ? (
         <div className="welcome-screen">
           {/* Main Navigation Header - Welcome Mode Only */}
           <header className="main-nav-header">
@@ -919,7 +918,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
               </div>
 
               <div className="welcome-input-wrapper">
-                {!hasStartedChat && (
+                {!effectiveHasStartedChat && (
                   <div className="welcome-logo input-logo">
                     <img
                       src="https://avatars.githubusercontent.com/u/230847519?s=100&v=4"
@@ -1031,6 +1030,12 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
         </div>
       ) : (
         <div className="custom-chat-messages">
+          {messages.length === 0 && (
+            <div className="chat-empty-state">
+              <p className="chat-empty-state-title">No messages yet</p>
+              <p className="chat-empty-state-hint">Send a message below to start the conversation.</p>
+            </div>
+          )}
           {messages.map((message) => (
             <div
               key={message.id}
@@ -1068,7 +1073,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
       )}
 
       {/* Input area only shown when chat has started */}
-      {hasStartedChat && (
+      {effectiveHasStartedChat && (
         <div className="custom-chat-input-area">
           {/* Followup suggestions */}
           {followupSuggestions.length > 0 && !isProcessing && (
@@ -1079,7 +1084,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
           )}
 
           <div className="chat-input-wrapper">
-            {!hasStartedChat && (
+            {!effectiveHasStartedChat && (
               <div className="welcome-logo input-logo">
                 <img
                   src="https://avatars.githubusercontent.com/u/230847519?s=100&v=4"
@@ -1154,7 +1159,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
           )}
 
           {/* Show feature cards only on welcome screen, AFTER input */}
-          {!hasStartedChat && (
+          {!effectiveHasStartedChat && (
             <div className="welcome-features-section">
               <div className="section-header">
                 <h2 className="section-title">Key Capabilities</h2>

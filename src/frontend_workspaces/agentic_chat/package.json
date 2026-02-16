@@ -17,6 +17,10 @@
     "./PoliciesConfig": {
       "import": "./src/PoliciesConfig.tsx",
       "default": "./src/PoliciesConfig.tsx"
+    },
+    "./VariablesSidebar": {
+      "import": "./src/VariablesSidebar.tsx",
+      "default": "./src/VariablesSidebar.tsx"
     }
   },
   "scripts": {
