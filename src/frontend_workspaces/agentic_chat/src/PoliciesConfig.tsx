@@ -96,6 +96,8 @@ interface PoliciesConfigData {
 
 interface PoliciesConfigProps {
   onClose: () => void;
+  /** When true (e.g. Manage page), GET/POST use X-Use-Draft header so backend uses draft policy collection. */
+  draftMode?: boolean;
 }
 
 interface ToolInfo {
@@ -412,7 +414,7 @@ function TagInput({ values, onChange, placeholder, disabled }: TagInputProps) {
   );
 }
 
-export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
+export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesConfigProps) {
   const [config, setConfig] = useState<PoliciesConfigData>({
     enablePolicies: true,
     policies: [],
@@ -436,7 +438,9 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
     setIsLoading(true);
     try {
       console.log("[PoliciesConfig] Loading policies from server...");
-      const response = await fetch("/api/config/policies");
+      const response = await fetch("/api/config/policies", {
+        headers: draftMode ? { "X-Use-Draft": "true" } : {},
+      });
       console.log("[PoliciesConfig] Response status:", response.status);
 
       if (response.ok) {
@@ -615,7 +619,10 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
       });
       const response = await fetch("/api/config/policies", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(draftMode ? { "X-Use-Draft": "true" } : {}),
+        },
         body: JSON.stringify(normalizedConfig),
       });
 

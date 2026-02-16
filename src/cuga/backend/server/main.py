@@ -49,7 +49,7 @@ from cuga.config import (
     LOGGING_DIR,
     TRACES_DIR,
 )
-
+from cuga.backend.server import manage_routes
 
 try:
     from langfuse.langchain import CallbackHandler
@@ -165,8 +165,19 @@ class AppState:
             )
 
 
+class DraftAppState:
+    """State for the draft agent (Manage chat). Isolated from published app_state."""
+
+    def __init__(self):
+        self.tools_include_by_app: Optional[Dict[str, List[str]]] = None
+        self.tools_include_version: int = 0
+        self.agent: Optional[DynamicAgentGraph] = None
+        self.policy_system: Optional[Any] = None
+
+
 # Create a single instance of the AppState class to be used throughout the application.
 app_state = AppState()
+draft_app_state = DraftAppState()
 
 
 class ChatRequest(BaseModel):
@@ -388,6 +399,7 @@ async def lifespan(app: FastAPI):
         else None
     )
     from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
+    from cuga.backend.server.config_store import load_config, load_draft
 
     def _get_include_by_app():
         return (
@@ -403,6 +415,63 @@ async def lifespan(app: FastAPI):
         tool_provider=tool_provider,
     )
     await app_state.agent.build_graph()
+
+    draft_config = load_draft()
+    if draft_config is None:
+        draft_config, _ = load_config(None) or (None, None)
+    if draft_config:
+        tools_list = (draft_config or {}).get("tools") or []
+        draft_app_state.tools_include_by_app = {
+            t["name"]: t["include"]
+            for t in tools_list
+            if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
+        } or None
+        draft_app_state.tools_include_version = 0
+    else:
+        draft_app_state.tools_include_by_app = getattr(app_state, "tools_include_by_app", None)
+        draft_app_state.tools_include_version = getattr(app_state, "tools_include_version", 0)
+
+    def _get_draft_include_by_app():
+        return (
+            getattr(draft_app_state, "tools_include_by_app", None),
+            getattr(draft_app_state, "tools_include_version", 0),
+        )
+
+    if settings.policy.enabled and app_state.policy_system:
+        from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+        from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+
+        policy_config = getattr(settings, "policy", None)
+        base_name = policy_config.collection_name if policy_config else "cuga_policies"
+        draft_collection = f"{base_name}_draft"
+        draft_storage = PolicyStorage(
+            collection_name=draft_collection,
+            host=getattr(policy_config, "milvus_host", "localhost") if policy_config else "localhost",
+            port=getattr(policy_config, "milvus_port", "19530") if policy_config else "19530",
+            milvus_uri=getattr(policy_config, "milvus_uri", None) if policy_config else None,
+            embedding_provider=os.getenv("POLICY_EMBEDDING_PROVIDER")
+            or getattr(policy_config, "embedding_provider", "auto")
+            if policy_config
+            else "auto",
+            embedding_model=os.getenv("POLICY_EMBEDDING_MODEL")
+            or getattr(policy_config, "embedding_model", None)
+            if policy_config
+            else None,
+        )
+        await draft_storage.initialize_async()
+        draft_app_state.policy_system = PolicyConfigurable(storage=draft_storage)
+        await draft_app_state.policy_system.initialize()
+        logger.info("Draft policy system initialized (collection: %s)", draft_collection)
+
+    draft_tool_provider = CombinedToolProvider(get_include_by_app=_get_draft_include_by_app)
+    draft_policy = getattr(draft_app_state, "policy_system", None) or app_state.policy_system
+    draft_app_state.agent = DynamicAgentGraph(
+        None,
+        langfuse_handler=langfuse_handler,
+        policy_system=draft_policy,
+        tool_provider=draft_tool_provider,
+    )
+    await draft_app_state.agent.build_graph()
 
     logger.info("Application finished starting up...")
     url = f"http://localhost:{settings.server_ports.demo}?t={random_id_with_timestamp()}"
@@ -541,8 +610,12 @@ async def setup_page_info(state: AgentState, env: ExtensionEnv | BrowserEnvGymAs
     state.current_app_description = f"web application for '{title}' and url '{url_app_name}'"
 
 
-async def event_stream(query: str, api_mode=False, resume=None, thread_id: str = None):
-    """Handles the main agent event stream."""
+async def event_stream(query: str, api_mode=False, resume=None, thread_id: str = None, agent=None):
+    """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
+    run_agent = agent if agent is not None else app_state.agent
+    if not run_agent or not run_agent.graph:
+        yield StreamEvent(name="Error", data="Agent not available.").format()
+        return
     # Create or get cancellation event for this thread
     if thread_id:
         if thread_id not in app_state.stop_events:
@@ -565,7 +638,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
             try:
-                latest_state_values = app_state.agent.graph.get_state(
+                latest_state_values = run_agent.graph.get_state(
                     {"configurable": {"thread_id": thread_id}}
                 ).values
                 if latest_state_values:
@@ -600,9 +673,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            latest_state_values = app_state.agent.graph.get_state(
-                {"configurable": {"thread_id": thread_id}}
-            ).values
+            latest_state_values = run_agent.graph.get_state({"configurable": {"thread_id": thread_id}}).values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
@@ -635,7 +706,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
         print("Note: Trace ID will be available after the first LLM operation")
 
     agent_loop_obj = AgentLoop(
-        graph=app_state.agent.graph,
+        graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
         thread_id=thread_id,
         tracker=local_tracker,
@@ -677,13 +748,13 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                 if isinstance(event, AgentLoopAnswer):
                     if event.flow_generalized:
                         await manage_save_reuse_server()
-                        await app_state.agent.chat.chat_agent.cleanup()
-                        await app_state.agent.chat.chat_agent.setup()
+                        await run_agent.chat.chat_agent.cleanup()
+                        await run_agent.chat.chat_agent.setup()
 
                     if event.interrupt and not event.has_tools:
                         # Update local state from graph
                         if thread_id:
-                            latest_state_values = app_state.agent.graph.get_state(
+                            latest_state_values = run_agent.graph.get_state(
                                 {"configurable": {"thread_id": thread_id}}
                             ).values
                             if latest_state_values:
@@ -711,7 +782,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                         variables_metadata = {}
                         active_policies = []
                         if thread_id:
-                            latest_state_values = app_state.agent.graph.get_state(
+                            latest_state_values = run_agent.graph.get_state(
                                 {"configurable": {"thread_id": thread_id}}
                             ).values
 
@@ -772,7 +843,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                         ).format(app_state.output_format, thread_id=thread_id)
 
                         if thread_id:
-                            latest_state_values = app_state.agent.graph.get_state(
+                            latest_state_values = run_agent.graph.get_state(
                                 {"configurable": {"thread_id": thread_id}}
                             ).values
                             if latest_state_values:
@@ -789,7 +860,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                         return
                     elif event.has_tools:
                         if thread_id:
-                            latest_state_values = app_state.agent.graph.get_state(
+                            latest_state_values = run_agent.graph.get_state(
                                 {"configurable": {"thread_id": thread_id}}
                             ).values
                             if latest_state_values:
@@ -825,7 +896,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                             local_state.url = app_state.env.get_url()
 
                         if thread_id and local_state:
-                            app_state.agent.graph.update_state(
+                            run_agent.graph.update_state(
                                 {"configurable": {"thread_id": thread_id}}, local_state.model_dump()
                             )
                         agent_stream_gen = agent_loop_obj.run_stream(state=None)
@@ -833,7 +904,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                 else:
                     logger.debug("Yield {}".format(event))
                     if thread_id:
-                        latest_state_values = app_state.agent.graph.get_state(
+                        latest_state_values = run_agent.graph.get_state(
                             {"configurable": {"thread_id": thread_id}}
                         ).values
                         if latest_state_values:
@@ -866,6 +937,8 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
 
 
 app = FastAPI(lifespan=lifespan)
+app.state.app_state = app_state
+app.state.draft_app_state = draft_app_state
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -873,6 +946,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+app.include_router(manage_routes.router)
 
 if getattr(settings.advanced_features, "use_extension", False):
     print(settings.advanced_features.use_extension)
@@ -962,10 +1037,8 @@ if getattr(settings.advanced_features, "use_extension", False):
 
 @app.post("/stream")
 async def stream(request: Request):
-    """Endpoint to start the agent stream."""
+    """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     query = await get_query(request)
-
-    # Get thread_id from header or generate new one
     thread_id = request.headers.get("X-Thread-ID")
     if not thread_id:
         thread_id = str(uuid.uuid4())
@@ -973,12 +1046,20 @@ async def stream(request: Request):
     else:
         logger.info(f"Using provided thread_id: {thread_id}")
 
+    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+    run_agent = None
+    if use_draft:
+        draft_state = getattr(request.app.state, "draft_app_state", None)
+        if draft_state and getattr(draft_state, "agent", None):
+            run_agent = draft_state.agent
+
     return StreamingResponse(
         event_stream(
             query if isinstance(query, str) else None,
             api_mode=settings.advanced_features.mode == "api",
             resume=query if isinstance(query, ActionResponse) else None,
             thread_id=thread_id,
+            agent=run_agent,
         ),
         media_type="text/event-stream",
     )
@@ -1217,21 +1298,43 @@ async def save_memory_config(request: Request):
 
 
 @app.get("/api/config/policies")
-async def get_policies_config():
-    """Endpoint to retrieve policies configuration."""
-    # Return early if policies are disabled
+async def get_policies_config(request: Request):
+    """Endpoint to retrieve policies configuration. Use draft collection when X-Use-Draft header is set."""
     if not settings.policy.enabled:
         return JSONResponse({"enablePolicies": False, "policies": []})
 
+    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
     try:
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 
-        # Use the policy system's storage if available, otherwise create a new one
-        if app_state.policy_system and app_state.policy_system.storage:
+        need_disconnect = False
+        if use_draft:
+            draft_state = getattr(request.app.state, "draft_app_state", None)
+            if (
+                draft_state
+                and getattr(draft_state, "policy_system", None)
+                and draft_state.policy_system.storage
+            ):
+                storage = draft_state.policy_system.storage
+                logger.info("Using draft policy storage for GET")
+            else:
+                need_disconnect = True
+                policy_config = getattr(settings, "policy", None)
+                base_name = policy_config.collection_name if policy_config else "cuga_policies"
+                draft_collection = f"{base_name}_draft"
+                storage = PolicyStorage(
+                    collection_name=draft_collection,
+                    host=getattr(policy_config, "milvus_host", "localhost") if policy_config else "localhost",
+                    port=getattr(policy_config, "milvus_port", "19530") if policy_config else "19530",
+                    milvus_uri=getattr(policy_config, "milvus_uri", None) if policy_config else None,
+                )
+                await storage.initialize_async()
+                logger.info(f"Created draft storage for GET (collection: {draft_collection})")
+        elif app_state.policy_system and app_state.policy_system.storage:
             storage = app_state.policy_system.storage
             logger.info("Using existing policy system storage for GET")
         else:
-            # Get policy configuration from settings.toml
+            need_disconnect = True
             collection_name = settings.policy.collection_name
             milvus_host = settings.policy.milvus_host
             milvus_port = settings.policy.milvus_port
@@ -1248,10 +1351,6 @@ async def get_policies_config():
 
         # List all policies (this IS async)
         policies_objs = await storage.list_policies(enabled_only=False)
-
-        # Don't disconnect if using the policy system's storage
-        if not (app_state.policy_system and app_state.policy_system.storage):
-            storage.disconnect()
 
         # Convert Policy objects to frontend format
         policies = []
@@ -1294,6 +1393,9 @@ async def get_policies_config():
 
             policies.append(frontend_policy)
 
+        if need_disconnect:
+            storage.disconnect()
+
         logger.info(f"Loaded {len(policies)} policies from storage")
         return JSONResponse({"enablePolicies": settings.policy.enabled, "policies": policies})
     except Exception as e:
@@ -1306,13 +1408,14 @@ async def get_policies_config():
 
 @app.post("/api/config/policies")
 async def save_policies_config(request: Request):
-    """Endpoint to save policies configuration."""
+    """Endpoint to save policies configuration. Use draft collection when X-Use-Draft header is set."""
     if not settings.policy.enabled:
         return JSONResponse(
             {"status": "error", "message": "Policy system is disabled in settings"},
             status_code=403,
         )
 
+    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
     try:
         from cuga.backend.cuga_graph.policy.storage import PolicyStorage
         from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
@@ -1321,43 +1424,84 @@ async def save_policies_config(request: Request):
         logger.info(f"Received policy save request with {len(data.get('policies', []))} policies")
         policies = data.get("policies", [])
 
-        if app_state.policy_system and app_state.policy_system.storage:
-            storage = app_state.policy_system.storage
-            logger.info("Using existing policy system storage")
-        else:
-            collection_name = settings.policy.collection_name
-            milvus_host = settings.policy.milvus_host
-            milvus_port = settings.policy.milvus_port
-            milvus_uri = settings.policy.milvus_uri
-            embedding_provider = os.getenv("POLICY_EMBEDDING_PROVIDER") or settings.policy.embedding_provider
-            embedding_model = os.getenv("POLICY_EMBEDDING_MODEL") or settings.policy.embedding_model
-            storage = PolicyStorage(
-                collection_name=collection_name,
-                host=milvus_host,
-                port=milvus_port,
-                milvus_uri=milvus_uri,
-                embedding_provider=embedding_provider,
-                embedding_model=embedding_model,
+        if use_draft:
+            draft_state = getattr(request.app.state, "draft_app_state", None)
+            draft_need_disconnect = False
+            if (
+                draft_state
+                and getattr(draft_state, "policy_system", None)
+                and draft_state.policy_system.storage
+            ):
+                storage = draft_state.policy_system.storage
+                logger.info("Saving to draft policy storage")
+            else:
+                draft_need_disconnect = True
+                policy_config = getattr(settings, "policy", None)
+                base_name = policy_config.collection_name if policy_config else "cuga_policies"
+                draft_collection = f"{base_name}_draft"
+                storage = PolicyStorage(
+                    collection_name=draft_collection,
+                    host=getattr(policy_config, "milvus_host", "localhost") if policy_config else "localhost",
+                    port=getattr(policy_config, "milvus_port", "19530") if policy_config else "19530",
+                    milvus_uri=getattr(policy_config, "milvus_uri", None) if policy_config else None,
+                    embedding_provider=os.getenv("POLICY_EMBEDDING_PROVIDER")
+                    or getattr(policy_config, "embedding_provider", "auto")
+                    if policy_config
+                    else "auto",
+                    embedding_model=os.getenv("POLICY_EMBEDDING_MODEL")
+                    or getattr(policy_config, "embedding_model", None)
+                    if policy_config
+                    else None,
+                )
+                await storage.initialize_async()
+                logger.info(f"Created draft storage for POST (collection: {draft_collection})")
+            await apply_policies_data_to_storage(
+                storage,
+                policies,
+                clear_existing=True,
+                filesystem_sync=None,
             )
-            await storage.initialize_async()
-            logger.info(
-                f"Created new storage instance from settings (collection: {collection_name}, "
-                f"embedding: {embedding_provider}, dim: {storage.embedding_dim})"
+            if draft_need_disconnect:
+                storage.disconnect()
+        else:
+            if app_state.policy_system and app_state.policy_system.storage:
+                storage = app_state.policy_system.storage
+                logger.info("Using existing policy system storage")
+            else:
+                collection_name = settings.policy.collection_name
+                milvus_host = settings.policy.milvus_host
+                milvus_port = settings.policy.milvus_port
+                milvus_uri = settings.policy.milvus_uri
+                embedding_provider = (
+                    os.getenv("POLICY_EMBEDDING_PROVIDER") or settings.policy.embedding_provider
+                )
+                embedding_model = os.getenv("POLICY_EMBEDDING_MODEL") or settings.policy.embedding_model
+                storage = PolicyStorage(
+                    collection_name=collection_name,
+                    host=milvus_host,
+                    port=milvus_port,
+                    milvus_uri=milvus_uri,
+                    embedding_provider=embedding_provider,
+                    embedding_model=embedding_model,
+                )
+                await storage.initialize_async()
+                logger.info(
+                    f"Created new storage instance from settings (collection: {collection_name}, "
+                    f"embedding: {embedding_provider}, dim: {storage.embedding_dim})"
+                )
+
+            await apply_policies_data_to_storage(
+                storage,
+                policies,
+                clear_existing=True,
+                filesystem_sync=app_state.policy_filesystem_sync,
             )
 
-        await apply_policies_data_to_storage(
-            storage,
-            policies,
-            clear_existing=True,
-            filesystem_sync=app_state.policy_filesystem_sync,
-        )
-
-        # Don't disconnect if using the policy system's storage
-        if not (app_state.policy_system and app_state.policy_system.storage):
-            storage.disconnect()
-            logger.info("Storage disconnected")
-        else:
-            logger.info("Keeping policy system storage connected")
+            if not (app_state.policy_system and app_state.policy_system.storage):
+                storage.disconnect()
+                logger.info("Storage disconnected")
+            else:
+                logger.info("Keeping policy system storage connected")
 
         logger.info(f"Policies configuration saved: {len(policies)} policies")
         return JSONResponse({"status": "success", "message": f"Saved {len(policies)} policies successfully"})
@@ -1782,112 +1926,6 @@ async def get_agent_context():
             "config_version": getattr(app_state, "config_version", None),
         }
     )
-
-
-@app.get("/api/manage/config")
-async def get_manage_config(version: Optional[int] = None):
-    """Get agent config (latest or by version). Merges command/args/transport from managed MCP YAML for MCP tools that lack them."""
-    try:
-        from cuga.backend.server.config_store import load_config
-        from cuga.backend.server.managed_mcp import get_managed_mcp_path, read_managed_mcp_servers
-
-        config, ver = load_config(version)
-        if config is None:
-            return JSONResponse({"config": {}})
-        tools_list = config.get("tools") or []
-        if tools_list:
-            yaml_servers = read_managed_mcp_servers(get_managed_mcp_path())
-            for t in tools_list:
-                if (t.get("type") or "mcp").lower() != "mcp":
-                    continue
-                if t.get("command"):
-                    continue
-                name = t.get("name")
-                if not name or name not in yaml_servers:
-                    continue
-                existing = yaml_servers[name]
-                if isinstance(existing, dict):
-                    for key in ("command", "args", "transport", "description", "env"):
-                        if key in existing and key not in t:
-                            t[key] = existing[key]
-        return JSONResponse({"config": config, "version": ver})
-    except Exception as e:
-        logger.error(f"Failed to load manage config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/manage/config")
-async def save_manage_config(request: Request):
-    """Save agent config as a new version."""
-    try:
-        from cuga.backend.server.config_store import save_config
-        from cuga.backend.server.managed_mcp import get_managed_mcp_path, write_managed_mcp_yaml
-
-        data = await request.json()
-        config = data.get("config", data)
-        ver = save_config(config)
-        app_state.config_version = ver
-        tools_list = (config or {}).get("tools") or []
-        app_state.tools_include_by_app = {
-            t["name"]: t["include"]
-            for t in tools_list
-            if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
-        } or None
-        app_state.tools_include_version = ver or 0
-        llm_cfg = (config or {}).get("llm") or {}
-        if isinstance(llm_cfg, dict):
-            if "model" in llm_cfg and llm_cfg["model"]:
-                os.environ["MODEL_NAME"] = str(llm_cfg["model"])
-            if "temperature" in llm_cfg and llm_cfg["temperature"] is not None:
-                os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
-        raw_policies = (config or {}).get("policies")
-        policies_list = (
-            raw_policies.get("policies", [])
-            if isinstance(raw_policies, dict) and "policies" in raw_policies
-            else raw_policies
-            if isinstance(raw_policies, list)
-            else []
-        )
-        if raw_policies is not None and app_state.policy_system and app_state.policy_system.storage:
-            try:
-                from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
-
-                await apply_policies_data_to_storage(
-                    app_state.policy_system.storage,
-                    policies_list,
-                    clear_existing=True,
-                    filesystem_sync=app_state.policy_filesystem_sync,
-                )
-                await app_state.policy_system.initialize()
-                logger.info("Applied %s policies from saved config", len(policies_list))
-            except Exception as policy_err:
-                logger.warning("Failed to apply policies from config: %s", policy_err)
-        if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
-            try:
-                write_managed_mcp_yaml(config, get_managed_mcp_path())
-                registry_url = get_registry_base_url()
-                async with httpx.AsyncClient() as client:
-                    r = await client.post(f"{registry_url}/reload", timeout=10.0)
-                    r.raise_for_status()
-            except Exception as reload_err:
-                logger.warning("Manager mode: write YAML/reload failed: %s", reload_err)
-        return JSONResponse({"status": "success", "version": ver})
-    except Exception as e:
-        logger.error(f"Failed to save manage config: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/manage/config/history")
-async def get_manage_config_history():
-    """List config versions (newest first)."""
-    try:
-        from cuga.backend.server.config_store import list_versions
-
-        versions = list_versions()
-        return JSONResponse({"versions": versions})
-    except Exception as e:
-        logger.error(f"Failed to list config history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/workspace/tree")

@@ -59,6 +59,7 @@ export default {
     alias: {
       react: reactPath,
       "react-dom": reactDomPath,
+      "@ibm/plex": path.resolve(__dirname, "node_modules/@ibm/plex"),
       "agentic_chat/CustomChat": path.resolve(__dirname, "../agentic_chat/src/CustomChat.tsx"),
       "agentic_chat/PoliciesConfig": path.resolve(__dirname, "../agentic_chat/src/PoliciesConfig.tsx"),
     },
@@ -134,11 +135,12 @@ export default {
         use: ["style-loader", "css-loader"],
       },
       {
-        test: /\.(woff|woff2|eot|ttf|otf)$/i,
-        type: 'asset/resource',
-        generator: {
-          emit: false,
-        },
+        test: /\.scss$/,
+        use: [
+          "style-loader",
+          { loader: "css-loader", options: { url: false } },
+          "sass-loader",
+        ],
       },
     ],
   },

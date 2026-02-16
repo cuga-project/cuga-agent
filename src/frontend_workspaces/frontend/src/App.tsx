@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { App } from "agentic_chat";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
+import "./carbon.scss";
 import "./global.css";
 
 function RouteRoot({ children }: { children: React.ReactNode }) {

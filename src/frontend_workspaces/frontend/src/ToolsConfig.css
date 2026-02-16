@@ -378,7 +378,8 @@
   border-bottom: none;
 }
 
-.tools-config-tools-list-item label {
+.tools-config-tools-list-item label,
+.tools-config-tools-list-item .cds--checkbox-label {
   display: flex;
   align-items: flex-start;
   gap: 8px;
@@ -386,7 +387,8 @@
   font-size: 13px;
 }
 
-.tools-config-tools-list-item input[type="checkbox"] {
+.tools-config-tools-list-item input[type="checkbox"],
+.tools-config-tools-list-item .cds--checkbox-input {
   margin-top: 3px;
   flex-shrink: 0;
 }

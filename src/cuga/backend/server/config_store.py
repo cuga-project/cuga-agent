@@ -26,6 +26,15 @@ def _get_conn() -> sqlite3.Connection:
         )
         """
     )
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS agent_config_draft (
+            id INTEGER PRIMARY KEY,
+            config_json TEXT NOT NULL,
+            updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+        )
+        """
+    )
     conn.commit()
     return conn
 
@@ -83,5 +92,28 @@ def get_latest_version() -> tuple[int | None, str | None]:
         if not row:
             return None, None
         return row["version"], row["created_at"]
+    finally:
+        conn.close()
+
+
+def save_draft(config: dict[str, Any]) -> None:
+    conn = _get_conn()
+    try:
+        conn.execute(
+            "INSERT OR REPLACE INTO agent_config_draft (id, config_json, updated_at) VALUES (1, ?, datetime('now'))",
+            (json.dumps(config),),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_draft() -> dict[str, Any] | None:
+    conn = _get_conn()
+    try:
+        row = conn.execute("SELECT config_json FROM agent_config_draft WHERE id = 1").fetchone()
+        if not row:
+            return None
+        return json.loads(row["config_json"])
     finally:
         conn.close()

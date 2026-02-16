@@ -1,6 +1,26 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useParams, useLocation } from "react-router-dom";
-import { Save, History, Key, Flag, Trash2, Shield, FileJson, X, Upload } from "lucide-react";
+import {
+  Button,
+  TextInput,
+  FormGroup,
+  Checkbox,
+  NumberInput,
+  Tag,
+  ComposedModal,
+  ModalHeader,
+  ModalBody,
+} from "@carbon/react";
+import {
+  Save,
+  Time as HistoryIcon,
+  Key as KeyIcon,
+  Flag as FlagIcon,
+  Security as ShieldIcon,
+  Document as DocumentIcon,
+  Close,
+  Upload,
+} from "@carbon/icons-react";
 import { CustomChat } from "agentic_chat/CustomChat";
 import PoliciesConfig from "agentic_chat/PoliciesConfig";
 import VariablesSidebar from "agentic_chat/VariablesSidebar";
@@ -86,6 +106,9 @@ export function ManagePage() {
   const [manageVariablesHistory, setManageVariablesHistory] = useState<Array<{ id: string; title: string; timestamp: number; variables: Record<string, any> }>>([]);
   const [manageSelectedAnswerId, setManageSelectedAnswerId] = useState<string | null>(null);
   const [manageVariablesPanelOpen, setManageVariablesPanelOpen] = useState(false);
+  const [currentVersion, setCurrentVersion] = useState<number | "draft" | null>(null);
+  const skipDraftSaveRef = useRef(true);
+  const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   const handleManageVariablesUpdate = useCallback((variables: Record<string, any>, history: Array<any>) => {
     setManageVariables(variables);
@@ -130,17 +153,37 @@ export function ManagePage() {
 
   const loadLatest = useCallback(async () => {
     try {
-      const [configRes, policiesRes, toolsListRes] = await Promise.all([
-        fetch("/api/manage/config"),
+      skipDraftSaveRef.current = true;
+      const [draftRes, policiesRes, toolsListRes] = await Promise.all([
+        fetch("/api/manage/config?draft=1"),
         fetch("/api/config/policies"),
         fetch("/api/tools/list"),
       ]);
       const out = { ...DEFAULT_CONFIG };
-      if (configRes.ok) {
-        const data = await configRes.json();
-        Object.assign(out, data.config);
-        if (Array.isArray(out.tools)) {
-          out.tools = normalizeTools(out.tools);
+      let version: number | "draft" | null = null;
+      if (draftRes.ok) {
+        const data = await draftRes.json();
+        if (data.version === "draft" || (data.config && Object.keys(data.config).length > 0)) {
+          if (data.config) {
+            Object.assign(out, data.config);
+            if (Array.isArray(out.tools)) {
+              out.tools = normalizeTools(out.tools);
+            }
+          }
+          version = data.version === "draft" ? "draft" : (data.version ?? null);
+        }
+      }
+      if (version === null) {
+        const publishedRes = await fetch("/api/manage/config");
+        if (publishedRes.ok) {
+          const data = await publishedRes.json();
+          if (data.config && Object.keys(data.config).length > 0) {
+            Object.assign(out, data.config);
+            if (Array.isArray(out.tools)) {
+              out.tools = normalizeTools(out.tools);
+            }
+          }
+          version = typeof data.version === "number" ? data.version : null;
         }
       }
       if (policiesRes.ok) {
@@ -161,6 +204,7 @@ export function ManagePage() {
         setConnectedTools([]);
       }
       setConfig(out);
+      setCurrentVersion(version);
       setLoadError(null);
     } catch (e) {
       setLoadError(e instanceof Error ? e.message : "Failed to load config");
@@ -184,6 +228,25 @@ export function ManagePage() {
     loadHistory();
   }, [loadLatest, loadHistory]);
 
+  useEffect(() => {
+    if (skipDraftSaveRef.current) {
+      skipDraftSaveRef.current = false;
+      return;
+    }
+    const t = setTimeout(() => {
+      draftSaveTimeoutRef.current = null;
+      fetch("/api/manage/config/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config }),
+      }).then(() => setCurrentVersion("draft")).catch(() => {});
+    }, 500);
+    draftSaveTimeoutRef.current = t;
+    return () => {
+      if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current);
+    };
+  }, [config]);
+
   const loadVersion = async (version: number) => {
     try {
       const res = await fetch(`/api/manage/config?version=${version}`);
@@ -194,24 +257,13 @@ export function ManagePage() {
           next.tools = normalizeTools(next.tools);
         }
         setConfig(next);
+        setCurrentVersion(version);
       }
     } catch (e) {
       setSaveStatus("error");
       setTimeout(() => setSaveStatus("idle"), 2000);
     }
   };
-
-  const refetchPolicies = useCallback(async () => {
-    try {
-      const res = await fetch("/api/config/policies");
-      if (res.ok) {
-        const data = await res.json();
-        setConfig((c) => ({ ...c, policies: { enablePolicies: data.enablePolicies ?? true, policies: data.policies ?? [] } }));
-      }
-    } catch {
-      // ignore
-    }
-  }, []);
 
   const saveConfig = async () => {
     setSaveStatus("saving");
@@ -228,7 +280,9 @@ export function ManagePage() {
         body: JSON.stringify({ config: toSave }),
       });
       if (res.ok) {
+        const data = await res.json();
         setConfig(toSave);
+        setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
         setSaveStatus("success");
         loadHistory();
         setTimeout(() => setSaveStatus("idle"), 2000);
@@ -329,7 +383,7 @@ export function ManagePage() {
   return (
     <div className="manage-page">
       <header className="manage-header">
-        <h1>{agentId ? `${agentId} — configuration` : "Agent configuration"}</h1>
+        <h1 className="manage-header-title">{agentId ? `${agentId} — configuration` : "Agent configuration"}</h1>
         <div className="manage-header-links">
           <Link to={`/manage${search}`}>← Agents</Link>
           <Link to={search ? `/${search}` : "/"}>Chat</Link>
@@ -341,50 +395,55 @@ export function ManagePage() {
           <div className="manage-config">
             <div className="manage-config-grid">
               <section className="manage-section">
-                <h3>
-                  <Key size={14} style={{ verticalAlign: "middle", marginRight: 6 }} />
+                <h3 className="manage-section-title">
+                  <KeyIcon size={16} className="manage-section-icon" />
                   LLM
                 </h3>
                 <div className="manage-section-grid">
-                  <div className="manage-form-group">
-                    <label>API Key</label>
-                    <input
+                  <FormGroup legendText="">
+                    <TextInput
                       type="password"
+                      id="llm-api-key"
+                      labelText="API Key"
                       value={llm.api_key ?? ""}
                       onChange={(e) => updateLlm("api_key", e.target.value)}
                       placeholder="sk-..."
                     />
-                  </div>
-                  <div className="manage-form-group">
-                    <label>Base URL</label>
-                    <input
+                  </FormGroup>
+                  <FormGroup legendText="">
+                    <TextInput
                       type="text"
+                      id="llm-base-url"
+                      labelText="Base URL"
                       value={llm.base_url ?? ""}
                       onChange={(e) => updateLlm("base_url", e.target.value)}
                       placeholder="https://api.openai.com/v1"
                     />
-                    <small>Optional; leave empty for default</small>
-                  </div>
-                  <div className="manage-form-group">
-                    <label>Model</label>
-                    <input
+                    <span className="manage-helper">Optional; leave empty for default</span>
+                  </FormGroup>
+                  <FormGroup legendText="">
+                    <TextInput
                       type="text"
+                      id="llm-model"
+                      labelText="Model"
                       value={llm.model ?? ""}
                       onChange={(e) => updateLlm("model", e.target.value)}
                       placeholder="gpt-4o"
                     />
-                  </div>
-                  <div className="manage-form-group">
-                    <label>Temperature</label>
-                    <input
-                      type="number"
+                  </FormGroup>
+                  <FormGroup legendText="" className="manage-section-grid-span-2">
+                    <NumberInput
+                      id="llm-temperature"
+                      label="Temperature"
                       min={0}
                       max={2}
                       step={0.1}
                       value={llm.temperature ?? 0.7}
-                      onChange={(e) => updateLlmTemperature(parseFloat(e.target.value) || 0.7)}
+                      onChange={(_e: unknown, { value }: { value: number | string }) =>
+                        updateLlmTemperature(Number(value) || 0.7)
+                      }
                     />
-                  </div>
+                  </FormGroup>
                 </div>
               </section>
 
@@ -396,45 +455,45 @@ export function ManagePage() {
               />
 
               <section className="manage-section">
-                <h3>
-                  <Flag size={14} style={{ verticalAlign: "middle", marginRight: 6 }} />
+                <h3 className="manage-section-title">
+                  <FlagIcon size={16} className="manage-section-icon" />
                   Feature flags
                 </h3>
                 <div className="manage-section-grid">
                   <div className="manage-checkbox-row">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       id="enable_todos"
+                      labelText="Enable todos"
                       checked={flags.enable_todos ?? true}
-                      onChange={(e) => updateFeatureFlag("enable_todos", e.target.checked)}
+                      onChange={(_e, { checked }) => updateFeatureFlag("enable_todos", !!checked)}
                     />
-                    <label htmlFor="enable_todos">Enable todos</label>
                   </div>
                   <div className="manage-checkbox-row">
-                    <input
-                      type="checkbox"
+                    <Checkbox
                       id="reflection"
+                      labelText="Reflection"
                       checked={flags.reflection ?? false}
-                      onChange={(e) => updateFeatureFlag("reflection", e.target.checked)}
+                      onChange={(_e, { checked }) => updateFeatureFlag("reflection", !!checked)}
                     />
-                    <label htmlFor="reflection">Reflection</label>
                   </div>
-                  <div className="manage-form-group manage-section-grid-span-2">
-                    <label>Max steps</label>
-                    <input
-                      type="number"
+                  <FormGroup legendText="" className="manage-section-grid-span-2">
+                    <NumberInput
+                      id="max_steps"
+                      label="Max steps"
                       min={1}
                       max={200}
                       value={flags.max_steps ?? 20}
-                      onChange={(e) => updateMaxSteps(parseInt(e.target.value, 10) || 20)}
+                      onChange={(_e: unknown, { value }: { value: number | string }) =>
+                        updateMaxSteps(Number(value) || 20)
+                      }
                     />
-                  </div>
+                  </FormGroup>
                 </div>
               </section>
 
               <section className="manage-section">
-                <h3>
-                  <Shield size={14} style={{ verticalAlign: "middle", marginRight: 6 }} />
+                <h3 className="manage-section-title">
+                  <ShieldIcon size={16} className="manage-section-icon" />
                   Policies
                 </h3>
                 <div className="manage-policies-summary">
@@ -446,57 +505,62 @@ export function ManagePage() {
                   {policiesEnabled && summary.total > 0 && (
                     <div className="manage-policies-breakdown">
                       {Object.entries(summary.byType).map(([type, count]) => (
-                        <span key={type} className="manage-policies-badge">
+                        <Tag key={type} type="gray" size="md" className="manage-policies-badge">
                           {POLICY_TYPE_LABELS[type] ?? type}: {count}
-                        </span>
+                        </Tag>
                       ))}
                     </div>
                   )}
                 </div>
-                <button
-                  type="button"
-                  className="manage-policies-open-btn"
+                <Button
+                  kind="primary"
+                  renderIcon={ShieldIcon}
                   onClick={() => setShowPoliciesModal(true)}
+                  className="manage-policies-open-btn"
                 >
-                  <Shield size={14} />
                   Configure policies
-                </button>
+                </Button>
               </section>
 
               <div className="manage-history">
-              <h4>
-                <History size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-                Version history
-              </h4>
-              <div className="manage-history-list">
-                {history.length === 0 && <div style={{ fontSize: 12, color: "#71717a", padding: 8 }}>No versions yet</div>}
-                {history.map((v) => (
-                  <div key={v.version} className="manage-history-item">
-                    <span
-                      className="manage-history-item-main"
-                      onClick={() => loadVersion(v.version)}
-                    >
-                      <span className="version-badge">v{v.version}</span>
-                      {new Date(v.created_at).toLocaleString()}
-                    </span>
-                    <button
-                      type="button"
-                      className="manage-history-view-btn"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        fetch(`/api/manage/config?version=${v.version}`)
-                          .then((res) => res.ok ? res.json() : null)
-                          .then((data) => data && setViewVersion({ version: v.version, config: data.config ?? {} }))
-                          .catch(() => {});
-                      }}
-                      title="View JSON"
-                    >
-                      <FileJson size={14} />
-                    </button>
-                  </div>
-                ))}
+                <h4 className="manage-history-title">
+                  <HistoryIcon size={16} className="manage-section-icon" />
+                  Version history
+                </h4>
+                <div className="manage-history-list">
+                  {history.length === 0 && (
+                    <div className="manage-history-empty">No versions yet</div>
+                  )}
+                  {history.map((v) => (
+                    <div key={v.version} className="manage-history-item">
+                      <span
+                        className="manage-history-item-main"
+                        onClick={() => loadVersion(v.version)}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => e.key === "Enter" && loadVersion(v.version)}
+                      >
+                        <Tag type="blue" size="md" className="version-badge">v{v.version}</Tag>
+                        {new Date(v.created_at).toLocaleString()}
+                      </span>
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        hasIconOnly
+                        iconDescription="View JSON"
+                        renderIcon={DocumentIcon}
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          fetch(`/api/manage/config?version=${v.version}`)
+                            .then((res) => (res.ok ? res.json() : null))
+                            .then((data) => data && setViewVersion({ version: v.version, config: data.config ?? {} }))
+                            .catch(() => {});
+                        }}
+                      />
+                    </div>
+                  ))}
+                </div>
               </div>
-            </div>
             </div>
           </div>
 
@@ -510,27 +574,37 @@ export function ManagePage() {
               onChange={handleImportJson}
             />
             <div className="manage-save-bar-actions">
-              <button
-                type="button"
-                className="manage-import-btn"
+              <Button
+                kind="secondary"
+                renderIcon={Upload}
                 onClick={() => fileInputRef.current?.click()}
+                className="manage-import-btn"
               >
-                <Upload size={16} style={{ verticalAlign: "middle", marginRight: 6 }} />
                 Import JSON
-              </button>
-              <button
-                className="manage-save-btn"
+              </Button>
+              <Button
+                kind="primary"
+                renderIcon={Save}
                 onClick={saveConfig}
                 disabled={saveStatus === "saving"}
+                className="manage-save-btn"
               >
-                <Save size={16} style={{ verticalAlign: "middle", marginRight: 6 }} />
                 {saveStatus === "idle" && "Save configuration"}
                 {saveStatus === "saving" && "Saving…"}
                 {saveStatus === "success" && "Saved"}
                 {saveStatus === "error" && "Error"}
-              </button>
+              </Button>
             </div>
-            <div className={`manage-save-status ${saveStatus === "success" ? "success" : saveStatus === "error" ? "error" : importStatus === "ok" ? "success" : importStatus === "error" ? "error" : ""}`}>
+            <div
+              className={`manage-save-status ${
+                saveStatus === "success" || importStatus === "ok" ? "success" : saveStatus === "error" || importStatus === "error" ? "error" : ""
+              }`}
+            >
+              {currentVersion != null && (
+                <span className="manage-version-label">
+                  Version: {currentVersion === "draft" ? "draft" : currentVersion}
+                </span>
+              )}
               {loadError && <span>{loadError}</span>}
               {!loadError && importStatus === "ok" && <span>Config imported</span>}
               {!loadError && importStatus === "error" && <span>Invalid JSON</span>}
@@ -544,86 +618,77 @@ export function ManagePage() {
             <CustomChat
               initialChatStarted={true}
               forceAdvancedMode={true}
+              useDraftAgent={true}
               onVariablesUpdate={handleManageVariablesUpdate}
             />
           </div>
         </main>
+      </div>
 
-        {(manageVariablesHistory.length > 0 || Object.keys(manageVariables).length > 0) && (
-          <>
-            <button
-              type="button"
+      {(manageVariablesHistory.length > 0 || Object.keys(manageVariables).length > 0) && (
+        <>
+          <div className="manage-variables-toggle-wrap">
+            <Button
+              kind="secondary"
               className="manage-variables-toggle"
               onClick={() => setManageVariablesPanelOpen((o) => !o)}
               title={manageVariablesPanelOpen ? "Close variables" : "Open variables"}
               aria-expanded={manageVariablesPanelOpen}
+              renderIcon={DocumentIcon}
             >
-              <FileJson size={18} />
-              <span>Variables</span>
-              {!manageVariablesPanelOpen && (
-                <span className="manage-variables-toggle-count">
-                  {Object.keys(manageVariables).length || manageVariablesHistory.length}
-                </span>
-              )}
-            </button>
-            {manageVariablesPanelOpen && (
-              <div className="manage-variables-overlay">
-                <div className="manage-variables-panel">
-                  <div className="manage-variables-panel-header">
-                    <span>Variables</span>
-                    <button
-                      type="button"
-                      className="manage-variables-panel-close"
-                      onClick={() => setManageVariablesPanelOpen(false)}
-                      aria-label="Close"
-                    >
-                      <X size={20} />
-                    </button>
-                  </div>
-                  <div className="manage-variables-panel-body">
-                    <VariablesSidebar
-                      variables={manageVariables}
-                      history={manageVariablesHistory}
-                      selectedAnswerId={manageSelectedAnswerId}
-                      onSelectAnswer={(id: string) => setManageSelectedAnswerId(id)}
-                    />
-                  </div>
-                </div>
-              </div>
+              Variables
+            </Button>
+            {!manageVariablesPanelOpen && (
+              <Tag type="blue" size="sm" className="manage-variables-toggle-count">
+                {Object.keys(manageVariables).length || manageVariablesHistory.length}
+              </Tag>
             )}
-          </>
-        )}
-      </div>
+          </div>
+          {manageVariablesPanelOpen && (
+            <ComposedModal
+              open={manageVariablesPanelOpen}
+              onClose={() => setManageVariablesPanelOpen(false)}
+              className="manage-variables-modal"
+            >
+              <ModalHeader title="Variables" />
+              <ModalBody className="manage-variables-panel-body">
+                <VariablesSidebar
+                  variables={manageVariables}
+                  history={manageVariablesHistory}
+                  selectedAnswerId={manageSelectedAnswerId}
+                  onSelectAnswer={(id: string) => setManageSelectedAnswerId(id)}
+                />
+              </ModalBody>
+            </ComposedModal>
+          )}
+        </>
+      )}
 
       {showPoliciesModal && (
         <PoliciesConfig
-          onClose={() => {
-            setShowPoliciesModal(false);
-            refetchPolicies();
-          }}
+          draftMode={true}
+          onClose={() => setShowPoliciesModal(false)}
         />
       )}
 
-      {viewVersion && (
-        <div className="manage-json-viewer-overlay" onClick={() => setViewVersion(null)}>
-          <div className="manage-json-viewer-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="manage-json-viewer-header">
-              <h2>
-                <FileJson size={18} style={{ verticalAlign: "middle", marginRight: 8 }} />
-                Version {viewVersion.version}
-              </h2>
-              <button type="button" className="manage-json-viewer-close" onClick={() => setViewVersion(null)} aria-label="Close">
-                <X size={20} />
-              </button>
-            </div>
-            <div className="manage-json-viewer-body">
-              <pre className="manage-json-viewer-pre">
-                <code>{JSON.stringify(maskSecrets(viewVersion.config), null, 2)}</code>
-              </pre>
-            </div>
-          </div>
-        </div>
-      )}
+      <ComposedModal
+        open={!!viewVersion}
+        onClose={() => setViewVersion(null)}
+        size="lg"
+        isFullWidth
+      >
+        <ModalHeader
+          title={viewVersion ? `Version ${viewVersion.version}` : ""}
+          buttonOnClick={() => setViewVersion(null)}
+        />
+        <ModalBody hasScrollingContent>
+          {viewVersion && (
+            <pre className="manage-json-viewer-pre">
+              <code>{JSON.stringify(maskSecrets(viewVersion.config), null, 2)}</code>
+            </pre>
+          )}
+        </ModalBody>
+      </ComposedModal>
     </div>
   );
 }

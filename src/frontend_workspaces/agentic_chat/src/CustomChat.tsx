@@ -37,9 +37,11 @@ interface CustomChatProps {
   initialChatStarted?: boolean;
   /** When true, always show chat view (no welcome screen). Used on manage page. */
   forceAdvancedMode?: boolean;
+  /** When true, stream uses draft config agent (Manage page). */
+  useDraftAgent?: boolean;
 }
 
-export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false }: CustomChatProps) {
+export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false, useDraftAgent = false }: CustomChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -319,7 +321,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
       const finalThreadId = threadIdRef.current || threadId;
       console.log('[CustomChat] Sending message with threadId:', finalThreadId);
       // Call the streaming workflow with processed text (bracket format converted to ./path)
-      await fetchStreamingData(newChatInstance as any, processedText, undefined, finalThreadId);
+      await fetchStreamingData(newChatInstance as any, processedText, undefined, finalThreadId, useDraftAgent);
     } catch (error) {
       console.error("Error sending message:", error);
     } finally {
@@ -1057,6 +1059,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
                   <CardManager 
                     chatInstance={message.chatInstance as any} 
                     threadId={threadIdRef.current || threadId}
+                    useDraftAgent={useDraftAgent}
                   />
                 </div>
               ) : (

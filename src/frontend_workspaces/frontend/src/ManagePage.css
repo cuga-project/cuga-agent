@@ -20,12 +20,54 @@
   box-shadow: 0 1px 0 rgba(255, 255, 255, 0.6) inset;
 }
 
-.manage-header h1 {
+.manage-header h1,
+.manage-header-title {
   margin: 0;
   font-size: 18px;
   font-weight: 600;
   color: #1e293b;
   letter-spacing: -0.02em;
+}
+
+.manage-section-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 14px 0;
+  font-size: 14px;
+  font-weight: 600;
+  color: #64748b;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.manage-section-icon {
+  flex-shrink: 0;
+}
+
+.manage-helper {
+  display: block;
+  font-size: 12px;
+  color: #64748b;
+  margin-top: 4px;
+}
+
+.manage-history-empty {
+  font-size: 12px;
+  color: #71717a;
+  padding: 8px;
+}
+
+.manage-variables-toggle-wrap {
+  position: fixed;
+  top: 50%;
+  right: 0;
+  transform: translateY(-50%);
+  z-index: 900;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
 }
 
 .manage-header a {
@@ -126,6 +168,11 @@
 
 .manage-section-grid .manage-form-group.manage-section-grid-span-2 {
   grid-column: 1 / -1;
+}
+
+.manage-section-grid .cds--form-group,
+.manage-section-grid .cds--number-input {
+  margin-bottom: 0;
 }
 
 .manage-form-group {
@@ -257,41 +304,20 @@
   color: #334155;
 }
 
-.manage-page .manage-save-bar .manage-save-btn {
+.manage-save-bar-actions .manage-save-btn {
   flex: 1;
   min-width: 0;
-  padding: 12px 16px;
-  height: auto;
-  line-height: 1.25;
-  font-size: 14px;
-  font-weight: 600;
-  box-sizing: border-box;
-  background: linear-gradient(180deg, #6366f1 0%, #4f46e5 100%);
-  border: none;
-  border-radius: 10px;
-  color: white;
-  cursor: pointer;
-  transition: box-shadow 0.2s, transform 0.1s;
-  box-shadow: 0 2px 8px rgba(99, 102, 241, 0.35);
-}
-
-.manage-page .manage-save-bar .manage-save-btn:hover {
-  box-shadow: 0 4px 12px rgba(99, 102, 241, 0.4);
-}
-
-.manage-page .manage-save-bar .manage-save-btn:active {
-  transform: translateY(1px);
-}
-
-.manage-page .manage-save-bar .manage-save-btn:disabled {
-  background: #94a3b8;
-  cursor: not-allowed;
 }
 
 .manage-save-status {
   font-size: 12px;
   margin-top: 8px;
   text-align: center;
+}
+
+.manage-version-label {
+  margin-right: 10px;
+  color: var(--manage-muted, #64748b);
 }
 
 .manage-save-status.success {
@@ -520,17 +546,11 @@
   overflow: hidden;
 }
 
-.manage-variables-toggle {
-  position: fixed;
-  top: 50%;
-  right: 0;
-  transform: translateY(-50%);
-  z-index: 900;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
+.manage-variables-toggle-wrap .manage-variables-toggle {
   padding: 12px 10px;
+}
+
+.manage-variables-toggle {
   background: rgba(255, 255, 255, 0.98);
   border: 1px solid rgba(226, 232, 240, 0.9);
   border-right: none;
@@ -539,7 +559,6 @@
   color: #475569;
   font-size: 12px;
   font-weight: 500;
-  cursor: pointer;
   transition: background 0.2s, color 0.2s, box-shadow 0.2s;
 }
 

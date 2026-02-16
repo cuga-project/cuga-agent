@@ -1,5 +1,6 @@
 import React, { useState, useMemo } from "react";
-import { Wrench, Plus, Pencil, Trash2, Plug, ListFilter, X } from "lucide-react";
+import { Wrench, Plus, Pencil, Trash2, Plug, ListFilter } from "lucide-react";
+import { ComposedModal, ModalHeader, ModalBody, ModalFooter, Button, Checkbox } from "@carbon/react";
 import type { ToolEntry } from "./types/tools";
 import { AddToolModal } from "./AddToolModal";
 import "./ToolsConfig.css";
@@ -365,61 +366,57 @@ function ServerToolsModal({
   };
 
   return (
-    <div className="tools-config-modal-overlay" onClick={onClose}>
-      <div className="tools-config-modal tools-config-server-tools-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="tools-config-modal-header">
-          <h4>Tools for {serverName}</h4>
-          <button type="button" className="tools-config-modal-close" onClick={onClose} aria-label="Close">
-            <X size={18} />
-          </button>
-        </div>
+    <ComposedModal open onClose={onClose} size="lg" isFullWidth>
+      <ModalHeader title={`Tools for ${serverName}`} buttonOnClick={onClose} />
+      <ModalBody hasScrollingContent>
         {isNewInConfig && (
           <p className="tools-config-modal-new-hint">
             Saving will add <strong>{serverName}</strong> to your configuration list above.
           </p>
         )}
-        <div className="tools-config-modal-body">
-          <div className="tools-config-tools-checkbox-row">
-            <label>
-              <input
-                type="checkbox"
-                checked={selectAll || selected.size === allIds.length}
-                onChange={(e) => handleSelectAll(e.target.checked)}
-              />
-              <span>Select all</span>
-            </label>
-          </div>
-          <ul className="tools-config-tools-list">
-            {appTools.map((t) => {
-              const id = t.id ?? t.name;
-              const checked = selectAll || selected.has(id);
-              return (
-                <li key={id} className="tools-config-tools-list-item">
-                  <label title={t.description || t.name}>
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggle(id)}
-                    />
-                    <span className="tools-config-tool-id">{id}</span>
-                    {t.description && (
-                      <span className="tools-config-tool-desc">{t.description.slice(0, 80)}{t.description.length > 80 ? "…" : ""}</span>
-                    )}
-                  </label>
-                </li>
-              );
-            })}
-          </ul>
+        <div className="tools-config-tools-checkbox-row">
+          <Checkbox
+            id="tools-select-all"
+            labelText="Select all"
+            checked={selectAll || selected.size === allIds.length}
+            onChange={(_e, { checked }) => handleSelectAll(!!checked)}
+          />
         </div>
-        <div className="tools-config-modal-footer">
-          <button type="button" className="tools-config-btn-secondary" onClick={onClose}>
-            Cancel
-          </button>
-          <button type="button" className="tools-config-btn-primary" onClick={handleSave}>
-            Save
-          </button>
-        </div>
-      </div>
-    </div>
+        <ul className="tools-config-tools-list">
+          {appTools.map((t) => {
+            const id = t.id ?? t.name;
+            const checked = selectAll || selected.has(id);
+            return (
+              <li key={id} className="tools-config-tools-list-item">
+                <Checkbox
+                  id={`tool-${id}`}
+                  labelText={
+                    <>
+                      <span className="tools-config-tool-id">{id}</span>
+                      {t.description && (
+                        <span className="tools-config-tool-desc">
+                          {t.description.slice(0, 80)}{t.description.length > 80 ? "…" : ""}
+                        </span>
+                      )}
+                    </>
+                  }
+                  checked={checked}
+                  onChange={() => toggle(id)}
+                  title={t.description || t.name}
+                />
+              </li>
+            );
+          })}
+        </ul>
+      </ModalBody>
+      <ModalFooter>
+        <Button kind="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button kind="primary" onClick={handleSave}>
+          Save
+        </Button>
+      </ModalFooter>
+    </ComposedModal>
   );
 }
