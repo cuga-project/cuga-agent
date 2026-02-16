@@ -74,6 +74,9 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.state.user_preferences_context import (
+    format_preferences_for_decision_context,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt, PromptUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
@@ -161,6 +164,7 @@ class CugaLiteState(BaseModel):
     - sub_task: str (current subtask being executed)
     - sub_task_app: str (app name for subtask)
     - api_intent_relevant_apps: List[Any] (relevant apps for the task)
+    - user_preferences: Dict[str, Any] (memory facts loaded in parent graph)
     - hitl_action: Optional[FollowUpAction] (human-in-the-loop action request)
     - hitl_response: Optional[ActionResponse] (human-in-the-loop response)
     - sender: str (node that sent the current state)
@@ -187,6 +191,7 @@ class CugaLiteState(BaseModel):
     sub_task: Optional[str] = None
     sub_task_app: Optional[str] = None
     api_intent_relevant_apps: Optional[List[Any]] = None
+    user_preferences: Dict[str, Any] = Field(default_factory=dict)
     hitl_action: Optional[Any] = None  # FollowUpAction from followup_model
     hitl_response: Optional[Any] = None  # ActionResponse from followup_model
     sender: Optional[str] = None
@@ -749,6 +754,44 @@ def create_cuga_lite_graph(
                     special_instructions=base_special_instructions,
                 )
 
+            memory_query = ""
+            for idx in range(len(state.chat_messages) - 1, -1, -1):
+                msg = state.chat_messages[idx]
+                msg_role = getattr(msg, 'type', None)
+                if not (isinstance(msg, HumanMessage) or msg_role in {'human', 'user'}):
+                    continue
+                content = getattr(msg, "content", "") or ""
+                if isinstance(content, str) and content.startswith("Execution output:"):
+                    continue
+                memory_query = content
+                break
+
+            memory_decision_context = (
+                format_preferences_for_decision_context(
+                    state.user_preferences,
+                    max_facts=5,
+                    query=memory_query,
+                )
+                if state.user_preferences
+                else ""
+            )
+            if memory_decision_context:
+                memory_system_section = (
+                    "\n\n## Memory Decision Context (Trusted)\n"
+                    "The following persistent user facts are trusted context for this turn.\n"
+                    "You are allowed to answer directly from these facts without additional tool calls when relevant.\n"
+                    "If the user asks about personal details covered below, prefer these facts over saying information is unavailable.\n\n"
+                    f"{memory_decision_context}"
+                )
+                dynamic_prompt = f"{dynamic_prompt}{memory_system_section}"
+                logger.info(
+                    f"[FACT DEBUG][CugaLiteGraph] Added memory decision context to system prompt (chars={len(memory_decision_context)})"
+                )
+            else:
+                logger.info(
+                    "[FACT DEBUG][CugaLiteGraph] No memory decision context available for system prompt injection"
+                )
+
             return Command(
                 goto="call_model",
                 update={
@@ -776,6 +819,9 @@ def create_cuga_lite_graph(
 
             logger.debug(
                 f"[APPROVAL DEBUG] call_model received cuga_lite_metadata: {state.cuga_lite_metadata}"
+            )
+            logger.info(
+                f"[FACT DEBUG][CugaLiteGraph] call_model received user_preferences categories: {list(state.user_preferences.keys()) if state.user_preferences else []}"
             )
 
             # Check if we're returning from tool approval - if so, skip code generation and go to sandbox
@@ -808,6 +854,50 @@ def create_cuga_lite_graph(
 
             # Track if we've added personal information (pi)
             pi_added = False
+            memory_section_header = "## Memory Decision Context"
+            target_user_message_index = None
+            memory_query = ""
+            for idx in range(len(state.chat_messages) - 1, -1, -1):
+                existing_msg = state.chat_messages[idx]
+                existing_msg_role = getattr(existing_msg, 'type', None)
+                if not (isinstance(existing_msg, HumanMessage) or existing_msg_role in {'human', 'user'}):
+                    continue
+
+                content = getattr(existing_msg, "content", "") or ""
+                # Skip internal loop messages generated by sandbox execution.
+                if isinstance(content, str) and content.startswith("Execution output:"):
+                    continue
+
+                target_user_message_index = idx
+                memory_query = content
+                break
+
+            if target_user_message_index is None:
+                for idx, existing_msg in enumerate(state.chat_messages):
+                    existing_msg_role = getattr(existing_msg, 'type', None)
+                    if isinstance(existing_msg, HumanMessage) or existing_msg_role in {'human', 'user'}:
+                        target_user_message_index = idx
+                        memory_query = getattr(existing_msg, "content", "") or ""
+                        break
+            logger.info(
+                f"[FACT DEBUG][CugaLiteGraph] target_user_message_index={target_user_message_index}, total_chat_messages={len(state.chat_messages)}"
+            )
+            memory_decision_context = (
+                format_preferences_for_decision_context(
+                    state.user_preferences,
+                    max_facts=5,
+                    query=memory_query,
+                )
+                if state.user_preferences
+                else ""
+            )
+            logger.info(
+                f"[FACT DEBUG][CugaLiteGraph] memory_decision_context generated={bool(memory_decision_context)}"
+            )
+            if memory_decision_context:
+                logger.debug(
+                    f"[FACT DEBUG][CugaLiteGraph] memory_decision_context preview:\n{memory_decision_context[:500]}"
+                )
 
             # Get playbook guidance if available (only on first detection)
             # TODO: In the future, we could refine the playbook guidance on each message
@@ -854,6 +944,21 @@ def create_cuga_lite_graph(
                         content_modified = True
                         logger.debug("Added personal information (pi) to first user message")
 
+                    if (
+                        memory_decision_context
+                        and i == target_user_message_index
+                        and memory_section_header not in content
+                    ):
+                        content = (
+                            f"{content}\n\n{memory_section_header}\n{memory_decision_context}"
+                        )
+                        content_modified = True
+                        logger.debug("Added memory decision context to first user message")
+                    elif memory_decision_context and i == target_user_message_index:
+                        logger.debug(
+                            "[FACT DEBUG][CugaLiteGraph] Memory decision context already present on target user message"
+                        )
+
                     # Add playbook guidance to the LAST user message only
                     if playbook_guidance and i == len(state.chat_messages) - 1:
                         content = f"{content}\n\n## Task Guidance\n{playbook_guidance}"
@@ -870,7 +975,7 @@ def create_cuga_lite_graph(
                     if content_modified:
                         state.chat_messages[i] = HumanMessage(content=content)
                         logger.debug(
-                            f"Updated state.chat_messages[{i}] with modified content (playbook/pi/variables)"
+                            f"Updated state.chat_messages[{i}] with modified content (playbook/pi/memory/variables)"
                         )
 
                     messages_for_model.append({"role": "user", "content": content})
@@ -889,6 +994,21 @@ def create_cuga_lite_graph(
                             content_modified = True
                             logger.debug("Added personal information (pi) to first user message")
 
+                        if (
+                            memory_decision_context
+                            and i == target_user_message_index
+                            and memory_section_header not in content
+                        ):
+                            content = (
+                                f"{content}\n\n{memory_section_header}\n{memory_decision_context}"
+                            )
+                            content_modified = True
+                            logger.debug("Added memory decision context to first user message")
+                        elif memory_decision_context and i == target_user_message_index:
+                            logger.debug(
+                                "[FACT DEBUG][CugaLiteGraph] Memory decision context already present on target user message"
+                            )
+
                         # Add playbook guidance to the LAST user message only
                         if playbook_guidance and i == len(state.chat_messages) - 1:
                             content = f"{content}\n\n## Task Guidance\n{playbook_guidance}"
@@ -903,7 +1023,7 @@ def create_cuga_lite_graph(
                         if content_modified:
                             state.chat_messages[i] = HumanMessage(content=content)
                             logger.debug(
-                                f"Updated state.chat_messages[{i}] with modified content (playbook/pi/variables)"
+                                f"Updated state.chat_messages[{i}] with modified content (playbook/pi/memory/variables)"
                             )
 
                         messages_for_model.append({"role": "user", "content": content})

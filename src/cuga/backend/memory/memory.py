@@ -180,7 +180,7 @@ class Memory:
         namespace_id: str,
         user_id: str,
         query: Optional[str] = None,
-        limit: int = 20
+        limit: int = 5
     ) -> Dict[str, List[Dict[str, Any]]]:
         """Retrieve relevant facts using semantic search, organized by category.
         

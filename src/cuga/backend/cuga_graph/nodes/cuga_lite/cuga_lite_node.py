@@ -2,6 +2,7 @@
 CugaLite Node - Fast execution node using CugaLite subgraph
 """
 
+import asyncio
 import json
 from typing import Literal, Dict, Any, List, Optional, Callable
 from langgraph.types import Command
@@ -10,7 +11,11 @@ from loguru import logger
 from pydantic import BaseModel, Field
 
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
-from cuga.backend.cuga_graph.state.agent_state import AgentState, SubTaskHistory
+from cuga.backend.cuga_graph.state.agent_state import (
+    AgentState,
+    SubTaskHistory,
+    load_user_preferences,
+)
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import ActionName
 from cuga.backend.cuga_graph.state.api_planner_history import CoderAgentHistoricalOutput
@@ -235,6 +240,88 @@ class CugaLiteNode(BaseNode):
         error_indicators = ['Error during execution:', 'Error:', 'Exception:', 'Traceback', 'Failed to']
         return any(indicator in answer for indicator in error_indicators)
 
+    @staticmethod
+    async def _load_user_facts_for_top_level(state: AgentState, query: str) -> None:
+        """Generate and load memory facts for top-level CugaLite requests."""
+        try:
+            from cuga.backend.memory.memory import Memory
+            from cuga.backend.memory.agentic_memory import NamespaceNotFoundException
+            from cuga.backend.memory.agentic_memory.schema import Message
+
+            memory = Memory()
+            namespace_id = "memory"
+            memory_user_id = (
+                state.user_id if state.user_id and state.user_id not in {"default", ""} else "default"
+            )
+            if not state.user_id:
+                state.user_id = memory_user_id
+
+            try:
+                memory.get_namespace_details(namespace_id=namespace_id)
+            except NamespaceNotFoundException:
+                logger.info(f"Creating namespace for CugaLite facts: {namespace_id}")
+                memory.create_namespace(namespace_id=namespace_id, user_id=memory_user_id)
+
+            if query:
+                messages = [Message(role="user", content=query)]
+                task = asyncio.create_task(
+                    memory.memory_client.extract_facts_from_messages_async(
+                        namespace_id=namespace_id,
+                        messages=messages,
+                        metadata={"user_id": memory_user_id},
+                        enable_conflict_resolution=False,
+                    )
+                )
+
+                def _log_task_result(done_task: asyncio.Task) -> None:
+                    try:
+                        done_task.result()
+                    except Exception:
+                        logger.exception("CugaLite categorized fact extraction task failed")
+
+                task.add_done_callback(_log_task_result)
+                logger.debug(f"Queued CugaLite categorized fact extraction for user {state.user_id}")
+
+            load_user_preferences(state, memory, namespace_id, query=query)
+            if state.user_preferences:
+                categories = list(state.user_preferences.keys())
+                total_facts = sum(
+                    len(facts) for facts in state.user_preferences.values() if isinstance(facts, list)
+                )
+                fact_preview = []
+                for category, facts in state.user_preferences.items():
+                    if not isinstance(facts, list):
+                        continue
+                    for fact in facts:
+                        if not isinstance(fact, dict):
+                            continue
+                        key = str(fact.get("key") or "").strip()
+                        value = str(fact.get("value") or "").strip()
+                        content = str(fact.get("content") or "").strip()
+                        pointer = f"{category}.{key}" if key else category
+                        payload = value if value else content
+                        if payload:
+                            payload = payload[:80]
+                        fact_preview.append(f"{pointer}={payload}")
+                        if len(fact_preview) >= 10:
+                            break
+                    if len(fact_preview) >= 10:
+                        break
+                logger.info(
+                    f"[FACT DEBUG][CugaLiteNode] Loaded user preferences: categories={categories}, total_facts={total_facts}"
+                )
+                if fact_preview:
+                    logger.debug(
+                        "[FACT DEBUG][CugaLiteNode] Loaded facts preview: "
+                        + "; ".join(fact_preview)
+                    )
+            else:
+                logger.warning(
+                    "[FACT DEBUG][CugaLiteNode] No user preferences loaded from memory for this query"
+                )
+        except Exception as e:
+            logger.error(f"Error handling facts in CugaLiteNode: {e}")
+
     async def node(
         self, state: AgentState
     ) -> Command[
@@ -276,6 +363,13 @@ class CugaLiteNode(BaseNode):
         )
         logger.info(f"Using task_input: {task_input}")
         logger.info(f"is_autonomous_subtask: {is_autonomous_subtask}")
+
+        is_top_level_request = not (state.sub_task and state.sub_task.strip())
+        logger.info(
+            f"[FACT DEBUG][CugaLiteNode] enable_fact={settings.advanced_features.enable_fact}, is_top_level_request={is_top_level_request}, user_id={state.user_id}"
+        )
+        if settings.advanced_features.enable_fact and is_top_level_request:
+            await self._load_user_facts_for_top_level(state, query=state.input)
 
         # Check if task_input is just a markdown file path and replace with file content
         task_input_stripped = task_input.strip()
@@ -321,6 +415,9 @@ class CugaLiteNode(BaseNode):
         updated_chat_messages.append(HumanMessage(content=task_input))
         logger.info(f"Added user input to chat_messages: {task_input[:100]}...")
         logger.info(f"Total chat_messages count after append: {len(updated_chat_messages)}")
+        logger.info(
+            f"[FACT DEBUG][CugaLiteNode] Forwarding user_preferences to subgraph: categories={list(state.user_preferences.keys()) if state.user_preferences else []}"
+        )
 
         # Route to CugaLite subgraph with updated state
         logger.info("Routing to CugaLiteSubgraph")
@@ -334,6 +431,7 @@ class CugaLiteNode(BaseNode):
                 "sub_task": state.sub_task,
                 "sub_task_app": state.sub_task_app,
                 "api_intent_relevant_apps": state.api_intent_relevant_apps,
+                "user_preferences": state.user_preferences,
                 "cuga_lite_metadata": {
                     "initial_var_names": initial_var_names,
                     "is_autonomous_subtask": is_autonomous_subtask,

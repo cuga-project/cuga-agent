@@ -14,6 +14,9 @@ from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt imp
 )
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_prompt_simple
+from cuga.backend.cuga_graph.state.user_preferences_context import (
+    format_preferences_for_decision_context as shared_format_preferences_for_decision_context,
+)
 from cuga.config import settings
 from cuga.configurations.instructions_manager import InstructionsManager
 
@@ -172,26 +175,10 @@ class APIPlannerAgent(BaseAgent):
     @staticmethod
     def _format_preferences_for_decision_context(preferences: Dict[str, Any]) -> str:
         """Create compact, structured context facts for the user prompt section."""
-        facts = APIPlannerAgent._extract_structured_facts(preferences)
-        if not facts:
-            return ""
-
-        lines = [
-            "Use these persistent user facts to drive planning decisions and query scoping.",
-            "Prefer specific filters from these facts over broad listing operations when possible.",
-            "",
-            "Structured facts:",
-        ]
-        for fact in facts[:25]:
-            pointer = APIPlannerAgent._escape_inline_code(APIPlannerAgent._format_fact_pointer(fact))
-            value = APIPlannerAgent._safe_text(fact.get("value"))
-            content = APIPlannerAgent._safe_text(fact.get("content"))
-            if value:
-                value = APIPlannerAgent._escape_inline_code(value)
-                lines.append(f"- `{pointer}` = `{value}`")
-            elif content:
-                lines.append(f"- `{pointer}`: {content}")
-        return "\n".join(lines)
+        return shared_format_preferences_for_decision_context(
+            preferences,
+            max_facts=5,
+        )
 
     @staticmethod
     def _format_preferences_for_prompt(preferences: Dict[str, Any]) -> str:
