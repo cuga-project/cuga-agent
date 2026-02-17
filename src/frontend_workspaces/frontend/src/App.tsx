@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { App } from "agentic_chat";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
+import { CarbonChat } from "./carbon-chat";
 import "./carbon.scss";
 import "./global.css";
 
@@ -23,6 +24,7 @@ function renderApp(): void {
         <Route path="/" element={<RouteRoot><App /></RouteRoot>} />
         <Route path="/manage" element={<RouteRoot><ManageDashboard /></RouteRoot>} />
         <Route path="/manage/:agentId" element={<RouteRoot><ManagePage /></RouteRoot>} />
+        <Route path="/chat" element={<RouteRoot><CarbonChat /></RouteRoot>} />
       </Routes>
     </BrowserRouter>
   );
