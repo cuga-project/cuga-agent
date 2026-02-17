@@ -20,6 +20,8 @@ import {
   ClickableTile,
   InlineNotification,
   Layer,
+  Accordion,
+  AccordionItem,
 } from "@carbon/react";
 import { CugaHeader } from "agentic_chat/CugaHeader";
 import {
@@ -405,196 +407,166 @@ export function ManagePage() {
       <div className="manage-layout">
         <div className="manage-config-panel">
           <div className="manage-config-scroll">
-            <VStack gap={6} className="manage-config-stack">
-                <Tile className="manage-config-tile">
-                  <Stack gap={5} orientation="vertical">
-                    <div className="manage-tile-heading">
-                      <KeyIcon size={20} aria-hidden />
-                      <h3 className="cds--type-semibold cds--tile__heading">LLM</h3>
-                    </div>
-                    <VStack gap={5} className="manage-llm-fields">
-                      <FormGroup legendText="">
-                        <TextInput
-                          type="password"
-                          id="llm-api-key"
-                          labelText="API Key"
-                          value={llm.api_key ?? ""}
-                          onChange={(e) => updateLlm("api_key", e.target.value)}
-                          placeholder="sk-..."
-                        />
-                      </FormGroup>
-                      <FormGroup legendText="">
-                        <TextInput
-                          type="text"
-                          id="llm-base-url"
-                          labelText="Base URL"
-                          value={llm.base_url ?? ""}
-                          onChange={(e) => updateLlm("base_url", e.target.value)}
-                          placeholder="https://api.openai.com/v1"
-                          helperText="Optional; leave empty for default"
-                        />
-                      </FormGroup>
-                      <FormGroup legendText="">
-                        <TextInput
-                          type="text"
-                          id="llm-model"
-                          labelText="Model"
-                          value={llm.model ?? ""}
-                          onChange={(e) => updateLlm("model", e.target.value)}
-                          placeholder="gpt-4o"
-                        />
-                      </FormGroup>
-                      <FormGroup legendText="">
-                        <NumberInput
-                          id="llm-temperature"
-                          label="Temperature"
-                          min={0}
-                          max={2}
-                          step={0.1}
-                          value={llm.temperature ?? 0.7}
-                          onChange={(_e: unknown, { value }: { value: number | string }) =>
-                            updateLlmTemperature(Number(value) || 0.7)
-                          }
-                        />
-                      </FormGroup>
-                    </VStack>
-                  </Stack>
-                </Tile>
+            <Accordion align="start" size="lg">
+              <AccordionItem title="LLM Configuration" open>
+                  <VStack gap={5} className="manage-llm-fields">
+                    <FormGroup legendText="">
+                      <TextInput
+                        type="password"
+                        id="llm-api-key"
+                        labelText="API Key"
+                        value={llm.api_key ?? ""}
+                        onChange={(e) => updateLlm("api_key", e.target.value)}
+                        placeholder="sk-..."
+                      />
+                    </FormGroup>
+                    <FormGroup legendText="">
+                      <TextInput
+                        type="text"
+                        id="llm-base-url"
+                        labelText="Base URL"
+                        value={llm.base_url ?? ""}
+                        onChange={(e) => updateLlm("base_url", e.target.value)}
+                        placeholder="https://api.openai.com/v1"
+                        helperText="Optional; leave empty for default"
+                      />
+                    </FormGroup>
+                    <FormGroup legendText="">
+                      <TextInput
+                        type="text"
+                        id="llm-model"
+                        labelText="Model"
+                        value={llm.model ?? ""}
+                        onChange={(e) => updateLlm("model", e.target.value)}
+                        placeholder="gpt-4o"
+                      />
+                    </FormGroup>
+                    <FormGroup legendText="">
+                      <NumberInput
+                        id="llm-temperature"
+                        label="Temperature"
+                        min={0}
+                        max={2}
+                        step={0.1}
+                        value={llm.temperature ?? 0.7}
+                        onChange={(_e: unknown, { value }: { value: number | string }) =>
+                          updateLlmTemperature(Number(value) || 0.7)
+                        }
+                      />
+                    </FormGroup>
+                  </VStack>
+              </AccordionItem>
 
-                <Tile className="manage-config-tile">
-                  <Stack gap={5} orientation="vertical">
-                    <div className="manage-tile-heading">
-                      <Tools size={20} aria-hidden />
-                      <h3 className="cds--type-semibold cds--tile__heading">Tools</h3>
-                    </div>
-                    <ToolsConfig
-                      tools={tools}
-                      onChange={setTools}
-                      connectedApps={connectedApps}
-                      connectedTools={connectedTools}
-                    />
-                  </Stack>
-                </Tile>
+              <AccordionItem title="Tools" open>
+                  <ToolsConfig
+                    tools={tools}
+                    onChange={setTools}
+                    connectedApps={connectedApps}
+                    connectedTools={connectedTools}
+                  />
+              </AccordionItem>
 
-                <Tile className="manage-config-tile">
-                  <Stack gap={5} orientation="vertical">
-                    <div className="manage-tile-heading">
-                      <FlagIcon size={20} aria-hidden />
-                      <h3 className="cds--type-semibold cds--tile__heading">Feature flags</h3>
-                    </div>
-                    <VStack gap={5}>
-                      <FormGroup legendText="">
-                        <Checkbox
-                          id="enable_todos"
-                          labelText="Enable todos"
-                          checked={flags.enable_todos ?? true}
-                          onChange={(_e, { checked }) => updateFeatureFlag("enable_todos", !!checked)}
-                        />
-                      </FormGroup>
-                      <FormGroup legendText="">
-                        <Checkbox
-                          id="reflection"
-                          labelText="Reflection"
-                          checked={flags.reflection ?? false}
-                          onChange={(_e, { checked }) => updateFeatureFlag("reflection", !!checked)}
-                        />
-                      </FormGroup>
-                      <FormGroup legendText="">
-                        <NumberInput
-                          id="max_steps"
-                          label="Max steps"
-                          min={1}
-                          max={200}
-                          value={flags.max_steps ?? 20}
-                          onChange={(_e: unknown, { value }: { value: number | string }) =>
-                            updateMaxSteps(Number(value) || 20)
-                          }
-                        />
-                      </FormGroup>
-                    </VStack>
-                  </Stack>
-                </Tile>
+              <AccordionItem title="Feature Flags">
+                  <VStack gap={5}>
+                    <FormGroup legendText="">
+                      <Checkbox
+                        id="enable_todos"
+                        labelText="Enable todos"
+                        checked={flags.enable_todos ?? true}
+                        onChange={(_e, { checked }) => updateFeatureFlag("enable_todos", !!checked)}
+                      />
+                    </FormGroup>
+                    <FormGroup legendText="">
+                      <Checkbox
+                        id="reflection"
+                        labelText="Reflection"
+                        checked={flags.reflection ?? false}
+                        onChange={(_e, { checked }) => updateFeatureFlag("reflection", !!checked)}
+                      />
+                    </FormGroup>
+                    <FormGroup legendText="">
+                      <NumberInput
+                        id="max_steps"
+                        label="Max steps"
+                        min={1}
+                        max={200}
+                        value={flags.max_steps ?? 20}
+                        onChange={(_e: unknown, { value }: { value: number | string }) =>
+                          updateMaxSteps(Number(value) || 20)
+                        }
+                      />
+                    </FormGroup>
+                  </VStack>
+              </AccordionItem>
 
-                <Tile className="manage-config-tile">
-                  <Stack gap={5} orientation="vertical">
-                    <div className="manage-tile-heading">
-                      <ShieldIcon size={20} aria-hidden />
-                      <h3 className="cds--type-semibold cds--tile__heading">Policies</h3>
-                    </div>
-                    <Stack gap={3} orientation="vertical">
-                      <p className="cds--type-body-compact-01">
-                        {policiesEnabled
-                          ? `${summary.total} policy${summary.total !== 1 ? "ies" : ""} defined`
-                          : "Policies disabled"}
-                      </p>
-                      {policiesEnabled && summary.total > 0 && (
-                        <div className="manage-policies-tags">
-                          {Object.entries(summary.byType).map(([type, count]) => (
-                            <Tag key={type} type="gray" size="md">
-                              {POLICY_TYPE_LABELS[type] ?? type}: {count}
-                            </Tag>
-                          ))}
-                        </div>
-                      )}
-                      <Button
-                        kind="primary"
-                        renderIcon={ShieldIcon}
-                        onClick={() => setShowPoliciesModal(true)}
-                      >
-                        Configure policies
-                      </Button>
-                    </Stack>
-                  </Stack>
-                </Tile>
-
-                <Tile className="manage-config-tile">
-                  <Stack gap={4} orientation="vertical">
-                    <div className="manage-tile-heading">
-                      <HistoryIcon size={20} aria-hidden />
-                      <h3 className="cds--type-semibold cds--tile__heading">Version history</h3>
-                    </div>
-                    {history.length === 0 ? (
-                      <p className="cds--type-body-compact-01 cds--color-text-placeholder">No versions yet</p>
-                    ) : (
-                      <Stack gap={2} orientation="vertical" className="manage-history-stack">
-                        {history.map((v: ConfigVersion) => (
-                          <ClickableTile
-                            key={v.version}
-                            onClick={() => loadVersion(v.version)}
-                            className="manage-history-tile"
-                          >
-                            <div className="manage-history-tile-row">
-                              <div className="manage-tile-heading">
-                                <Tag type="blue" size="md">v{v.version}</Tag>
-                                <span className="cds--type-body-compact-01">
-                                  {new Date(v.created_at).toLocaleString()}
-                                </span>
-                              </div>
-                              <Button
-                                kind="ghost"
-                                size="sm"
-                                hasIconOnly
-                                iconDescription="View JSON"
-                                renderIcon={DocumentIcon}
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  fetch(`/api/manage/config?version=${v.version}`)
-                                    .then((res) => (res.ok ? res.json() : null))
-                                    .then((data) => data && setViewVersion({ version: v.version, config: data.config ?? {} }))
-                                    .catch(() => {});
-                                }}
-                              />
-                            </div>
-                          </ClickableTile>
+              <AccordionItem title="Policies">
+                  <Stack gap={3} orientation="vertical">
+                    <p className="cds--type-body-compact-01">
+                      {policiesEnabled
+                        ? `${summary.total} policy${summary.total !== 1 ? "ies" : ""} defined`
+                        : "Policies disabled"}
+                    </p>
+                    {policiesEnabled && summary.total > 0 && (
+                      <div className="manage-policies-tags">
+                        {Object.entries(summary.byType).map(([type, count]) => (
+                          <Tag key={type} type="gray" size="md">
+                            {POLICY_TYPE_LABELS[type] ?? type}: {count}
+                          </Tag>
                         ))}
-                      </Stack>
+                      </div>
                     )}
+                    <Button
+                      kind="primary"
+                      renderIcon={ShieldIcon}
+                      onClick={() => setShowPoliciesModal(true)}
+                    >
+                      Configure policies
+                    </Button>
                   </Stack>
-                </Tile>
-                </VStack>
-              </div>
+              </AccordionItem>
 
-              <Tile className="manage-config-tile manage-save-bar">
+              <AccordionItem title="Version History">
+                  {history.length === 0 ? (
+                    <p className="cds--type-body-compact-01 cds--color-text-placeholder">No versions yet</p>
+                  ) : (
+                    <Stack gap={2} orientation="vertical" className="manage-history-stack">
+                      {history.map((v: ConfigVersion) => (
+                        <ClickableTile
+                          key={v.version}
+                          onClick={() => loadVersion(v.version)}
+                          className="manage-history-tile"
+                        >
+                          <div className="manage-history-tile-row">
+                            <div className="manage-tile-heading">
+                              <Tag type="blue" size="md">v{v.version}</Tag>
+                              <span className="cds--type-body-compact-01">
+                                {new Date(v.created_at).toLocaleString()}
+                              </span>
+                            </div>
+                            <Button
+                              kind="ghost"
+                              size="sm"
+                              hasIconOnly
+                              iconDescription="View JSON"
+                              renderIcon={DocumentIcon}
+                              onClick={(e) => {
+                                e.stopPropagation();
+                                fetch(`/api/manage/config?version=${v.version}`)
+                                  .then((res) => (res.ok ? res.json() : null))
+                                  .then((data) => data && setViewVersion({ version: v.version, config: data.config ?? {} }))
+                                  .catch(() => {});
+                              }}
+                            />
+                          </div>
+                        </ClickableTile>
+                      ))}
+                    </Stack>
+                  )}
+              </AccordionItem>
+            </Accordion>
+          </div>
+
+              <Layer withBackground className="manage-save-bar">
                 <input
                   ref={fileInputRef}
                   type="file"
@@ -603,12 +575,13 @@ export function ManagePage() {
                   aria-label="Import config JSON"
                   onChange={handleImportJson}
                 />
-                <VStack gap={4}>
-                  <HStack gap={3}>
+                <div className="manage-save-bar-content">
+                  <div className="manage-save-bar-buttons">
                     <Button
                       kind="secondary"
                       renderIcon={Upload}
                       onClick={() => fileInputRef.current?.click()}
+                      className="manage-save-bar-button"
                     >
                       Import JSON
                     </Button>
@@ -617,33 +590,34 @@ export function ManagePage() {
                       renderIcon={Save}
                       onClick={saveConfig}
                       disabled={saveStatus === "saving"}
+                      className="manage-save-bar-button"
                     >
-                      {saveStatus === "idle" && "Save configuration"}
+                      {saveStatus === "idle" && "Save Configuration"}
                       {saveStatus === "saving" && "Saving…"}
                       {saveStatus === "success" && "Saved"}
                       {saveStatus === "error" && "Error"}
                     </Button>
-                  </HStack>
+                  </div>
                   {(loadError || currentVersion != null || importStatus !== "idle") && (
-                    <>
+                    <div className="manage-save-bar-status">
                       {loadError && (
-                        <InlineNotification kind="error" title="Error" subtitle={loadError} lowContrast />
+                        <InlineNotification kind="error" title="Error" subtitle={loadError} lowContrast hideCloseButton />
                       )}
                       {!loadError && importStatus === "ok" && (
-                        <InlineNotification kind="success" title="Success" subtitle="Config imported" lowContrast />
+                        <InlineNotification kind="success" title="Success" subtitle="Config imported" lowContrast hideCloseButton />
                       )}
                       {!loadError && importStatus === "error" && (
-                        <InlineNotification kind="error" title="Error" subtitle="Invalid JSON" lowContrast />
+                        <InlineNotification kind="error" title="Error" subtitle="Invalid JSON" lowContrast hideCloseButton />
                       )}
                       {!loadError && currentVersion != null && (
-                        <p className="cds--type-helper-text-01">
+                        <p className="manage-save-bar-version">
                           Version: {currentVersion === "draft" ? "draft" : String(currentVersion)}
                         </p>
                       )}
-                    </>
+                    </div>
                   )}
-                </VStack>
-              </Tile>
+                </div>
+              </Layer>
           </div>
 
         <Layer withBackground className="manage-chat-panel">

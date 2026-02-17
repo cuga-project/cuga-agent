@@ -14,9 +14,24 @@ import {
   type MessageRequest,
   type CustomSendMessageOptions,
   CarbonTheme,
+  BusEventType,
 } from '@carbon/ai-chat';
 import { customSendMessage as customSendMessageImpl } from './customSendMessage';
 import './CarbonChat.css';
+
+// Reset thread ID when conversation restarts
+let currentThreadId: string | null = null;
+
+function resetThreadId() {
+  currentThreadId = null;
+}
+
+export function getOrCreateThreadId(): string {
+  if (!currentThreadId) {
+    currentThreadId = crypto.randomUUID();
+  }
+  return currentThreadId;
+}
 
 interface CarbonChatProps {
   className?: string;
@@ -45,12 +60,13 @@ const CarbonChat = ({
   const handleChatReady = useCallback((instance: ChatInstance) => {
     chatInstanceRef.current = instance;
     
-    // Send initial welcome message
-    customSendMessageImpl(
-      { input: { text: '' } },
-      { signal: new AbortController().signal, silent: false },
-      instance
-    );
+    // Hook into messaging restart to reset thread ID
+    const originalRestart = instance.messaging.restartConversation;
+    instance.messaging.restartConversation = () => {
+      resetThreadId();
+      console.log('Conversation restarted, thread ID reset');
+      return originalRestart.call(instance.messaging);
+    };
   }, []);
 
   return (
@@ -61,7 +77,8 @@ const CarbonChat = ({
       assistantName="CUGA Agent"
       header={{
         isOn: true,
-        showRestartButton: true
+        showRestartButton: true,
+        showCloseButton: false
       }}
       layout={{
         showFrame: false,

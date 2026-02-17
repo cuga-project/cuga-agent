@@ -9,6 +9,10 @@
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
 }
 
+.manage-page .cds--accordion__content {
+  padding-inline-end: 0.5rem !important;
+}
+
 .manage-header {
   display: flex;
   align-items: center;
@@ -227,10 +231,50 @@
   width: 100%;
 }
 
-.manage-save-bar.manage-config-tile {
+.manage-save-bar {
   flex-shrink: 0;
-  margin-top: 10px;
-  border-radius: 0 0 16px 16px;
+  margin-top: 16px;
+  padding: 16px;
+  border-radius: 0;
+}
+
+.manage-save-bar-content {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.manage-save-bar-buttons {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+.manage-save-bar-button {
+  width: 100%;
+  max-width: 100%;
+  justify-content: center;
+  border-radius: 0 !important;
+}
+
+.manage-save-bar-button .cds--btn__icon {
+  margin-left: 8px;
+}
+
+.manage-save-bar-status {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.manage-save-bar-version {
+  margin: 0;
+  padding: 8px 12px;
+  font-size: 12px;
+  color: #64748b;
+  background: #fff;
+  border: 1px solid #e2e8f0;
+  border-radius: 0;
 }
 
 .manage-import-input {
