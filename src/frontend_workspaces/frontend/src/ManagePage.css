@@ -10,7 +10,7 @@
 }
 
 .manage-page .cds--accordion__content {
-  padding-inline-end: 0.5rem !important;
+  /* padding-inline-end: 0.5rem !important; */
 }
 
 .manage-header {
@@ -107,7 +107,7 @@
 }
 
 .manage-config-panel {
-  flex: 0 0 520px;
+  flex: 0 0 620px;
   display: flex;
   flex-direction: column;
   min-height: 0;

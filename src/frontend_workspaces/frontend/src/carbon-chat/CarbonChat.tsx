@@ -36,11 +36,15 @@ export function getOrCreateThreadId(): string {
 interface CarbonChatProps {
   className?: string;
   theme?: 'light' | 'dark';
+  contained?: boolean;
+  useDraft?: boolean;
 }
 
 const CarbonChat = ({
   className = '',
-  theme = 'light'
+  theme = 'light',
+  contained = false,
+  useDraft = false
 }: CarbonChatProps) => {
   const chatInstanceRef = useRef<ChatInstance | null>(null);
 
@@ -51,9 +55,9 @@ const CarbonChat = ({
       options: CustomSendMessageOptions,
       instance: ChatInstance
     ) => {
-      return await customSendMessageImpl(request, options, instance);
+      return await customSendMessageImpl(request, options, instance, useDraft);
     },
-    []
+    [useDraft]
   );
 
   // Callback to get the chat instance when it's ready
@@ -71,7 +75,7 @@ const CarbonChat = ({
 
   return (
     <ChatCustomElement
-      className={`carbon-chat-fullscreen ${className}`}
+      className={`${contained ? 'carbon-chat-contained' : 'carbon-chat-fullscreen'} ${className}`}
       injectCarbonTheme={theme === 'dark' ? CarbonTheme.G100 : CarbonTheme.WHITE}
       openChatByDefault={true}
       assistantName="CUGA Agent"
@@ -82,7 +86,7 @@ const CarbonChat = ({
       }}
       layout={{
         showFrame: false,
-        hasContentMaxWidth: true,
+        hasContentMaxWidth: false,
       }}
       messaging={{
         customSendMessage: handleCustomSendMessage,

@@ -34,7 +34,7 @@ import {
   Upload,
   Tools,
 } from "@carbon/icons-react";
-import { CustomChat } from "agentic_chat/CustomChat";
+import CarbonChat from "./carbon-chat/CarbonChat";
 import PoliciesConfig from "agentic_chat/PoliciesConfig";
 import VariablesSidebar from "agentic_chat/VariablesSidebar";
 import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfig";
@@ -407,6 +407,7 @@ export function ManagePage() {
       <div className="manage-layout">
         <div className="manage-config-panel">
           <div className="manage-config-scroll">
+            <Layer withBackground>
             <Accordion align="start" size="lg">
               <AccordionItem title="LLM Configuration" open>
                   <VStack gap={5} className="manage-llm-fields">
@@ -564,8 +565,8 @@ export function ManagePage() {
                   )}
               </AccordionItem>
             </Accordion>
-          </div>
-
+            </Layer>
+</div>
               <Layer withBackground className="manage-save-bar">
                 <input
                   ref={fileInputRef}
@@ -623,12 +624,7 @@ export function ManagePage() {
         <Layer withBackground className="manage-chat-panel">
           <p className="manage-chat-label">Try your configuration</p>
           <div className="manage-chat-wrap">
-            <CustomChat
-              initialChatStarted={true}
-              forceAdvancedMode={true}
-              useDraftAgent={true}
-              onVariablesUpdate={handleManageVariablesUpdate}
-            />
+            <CarbonChat contained={true} useDraft={true} />
           </div>
         </Layer>
       </div>

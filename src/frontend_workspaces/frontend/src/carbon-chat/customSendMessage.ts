@@ -107,10 +107,11 @@ async function* parseCugaStream(response: Response): AsyncGenerator<CugaStreamEv
   }
 }
 
-async function customSendMessage(
+export async function customSendMessage(
   request: MessageRequest,
   requestOptions: CustomSendMessageOptions,
   instance: ChatInstance,
+  useDraft: boolean = false,
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -148,14 +149,23 @@ async function customSendMessage(
     console.log(`Connecting to CUGA backend at: ${CUGA_BACKEND_URL}/stream`);
     console.log(`Thread ID: ${threadId}`);
     console.log(`User message: ${userMessage}`);
+    console.log(`Use Draft: ${useDraft}`);
+    
+    // Build headers
+    const headers: Record<string, string> = {
+      "Content-Type": "application/json",
+      "X-Thread-ID": threadId,
+    };
+    
+    // Add draft header if needed
+    if (useDraft) {
+      headers["X-Use-Draft"] = "true";
+    }
     
     // Call CUGA backend /stream endpoint
     const response = await fetch(`${CUGA_BACKEND_URL}/stream`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Thread-ID": threadId,
-      },
+      headers,
       body: JSON.stringify({ query: userMessage }),
       signal: requestOptions.signal,
     });
@@ -477,5 +487,3 @@ async function customSendMessage(
     }
   }
 }
-
-export { customSendMessage };
