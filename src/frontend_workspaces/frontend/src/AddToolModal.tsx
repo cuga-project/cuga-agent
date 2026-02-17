@@ -1,5 +1,16 @@
 import React, { useState, useEffect } from "react";
-import { X } from "lucide-react";
+import {
+  ComposedModal,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+  TextInput,
+  TextArea,
+  FormGroup,
+  Select,
+  SelectItem,
+} from "@carbon/react";
 import type { ToolEntry, ToolAuth, AuthType } from "./types/tools";
 import { AUTH_TYPE_OPTIONS } from "./types/tools";
 import "./AddToolModal.css";
@@ -82,137 +93,132 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
       : url.trim().length > 0;
 
   return (
-    <div className="tool-modal-overlay" onClick={onClose}>
-      <div className="tool-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="tool-modal-header">
-          <h2>{initial ? "Edit tool" : "Add tool"}</h2>
-          <button type="button" className="tool-modal-close" onClick={onClose} aria-label="Close">
-            <X size={20} />
-          </button>
-        </div>
-        <form onSubmit={handleSubmit}>
-          <div className="tool-modal-body">
-            <div className="tool-modal-field">
-              <label>Name</label>
-              <input
-                type="text"
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder={type === "mcp" ? "e.g. filesystem" : "e.g. crm"}
-              />
-              <small>Display name for this tool or server</small>
-            </div>
-            <div className="tool-modal-field">
-              <label>Type</label>
-              <select value={type} onChange={(e) => setType(e.target.value as "mcp" | "openapi")}>
-                <option value="mcp">MCP server</option>
-                <option value="openapi">OpenAPI service</option>
-              </select>
-            </div>
-            {type === "mcp" && (
-              <div className="tool-modal-field">
-                <label>Connection</label>
-                <select value={mcpMode} onChange={(e) => setMcpMode(e.target.value as McpConnectionMode)}>
-                  <option value="url">URL (SSE)</option>
-                  <option value="command">Command (stdio)</option>
-                </select>
-              </div>
-            )}
-            {type === "mcp" && mcpMode === "command" ? (
-              <>
-                <div className="tool-modal-field">
-                  <label>Command</label>
-                  <input
-                    type="text"
-                    value={command}
-                    onChange={(e) => setCommand(e.target.value)}
-                    placeholder="e.g. npx"
-                  />
-                </div>
-                <div className="tool-modal-field">
-                  <label>Args (one per line)</label>
-                  <textarea
-                    value={argsText}
-                    onChange={(e) => setArgsText(e.target.value)}
-                    placeholder={"-y\n@modelcontextprotocol/server-filesystem\n./cuga_workspace"}
-                    rows={4}
-                    className="tool-modal-args"
-                  />
-                  <small>One argument per line (e.g. -y, package name, working directory)</small>
-                </div>
-              </>
-            ) : (
-              <div className="tool-modal-field">
-                <label>URL</label>
-                <input
-                  type="text"
-                  value={url}
-                  onChange={(e) => setUrl(e.target.value)}
-                  placeholder={type === "mcp" ? "http://localhost:8112/sse" : "http://localhost:8007/openapi.json"}
-                  required={type === "openapi" || mcpMode === "url"}
+    <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
+      <ModalHeader title={initial ? "Edit tool" : "Add tool"} buttonOnClick={onClose} />
+      <form onSubmit={handleSubmit}>
+        <ModalBody hasScrollingContent className="add-tool-modal-body">
+          <FormGroup legendText="">
+            <TextInput
+              id="tool-name"
+              labelText="Name"
+              value={name}
+              onChange={(e) => setName(e.target.value)}
+              placeholder={type === "mcp" ? "e.g. filesystem" : "e.g. crm"}
+              helperText="Display name for this tool or server"
+            />
+          </FormGroup>
+          <FormGroup legendText="">
+            <Select
+              id="tool-type"
+              labelText="Type"
+              value={type}
+              onChange={(e) => setType(e.target.value as "mcp" | "openapi")}
+            >
+              <SelectItem value="mcp" text="MCP server" />
+              <SelectItem value="openapi" text="OpenAPI service" />
+            </Select>
+          </FormGroup>
+          {type === "mcp" && (
+            <FormGroup legendText="">
+              <Select
+                id="tool-mcp-mode"
+                labelText="Connection"
+                value={mcpMode}
+                onChange={(e) => setMcpMode(e.target.value as McpConnectionMode)}
+              >
+                <SelectItem value="url" text="URL (SSE)" />
+                <SelectItem value="command" text="Command (stdio)" />
+              </Select>
+            </FormGroup>
+          )}
+          {type === "mcp" && mcpMode === "command" ? (
+            <>
+              <FormGroup legendText="">
+                <TextInput
+                  id="tool-command"
+                  labelText="Command"
+                  value={command}
+                  onChange={(e) => setCommand(e.target.value)}
+                  placeholder="e.g. npx"
                 />
-                <small>{type === "mcp" ? "MCP server SSE or HTTP endpoint" : "OpenAPI spec URL"}</small>
-              </div>
-            )}
-            <div className="tool-modal-field">
-              <label>Description (optional)</label>
-              <textarea
-                value={description}
-                onChange={(e) => setDescription(e.target.value)}
-                placeholder="Short description of what this tool provides"
-                rows={2}
+              </FormGroup>
+              <FormGroup legendText="">
+                <TextArea
+                  id="tool-args"
+                  labelText="Args (one per line)"
+                  value={argsText}
+                  onChange={(e) => setArgsText(e.target.value)}
+                  placeholder={"-y\n@modelcontextprotocol/server-filesystem\n./cuga_workspace"}
+                  rows={4}
+                  helperText="One argument per line (e.g. -y, package name, working directory)"
+                />
+              </FormGroup>
+            </>
+          ) : (
+            <FormGroup legendText="">
+              <TextInput
+                id="tool-url"
+                labelText="URL"
+                value={url}
+                onChange={(e) => setUrl(e.target.value)}
+                placeholder={type === "mcp" ? "http://localhost:8112/sse" : "http://localhost:8007/openapi.json"}
+                required={type === "openapi" || mcpMode === "url"}
+                helperText={type === "mcp" ? "MCP server SSE or HTTP endpoint" : "OpenAPI spec URL"}
               />
-            </div>
-            <div className="tool-modal-auth-section">
-              <label className="tool-modal-field" style={{ marginBottom: 8 }}>Authentication</label>
-              <div className="tool-modal-field">
-                <label>Auth type</label>
-                <select
-                  value={authType}
-                  onChange={(e) => setAuthType(e.target.value as AuthType)}
-                >
-                  {AUTH_TYPE_OPTIONS.map((opt) => (
-                    <option key={opt.value} value={opt.value}>
-                      {opt.label}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              {needsKey && (
-                <div className="tool-modal-field">
-                  <label>Header / query key</label>
-                  <input
-                    type="text"
-                    value={authKey}
-                    onChange={(e) => setAuthKey(e.target.value)}
-                    placeholder={authType === "header" ? "X-API-Key" : "api_key"}
-                  />
-                </div>
-              )}
-              {(authType !== "none" || authValue) && (
-                <div className="tool-modal-field">
-                  <label>Secret / token / value</label>
-                  <input
-                    type="password"
-                    value={authValue}
-                    onChange={(e) => setAuthValue(e.target.value)}
-                    placeholder="Leave empty to not store"
-                    autoComplete="off"
-                  />
-                </div>
-              )}
-            </div>
-          </div>
-          <div className="tool-modal-footer">
-            <button type="button" className="tool-modal-btn tool-modal-btn-cancel" onClick={onClose}>
-              Cancel
-            </button>
-            <button type="submit" className="tool-modal-btn tool-modal-btn-save" disabled={!valid}>
-              {initial ? "Save" : "Add tool"}
-            </button>
-          </div>
-        </form>
-      </div>
-    </div>
+            </FormGroup>
+          )}
+          <FormGroup legendText="">
+            <TextArea
+              id="tool-description"
+              labelText="Description (optional)"
+              value={description}
+              onChange={(e) => setDescription(e.target.value)}
+              placeholder="Short description of what this tool provides"
+              rows={2}
+            />
+          </FormGroup>
+          <FormGroup legendText="Authentication">
+            <Select
+              id="tool-auth-type"
+              labelText="Auth type"
+              value={authType}
+              onChange={(e) => setAuthType(e.target.value as AuthType)}
+            >
+              {AUTH_TYPE_OPTIONS.map((opt) => (
+                <SelectItem key={opt.value} value={opt.value} text={opt.label} />
+              ))}
+            </Select>
+            {needsKey && (
+              <TextInput
+                id="tool-auth-key"
+                labelText="Header / query key"
+                value={authKey}
+                onChange={(e) => setAuthKey(e.target.value)}
+                placeholder={authType === "header" ? "X-API-Key" : "api_key"}
+              />
+            )}
+            {(authType !== "none" || authValue) && (
+              <TextInput
+                id="tool-auth-value"
+                type="password"
+                labelText="Secret / token / value"
+                value={authValue}
+                onChange={(e) => setAuthValue(e.target.value)}
+                placeholder="Leave empty to not store"
+                autoComplete="off"
+              />
+            )}
+          </FormGroup>
+        </ModalBody>
+        <ModalFooter>
+          <Button kind="secondary" onClick={onClose}>
+            Cancel
+          </Button>
+          <Button kind="primary" type="submit" disabled={!valid}>
+            {initial ? "Save" : "Add tool"}
+          </Button>
+        </ModalFooter>
+      </form>
+    </ComposedModal>
   );
 }

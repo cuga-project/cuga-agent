@@ -1,6 +1,25 @@
 import React, { useState, useMemo } from "react";
-import { Wrench, Plus, Pencil, Trash2, Plug, ListFilter } from "lucide-react";
-import { ComposedModal, ModalHeader, ModalBody, ModalFooter, Button, Checkbox } from "@carbon/react";
+import { Tools, Add, Edit, TrashCan, Plug, Filter } from "@carbon/icons-react";
+import {
+  ComposedModal,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+  Checkbox,
+  Stack,
+  VStack,
+  HStack,
+  Tag,
+  ContainedList,
+  ContainedListItem,
+  StructuredListWrapper,
+  StructuredListHead,
+  StructuredListRow,
+  StructuredListCell,
+  StructuredListBody,
+  Tile,
+} from "@carbon/react";
 import type { ToolEntry } from "./types/tools";
 import { AddToolModal } from "./AddToolModal";
 import "./ToolsConfig.css";
@@ -124,163 +143,169 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
   };
 
   return (
-    <section className="manage-section tools-config-section">
-      <h3>
-        <Wrench size={14} style={{ verticalAlign: "middle", marginRight: 6 }} />
-        Tools
-      </h3>
-      <div className="tools-config-list">
-        {tools.length === 0 && !hasConnected ? (
-          <div className="tools-config-empty">No tools added yet.</div>
-        ) : tools.length > 0 ? (
-          (showAllTools ? tools : tools.slice(0, TOOLS_PREVIEW_COUNT)).map((t, i) => (
-            <div key={i} className="tools-config-card">
-              <div className="tools-config-card-main">
-                <span className="tools-config-name">{t.name || (t.type === "mcp" ? "MCP" : "OpenAPI")}</span>
-                <span className={`tools-config-badge tools-config-badge-${t.type}`}>
-                  {t.type === "mcp" ? "MCP" : "OpenAPI"}
-                </span>
-              </div>
-              {t.url && (
-                <div className="tools-config-url" title={t.url}>
-                  {t.url}
-                </div>
-              )}
-              {t.command && (
-                <div className="tools-config-command" title={[t.command, ...(t.args ?? [])].join(" ")}>
-                  {t.command}{t.args?.length ? ` ${t.args.join(" ")}` : ""}
-                </div>
-              )}
-              {t.auth?.type && t.auth.type !== "none" && (
-                <div className="tools-config-auth-hint">Auth: {t.auth.type}</div>
-              )}
-              {t.include && t.include.length > 0 && (
-                <div className="tools-config-include-hint">
-                  {t.include.length} tool{t.include.length !== 1 ? "s" : ""} enabled
-                </div>
-              )}
-              <div className="tools-config-actions">
-                {connectedTools.some((ct) => ct.app === t.name) && (
-                  <button
-                    type="button"
-                    className="tools-config-action-btn"
-                    onClick={() => setToolsModalIndex(i)}
-                    title="Select which tools to enable"
-                  >
-                    <ListFilter size={14} />
-                  </button>
-                )}
-                <button
-                  type="button"
-                  className="tools-config-action-btn"
-                  onClick={() => setEditingIndex(i)}
-                  title="Edit"
-                >
-                  <Pencil size={14} />
-                </button>
-                <button
-                  type="button"
-                  className="tools-config-action-btn tools-config-action-btn-danger"
-                  onClick={() => handleRemove(i)}
-                  title="Remove server"
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            </div>
-          ))
-        ) : null}
-      </div>
-      <div className="tools-config-list-footer">
-        <button type="button" className="tools-config-add-btn" onClick={() => setModalOpen(true)}>
-          <Plus size={14} />
-          Add
-        </button>
-        {tools.length > TOOLS_PREVIEW_COUNT && !showAllTools && (
-          <button
-            type="button"
-            className="tools-config-more-btn"
-            onClick={() => setShowAllTools(true)}
-          >
-            + {tools.length - TOOLS_PREVIEW_COUNT} more…
-          </button>
-        )}
-        {tools.length > TOOLS_PREVIEW_COUNT && showAllTools && (
-          <button
-            type="button"
-            className="tools-config-more-btn"
-            onClick={() => setShowAllTools(false)}
-          >
-            Show less
-          </button>
-        )}
-      </div>
-      {hasConnected && (
-        <div className="tools-config-connected">
-          <h4 className="tools-config-connected-title">
-            <Plug size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
-            Connected tools (from registry)
-          </h4>
-          <p className="tools-config-connected-hint">
-            Servers the registry discovered. Use &quot;Select tools&quot; to choose which tools to enable; that adds the server to your configuration above if it isn&apos;t there yet.
-          </p>
-          <div className="tools-config-connected-list">
-            {connectedApps.map((app) => {
-              const appTools = connectedTools.filter((t) => t.app === app.name);
-              const serverEntry = tools.find((t) => t.name === app.name);
-              const inConfig = !!serverEntry;
-              const includeSet =
-                serverEntry?.include && serverEntry.include.length > 0
-                  ? new Set(serverEntry.include)
-                  : null;
-              const displayTools =
-                includeSet != null
-                  ? appTools.filter(
-                      (t) => includeSet.has(t.id ?? t.name) || includeSet.has(t.name)
-                    )
-                  : appTools;
-              const count = displayTools.length;
-              return (
-                <div key={app.name} className="tools-config-connected-app">
-                  <div className="tools-config-connected-app-header">
-                    <span className="tools-config-connected-app-name">{app.name}</span>
-                    <span className="tools-config-badge tools-config-badge-mcp">{app.type}</span>
-                    {inConfig && (
-                      <span className="tools-config-in-config-badge" title="This server is in your configuration above">
-                        In config
+    <Stack gap={5} orientation="vertical">
+      {tools.length === 0 && !hasConnected ? (
+        <p className="cds--type-body-compact-01 cds--color-text-placeholder">No tools added yet.</p>
+      ) : tools.length > 0 ? (
+        <StructuredListWrapper>
+          <StructuredListBody>
+            {(showAllTools ? tools : tools.slice(0, TOOLS_PREVIEW_COUNT)).map((t, i) => (
+              <StructuredListRow key={i}>
+                <StructuredListCell>
+                  <VStack gap={2}>
+                    <HStack gap={3}>
+                      <span className="cds--type-body-compact-01 cds--type-semibold">
+                        {t.name || (t.type === "mcp" ? "MCP" : "OpenAPI")}
+                      </span>
+                      <Tag type={t.type === "mcp" ? "blue" : "green"} size="md">
+                        {t.type === "mcp" ? "MCP" : "OpenAPI"}
+                      </Tag>
+                      {t.include && t.include.length > 0 && (
+                        <Tag type="purple" size="sm">
+                          {t.include.length} tool{t.include.length !== 1 ? "s" : ""}
+                        </Tag>
+                      )}
+                    </HStack>
+                    {t.url && (
+                      <span className="cds--type-helper-text-01" style={{ wordBreak: "break-all" }}>
+                        {t.url}
                       </span>
                     )}
-                    <span className="tools-config-connected-app-count">
+                    {t.command && (
+                      <span className="cds--type-helper-text-01" style={{ wordBreak: "break-all" }}>
+                        {t.command}{t.args?.length ? ` ${t.args.join(" ")}` : ""}
+                      </span>
+                    )}
+                    {t.auth?.type && t.auth.type !== "none" && (
+                      <span className="cds--type-helper-text-01">Auth: {t.auth.type}</span>
+                    )}
+                  </VStack>
+                </StructuredListCell>
+                <StructuredListCell>
+                  <HStack gap={2}>
+                    {connectedTools.some((ct) => ct.app === t.name) && (
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        hasIconOnly
+                        iconDescription="Select which tools to enable"
+                        renderIcon={Filter}
+                        onClick={() => setToolsModalIndex(i)}
+                      />
+                    )}
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Edit"
+                      renderIcon={Edit}
+                      onClick={() => setEditingIndex(i)}
+                    />
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Remove server"
+                      renderIcon={TrashCan}
+                      onClick={() => handleRemove(i)}
+                    />
+                  </HStack>
+                </StructuredListCell>
+              </StructuredListRow>
+            ))}
+          </StructuredListBody>
+        </StructuredListWrapper>
+      ) : null}
+      <HStack gap={3}>
+        <Button kind="secondary" size="sm" renderIcon={Add} onClick={() => setModalOpen(true)}>
+          Add tool
+        </Button>
+        {tools.length > TOOLS_PREVIEW_COUNT && !showAllTools && (
+          <Button kind="ghost" size="sm" onClick={() => setShowAllTools(true)}>
+            Show {tools.length - TOOLS_PREVIEW_COUNT} more
+          </Button>
+        )}
+        {tools.length > TOOLS_PREVIEW_COUNT && showAllTools && (
+          <Button kind="ghost" size="sm" onClick={() => setShowAllTools(false)}>
+            Show less
+          </Button>
+        )}
+      </HStack>
+      {hasConnected && (
+        <ContainedList
+          kind="on-page"
+          label={
+            <VStack gap={1}>
+              <HStack gap={3} className="tools-config-connected-label">
+                <Plug size={20} aria-hidden />
+                <span className="cds--type-semibold">Connected tools (from registry)</span>
+              </HStack>
+            </VStack>
+          }
+          className="tools-config-connected-list"
+        >
+          {connectedApps.map((app) => {
+            const appTools = connectedTools.filter((t) => t.app === app.name);
+            const serverEntry = tools.find((t) => t.name === app.name);
+            const inConfig = !!serverEntry;
+            const includeSet =
+              serverEntry?.include && serverEntry.include.length > 0
+                ? new Set(serverEntry.include)
+                : null;
+            const displayTools =
+              includeSet != null
+                ? appTools.filter(
+                    (t) => includeSet.has(t.id ?? t.name) || includeSet.has(t.name)
+                  )
+                : appTools;
+            const count = displayTools.length;
+            return (
+              <ContainedListItem
+                key={app.name}
+                action={
+                  <Button
+                    kind="ghost"
+                    size="sm"
+                    renderIcon={Filter}
+                    onClick={() => setToolsModalAppName(app.name)}
+                  >
+                    Select tools
+                  </Button>
+                }
+              >
+                <VStack gap={2}>
+                  <HStack gap={3} className="tools-config-connected-item-header">
+                    <span className="cds--type-body-compact-01 cds--type-semibold">{app.name}</span>
+                    <Tag type="blue" size="md">{app.type}</Tag>
+                    {inConfig && (
+                      <Tag type="purple" size="md" title="This server is in your configuration above">
+                        In config
+                      </Tag>
+                    )}
+                    <span className="cds--type-helper-text-01">
                       {count} tool{count !== 1 ? "s" : ""}
                       {includeSet != null && count < appTools.length ? " selected" : ""}
                     </span>
-                    <button
-                      type="button"
-                      className="tools-config-connected-select-btn"
-                      onClick={() => setToolsModalAppName(app.name)}
-                      title="Select which tools to enable"
-                    >
-                      <ListFilter size={14} />
-                      Select tools
-                    </button>
-                  </div>
+                  </HStack>
                   {displayTools.length > 0 && (
-                    <ul className="tools-config-connected-tool-names">
-                      {displayTools.slice(0, 3).map((t) => (
-                        <li key={t.name} title={t.description || t.name}>
-                          {t.name}
-                        </li>
-                      ))}
-                      {displayTools.length > 3 && (
-                        <li>+{displayTools.length - 3} more</li>
-                      )}
-                    </ul>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+                   <ContainedList kind="on-page" size="sm" isInset className="tools-config-connected-sublist">
+                     {displayTools.slice(0, 3).map((t) => (
+                       <ContainedListItem key={t.name} disabled>
+                         <span className="cds--type-body-compact-01" title={t.description || t.name}>{t.name}</span>
+                       </ContainedListItem>
+                     ))}
+                     {displayTools.length > 3 && (
+                       <ContainedListItem disabled>
+                         <span className="cds--type-helper-text-01">+{displayTools.length - 3} more</span>
+                       </ContainedListItem>
+                     )}
+                   </ContainedList>
+                 )}
+                </VStack>
+              </ContainedListItem>
+            );
+          })}
+        </ContainedList>
       )}
       {modalOpen && (
         <AddToolModal
@@ -313,7 +338,7 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
           }}
         />
       )}
-    </section>
+    </Stack>
   );
 }
 
@@ -343,7 +368,7 @@ function ServerToolsModal({
   const [selectAll, setSelectAll] = useState(defaultChecked);
 
   const toggle = (id: string) => {
-    setSelected((prev) => {
+    setSelected((prev: Set<string>) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id);
       else next.add(id);
@@ -368,7 +393,7 @@ function ServerToolsModal({
   return (
     <ComposedModal open onClose={onClose} size="lg" isFullWidth>
       <ModalHeader title={`Tools for ${serverName}`} buttonOnClick={onClose} />
-      <ModalBody hasScrollingContent>
+      <ModalBody hasScrollingContent className="server-tools-modal-body">
         {isNewInConfig && (
           <p className="tools-config-modal-new-hint">
             Saving will add <strong>{serverName}</strong> to your configuration list above.

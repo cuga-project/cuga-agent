@@ -10,7 +10,18 @@ import {
   ComposedModal,
   ModalHeader,
   ModalBody,
+  Grid,
+  Row,
+  Column,
+  Stack,
+  VStack,
+  HStack,
+  Tile,
+  ClickableTile,
+  InlineNotification,
+  Layer,
 } from "@carbon/react";
+import { CugaHeader } from "agentic_chat/CugaHeader";
 import {
   Save,
   Time as HistoryIcon,
@@ -18,8 +29,8 @@ import {
   Flag as FlagIcon,
   Security as ShieldIcon,
   Document as DocumentIcon,
-  Close,
   Upload,
+  Tools,
 } from "@carbon/icons-react";
 import { CustomChat } from "agentic_chat/CustomChat";
 import PoliciesConfig from "agentic_chat/PoliciesConfig";
@@ -382,237 +393,260 @@ export function ManagePage() {
 
   return (
     <div className="manage-page">
-      <header className="manage-header">
-        <h1 className="manage-header-title">{agentId ? `${agentId} — configuration` : "Agent configuration"}</h1>
-        <div className="manage-header-links">
-          <Link to={`/manage${search}`}>← Agents</Link>
-          <Link to={search ? `/${search}` : "/"}>Chat</Link>
-        </div>
-      </header>
+      <CugaHeader
+        title={agentId ? `${agentId} — configuration` : "Agent configuration"}
+        navItems={[
+          { label: "Agents", to: `/manage${search}` },
+          { label: "Chat", to: search ? `/${search}` : "/" },
+        ]}
+        linkComponent={Link}
+      />
 
       <div className="manage-layout">
-        <aside className="manage-left">
-          <div className="manage-config">
-            <div className="manage-config-grid">
-              <section className="manage-section">
-                <h3 className="manage-section-title">
-                  <KeyIcon size={16} className="manage-section-icon" />
-                  LLM
-                </h3>
-                <div className="manage-section-grid">
-                  <FormGroup legendText="">
-                    <TextInput
-                      type="password"
-                      id="llm-api-key"
-                      labelText="API Key"
-                      value={llm.api_key ?? ""}
-                      onChange={(e) => updateLlm("api_key", e.target.value)}
-                      placeholder="sk-..."
-                    />
-                  </FormGroup>
-                  <FormGroup legendText="">
-                    <TextInput
-                      type="text"
-                      id="llm-base-url"
-                      labelText="Base URL"
-                      value={llm.base_url ?? ""}
-                      onChange={(e) => updateLlm("base_url", e.target.value)}
-                      placeholder="https://api.openai.com/v1"
-                    />
-                    <span className="manage-helper">Optional; leave empty for default</span>
-                  </FormGroup>
-                  <FormGroup legendText="">
-                    <TextInput
-                      type="text"
-                      id="llm-model"
-                      labelText="Model"
-                      value={llm.model ?? ""}
-                      onChange={(e) => updateLlm("model", e.target.value)}
-                      placeholder="gpt-4o"
-                    />
-                  </FormGroup>
-                  <FormGroup legendText="" className="manage-section-grid-span-2">
-                    <NumberInput
-                      id="llm-temperature"
-                      label="Temperature"
-                      min={0}
-                      max={2}
-                      step={0.1}
-                      value={llm.temperature ?? 0.7}
-                      onChange={(_e: unknown, { value }: { value: number | string }) =>
-                        updateLlmTemperature(Number(value) || 0.7)
-                      }
-                    />
-                  </FormGroup>
-                </div>
-              </section>
-
-              <ToolsConfig
-                tools={tools}
-                onChange={setTools}
-                connectedApps={connectedApps}
-                connectedTools={connectedTools}
-              />
-
-              <section className="manage-section">
-                <h3 className="manage-section-title">
-                  <FlagIcon size={16} className="manage-section-icon" />
-                  Feature flags
-                </h3>
-                <div className="manage-section-grid">
-                  <div className="manage-checkbox-row">
-                    <Checkbox
-                      id="enable_todos"
-                      labelText="Enable todos"
-                      checked={flags.enable_todos ?? true}
-                      onChange={(_e, { checked }) => updateFeatureFlag("enable_todos", !!checked)}
-                    />
-                  </div>
-                  <div className="manage-checkbox-row">
-                    <Checkbox
-                      id="reflection"
-                      labelText="Reflection"
-                      checked={flags.reflection ?? false}
-                      onChange={(_e, { checked }) => updateFeatureFlag("reflection", !!checked)}
-                    />
-                  </div>
-                  <FormGroup legendText="" className="manage-section-grid-span-2">
-                    <NumberInput
-                      id="max_steps"
-                      label="Max steps"
-                      min={1}
-                      max={200}
-                      value={flags.max_steps ?? 20}
-                      onChange={(_e: unknown, { value }: { value: number | string }) =>
-                        updateMaxSteps(Number(value) || 20)
-                      }
-                    />
-                  </FormGroup>
-                </div>
-              </section>
-
-              <section className="manage-section">
-                <h3 className="manage-section-title">
-                  <ShieldIcon size={16} className="manage-section-icon" />
-                  Policies
-                </h3>
-                <div className="manage-policies-summary">
-                  <div className="manage-policies-summary-row">
-                    <span className="manage-policies-total">
-                      {policiesEnabled ? `${summary.total} policy${summary.total !== 1 ? "ies" : ""} defined` : "Policies disabled"}
-                    </span>
-                  </div>
-                  {policiesEnabled && summary.total > 0 && (
-                    <div className="manage-policies-breakdown">
-                      {Object.entries(summary.byType).map(([type, count]) => (
-                        <Tag key={type} type="gray" size="md" className="manage-policies-badge">
-                          {POLICY_TYPE_LABELS[type] ?? type}: {count}
-                        </Tag>
-                      ))}
+        <div className="manage-config-panel">
+          <div className="manage-config-scroll">
+            <VStack gap={6} className="manage-config-stack">
+                <Tile className="manage-config-tile">
+                  <Stack gap={5} orientation="vertical">
+                    <div className="manage-tile-heading">
+                      <KeyIcon size={20} aria-hidden />
+                      <h3 className="cds--type-semibold cds--tile__heading">LLM</h3>
                     </div>
-                  )}
-                </div>
-                <Button
-                  kind="primary"
-                  renderIcon={ShieldIcon}
-                  onClick={() => setShowPoliciesModal(true)}
-                  className="manage-policies-open-btn"
-                >
-                  Configure policies
-                </Button>
-              </section>
+                    <VStack gap={5} className="manage-llm-fields">
+                      <FormGroup legendText="">
+                        <TextInput
+                          type="password"
+                          id="llm-api-key"
+                          labelText="API Key"
+                          value={llm.api_key ?? ""}
+                          onChange={(e) => updateLlm("api_key", e.target.value)}
+                          placeholder="sk-..."
+                        />
+                      </FormGroup>
+                      <FormGroup legendText="">
+                        <TextInput
+                          type="text"
+                          id="llm-base-url"
+                          labelText="Base URL"
+                          value={llm.base_url ?? ""}
+                          onChange={(e) => updateLlm("base_url", e.target.value)}
+                          placeholder="https://api.openai.com/v1"
+                          helperText="Optional; leave empty for default"
+                        />
+                      </FormGroup>
+                      <FormGroup legendText="">
+                        <TextInput
+                          type="text"
+                          id="llm-model"
+                          labelText="Model"
+                          value={llm.model ?? ""}
+                          onChange={(e) => updateLlm("model", e.target.value)}
+                          placeholder="gpt-4o"
+                        />
+                      </FormGroup>
+                      <FormGroup legendText="">
+                        <NumberInput
+                          id="llm-temperature"
+                          label="Temperature"
+                          min={0}
+                          max={2}
+                          step={0.1}
+                          value={llm.temperature ?? 0.7}
+                          onChange={(_e: unknown, { value }: { value: number | string }) =>
+                            updateLlmTemperature(Number(value) || 0.7)
+                          }
+                        />
+                      </FormGroup>
+                    </VStack>
+                  </Stack>
+                </Tile>
 
-              <div className="manage-history">
-                <h4 className="manage-history-title">
-                  <HistoryIcon size={16} className="manage-section-icon" />
-                  Version history
-                </h4>
-                <div className="manage-history-list">
-                  {history.length === 0 && (
-                    <div className="manage-history-empty">No versions yet</div>
-                  )}
-                  {history.map((v) => (
-                    <div key={v.version} className="manage-history-item">
-                      <span
-                        className="manage-history-item-main"
-                        onClick={() => loadVersion(v.version)}
-                        role="button"
-                        tabIndex={0}
-                        onKeyDown={(e) => e.key === "Enter" && loadVersion(v.version)}
-                      >
-                        <Tag type="blue" size="md" className="version-badge">v{v.version}</Tag>
-                        {new Date(v.created_at).toLocaleString()}
-                      </span>
+                <Tile className="manage-config-tile">
+                  <Stack gap={5} orientation="vertical">
+                    <div className="manage-tile-heading">
+                      <Tools size={20} aria-hidden />
+                      <h3 className="cds--type-semibold cds--tile__heading">Tools</h3>
+                    </div>
+                    <ToolsConfig
+                      tools={tools}
+                      onChange={setTools}
+                      connectedApps={connectedApps}
+                      connectedTools={connectedTools}
+                    />
+                  </Stack>
+                </Tile>
+
+                <Tile className="manage-config-tile">
+                  <Stack gap={5} orientation="vertical">
+                    <div className="manage-tile-heading">
+                      <FlagIcon size={20} aria-hidden />
+                      <h3 className="cds--type-semibold cds--tile__heading">Feature flags</h3>
+                    </div>
+                    <VStack gap={5}>
+                      <FormGroup legendText="">
+                        <Checkbox
+                          id="enable_todos"
+                          labelText="Enable todos"
+                          checked={flags.enable_todos ?? true}
+                          onChange={(_e, { checked }) => updateFeatureFlag("enable_todos", !!checked)}
+                        />
+                      </FormGroup>
+                      <FormGroup legendText="">
+                        <Checkbox
+                          id="reflection"
+                          labelText="Reflection"
+                          checked={flags.reflection ?? false}
+                          onChange={(_e, { checked }) => updateFeatureFlag("reflection", !!checked)}
+                        />
+                      </FormGroup>
+                      <FormGroup legendText="">
+                        <NumberInput
+                          id="max_steps"
+                          label="Max steps"
+                          min={1}
+                          max={200}
+                          value={flags.max_steps ?? 20}
+                          onChange={(_e: unknown, { value }: { value: number | string }) =>
+                            updateMaxSteps(Number(value) || 20)
+                          }
+                        />
+                      </FormGroup>
+                    </VStack>
+                  </Stack>
+                </Tile>
+
+                <Tile className="manage-config-tile">
+                  <Stack gap={5} orientation="vertical">
+                    <div className="manage-tile-heading">
+                      <ShieldIcon size={20} aria-hidden />
+                      <h3 className="cds--type-semibold cds--tile__heading">Policies</h3>
+                    </div>
+                    <Stack gap={3} orientation="vertical">
+                      <p className="cds--type-body-compact-01">
+                        {policiesEnabled
+                          ? `${summary.total} policy${summary.total !== 1 ? "ies" : ""} defined`
+                          : "Policies disabled"}
+                      </p>
+                      {policiesEnabled && summary.total > 0 && (
+                        <div className="manage-policies-tags">
+                          {Object.entries(summary.byType).map(([type, count]) => (
+                            <Tag key={type} type="gray" size="md">
+                              {POLICY_TYPE_LABELS[type] ?? type}: {count}
+                            </Tag>
+                          ))}
+                        </div>
+                      )}
                       <Button
-                        kind="ghost"
-                        size="sm"
-                        hasIconOnly
-                        iconDescription="View JSON"
-                        renderIcon={DocumentIcon}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          fetch(`/api/manage/config?version=${v.version}`)
-                            .then((res) => (res.ok ? res.json() : null))
-                            .then((data) => data && setViewVersion({ version: v.version, config: data.config ?? {} }))
-                            .catch(() => {});
-                        }}
-                      />
+                        kind="primary"
+                        renderIcon={ShieldIcon}
+                        onClick={() => setShowPoliciesModal(true)}
+                      >
+                        Configure policies
+                      </Button>
+                    </Stack>
+                  </Stack>
+                </Tile>
+
+                <Tile className="manage-config-tile">
+                  <Stack gap={4} orientation="vertical">
+                    <div className="manage-tile-heading">
+                      <HistoryIcon size={20} aria-hidden />
+                      <h3 className="cds--type-semibold cds--tile__heading">Version history</h3>
                     </div>
-                  ))}
-                </div>
+                    {history.length === 0 ? (
+                      <p className="cds--type-body-compact-01 cds--color-text-placeholder">No versions yet</p>
+                    ) : (
+                      <Stack gap={2} orientation="vertical" className="manage-history-stack">
+                        {history.map((v: ConfigVersion) => (
+                          <ClickableTile
+                            key={v.version}
+                            onClick={() => loadVersion(v.version)}
+                            className="manage-history-tile"
+                          >
+                            <div className="manage-history-tile-row">
+                              <div className="manage-tile-heading">
+                                <Tag type="blue" size="md">v{v.version}</Tag>
+                                <span className="cds--type-body-compact-01">
+                                  {new Date(v.created_at).toLocaleString()}
+                                </span>
+                              </div>
+                              <Button
+                                kind="ghost"
+                                size="sm"
+                                hasIconOnly
+                                iconDescription="View JSON"
+                                renderIcon={DocumentIcon}
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  fetch(`/api/manage/config?version=${v.version}`)
+                                    .then((res) => (res.ok ? res.json() : null))
+                                    .then((data) => data && setViewVersion({ version: v.version, config: data.config ?? {} }))
+                                    .catch(() => {});
+                                }}
+                              />
+                            </div>
+                          </ClickableTile>
+                        ))}
+                      </Stack>
+                    )}
+                  </Stack>
+                </Tile>
+                </VStack>
               </div>
-            </div>
+
+              <Tile className="manage-config-tile manage-save-bar">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  accept=".json,application/json"
+                  className="manage-import-input"
+                  aria-label="Import config JSON"
+                  onChange={handleImportJson}
+                />
+                <VStack gap={4}>
+                  <HStack gap={3}>
+                    <Button
+                      kind="secondary"
+                      renderIcon={Upload}
+                      onClick={() => fileInputRef.current?.click()}
+                    >
+                      Import JSON
+                    </Button>
+                    <Button
+                      kind="primary"
+                      renderIcon={Save}
+                      onClick={saveConfig}
+                      disabled={saveStatus === "saving"}
+                    >
+                      {saveStatus === "idle" && "Save configuration"}
+                      {saveStatus === "saving" && "Saving…"}
+                      {saveStatus === "success" && "Saved"}
+                      {saveStatus === "error" && "Error"}
+                    </Button>
+                  </HStack>
+                  {(loadError || currentVersion != null || importStatus !== "idle") && (
+                    <>
+                      {loadError && (
+                        <InlineNotification kind="error" title="Error" subtitle={loadError} lowContrast />
+                      )}
+                      {!loadError && importStatus === "ok" && (
+                        <InlineNotification kind="success" title="Success" subtitle="Config imported" lowContrast />
+                      )}
+                      {!loadError && importStatus === "error" && (
+                        <InlineNotification kind="error" title="Error" subtitle="Invalid JSON" lowContrast />
+                      )}
+                      {!loadError && currentVersion != null && (
+                        <p className="cds--type-helper-text-01">
+                          Version: {currentVersion === "draft" ? "draft" : String(currentVersion)}
+                        </p>
+                      )}
+                    </>
+                  )}
+                </VStack>
+              </Tile>
           </div>
 
-          <div className="manage-save-bar">
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept=".json,application/json"
-              className="manage-import-input"
-              aria-label="Import config JSON"
-              onChange={handleImportJson}
-            />
-            <div className="manage-save-bar-actions">
-              <Button
-                kind="secondary"
-                renderIcon={Upload}
-                onClick={() => fileInputRef.current?.click()}
-                className="manage-import-btn"
-              >
-                Import JSON
-              </Button>
-              <Button
-                kind="primary"
-                renderIcon={Save}
-                onClick={saveConfig}
-                disabled={saveStatus === "saving"}
-                className="manage-save-btn"
-              >
-                {saveStatus === "idle" && "Save configuration"}
-                {saveStatus === "saving" && "Saving…"}
-                {saveStatus === "success" && "Saved"}
-                {saveStatus === "error" && "Error"}
-              </Button>
-            </div>
-            <div
-              className={`manage-save-status ${
-                saveStatus === "success" || importStatus === "ok" ? "success" : saveStatus === "error" || importStatus === "error" ? "error" : ""
-              }`}
-            >
-              {currentVersion != null && (
-                <span className="manage-version-label">
-                  Version: {currentVersion === "draft" ? "draft" : currentVersion}
-                </span>
-              )}
-              {loadError && <span>{loadError}</span>}
-              {!loadError && importStatus === "ok" && <span>Config imported</span>}
-              {!loadError && importStatus === "error" && <span>Invalid JSON</span>}
-            </div>
-          </div>
-        </aside>
-
-        <main className="manage-right">
+        <Layer withBackground className="manage-chat-panel">
           <p className="manage-chat-label">Try your configuration</p>
           <div className="manage-chat-wrap">
             <CustomChat
@@ -622,7 +656,7 @@ export function ManagePage() {
               onVariablesUpdate={handleManageVariablesUpdate}
             />
           </div>
-        </main>
+        </Layer>
       </div>
 
       {(manageVariablesHistory.length > 0 || Object.keys(manageVariables).length > 0) && (

@@ -1,0 +1,12 @@
+.cuga-header-wrapper {
+  flex-shrink: 0;
+}
+
+.cuga-header-agent-context {
+  font-size: 0.75rem;
+  font-weight: 400;
+  opacity: 0.9;
+  margin-left: 0.5rem;
+  align-self: center;
+  white-space: nowrap;
+}

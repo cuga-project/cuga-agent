@@ -21,6 +21,10 @@
     "./VariablesSidebar": {
       "import": "./src/VariablesSidebar.tsx",
       "default": "./src/VariablesSidebar.tsx"
+    },
+    "./CugaHeader": {
+      "import": "./src/CugaHeader.tsx",
+      "default": "./src/CugaHeader.tsx"
     }
   },
   "scripts": {

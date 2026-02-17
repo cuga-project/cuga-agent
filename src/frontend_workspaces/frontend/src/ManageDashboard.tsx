@@ -1,6 +1,22 @@
 import React, { useState, useEffect } from "react";
-import { Link, useNavigate } from "react-router-dom";
-import { Bot, Wrench, ExternalLink, Settings, FileStack } from "lucide-react";
+import { useNavigate } from "react-router-dom";
+import {
+  Heading,
+  Link,
+  ClickableTile,
+  Tag,
+  InlineLoading,
+  InlineNotification,
+  Button,
+} from "@carbon/react";
+import {
+  Bot,
+  Tools,
+  Launch,
+  Settings,
+  DocumentMultiple_01,
+} from "@carbon/icons-react";
+import { CugaHeader } from "./CugaHeader";
 import "./ManageDashboard.css";
 
 export interface AgentItem {
@@ -16,6 +32,7 @@ export function ManageDashboard() {
   const [agents, setAgents] = useState<AgentItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -41,95 +58,128 @@ export function ManageDashboard() {
     };
   }, []);
 
-  return (
-    <div className="manage-dashboard-page">
-      <header className="manage-dashboard-header">
-        <h1>Agents</h1>
-        <Link to="/">← Back to chat</Link>
-      </header>
+  useEffect(() => {
+    fetch("/api/agent/context")
+      .then((res) => (res.ok ? res.json() : null))
+      .then(
+        (data) =>
+          data &&
+          setAgentContext({
+            agent_id: data.agent_id ?? "cuga-default",
+            config_version: data.config_version ?? null,
+          })
+      )
+      .catch(() => {});
+  }, []);
 
-      <div className="manage-dashboard-content">
-        <h2 className="manage-dashboard-title">Agent dashboard</h2>
-        <p className="manage-dashboard-subtitle">
+  return (
+    <div className="manage-dashboard-page" style={{ width: "100%", display: "flex", flexDirection: "column", height: "100vh" }}>
+      <CugaHeader
+        title="CUGA Agent"
+        agentContext={agentContext ?? undefined}
+        navItems={[
+          { label: "Chat", href: "/" },
+        ]}
+      />
+
+      <div className="manage-dashboard-content" style={{ flex: 1, overflow: "auto", padding: "2rem 3rem", marginTop: "3rem", width: "100%" }}>
+        <Heading style={{ marginBottom: "0.5rem" }}>Agent dashboard</Heading>
+        <p style={{ marginBottom: "2rem", color: "#525252" }}>
           Select an agent to configure it and try it out.
         </p>
 
         {loading && (
-          <div className="manage-dashboard-loading">Loading agents…</div>
+          <InlineLoading description="Loading agents…" />
         )}
 
         {error && (
-          <div className="manage-dashboard-error">{error}</div>
+          <InlineNotification
+            kind="error"
+            title="Error"
+            subtitle={error}
+            lowContrast
+          />
         )}
 
         {!loading && !error && agents.length > 0 && (
-          <div className="manage-dashboard-list">
-            {agents.map((agent) => (
-              <div
+          <div
+            className="manage-dashboard-list"
+            style={{
+              display: "grid",
+              gridTemplateColumns: "repeat(auto-fill, minmax(400px, 1fr))",
+              gap: "1.5rem",
+              marginTop: "1rem"
+            }}
+          >
+            {agents.map((agent: AgentItem) => (
+              <ClickableTile
                 key={agent.id}
-                className="manage-dashboard-card"
                 onClick={() => navigate(`/manage/${encodeURIComponent(agent.id)}`)}
-                onKeyDown={(e) => {
-                  if (e.key === "Enter" || e.key === " ") {
-                    e.preventDefault();
-                    navigate(`/manage/${encodeURIComponent(agent.id)}`);
-                  }
-                }}
-                role="button"
-                tabIndex={0}
+                style={{ display: "flex", flexDirection: "column", padding: "1.5rem", minHeight: "200px" }}
               >
-                <div className="manage-dashboard-card-top">
-                  <span className="manage-dashboard-card-id">
-                    <Bot size={18} style={{ verticalAlign: "middle", marginRight: 8 }} />
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontWeight: 600 }}>
+                    <Bot size={20} />
                     {agent.id}
-                  </span>
-                  <div className="manage-dashboard-card-meta">
-                    <span className="manage-dashboard-tools-badge">
-                      <Wrench size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
+                  </div>
+                  <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
+                    <Tag type="blue" size="sm">
+                      <Tools size={12} style={{ marginRight: "0.25rem" }} />
                       {agent.tools_count} tool{agent.tools_count !== 1 ? "s" : ""}
-                    </span>
+                    </Tag>
                     {agent.latest_version != null && (
-                      <span className="manage-dashboard-version-badge" title={agent.latest_version_created_at ? new Date(agent.latest_version_created_at).toLocaleString() : undefined}>
-                        <FileStack size={12} style={{ verticalAlign: "middle", marginRight: 4 }} />
+                      <Tag
+                        type="gray"
+                        size="sm"
+                        title={agent.latest_version_created_at ? new Date(agent.latest_version_created_at).toLocaleString() : undefined}
+                      >
+                        <DocumentMultiple_01 size={12} style={{ marginRight: "0.25rem" }} />
                         v{agent.latest_version}
-                      </span>
+                      </Tag>
                     )}
                   </div>
                 </div>
                 {agent.description && (
-                  <p className="manage-dashboard-card-desc">{agent.description}</p>
+                  <p style={{ marginBottom: "1.5rem", color: "#525252", flex: 1, lineHeight: "1.5" }}>{agent.description}</p>
                 )}
-                <div className="manage-dashboard-card-actions">
-                  <span
-                    className="manage-dashboard-card-btn"
-                    onClick={(e) => {
+                <div style={{ display: "flex", gap: "0.75rem", marginTop: "auto", flexWrap: "wrap" }}>
+                  <Button
+                    kind="tertiary"
+                    size="sm"
+                    renderIcon={Settings}
+                    onClick={(e: React.MouseEvent) => {
                       e.preventDefault();
                       e.stopPropagation();
                       navigate(`/manage/${encodeURIComponent(agent.id)}`);
                     }}
                   >
-                    <Settings size={14} />
                     Configure & try it out
-                  </span>
-                  <a
+                  </Button>
+                  <Link
                     href={agent.logs_url ?? "#"}
                     target="_blank"
                     rel="noopener noreferrer"
-                    className="manage-dashboard-card-link manage-dashboard-logs-link"
-                    onClick={(e) => e.stopPropagation()}
+                    onClick={(e: React.MouseEvent) => e.stopPropagation()}
                     title={agent.logs_url ? "Open logs in Loki" : "Set CUGA_LOKI_LOGS_URL or LOKI_URL for your Loki dashboard"}
+                    style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
                   >
-                    <ExternalLink size={14} />
+                    <Launch size={16} />
                     Logs (Loki)
-                  </a>
+                  </Link>
                 </div>
-              </div>
+              </ClickableTile>
             ))}
           </div>
         )}
 
         {!loading && !error && agents.length === 0 && (
-          <div className="manage-dashboard-loading">No agents configured.</div>
+          <InlineNotification
+            kind="info"
+            title="No agents configured"
+            subtitle="Create an agent to get started"
+            lowContrast
+            hideCloseButton
+          />
         )}
       </div>
     </div>

@@ -77,6 +77,12 @@
   color: #1f2937;
 }
 
+.config-modal-actions-row {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
 .config-modal-tabs {
   display: flex;
   gap: 4px;

@@ -338,6 +338,9 @@ importers:
       '@carbon/react':
         specifier: ^1.62.0
         version: 1.90.0(react-dom@18.3.1(react@18.3.1))(react-is@18.3.1)(react@18.3.1)(sass@1.92.0)
+      '@ibm/plex':
+        specifier: ^6.4.0
+        version: 6.4.1
       agentic_chat:
         specifier: workspace:*
         version: link:../agentic_chat
@@ -8049,7 +8052,7 @@ snapshots:
 
   '@carbon/colors@11.39.0':
     dependencies:
-      '@ibm/telemetry-js': 1.10.1
+      '@ibm/telemetry-js': 1.11.0
 
   '@carbon/colors@11.46.0':
     dependencies:
@@ -8070,7 +8073,7 @@ snapshots:
   '@carbon/grid@11.42.0':
     dependencies:
       '@carbon/layout': 11.40.0
-      '@ibm/telemetry-js': 1.10.1
+      '@ibm/telemetry-js': 1.11.0
 
   '@carbon/grid@11.49.0':
     dependencies:
@@ -8136,7 +8139,7 @@ snapshots:
 
   '@carbon/motion@11.34.0':
     dependencies:
-      '@ibm/telemetry-js': 1.10.1
+      '@ibm/telemetry-js': 1.11.0
 
   '@carbon/motion@11.40.0':
     dependencies:
@@ -8218,7 +8221,7 @@ snapshots:
       '@carbon/colors': 11.39.0
       '@carbon/layout': 11.40.0
       '@carbon/type': 11.46.0
-      '@ibm/telemetry-js': 1.10.1
+      '@ibm/telemetry-js': 1.11.0
       color: 4.2.3
 
   '@carbon/themes@11.67.0':
@@ -8233,7 +8236,7 @@ snapshots:
     dependencies:
       '@carbon/grid': 11.42.0
       '@carbon/layout': 11.40.0
-      '@ibm/telemetry-js': 1.10.1
+      '@ibm/telemetry-js': 1.11.0
 
   '@carbon/type@11.53.0':
     dependencies:
@@ -8673,11 +8676,11 @@ snapshots:
 
   '@ibm/plex-mono@1.1.0':
     dependencies:
-      '@ibm/telemetry-js': 1.10.1
+      '@ibm/telemetry-js': 1.11.0
 
   '@ibm/plex-sans-arabic@1.1.0':
     dependencies:
-      '@ibm/telemetry-js': 1.10.1
+      '@ibm/telemetry-js': 1.11.0
 
   '@ibm/plex-sans-devanagari@0.0.3-alpha.0': {}
 
@@ -8719,7 +8722,7 @@ snapshots:
 
   '@ibm/plex@6.4.1':
     dependencies:
-      '@ibm/telemetry-js': 1.10.1
+      '@ibm/telemetry-js': 1.11.0
 
   '@ibm/telemetry-js@1.10.1': {}
 

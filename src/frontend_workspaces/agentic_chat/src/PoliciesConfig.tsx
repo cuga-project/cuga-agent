@@ -1,6 +1,13 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef } from "react";
-import { X, Save, Plus, Trash2, ChevronDown, ChevronUp, Shield, Search, Download, Upload } from "lucide-react";
+import {
+  ComposedModal,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+} from "@carbon/react";
+import { Save, Add, TrashCan, ChevronDown, ChevronUp, Search, Download, Upload } from "@carbon/icons-react";
 import "./ConfigModal.css";
 
 interface PolicyTrigger {
@@ -415,6 +422,7 @@ function TagInput({ values, onChange, placeholder, disabled }: TagInputProps) {
 }
 
 export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesConfigProps) {
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [config, setConfig] = useState<PoliciesConfigData>({
     enablePolicies: true,
     policies: [],
@@ -802,92 +810,72 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
   ) as OutputFormatterPolicy[];
 
   return (
-    <div className="config-modal-overlay">
-      <div className="config-modal">
-        <div className="config-modal-header">
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <Shield size={24} style={{ color: "#4e00ec" }} />
-            <h2>Policies Configuration</h2>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <button
-              onClick={exportPolicies}
-              disabled={config.policies.length === 0}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "6px 12px",
-                backgroundColor: config.policies.length === 0 ? "#e5e7eb" : "#f3f4f6",
-                border: "1px solid #d1d5db",
-                borderRadius: "6px",
-                cursor: config.policies.length === 0 ? "not-allowed" : "pointer",
-                fontSize: "13px",
-                fontWeight: 500,
-                color: config.policies.length === 0 ? "#9ca3af" : "#374151",
-              }}
-              title="Export all policies as JSON"
-            >
-              <Download size={16} />
-              Export
-            </button>
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "6px 12px",
-                backgroundColor: "#f3f4f6",
-                border: "1px solid #d1d5db",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontSize: "13px",
-                fontWeight: 500,
-                color: "#374151",
-              }}
-              title="Import policies from JSON"
-            >
-              <Upload size={16} />
-              Import
-              <input type="file" accept=".json" onChange={importPolicies} style={{ display: "none" }} />
-            </label>
-            <button className="config-modal-close" onClick={onClose}>
-              <X size={20} />
-            </button>
-          </div>
-        </div>
+    <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
+      <ModalHeader title="Policies Configuration" buttonOnClick={onClose} />
 
+      <ModalBody hasScrollingContent className="config-modal-body-wrap">
+        <div className="config-modal-actions-row">
+          <Button
+            kind="secondary"
+            size="sm"
+            renderIcon={Download}
+            onClick={exportPolicies}
+            disabled={config.policies.length === 0}
+          >
+            Export
+          </Button>
+          <Button kind="secondary" size="sm" renderIcon={Upload} onClick={() => importInputRef.current?.click()}>
+            Import
+          </Button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json"
+            onChange={importPolicies}
+            style={{ display: "none" }}
+          />
+        </div>
         <div className="config-modal-tabs">
-          <button
+          <Button
+            kind={activeTab === "intent_guard" ? "primary" : "ghost"}
+            size="sm"
             className={`config-tab ${activeTab === "intent_guard" ? "active" : ""}`}
             onClick={() => setActiveTab("intent_guard")}
           >
             Intent Guards ({intentGuards.length})
-          </button>
-          <button
+          </Button>
+          <Button
+            kind={activeTab === "playbook" ? "primary" : "ghost"}
+            size="sm"
             className={`config-tab ${activeTab === "playbook" ? "active" : ""}`}
             onClick={() => setActiveTab("playbook")}
           >
             Playbooks ({playbooks.length})
-          </button>
-          <button
+          </Button>
+          <Button
+            kind={activeTab === "tool_guide" ? "primary" : "ghost"}
+            size="sm"
             className={`config-tab ${activeTab === "tool_guide" ? "active" : ""}`}
             onClick={() => setActiveTab("tool_guide")}
           >
             Tool Guide ({ToolGuides.length})
-          </button>
-          <button
+          </Button>
+          <Button
+            kind={activeTab === "tool_approval" ? "primary" : "ghost"}
+            size="sm"
             className={`config-tab ${activeTab === "tool_approval" ? "active" : ""}`}
             onClick={() => setActiveTab("tool_approval")}
           >
             Tool Approval ({toolApprovals.length})
-          </button>
-          <button
+          </Button>
+          <Button
+            kind={activeTab === "output_formatter" ? "primary" : "ghost"}
+            size="sm"
             className={`config-tab ${activeTab === "output_formatter" ? "active" : ""}`}
             onClick={() => setActiveTab("output_formatter")}
           >
             Output Formatter ({outputFormatters.length})
-          </button>
+          </Button>
         </div>
 
         <div className="config-modal-content">
@@ -924,21 +912,24 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
             </>
           )}
         </div>
-
-        <div className="config-modal-footer">
-          <button className="cancel-btn" onClick={onClose}>
-            Cancel
-          </button>
-          <button className={`save-btn ${saveStatus}`} onClick={saveConfig} disabled={saveStatus === "saving"}>
-            <Save size={16} />
-            {saveStatus === "idle" && "Save Changes"}
-            {saveStatus === "saving" && "Saving..."}
-            {saveStatus === "success" && "Saved!"}
-            {saveStatus === "error" && "Error!"}
-          </button>
-        </div>
-      </div>
-    </div>
+      </ModalBody>
+      <ModalFooter>
+        <Button kind="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          kind="primary"
+          renderIcon={Save}
+          onClick={saveConfig}
+          disabled={saveStatus === "saving"}
+        >
+          {saveStatus === "idle" && "Save Changes"}
+          {saveStatus === "saving" && "Saving..."}
+          {saveStatus === "success" && "Saved!"}
+          {saveStatus === "error" && "Error!"}
+        </Button>
+      </ModalFooter>
+    </ComposedModal>
   );
 
   function renderIntentGuards() {
@@ -946,10 +937,9 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
       <div className="config-card">
         <div className="section-header">
           <h3>Intent Guards</h3>
-          <button className="add-btn" onClick={addIntentGuard} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+          <Button kind="primary" size="sm" renderIcon={Add} onClick={addIntentGuard} disabled={!config.enablePolicies} className="add-btn">
             Add Intent Guard
-          </button>
+          </Button>
         </div>
 
         <div className="sources-list">
@@ -976,16 +966,25 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
                       placeholder="Policy Name"
                       disabled={!config.enablePolicies}
                     />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription={isExpanded ? "Collapse" : "Expand"}
+                      renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                      className="expand-btn"
+                      onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                    />
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Delete"
+                      renderIcon={TrashCan}
                       className="delete-btn"
                       onClick={() => removePolicy(policy.id)}
                       disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    />
                   </div>
                   {!isExpanded && (
                     <div className="agent-summary">
@@ -1224,10 +1223,9 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
       <div className="config-card">
         <div className="section-header">
           <h3>Playbooks</h3>
-          <button className="add-btn" onClick={addPlaybook} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+          <Button kind="primary" size="sm" renderIcon={Add} onClick={addPlaybook} disabled={!config.enablePolicies} className="add-btn">
             Add Playbook
-          </button>
+          </Button>
         </div>
 
         <div className="sources-list">
@@ -1254,16 +1252,25 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
                       placeholder="Playbook Name"
                       disabled={!config.enablePolicies}
                     />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription={isExpanded ? "Collapse" : "Expand"}
+                      renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                      className="expand-btn"
+                      onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                    />
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Delete"
+                      renderIcon={TrashCan}
                       className="delete-btn"
                       onClick={() => removePolicy(policy.id)}
                       disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    />
                   </div>
                   {!isExpanded && (
                     <div className="agent-summary">
@@ -1474,10 +1481,9 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
       <div className="config-card">
         <div className="section-header">
           <h3>Tool Guide Policies</h3>
-          <button className="add-btn" onClick={addToolGuide} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+          <Button kind="primary" size="sm" renderIcon={Add} onClick={addToolGuide} disabled={!config.enablePolicies} className="add-btn">
             Add Tool Guide
-          </button>
+          </Button>
         </div>
 
         <div className="sources-list">
@@ -1501,16 +1507,25 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
                       placeholder="Policy Name"
                       disabled={!config.enablePolicies}
                     />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription={isExpanded ? "Collapse" : "Expand"}
+                      renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                      className="expand-btn"
+                      onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                    />
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Delete"
+                      renderIcon={TrashCan}
                       className="delete-btn"
                       onClick={() => removePolicy(policy.id)}
                       disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    />
                   </div>
                   {!isExpanded && (
                     <div className="agent-summary">
@@ -1633,10 +1648,9 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
       <div className="config-card">
         <div className="section-header">
           <h3>Tool Approval Policies</h3>
-          <button className="add-btn" onClick={addToolApproval} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+          <Button kind="primary" size="sm" renderIcon={Add} onClick={addToolApproval} disabled={!config.enablePolicies} className="add-btn">
             Add Tool Approval
-          </button>
+          </Button>
         </div>
 
         <div className="policies-list">
@@ -1660,16 +1674,25 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
                       placeholder="Policy Name"
                       disabled={!config.enablePolicies}
                     />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription={isExpanded ? "Collapse" : "Expand"}
+                      renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                      className="expand-btn"
+                      onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                    />
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Delete"
+                      renderIcon={TrashCan}
                       className="delete-btn"
                       onClick={() => removePolicy(policy.id)}
                       disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    />
                   </div>
                   {!isExpanded && (
                     <div className="agent-summary">
@@ -1811,10 +1834,9 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
       <div className="config-card">
         <div className="section-header">
           <h3>Output Formatter Policies</h3>
-          <button className="add-btn" onClick={addOutputFormatter} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+          <Button kind="primary" size="sm" renderIcon={Add} onClick={addOutputFormatter} disabled={!config.enablePolicies} className="add-btn">
             Add Output Formatter
-          </button>
+          </Button>
         </div>
 
         <div className="policies-list">
@@ -1841,16 +1863,25 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
                       placeholder="Policy Name"
                       disabled={!config.enablePolicies}
                     />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription={isExpanded ? "Collapse" : "Expand"}
+                      renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                      className="expand-btn"
+                      onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                    />
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Delete"
+                      renderIcon={TrashCan}
                       className="delete-btn"
                       onClick={() => removePolicy(policy.id)}
                       disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+                    />
                   </div>
                   {!isExpanded && (
                     <div className="agent-summary">
