@@ -625,7 +625,7 @@ export function ManagePage() {
         <Layer withBackground className="manage-chat-panel">
           <p className="manage-chat-label">Try your configuration</p>
           <div className="manage-chat-wrap">
-            <CarbonChat contained={true} useDraft={true} />
+            <CarbonChat contained={true} useDraft={true} disableHistory={true} />
           </div>
         </Layer>
       </div>

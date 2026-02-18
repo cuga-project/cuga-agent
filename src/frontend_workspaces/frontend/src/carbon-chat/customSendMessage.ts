@@ -112,6 +112,7 @@ export async function customSendMessage(
   requestOptions: CustomSendMessageOptions,
   instance: ChatInstance,
   useDraft: boolean = false,
+  disableHistory: boolean = false,
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -160,6 +161,11 @@ export async function customSendMessage(
     // Add draft header if needed
     if (useDraft) {
       headers["X-Use-Draft"] = "true";
+    }
+    
+    // Add disable history header if needed
+    if (disableHistory) {
+      headers["X-Disable-History"] = "true";
     }
     
     // Call CUGA backend /stream endpoint

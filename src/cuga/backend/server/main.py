@@ -1,5 +1,5 @@
 import asyncio
-import datetime
+from datetime import datetime
 import platform
 import re
 import shutil
@@ -8,6 +8,7 @@ import subprocess
 import uuid
 import yaml
 import httpx
+import json
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Union, Optional
 from pathlib import Path
@@ -15,9 +16,9 @@ from cuga.backend.utils.id_utils import random_id_with_timestamp
 import traceback
 from pydantic import BaseModel, ValidationError
 from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
-from langchain_core.messages import AIMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
@@ -50,6 +51,10 @@ from cuga.config import (
     TRACES_DIR,
 )
 from cuga.backend.server import manage_routes
+from cuga.backend.server.conversation_history import get_conversation_db
+
+# Default user ID for conversation history
+DEFAULT_USER_ID = "default_user"
 
 try:
     from langfuse.langchain import CallbackHandler
@@ -58,8 +63,6 @@ except ImportError:
         from langfuse.callback.langchain import LangchainCallbackHandler as CallbackHandler
     except ImportError:
         CallbackHandler = None
-from fastapi.responses import StreamingResponse, JSONResponse
-import json
 
 # Import embedded assets with feature flag
 USE_EMBEDDED_ASSETS = os.getenv("USE_EMBEDDED_ASSETS", "false").lower() in ("true", "1", "yes", "on")
@@ -618,7 +621,161 @@ async def setup_page_info(state: AgentState, env: ExtensionEnv | BrowserEnvGymAs
     state.current_app_description = f"web application for '{title}' and url '{url_app_name}'"
 
 
-async def event_stream(query: str, api_mode=False, resume=None, thread_id: str = None, agent=None):
+async def _save_conversation_and_events_async(
+    agent_id: str, thread_id: str, user_id: str, state: AgentState, events: List[Dict[str, Any]]
+):
+    """
+    Asynchronously save conversation history and stream events in a single batch operation.
+    This runs in the background without blocking the event stream.
+    """
+    try:
+        # Run the blocking DB operations in a thread pool
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(
+            None, _save_conversation_and_events_sync, agent_id, thread_id, user_id, state, events
+        )
+    except Exception as e:
+        logger.error(f"Error in async save: {e}")
+
+
+def _save_conversation_and_events_sync(
+    agent_id: str, thread_id: str, user_id: str, state: AgentState, events: List[Dict[str, Any]]
+):
+    """
+    Synchronous helper to save both conversation and events.
+    Called from async function via thread pool.
+    """
+    try:
+        # Save conversation history
+        save_conversation_to_db(agent_id, thread_id, state, user_id)
+
+        # Batch save all stream events
+        if events:
+            conversation_db = get_conversation_db()
+            conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
+            logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
+    except Exception as e:
+        logger.error(f"Error in sync save: {e}")
+
+
+def save_conversation_to_db(agent_id: str, thread_id: str, state: AgentState, user_id: str = DEFAULT_USER_ID):
+    """
+    Save conversation history to database.
+
+    Args:
+        agent_id: The agent identifier
+        thread_id: The thread/conversation identifier
+        state: The current agent state containing messages
+        user_id: The user identifier (defaults to DEFAULT_USER_ID)
+    """
+    try:
+        if not thread_id or not state:
+            return
+
+        conversation_db = get_conversation_db()
+
+        # Get the latest version and increment
+        latest_version = conversation_db.get_latest_version(agent_id, thread_id, user_id)
+        new_version = latest_version + 1
+
+        # Debug logging
+        logger.info(f"=== SAVE DEBUG === thread_id={thread_id}, version={new_version}")
+        logger.info(f"State has chat_messages: {len(state.chat_messages) if state.chat_messages else 0}")
+        logger.info(
+            f"State has chat_agent_messages: {len(state.chat_agent_messages) if state.chat_agent_messages else 0}"
+        )
+        logger.info(
+            f"State has supervisor_chat_messages: {len(state.supervisor_chat_messages) if state.supervisor_chat_messages else 0}"
+        )
+
+        # Convert messages to serializable format
+        messages = []
+
+        # Add chat_messages if available
+        if state.chat_messages:
+            logger.info(f"Processing {len(state.chat_messages)} chat_messages")
+            for i, msg in enumerate(state.chat_messages):
+                # Determine role based on message type or position (alternating user/assistant)
+                if isinstance(msg, HumanMessage):
+                    role = "user"
+                elif isinstance(msg, AIMessage):
+                    role = "assistant"
+                else:
+                    # For BaseMessage, alternate between user and assistant based on position
+                    role = "user" if i % 2 == 0 else "assistant"
+
+                logger.debug(
+                    f"Message {i}: type={type(msg).__name__}, role={role}, content={str(msg.content if hasattr(msg, 'content') else msg)[:50]}..."
+                )
+
+                messages.append(
+                    {
+                        "role": role,
+                        "content": msg.content if hasattr(msg, 'content') else str(msg),
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "metadata": {"type": type(msg).__name__, "message_type": "chat_messages"},
+                    }
+                )
+
+        # Add chat_agent_messages if available
+        if state.chat_agent_messages:
+            logger.info(f"Processing {len(state.chat_agent_messages)} chat_agent_messages")
+            for msg in state.chat_agent_messages:
+                messages.append(
+                    {
+                        "role": "user"
+                        if isinstance(msg, HumanMessage)
+                        else "assistant"
+                        if isinstance(msg, AIMessage)
+                        else "system",
+                        "content": msg.content if hasattr(msg, 'content') else str(msg),
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "metadata": {"type": type(msg).__name__, "message_type": "chat_agent_messages"},
+                    }
+                )
+
+        # Add supervisor_chat_messages if available
+        if state.supervisor_chat_messages:
+            logger.info(f"Processing {len(state.supervisor_chat_messages)} supervisor_chat_messages")
+            for msg in state.supervisor_chat_messages:
+                messages.append(
+                    {
+                        "role": "user"
+                        if isinstance(msg, HumanMessage)
+                        else "assistant"
+                        if isinstance(msg, AIMessage)
+                        else "system",
+                        "content": msg.content if hasattr(msg, 'content') else str(msg),
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "metadata": {"type": type(msg).__name__, "message_type": "supervisor_chat_messages"},
+                    }
+                )
+
+        # Save to database
+        if messages:
+            logger.info(f"Total messages to save: {len(messages)}")
+            success = conversation_db.save_conversation(
+                agent_id=agent_id,
+                thread_id=thread_id,
+                version=new_version,
+                user_id=user_id,
+                messages=messages,
+            )
+            if success:
+                logger.info(
+                    f"✓ Saved conversation history: thread_id={thread_id}, version={new_version}, messages={len(messages)}"
+                )
+            else:
+                logger.warning(f"✗ Failed to save conversation history: thread_id={thread_id}")
+        else:
+            logger.warning(f"No messages to save for thread_id={thread_id}")
+    except Exception as e:
+        logger.error(f"Error saving conversation to database: {e}")
+
+
+async def event_stream(
+    query: str, api_mode=False, resume=None, thread_id: str = None, agent=None, disable_history: bool = False
+):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
     run_agent = agent if agent is not None else app_state.agent
     if not run_agent or not run_agent.graph:
@@ -700,6 +857,22 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
             await setup_page_info(local_state, app_state.env)
 
     local_tracker.task_id = 'demo'
+
+    # Initialize event sequence counter and buffer for stream event tracking
+    event_sequence = 0
+    stream_events_buffer = []  # Buffer to collect events during streaming
+
+    # Add user message to buffer as first event
+    if query and thread_id:
+        stream_events_buffer.append(
+            {
+                "event_name": "UserMessage",
+                "event_data": query,
+                "timestamp": datetime.utcnow().isoformat(),
+                "sequence": event_sequence,
+            }
+        )
+        event_sequence += 1
 
     langfuse_handler = (
         CallbackHandler()
@@ -799,6 +972,8 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                                 variables_metadata = (
                                     local_state.variables_manager.get_all_variables_metadata()
                                 )
+
+                                # Conversation history will be saved at the end with stream events
                                 # Extract active policies from cuga_lite_metadata
                                 if local_state.cuga_lite_metadata:
                                     metadata = local_state.cuga_lite_metadata
@@ -845,6 +1020,32 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                         logger.info("=" * 80)
                         logger.info(f"{event.answer if event.answer else 'Done.'}")
                         logger.info("=" * 80)
+
+                        # Add Answer event to buffer
+                        if thread_id:
+                            stream_events_buffer.append(
+                                {
+                                    "event_name": "Answer",
+                                    "event_data": final_answer_text,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "sequence": event_sequence,
+                                }
+                            )
+                            event_sequence += 1
+
+                            # Batch save all events and conversation history synchronously (for debugging)
+                            # Skip saving if disable_history is True
+                            if not disable_history:
+                                _save_conversation_and_events_sync(
+                                    agent_id=app_state.agent_id,
+                                    thread_id=thread_id,
+                                    user_id=DEFAULT_USER_ID,
+                                    state=local_state if local_state else AgentState(),
+                                    events=stream_events_buffer.copy(),
+                                )
+                            else:
+                                logger.info(f"History saving disabled for thread_id: {thread_id}")
+
                         yield StreamEvent(
                             name="Answer",
                             data=final_answer_text,
@@ -907,6 +1108,7 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                             run_agent.graph.update_state(
                                 {"configurable": {"thread_id": thread_id}}, local_state.model_dump()
                             )
+                            # Conversation history will be saved at the end with stream events
                         agent_stream_gen = agent_loop_obj.run_stream(state=None)
                         break
                 else:
@@ -920,6 +1122,18 @@ async def event_stream(query: str, api_mode=False, resume=None, thread_id: str =
                     name = ((event.split("\n")[0]).split(":")[1]).strip()
                     logger.debug("Yield {}".format(event))
                     if name not in ["ChatAgent"]:
+                        # Add stream event to buffer instead of immediate DB write
+                        if thread_id:
+                            stream_events_buffer.append(
+                                {
+                                    "event_name": name,
+                                    "event_data": event,
+                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "sequence": event_sequence,
+                                }
+                            )
+                            event_sequence += 1
+
                         yield StreamEvent(name=name, data=event).format(
                             app_state.output_format, thread_id=thread_id
                         )
@@ -1054,7 +1268,20 @@ async def stream(request: Request):
     else:
         logger.info(f"Using provided thread_id: {thread_id}")
 
+    # User message will be saved as part of the event stream buffer
+    # No need to save it separately here to avoid race conditions
+
     use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in ("1", "true", "yes", "on")
+    disable_history = str(request.headers.get("X-Disable-History", "") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+
+    if disable_history:
+        logger.info(f"History saving disabled for thread_id: {thread_id}")
+
     run_agent = None
     if use_draft:
         draft_state = getattr(request.app.state, "draft_app_state", None)
@@ -1068,6 +1295,7 @@ async def stream(request: Request):
             resume=query if isinstance(query, ActionResponse) else None,
             thread_id=thread_id,
             agent=run_agent,
+            disable_history=disable_history,
         ),
         media_type="text/event-stream",
     )
@@ -1144,6 +1372,80 @@ async def reset_agent_state(request: Request):
     except Exception as e:
         logger.error(f"Failed to reset agent state: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to reset agent state: {str(e)}")
+
+
+@app.get("/api/conversation-threads")
+async def get_conversation_threads(agent_id: str = "cuga-default", user_id: str = DEFAULT_USER_ID):
+    """
+    Endpoint to retrieve all conversation threads for an agent.
+    Returns list of threads with their latest version and first user message.
+    """
+    try:
+        conversation_db = get_conversation_db()
+        threads = conversation_db.get_all_threads_for_agent(agent_id, user_id)
+        return JSONResponse({"threads": threads})
+    except Exception as e:
+        logger.error(f"Failed to get conversation threads: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get conversation threads: {str(e)}")
+
+
+@app.get("/api/conversation-messages/{thread_id}")
+async def get_conversation_messages(
+    thread_id: str, agent_id: str = "cuga-default", user_id: str = DEFAULT_USER_ID
+):
+    """
+    Endpoint to retrieve all messages for a specific conversation thread.
+    Returns the latest version of the conversation.
+    """
+    try:
+        conversation_db = get_conversation_db()
+
+        # Get the latest version for this thread
+        latest_version = conversation_db.get_latest_version(agent_id, thread_id, user_id)
+
+        if latest_version == 0:
+            return JSONResponse({"messages": []})
+
+        # Get the conversation
+        conversation = conversation_db.get_conversation(agent_id, thread_id, latest_version, user_id)
+
+        if not conversation:
+            return JSONResponse({"messages": []})
+
+        # Convert Pydantic models to dictionaries for JSON serialization
+        messages_dict = [msg.model_dump() for msg in conversation.messages]
+        return JSONResponse({"messages": messages_dict})
+    except Exception as e:
+        logger.error(f"Failed to get conversation messages: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get conversation messages: {str(e)}")
+
+
+@app.get("/api/conversation-stream-events/{thread_id}")
+async def get_conversation_stream_events(
+    thread_id: str, agent_id: str = "cuga-default", user_id: str = DEFAULT_USER_ID
+):
+    """
+    Endpoint to retrieve all streaming events for a specific conversation thread.
+    Returns the events that were streamed during the conversation for replay.
+    """
+    try:
+        conversation_db = get_conversation_db()
+
+        # Get the stream events
+        stream_history = conversation_db.get_stream_events(agent_id, thread_id, user_id)
+
+        if not stream_history:
+            return JSONResponse({"events": []})
+
+        # Convert Pydantic models to dictionaries for JSON serialization
+        events_dict = [
+            event.model_dump() if hasattr(event, 'model_dump') else dict(event)
+            for event in stream_history.events
+        ]
+        return JSONResponse({"events": events_dict})
+    except Exception as e:
+        logger.error(f"Failed to get conversation stream events: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to get conversation stream events: {str(e)}")
 
 
 @app.get("/api/config/tools")
@@ -1272,12 +1574,19 @@ async def create_conversation(request: Request):
 
 
 @app.delete("/api/conversations/{conversation_id}")
-async def delete_conversation(conversation_id: str):
-    """Endpoint to delete a conversation."""
+async def delete_conversation(
+    conversation_id: str, agent_id: str = "cuga-default", user_id: str = DEFAULT_USER_ID
+):
+    """Endpoint to delete a conversation thread and its stream events."""
     try:
-        # TODO: Implement actual conversation storage
-        logger.info(f"Deleted conversation: {conversation_id}")
-        return JSONResponse({"status": "success", "message": "Conversation deleted"})
+        conversation_db = get_conversation_db()
+        success = conversation_db.delete_thread(agent_id, conversation_id, user_id)
+
+        if success:
+            logger.info(f"Deleted conversation and stream events: {conversation_id}")
+            return JSONResponse({"status": "success", "message": "Conversation deleted"})
+        else:
+            raise HTTPException(status_code=500, detail="Failed to delete conversation")
     except Exception as e:
         logger.error(f"Failed to delete conversation: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to delete conversation: {str(e)}")
