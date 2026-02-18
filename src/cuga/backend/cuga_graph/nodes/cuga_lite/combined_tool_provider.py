@@ -13,7 +13,7 @@ from loguru import logger
 from langchain_core.tools import StructuredTool
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_registry_base_url
+from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_registry_base_url, get_agent_id
 from cuga.backend.tools_env.registry.utils.types import AppDefinition
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
     ToolProviderInterface,
@@ -200,6 +200,7 @@ class CombinedToolProvider(ToolProviderInterface):
         self,
         app_names: Optional[List[str]] = None,
         get_include_by_app: Optional[Callable[[], Tuple[Optional[Dict[str, List[str]]], int]]] = None,
+        agent_id: Optional[str] = None,
     ):
         """
         Initialize the combined tool provider.
@@ -209,9 +210,11 @@ class CombinedToolProvider(ToolProviderInterface):
             get_include_by_app: Optional callable returning (include_by_app, version).
                 If provided, only tools whose name is in include_by_app[app_name] are returned
                 (when that list is non-empty). Version change clears the tools cache.
+            agent_id: Optional agent ID for database mode. If None, uses environment variable or defaults.
         """
         self.app_names = app_names
         self.get_include_by_app = get_include_by_app
+        self.agent_id = agent_id
         self.apps: List[AppDefinition] = []
         self.tools_cache: Dict[str, List[StructuredTool]] = {}
         self._last_include_version: int = -1
@@ -219,7 +222,7 @@ class CombinedToolProvider(ToolProviderInterface):
 
     async def initialize(self):
         """Load apps from tracker and registry."""
-        logger.info("Initializing CombinedToolProvider...")
+        logger.info(f"Initializing CombinedToolProvider (agent_id={self.agent_id})...")
 
         tracker_apps = []
         if hasattr(tracker, 'apps') and tracker.apps:
@@ -228,7 +231,7 @@ class CombinedToolProvider(ToolProviderInterface):
         registry_apps = []
         if settings.advanced_features.registry:
             try:
-                registry_apps = await get_apps()
+                registry_apps = await get_apps(agent_id=self.agent_id)
             except Exception as e:
                 logger.warning(f"Failed to get apps from registry: {e}")
 
@@ -346,9 +349,15 @@ class CombinedToolProvider(ToolProviderInterface):
 
         if settings.advanced_features.registry:
             try:
-                logger.debug(f"Getting tools from registry for: {app_name}")
+                logger.debug(f"Getting tools from registry for: {app_name} (agent_id={self.agent_id})")
                 registry_base = get_registry_base_url()
                 url = f'{registry_base}/applications/{app_name}/apis?include_response_schema=true'
+
+                # Add agent_id parameter if available
+                agent_id = self.agent_id or get_agent_id()
+                if agent_id:
+                    url += f'&agent_id={agent_id}'
+
                 headers = {'accept': 'application/json'}
 
                 async with aiohttp.ClientSession() as session:

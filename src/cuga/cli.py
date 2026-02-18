@@ -955,7 +955,7 @@ def start(
             os.environ["CUGA_MANAGER_MODE"] = "true"
             os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
             managed_path = ensure_managed_mcp_file_exists(get_managed_mcp_path())
-            os.environ["MCP_SERVERS_FILE"] = managed_path
+            os.environ["MCP_SERVERS_FILE"] = "none"
             logger.info("Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE=%s", managed_path)
             kill_processes_by_port([settings.server_ports.registry, settings.server_ports.demo])
             os.environ["CUGA_HOST"] = host

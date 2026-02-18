@@ -43,11 +43,12 @@ interface ToolsConfigProps {
   onChange: (tools: ToolEntry[]) => void;
   connectedApps?: ConnectedApp[];
   connectedTools?: ConnectedTool[];
+  agentId?: string;
 }
 
 const TOOLS_PREVIEW_COUNT = 3;
 
-export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTools = [] }: ToolsConfigProps) {
+export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default" }: ToolsConfigProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [toolsModalIndex, setToolsModalIndex] = useState<number | null>(null);
@@ -55,7 +56,8 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
   const [showAllTools, setShowAllTools] = useState(false);
 
   const handleAdd = (tool: ToolEntry) => {
-    onChange([...tools, tool]);
+    const updatedTools = [...tools, tool];
+    onChange(updatedTools);
     setModalOpen(false);
   };
 
@@ -68,7 +70,8 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
   };
 
   const handleRemove = (index: number) => {
-    onChange(tools.filter((_, i) => i !== index));
+    const updatedTools = tools.filter((_, i) => i !== index);
+    onChange(updatedTools);
   };
 
   const updateServerInclude = (index: number, include: string[] | undefined) => {
@@ -83,14 +86,15 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
 
   const saveToolsModalByAppName = (appName: string, include: string[] | undefined) => {
     const idx = tools.findIndex((t) => t.name === appName);
+    let updatedTools: ToolEntry[];
+    
     if (idx >= 0) {
-      const next = tools.map((t, i) => {
+      updatedTools = tools.map((t, i) => {
         if (i !== idx) return t;
         if (include && include.length > 0) return { ...t, include };
         const { include: _omit, ...rest } = t;
         return rest;
       });
-      onChange(next);
     } else {
       const entry: ToolEntry = {
         name: appName,
@@ -101,18 +105,19 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
       if (include && include.length > 0) entry.include = include;
       const connectedIndex = connectedApps.findIndex((a) => a.name === appName);
       if (connectedIndex >= 0) {
-        const byConnectedOrder = [...tools];
+        updatedTools = [...tools];
         let insertAt = 0;
         for (const app of connectedApps) {
           if (app.name === appName) break;
           if (tools.some((t) => t.name === app.name)) insertAt++;
         }
-        byConnectedOrder.splice(insertAt, 0, entry);
-        onChange(byConnectedOrder);
+        updatedTools.splice(insertAt, 0, entry);
       } else {
-        onChange([...tools, entry]);
+        updatedTools = [...tools, entry];
       }
     }
+    
+    onChange(updatedTools);
   };
 
   const editingTool = editingIndex !== null ? tools[editingIndex] ?? null : null;
@@ -142,80 +147,95 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
     setToolsModalAppName(null);
   };
 
+  // Get list of available tools that are NOT yet configured
+  const configuredNames = new Set(tools.map(t => t.name));
+  const availableToAdd = connectedApps.filter(app => !configuredNames.has(app.name));
+
   return (
     <Stack gap={5} orientation="vertical">
-      {tools.length === 0 && !hasConnected ? (
-        <p className="cds--type-body-compact-01 cds--color-text-placeholder">No tools added yet.</p>
-      ) : tools.length > 0 ? (
+      {/* Configured Tools Section */}
+      {tools.length === 0 ? (
+        <p className="cds--type-body-compact-01 cds--color-text-placeholder">No tools configured yet.</p>
+      ) : (
         <StructuredListWrapper>
           <StructuredListBody>
-            {(showAllTools ? tools : tools.slice(0, TOOLS_PREVIEW_COUNT)).map((t, i) => (
-              <StructuredListRow key={i}>
-                <StructuredListCell>
-                  <VStack gap={2}>
-                    <HStack gap={3}>
-                      <span className="cds--type-body-compact-01 cds--type-semibold">
-                        {t.name || (t.type === "mcp" ? "MCP" : "OpenAPI")}
-                      </span>
-                      <Tag type={t.type === "mcp" ? "blue" : "green"} size="md">
-                        {t.type === "mcp" ? "MCP" : "OpenAPI"}
-                      </Tag>
-                      {t.include && t.include.length > 0 && (
-                        <Tag type="purple" size="sm">
-                          {t.include.length} tool{t.include.length !== 1 ? "s" : ""}
+            {(showAllTools ? tools : tools.slice(0, TOOLS_PREVIEW_COUNT)).map((t, i) => {
+              const isConnected = connectedTools.some((ct) => ct.app === t.name);
+              return (
+                <StructuredListRow key={i}>
+                  <StructuredListCell>
+                    <VStack gap={2}>
+                      <HStack gap={3}>
+                        <span className="cds--type-body-compact-01 cds--type-semibold">
+                          {t.name || (t.type === "mcp" ? "MCP" : "OpenAPI")}
+                        </span>
+                        <Tag type={t.type === "mcp" ? "blue" : "green"} size="md">
+                          {t.type === "mcp" ? "MCP" : "OpenAPI"}
                         </Tag>
+                        {isConnected && (
+                          <Tag type="green" size="sm" title="Currently connected">
+                            Connected
+                          </Tag>
+                        )}
+                        {t.include && t.include.length > 0 && (
+                          <Tag type="purple" size="sm">
+                            {t.include.length} tool{t.include.length !== 1 ? "s" : ""}
+                          </Tag>
+                        )}
+                      </HStack>
+                      {t.url && (
+                        <span className="cds--type-helper-text-01" style={{ wordBreak: "break-all" }}>
+                          {t.url}
+                        </span>
                       )}
-                    </HStack>
-                    {t.url && (
-                      <span className="cds--type-helper-text-01" style={{ wordBreak: "break-all" }}>
-                        {t.url}
-                      </span>
-                    )}
-                    {t.command && (
-                      <span className="cds--type-helper-text-01" style={{ wordBreak: "break-all" }}>
-                        {t.command}{t.args?.length ? ` ${t.args.join(" ")}` : ""}
-                      </span>
-                    )}
-                    {t.auth?.type && t.auth.type !== "none" && (
-                      <span className="cds--type-helper-text-01">Auth: {t.auth.type}</span>
-                    )}
-                  </VStack>
-                </StructuredListCell>
-                <StructuredListCell>
-                  <HStack gap={2}>
-                    {connectedTools.some((ct) => ct.app === t.name) && (
+                      {t.command && (
+                        <span className="cds--type-helper-text-01" style={{ wordBreak: "break-all" }}>
+                          {t.command}{t.args?.length ? ` ${t.args.join(" ")}` : ""}
+                        </span>
+                      )}
+                      {t.auth?.type && t.auth.type !== "none" && (
+                        <span className="cds--type-helper-text-01">Auth: {t.auth.type}</span>
+                      )}
+                    </VStack>
+                  </StructuredListCell>
+                  <StructuredListCell>
+                    <HStack gap={2}>
+                      {isConnected && (
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          hasIconOnly
+                          iconDescription="Select which tools to enable"
+                          renderIcon={Filter}
+                          onClick={() => setToolsModalIndex(i)}
+                        />
+                      )}
                       <Button
                         kind="ghost"
                         size="sm"
                         hasIconOnly
-                        iconDescription="Select which tools to enable"
-                        renderIcon={Filter}
-                        onClick={() => setToolsModalIndex(i)}
+                        iconDescription="Edit"
+                        renderIcon={Edit}
+                        onClick={() => setEditingIndex(i)}
                       />
-                    )}
-                    <Button
-                      kind="ghost"
-                      size="sm"
-                      hasIconOnly
-                      iconDescription="Edit"
-                      renderIcon={Edit}
-                      onClick={() => setEditingIndex(i)}
-                    />
-                    <Button
-                      kind="ghost"
-                      size="sm"
-                      hasIconOnly
-                      iconDescription="Remove server"
-                      renderIcon={TrashCan}
-                      onClick={() => handleRemove(i)}
-                    />
-                  </HStack>
-                </StructuredListCell>
-              </StructuredListRow>
-            ))}
+                      <Button
+                        kind="ghost"
+                        size="sm"
+                        hasIconOnly
+                        iconDescription="Remove"
+                        renderIcon={TrashCan}
+                        onClick={() => handleRemove(i)}
+                      />
+                    </HStack>
+                  </StructuredListCell>
+                </StructuredListRow>
+              );
+            })}
           </StructuredListBody>
         </StructuredListWrapper>
-      ) : null}
+      )}
+      
+      {/* Action Buttons */}
       <HStack gap={3}>
         <Button kind="secondary" size="sm" renderIcon={Add} onClick={() => setModalOpen(true)}>
           Add tool
@@ -231,82 +251,8 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
           </Button>
         )}
       </HStack>
-      {hasConnected && (
-        <ContainedList
-          kind="on-page"
-          label={
-            <VStack gap={1}>
-              <HStack gap={3} className="tools-config-connected-label">
-                <Plug size={20} aria-hidden />
-                <span className="cds--type-semibold">Connected tools (from registry)</span>
-              </HStack>
-            </VStack>
-          }
-          className="tools-config-connected-list"
-        >
-          {connectedApps.map((app) => {
-            const appTools = connectedTools.filter((t) => t.app === app.name);
-            const serverEntry = tools.find((t) => t.name === app.name);
-            const inConfig = !!serverEntry;
-            const includeSet =
-              serverEntry?.include && serverEntry.include.length > 0
-                ? new Set(serverEntry.include)
-                : null;
-            const displayTools =
-              includeSet != null
-                ? appTools.filter(
-                    (t) => includeSet.has(t.id ?? t.name) || includeSet.has(t.name)
-                  )
-                : appTools;
-            const count = displayTools.length;
-            return (
-              <ContainedListItem
-                key={app.name}
-                action={
-                  <Button
-                    kind="ghost"
-                    size="sm"
-                    renderIcon={Filter}
-                    onClick={() => setToolsModalAppName(app.name)}
-                  >
-                    Select tools
-                  </Button>
-                }
-              >
-                <VStack gap={2}>
-                  <HStack gap={3} className="tools-config-connected-item-header">
-                    <span className="cds--type-body-compact-01 cds--type-semibold">{app.name}</span>
-                    <Tag type="blue" size="md">{app.type}</Tag>
-                    {inConfig && (
-                      <Tag type="purple" size="md" title="This server is in your configuration above">
-                        In config
-                      </Tag>
-                    )}
-                    <span className="cds--type-helper-text-01">
-                      {count} tool{count !== 1 ? "s" : ""}
-                      {includeSet != null && count < appTools.length ? " selected" : ""}
-                    </span>
-                  </HStack>
-                  {displayTools.length > 0 && (
-                   <ContainedList kind="on-page" size="sm" isInset className="tools-config-connected-sublist">
-                     {displayTools.slice(0, 3).map((t) => (
-                       <ContainedListItem key={t.name} disabled>
-                         <span className="cds--type-body-compact-01" title={t.description || t.name}>{t.name}</span>
-                       </ContainedListItem>
-                     ))}
-                     {displayTools.length > 3 && (
-                       <ContainedListItem disabled>
-                         <span className="cds--type-helper-text-01">+{displayTools.length - 3} more</span>
-                       </ContainedListItem>
-                     )}
-                   </ContainedList>
-                 )}
-                </VStack>
-              </ContainedListItem>
-            );
-          })}
-        </ContainedList>
-      )}
+
+
       {modalOpen && (
         <AddToolModal
           onClose={() => setModalOpen(false)}

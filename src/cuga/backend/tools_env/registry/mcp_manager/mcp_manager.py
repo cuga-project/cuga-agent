@@ -470,6 +470,10 @@ class MCPManager:
     def get_apps(self) -> List[ServiceConfig]:
         return list(self.schema_urls.values())
 
+    def get_app_names(self) -> List[str]:
+        """Get list of application names (keys from schema_urls)"""
+        return list(self.schema_urls.keys())
+
     def get_all_apis(self, include_response_schema=False):
         app_names = list(self.tools_by_server.keys())
         tools = {app: self.get_apis_for_application(app, include_response_schema) for app in app_names}
@@ -502,11 +506,23 @@ class MCPManager:
                 result[prefixed_tool_name] = s_copy
             return result
 
-        # Check if it's an MCP server
-        if app_name in self.mcp_clients:
+        # Check if it's an MCP server (either successfully connected or configured)
+        is_mcp_server = app_name in self.mcp_clients or (
+            app_name in self.schema_urls and self.schema_urls[app_name].type == ServiceType.MCP_SERVER
+        )
+
+        if is_mcp_server:
             # Convert MCP tools to the same format as OpenAPITransformer
             result = {}
             mcp_tools = self.tools_by_server.get(app_name, [])
+
+            # If no tools loaded yet, return empty dict (server may still be initializing)
+            if not mcp_tools:
+                logger.warning(
+                    f"MCP server '{app_name}' has no tools loaded yet. It may still be initializing."
+                )
+                return {}
+
             for tool in mcp_tools:
                 if isinstance(tool, dict) and 'function' in tool:
                     func = tool['function']

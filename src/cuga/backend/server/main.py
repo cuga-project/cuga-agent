@@ -407,7 +407,7 @@ async def lifespan(app: FastAPI):
             getattr(app_state, "tools_include_version", 0),
         )
 
-    tool_provider = CombinedToolProvider(get_include_by_app=_get_include_by_app)
+    tool_provider = CombinedToolProvider(get_include_by_app=_get_include_by_app, agent_id="cuga-default")
     app_state.agent = DynamicAgentGraph(
         None,
         langfuse_handler=langfuse_handler,
@@ -430,6 +430,12 @@ async def lifespan(app: FastAPI):
     else:
         draft_app_state.tools_include_by_app = getattr(app_state, "tools_include_by_app", None)
         draft_app_state.tools_include_version = getattr(app_state, "tools_include_version", 0)
+
+    # Create versioned agent_id for draft to track configuration changes
+    # Using '--' separator for better compatibility (URL-safe, filesystem-safe)
+    # Single agent_id "cuga-default" with version "draft" for draft configs
+    draft_version = "draft"
+    draft_agent_id = f"cuga-default--{draft_version}"
 
     def _get_draft_include_by_app():
         return (
@@ -463,7 +469,9 @@ async def lifespan(app: FastAPI):
         await draft_app_state.policy_system.initialize()
         logger.info("Draft policy system initialized (collection: %s)", draft_collection)
 
-    draft_tool_provider = CombinedToolProvider(get_include_by_app=_get_draft_include_by_app)
+    draft_tool_provider = CombinedToolProvider(
+        get_include_by_app=_get_draft_include_by_app, agent_id=draft_agent_id
+    )
     draft_policy = getattr(draft_app_state, "policy_system", None) or app_state.policy_system
     draft_app_state.agent = DynamicAgentGraph(
         None,

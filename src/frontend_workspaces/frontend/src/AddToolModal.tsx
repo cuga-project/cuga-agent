@@ -10,7 +10,10 @@ import {
   FormGroup,
   Select,
   SelectItem,
+  Tile,
+  ClickableTile,
 } from "@carbon/react";
+import { Template, Folder } from "@carbon/icons-react";
 import type { ToolEntry, ToolAuth, AuthType } from "./types/tools";
 import { AUTH_TYPE_OPTIONS } from "./types/tools";
 import "./AddToolModal.css";
@@ -25,6 +28,33 @@ const emptyAuth: ToolAuth = { type: "none" };
 
 type McpConnectionMode = "url" | "command";
 
+// Pre-configured tool templates
+interface ToolTemplate {
+  id: string;
+  name: string;
+  description: string;
+  icon: React.ComponentType<any>;
+  config: Partial<ToolEntry> & { mcpMode?: McpConnectionMode; argsText?: string };
+}
+
+const TOOL_TEMPLATES: ToolTemplate[] = [
+  {
+    id: "filesystem",
+    name: "Filesystem",
+    description: "Read and write files in a specified directory",
+    icon: Folder,
+    config: {
+      name: "filesystem",
+      type: "mcp",
+      mcpMode: "command",
+      command: "npx",
+      argsText: "-y\n@modelcontextprotocol/server-filesystem\n./cuga_workspace",
+      description: "Filesystem access for reading and writing files",
+      transport: "stdio",
+    },
+  },
+];
+
 export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
   const [name, setName] = useState("");
   const [type, setType] = useState<"mcp" | "openapi">("mcp");
@@ -36,6 +66,7 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
   const [authType, setAuthType] = useState<AuthType>("none");
   const [authKey, setAuthKey] = useState("");
   const [authValue, setAuthValue] = useState("");
+  const [showTemplates, setShowTemplates] = useState(!initial);
 
   useEffect(() => {
     if (initial) {
@@ -51,8 +82,25 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
       setAuthType(auth.type === "none" || !auth.type ? "none" : auth.type);
       setAuthKey(auth.key ?? "");
       setAuthValue(auth.value ?? "");
+      setShowTemplates(false);
     }
   }, [initial]);
+
+  const applyTemplate = (template: ToolTemplate) => {
+    const config = template.config;
+    setName(config.name || "");
+    setType(config.type || "mcp");
+    setMcpMode(config.mcpMode || "url");
+    setUrl(config.url || "");
+    setCommand(config.command || "");
+    setArgsText(config.argsText || (config.args || []).join("\n"));
+    setDescription(config.description || "");
+    const auth = config.auth ?? emptyAuth;
+    setAuthType(auth.type === "none" || !auth.type ? "none" : auth.type);
+    setAuthKey(auth.key ?? "");
+    setAuthValue(auth.value ?? "");
+    setShowTemplates(false);
+  };
 
   const authOption = AUTH_TYPE_OPTIONS.find((o) => o.value === authType);
   const needsKey = authOption?.needsKey ?? false;
@@ -97,6 +145,59 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
       <ModalHeader title={initial ? "Edit tool" : "Add tool"} buttonOnClick={onClose} />
       <form onSubmit={handleSubmit}>
         <ModalBody hasScrollingContent className="add-tool-modal-body">
+          {!initial && showTemplates && (
+            <div style={{ marginBottom: "1.5rem" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "1rem" }}>
+                <Template size={20} />
+                <h4 className="cds--type-heading-compact-01">Start from a template</h4>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: "1rem" }}>
+                {TOOL_TEMPLATES.map((template) => {
+                  const IconComponent = template.icon;
+                  return (
+                    <ClickableTile
+                      key={template.id}
+                      onClick={() => applyTemplate(template)}
+                      style={{ padding: "1rem" }}
+                    >
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: "0.75rem" }}>
+                        <IconComponent size={24} style={{ flexShrink: 0, marginTop: "0.125rem" }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div className="cds--type-body-compact-01 cds--type-semibold" style={{ marginBottom: "0.25rem" }}>
+                            {template.name}
+                          </div>
+                          <div className="cds--type-helper-text-01" style={{ color: "var(--cds-text-secondary)" }}>
+                            {template.description}
+                          </div>
+                        </div>
+                      </div>
+                    </ClickableTile>
+                  );
+                })}
+              </div>
+              <div style={{ marginTop: "1rem", paddingTop: "1rem", borderTop: "1px solid var(--cds-border-subtle-01)" }}>
+                <Button
+                  kind="ghost"
+                  size="sm"
+                  onClick={() => setShowTemplates(false)}
+                >
+                  Or configure manually
+                </Button>
+              </div>
+            </div>
+          )}
+          {!initial && !showTemplates && (
+            <div style={{ marginBottom: "1rem" }}>
+              <Button
+                kind="ghost"
+                size="sm"
+                renderIcon={Template}
+                onClick={() => setShowTemplates(true)}
+              >
+                Browse templates
+              </Button>
+            </div>
+          )}
           <FormGroup legendText="">
             <TextInput
               id="tool-name"

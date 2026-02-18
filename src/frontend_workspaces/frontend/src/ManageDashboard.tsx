@@ -78,7 +78,7 @@ export function ManageDashboard() {
         title="CUGA Agent"
         agentContext={agentContext ?? undefined}
         navItems={[
-          { label: "Chat", href: "/" },
+          { label: "Chat", href: "/chat-landing" },
         ]}
       />
 

@@ -5,6 +5,7 @@ import { App } from "agentic_chat";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
 import { CarbonChat } from "./carbon-chat";
+import { ChatLanding } from "./ChatLanding";
 import "./carbon.scss";
 import "./global.css";
 
@@ -25,6 +26,7 @@ function renderApp(): void {
         <Route path="/manage" element={<RouteRoot><ManageDashboard /></RouteRoot>} />
         <Route path="/manage/:agentId" element={<RouteRoot><ManagePage /></RouteRoot>} />
         <Route path="/chat" element={<RouteRoot><CarbonChat /></RouteRoot>} />
+        <Route path="/chat-landing" element={<RouteRoot><ChatLanding /></RouteRoot>} />
       </Routes>
     </BrowserRouter>
   );

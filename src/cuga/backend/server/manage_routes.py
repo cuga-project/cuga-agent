@@ -89,59 +89,126 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
 @router.get("/config")
 async def get_manage_config(
     request: Request,
-    version: Optional[int] = None,
+    version: Optional[str] = None,
     draft: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ):
-    """Get config: ?draft=1 returns draft; ?version=N returns that version; else latest published."""
+    """Get config: ?draft=1 returns draft; ?version=N returns that version; ?agent_id=X for specific agent; else latest published."""
     try:
         from cuga.backend.server.config_store import load_config, load_draft
 
+        # Determine agent_id from parameter or X-Use-Draft header (backward compatibility)
+        if agent_id is None:
+            agent_id = "cuga-default"
         use_draft = str(draft or "").lower() in ("1", "true", "yes", "on")
         if use_draft:
-            config = load_draft()
+            config = load_draft(agent_id)
             if config is None:
-                config, _ = load_config(None)
+                config, _ = load_config(None, agent_id)
             if config is None:
-                return JSONResponse({"config": {}, "version": "draft"})
+                return JSONResponse({"config": {}, "version": "draft", "agent_id": agent_id})
             _merge_mcp_yaml_into_config(config)
-            return JSONResponse({"config": config, "version": "draft"})
-        config, ver = load_config(version)
+            return JSONResponse({"config": config, "version": "draft", "agent_id": agent_id})
+        config, ver = load_config(version, agent_id)
         if config is None:
-            return JSONResponse({"config": {}})
+            return JSONResponse({"config": {}, "agent_id": agent_id})
         _merge_mcp_yaml_into_config(config)
-        return JSONResponse({"config": config, "version": ver})
+        return JSONResponse({"config": config, "version": ver, "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to load manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/config/draft")
-async def save_manage_config_draft(request: Request):
-    """Auto-save current form to draft (version stays 'draft'). Updates draft agent tools."""
+async def save_manage_config_draft(request: Request, agent_id: Optional[str] = None):
+    """Auto-save current form to draft (version stays 'draft'). Updates draft agent tools and triggers registry reload."""
     try:
         from cuga.backend.server.config_store import save_draft
+        from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
+        # Always use cuga-default as the base agent_id
+        logger.info(
+            f"[DEBUG] save_manage_config_draft called with agent_id={agent_id}, type={type(agent_id)}"
+        )
+        if agent_id is None:
+            agent_id = "cuga-default"
+        logger.info(f"[DEBUG] After default assignment: agent_id={agent_id}, type={type(agent_id)}")
 
         data = await request.json()
+        logger.info(f"[DEBUG] Received data keys: {list(data.keys())}")
         config = data.get("config", data)
-        save_draft(config or {})
-        draft_state = getattr(request.app.state, "draft_app_state", None)
-        if draft_state and config:
+        logger.info(
+            f"[DEBUG] Config type: {type(config)}, has tools: {'tools' in config if isinstance(config, dict) else 'N/A'}"
+        )
+
+        logger.info(f"[DEBUG] Calling save_draft with agent_id={agent_id}, type={type(agent_id)}")
+        save_draft(config or {}, agent_id)
+        logger.info("[DEBUG] save_draft completed successfully")
+
+        # This is the /manage/draft endpoint, so always use draft state
+        # The endpoint itself indicates draft mode, not the X-Use-Draft header
+        state_to_update = getattr(request.app.state, "draft_app_state", None)
+        logger.info("[DEBUG] Using draft_app_state for /manage/draft endpoint")
+
+        logger.info(f"[DEBUG] state_to_update={state_to_update}, config is dict: {isinstance(config, dict)}")
+
+        if state_to_update and config:
             tools_list = (config or {}).get("tools") or []
-            draft_state.tools_include_by_app = {
+            logger.info(f"[DEBUG] tools_list length: {len(tools_list)}")
+
+            state_to_update.tools_include_by_app = {
                 t["name"]: t["include"]
                 for t in tools_list
                 if t.get("name") and isinstance(t.get("include"), list) and len(t["include"]) > 0
             } or None
-            draft_state.tools_include_version = getattr(draft_state, "tools_include_version", 0) + 1
-        return JSONResponse({"status": "success", "version": "draft"})
+
+            current_version = getattr(state_to_update, "tools_include_version", 0)
+            logger.info(
+                f"[DEBUG] current tools_include_version={current_version}, type={type(current_version)}"
+            )
+            # Ensure current_version is an integer before incrementing
+            if isinstance(current_version, str):
+                current_version = int(current_version) if current_version.isdigit() else 0
+            state_to_update.tools_include_version = current_version + 1
+            logger.info(f"[DEBUG] new tools_include_version={state_to_update.tools_include_version}")
+
+        # Trigger registry reload for the agent
+        try:
+            from cuga.backend.server.config_store import _parse_agent_id
+
+            # Use base agent_id for registry reload (without version suffix)
+            logger.info(f"[DEBUG] Before _parse_agent_id: agent_id={agent_id}, type={type(agent_id)}")
+            base_agent_id = _parse_agent_id(str(agent_id))
+            logger.info(f"[DEBUG] After _parse_agent_id: base_agent_id={base_agent_id}")
+
+            registry_url = get_registry_base_url()
+            logger.info(f"[DEBUG] registry_url={registry_url}")
+
+            reload_url = f"{registry_url}/reload?agent_id={base_agent_id}"
+            logger.info(f"[DEBUG] reload_url={reload_url}")
+
+            async with httpx.AsyncClient() as client:
+                r = await client.post(reload_url, timeout=10.0)
+                r.raise_for_status()
+                logger.info(f"Registry reloaded for {base_agent_id} agent")
+        except Exception as reload_err:
+            logger.warning(f"Failed to reload registry for {str(agent_id)}: {reload_err}")
+            logger.exception("[DEBUG] Full traceback:")
+
+        logger.info(f"[DEBUG] Returning JSONResponse with agent_id={agent_id}, type={type(agent_id)}")
+        return JSONResponse({"status": "success", "version": "draft", "agent_id": str(agent_id)})
     except Exception as e:
         logger.error(f"Failed to save draft: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/config")
-async def save_manage_config_publish(request: Request):
+async def save_manage_config_publish(request: Request, agent_id: Optional[str] = None):
     """Create new version from current config and apply to agent (live)."""
+    # Determine agent_id from parameter or default to cuga-default
+    if agent_id is None:
+        agent_id = "cuga-default"
+
     app_state = _app_state(request)
     if app_state is None:
         raise HTTPException(status_code=500, detail="App state not available")
@@ -150,11 +217,11 @@ async def save_manage_config_publish(request: Request):
 
         data = await request.json()
         config = data.get("config", data)
-        ver = save_config(config or {})
+        ver = save_config(config or {}, agent_id)
         app_state.config_version = ver
-        app_state.tools_include_version = ver or 0
+        app_state.tools_include_version = int(ver) if ver else 0
         await _apply_published_config(app_state, config or {})
-        return JSONResponse({"status": "success", "version": ver})
+        return JSONResponse({"status": "success", "version": ver, "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to save manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))

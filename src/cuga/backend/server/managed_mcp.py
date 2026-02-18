@@ -124,3 +124,31 @@ def write_managed_mcp_yaml(config: dict[str, Any], path: str | None = None) -> s
     with open(p, "w") as f:
         yaml.dump(data, f, default_flow_style=False, sort_keys=False)
     return p
+
+
+# ============================================================================
+# Database-backed MCP management (by agent_id) - reads from agent config
+# ============================================================================
+
+
+def get_tools_from_agent_config(agent_id: str) -> list[dict[str, Any]]:
+    """Get all tools for an agent from their config in database."""
+    from cuga.backend.server.config_store import get_agent_tools
+
+    return get_agent_tools(agent_id)
+
+
+def get_registry_yaml_from_agent_config(agent_id: str) -> dict[str, Any]:
+    """Convert agent config tools to registry YAML format."""
+    tools = get_tools_from_agent_config(agent_id)
+    return tools_to_registry_yaml(tools)
+
+
+def write_registry_yaml_from_agent_config(agent_id: str, path: str | None = None) -> str:
+    """Write registry YAML from agent config tools."""
+    p = path or get_managed_mcp_path()
+    data = get_registry_yaml_from_agent_config(agent_id)
+    os.makedirs(os.path.dirname(p), exist_ok=True)
+    with open(p, "w") as f:
+        yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+    return p

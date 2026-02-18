@@ -399,7 +399,7 @@ export function ManagePage() {
         title={agentId ? `${agentId} — configuration` : "Agent configuration"}
         navItems={[
           { label: "Agents", to: `/manage${search}` },
-          { label: "Chat", to: search ? `/${search}` : "/" },
+          { label: "Chat", to: search ? `/${search}` : "/chat-landing" },
         ]}
         linkComponent={Link}
       />
@@ -464,6 +464,7 @@ export function ManagePage() {
                     onChange={setTools}
                     connectedApps={connectedApps}
                     connectedTools={connectedTools}
+                    agentId= {"cuga-default"}
                   />
               </AccordionItem>
 

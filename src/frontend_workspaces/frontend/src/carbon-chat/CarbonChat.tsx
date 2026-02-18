@@ -60,17 +60,14 @@ const CarbonChat = ({
     [useDraft]
   );
 
-  // Callback to get the chat instance when it's ready
   const handleChatReady = useCallback((instance: ChatInstance) => {
     chatInstanceRef.current = instance;
-    
-    // Hook into messaging restart to reset thread ID
-    const originalRestart = instance.messaging.restartConversation;
-    instance.messaging.restartConversation = () => {
-      resetThreadId();
-      console.log('Conversation restarted, thread ID reset');
-      return originalRestart.call(instance.messaging);
-    };
+    instance.on({
+      type: BusEventType.RESTART_CONVERSATION,
+      handler: () => {
+        resetThreadId();
+      },
+    });
   }, []);
 
   return (
@@ -86,7 +83,10 @@ const CarbonChat = ({
       }}
       layout={{
         showFrame: false,
-        hasContentMaxWidth: false,
+        hasContentMaxWidth: true,
+      }}
+      input={{
+        isVisible: true,
       }}
       messaging={{
         customSendMessage: handleCustomSendMessage,
