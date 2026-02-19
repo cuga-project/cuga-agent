@@ -166,14 +166,44 @@ export function ManagePage() {
     });
   }, []);
 
+  type ToastNotification = { id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string };
+
+  const addToast = useCallback((kind: "error" | "info" | "success" | "warning", title: string, subtitle: string) => {
+    const id = `toast-${Date.now()}-${Math.random()}`;
+    console.log('[Toast Debug] Adding toast:', { id, kind, title, subtitle });
+    setToastNotifications((prev: ToastNotification[]) => {
+      const newToasts = [...prev, { id, kind, title, subtitle }];
+      console.log('[Toast Debug] Current toasts:', newToasts);
+      return newToasts;
+    });
+    setTimeout(() => {
+      console.log('[Toast Debug] Removing toast:', id);
+      setToastNotifications((prev: ToastNotification[]) => prev.filter((t: ToastNotification) => t.id !== id));
+    }, 5000);
+  }, []);
+
+  const removeToast = useCallback((id: string) => {
+    setToastNotifications((prev: ToastNotification[]) => prev.filter((t: ToastNotification) => t.id !== id));
+  }, []);
+
   const loadLatest = useCallback(async () => {
     try {
       skipDraftSaveRef.current = true;
-      const [draftRes, policiesRes, toolsListRes] = await Promise.all([
+      const [draftRes, toolsListRes] = await Promise.all([
         fetch("/api/manage/config?draft=1"),
-        fetch("/api/config/policies"),
         fetch("/api/tools/list"),
       ]);
+      
+      // Check for HTTP errors
+      if (!draftRes.ok && draftRes.status >= 400) {
+        const errorMsg = `Failed to load draft config (${draftRes.status} ${draftRes.statusText})`;
+        addToast("error", "Load Error", errorMsg);
+      }
+      if (!toolsListRes.ok && toolsListRes.status >= 400) {
+        const errorMsg = `Failed to load tools list (${toolsListRes.status} ${toolsListRes.statusText})`;
+        addToast("warning", "Load Warning", errorMsg);
+      }
+      
       const out = { ...DEFAULT_CONFIG };
       let version: number | "draft" | null = null;
       if (draftRes.ok) {
@@ -183,6 +213,16 @@ export function ManagePage() {
             Object.assign(out, data.config);
             if (Array.isArray(out.tools)) {
               out.tools = normalizeTools(out.tools);
+            }
+            // Policies are now included in the config from manage API
+            if (out.policies) {
+              // Ensure policies structure is correct
+              if (!out.policies.enablePolicies && out.policies.enablePolicies !== false) {
+                out.policies.enablePolicies = true;
+              }
+              if (!Array.isArray(out.policies.policies)) {
+                out.policies.policies = [];
+              }
             }
           }
           version = data.version === "draft" ? "draft" : (data.version ?? null);
@@ -197,13 +237,22 @@ export function ManagePage() {
             if (Array.isArray(out.tools)) {
               out.tools = normalizeTools(out.tools);
             }
+            // Policies are now included in the config from manage API
+            if (out.policies) {
+              // Ensure policies structure is correct
+              if (!out.policies.enablePolicies && out.policies.enablePolicies !== false) {
+                out.policies.enablePolicies = true;
+              }
+              if (!Array.isArray(out.policies.policies)) {
+                out.policies.policies = [];
+              }
+            }
           }
           version = typeof data.version === "number" ? data.version : null;
+        } else if (publishedRes.status >= 400) {
+          const errorMsg = `Failed to load published config (${publishedRes.status} ${publishedRes.statusText})`;
+          addToast("error", "Load Error", errorMsg);
         }
-      }
-      if (policiesRes.ok) {
-        const policiesData = await policiesRes.json();
-        out.policies = { enablePolicies: policiesData.enablePolicies ?? true, policies: policiesData.policies ?? [] };
       }
       if (toolsListRes.ok) {
         const toolsData = await toolsListRes.json();
@@ -222,9 +271,11 @@ export function ManagePage() {
       setCurrentVersion(version);
       setLoadError(null);
     } catch (e) {
-      setLoadError(e instanceof Error ? e.message : "Failed to load config");
+      const errorMsg = e instanceof Error ? e.message : "Failed to load config";
+      setLoadError(errorMsg);
+      addToast("error", "Load Error", errorMsg);
     }
-  }, [normalizeTools]);
+  }, [normalizeTools, addToast]);
 
   const loadHistory = useCallback(async () => {
     try {
@@ -254,13 +305,27 @@ export function ManagePage() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ config }),
-      }).then(() => setCurrentVersion("draft")).catch(() => {});
+      })
+        .then(async (res) => {
+          if (res.ok) {
+            setCurrentVersion("draft");
+          } else {
+            const errorMsg = `Failed to save draft (${res.status} ${res.statusText})`;
+            console.error('[Draft Save Error]', errorMsg);
+            addToast("warning", "Draft Save Failed", errorMsg);
+          }
+        })
+        .catch((error) => {
+          const errorMsg = error instanceof Error ? error.message : "Network error saving draft";
+          console.error('[Draft Save Error]', errorMsg);
+          addToast("warning", "Draft Save Failed", errorMsg);
+        });
     }, 500);
     draftSaveTimeoutRef.current = t;
     return () => {
       if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current);
     };
-  }, [config]);
+  }, [config, addToast]);
 
   const loadVersion = async (version: number) => {
     try {
@@ -273,33 +338,30 @@ export function ManagePage() {
         }
         setConfig(next);
         setCurrentVersion(version);
+        addToast("success", "Version Loaded", `Loaded version ${version}`);
+      } else {
+        const errorMsg = `Failed to load version ${version} (${res.status} ${res.statusText})`;
+        addToast("error", "Load Error", errorMsg);
+        setSaveStatus("error");
+        setTimeout(() => setSaveStatus("idle"), 2000);
       }
     } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : `Failed to load version ${version}`;
+      addToast("error", "Load Error", errorMsg);
       setSaveStatus("error");
       setTimeout(() => setSaveStatus("idle"), 2000);
     }
   };
 
-  const addToast = useCallback((kind: "error" | "info" | "success" | "warning", title: string, subtitle: string) => {
-    const id = `toast-${Date.now()}-${Math.random()}`;
-    setToastNotifications((prev) => [...prev, { id, kind, title, subtitle }]);
-    setTimeout(() => {
-      setToastNotifications((prev) => prev.filter((t) => t.id !== id));
-    }, 5000);
-  }, []);
-
-  const removeToast = useCallback((id: string) => {
-    setToastNotifications((prev) => prev.filter((t) => t.id !== id));
-  }, []);
-
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
-      const policiesRes = await fetch("/api/config/policies");
+      // Policies are now part of the config, no need to fetch separately
       let toSave = { ...config };
-      if (policiesRes.ok) {
-        const policiesData = await policiesRes.json();
-        toSave = { ...toSave, policies: { enablePolicies: policiesData.enablePolicies ?? true, policies: policiesData.policies ?? [] } };
+      
+      // Ensure policies structure exists
+      if (!toSave.policies) {
+        toSave.policies = { enablePolicies: true, policies: [] };
       }
       const res = await fetch("/api/manage/config", {
         method: "POST",
@@ -308,10 +370,28 @@ export function ManagePage() {
       });
       if (res.ok) {
         const data = await res.json();
+        console.log('[Save Config] Response data:', data);
         
-        // Check for partial errors in the response
+        // Check for partial status and tool errors
+        const hasPartialErrors = data.status === "partial" && data.tool_errors;
+        console.log('[Save Config] Has partial errors:', hasPartialErrors);
+        
+        if (hasPartialErrors) {
+          console.log('[Save Config] Processing tool errors:', data.tool_errors);
+          // Show warning toast for each tool error
+          Object.entries(data.tool_errors as Record<string, any>).forEach(([toolName, errorInfo]: [string, any]) => {
+            const errorMsg = errorInfo.error || errorInfo.message || "Unknown error";
+            const errorType = errorInfo.type ? ` (${errorInfo.type})` : "";
+            addToast("warning", `Tool initialization failed: ${toolName}`, `${errorMsg}${errorType}`);
+          });
+          
+          // Show summary message
+          const errorCount = Object.keys(data.tool_errors).length;
+          addToast("info", "Configuration partially saved", data.message || `${errorCount} tool(s) failed to initialize`);
+        }
+        
+        // Also check for legacy partial_errors format
         if (data.partial_errors && Array.isArray(data.partial_errors) && data.partial_errors.length > 0) {
-          // Show warning toast for partial errors
           data.partial_errors.forEach((error: any) => {
             const errorMsg = typeof error === "string" ? error : (error.message || error.error || "Unknown error");
             addToast("warning", "Partial save error", errorMsg);
@@ -322,61 +402,64 @@ export function ManagePage() {
         setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
         setSaveStatus("success");
         
-        // Show success toast
-        if (!data.partial_errors || data.partial_errors.length === 0) {
+        // Show success toast only if no errors
+        if (!hasPartialErrors && (!data.partial_errors || data.partial_errors.length === 0)) {
           addToast("success", "Configuration saved", "Your configuration has been saved successfully");
-        } else {
-          addToast("info", "Configuration partially saved", "Some settings were saved with warnings");
         }
         
         loadHistory();
         setTimeout(() => setSaveStatus("idle"), 2000);
       } else {
-        // Handle error response
-        const errorData = await res.json().catch(() => ({}));
-        const errorMsg = errorData.error || errorData.message || `Failed to save configuration (${res.status})`;
+        // Handle HTTP error response
+        let errorMsg = `Failed to save configuration (${res.status} ${res.statusText})`;
+        try {
+          const errorData = await res.json();
+          errorMsg = errorData.error || errorData.message || errorMsg;
+        } catch {
+          // If response is not JSON, use default error message
+        }
         
         setSaveStatus("error");
-        addToast("error", "Save failed", errorMsg);
+        addToast("error", "Save Failed", errorMsg);
         setTimeout(() => setSaveStatus("idle"), 2000);
       }
     } catch (error) {
       const errorMsg = error instanceof Error ? error.message : "Network error occurred";
       setSaveStatus("error");
-      addToast("error", "Save failed", errorMsg);
+      addToast("error", "Network Error", errorMsg);
       setTimeout(() => setSaveStatus("idle"), 2000);
     }
   };
 
   const updateLlm = (field: "api_key" | "base_url" | "model", value: string) => {
-    setConfig((c) => ({
+    setConfig((c: AgentConfig) => ({
       ...c,
       llm: { ...(c.llm ?? {}), [field]: value },
     }));
   };
   const updateLlmTemperature = (value: number) => {
-    setConfig((c) => ({
+    setConfig((c: AgentConfig) => ({
       ...c,
       llm: { ...(c.llm ?? {}), temperature: value },
     }));
   };
 
   const updateFeatureFlag = (field: "enable_todos" | "reflection", value: boolean) => {
-    setConfig((c) => ({
+    setConfig((c: AgentConfig) => ({
       ...c,
       feature_flags: { ...(c.feature_flags ?? {}), [field]: value },
     }));
   };
 
   const updateMaxSteps = (value: number) => {
-    setConfig((c) => ({
+    setConfig((c: AgentConfig) => ({
       ...c,
       feature_flags: { ...(c.feature_flags ?? {}), max_steps: value },
     }));
   };
 
   const setTools = (tools: ToolEntry[]) => {
-    setConfig((c) => ({ ...c, tools }));
+    setConfig((c: AgentConfig) => ({ ...c, tools }));
   };
 
   const handleImportJson = useCallback(
@@ -438,7 +521,7 @@ export function ManagePage() {
         title={agentId ? `${agentId} — configuration` : "Agent configuration"}
         navItems={[
           { label: "Agents", to: `/manage${search}` },
-          { label: "Chat", to: search ? `/${search}` : "/chat-landing" },
+          { label: "Chat", to: search ? `/${search}` : "/chat" },
         ]}
         linkComponent={Link}
       />
@@ -504,6 +587,7 @@ export function ManagePage() {
                     connectedApps={connectedApps}
                     connectedTools={connectedTools}
                     agentId= {"cuga-default"}
+                    onError={(title, message) => addToast("error", title, message)}
                   />
               </AccordionItem>
 
@@ -675,7 +759,7 @@ export function ManagePage() {
             <Button
               kind="secondary"
               className="manage-variables-toggle"
-              onClick={() => setManageVariablesPanelOpen((o) => !o)}
+              onClick={() => setManageVariablesPanelOpen((o: boolean) => !o)}
               title={manageVariablesPanelOpen ? "Close variables" : "Open variables"}
               aria-expanded={manageVariablesPanelOpen}
               renderIcon={DocumentIcon}
@@ -735,18 +819,33 @@ export function ManagePage() {
       </ComposedModal>
 
       {/* Toast Notifications */}
-      <div style={{ position: "fixed", top: "3rem", right: "1rem", zIndex: 9999, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
-        {toastNotifications.map((toast) => (
-          <ToastNotification
-            key={toast.id}
-            kind={toast.kind}
-            title={toast.title}
-            subtitle={toast.subtitle}
-            timeout={5000}
-            onClose={() => removeToast(toast.id)}
-            lowContrast
-          />
-        ))}
+      <div
+        style={{
+          position: "fixed",
+          top: "3rem",
+          right: "1rem",
+          zIndex: 9999,
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.5rem",
+          maxWidth: "400px"
+        }}
+      >
+        {console.log('[Toast Debug] Rendering toasts:', toastNotifications)}
+        {toastNotifications.map((toast: { id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }) => {
+          console.log('[Toast Debug] Rendering individual toast:', toast);
+          return (
+            <ToastNotification
+              key={toast.id}
+              kind={toast.kind}
+              title={toast.title}
+              subtitle={toast.subtitle}
+              timeout={5000}
+              onClose={() => removeToast(toast.id)}
+              lowContrast
+            />
+          );
+        })}
       </div>
     </div>
   );

@@ -89,6 +89,7 @@ class ManagerProcess:
 
     def __init__(self):
         self.process: Optional[subprocess.Popen] = None
+        self.log_file: Optional[Path] = None
 
     def __enter__(self):
         """Start the manager process."""
@@ -98,11 +99,16 @@ class ManagerProcess:
         env = os.environ.copy()
         env["CUGA_MANAGER_MODE"] = "true"
 
+        # Create log file in tests/system directory
+        self.log_file = Path(__file__).parent / "manager.logs"
+        log_handle = open(self.log_file, "w")
+        logger.info(f"Manager logs will be written to: {self.log_file}")
+
         self.process = subprocess.Popen(
             ["cuga", "start", "manager"],
             env=env,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
+            stdout=log_handle,
+            stderr=log_handle,
             text=True,
         )
 
@@ -124,6 +130,10 @@ class ManagerProcess:
                 self.process.kill()
                 self.process.wait()
             logger.info("✅ CUGA manager stopped")
+
+            # Close log file if it was opened
+            if self.log_file and self.log_file.exists():
+                logger.info(f"Manager logs saved to: {self.log_file}")
 
     def _wait_for_manager(self):
         """Wait for the manager to be ready by checking health endpoint."""
@@ -693,6 +703,269 @@ class TestManagerAPIWorkflow:
         assert v2_data["config"]["llm"]["temperature"] == 0.5
 
         logger.info("✅ Multiple versions working correctly")
+
+    def test_11_policies_isolation_with_intent_guard(
+        self, http_client: httpx.Client, test_agent_config: Dict[str, Any]
+    ):
+        """
+        Test policies isolation between draft and published versions with intent guard checks.
+
+        This test verifies:
+        1. Draft version can have different policies than published version
+        2. Intent guards are checked first in draft mode (blocks execution if triggered)
+        3. Intent guards are checked first in v1 (published) mode
+        4. Each version maintains its own policy configuration independently
+        """
+        logger.info("Test 11: Testing policies isolation with intent guard...")
+        logger.info("=" * 80)
+
+        # ============================================================
+        # STEP 1: Create agent config with policies in DRAFT mode
+        # ============================================================
+        logger.info("\n📋 STEP 1: Create draft config with intent guard policy")
+        logger.info("-" * 80)
+
+        draft_config_with_policy = test_agent_config.copy()
+        draft_config_with_policy["policies"] = [
+            {
+                "type": "intent_guard",
+                "id": "draft_delete_guard",
+                "name": "Draft Delete Guard",
+                "description": "Blocks delete operations in draft mode",
+                "triggers": [
+                    {
+                        "type": "keyword",
+                        "value": ["delete", "remove"],
+                        "target": "intent",
+                        "case_sensitive": False,
+                        "operator": "or",
+                    }
+                ],
+                "response": {
+                    "response_type": "natural_language",
+                    "content": "⛔ DRAFT MODE: Delete operations are blocked by draft policy.",
+                },
+                "priority": 100,
+                "enabled": True,
+            }
+        ]
+
+        response = http_client.post(
+            f"{MANAGE_API_URL}/config/draft",
+            params={"agent_id": TEST_AGENT_ID},
+            json={"config": draft_config_with_policy},
+        )
+        assert response.status_code == 200, f"Failed to save draft with policy: {response.text}"
+        logger.info("✅ Draft config with intent guard policy saved")
+
+        # Wait for policy system to initialize
+        logger.info("Waiting 8 seconds for policy system initialization...")
+        time.sleep(8)
+
+        # ============================================================
+        # STEP 2: Test intent guard in DRAFT mode (should block)
+        # ============================================================
+        logger.info("\n📋 STEP 2: Test intent guard blocking in DRAFT mode")
+        logger.info("-" * 80)
+
+        draft_task_blocked = {
+            "messages": [{"role": "user", "content": "Delete all files in test_workspace"}],
+            "thread_id": f"test-draft-policy-{int(time.time())}",
+        }
+
+        draft_response_blocked = http_client.post(
+            STREAM_API_URL,
+            json=draft_task_blocked,
+            headers={"X-Use-Draft": "1"},
+        )
+
+        assert draft_response_blocked.status_code == 200, (
+            f"Draft execution failed: {draft_response_blocked.text}"
+        )
+        draft_text_blocked = draft_response_blocked.text
+        logger.info(f"Draft response preview: {draft_text_blocked[:500]}...")
+
+        # Verify intent guard blocked the request in draft mode
+        assert validate_response_keywords(
+            draft_text_blocked,
+            "DRAFT MODE |and| blocked |or| not allowed",
+            "Draft mode should show intent guard block message",
+        ), f"Expected draft intent guard block message. Got: {draft_text_blocked[:500]}"
+
+        logger.info("✅ Intent guard correctly blocked delete operation in DRAFT mode")
+
+        # ============================================================
+        # STEP 3: Test allowed operation in DRAFT mode (should work)
+        # ============================================================
+        logger.info("\n📋 STEP 3: Test allowed operation in DRAFT mode")
+        logger.info("-" * 80)
+
+        draft_task_allowed = {
+            "messages": [{"role": "user", "content": "List files in test_workspace"}],
+            "thread_id": f"test-draft-allowed-{int(time.time())}",
+        }
+
+        draft_response_allowed = http_client.post(
+            STREAM_API_URL,
+            json=draft_task_allowed,
+            headers={"X-Use-Draft": "1"},
+        )
+
+        assert draft_response_allowed.status_code == 200
+        draft_text_allowed = draft_response_allowed.text
+        logger.info(f"Draft allowed response preview: {draft_text_allowed[:500]}...")
+
+        # Should work normally (list files)
+        assert validate_response_keywords(
+            draft_text_allowed, "sample.txt |or| sample", "Draft mode should list files when not blocked"
+        )
+
+        logger.info("✅ Allowed operation works correctly in DRAFT mode")
+
+        # ============================================================
+        # STEP 4: Publish v1 with DIFFERENT policy
+        # ============================================================
+        logger.info("\n📋 STEP 4: Publish v1 with different intent guard policy")
+        logger.info("-" * 80)
+
+        v1_config_with_policy = test_agent_config.copy()
+        v1_config_with_policy["policies"] = [
+            {
+                "type": "intent_guard",
+                "id": "v1_modify_guard",
+                "name": "V1 Modify Guard",
+                "description": "Blocks modify operations in v1",
+                "triggers": [
+                    {
+                        "type": "keyword",
+                        "value": ["modify", "change", "update"],
+                        "target": "intent",
+                        "case_sensitive": False,
+                        "operator": "or",
+                    }
+                ],
+                "response": {
+                    "response_type": "natural_language",
+                    "content": "⛔ V1 MODE: Modify operations are blocked by v1 policy.",
+                },
+                "priority": 100,
+                "enabled": True,
+            }
+        ]
+
+        publish_response = http_client.post(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": f"{TEST_AGENT_ID}-policy"},
+            json={"config": v1_config_with_policy},
+        )
+        assert publish_response.status_code == 200, f"Failed to publish v1: {publish_response.text}"
+        logger.info("✅ Published v1 with different intent guard policy")
+
+        # Wait for policy system to reload
+        logger.info("Waiting 8 seconds for v1 policy system initialization...")
+        time.sleep(8)
+
+        # ============================================================
+        # STEP 5: Test v1 intent guard (should block modify, allow delete)
+        # ============================================================
+        logger.info("\n📋 STEP 5: Test v1 intent guard blocking modify operations")
+        logger.info("-" * 80)
+
+        v1_task_blocked = {
+            "messages": [{"role": "user", "content": "Modify the content of sample.txt"}],
+            "thread_id": f"test-v1-policy-{int(time.time())}",
+        }
+
+        v1_response_blocked = http_client.post(
+            STREAM_API_URL,
+            json=v1_task_blocked,
+            # No X-Use-Draft header = production/v1 mode
+        )
+
+        assert v1_response_blocked.status_code == 200
+        v1_text_blocked = v1_response_blocked.text
+        logger.info(f"V1 blocked response preview: {v1_text_blocked[:500]}...")
+
+        # Verify v1 intent guard blocked modify operation
+        assert validate_response_keywords(
+            v1_text_blocked,
+            "V1 MODE |and| blocked |or| not allowed",
+            "V1 mode should show intent guard block message for modify",
+        ), f"Expected v1 intent guard block message. Got: {v1_text_blocked[:500]}"
+
+        logger.info("✅ V1 intent guard correctly blocked modify operation")
+
+        # ============================================================
+        # STEP 6: Test that v1 allows delete (different policy than draft)
+        # ============================================================
+        logger.info("\n📋 STEP 6: Test v1 allows delete (policy isolation)")
+        logger.info("-" * 80)
+
+        v1_task_delete = {
+            "messages": [{"role": "user", "content": "Delete test file"}],
+            "thread_id": f"test-v1-delete-{int(time.time())}",
+        }
+
+        v1_response_delete = http_client.post(
+            STREAM_API_URL,
+            json=v1_task_delete,
+        )
+
+        assert v1_response_delete.status_code == 200
+        v1_text_delete = v1_response_delete.text
+        logger.info(f"V1 delete response preview: {v1_text_delete[:500]}...")
+
+        # V1 should NOT block delete (only blocks modify)
+        # Should not contain V1 MODE block message
+        assert "V1 MODE" not in v1_text_delete or "blocked" not in v1_text_delete.lower(), (
+            f"V1 should allow delete operations. Got: {v1_text_delete[:500]}"
+        )
+
+        logger.info("✅ V1 correctly allows delete (different policy than draft)")
+
+        # ============================================================
+        # STEP 7: Verify draft still blocks delete (isolation check)
+        # ============================================================
+        logger.info("\n📋 STEP 7: Verify draft still blocks delete (isolation)")
+        logger.info("-" * 80)
+
+        draft_recheck = {
+            "messages": [{"role": "user", "content": "Delete all test files"}],
+            "thread_id": f"test-draft-recheck-{int(time.time())}",
+        }
+
+        draft_response_recheck = http_client.post(
+            STREAM_API_URL,
+            json=draft_recheck,
+            headers={"X-Use-Draft": "1"},
+        )
+
+        assert draft_response_recheck.status_code == 200
+        draft_text_recheck = draft_response_recheck.text
+        logger.info(f"Draft recheck response preview: {draft_text_recheck[:500]}...")
+
+        # Draft should still block delete
+        assert validate_response_keywords(
+            draft_text_recheck,
+            "DRAFT MODE |and| blocked |or| not allowed",
+            "Draft should still block delete after v1 publish",
+        )
+
+        logger.info("✅ Draft still blocks delete - policies are properly isolated")
+
+        # ============================================================
+        # STEP 8: Summary
+        # ============================================================
+        logger.info("\n" + "=" * 80)
+        logger.info("✅ POLICIES ISOLATION TEST PASSED")
+        logger.info("=" * 80)
+        logger.info("Verified:")
+        logger.info("  ✓ Draft mode has independent intent guard (blocks delete)")
+        logger.info("  ✓ V1 mode has different intent guard (blocks modify)")
+        logger.info("  ✓ Intent guards are checked first in both modes")
+        logger.info("  ✓ Policies are properly isolated between versions")
+        logger.info("  ✓ Each version maintains its own policy configuration")
+        logger.info("=" * 80)
 
 
 if __name__ == "__main__":

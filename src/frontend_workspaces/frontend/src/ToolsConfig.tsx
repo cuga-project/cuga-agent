@@ -44,11 +44,12 @@ interface ToolsConfigProps {
   connectedApps?: ConnectedApp[];
   connectedTools?: ConnectedTool[];
   agentId?: string;
+  onError?: (title: string, message: string) => void;
 }
 
 const TOOLS_PREVIEW_COUNT = 3;
 
-export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default" }: ToolsConfigProps) {
+export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", onError }: ToolsConfigProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [toolsModalIndex, setToolsModalIndex] = useState<number | null>(null);

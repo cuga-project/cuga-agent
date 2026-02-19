@@ -133,17 +133,45 @@ async def apply_policies_data_to_storage(
                 policy_data.pop("intent_examples", None)
 
             if policy_type == "intent_guard":
-                from cuga.backend.cuga_graph.policy.models import IntentGuardResponse
+                from cuga.backend.cuga_graph.policy.models import (
+                    IntentGuardResponse,
+                    KeywordTrigger,
+                    NaturalLanguageTrigger,
+                    AppTrigger,
+                    StateTrigger,
+                    ToolTrigger,
+                    AlwaysTrigger,
+                )
+
+                # Parse triggers into proper model objects
+                parsed_triggers = []
+                for trigger_data in policy_data.get("triggers", []):
+                    trigger_type = trigger_data.get("type")
+                    if trigger_type == "keyword":
+                        parsed_triggers.append(KeywordTrigger(**trigger_data))
+                    elif trigger_type == "natural_language":
+                        parsed_triggers.append(NaturalLanguageTrigger(**trigger_data))
+                    elif trigger_type == "app":
+                        parsed_triggers.append(AppTrigger(**trigger_data))
+                    elif trigger_type == "state":
+                        parsed_triggers.append(StateTrigger(**trigger_data))
+                    elif trigger_type == "tool":
+                        parsed_triggers.append(ToolTrigger(**trigger_data))
+                    elif trigger_type == "always":
+                        parsed_triggers.append(AlwaysTrigger(**trigger_data))
+                    else:
+                        logger.warning(f"Unknown trigger type: {trigger_type}")
 
                 response_data = policy_data.get("response", {})
                 policy = IntentGuard(
                     id=policy_data["id"],
                     name=policy_data["name"],
                     description=policy_data["description"],
-                    triggers=policy_data["triggers"],
+                    triggers=parsed_triggers,
                     response=IntentGuardResponse(
                         response_type=response_data.get("response_type", "natural_language"),
                         content=response_data.get("content", ""),
+                        status_code=response_data.get("status_code"),
                     ),
                     allow_override=policy_data.get("allow_override", False),
                     priority=policy_data.get("priority", 50),

@@ -19,6 +19,7 @@ from cuga.backend.cuga_graph.policy.models import (
     CustomPolicy,
     NaturalLanguageTrigger,
 )
+from cuga.config import DBS_DIR
 
 
 class PolicyStorage:
@@ -52,7 +53,19 @@ class PolicyStorage:
         self.collection_name = collection_name
         self.host = host
         self.port = port
-        self.milvus_uri = milvus_uri or "./milvus_policies.db"
+
+        # Resolve milvus_uri relative to DBS_DIR if not provided or if relative path
+        if milvus_uri is None:
+            os.makedirs(DBS_DIR, exist_ok=True)
+            self.milvus_uri = os.path.join(DBS_DIR, "milvus_policies.db")
+        elif not milvus_uri.startswith(("http://", "https://", "/")):
+            # Relative path - resolve to DBS_DIR
+            os.makedirs(DBS_DIR, exist_ok=True)
+            self.milvus_uri = os.path.join(DBS_DIR, milvus_uri)
+        else:
+            # Absolute path or URL - use as is
+            self.milvus_uri = milvus_uri
+
         # embedding_dim will be auto-detected during initialize_async() if None
         # Default to 1536 (OpenAI) as fallback, but will be updated based on actual model
         self.embedding_dim = embedding_dim or 1536

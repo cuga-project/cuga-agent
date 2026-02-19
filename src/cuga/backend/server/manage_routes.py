@@ -138,6 +138,11 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
         logger.info(
             f"[DEBUG] Config type: {type(config)}, has tools: {'tools' in config if isinstance(config, dict) else 'N/A'}"
         )
+        logger.info(
+            f"[DEBUG] Config has policies: {'policies' in config if isinstance(config, dict) else 'N/A'}"
+        )
+        if isinstance(config, dict) and 'policies' in config:
+            logger.info(f"[DEBUG] Policies in config: {config['policies']}")
 
         logger.info(f"[DEBUG] Calling save_draft with agent_id={agent_id}, type={type(agent_id)}")
         save_draft(config or {}, agent_id)
@@ -149,6 +154,9 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
         logger.info("[DEBUG] Using draft_app_state for /manage/draft endpoint")
 
         logger.info(f"[DEBUG] state_to_update={state_to_update}, config is dict: {isinstance(config, dict)}")
+
+        # Initialize error tracking
+        policy_errors = {}
 
         if state_to_update and config:
             tools_list = (config or {}).get("tools") or []
@@ -169,6 +177,58 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                 current_version = int(current_version) if current_version.isdigit() else 0
             state_to_update.tools_include_version = current_version + 1
             logger.info(f"[DEBUG] new tools_include_version={state_to_update.tools_include_version}")
+
+            # Apply policies to draft state
+            raw_policies = (config or {}).get("policies")
+            policies_list = (
+                raw_policies.get("policies", [])
+                if isinstance(raw_policies, dict) and "policies" in raw_policies
+                else raw_policies
+                if isinstance(raw_policies, list)
+                else []
+            )
+            if (
+                raw_policies is not None
+                and state_to_update.policy_system
+                and state_to_update.policy_system.storage
+            ):
+                try:
+                    from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+                    logger.info(f"[DEBUG] Applying {len(policies_list)} policies to draft")
+                    logger.info(f"[DEBUG] First policy data: {policies_list[0] if policies_list else 'None'}")
+
+                    result = await apply_policies_data_to_storage(
+                        state_to_update.policy_system.storage,
+                        policies_list,
+                        clear_existing=True,
+                        filesystem_sync=state_to_update.policy_filesystem_sync,
+                    )
+                    logger.info(f"[DEBUG] apply_policies_data_to_storage returned: {result}")
+
+                    await state_to_update.policy_system.initialize()
+                    logger.info("[DEBUG] Policy system initialized")
+
+                    # Verify policies were stored
+                    stored_policies = await state_to_update.policy_system.storage.list_policies(
+                        enabled_only=False
+                    )
+                    logger.info(f"[DEBUG] Total policies in storage after apply: {len(stored_policies)}")
+                    for p in stored_policies:
+                        logger.info(
+                            f"[DEBUG] Stored policy: id={p.id}, type={p.type}, triggers={len(p.triggers)}, trigger_types={[type(t).__name__ for t in p.triggers]}"
+                        )
+
+                    # Check for policy errors
+                    if result.get("errors"):
+                        policy_errors = {"policy_errors": result["errors"]}
+                        logger.warning(f"Policy application had {len(result['errors'])} errors")
+
+                    logger.info("Applied %s policies to draft from saved config", result.get("count", 0))
+                except Exception as policy_err:
+                    logger.warning("Failed to apply policies to draft from config: %s", policy_err)
+                    logger.exception("[DEBUG] Full policy error traceback:")
+                    policy_errors = {"policy_errors": [str(policy_err)]}
 
         # Trigger registry reload for the agent FIRST (before rebuilding agent graph)
         tool_errors = {}
@@ -223,15 +283,26 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 
         logger.info(f"[DEBUG] Returning JSONResponse with agent_id={agent_id}, type={type(agent_id)}")
 
-        # Return response with tool errors if any
+        # Return response with tool and policy errors if any
+        has_errors = bool(tool_errors or policy_errors)
         response_data = {
-            "status": "partial" if tool_errors else "success",
+            "status": "partial" if has_errors else "success",
             "version": "draft",
             "agent_id": str(agent_id),
         }
+
+        error_messages = []
         if tool_errors:
             response_data["tool_errors"] = tool_errors
-            response_data["message"] = f"{len(tool_errors)} tool(s) failed to initialize"
+            error_messages.append(f"{len(tool_errors)} tool(s) failed to initialize")
+
+        if policy_errors:
+            response_data.update(policy_errors)
+            if "policy_errors" in policy_errors:
+                error_messages.append(f"{len(policy_errors['policy_errors'])} policy/policies failed to load")
+
+        if error_messages:
+            response_data["message"] = "; ".join(error_messages)
 
         return JSONResponse(response_data)
     except Exception as e:

@@ -176,6 +176,7 @@ class DraftAppState:
         self.tools_include_version: int = 0
         self.agent: Optional[DynamicAgentGraph] = None
         self.policy_system: Optional[Any] = None
+        self.policy_filesystem_sync: Optional[Any] = None  # PolicyFilesystemSync instance for draft
 
 
 # Create a single instance of the AppState class to be used throughout the application.
@@ -891,6 +892,7 @@ async def event_stream(
         langfuse_handler=langfuse_handler,
         thread_id=thread_id,
         tracker=local_tracker,
+        policy_system=run_agent.policy_system,
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 

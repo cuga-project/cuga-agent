@@ -321,12 +321,68 @@ export async function customSendMessage(
           
           // Parse the answer - it may be JSON with data/variables/policies
           let answerText = "";
+          let policyInfo = null;
+          
           if (typeof event.data === "string") {
             try {
               const parsed = JSON.parse(event.data);
-              // Extract just the data field if it's a structured response
-              answerText = parsed.data || event.data;
-            } catch {
+              
+              // Check if parsed.data is a string that needs further parsing
+              let innerData = parsed.data;
+              if (typeof innerData === "string") {
+                try {
+                  innerData = JSON.parse(innerData);
+                } catch {
+                  // If inner parsing fails, use as-is
+                }
+              }
+              
+              // Check if this is a policy event (either in outer or inner data)
+              const policyData = innerData?.type === "policy" ? innerData :
+                                 (parsed.active_policies && parsed.active_policies.length > 0 ? parsed.active_policies[0] : null);
+              
+              if (policyData && (policyData.policy_blocked || policyData.policy_matched)) {
+                // Extract policy information
+                const isPlaybook = policyData.policy_type === "playbook";
+                const playbookContent = policyData.metadata?.playbook_guidance || policyData.metadata?.playbook_content || policyData.content;
+                
+                policyInfo = {
+                  response_content: policyData.metadata?.response_content || policyData.content || (isPlaybook ? "" : "This action is not allowed."),
+                  policy_reasoning: policyData.metadata?.policy_reasoning || "Policy triggered",
+                  policy_type: policyData.policy_type || policyData.metadata?.policy_type || "unknown",
+                  policy_name: policyData.policy_name || policyData.metadata?.policy_name || "Policy",
+                  is_playbook: isPlaybook,
+                  playbook_content: playbookContent,
+                };
+                
+                // Format the answer based on policy type
+                if (isPlaybook && playbookContent) {
+                  // For playbooks, show the playbook content prominently
+                  answerText = playbookContent;
+                  answerText += "\n\n";
+                  answerText += "> ###### 📖 *Playbook Information*\n";
+                  answerText += ">\n";
+                  answerText += `> *Playbook Name:* **${policyInfo.policy_name}**\n`;
+                  answerText += ">\n";
+                  answerText += `> *Reasoning:* ${policyInfo.policy_reasoning}`;
+                } else {
+                  // For blocked policies, show response content and policy info
+                  answerText = policyInfo.response_content;
+                  answerText += "\n\n";
+                  answerText += "> ###### 🛡️ *Policy Information*\n";
+                  answerText += ">\n";
+                  answerText += `> *Policy Name:* **${policyInfo.policy_name}**\n`;
+                  answerText += ">\n";
+                  answerText += `> *Policy Type:* \`${policyInfo.policy_type}\`\n`;
+                  answerText += ">\n";
+                  answerText += `> *Reasoning:* ${policyInfo.policy_reasoning}`;
+                }
+              } else {
+                // Extract just the data field if it's a structured response
+                answerText = typeof innerData === "string" ? innerData : (parsed.data || event.data);
+              }
+            } catch (e) {
+              console.error("Error parsing Answer event:", e);
               // If not JSON, use as-is
               answerText = event.data;
             }

@@ -6,6 +6,7 @@ import {
   ModalBody,
   ModalFooter,
   Button,
+  ToastNotification,
 } from "@carbon/react";
 import { Save, Add, TrashCan, ChevronDown, ChevronUp, Search, Download, Upload } from "@carbon/icons-react";
 import "./ConfigModal.css";
@@ -436,6 +437,7 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
   const [availableTools, setAvailableTools] = useState<ToolInfo[]>([]);
   const [availableApps, setAvailableApps] = useState<AppInfo[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
+  const [toastMessage, setToastMessage] = useState<{ kind: "success" | "error" | "warning"; title: string; subtitle: string } | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -445,18 +447,22 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
   const loadConfig = async () => {
     setIsLoading(true);
     try {
-      console.log("[PoliciesConfig] Loading policies from server...");
-      const response = await fetch("/api/config/policies", {
-        headers: draftMode ? { "X-Use-Draft": "true" } : {},
-      });
+      console.log("[PoliciesConfig] Loading policies from manage API...");
+      // Load from manage API to get the full config including policies
+      const endpoint = draftMode ? "/api/manage/config?draft=1" : "/api/manage/config";
+      const response = await fetch(endpoint);
       console.log("[PoliciesConfig] Response status:", response.status);
 
       if (response.ok) {
         const data = await response.json();
-        console.log("[PoliciesConfig] Loaded policies:", data);
+        console.log("[PoliciesConfig] Loaded config:", data);
 
+        // Extract policies from config
+        const configData = data.config || {};
+        const policiesData = configData.policies || {};
+        
         // Normalize natural_language trigger values to always be arrays (for backward compatibility)
-        const normalizedPolicies = (data.policies ?? []).map((policy: Policy) => ({
+        const normalizedPolicies = (policiesData.policies ?? []).map((policy: Policy) => ({
           ...policy,
           triggers: policy.triggers.map((trigger: PolicyTrigger) => {
             if (trigger.type === "natural_language" && trigger.value !== undefined) {
@@ -473,7 +479,7 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
         }));
 
         setConfig({
-          enablePolicies: data.enablePolicies ?? true,
+          enablePolicies: policiesData.enablePolicies ?? true,
           policies: normalizedPolicies,
         });
       } else {
@@ -573,6 +579,8 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
   };
 
   const saveConfig = async () => {
+    console.log("[PoliciesConfig] saveConfig called - starting save process");
+    
     // Force blur on any focused input to ensure pending changes are saved
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
@@ -581,29 +589,46 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
     // Small delay to ensure blur event handlers complete
     await new Promise((resolve) => setTimeout(resolve, 50));
 
+    console.log("[PoliciesConfig] Setting save status to 'saving'");
     setSaveStatus("saving");
     try {
+      // First, load the current full config
+      console.log("[PoliciesConfig] Loading current config to merge with policies...");
+      const loadEndpoint = draftMode ? "/api/manage/config?draft=1" : "/api/manage/config";
+      const loadResponse = await fetch(loadEndpoint);
+      
+      let existingConfig = {};
+      if (loadResponse.ok) {
+        const loadData = await loadResponse.json();
+        existingConfig = loadData.config || {};
+        console.log("[PoliciesConfig] Loaded existing config:", existingConfig);
+      } else {
+        console.warn("[PoliciesConfig] Could not load existing config, will save policies only");
+      }
+      
       // Normalize natural_language trigger values to always be arrays
+      const normalizedPolicies = config.policies.map((policy) => ({
+        ...policy,
+        triggers: policy.triggers.map((trigger) => {
+          if (trigger.type === "natural_language" && trigger.value !== undefined) {
+            // Ensure value is always an array for natural_language triggers
+            const normalizedValue = Array.isArray(trigger.value)
+              ? trigger.value
+              : typeof trigger.value === "string"
+              ? [trigger.value]
+              : [];
+            return { ...trigger, value: normalizedValue };
+          }
+          return trigger;
+        }),
+      }));
+
       const normalizedConfig = {
-        ...config,
-        policies: config.policies.map((policy) => ({
-          ...policy,
-          triggers: policy.triggers.map((trigger) => {
-            if (trigger.type === "natural_language" && trigger.value !== undefined) {
-              // Ensure value is always an array for natural_language triggers
-              const normalizedValue = Array.isArray(trigger.value)
-                ? trigger.value
-                : typeof trigger.value === "string"
-                ? [trigger.value]
-                : [];
-              return { ...trigger, value: normalizedValue };
-            }
-            return trigger;
-          }),
-        })),
+        enablePolicies: config.enablePolicies,
+        policies: normalizedPolicies,
       };
 
-      console.log("[PoliciesConfig] Saving config:", normalizedConfig);
+      console.log("[PoliciesConfig] Normalized policies config:", normalizedConfig);
       console.log("[PoliciesConfig] Policies count:", normalizedConfig.policies.length);
       normalizedConfig.policies.forEach((policy, idx) => {
         console.log(`[PoliciesConfig] Policy ${idx}: ${policy.name}`);
@@ -625,31 +650,82 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
           }
         });
       });
-      const response = await fetch("/api/config/policies", {
+      
+      // Merge policies into existing config
+      const fullConfig = {
+        ...existingConfig,
+        policies: normalizedConfig,
+      };
+      
+      console.log("[PoliciesConfig] About to send POST request to manage API");
+      console.log("[PoliciesConfig] Draft mode:", draftMode);
+      console.log("[PoliciesConfig] Full config to save:", JSON.stringify(fullConfig).substring(0, 300) + "...");
+      
+      // Use manage API endpoints instead of direct config/policies endpoint
+      const endpoint = draftMode ? "/api/manage/config/draft" : "/api/manage/config";
+      const response = await fetch(endpoint, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
-          ...(draftMode ? { "X-Use-Draft": "true" } : {}),
         },
-        body: JSON.stringify(normalizedConfig),
+        body: JSON.stringify({
+          config: fullConfig
+        }),
       });
 
-      console.log("[PoliciesConfig] Response status:", response.status);
+      console.log("[PoliciesConfig] Response received - status:", response.status);
 
       if (response.ok) {
         const result = await response.json();
         console.log("[PoliciesConfig] Save successful:", result);
         setSaveStatus("success");
-        setTimeout(() => setSaveStatus("idle"), 2000);
+        
+        // Show success toast
+        setToastMessage({
+          kind: "success",
+          title: "Policies saved successfully",
+          subtitle: `${normalizedConfig.policies.length} ${normalizedConfig.policies.length === 1 ? 'policy' : 'policies'} saved`,
+        });
+        
+        // Close modal after short delay
+        setTimeout(() => {
+          setSaveStatus("idle");
+          onClose();
+        }, 1500);
       } else {
         const errorText = await response.text();
         console.error("[PoliciesConfig] Save failed:", response.status, errorText);
         setSaveStatus("error");
+        
+        // Show error toast
+        let errorMessage = "Failed to save policies";
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorData.message || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        
+        setToastMessage({
+          kind: "error",
+          title: "Save failed",
+          subtitle: errorMessage,
+        });
+        
         setTimeout(() => setSaveStatus("idle"), 2000);
       }
     } catch (error) {
       console.error("[PoliciesConfig] Save error:", error);
       setSaveStatus("error");
+      
+      // Show error toast
+      const errorMessage = error instanceof Error ? error.message : "Network error occurred";
+      setToastMessage({
+        kind: "error",
+        title: "Save failed",
+        subtitle: errorMessage,
+      });
+      
       setTimeout(() => setSaveStatus("idle"), 2000);
     }
   };
@@ -810,8 +886,9 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
   ) as OutputFormatterPolicy[];
 
   return (
-    <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
-      <ModalHeader title="Policies Configuration" buttonOnClick={onClose} />
+    <>
+      <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
+        <ModalHeader title="Policies Configuration" buttonOnClick={onClose} />
 
       <ModalBody hasScrollingContent className="config-modal-body-wrap">
         <div className="config-modal-actions-row">
@@ -929,7 +1006,30 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
           {saveStatus === "error" && "Error!"}
         </Button>
       </ModalFooter>
-    </ComposedModal>
+      </ComposedModal>
+      
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div
+          style={{
+            position: "fixed",
+            top: "3rem",
+            right: "1rem",
+            zIndex: 10000,
+            maxWidth: "400px",
+          }}
+        >
+          <ToastNotification
+            kind={toastMessage.kind}
+            title={toastMessage.title}
+            subtitle={toastMessage.subtitle}
+            timeout={5000}
+            onClose={() => setToastMessage(null)}
+            lowContrast
+          />
+        </div>
+      )}
+    </>
   );
 
   function renderIntentGuards() {

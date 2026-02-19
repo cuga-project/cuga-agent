@@ -21,7 +21,7 @@ vendor
 logs/
 .milvus*
 .bob
-.bobmodes
+
 
 # Test-related temporary files and folders
 .cuga_*

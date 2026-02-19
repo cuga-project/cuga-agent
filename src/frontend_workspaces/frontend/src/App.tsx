@@ -25,8 +25,8 @@ function renderApp(): void {
         <Route path="/" element={<RouteRoot><App /></RouteRoot>} />
         <Route path="/manage" element={<RouteRoot><ManageDashboard /></RouteRoot>} />
         <Route path="/manage/:agentId" element={<RouteRoot><ManagePage /></RouteRoot>} />
-        <Route path="/chat" element={<RouteRoot><CarbonChat /></RouteRoot>} />
-        <Route path="/chat-landing" element={<RouteRoot><ChatLanding /></RouteRoot>} />
+        {/* <Route path="/chat" element={<RouteRoot><CarbonChat /></RouteRoot>} /> */}
+        <Route path="/chat" element={<RouteRoot><ChatLanding /></RouteRoot>} />
       </Routes>
     </BrowserRouter>
   );

@@ -1,5 +1,6 @@
 """LangGraph configurable integration for policy system."""
 
+import os
 from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -10,7 +11,7 @@ from cuga.backend.cuga_graph.policy.agent import PolicyAgent, PolicyContext
 from cuga.backend.cuga_graph.policy.models import PolicyMatch, PolicyType
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 from cuga.backend.llm.models import LLMManager
-from cuga.config import settings
+from cuga.config import settings, DBS_DIR
 
 
 class PolicyConfigurable:
@@ -122,9 +123,18 @@ class PolicyConfigurable:
             )
             final_milvus_host = milvus_host or (policy_config.milvus_host if policy_config else "localhost")
             final_milvus_port = milvus_port or (policy_config.milvus_port if policy_config else "19530")
-            final_milvus_uri = milvus_uri or (
-                policy_config.milvus_uri if policy_config else "./milvus_policies.db"
+
+            # Resolve milvus_uri relative to DBS_DIR
+            configured_uri = milvus_uri or (
+                policy_config.milvus_uri if policy_config else "milvus_policies.db"
             )
+            if configured_uri and not configured_uri.startswith(("http://", "https://", "/")):
+                # Relative path - resolve to DBS_DIR
+                os.makedirs(DBS_DIR, exist_ok=True)
+                final_milvus_uri = os.path.join(DBS_DIR, configured_uri)
+            else:
+                # Absolute path or URL - use as is
+                final_milvus_uri = configured_uri
             final_embedding_dim = embedding_dim or (policy_config.embedding_dim if policy_config else 1536)
             final_embedding_provider = embedding_provider or (
                 policy_config.embedding_provider if policy_config else "auto"
