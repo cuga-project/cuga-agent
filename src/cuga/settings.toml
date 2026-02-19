@@ -10,7 +10,6 @@ start_url = "https://opensource-demo.orangehrmlive.com/web/index.php/auth/login"
 
 [features]
 cuga_mode = "balanced"
-memory_provider = "milvus"
 
 [advanced_features]
 web_arena_eval = false
@@ -131,7 +130,6 @@ petstore_api = 8081
 graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
-memory = 8888
 oak_health_api = 8090  # cuga-oak-health OpenAPI (demo_health)
 
 [observability]

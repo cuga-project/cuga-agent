@@ -112,7 +112,7 @@ class ActivityTracker(object):
         # allows memory to be enabled after config changes
         if self._memory is None:
             from cuga.backend.memory.memory import Memory
-            from cuga.backend.memory.agentic_memory import NamespaceNotFoundException
+            from kaizen.schema.exceptions import NamespaceNotFoundException
 
             self._memory = Memory()
             try:
@@ -672,7 +672,7 @@ class ActivityTracker(object):
                     )
 
         if settings.advanced_features.enable_memory:
-            from cuga.backend.memory.agentic_memory.utils.prompts import prompts
+            from cuga.backend.memory.utils.prompts import prompts
 
             step_data = step.model_dump()
             if len(self.steps) == 0:

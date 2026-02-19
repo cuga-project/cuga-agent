@@ -53,14 +53,12 @@ run_pytest() {
     fi
 }
 
-# Helper function to run pytest with memory dependencies installed
+# Helper function to run pytest for memory tests.
 # Exit codes: 0=success, 1-4=failures, 5=no tests collected (treat as success)
 run_pytest_with_memory() {
-    # Sync memory dependency groups before running tests
-    uv sync --extra memory
     uv run pytest "$@" -v
     local ec=$?
-    echo "pytest (with memory) $* exited with code $ec"
+    echo "pytest (memory) $* exited with code $ec"
     # Exit code 5 means no tests collected, which is not a failure
     if [ $ec -ne 0 ] && [ $ec -ne 5 ]; then
         echo "❌ Test failed! Exiting..."

@@ -245,8 +245,7 @@ class CugaLiteNode(BaseNode):
         """Generate and load memory facts for top-level CugaLite requests."""
         try:
             from cuga.backend.memory.memory import Memory
-            from cuga.backend.memory.agentic_memory import NamespaceNotFoundException
-            from cuga.backend.memory.agentic_memory.schema import Message
+            from kaizen.schema.exceptions import NamespaceNotFoundException
 
             memory = Memory()
             namespace_id = "memory"
@@ -263,7 +262,7 @@ class CugaLiteNode(BaseNode):
                 memory.create_namespace(namespace_id=namespace_id, user_id=memory_user_id)
 
             if query:
-                messages = [Message(role="user", content=query)]
+                messages = [{"role": "user", "content": query}]
                 task = asyncio.create_task(
                     memory.memory_client.extract_facts_from_messages_async(
                         namespace_id=namespace_id,

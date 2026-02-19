@@ -56,7 +56,7 @@ class ApiCoder(BaseNode):
             and settings.advanced_features.enable_memory
         ):
             from cuga.backend.memory.memory import Memory
-            from cuga.backend.memory.agentic_memory import NamespaceNotFoundException
+            from kaizen.schema.exceptions import NamespaceNotFoundException
 
             memory = Memory()
 

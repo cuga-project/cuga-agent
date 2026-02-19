@@ -86,7 +86,7 @@ class TaskAnalyzer(BaseNode):
                 # memory integration
                 rtrvd_tips_formatted = None
                 if settings.advanced_features.enable_memory:
-                    from cuga.backend.memory.agentic_memory.utils.memory_tips_formatted import (
+                    from cuga.backend.memory.utils.memory_tips_formatted import (
                         get_formatted_tips,
                     )
 

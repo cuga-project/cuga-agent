@@ -4,7 +4,7 @@ version = "0.2.10"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
-requires-python = ">=3.10, <3.14"
+requires-python = ">=3.12, <3.14"
 dependencies = [
     "langchain>=1.0",
     "langchain-ibm>=0.3.9",
@@ -29,6 +29,8 @@ dependencies = [
     "fastmcp",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
+    "litellm",
+    "jinja2",
     "pymilvus[milvus-lite,model]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
@@ -45,12 +47,12 @@ dependencies = [
     "hvac>=2.0.0",
     "boto3>=1.34.0",
     "openlit>=1.4.0", # 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard
+    "kaizen",
 ]
 
 [project.optional-dependencies]
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
-memory = ["mem0ai[extras]"]
 health = ["cuga-oak-health; python_version>='3.12'"]
 
 [project.urls]
@@ -65,6 +67,9 @@ constraint-dependencies = [
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
     "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
 ]
+
+[tool.uv.sources]
+kaizen = { path = "./kaizen", editable = true }
 
 [tool.setuptools]
 package-dir = {"" = "src"}

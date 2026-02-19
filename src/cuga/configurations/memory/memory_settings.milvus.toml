@@ -1,7 +1,0 @@
-[milvus]
-max_num_messages = 2
-embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
-
-# Model configurations for milvus components are now defined in model-specific files
-# (e.g., settings.openai.toml, settings.watsonx.toml) to allow proper overriding
-# based on the selected LLM provider.

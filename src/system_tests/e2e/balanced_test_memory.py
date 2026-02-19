@@ -16,12 +16,8 @@ class TestServerStreamBalancedMemory(BaseTestServerStream):
     test_env_vars = {
         "DYNACONF_FEATURES__CUGA_MODE": "balanced",
         "DYNACONF_ADVANCED_FEATURES__ENABLE_MEMORY": "true",
-        "DYNACONF_FEATURES__MEMORY_PROVIDER": "http",
     }
-    enable_memory_service = True
-    memory_service_env_vars = {
-        "DYNACONF_FEATURES__MEMORY_PROVIDER": "mem0",
-    }
+    enable_memory_service = False
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)

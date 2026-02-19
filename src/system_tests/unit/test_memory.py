@@ -1,642 +1,281 @@
 #!/usr/bin/env python3
-"""
-Unit tests for Memory module with mocked HTTP responses.
+"""Unit tests for Kaizen-backed CUGA memory."""
 
-Tests the Memory singleton and MemoryClient without requiring the memory service to be running.
-Uses unittest.mock to simulate API responses.
-"""
+from __future__ import annotations
+
+from datetime import UTC, datetime
 
 import pytest
-from unittest.mock import Mock, patch, MagicMock
-from datetime import datetime
-import httpx
 
-from cuga.backend.memory.agentic_memory.client.memory_client import MemoryConfig
+from kaizen.schema.conflict_resolution import EntityUpdate
+from kaizen.schema.core import Entity, Namespace, RecordedEntity
+from kaizen.schema.exceptions import NamespaceNotFoundException
+from kaizen.schema.tips import Tip
+
 from cuga.backend.memory.memory import Memory
-from cuga.backend.memory.agentic_memory import MemoryClient
-from cuga.backend.memory.agentic_memory.schema import Namespace, RecordedFact, Run
-from cuga.backend.memory.agentic_memory.utils.exceptions import (
-    NamespaceNotFoundException,
-    APIRequestException,
-)
+from cuga.config import settings
+
+
+class FakeKaizenClient:
+    def __init__(self):
+        self._namespaces: dict[str, Namespace] = {}
+        self._entities: dict[str, list[RecordedEntity]] = {}
+        self._counter = 1
+
+    def ready(self) -> bool:
+        return True
+
+    def create_namespace(self, namespace_id: str | None = None) -> Namespace:
+        namespace_id = namespace_id or f"ns_{len(self._namespaces) + 1}"
+        namespace = Namespace(id=namespace_id, created_at=datetime.now(UTC), num_entities=0)
+        self._namespaces[namespace_id] = namespace
+        self._entities.setdefault(namespace_id, [])
+        return namespace
+
+    def get_namespace_details(self, namespace_id: str) -> Namespace:
+        namespace = self._namespaces.get(namespace_id)
+        if namespace is None:
+            raise NamespaceNotFoundException(f"Namespace `{namespace_id}` not found")
+        return Namespace(
+            id=namespace.id,
+            created_at=namespace.created_at,
+            num_entities=len(self._entities.get(namespace_id, [])),
+        )
+
+    def search_namespaces(self, limit: int = 10) -> list[Namespace]:
+        return [
+            Namespace(id=ns.id, created_at=ns.created_at, num_entities=len(self._entities.get(ns.id, [])))
+            for ns in list(self._namespaces.values())[:limit]
+        ]
+
+    def delete_namespace(self, namespace_id: str) -> None:
+        self._namespaces.pop(namespace_id, None)
+        self._entities.pop(namespace_id, None)
+
+    def namespace_exists(self, namespace_id: str) -> bool:
+        return namespace_id in self._namespaces
+
+    def update_entities(
+        self, namespace_id: str, entities: list[Entity], enable_conflict_resolution: bool = True
+    ) -> list[EntityUpdate]:
+        _ = enable_conflict_resolution
+        if namespace_id not in self._namespaces:
+            raise NamespaceNotFoundException(f"Namespace `{namespace_id}` not found")
+
+        updates: list[EntityUpdate] = []
+        for entity in entities:
+            entity_id = str(self._counter)
+            self._counter += 1
+            recorded = RecordedEntity(
+                id=entity_id,
+                type=entity.type,
+                content=entity.content,
+                metadata=entity.metadata,
+                created_at=datetime.now(UTC),
+            )
+            self._entities[namespace_id].append(recorded)
+            updates.append(
+                EntityUpdate(
+                    id=entity_id,
+                    type=entity.type,
+                    content=entity.content,
+                    event="ADD",
+                    metadata=entity.metadata,
+                )
+            )
+        return updates
+
+    def search_entities(
+        self,
+        namespace_id: str,
+        query: str | None = None,
+        filters: dict | None = None,
+        limit: int = 10,
+    ) -> list[RecordedEntity]:
+        if namespace_id not in self._namespaces:
+            raise NamespaceNotFoundException(f"Namespace `{namespace_id}` not found")
+        rows = list(self._entities[namespace_id])
+
+        def matches(entity: RecordedEntity) -> bool:
+            for key, value in (filters or {}).items():
+                if key == "__entity_type":
+                    if entity.type != value:
+                        return False
+                elif key.startswith("metadata."):
+                    metadata_key = key.split(".", 1)[1]
+                    if (entity.metadata or {}).get(metadata_key) != value:
+                        return False
+                elif key == "type":
+                    if entity.type != value:
+                        return False
+                elif key == "id":
+                    if entity.id != str(value):
+                        return False
+                else:
+                    if (entity.metadata or {}).get(key) != value:
+                        return False
+            if query:
+                return query.lower() in str(entity.content).lower()
+            return True
+
+        matched = [entity for entity in rows if matches(entity)]
+        matched.sort(key=lambda row: row.created_at, reverse=True)
+        return matched[:limit]
+
+    def get_all_entities(
+        self,
+        namespace_id: str,
+        filters: dict | None = None,
+        limit: int = 100,
+    ) -> list[RecordedEntity]:
+        return self.search_entities(namespace_id=namespace_id, query=None, filters=filters, limit=limit)
+
+    def delete_entity_by_id(self, namespace_id: str, entity_id: str) -> None:
+        if namespace_id not in self._namespaces:
+            raise NamespaceNotFoundException(f"Namespace `{namespace_id}` not found")
+        self._entities[namespace_id] = [entity for entity in self._entities[namespace_id] if entity.id != entity_id]
+
+
+@pytest.fixture(autouse=True)
+def memory_fixture(monkeypatch):
+    import cuga.backend.memory.memory as memory_module
+
+    settings.set("advanced_features.enable_memory", True)
+    settings.set("advanced_features.enable_fact", True)
+
+    Memory._instance = None
+    Memory._initialized = False
+
+    fake_client = FakeKaizenClient()
+    monkeypatch.setattr(memory_module, "KaizenClient", lambda: fake_client)
+    monkeypatch.setattr(
+        memory_module,
+        "extract_facts_from_messages",
+        lambda _messages: [
+            memory_module.ExtractedFact(
+                category="user_preferences",
+                key="timezone",
+                value="PST",
+                content="User timezone is PST",
+            )
+        ],
+    )
+    monkeypatch.setattr(
+        memory_module,
+        "generate_tips",
+        lambda _messages: [
+            Tip(
+                content="Retry with a narrower query",
+                rationale="Narrow queries return stronger matches",
+                category="strategy",
+                trigger="When retrieval is noisy",
+            )
+        ],
+    )
+
+    yield fake_client
+
+    Memory._instance = None
+    Memory._initialized = False
 
 
 class TestMemorySingleton:
-    """Test suite for Memory singleton pattern."""
-
     def test_memory_singleton_instance(self):
-        """Test that Memory returns the same instance."""
         memory1 = Memory()
         memory2 = Memory()
-
-        assert memory1 is memory2, "Memory should be a singleton"
+        assert memory1 is memory2
 
     def test_memory_singleton_initialization(self):
-        """Test that Memory initializes only once."""
         memory = Memory()
-
-        assert hasattr(memory, 'memory_client')
-        assert isinstance(memory.memory_client, MemoryClient)
+        assert hasattr(memory, "memory_client")
         assert memory.user_id is None
 
 
-class TestMemoryClientMocked:
-    """Test suite for MemoryClient with mocked HTTP responses."""
+class TestMemoryBehavior:
+    def test_namespace_and_fact_crud(self):
+        memory = Memory()
+        namespace = memory.create_namespace("test_namespace")
 
-    @pytest.fixture
-    def mock_client(self):
-        """Create a MemoryClient with mocked httpx client."""
-        with patch('httpx.Client'):
-            client = MemoryClient(base_url="http://localhost:8888")
-            mock_httpx_instance = MagicMock()
-            client.client = mock_httpx_instance
-            yield client, mock_httpx_instance
-
-    def test_health_check_success(self, mock_client):
-        """Test successful health check."""
-        client, mock_httpx = mock_client
-
-        # Mock successful response
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {"status": "ok"}
-        mock_httpx.request.return_value = mock_response
-
-        result = client.health_check()
-
-        assert result is True
-        mock_httpx.request.assert_called_once_with("GET", "/v1/health/live")
-
-    def test_health_check_failure(self, mock_client):
-        """Test health check when service is down."""
-        client, mock_httpx = mock_client
-
-        # Mock failed response
-        mock_httpx.request.side_effect = httpx.RequestError("Connection failed")
-
-        result = client.health_check()
-
-        assert result is False
-
-    def test_create_namespace_success(self, mock_client):
-        """Test creating a namespace successfully."""
-        client, mock_httpx = mock_client
-
-        # Mock successful response
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "test_namespace",
-            "user_id": "user123",
-            "agent_id": "cuga",
-            "app_id": "test_app",
-            "created_at": datetime.now().isoformat(),
-        }
-        mock_httpx.request.return_value = mock_response
-
-        namespace = client.create_namespace(
-            namespace_id="test_namespace", user_id="user123", agent_id="cuga", app_id="test_app"
+        events = memory.create_and_store_fact(
+            namespace_id=namespace.id,
+            content="User likes soccer",
+            metadata={"user_id": "u-1", "category": "sports", "key": "activity", "value": "soccer"},
+            enable_conflict_resolution=False,
         )
 
-        assert isinstance(namespace, Namespace)
-        assert namespace.id == "test_namespace"
-        assert namespace.user_id == "user123"
-        assert namespace.agent_id == "cuga"
-
-    def test_create_namespace_minimal(self, mock_client):
-        """Test creating a namespace with minimal parameters."""
-        client, mock_httpx = mock_client
-
-        # Mock successful response
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "auto_generated_id",
-            "user_id": None,
-            "agent_id": None,
-            "app_id": None,
-            "created_at": datetime.now().isoformat(),
-        }
-        mock_httpx.request.return_value = mock_response
-
-        namespace = client.create_namespace()
-
-        assert isinstance(namespace, Namespace)
-        assert namespace.id is not None
-
-    def test_get_namespace_details_success(self, mock_client):
-        """Test getting namespace details."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "test_namespace",
-            "user_id": "user123",
-            "agent_id": "cuga",
-            "app_id": "test_app",
-            "created_at": datetime.now().isoformat(),
-        }
-        mock_httpx.request.return_value = mock_response
-
-        namespace = client.get_namespace_details("test_namespace")
-
-        assert isinstance(namespace, Namespace)
-        assert namespace.id == "test_namespace"
-
-    def test_get_namespace_details_not_found(self, mock_client):
-        """Test getting non-existent namespace."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 404
-        mock_httpx.request.return_value = mock_response
-
-        with pytest.raises(NamespaceNotFoundException):
-            client.get_namespace_details("nonexistent")
-
-    def test_search_namespaces_with_filters(self, mock_client):
-        """Test searching namespaces with filters."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = [
-            {
-                "id": "namespace1",
-                "user_id": "user123",
-                "agent_id": "cuga",
-                "app_id": "app1",
-                "created_at": datetime.now().isoformat(),
-            },
-            {
-                "id": "namespace2",
-                "user_id": "user123",
-                "agent_id": "cuga",
-                "app_id": "app2",
-                "created_at": datetime.now().isoformat(),
-            },
-        ]
-        mock_httpx.request.return_value = mock_response
-
-        namespaces = client.search_namespaces(user_id="user123", agent_id="cuga", limit=10)
-
-        assert len(namespaces) == 2
-        assert all(isinstance(ns, Namespace) for ns in namespaces)
-        assert namespaces[0].user_id == "user123"
-
-    def test_delete_namespace_success(self, mock_client):
-        """Test deleting a namespace."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 204
-        mock_httpx.request.return_value = mock_response
-
-        # Should not raise exception
-        client.delete_namespace("test_namespace")
-
-        mock_httpx.request.assert_called_once()
-
-    def test_create_and_store_fact_success(self, mock_client):
-        """Test storing a fact in a namespace."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = "fact_id_123"
-        mock_httpx.request.return_value = mock_response
-
-        fact_id = client.create_and_store_fact(
-            namespace_id="test_namespace",
-            content="This is a test fact",
-            metadata={"type": "test", "agent": "TestAgent"},
-        )
-
-        assert fact_id == "fact_id_123"
-
-    def test_search_for_facts_with_query(self, mock_client):
-        """Test searching for facts with a query."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = [
-            {
-                "id": "1",
-                "content": "Test fact 1",
-                "metadata": {"type": "test"},
-                "created_at": datetime.now().isoformat(),
-                "run_id": None,
-            },
-            {
-                "id": "2",
-                "content": "Test fact 2",
-                "metadata": {"type": "test"},
-                "created_at": datetime.now().isoformat(),
-                "run_id": None,
-            },
-        ]
-        mock_httpx.request.return_value = mock_response
-
-        facts = client.search_for_facts(namespace_id="test_namespace", query="test query", limit=10)
-
-        assert len(facts) == 2
-        assert all(isinstance(f, RecordedFact) for f in facts)
-        assert facts[0].content == "Test fact 1"
-
-    def test_search_for_facts_with_filters(self, mock_client):
-        """Test searching for facts with metadata filters."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = [
-            {
-                "id": "1",
-                "content": "Agent tip fact",
-                "metadata": {"type": "tip", "agent": "APIPlannerAgent"},
-                "created_at": datetime.now().isoformat(),
-                "run_id": None,
-            }
-        ]
-        mock_httpx.request.return_value = mock_response
-
-        facts = client.search_for_facts(
-            namespace_id="test_namespace",
-            query="API errors",
-            filters={"agent": "APIPlannerAgent", "type": "tip"},
-            limit=5,
-        )
-
+        assert len(events) == 1
+        facts = memory.search_for_facts(namespace.id, query="soccer", filters={"user_id": "u-1"}, limit=5)
         assert len(facts) == 1
-        assert facts[0].metadata["agent"] == "APIPlannerAgent"
+        assert facts[0].type == "fact"
+        assert facts[0].metadata.get("category") == "sports"
 
-    def test_get_all_facts_empty_namespace(self, mock_client):
-        """Test getting all facts from an empty namespace."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = []
-        mock_httpx.request.return_value = mock_response
-
-        facts = client.get_all_facts("test_namespace")
-
-        assert len(facts) == 0
-
-    def test_create_run_success(self, mock_client):
-        """Test creating a run."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "run_123",
-            "namespace_id": "test_namespace",
-            "created_at": datetime.now().isoformat(),
-            "ended": False,
-            "steps": [],
-        }
-        mock_httpx.request.return_value = mock_response
-
-        run = client.create_run("test_namespace", run_id="run_123")
-
-        assert isinstance(run, Run)
-        assert run.id == "run_123"
-        assert run.ended is False
-
-    def test_add_step_to_run(self, mock_client):
-        """Test adding a step to a run."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = "step_id_456"
-        mock_httpx.request.return_value = mock_response
-
-        step_id = client.add_step(
-            namespace_id="test_namespace",
-            run_id="run_123",
-            step={"agent": "TaskAnalyzerAgent", "status": "success"},
-            prompt="Analyze this step",
-        )
-
-        assert step_id == "step_id_456"
-
-    def test_search_runs_success(self, mock_client):
-        """Test searching for runs."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "run_123",
-            "namespace_id": "test_namespace",
-            "created_at": datetime.now().isoformat(),
-            "ended": True,
-            "steps": [
-                {
-                    "id": "1",
-                    "content": "Step 1",
-                    "metadata": {"agent": "TaskAnalyzerAgent"},
-                    "created_at": datetime.now().isoformat(),
-                    "run_id": "run_123",
-                }
-            ],
-        }
-        mock_httpx.request.return_value = mock_response
-
-        run = client.search_runs(
-            namespace_id="test_namespace", query="revenue calculation", filters={"status": "success"}
-        )
-
-        assert isinstance(run, Run)
-        assert run.id == "run_123"
-
-    def test_end_run_success(self, mock_client):
-        """Test ending a run (triggers tips extraction)."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_httpx.request.return_value = mock_response
-
-        # Should not raise exception
-        client.end_run("test_namespace", "run_123")
-
-        mock_httpx.request.assert_called_once()
-
-    def test_namespace_exists_true(self, mock_client):
-        """Test checking if namespace exists (true case)."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = []
-        mock_httpx.request.return_value = mock_response
-
-        result = client.namespace_exists("test_namespace")
-
-        assert result is True
-
-    def test_namespace_exists_false(self, mock_client):
-        """Test checking if namespace exists (false case)."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 404
-        mock_httpx.request.return_value = mock_response
-
-        result = client.namespace_exists("nonexistent")
-
-        assert result is False
-
-
-class TestMemoryWrapperMocked:
-    """Test suite for Memory wrapper class with mocked client."""
-
-    @pytest.fixture
-    def mock_memory(self):
-        """Create a Memory instance with mocked MemoryClient."""
-        with patch.object(Memory, '_initialized', False):
-            with patch('cuga.backend.memory.memory.MemoryClient') as mock_client_class:
-                mock_client = MagicMock()
-                mock_client_class.return_value = mock_client
-                memory = Memory()
-                yield memory, mock_client
-
-    def test_create_namespace_wrapper(self, mock_memory):
-        """Test Memory.create_namespace wrapper."""
-        memory, mock_client = mock_memory
-
-        mock_namespace = Namespace(
-            id="test_ns", user_id="user123", agent_id="cuga", app_id="test", created_at=datetime.now()
-        )
-        mock_client.create_namespace.return_value = mock_namespace
-
-        result = memory.create_namespace(
-            namespace_id="test_ns", user_id="user123", agent_id="cuga", app_id="test"
-        )
-
-        assert result.id == "test_ns"
-        mock_client.create_namespace.assert_called_once()
-
-    def test_search_for_facts_wrapper(self, mock_memory):
-        """Test Memory.search_for_facts wrapper."""
-        memory, mock_client = mock_memory
-
-        mock_facts = [
-            RecordedFact(
-                id="1", content="Test fact", metadata={"type": "test"}, created_at=datetime.now(), run_id=None
-            )
-        ]
-        mock_client.search_for_facts.return_value = mock_facts
-
-        result = memory.search_for_facts(namespace_id="test_ns", query="test", limit=5)
-
-        assert len(result) == 1
-        assert result[0].content == "Test fact"
-        mock_client.search_for_facts.assert_called_once()
-
-    def test_get_matching_tips(self, mock_memory):
-        """Test Memory.get_matching_tips method."""
-        memory, mock_client = mock_memory
-
-        mock_facts = [
-            RecordedFact(
-                id="1",
-                content="Tip 1: Validate inputs",
-                metadata={"type": "tip", "agent": "APIPlannerAgent"},
-                created_at=datetime.now(),
-                run_id=None,
-            ),
-            RecordedFact(
-                id="2",
-                content="Tip 2: Handle errors gracefully",
-                metadata={"type": "tip", "agent": "APIPlannerAgent"},
-                created_at=datetime.now(),
-                run_id=None,
-            ),
-        ]
-        mock_client.search_for_facts.return_value = mock_facts
-
-        result = memory.get_matching_tips(
-            namespace_id="test_ns", agent_id="APIPlannerAgent", query="API errors", limit=3
-        )
-
-        assert len(result) == 2
-        assert "Tip 1" in result[0]
-        assert "Tip 2" in result[1]
-
-    def test_create_run_wrapper(self, mock_memory):
-        """Test Memory.create_run wrapper."""
-        memory, mock_client = mock_memory
-
-        mock_run = Run(id="run_123", namespace_id="test_ns", created_at=datetime.now(), ended=False, steps=[])
-        mock_client.create_run.return_value = mock_run
-
-        result = memory.create_run("test_ns", run_id="run_123")
-
-        assert result.id == "run_123"
-        assert result.ended is False
-        mock_client.create_run.assert_called_once()
-
-    def test_add_step_wrapper(self, mock_memory):
-        """Test Memory.add_step wrapper."""
-        memory, mock_client = mock_memory
-
-        mock_client.add_step.return_value = "step_456"
-
-        result = memory.add_step(
-            namespace_id="test_ns",
-            run_id="run_123",
-            step={"agent": "CodeAgent", "status": "success"},
-            prompt="Analyze code step",
-        )
-
-        assert result == "step_456"
-        mock_client.add_step.assert_called_once()
-
-    def test_end_run_wrapper(self, mock_memory):
-        """Test Memory.end_run wrapper."""
-        memory, mock_client = mock_memory
-
-        mock_client.end_run.return_value = None
-
-        # Should not raise exception
-        memory.end_run("test_ns", "run_123")
-
-        mock_client.end_run.assert_called_once_with("test_ns", "run_123")
-
-
-class TestExceptionHandling:
-    """Test suite for exception handling in MemoryClient."""
-
-    @pytest.fixture
-    def mock_client(self):
-        """Create a MemoryClient with mocked httpx client."""
-        with patch('httpx.Client'):
-            client = MemoryClient(base_url="http://localhost:8888")
-            mock_httpx_instance = MagicMock()
-            client.client = mock_httpx_instance
-            yield client, mock_httpx_instance
-
-    def test_request_error_handling(self, mock_client):
-        """Test handling of network request errors."""
-        client, mock_httpx = mock_client
-
-        mock_httpx.request.side_effect = httpx.RequestError("Network error")
-
-        with pytest.raises(APIRequestException) as exc_info:
-            client.create_namespace()
-
-        assert "request failed" in str(exc_info.value).lower()
-
-    def test_http_status_error_handling(self, mock_client):
-        """Test handling of HTTP status errors."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 500
-        mock_response.raise_for_status.side_effect = httpx.HTTPStatusError(
-            "Server error", request=Mock(), response=mock_response
-        )
-        mock_httpx.request.return_value = mock_response
-
-        with pytest.raises(APIRequestException) as exc_info:
-            client.create_namespace()
-
-        assert "500" in str(exc_info.value)
-
-    def test_namespace_not_found_error(self, mock_client):
-        """Test NamespaceNotFoundException."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 404
-        mock_httpx.request.return_value = mock_response
-
+        memory.delete_namespace(namespace.id)
         with pytest.raises(NamespaceNotFoundException):
-            client.get_namespace_details("nonexistent")
+            memory.get_namespace_details(namespace.id)
 
+    @pytest.mark.asyncio
+    async def test_extract_facts_from_messages_async(self):
+        memory = Memory()
+        namespace = memory.create_namespace("facts_async")
 
-class TestEdgeCases:
-    """Test suite for edge cases and boundary conditions."""
+        updates = await memory.extract_facts_from_messages_async(
+            namespace_id=namespace.id,
+            messages=[{"role": "user", "content": "I live in SF"}],
+            metadata={"user_id": "u-2"},
+            enable_conflict_resolution=False,
+        )
 
-    @pytest.fixture
-    def mock_client(self):
-        """Create a MemoryClient with mocked httpx client."""
-        with patch('httpx.Client'):
-            client = MemoryClient(config=MemoryConfig(provider='http'))
-            mock_httpx_instance = MagicMock()
-            client.backend._client = mock_httpx_instance
-            yield client, mock_httpx_instance
+        assert len(updates) == 1
+        facts = memory.search_for_facts(namespace.id, filters={"user_id": "u-2"})
+        assert facts[0].metadata.get("key") == "timezone"
 
-    def test_empty_query_search(self, mock_client):
-        """Test searching with None/empty query."""
-        client, mock_httpx = mock_client
+    @pytest.mark.asyncio
+    async def test_run_lifecycle_and_tips(self):
+        memory = Memory()
+        namespace = memory.create_namespace("run_ns")
 
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = []
-        mock_httpx.request.return_value = mock_response
+        run = memory.create_run(namespace.id, run_id="run_123")
+        memory.add_step(
+            namespace_id=namespace.id,
+            run_id=run.id,
+            step={"name": "TaskAnalyzer", "status": "ok", "intent": "Book flight"},
+            prompt="Analyze",
+        )
+        memory.add_step(
+            namespace_id=namespace.id,
+            run_id=run.id,
+            step={"name": "APIPlanner", "status": "ok"},
+            prompt="Plan",
+        )
 
-        facts = client.search_for_facts("test_ns", query=None, limit=10)
+        await memory.end_run(namespace.id, run.id)
+        ended = memory.get_run(namespace.id, run.id)
 
-        assert len(facts) == 0
+        assert ended.ended is True
+        tips = memory.search_entities(namespace.id, query=None, filters={"__entity_type": "tip"}, limit=10)
+        assert len(tips) >= 1
 
-    def test_large_limit_search(self, mock_client):
-        """Test searching with large limit."""
-        client, mock_httpx = mock_client
+    def test_preference_helpers(self):
+        memory = Memory()
+        namespace = memory.create_namespace("pref_ns")
 
-        mock_response = Mock()
-        mock_response.status_code = 200
-        # Simulate returning many facts
-        mock_response.json.return_value = [
-            {
-                "id": str(i),
-                "content": f"Fact {i}",
-                "metadata": {},
-                "created_at": datetime.now().isoformat(),
-                "run_id": None,
-            }
-            for i in range(100)
-        ]
-        mock_httpx.request.return_value = mock_response
+        memory.update_preference(
+            namespace_id=namespace.id,
+            user_id="u-3",
+            category="meeting_preferences",
+            key="default_duration",
+            value="30",
+        )
 
-        facts = client.search_for_facts("test_ns", query="test", limit=100)
+        preferences = memory.get_user_preferences(namespace_id=namespace.id, user_id="u-3")
+        assert "meeting_preferences" in preferences
+        assert preferences["meeting_preferences"][0]["value"] == "30"
 
-        assert len(facts) == 100
-
-    def test_fact_without_metadata(self, mock_client):
-        """Test storing fact without metadata."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = "fact_id"
-        mock_httpx.request.return_value = mock_response
-
-        fact_id = client.create_and_store_fact(namespace_id="test_ns", content="Fact without metadata")
-
-        assert fact_id == "fact_id"
-
-    def test_run_with_no_steps(self, mock_client):
-        """Test run with empty steps list."""
-        client, mock_httpx = mock_client
-
-        mock_response = Mock()
-        mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "id": "run_empty",
-            "namespace_id": "test_ns",
-            "created_at": datetime.now().isoformat(),
-            "ended": False,
-            "steps": [],
-        }
-        mock_httpx.request.return_value = mock_response
-
-        run = client.create_run("test_ns", run_id="run_empty")
-
-        assert len(run.steps) == 0
+        memory.delete_preference(
+            namespace_id=namespace.id,
+            user_id="u-3",
+            category="meeting_preferences",
+            key="default_duration",
+        )
+        cleared = memory.get_user_preferences(namespace_id=namespace.id, user_id="u-3")
+        assert "meeting_preferences" not in cleared

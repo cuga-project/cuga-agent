@@ -3,23 +3,23 @@ from rich.console import Console
 from rich.table import Table
 from typing import Annotated, TYPE_CHECKING
 
-from cuga.backend.memory.agentic_memory.utils.exceptions import APIRequestException
+from kaizen.schema.exceptions import KaizenException, NamespaceNotFoundException
 
 if TYPE_CHECKING:
     from cuga.backend.memory.memory import Memory
 
-memory_app = typer.Typer(help="Tools used with the memory service")
+memory_app = typer.Typer(help="Tools used with in-process memory")
 memory_namespace = typer.Typer(help="Manage namespaces")
 memory_app.add_typer(memory_namespace, name="namespace")
 
 
-def create_memory_client() -> 'Memory':
+def create_memory_client() -> "Memory":
     from cuga.backend.memory.memory import Memory
 
     memory = Memory()
     if not memory.health_check():
         err_console = Console(stderr=True)
-        err_console.print("[bold red]Memory service is not running.[/bold red]")
+        err_console.print("[bold red]Memory backend is not healthy.[/bold red]")
         raise typer.Exit(1)
     return memory
 
@@ -38,13 +38,11 @@ def create(
     memory = create_memory_client()
     try:
         namespace = memory.create_namespace(namespace_id, user_id, agent_id, app_id)
-    except APIRequestException as e:
-        if '409' in str(e):
-            err_console = Console(stderr=True)
-            err_console.print(f"[bold red]Namespace `{namespace_id}` already exists.[/bold red]")
-            raise typer.Exit(1)
-        else:
-            raise e
+    except KaizenException as e:
+        err_console = Console(stderr=True)
+        err_console.print(f"[bold red]{e}[/bold red]")
+        raise typer.Exit(1)
+
     if not quiet:
         console = Console()
         console.print(f"Created namespace `{namespace.id}`")
@@ -52,8 +50,6 @@ def create(
 
 @memory_namespace.command(help="Get namespace details")
 def details(namespace_id: Annotated[str, typer.Argument(help="ID of the namespace to retrieve.")]):
-    from cuga.backend.memory import NamespaceNotFoundException
-
     memory = create_memory_client()
     try:
         namespace = memory.get_namespace_details(namespace_id)
@@ -61,16 +57,10 @@ def details(namespace_id: Annotated[str, typer.Argument(help="ID of the namespac
         err_console = Console(stderr=True)
         err_console.print(f"[bold red]Namespace `{namespace_id}` not found.[/bold red]")
         raise typer.Exit(1)
+
     console = Console()
-    table = Table("ID", "Created At", "User ID", "Agent ID", "Application ID", "Entities")
-    table.add_row(
-        namespace.id,
-        str(namespace.created_at),
-        namespace.user_id,
-        namespace.agent_id,
-        namespace.app_id,
-        namespace.num_entities,
-    )
+    table = Table("ID", "Created At", "Entities")
+    table.add_row(namespace.id, str(namespace.created_at), str(namespace.num_entities or 0))
     console.print(table)
 
 
@@ -88,17 +78,16 @@ def delete(
 
 @memory_namespace.command(help="Search for namespaces. Lists all namespaces if no filters provided.")
 def search(
-    user_id: Annotated[str | None, typer.Option(help="The user to filter by.")] = None,
-    agent_id: Annotated[str | None, typer.Option(help="The agent to filter by.")] = None,
-    app_id: Annotated[str | None, typer.Option(help="The application to filter by.")] = None,
+    user_id: Annotated[str | None, typer.Option(help="Unused in Kaizen mode.")] = None,
+    agent_id: Annotated[str | None, typer.Option(help="Unused in Kaizen mode.")] = None,
+    app_id: Annotated[str | None, typer.Option(help="Unused in Kaizen mode.")] = None,
     limit: int = 10,
 ):
+    _ = (user_id, agent_id, app_id)
     memory = create_memory_client()
-    namespaces = memory.search_namespaces(user_id, agent_id, app_id, limit)
+    namespaces = memory.search_namespaces(limit=limit)
     console = Console()
-    table = Table("ID", "Created At", "User ID", "Agent ID", "Application ID")
+    table = Table("ID", "Created At", "Entities")
     for namespace in namespaces:
-        table.add_row(
-            namespace.id, str(namespace.created_at), namespace.user_id, namespace.agent_id, namespace.app_id
-        )
+        table.add_row(namespace.id, str(namespace.created_at), str(namespace.num_entities or 0))
     console.print(table)

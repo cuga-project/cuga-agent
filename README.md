@@ -797,9 +797,9 @@ instruction_set = "default"  # or any instruction set above
 <details>
 <summary><em style="color: #666;"> 📹 Optional: Run with memory</em></summary>
 
-1. Install memory dependencies `uv sync --extra memory`
-1. Change `enable_memory = true` in `setting.toml`
-2. Run `cuga start memory`
+1. Install dependencies `uv sync`
+2. Change `enable_memory = true` in `settings.toml`
+3. Run `cuga start demo`
 
 Watch CUGA with Memory enabled
 
@@ -809,11 +809,10 @@ Watch CUGA with Memory enabled
 
 ### Setup Steps:
 
-1. set `enable_memory` flag to true
-2. Run `cuga start memory`
-3. Run `cuga start demo_crm --sample-memory-data` 
-4. go to the cuga webpage and type `Identify the common cities between my cuga_workspace/cities.txt and cuga_workspace/company.txt` . Here you should see the errors related to CodeAgent. Wait for a minute for `tips` to be generated. `Tips` generation can be confirmed from the  terminal where` cuga start memory` was run
-5. Re-run the same utterance again and it should finish in lesser number of steps
+1. Set `enable_memory = true`
+2. Run `cuga start demo_crm --sample-memory-data`
+3. In the UI, type `Identify the common cities between my cuga_workspace/cities.txt and cuga_workspace/company.txt`
+4. Wait for tips to be generated in-process, then rerun the same utterance and verify fewer steps
 
 </details>
 

@@ -7,19 +7,23 @@ This document explains how to enable the use of the memory feature in CUGA.
 CUGA execution can be enhanced by enabling episodic memory, which introduces the ability to levearge previously identified insights and relevant experiences when generating the final answer.
 Some key features include:
 
-### 1. Agentic Memory Component
+### 1. Kaizen-Based Memory Component
 
-- Extract and store tips in Milvus via mem0 interface.
-- Endpoints to support CRUD operations for tips and namespaces.
-- Memory Client for communication with endpoints.
+- Extract and store entities in Milvus via Kaizen.
+- In-process memory access through `cuga.backend.memory.memory.Memory`.
+- Entity types used by CUGA:
+  - `fact`
+  - `tip`
+  - `run`
+  - `run_step`
 - Database dependencies:
-  - Milvus (for tips)
-  - SQLite (for namespace lookup)
+  - Milvus (entity vectors + metadata)
+  - SQLite (Kaizen namespace catalog)
 
 ### 2. Integration with cuga-agent
 
 - Adds `enable_memory` flag to control memory features.
-- Support Memory port configuration in `settings.toml`
+- No standalone memory sidecar service required
 - Uses retrieved memory in agents:
   - Task analyzer
   - Task decomposition
@@ -35,17 +39,32 @@ Some key features include:
 ## 🚀  Quick Start
 
 1. Set `enable_memory=true` in `settings.toml`
-2. Start memory API:
-	`cuga start memory`
-The API will be available at port 8888.
+2. Start CUGA normally:
+	`cuga start demo`
+Memory is initialized in-process from the same runtime.
+
+### Configuration
+
+- Kaizen DB paths default to CUGA DB directory:
+  - `KAIZEN_URI=<CUGA_DBS_DIR>/entities.milvus.db`
+  - `KAIZEN_SQLITE_URI=<CUGA_DBS_DIR>/entities.sqlite.db`
+- Configure Kaizen LLMs in `src/cuga/configurations/models/settings.<provider>.toml`:
+  - `[memory.kaizen.fact_extraction.model]`
+  - `[memory.kaizen.tips.model]`
+  - `[memory.kaizen.conflict_resolution.model]`
 
 
 
 ## 📁 Prompt Location
 ```
 cuga/
-└── backend/memory/agentic_memory/llm/tips/     
-           		                        └── prompts		# Folder with all prompts       	
+└── backend/memory/utils/
+                              └── prompts.py      # CUGA step prompt mapping hooks
+
+kaizen/
+└── kaizen/llm/
+               ├── tips/
+               └── fact_extraction/
 ```            
             
 ## 🔧 How It Works

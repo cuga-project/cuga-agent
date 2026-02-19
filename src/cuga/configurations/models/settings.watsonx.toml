@@ -59,25 +59,19 @@ model_name = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
 temperature = 0.1
 max_tokens = 2000
 
-[memory.mem0.model]
+[memory.kaizen.conflict_resolution.model]
 platform = "watsonx"
 model_name = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
 temperature = 0.1
 max_tokens = 1000
 
-[memory.milvus.step_processing.model]
+[memory.kaizen.fact_extraction.model]
 platform = "watsonx"
 model_name = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
 temperature = 0.1
 max_tokens = 1000
 
-[memory.milvus.fact_extraction.model]
-platform = "watsonx"
-model_name = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.tips_extractor.model]
+[memory.kaizen.tips.model]
 platform = "watsonx"
 model_name = "meta-llama/llama-4-maverick-17b-128e-instruct-fp8"
 temperature = 0.1

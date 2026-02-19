@@ -80,7 +80,7 @@ apikey_name = "RITS_API_KEY"
 temperature = 0.1
 max_tokens = 400
 
-[memory.mem0.model]
+[memory.kaizen.conflict_resolution.model]
 platform = "rits"
 model_name = "rits/openai/gpt-oss-120b"
 url="http://localhost:4000"
@@ -88,7 +88,7 @@ apikey_name = "RITS_API_KEY"
 temperature = 0.1
 max_tokens = 1000
 
-[memory.milvus.step_processing.model]
+[memory.kaizen.fact_extraction.model]
 platform = "rits"
 model_name = "rits/openai/gpt-oss-120b"
 url="http://localhost:4000"
@@ -96,15 +96,7 @@ apikey_name = "RITS_API_KEY"
 temperature = 0.1
 max_tokens = 1000
 
-[memory.milvus.fact_extraction.model]
-platform = "rits"
-model_name = "rits/openai/gpt-oss-120b"
-url="http://localhost:4000"
-apikey_name = "RITS_API_KEY"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.tips_extractor.model]
+[memory.kaizen.tips.model]
 platform = "rits"
 model_name = "rits/openai/gpt-oss-120b"
 url="http://localhost:4000"

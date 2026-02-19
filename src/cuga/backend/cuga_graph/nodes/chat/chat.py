@@ -146,8 +146,7 @@ class ChatNode(BaseNode):
         if settings.advanced_features.enable_fact:
             try:
                 from cuga.backend.memory.memory import Memory
-                from cuga.backend.memory.agentic_memory import NamespaceNotFoundException
-                from cuga.backend.memory.agentic_memory.schema import Message
+                from kaizen.schema.exceptions import NamespaceNotFoundException
 
                 memory = Memory()
                 # Use "memory" as the default namespace for preferences (same as ActivityTracker)
@@ -170,7 +169,7 @@ class ChatNode(BaseNode):
 
                 # 1. Extract and store facts with categorization (async, non-blocking)
                 if state.input:
-                    messages = [Message(role="user", content=state.input)]
+                    messages = [{"role": "user", "content": state.input}]
                     # Fire and forget - extract facts with categorization
                     task = asyncio.create_task(
                         memory.memory_client.extract_facts_from_messages_async(

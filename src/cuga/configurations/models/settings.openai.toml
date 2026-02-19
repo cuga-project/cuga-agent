@@ -48,22 +48,17 @@ platform = "openai"
 temperature = 0.1
 max_tokens = 400
 
-[memory.mem0.model]
+[memory.kaizen.conflict_resolution.model]
 platform = "openai"
 temperature = 0.1
 max_tokens = 1000
 
-[memory.milvus.step_processing.model]
+[memory.kaizen.fact_extraction.model]
 platform = "openai"
 temperature = 0.1
 max_tokens = 1000
 
-[memory.milvus.fact_extraction.model]
-platform = "openai"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.tips_extractor.model]
+[memory.kaizen.tips.model]
 platform = "openai"
 temperature = 0.1
 max_tokens = 5000
