@@ -181,6 +181,9 @@ Experience CUGA's Human-in-the-Loop capabilities where the agent pauses for huma
 git clone https://github.com/cuga-project/cuga-agent.git
 cd cuga-agent
 
+# 0. Clone Kaizen into the expected local path (required by pyproject.toml)
+git clone https://github.com/AgentToolkit/kaizen.git ./kaizen
+
 # 1. Create and activate virtual environment
 uv venv --python=3.12 && source .venv/bin/activate
 
@@ -204,6 +207,12 @@ cuga viz
 # agent execution trajectories, decision-making, and tool usage
 
 ```
+
+**Local setup contract (Kaizen dependency):**
+
+- CUGA uses an editable local dependency source: `kaizen = { path = "./kaizen", editable = true }`.
+- `./kaizen` must exist before running `uv sync`.
+- If `./kaizen` is missing, dependency resolution/install will fail.
 
 
 <details>
