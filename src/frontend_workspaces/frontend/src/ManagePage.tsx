@@ -22,6 +22,7 @@ import {
   Layer,
   Accordion,
   AccordionItem,
+  ToastNotification,
 } from "@carbon/react";
 import { CugaHeader } from "agentic_chat/CugaHeader";
 import {
@@ -109,6 +110,7 @@ export function ManagePage() {
   const [history, setHistory] = useState<ConfigVersion[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
   const [viewVersion, setViewVersion] = useState<{ version: number; config: AgentConfig } | null>(null);
   const [connectedApps, setConnectedApps] = useState<ConnectedApp[]>([]);
@@ -278,6 +280,18 @@ export function ManagePage() {
     }
   };
 
+  const addToast = useCallback((kind: "error" | "info" | "success" | "warning", title: string, subtitle: string) => {
+    const id = `toast-${Date.now()}-${Math.random()}`;
+    setToastNotifications((prev) => [...prev, { id, kind, title, subtitle }]);
+    setTimeout(() => {
+      setToastNotifications((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
+  }, []);
+
+  const removeToast = useCallback((id: string) => {
+    setToastNotifications((prev) => prev.filter((t) => t.id !== id));
+  }, []);
+
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
@@ -294,17 +308,42 @@ export function ManagePage() {
       });
       if (res.ok) {
         const data = await res.json();
+        
+        // Check for partial errors in the response
+        if (data.partial_errors && Array.isArray(data.partial_errors) && data.partial_errors.length > 0) {
+          // Show warning toast for partial errors
+          data.partial_errors.forEach((error: any) => {
+            const errorMsg = typeof error === "string" ? error : (error.message || error.error || "Unknown error");
+            addToast("warning", "Partial save error", errorMsg);
+          });
+        }
+        
         setConfig(toSave);
         setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
         setSaveStatus("success");
+        
+        // Show success toast
+        if (!data.partial_errors || data.partial_errors.length === 0) {
+          addToast("success", "Configuration saved", "Your configuration has been saved successfully");
+        } else {
+          addToast("info", "Configuration partially saved", "Some settings were saved with warnings");
+        }
+        
         loadHistory();
         setTimeout(() => setSaveStatus("idle"), 2000);
       } else {
+        // Handle error response
+        const errorData = await res.json().catch(() => ({}));
+        const errorMsg = errorData.error || errorData.message || `Failed to save configuration (${res.status})`;
+        
         setSaveStatus("error");
+        addToast("error", "Save failed", errorMsg);
         setTimeout(() => setSaveStatus("idle"), 2000);
       }
-    } catch {
+    } catch (error) {
+      const errorMsg = error instanceof Error ? error.message : "Network error occurred";
       setSaveStatus("error");
+      addToast("error", "Save failed", errorMsg);
       setTimeout(() => setSaveStatus("idle"), 2000);
     }
   };
@@ -694,6 +733,21 @@ export function ManagePage() {
           )}
         </ModalBody>
       </ComposedModal>
+
+      {/* Toast Notifications */}
+      <div style={{ position: "fixed", top: "3rem", right: "1rem", zIndex: 9999, display: "flex", flexDirection: "column", gap: "0.5rem" }}>
+        {toastNotifications.map((toast) => (
+          <ToastNotification
+            key={toast.id}
+            kind={toast.kind}
+            title={toast.title}
+            subtitle={toast.subtitle}
+            timeout={5000}
+            onClose={() => removeToast(toast.id)}
+            lowContrast
+          />
+        ))}
+      </div>
     </div>
   );
 }

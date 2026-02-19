@@ -79,8 +79,15 @@ def _get_agent_id():
     return os.environ.get("AGENT_ID", "cuga-default")
 
 
-async def _get_or_create_registry(agent_id: str) -> tuple[MCPManager, ApiRegistry]:
-    """Get or create registry for a specific agent (with caching)."""
+async def _get_or_create_registry(
+    agent_id: str, retry_on_empty: bool = False
+) -> tuple[MCPManager, ApiRegistry]:
+    """Get or create registry for a specific agent (with caching).
+
+    Args:
+        agent_id: The agent ID to get/create registry for
+        retry_on_empty: If True and DB returns empty config, retry once after a short delay
+    """
     global agent_registries, database_mode
 
     if agent_id in agent_registries:
@@ -91,6 +98,18 @@ async def _get_or_create_registry(agent_id: str) -> tuple[MCPManager, ApiRegistr
 
     if database_mode:
         services = load_service_configs_from_db(agent_id)
+
+        # If empty and retry requested, wait and try once more (handles race conditions)
+        if not services and retry_on_empty:
+            logger.info(f"Config empty for agent {agent_id}, retrying after 1 second...")
+            import asyncio
+
+            await asyncio.sleep(1)
+            services = load_service_configs_from_db(agent_id)
+            if services:
+                logger.info(f"Retry successful - loaded {len(services)} services for agent {agent_id}")
+            else:
+                logger.warning(f"Retry failed - config still empty for agent {agent_id}")
     else:
         # In YAML mode, all agents share the same config
         config_file = get_config_filename()
@@ -406,12 +425,26 @@ async def reload_config(
                 # Clear cache for this agent
                 if agent_id in agent_registries:
                     del agent_registries[agent_id]
-                # Recreate registry for this agent
-                await _get_or_create_registry(agent_id)
+                # Recreate registry for this agent with retry on empty
+                await _get_or_create_registry(agent_id, retry_on_empty=True)
                 # If this is the default agent, update global registry
                 if agent_id == default_agent_id:
                     mcp_manager, registry = agent_registries[agent_id]
-                return {"status": "ok", "source": f"database (agent: {agent_id})", "agent_id": agent_id}
+
+                # Check for initialization errors
+                current_manager, _ = agent_registries.get(agent_id, (None, None))
+                errors = current_manager.initialization_errors if current_manager else {}
+
+                response = {
+                    "status": "ok" if not errors else "partial",
+                    "source": f"database (agent: {agent_id})",
+                    "agent_id": agent_id,
+                }
+                if errors:
+                    response["errors"] = errors
+                    response["message"] = f"{len(errors)} tool(s) failed to initialize"
+
+                return response
             else:
                 # Reload all agents (clear cache)
                 logger.info("Reloading all agents from database")

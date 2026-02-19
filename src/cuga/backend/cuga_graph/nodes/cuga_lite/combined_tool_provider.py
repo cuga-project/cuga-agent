@@ -339,7 +339,9 @@ class CombinedToolProvider(ToolProviderInterface):
             if tracker_tools_dict:
                 for tool_name, tool_def in tracker_tools_dict.items():
                     try:
-                        tool = create_tool_from_api_dict(tool_name, tool_def, app_name)
+                        tool = create_tool_from_api_dict(
+                            tool_name, tool_def, app_name, agent_id=self.agent_id
+                        )
                         all_tools.append(tool)
                     except Exception as e:
                         logger.warning(f"Failed to create tool {tool_name} from tracker: {e}")
@@ -369,7 +371,9 @@ class CombinedToolProvider(ToolProviderInterface):
                                     if any(tool.name == tool_name for tool in all_tools):
                                         continue
                                     try:
-                                        tool = create_tool_from_api_dict(tool_name, tool_def, app_name)
+                                        tool = create_tool_from_api_dict(
+                                            tool_name, tool_def, app_name, agent_id=self.agent_id
+                                        )
                                         all_tools.append(tool)
                                         logger.debug(f"  ✓ {tool_name}")
                                     except Exception as e:

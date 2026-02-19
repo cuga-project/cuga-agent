@@ -44,6 +44,7 @@ class MCPManager:
         self.trm_tools = {}
         self.mcp_clients = {}  # Store MCP client connections
         self.fastmcp_client = None  # FastMCP client for standard MCP servers
+        self.initialization_errors = {}  # Track errors during tool initialization
 
     @staticmethod
     def _get_response_schema_from_tool(
@@ -578,11 +579,14 @@ class MCPManager:
 
         try:
             for name, config in mcp_servers:
+                stderr_output = []
+
                 try:
                     transport = self._create_transport(name, config)
                     if not transport:
                         continue
 
+                    # Capture stderr if it's a stdio transport
                     client = FastMCPClient(transport)
 
                     logger.info(f"Fetching tools from {name}...")
@@ -642,11 +646,40 @@ class MCPManager:
                     self.mcp_transports[name] = transport
 
                 except Exception as e:
-                    print(f"Error connecting to MCP server {name}: {e}")
+                    error_msg = str(e)
+                    print(f"Error connecting to MCP server {name}: {error_msg}")
+                    logger.warning(f"Failed to initialize MCP server '{name}': {error_msg}")
+
+                    # Capture full traceback for detailed error reporting
                     import traceback
 
-                    print(f"Traceback: {traceback.format_exc()}")
-                    raise
+                    full_traceback = traceback.format_exc()
+                    logger.debug(f"Traceback for {name}: {full_traceback}")
+
+                    # Extract more context from the exception
+                    error_details = {
+                        "error": error_msg,
+                        "type": type(e).__name__,
+                        "traceback": full_traceback,
+                    }
+
+                    # Try to get stderr output if it's a subprocess-related error
+                    if hasattr(transport, '_process') and hasattr(transport._process, 'stderr'):
+                        try:
+                            stderr_output = (
+                                transport._process.stderr.read() if transport._process.stderr else None
+                            )
+                            if stderr_output:
+                                error_details["stderr"] = stderr_output
+                        except Exception:
+                            pass
+
+                    # Track the error for reporting
+                    self.initialization_errors[name] = error_details
+
+                    # Don't raise - continue with other servers
+                    # This allows the system to work even if some MCP servers fail
+                    continue
 
         except Exception as e:
             logger.error(f"Error initializing MCP servers: {e}")

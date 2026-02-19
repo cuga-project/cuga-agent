@@ -38,7 +38,6 @@ def _merge_mcp_yaml_into_config(config: dict[str, Any]) -> None:
 
 
 async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> None:
-    from cuga.backend.server.managed_mcp import get_managed_mcp_path, write_managed_mcp_yaml
     from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
 
     tools_list = (config or {}).get("tools") or []
@@ -77,7 +76,6 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
             logger.warning("Failed to apply policies from config: %s", policy_err)
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
-            write_managed_mcp_yaml(config, get_managed_mcp_path())
             registry_url = get_registry_base_url()
             async with httpx.AsyncClient() as client:
                 r = await client.post(f"{registry_url}/reload", timeout=10.0)
@@ -172,7 +170,8 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             state_to_update.tools_include_version = current_version + 1
             logger.info(f"[DEBUG] new tools_include_version={state_to_update.tools_include_version}")
 
-        # Trigger registry reload for the agent
+        # Trigger registry reload for the agent FIRST (before rebuilding agent graph)
+        tool_errors = {}
         try:
             from cuga.backend.server.config_store import _parse_agent_id
 
@@ -184,19 +183,57 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             registry_url = get_registry_base_url()
             logger.info(f"[DEBUG] registry_url={registry_url}")
 
-            reload_url = f"{registry_url}/reload?agent_id={base_agent_id}"
+            # For draft, use the full draft agent_id including --draft suffix
+            draft_agent_id = f"{base_agent_id}--draft"
+            reload_url = f"{registry_url}/reload?agent_id={draft_agent_id}"
             logger.info(f"[DEBUG] reload_url={reload_url}")
 
             async with httpx.AsyncClient() as client:
                 r = await client.post(reload_url, timeout=10.0)
                 r.raise_for_status()
-                logger.info(f"Registry reloaded for {base_agent_id} agent")
+                reload_data = r.json()
+                logger.info(f"Registry reloaded for {draft_agent_id} agent: {reload_data}")
+
+                # Check if there were any tool initialization errors
+                if reload_data.get("status") == "partial" and "errors" in reload_data:
+                    tool_errors = reload_data["errors"]
+                    logger.warning(f"Tool initialization errors: {tool_errors}")
+
         except Exception as reload_err:
             logger.warning(f"Failed to reload registry for {str(agent_id)}: {reload_err}")
             logger.exception("[DEBUG] Full traceback:")
 
+        # NOW rebuild the draft agent graph AFTER registry has been reloaded
+        try:
+            logger.info("[DEBUG] Rebuilding draft agent graph with new configuration...")
+
+            # Get the draft agent from state
+            draft_agent = getattr(state_to_update, "agent", None)
+            if draft_agent:
+                # Rebuild the agent graph to pick up new tools from registry
+                await draft_agent.build_graph()
+                logger.info("[DEBUG] Draft agent graph rebuilt successfully")
+            else:
+                logger.warning("[DEBUG] No draft agent found in state, skipping rebuild")
+
+        except Exception as rebuild_err:
+            logger.error(f"Failed to rebuild draft agent graph: {rebuild_err}")
+            logger.exception("[DEBUG] Full traceback:")
+            # Don't fail the request if rebuild fails, just log it
+
         logger.info(f"[DEBUG] Returning JSONResponse with agent_id={agent_id}, type={type(agent_id)}")
-        return JSONResponse({"status": "success", "version": "draft", "agent_id": str(agent_id)})
+
+        # Return response with tool errors if any
+        response_data = {
+            "status": "partial" if tool_errors else "success",
+            "version": "draft",
+            "agent_id": str(agent_id),
+        }
+        if tool_errors:
+            response_data["tool_errors"] = tool_errors
+            response_data["message"] = f"{len(tool_errors)} tool(s) failed to initialize"
+
+        return JSONResponse(response_data)
     except Exception as e:
         logger.error(f"Failed to save draft: {e}")
         raise HTTPException(status_code=500, detail=str(e))
@@ -221,6 +258,25 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         app_state.config_version = ver
         app_state.tools_include_version = int(ver) if ver else 0
         await _apply_published_config(app_state, config or {})
+
+        # Rebuild the production agent graph to pick up new tools from registry
+        try:
+            logger.info("[DEBUG] Rebuilding production agent graph with new configuration...")
+
+            # Get the production agent from state
+            prod_agent = getattr(app_state, "agent", None)
+            if prod_agent:
+                # Rebuild the agent graph to pick up new tools from registry
+                await prod_agent.build_graph()
+                logger.info("[DEBUG] Production agent graph rebuilt successfully")
+            else:
+                logger.warning("[DEBUG] No production agent found in state, skipping rebuild")
+
+        except Exception as rebuild_err:
+            logger.error(f"Failed to rebuild production agent graph: {rebuild_err}")
+            logger.exception("[DEBUG] Full traceback:")
+            # Don't fail the request if rebuild fails, just log it
+
         return JSONResponse({"status": "success", "version": ver, "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to save manage config: {e}")

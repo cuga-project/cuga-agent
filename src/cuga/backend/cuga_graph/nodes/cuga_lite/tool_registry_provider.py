@@ -25,6 +25,7 @@ async def call_api(
     api_name: str,
     args: Dict[str, Any] = None,
     operation_id: Optional[str] = None,
+    agent_id: Optional[str] = None,
 ):
     """Call an API tool via the registry server.
 
@@ -33,6 +34,7 @@ async def call_api(
         api_name: Name of the API/tool
         args: Arguments to pass to the API
         operation_id: Optional original OpenAPI operationId for tracking
+        agent_id: Optional agent ID for multi-agent support
 
     Returns:
         The API response
@@ -45,6 +47,10 @@ async def call_api(
 
     registry_base = get_registry_base_url()
     registry_host = f'{registry_base}/functions/call'
+
+    # Add agent_id query parameter if provided
+    if agent_id:
+        registry_host += f'?agent_id={agent_id}'
 
     payload = {"function_name": api_name, "app_name": app_name, "args": args}
 
@@ -134,13 +140,16 @@ def _convert_openapi_params_to_json_schema(parameters: List[Dict[str, Any]]) -> 
     return {'properties': properties, 'required': required}
 
 
-def create_tool_from_api_dict(tool_name: str, tool_def: Dict[str, Any], app_name: str) -> StructuredTool:
+def create_tool_from_api_dict(
+    tool_name: str, tool_def: Dict[str, Any], app_name: str, agent_id: Optional[str] = None
+) -> StructuredTool:
     """Create a StructuredTool from an API definition dict.
 
     Args:
         tool_name: Name of the tool
         tool_def: Tool definition dict from get_apis
         app_name: Name of the app/server
+        agent_id: Optional agent ID for multi-agent support
 
     Returns:
         StructuredTool instance with .func attribute
@@ -201,8 +210,9 @@ def create_tool_from_api_dict(tool_name: str, tool_def: Dict[str, Any], app_name
     else:
         InputModel = create_model(f"{tool_name}Input")
 
-    # Capture operation_id in closure for the tool function
+    # Capture operation_id and agent_id in closure for the tool function
     _operation_id = operation_id
+    _agent_id = agent_id
 
     async def tool_func(*args, **kwargs):
         try:
@@ -222,7 +232,9 @@ def create_tool_from_api_dict(tool_name: str, tool_def: Dict[str, Any], app_name
             all_kwargs.update(kwargs)
 
             # Call API with timeout (timeout is handled inside call_api)
-            result = await call_api(app_name, tool_name, all_kwargs, operation_id=_operation_id)
+            result = await call_api(
+                app_name, tool_name, all_kwargs, operation_id=_operation_id, agent_id=_agent_id
+            )
             return result
         except TimeoutError:
             raise
@@ -261,14 +273,16 @@ class ToolRegistryProvider(ToolProviderInterface):
     Tools are loaded from OpenAPI specs, MCP servers, or TRM services.
     """
 
-    def __init__(self, app_names: Optional[List[str]] = None):
+    def __init__(self, app_names: Optional[List[str]] = None, agent_id: Optional[str] = None):
         """
         Initialize the registry provider.
 
         Args:
             app_names: Optional list of specific app names to load. If None, loads all.
+            agent_id: Optional agent ID for multi-agent support
         """
         self.app_names = app_names
+        self.agent_id = agent_id
         self.apps: List[AppDefinition] = []
         self.tools_cache: Dict[str, List[StructuredTool]] = {}
         self.initialized = False
@@ -335,7 +349,7 @@ class ToolRegistryProvider(ToolProviderInterface):
         logger.info(f"Converting {len(api_dicts)} APIs to tools for '{app_name}'")
         for tool_name, tool_def in api_dicts.items():
             try:
-                tool = create_tool_from_api_dict(tool_name, tool_def, app_name)
+                tool = create_tool_from_api_dict(tool_name, tool_def, app_name, agent_id=self.agent_id)
                 tools.append(tool)
                 logger.debug(f"  ✓ {tool_name}")
             except Exception as e:
