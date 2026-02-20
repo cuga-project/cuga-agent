@@ -115,6 +115,33 @@
   background: transparent;
   overflow: hidden;
   min-width: 320px;
+  font-size: 0.8125rem;
+}
+
+.manage-config-panel .cds--accordion__heading,
+.manage-config-panel .cds--accordion__title {
+  font-size: 0.8125rem;
+}
+
+.manage-config-panel .cds--label,
+.manage-config-panel .cds--form-requirement {
+  font-size: 0.75rem;
+}
+
+.manage-config-panel .cds--text-input,
+.manage-config-panel .cds--number input,
+.manage-config-panel .cds--checkbox-label {
+  font-size: 0.8125rem;
+}
+
+.manage-config-panel .cds--type-body-compact-01,
+.manage-config-panel .cds--type-helper-text-01,
+.manage-config-panel p {
+  font-size: 0.75rem;
+}
+
+.manage-config-panel .cds--btn {
+  font-size: 0.75rem;
 }
 
 .manage-chat-panel {
@@ -212,6 +239,17 @@
   display: flex;
   flex-wrap: wrap;
   gap: 0.5rem;
+}
+
+.manage-history-helper {
+  margin: 0 0 0.75rem 0;
+  color: #64748b;
+}
+
+.manage-tile-action-hint {
+  margin-left: auto;
+  color: #94a3b8;
+  font-style: italic;
 }
 
 .manage-history-stack {
@@ -376,6 +414,16 @@
   color: #334155;
   white-space: pre-wrap;
   word-break: break-all;
+}
+
+.manage-json-viewer-markdown {
+  font-size: 12px;
+  margin-bottom: 1.5rem;
+}
+
+.manage-json-viewer-markdown cds-aichat-markdown,
+.manage-json-viewer-markdown .cds-aichat-markdown {
+  font-size: inherit;
 }
 
 

@@ -10,6 +10,7 @@ import {
   ComposedModal,
   ModalHeader,
   ModalBody,
+  ModalFooter,
   Grid,
   Row,
   Column,
@@ -33,9 +34,11 @@ import {
   Flag as FlagIcon,
   Security as ShieldIcon,
   Document as DocumentIcon,
+  Download,
   Upload,
   Tools,
 } from "@carbon/icons-react";
+import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import CarbonChat from "./carbon-chat/CarbonChat";
 import PoliciesConfig from "agentic_chat/PoliciesConfig";
 import VariablesSidebar from "agentic_chat/VariablesSidebar";
@@ -275,10 +278,14 @@ export function ManagePage() {
       setConfig(out);
       setCurrentVersion(version);
       setLoadError(null);
+      setTimeout(() => {
+        skipDraftSaveRef.current = false;
+      }, 0);
     } catch (e) {
       const errorMsg = e instanceof Error ? e.message : "Failed to load config";
       setLoadError(errorMsg);
       addToast("error", "Load Error", errorMsg);
+      skipDraftSaveRef.current = false;
     }
   }, [normalizeTools, addToast]);
 
@@ -344,7 +351,6 @@ export function ManagePage() {
 
   useEffect(() => {
     if (skipDraftSaveRef.current) {
-      skipDraftSaveRef.current = false;
       return;
     }
     const t = setTimeout(() => {
@@ -567,7 +573,7 @@ export function ManagePage() {
         <div className="manage-config-panel">
           <div className="manage-config-scroll">
             <Layer withBackground>
-            <Accordion align="start" size="lg">
+            <Accordion align="start" size="md">
               <AccordionItem title="LLM Configuration" open>
                   <VStack gap={5} className="manage-llm-fields">
                     <FormGroup legendText="">
@@ -689,7 +695,7 @@ export function ManagePage() {
                   <Stack gap={3} orientation="vertical">
                     <p className="cds--type-body-compact-01">
                       {policiesEnabled
-                        ? `${summary.total} policy${summary.total !== 1 ? "ies" : ""} defined`
+                        ? `${summary.total} ${summary.total !== 1 ? "policies" : "policy"} defined`
                         : "Policies disabled"}
                     </p>
                     {policiesEnabled && summary.total > 0 && (
@@ -713,6 +719,9 @@ export function ManagePage() {
               </AccordionItem>
 
               <AccordionItem title="Version History">
+                  <p className="cds--type-helper-text-01 manage-history-helper">
+                    Click a version to set it as your current configuration.
+                  </p>
                   {history.length === 0 ? (
                     <p className="cds--type-body-compact-01 cds--color-text-placeholder">No versions yet</p>
                   ) : (
@@ -728,6 +737,9 @@ export function ManagePage() {
                               <Tag type="blue" size="md">v{v.version}</Tag>
                               <span className="cds--type-body-compact-01">
                                 {new Date(v.created_at).toLocaleString()}
+                              </span>
+                              <span className="manage-tile-action-hint cds--type-helper-text-01">
+                                Set as current
                               </span>
                             </div>
                             <Button
@@ -861,6 +873,7 @@ export function ManagePage() {
         <PoliciesConfig
           draftMode={true}
           onClose={() => setShowPoliciesModal(false)}
+          onSave={(policies) => setConfig((c) => ({ ...c, policies }))}
         />
       )}
 
@@ -874,13 +887,53 @@ export function ManagePage() {
           title={viewVersion ? `Version ${viewVersion.version}` : ""}
           buttonOnClick={() => setViewVersion(null)}
         />
-        <ModalBody hasScrollingContent>
+        <ModalBody>
           {viewVersion && (
-            <pre className="manage-json-viewer-pre">
-              <code>{JSON.stringify(maskSecrets(viewVersion.config), null, 2)}</code>
-            </pre>
+            <div className="manage-json-viewer-markdown">
+              <Markdown>
+                {"```json\n" + JSON.stringify(maskSecrets(viewVersion.config), null, 2) + "\n```"}
+              </Markdown>
+            </div>
           )}
         </ModalBody>
+        {viewVersion && (
+          <ModalFooter>
+            <Button
+              kind="secondary"
+              renderIcon={Download}
+              onClick={() => {
+                const blob = new Blob(
+                  [JSON.stringify(maskSecrets(viewVersion.config), null, 2)],
+                  { type: "application/json" }
+                );
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `config-v${viewVersion.version}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
+              Download
+            </Button>
+            <Button
+              kind="primary"
+              renderIcon={Save}
+              onClick={() => {
+                const next = { ...DEFAULT_CONFIG, ...viewVersion.config };
+                if (Array.isArray(next.tools)) {
+                  next.tools = normalizeTools(next.tools);
+                }
+                setConfig(next);
+                setCurrentVersion(viewVersion.version);
+                setViewVersion(null);
+                addToast("success", "Version loaded", `Version ${viewVersion.version} is now your current configuration`);
+              }}
+            >
+              Use as current
+            </Button>
+          </ModalFooter>
+        )}
       </ComposedModal>
 
       {/* Toast Notifications */}

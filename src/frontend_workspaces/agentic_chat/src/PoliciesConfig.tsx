@@ -123,6 +123,7 @@ interface PoliciesConfigData {
 interface PoliciesConfigProps {
   onClose: () => void;
   draftMode?: boolean;
+  onSave?: (policies: { enablePolicies: boolean; policies: unknown[] }) => void;
 }
 
 interface ToolInfo {
@@ -210,7 +211,7 @@ function TagInput({ values, onChange, placeholder, disabled, labelText, helperTe
   );
 }
 
-export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesConfigProps) {
+export default function PoliciesConfig({ onClose, draftMode = false, onSave }: PoliciesConfigProps) {
   const importInputRef = useRef<HTMLInputElement>(null);
   const [config, setConfig] = useState<PoliciesConfigData>({
     enablePolicies: true,
@@ -401,6 +402,7 @@ export default function PoliciesConfig({ onClose, draftMode = false }: PoliciesC
           title: "Policies saved successfully",
           subtitle: `${normalizedConfig.policies.length} ${normalizedConfig.policies.length === 1 ? 'policy' : 'policies'} saved`,
         });
+        onSave?.(normalizedConfig);
         setTimeout(() => {
           setSaveStatus("idle");
           onClose();

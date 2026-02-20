@@ -83,7 +83,10 @@ export function CugaHeader({
               onClick={onClickSideNavExpand}
               isCollapsible
             />
-            <HeaderName href="/" prefix={prefix}>
+            <a href="/" className="cuga-header-logo" aria-label="Home">
+              <img src="https://avatars.githubusercontent.com/u/230847519?s=200&v=4" alt="" />
+            </a>
+            <HeaderName href="/" prefix={prefix ?? ""}>
               {title}
             </HeaderName>
             {agentContext && (

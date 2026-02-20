@@ -41,6 +41,7 @@ interface CarbonChatProps {
   useDraft?: boolean;
   threadId?: string | null;
   disableHistory?: boolean;
+  isReadonly?: boolean;
   onThreadChange?: (threadId: string) => void;
 }
 
@@ -51,6 +52,7 @@ const CarbonChat = ({
   useDraft = false,
   threadId = null,
   disableHistory = false,
+  isReadonly = false,
   onThreadChange
 }: CarbonChatProps) => {
   const chatInstanceRef = useRef<ChatInstance | null>(null);
@@ -296,9 +298,13 @@ const CarbonChat = ({
       injectCarbonTheme={theme === 'dark' ? CarbonTheme.G100 : CarbonTheme.WHITE}
       openChatByDefault={true}
       assistantName="CUGA Agent"
+      isReadonly={isReadonly}
       header={{
         isOn: true,
         showRestartButton: true,
+        showAiLabel: false,
+        hideMinimizeButton: true,
+        
       } as any}
       layout={{
         showFrame: false,

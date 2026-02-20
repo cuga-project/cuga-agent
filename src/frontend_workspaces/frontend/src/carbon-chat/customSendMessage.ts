@@ -14,6 +14,7 @@ import {
   MessageRequest,
   MessageResponseTypes,
   ReasoningStepOpenState,
+  UserType,
   type ReasoningStep,
   type StreamChunk,
 } from "@carbon/ai-chat";
@@ -28,6 +29,13 @@ const BUTTON_KIND = {
   DANGER_TERTIARY: 'danger--tertiary',
   DANGER_GHOST: 'danger--ghost',
 } as const;
+
+const RESPONSE_USER_PROFILE = {
+  id: "cuga-agent",
+  nickname: "CUGA",
+  user_type: UserType.BOT,
+  profile_picture_url: "https://avatars.githubusercontent.com/u/230847519?s=200&v=4",
+};
 
 // CUGA backend endpoint - use window location for dynamic backend URL
 const CUGA_BACKEND_URL = typeof window !== 'undefined'
@@ -155,7 +163,7 @@ export async function customSendMessage(
       streaming_metadata: { id: "text-stream", cancellable: true },
     },
     partial_response: {
-      message_options: { reasoning: { steps: [] } },
+      message_options: { reasoning: { steps: [] }, response_user_profile: RESPONSE_USER_PROFILE },
     },
     streaming_metadata: { response_id: responseID },
   });
@@ -262,7 +270,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: [...collectedSteps, { title: currentStepTitle, content: currentStepContent }] } },
+                message_options: { reasoning: { steps: [...collectedSteps, { title: currentStepTitle, content: currentStepContent }] }, response_user_profile: RESPONSE_USER_PROFILE },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -297,7 +305,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: [...collectedSteps, { title: currentStepTitle, content: currentStepContent }] } },
+                message_options: { reasoning: { steps: [...collectedSteps, { title: currentStepTitle, content: currentStepContent }] }, response_user_profile: RESPONSE_USER_PROFILE },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -321,7 +329,7 @@ export async function customSendMessage(
               streaming_metadata: { id: "text-stream", cancellable: true },
             },
             partial_response: {
-              message_options: { reasoning: { steps: collectedSteps } },
+              message_options: { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE },
             },
             streaming_metadata: { response_id: responseID },
           } as StreamChunk);
@@ -665,7 +673,9 @@ export async function customSendMessage(
           };
 
           if (collectedSteps.length > 0) {
-            finalResponse.final_response.message_options = { reasoning: { steps: collectedSteps } };
+            finalResponse.final_response.message_options = { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE };
+          } else {
+            finalResponse.final_response.message_options = { response_user_profile: RESPONSE_USER_PROFILE };
           }
 
           instance.messaging.addMessageChunk(finalResponse);
@@ -711,7 +721,10 @@ export async function customSendMessage(
             final_response: {
               id: responseID,
               output: { generic: [completeItem] },
-              message_options: collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : undefined,
+              message_options: {
+                ...(collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : {}),
+                response_user_profile: RESPONSE_USER_PROFILE,
+              },
             },
           });
           return;
@@ -733,7 +746,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: collectedSteps } },
+                message_options: { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -759,7 +772,10 @@ export async function customSendMessage(
         final_response: {
           id: responseID,
           output: { generic: [completeItem] },
-          message_options: collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : undefined,
+          message_options: {
+            ...(collectedSteps.length > 0 ? { reasoning: { steps: collectedSteps } } : {}),
+            response_user_profile: RESPONSE_USER_PROFILE,
+          },
         },
       });
     }

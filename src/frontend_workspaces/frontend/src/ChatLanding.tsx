@@ -68,6 +68,7 @@ interface WorkspaceFolder {
 interface AgentConfig {
   name: string;
   description: string;
+  configVersion?: number | string | null;
   apps: AppConfig[];
   workspaceFolders: WorkspaceFolder[];
 }
@@ -205,6 +206,7 @@ export function ChatLanding() {
   const [threads, setThreads] = useState<ConversationThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
   const [configLoading, setConfigLoading] = useState(true);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
@@ -255,6 +257,7 @@ export function ChatLanding() {
 
   const handleThreadChange = useCallback(
     async (threadId: string) => {
+      setActiveThreadId(threadId);
       if (threadId !== selectedThreadId) {
         setSelectedThreadId(threadId);
         setTimeout(refreshThreads, 500);
@@ -273,6 +276,7 @@ export function ChatLanding() {
       );
       setThreads([]);
       setSelectedThreadId(null);
+      setActiveThreadId(null);
     } catch (err) {
       console.error(err);
       alert("Failed to remove conversations.");
@@ -294,11 +298,12 @@ export function ChatLanding() {
 
         let agentName = "CUGA Default Agent";
         let agentDescription = "A general-purpose assistant with configured tools and workspace access.";
-        
-        // Get agent name from context
+        let configVersion: number | string | null = null;
+
         if (contextRes.ok) {
           const contextData = await contextRes.json();
           agentName = contextData.agent_id || agentName;
+          configVersion = contextData.config_version ?? null;
         }
 
         // Get tools from tools/list endpoint and group by app
@@ -339,6 +344,7 @@ export function ChatLanding() {
         const config: AgentConfig = {
           name: agentName,
           description: agentDescription,
+          configVersion,
           apps,
           workspaceFolders: MOCK_AGENT_CONFIG.workspaceFolders, // TODO: Get from API if available
         };
@@ -394,7 +400,12 @@ export function ChatLanding() {
 
       {/* ── Full-width chat — panels float on top ─────────────────────────── */}
       <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
-        <CarbonChat contained={true} threadId={selectedThreadId} onThreadChange={handleThreadChange} />
+        <CarbonChat
+          contained={true}
+          threadId={selectedThreadId}
+          isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
+          onThreadChange={handleThreadChange}
+        />
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════════
@@ -418,7 +429,15 @@ export function ChatLanding() {
               </div>
 
               <div style={{ display: "flex", gap: "0.25rem", alignItems: "center" }}>
-                <IconButton label="New conversation" kind="ghost" size="sm" onClick={() => setSelectedThreadId(null)}>
+                <IconButton
+                  label="New conversation"
+                  kind="ghost"
+                  size="sm"
+                  onClick={() => {
+                    setSelectedThreadId(null);
+                    setActiveThreadId(null);
+                  }}
+                >
                   <Add />
                 </IconButton>
                 <IconButton
@@ -551,6 +570,13 @@ export function ChatLanding() {
                   >
                     {agentConfig.description}
                   </p>
+                  {agentConfig.configVersion != null && (
+                    <div style={{ marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.375rem" }}>
+                      <Tag type="gray" size="sm">
+                        Config v{agentConfig.configVersion}
+                      </Tag>
+                    </div>
+                  )}
                 </div>
               </div>
               <IconButton label="Close panel" kind="ghost" size="sm" onClick={() => setRightOpen(false)}>
@@ -584,7 +610,7 @@ export function ChatLanding() {
 
             <TabPanels style={{ flex: 1, overflowY: "auto" }}>
               {/* ── Configuration tab ── */}
-              <TabPanel style={{ padding: "1rem" }}>
+              <TabPanel style={{ padding: "1rem", overflowY: "scroll" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
                   {agentConfig.apps.map((app) => {
                     const isExpanded = expandedApps.has(app.appName);
@@ -696,7 +722,7 @@ export function ChatLanding() {
               </TabPanel>
 
               {/* ── Workspace tab ── */}
-              <TabPanel style={{ padding: "1rem" }}>
+              <TabPanel style={{ padding: "1rem", overflowY: "scroll" }}>
                 {hasReadOnly && (
                   <InlineNotification
                     kind="info"

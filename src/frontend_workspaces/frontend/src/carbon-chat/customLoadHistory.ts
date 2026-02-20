@@ -15,8 +15,16 @@ import {
   MessageResponse,
   MessageResponseTypes,
   ReasoningStepOpenState,
+  UserType,
   type ReasoningStep,
 } from "@carbon/ai-chat";
+
+const RESPONSE_USER_PROFILE = {
+  id: "cuga-agent",
+  nickname: "CUGA",
+  user_type: UserType.BOT,
+  profile_picture_url: "https://avatars.githubusercontent.com/u/230847519?s=200&v=4",
+};
 
 interface StreamEvent {
   event_name: string;
@@ -163,14 +171,10 @@ async function customLoadHistory(
             },
           };
 
-          // Add reasoning steps if we have any - at the root level like in customSendMessage
-          if (currentSteps.length > 0) {
-            messageResponse.message_options = {
-              reasoning: {
-                steps: currentSteps,
-              },
-            };
-          }
+          messageResponse.message_options = {
+            ...(currentSteps.length > 0 ? { reasoning: { steps: currentSteps } } : {}),
+            response_user_profile: RESPONSE_USER_PROFILE,
+          };
 
           history.push({
             message: messageResponse as MessageResponse,
@@ -242,6 +246,7 @@ async function loadBasicMessages(threadId: string): Promise<HistoryItem[]> {
                 },
               ],
             },
+            message_options: { response_user_profile: RESPONSE_USER_PROFILE },
           } as MessageResponse,
           time: msg.timestamp,
         };
