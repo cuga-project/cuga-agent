@@ -26,11 +26,6 @@ DBS_DIR = os.environ.get("CUGA_DBS_DIR", os.path.join(PACKAGE_ROOT, "./dbs"))
 # Define all path variables at the top (with environment variable overrides)
 ENV_FILE_PATH = os.getenv("ENV_FILE_PATH") or os.path.join(PACKAGE_ROOT, "..", "..", ".env")
 
-# Kaizen defaults: keep entity DBs under CUGA's dbs directory unless explicitly overridden.
-os.environ.setdefault("KAIZEN_URI", os.path.join(DBS_DIR, "entities.milvus.db"))
-os.environ.setdefault("KAIZEN_SQLITE_URI", os.path.join(DBS_DIR, "entities.sqlite.db"))
-
-
 # Helper function to find config files with existence check
 def _find_config_file(filename: str, env_var_name: str) -> str:
     """Find config file, checking existence in getcwd first, then package root."""
@@ -49,10 +44,14 @@ def _find_config_file(filename: str, env_var_name: str) -> str:
     return package_path  # Return even if it doesn't exist for consistency
 
 
-SETTINGS_TOML_PATH = _find_config_file("settings.toml", "SETTINGS_TOML_PATH")
 CONFIGURATIONS_DIR = os.environ.get("CUGA_CONFIGURATIONS_DIR", os.path.join(PACKAGE_ROOT, "configurations"))
 MODELS_DIR = os.path.join(CONFIGURATIONS_DIR, "models")
 MODES_DIR = os.path.join(CONFIGURATIONS_DIR, "modes")
+SETTINGS_TOML_PATH = _find_config_file("settings.toml", "SETTINGS_TOML_PATH")
+KAIZEN_SETTINGS_TOML_PATH = os.getenv(
+    "KAIZEN_SETTINGS_TOML_PATH",
+    os.path.join(CONFIGURATIONS_DIR, "memory", "kaizen.settings.toml"),
+)
 
 
 # from feature_flags import FeatureFlags as flags
@@ -228,6 +227,13 @@ settings = Dynaconf(
     root_path=PACKAGE_ROOT,
     settings_files=settings_files,
     validators=validators,
+)
+
+# Dedicated Kaizen config file. This keeps Kaizen backend/runtime settings
+# separate from main CUGA settings while still loading through this module.
+kaizen_settings = Dynaconf(
+    root_path=PACKAGE_ROOT,
+    settings_files=[KAIZEN_SETTINGS_TOML_PATH],
 )
 
 # Dynaconf section replacement can drop keys from base [features] when mode files

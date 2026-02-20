@@ -7,6 +7,8 @@ from cuga.backend.cuga_graph.nodes.api.code_agent.model import CodeAgentOutput
 from cuga.backend.cuga_graph.nodes.shared.base_agent import create_partial
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.memory.memory import get_kaizen_client, get_kaizen_namespace_id, normalize_user_id
+from kaizen.schema.core import Entity
 from langchain_core.messages import AIMessage
 
 from cuga.backend.cuga_graph.state.api_planner_history import CoderAgentHistoricalOutput
@@ -55,22 +57,19 @@ class ApiCoder(BaseNode):
             and settings.advanced_features.enable_fact
             and settings.advanced_features.enable_memory
         ):
-            from cuga.backend.memory.memory import Memory
-            from kaizen.schema.exceptions import NamespaceNotFoundException
-
-            memory = Memory()
-
-            # Ensure namespace exists before storing facts
-            try:
-                memory.get_namespace_details(namespace_id="memory")
-            except NamespaceNotFoundException:
-                memory.create_namespace(namespace_id="memory")
-
+            kaizen_client = get_kaizen_client()
+            namespace_id = get_kaizen_namespace_id()
+            kaizen_client.ensure_namespace(namespace_id=namespace_id)
             variables_string = json.dumps(res_obj.variables)
-            memory.create_and_store_fact(
-                namespace_id="memory",
-                content=variables_string,
-                metadata={"user_id": state.user_id},
+            kaizen_client.update_entities(
+                namespace_id=namespace_id,
+                entities=[
+                    Entity(
+                        type="fact",
+                        content=variables_string,
+                        metadata={"user_id": normalize_user_id(state.user_id)},
+                    )
+                ],
                 enable_conflict_resolution=False,
             )
 

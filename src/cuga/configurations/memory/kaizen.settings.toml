@@ -1,0 +1,16 @@
+[kaizen]
+backend = "milvus"
+namespace_id = "kaizen"
+
+[kaizen.milvus]
+uri = "./dbs/entities.milvus.db"
+sqlite_uri = "./dbs/entities.sqlite.db"
+embedding_model = "sentence-transformers/all-MiniLM-L6-v2"
+user = ""
+password = ""
+db_name = ""
+token = ""
+# timeout = 30.0
+
+[kaizen.filesystem]
+data_dir = "./dbs/kaizen_data"

@@ -6,18 +6,18 @@ from typing import Annotated, TYPE_CHECKING
 from kaizen.schema.exceptions import KaizenException, NamespaceNotFoundException
 
 if TYPE_CHECKING:
-    from cuga.backend.memory.memory import Memory
+    from kaizen.frontend.client.kaizen_client import KaizenClient
 
 memory_app = typer.Typer(help="Tools used with in-process memory")
 memory_namespace = typer.Typer(help="Manage namespaces")
 memory_app.add_typer(memory_namespace, name="namespace")
 
 
-def create_memory_client() -> "Memory":
-    from cuga.backend.memory.memory import Memory
+def create_memory_client() -> "KaizenClient":
+    from cuga.backend.memory.memory import get_kaizen_client
 
-    memory = Memory()
-    if not memory.health_check():
+    memory = get_kaizen_client()
+    if not memory.ready():
         err_console = Console(stderr=True)
         err_console.print("[bold red]Memory backend is not healthy.[/bold red]")
         raise typer.Exit(1)
@@ -35,9 +35,10 @@ def create(
     app_id: Annotated[str | None, typer.Option(help="The application associated with the namespace.")] = None,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress output.")] = False,
 ):
+    _ = (user_id, agent_id, app_id)
     memory = create_memory_client()
     try:
-        namespace = memory.create_namespace(namespace_id, user_id, agent_id, app_id)
+        namespace = memory.create_namespace(namespace_id)
     except KaizenException as e:
         err_console = Console(stderr=True)
         err_console.print(f"[bold red]{e}[/bold red]")

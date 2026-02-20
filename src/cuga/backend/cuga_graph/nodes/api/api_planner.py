@@ -14,6 +14,7 @@ from cuga.backend.cuga_graph.nodes.api.shortlister_agent.shortlister_agent impor
 from cuga.backend.cuga_graph.nodes.shared.base_agent import create_partial
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
 from cuga.backend.cuga_graph.state.agent_state import AgentState, SubTaskHistory
+from cuga.backend.memory.memory import get_kaizen_client, get_kaizen_namespace_id, normalize_user_id
 from langgraph.types import Command
 from cuga.backend.cuga_graph.state.api_planner_history import HistoricalAction
 from loguru import logger
@@ -194,16 +195,17 @@ class ApiPlanner(BaseNode):
                     state.sender = name
 
         if settings.advanced_features.enable_fact and settings.advanced_features.enable_memory:
-            from cuga.backend.memory.memory import Memory
-
             logger.info("Retrieving facts stored in memory")
-            filters = {
-                "user_id": state.user_id,
-            }
-            memory = Memory()
+            kaizen_client = get_kaizen_client()
+            namespace_id = get_kaizen_namespace_id()
             try:
-                retrieved_facts = memory.search_for_facts(
-                    namespace_id='memory', query=state.input, filters=filters
+                retrieved_facts = kaizen_client.search_entities(
+                    namespace_id=namespace_id,
+                    query=state.input,
+                    filters={
+                        "__entity_type": "fact",
+                        "metadata.user_id": normalize_user_id(state.user_id),
+                    },
                 )
             except Exception as e:
                 logger.warning(f"Failed to retrieve facts from memory: {e}")

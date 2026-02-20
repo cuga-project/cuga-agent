@@ -141,3 +141,8 @@ openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Re
 categorization_mode = "predefined"  # Options: "predefined", "dynamic", "hybrid"
 allow_dynamic_categories = false  # Allow LLM to create new categories (used in dynamic/hybrid modes)
 confirm_new_categories = false  # Require user confirmation for new categories
+
+# Optional CUGA override for Kaizen namespace.
+# If omitted, Kaizen's default namespace from `configurations/memory/kaizen.settings.toml` is used.
+# [memory.kaizen]
+# namespace_id = "my_custom_namespace"

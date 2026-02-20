@@ -2,7 +2,6 @@
 CugaLite Node - Fast execution node using CugaLite subgraph
 """
 
-import asyncio
 import json
 from typing import Literal, Dict, Any, List, Optional, Callable
 from langgraph.types import Command
@@ -14,7 +13,6 @@ from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
 from cuga.backend.cuga_graph.state.agent_state import (
     AgentState,
     SubTaskHistory,
-    load_user_preferences,
 )
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import ActionName
@@ -244,44 +242,17 @@ class CugaLiteNode(BaseNode):
     async def _load_user_facts_for_top_level(state: AgentState, query: str) -> None:
         """Generate and load memory facts for top-level CugaLite requests."""
         try:
-            from cuga.backend.memory.memory import Memory
-            from kaizen.schema.exceptions import NamespaceNotFoundException
+            from cuga.backend.memory.memory import sync_user_memory
 
-            memory = Memory()
-            namespace_id = "memory"
-            memory_user_id = (
-                state.user_id if state.user_id and state.user_id not in {"default", ""} else "default"
+            memory_user_id, state.user_preferences = await sync_user_memory(
+                user_id=state.user_id,
+                query=query,
             )
             if not state.user_id:
                 state.user_id = memory_user_id
-
-            try:
-                memory.get_namespace_details(namespace_id=namespace_id)
-            except NamespaceNotFoundException:
-                logger.info(f"Creating namespace for CugaLite facts: {namespace_id}")
-                memory.create_namespace(namespace_id=namespace_id, user_id=memory_user_id)
-
             if query:
-                messages = [{"role": "user", "content": query}]
-                task = asyncio.create_task(
-                    memory.memory_client.extract_facts_from_messages_async(
-                        namespace_id=namespace_id,
-                        messages=messages,
-                        metadata={"user_id": memory_user_id},
-                        enable_conflict_resolution=False,
-                    )
-                )
+                logger.debug(f"Stored CugaLite categorized fact(s) for user {state.user_id}")
 
-                def _log_task_result(done_task: asyncio.Task) -> None:
-                    try:
-                        done_task.result()
-                    except Exception:
-                        logger.exception("CugaLite categorized fact extraction task failed")
-
-                task.add_done_callback(_log_task_result)
-                logger.debug(f"Queued CugaLite categorized fact extraction for user {state.user_id}")
-
-            load_user_preferences(state, memory, namespace_id, query=query)
             if state.user_preferences:
                 categories = list(state.user_preferences.keys())
                 total_facts = sum(

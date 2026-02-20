@@ -58,10 +58,11 @@ class TaskDecompositionAgent(BaseAgent):
         # memory integration
         rtrvd_tips_formatted = None
         if settings.advanced_features.enable_memory:
+            from cuga.backend.memory.memory import get_kaizen_namespace_id
             from cuga.backend.memory.utils.memory_tips_formatted import get_formatted_tips
 
             rtrvd_tips_formatted = get_formatted_tips(
-                namespace_id="memory",
+                namespace_id=get_kaizen_namespace_id(),
                 agent_id='TaskDecompositionAgent',
                 query=input_variables.shortlister_query,
                 limit=3,

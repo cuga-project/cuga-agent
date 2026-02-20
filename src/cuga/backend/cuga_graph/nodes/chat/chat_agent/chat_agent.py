@@ -14,6 +14,9 @@ from mcp import ClientSession
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.state.user_preferences_context import (
+    format_preferences_for_decision_context,
+)
 
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_prompt_chat
@@ -199,6 +202,8 @@ class ChatAgent(BaseAgent):
         if not self._is_setup:
             raise RuntimeError("Agent not setup. Call setup() first.")
 
+        memory_context = self._build_memory_context(state)
+
         if self.use_regular_chat:
             # Use regular run method logic
             return await self._run_regular(chat_messages, state)
@@ -215,6 +220,7 @@ class ChatAgent(BaseAgent):
                 return await self.agent.ainvoke(
                     {
                         "conversation": self.map_chat_messages(chat_messages),
+                        "memory_context": memory_context,
                     }
                 )
             except Exception as e:
@@ -224,6 +230,7 @@ class ChatAgent(BaseAgent):
                     return await self.agent.ainvoke(
                         {
                             "conversation": self.map_chat_messages(chat_messages),
+                            "memory_context": memory_context,
                         }
                     )
                 raise e
@@ -277,15 +284,29 @@ class ChatAgent(BaseAgent):
 
         apps = await self.tool_provider.get_apps()
         apps_list = "\n".join([f"- {app.name}: {app.description or 'No description'}" for app in apps])
+        memory_context = self._build_memory_context(state)
 
         res = await self.chain.ainvoke(
             {
                 "conversation": self.map_chat_messages(chat_messages),
                 "variables_history": state.variables_manager.get_variables_summary(last_n=10),
                 "apps_list": apps_list or "No apps available",
+                "memory_context": memory_context,
             }
         )
         return res
+
+    @staticmethod
+    def _build_memory_context(state: AgentState) -> str:
+        if not state.user_preferences:
+            return "No persistent memory facts available."
+
+        context = format_preferences_for_decision_context(
+            state.user_preferences,
+            max_facts=8,
+            query=state.input,
+        )
+        return context or "No persistent memory facts available."
 
     async def _run_mcp_client(self, chat_messages: List[BaseMessage], state: AgentState):
         """MCP client run method implementation"""

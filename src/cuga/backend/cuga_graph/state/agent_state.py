@@ -1074,12 +1074,20 @@ def load_user_preferences(
         return state
 
     try:
-        # Retrieve preferences using semantic search, organized by category
-        preferences = memory.get_user_preferences(
-            namespace_id=namespace_id,
-            user_id=state.user_id,
-            query=query  # Pass user's utterance for semantic matching
-        )
+        # Retrieve preferences using semantic search, organized by category.
+        # Prefer the Kaizen client convenience API; keep compatibility fallback.
+        if hasattr(memory, "retrieve_user_memory"):
+            preferences = memory.retrieve_user_memory(
+                namespace_id=namespace_id,
+                user_id=state.user_id,
+                query=query,
+            )
+        else:
+            preferences = memory.get_user_preferences(
+                namespace_id=namespace_id,
+                user_id=state.user_id,
+                query=query,
+            )
 
         # Update state with categorized preferences
         state.user_preferences = preferences

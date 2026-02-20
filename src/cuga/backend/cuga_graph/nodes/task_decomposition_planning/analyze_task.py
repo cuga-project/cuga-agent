@@ -86,12 +86,16 @@ class TaskAnalyzer(BaseNode):
                 # memory integration
                 rtrvd_tips_formatted = None
                 if settings.advanced_features.enable_memory:
+                    from cuga.backend.memory.memory import get_kaizen_namespace_id
                     from cuga.backend.memory.utils.memory_tips_formatted import (
                         get_formatted_tips,
                     )
 
                     rtrvd_tips_formatted = get_formatted_tips(
-                        namespace_id="memory", agent_id='TaskAnalyzerAgent', query=intent, limit=3
+                        namespace_id=get_kaizen_namespace_id(),
+                        agent_id='TaskAnalyzerAgent',
+                        query=intent,
+                        limit=3,
                     )
                 res: AppMatch = await agent.match_apps_task.ainvoke(
                     input={
