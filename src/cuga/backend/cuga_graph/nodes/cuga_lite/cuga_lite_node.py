@@ -282,8 +282,7 @@ class CugaLiteNode(BaseNode):
                 )
                 if fact_preview:
                     logger.debug(
-                        "[FACT DEBUG][CugaLiteNode] Loaded facts preview: "
-                        + "; ".join(fact_preview)
+                        "[FACT DEBUG][CugaLiteNode] Loaded facts preview: " + "; ".join(fact_preview)
                     )
             else:
                 logger.warning(

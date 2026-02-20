@@ -158,7 +158,9 @@ class ChatNode(BaseNode):
                 if state.user_preferences:
                     num_categories = len(state.user_preferences)
                     total_facts = sum(len(facts) for facts in state.user_preferences.values())
-                    logger.info(f"Loaded {total_facts} facts in {num_categories} categories for user {state.user_id}")
+                    logger.info(
+                        f"Loaded {total_facts} facts in {num_categories} categories for user {state.user_id}"
+                    )
 
             except Exception as e:
                 logger.error(f"Error handling preferences in ChatNode: {e}")

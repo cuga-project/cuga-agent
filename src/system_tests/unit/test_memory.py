@@ -133,7 +133,9 @@ class FakeKaizenClient:
     def delete_entity_by_id(self, namespace_id: str, entity_id: str) -> None:
         if namespace_id not in self._namespaces:
             raise NamespaceNotFoundException(f"Namespace `{namespace_id}` not found")
-        self._entities[namespace_id] = [entity for entity in self._entities[namespace_id] if entity.id != entity_id]
+        self._entities[namespace_id] = [
+            entity for entity in self._entities[namespace_id] if entity.id != entity_id
+        ]
 
 
 @pytest.fixture(autouse=True)

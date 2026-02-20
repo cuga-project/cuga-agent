@@ -949,9 +949,7 @@ def create_cuga_lite_graph(
                         and i == target_user_message_index
                         and memory_section_header not in content
                     ):
-                        content = (
-                            f"{content}\n\n{memory_section_header}\n{memory_decision_context}"
-                        )
+                        content = f"{content}\n\n{memory_section_header}\n{memory_decision_context}"
                         content_modified = True
                         logger.debug("Added memory decision context to first user message")
                     elif memory_decision_context and i == target_user_message_index:
@@ -999,9 +997,7 @@ def create_cuga_lite_graph(
                             and i == target_user_message_index
                             and memory_section_header not in content
                         ):
-                            content = (
-                                f"{content}\n\n{memory_section_header}\n{memory_decision_context}"
-                            )
+                            content = f"{content}\n\n{memory_section_header}\n{memory_decision_context}"
                             content_modified = True
                             logger.debug("Added memory decision context to first user message")
                         elif memory_decision_context and i == target_user_message_index:

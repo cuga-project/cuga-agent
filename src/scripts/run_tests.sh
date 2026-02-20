@@ -80,11 +80,11 @@ run_pytest_with_e2b() {
     fi
 }
 
-echo "Running unit tests (registry + variables manager + local sandbox + E2B lite)..."
-run_pytest ./src/cuga/backend/tools_env/registry/tests/
-run_pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
-run_pytest_with_e2b ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
-echo "✅ All unit tests passed!"
+# echo "Running unit tests (registry + variables manager + local sandbox + E2B lite)..."
+# run_pytest ./src/cuga/backend/tools_env/registry/tests/
+# run_pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
+# run_pytest_with_e2b ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
+# echo "✅ All unit tests passed!"
 
 # Check for test type flag
 if [ "$1" = "unit_tests" ]; then

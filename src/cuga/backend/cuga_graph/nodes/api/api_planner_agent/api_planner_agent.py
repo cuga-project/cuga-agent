@@ -183,7 +183,7 @@ class APIPlannerAgent(BaseAgent):
     @staticmethod
     def _format_preferences_for_prompt(preferences: Dict[str, Any]) -> str:
         """Format user preferences for prompt injection.
-        
+
         Supports both legacy format (fact_id -> content string) and new categorized format
         (category -> list of fact dicts).
 
@@ -232,17 +232,17 @@ class APIPlannerAgent(BaseAgent):
 
         # Detect format by checking first value
         first_value = next(iter(preferences.values()), None)
-        
+
         if isinstance(first_value, list):
             # New categorized format
             for category, facts in preferences.items():
                 if not facts:
                     continue
-                    
+
                 # Format category name: "food" -> "Food", "personal_details" -> "Personal Details"
                 category_display = category.replace('_', ' ').title()
                 lines.append(f"\n### {category_display}")
-                
+
                 for fact in facts:
                     content = fact.get('content', '') if isinstance(fact, dict) else str(fact)
                     if content:
@@ -253,7 +253,7 @@ class APIPlannerAgent(BaseAgent):
             for content in preferences.values():
                 if content:
                     lines.append(f"- {content}")
-        
+
         return '\n'.join(lines) if len(lines) > 1 else ""
 
     def output_parser(result: AIMessage, name) -> Any:

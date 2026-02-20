@@ -672,7 +672,9 @@ class ActivityTracker(object):
             from cuga.backend.memory.utils.prompts import prompts
 
             if not all(hasattr(self.memory, method) for method in ("create_run", "add_step", "end_run")):
-                logger.debug("Skipping legacy run/tip memory pipeline: Kaizen client does not expose run APIs")
+                logger.debug(
+                    "Skipping legacy run/tip memory pipeline: Kaizen client does not expose run APIs"
+                )
                 step.prompts = copy.deepcopy(self.prompts)
                 self.prompts = []
                 self.steps.append(step)
@@ -699,6 +701,7 @@ class ActivityTracker(object):
         self.steps.append(step)
         if settings.advanced_features.enable_memory and step.name == "FinalAnswerAgent":
             from cuga.backend.memory.memory import get_kaizen_namespace_id
+
             # End run and execute any background processing.
             # If memory is running as a library, process must finish before exiting
             task = asyncio.create_task(

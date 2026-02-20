@@ -26,6 +26,7 @@ DBS_DIR = os.environ.get("CUGA_DBS_DIR", os.path.join(PACKAGE_ROOT, "./dbs"))
 # Define all path variables at the top (with environment variable overrides)
 ENV_FILE_PATH = os.getenv("ENV_FILE_PATH") or os.path.join(PACKAGE_ROOT, "..", "..", ".env")
 
+
 # Helper function to find config files with existence check
 def _find_config_file(filename: str, env_var_name: str) -> str:
     """Find config file, checking existence in getcwd first, then package root."""

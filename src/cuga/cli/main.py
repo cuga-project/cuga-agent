@@ -1183,6 +1183,7 @@ def start(
             raise typer.Exit(1)
         return
 
+
 def manage_service(action: str, service: str):
     """Common function for stopping or restarting services."""
     validate_service(service)

@@ -118,7 +118,9 @@ def _parse_timeout(value: Any) -> float | None:
         return None
 
 
-def _build_backend_settings() -> tuple[Literal["milvus", "filesystem"], MilvusDBSettings | FilesystemSettings]:
+def _build_backend_settings() -> tuple[
+    Literal["milvus", "filesystem"], MilvusDBSettings | FilesystemSettings
+]:
     os.makedirs(DBS_DIR, exist_ok=True)
 
     kaizen_cfg = _get_kaizen_cfg()
@@ -145,9 +147,7 @@ def _build_backend_settings() -> tuple[Literal["milvus", "filesystem"], MilvusDB
         token=str(milvus_cfg.get("token") or ""),
         timeout=timeout,
         sqlite_uri=sqlite_uri,
-        embedding_model=str(
-            milvus_cfg.get("embedding_model") or "sentence-transformers/all-MiniLM-L6-v2"
-        ),
+        embedding_model=str(milvus_cfg.get("embedding_model") or "sentence-transformers/all-MiniLM-L6-v2"),
     )
 
 
@@ -195,19 +195,3 @@ async def sync_user_memory(
         query=query,
     )
     return normalized_user_id, preferences
-
-
-class Memory:
-    """Compatibility shim; prefer `get_kaizen_client()` in new code."""
-
-    def __init__(self, *_args, **_kwargs):
-        self.client = get_kaizen_client()
-
-    def __getattr__(self, name: str):
-        return getattr(self.client, name)
-
-    def health_check(self) -> bool:
-        return self.client.ready()
-
-    def ready(self) -> bool:
-        return self.client.ready()
