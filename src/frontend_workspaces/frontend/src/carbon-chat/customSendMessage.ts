@@ -8,6 +8,7 @@
  */
 
 import {
+  ButtonItemType,
   ChatInstance,
   CustomSendMessageOptions,
   MessageRequest,
@@ -16,6 +17,17 @@ import {
   type ReasoningStep,
   type StreamChunk,
 } from "@carbon/ai-chat";
+
+// Button kind constants (matching Carbon Design System)
+const BUTTON_KIND = {
+  PRIMARY: 'primary',
+  SECONDARY: 'secondary',
+  TERTIARY: 'tertiary',
+  GHOST: 'ghost',
+  DANGER: 'danger',
+  DANGER_TERTIARY: 'danger--tertiary',
+  DANGER_GHOST: 'danger--ghost',
+} as const;
 
 // CUGA backend endpoint - use window location for dynamic backend URL
 const CUGA_BACKEND_URL = typeof window !== 'undefined'
@@ -113,10 +125,12 @@ export async function customSendMessage(
   instance: ChatInstance,
   useDraft: boolean = false,
   disableHistory: boolean = false,
+  actionResponse?: any,
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
-  if (!userMessage) {
+  // Allow empty message if we have an action response
+  if (!userMessage && !actionResponse) {
     return;
   }
 
@@ -169,10 +183,14 @@ export async function customSendMessage(
     }
     
     // Call CUGA backend /stream endpoint
+    const body = actionResponse
+      ? JSON.stringify({ ActionResponse: actionResponse })
+      : JSON.stringify({ query: userMessage });
+    
     const response = await fetch(`${CUGA_BACKEND_URL}/stream`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ query: userMessage }),
+      body,
       signal: requestOptions.signal,
     });
 
@@ -310,9 +328,169 @@ export async function customSendMessage(
           } as StreamChunk);
           break;
 
+        case "SuggestHumanActions":
+          console.log("Received SuggestHumanActions event");
+          
+          // Parse the action data
+          try {
+            const actionData = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+            
+            // Create card body with action details
+            const cardBody: any[] = [
+              {
+                response_type: MessageResponseTypes.TEXT,
+                text: `### ${actionData.action_name || "Action Required"}`,
+              },
+            ];
+            
+            // Add description if available
+            if (actionData.description) {
+              cardBody.push({
+                response_type: MessageResponseTypes.TEXT,
+                text: actionData.description,
+              });
+            }
+            
+            // Add additional data if available (e.g., tool info, code preview)
+            if (actionData.additional_data?.tool) {
+              const toolData = actionData.additional_data.tool;
+              
+              // Add required tools
+              if (toolData.required_tools && toolData.required_tools.length > 0) {
+                cardBody.push({
+                  response_type: MessageResponseTypes.TEXT,
+                  text: `**Required Tools:** ${toolData.required_tools.join(', ')}`,
+                });
+              }
+              
+              // Add code preview
+              if (toolData.code_preview && toolData.code_preview.length > 0) {
+                cardBody.push({
+                  response_type: MessageResponseTypes.TEXT,
+                  text: "**Code Preview:**",
+                });
+                cardBody.push({
+                  response_type: MessageResponseTypes.TEXT,
+                  text: `\`\`\`python\n${toolData.code_preview.join('\n')}\n\`\`\``,
+                });
+              }
+              
+              // Add policy name if available
+              if (toolData.policy_name) {
+                cardBody.push({
+                  response_type: MessageResponseTypes.TEXT,
+                  text: `**Policy:** ${toolData.policy_name}`,
+                });
+              }
+            }
+            
+            // Determine button kind based on color
+            let buttonKind: string = BUTTON_KIND.PRIMARY;
+            if (actionData.color === 'danger') {
+              buttonKind = BUTTON_KIND.DANGER;
+            } else if (actionData.color === 'warning') {
+              buttonKind = BUTTON_KIND.PRIMARY; // Use primary for warning
+            }
+            
+            // Create actions array for the card
+            const actions: any[] = [];
+            
+            // Add primary action button
+            if (actionData.button_text) {
+              actions.push({
+                id: `${actionData.action_id}_approve`,
+                kind: buttonKind,
+                label: actionData.button_text,
+                payload: {
+                  action_id: actionData.action_id,
+                  approved: true,
+                  thread_id: threadId,
+                  callback_url: actionData.callback_url,
+                  return_to: actionData.return_to,
+                },
+              });
+            }
+            
+            // Add deny/cancel button if this is a confirmation type
+            if (actionData.type === "confirmation") {
+              actions.push({
+                id: `${actionData.action_id}_cancel`,
+                kind: 'secondary',
+                label: "Cancel",
+                payload: {
+                  action_id: actionData.action_id,
+                  approved: false,
+                  thread_id: threadId,
+                  callback_url: actionData.callback_url,
+                  return_to: actionData.return_to,
+                },
+              });
+            }
+            
+            // Add the card with actions
+            instance.messaging.addMessage({
+              output: {
+                generic: [
+                  {
+                    body: cardBody,
+                    actions: actions,
+                    response_type: MessageResponseTypes.CARD,
+                    onFooterAction: async (action: any) => {
+                      console.log('[SuggestHumanActions] Footer action clicked:', action);
+                      
+                      const payload = action.payload;
+                      const actionResponse = {
+                        action_id: payload.action_id,
+                        approved: payload.approved,
+                        thread_id: payload.thread_id,
+                        callback_url: payload.callback_url,
+                        return_to: payload.return_to,
+                      };
+                      
+                      console.log('[SuggestHumanActions] Sending ActionResponse:', actionResponse);
+                      
+                      // Create a new request to resume the stream
+                      const request: MessageRequest = {
+                        input: { text: '' },
+                      };
+                      
+                      const options: CustomSendMessageOptions = {
+                        signal: new AbortController().signal,
+                        silent: false,
+                      };
+                      
+                      // Call customSendMessage with the action response
+                      await customSendMessage(request, options, instance, useDraft, disableHistory, actionResponse);
+                    },
+                  } as any,
+                ],
+              },
+            });
+            
+            // Don't finalize yet - wait for user response
+            return;
+          } catch (e) {
+            console.error("Error parsing SuggestHumanActions event:", e);
+            // Fall through to default handling
+          }
+          break;
+
         case "FinalAnswerAgent":
-          // Skip FinalAnswerAgent - we'll handle the Answer event instead
-          console.log("Skipping FinalAnswerAgent event, waiting for Answer...");
+          console.log("Received FinalAnswerAgent event");
+          // For playbooks, FinalAnswerAgent contains the actual answer
+          // We'll accumulate it but not finalize yet - wait for Answer event
+          if (typeof event.data === "string") {
+            try {
+              const parsed = JSON.parse(event.data);
+              const finalAnswer = parsed.final_answer || parsed.data || event.data;
+              // Store this as accumulated text but don't finalize
+              accumulatedText = finalAnswer;
+              console.log("FinalAnswerAgent - stored answer:", finalAnswer);
+            } catch {
+              accumulatedText = event.data;
+            }
+          }
+          // Don't finalize here - wait for Answer event
           break;
 
         case "Answer":
@@ -320,7 +498,7 @@ export async function customSendMessage(
           console.log("Received Answer event, finalizing message...");
           
           // Parse the answer - it may be JSON with data/variables/policies
-          let answerText = "";
+          let answerText = accumulatedText || ""; // Start with any accumulated text from FinalAnswerAgent
           let policyInfo = null;
           
           if (typeof event.data === "string") {
@@ -356,9 +534,100 @@ export async function customSendMessage(
                 };
                 
                 // Format the answer based on policy type
-                if (isPlaybook && playbookContent) {
-                  // For playbooks, show the playbook content prominently
-                  answerText = playbookContent;
+                if (policyData.policy_type === "tool_approval" && policyData.metadata?.approval_required) {
+                  // Tool approval - create interactive card
+                  const approvalMsg = policyData.metadata.approval_message || "This tool requires your approval before execution.";
+                  const toolsList = policyData.metadata.required_tools || [];
+                  const appsList = policyData.metadata.required_apps || [];
+                  const codePreview = policyData.metadata.code_preview || [];
+                  
+                  // Create card body
+                  const cardBody: any[] = [
+                    {
+                      response_type: MessageResponseTypes.TEXT,
+                      text: `### ✋ ${policyInfo.policy_name}`,
+                    },
+                    {
+                      response_type: MessageResponseTypes.TEXT,
+                      text: approvalMsg,
+                    },
+                  ];
+                  
+                  // Add tools list if available
+                  if (toolsList.length > 0) {
+                    const toolsText = toolsList.includes("*")
+                      ? "**Tools requiring approval:** All tools"
+                      : `**Tools requiring approval:** ${toolsList.join(', ')}`;
+                    cardBody.push({
+                      response_type: MessageResponseTypes.TEXT,
+                      text: toolsText,
+                    });
+                  }
+                  
+                  // Add apps list if available
+                  if (appsList.length > 0) {
+                    cardBody.push({
+                      response_type: MessageResponseTypes.TEXT,
+                      text: `**Apps requiring approval:** ${appsList.join(', ')}`,
+                    });
+                  }
+                  
+                  // Add code preview if available
+                  if (codePreview.length > 0) {
+                    cardBody.push({
+                      response_type: MessageResponseTypes.TEXT,
+                      text: "**Code Preview:**",
+                    });
+                    cardBody.push({
+                      response_type: MessageResponseTypes.TEXT,
+                      text: `\`\`\`python\n${codePreview.join('\n')}\n\`\`\``,
+                    });
+                  }
+                  
+                  // Add the card with approval buttons
+                  instance.messaging.addMessage({
+                    output: {
+                      generic: [
+                        {
+                          body: cardBody,
+                          footer: [
+                            {
+                              kind: BUTTON_KIND.PRIMARY as any,
+                              label: "Approve & Execute",
+                              button_type: ButtonItemType.CUSTOM_EVENT as any,
+                              response_type: MessageResponseTypes.BUTTON,
+                              custom_event_name: "tool_approval_response",
+                              user_defined: {
+                                approved: true,
+                                thread_id: threadId,
+                              },
+                            },
+                            {
+                              kind: BUTTON_KIND.DANGER as any,
+                              label: "Deny",
+                              button_type: ButtonItemType.CUSTOM_EVENT as any,
+                              response_type: MessageResponseTypes.BUTTON,
+                              custom_event_name: "tool_approval_response",
+                              user_defined: {
+                                approved: false,
+                                thread_id: threadId,
+                              },
+                            },
+                          ],
+                          response_type: MessageResponseTypes.CARD,
+                        },
+                      ],
+                    },
+                  });
+                  
+                  // Don't finalize yet - wait for user response
+                  return;
+                } else if (isPlaybook) {
+                  // For playbooks: use accumulated answer from FinalAnswerAgent, then show policy info only
+                  if (!answerText) {
+                    // If no FinalAnswerAgent answer yet, use a default message
+                    answerText = "Following the playbook to guide you through this process.";
+                  }
                   answerText += "\n\n";
                   answerText += "> ###### 📖 *Playbook Information*\n";
                   answerText += ">\n";
@@ -378,16 +647,22 @@ export async function customSendMessage(
                   answerText += `> *Reasoning:* ${policyInfo.policy_reasoning}`;
                 }
               } else {
-                // Extract just the data field if it's a structured response
-                answerText = typeof innerData === "string" ? innerData : (parsed.data || event.data);
+                // No policy - use accumulated text or extract from data
+                if (!answerText) {
+                  answerText = typeof innerData === "string" ? innerData : (parsed.data || event.data);
+                }
               }
             } catch (e) {
               console.error("Error parsing Answer event:", e);
-              // If not JSON, use as-is
-              answerText = event.data;
+              // If not JSON, use as-is or accumulated text
+              if (!answerText) {
+                answerText = event.data;
+              }
             }
           } else {
-            answerText = event.data?.answer || JSON.stringify(event.data);
+            if (!answerText) {
+              answerText = event.data?.answer || JSON.stringify(event.data);
+            }
           }
           
           accumulatedText = answerText; // Use the answer directly

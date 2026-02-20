@@ -215,9 +215,11 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                     )
                     logger.info(f"[DEBUG] Total policies in storage after apply: {len(stored_policies)}")
                     for p in stored_policies:
-                        logger.info(
-                            f"[DEBUG] Stored policy: id={p.id}, type={p.type}, triggers={len(p.triggers)}, trigger_types={[type(t).__name__ for t in p.triggers]}"
-                        )
+                        # Handle different policy types - some may not have triggers attribute
+                        triggers_info = ""
+                        if hasattr(p, 'triggers'):
+                            triggers_info = f", triggers={len(p.triggers)}, trigger_types={[type(t).__name__ for t in p.triggers]}"
+                        logger.info(f"[DEBUG] Stored policy: id={p.id}, type={p.type}{triggers_info}")
 
                     # Check for policy errors
                     if result.get("errors"):

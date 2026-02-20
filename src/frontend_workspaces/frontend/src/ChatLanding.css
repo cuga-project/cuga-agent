@@ -1,67 +1,83 @@
+/* ─── Root layout ──────────────────────────────────────────────────────────── */
+
 .chat-landing {
   display: flex;
   flex-direction: column;
   height: 100vh;
-  width: 100%;
   overflow: hidden;
+  /* No background set here — inherits from body/theme */
 }
 
-.chat-landing-body {
-  flex: 1;
-  margin-top: 4rem;
-  display: flex;
-  overflow: hidden;
-  position: relative;
-}
-
-.conversation-history-sidenav {
-  height: 100%;
-  width: 28rem !important;
-  margin-top: 50px;
-  flex-shrink: 0;
-  border-right: 1px solid var(--cds-border-subtle);
-  background-color: var(--cds-layer-01);
-  padding-top: 1rem;
-}
-
-.conversation-link-content {
-  display: flex;
-  flex-direction: column;
-  gap: 0.25rem;
-  width: 100%;
-}
-
-.conversation-title {
-  font-size: 0.875rem;
-  line-height: 1.25rem;
-  color: var(--cds-text-primary);
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.conversation-timestamp {
-  font-size: 0.75rem;
-  line-height: 1rem;
-  color: var(--cds-text-secondary);
-}
-
-.conversation-link {
-  padding: 0.5rem 1rem !important;
-}
+/* ─── Chat area: always full viewport width below the header ─────────────────
+   The two side panels float on top of this via position:fixed in the TSX.
+   We intentionally do NOT add left/right padding here — panels are overlaid.
+   ─────────────────────────────────────────────────────────────────────────── */
 
 .chat-content-area {
+  position: relative;
   flex: 1;
-  display: flex;
+  margin-top: 4rem;
+  width: 100%;
+  height: calc(100vh - 48px); /* 48px = Carbon shell header */
   overflow: hidden;
+  background: transparent;
 }
 
-.chat-content-area .carbon-chat-contained {
-  width: 100%;
-  height: 100%;
+/* ─── Conversation thread rows (hover handled inline for dynamic isActive) ── */
+
+.conversation-history-panel button:focus-visible {
+  outline: 2px solid var(--cds-focus);
+  outline-offset: -2px;
 }
 
-.chat-landing-body .carbon-chat-contained {
-  width: 100%;
-  height: 100%;
+/* ─── Carbon Tab panel resets inside the panels ─────────────────────────────
+   TabPanel adds its own padding; we override it since we control padding above.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.agent-info-panel .cds--tab-content {
+  padding: 0;
+}
+
+/* ─── Scrollbar styling — subtle so it doesn't break the glass look ─────── */
+
+.conversation-history-panel ::-webkit-scrollbar,
+.agent-info-panel ::-webkit-scrollbar {
+  width: 4px;
+}
+
+.conversation-history-panel ::-webkit-scrollbar-track,
+.agent-info-panel ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conversation-history-panel ::-webkit-scrollbar-thumb,
+.agent-info-panel ::-webkit-scrollbar-thumb {
+  background: var(--cds-border-subtle-01);
+  border-radius: 2px;
+}
+
+/* ─── Responsive: below 1100px the right panel auto-hides (handled in TSX),
+       below 768px the left panel auto-hides too.
+       These media queries just guard any CSS-only layout concerns.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 1099px) {
+  /* Right panel is hidden via JS translateX; nothing extra needed */
+}
+
+@media (max-width: 767px) {
+  /* Both panels hidden via JS; nothing extra needed */
+  .chat-content-area {
+    height: calc(100vh - 48px);
+  }
+}
+
+/* ─── Re-open toggle buttons ─────────────────────────────────────────────────
+   Defined inline in TSX but these add hover polish.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.chat-landing button[title="Open conversations"]:hover,
+.chat-landing button[title="Open agent panel"]:hover {
+  background: rgba(var(--cds-background-rgb, 255, 255, 255), 0.9) !important;
+  border-color: var(--cds-interactive) !important;
 }

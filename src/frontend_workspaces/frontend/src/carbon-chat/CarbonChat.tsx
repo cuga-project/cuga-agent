@@ -132,14 +132,66 @@ const CarbonChat = ({
   );
 
   const handleChatReady = useCallback((instance: ChatInstance) => {
+    console.log('[CarbonChat] handleChatReady called, setting up event listeners');
     chatInstanceRef.current = instance;
+    
     instance.on({
       type: BusEventType.RESTART_CONVERSATION,
       handler: () => {
+        console.log('[CarbonChat] RESTART_CONVERSATION event received');
         resetThreadId();
       },
     });
-  }, []);
+    
+    console.log('[CarbonChat] Setting up custom-event listener');
+    // Handle custom button events (tool approval, human actions, etc.)
+    instance.on({
+      type: 'custom-event' as any,
+      handler: async (event: any) => {
+        console.log('[CarbonChat] Custom event received:', event);
+        console.log('[CarbonChat] Event type:', typeof event);
+        console.log('[CarbonChat] Event keys:', Object.keys(event));
+        
+        const { custom_event_name, user_defined } = event;
+        
+        console.log('[CarbonChat] custom_event_name:', custom_event_name);
+        console.log('[CarbonChat] user_defined:', user_defined);
+        
+        // Handle tool approval and human action responses
+        if (custom_event_name === 'tool_approval_response' || user_defined?.action_id) {
+          const approved = user_defined?.approved === true;
+          const threadId = user_defined?.thread_id || getOrCreateThreadId();
+          const actionId = user_defined?.action_id || custom_event_name;
+          
+          console.log(`[CarbonChat] Handling action response: ${actionId}, approved: ${approved}`);
+          
+          // Create ActionResponse object
+          const actionResponse = {
+            action_id: actionId,
+            approved: approved,
+            thread_id: threadId,
+            callback_url: user_defined?.callback_url,
+            return_to: user_defined?.return_to,
+          };
+          
+          // Call customSendMessage to resume the stream with the action response
+          const request: MessageRequest = {
+            input: {
+              text: '', // Empty text since we're sending an action
+            },
+          };
+          
+          const options: CustomSendMessageOptions = {
+            signal: new AbortController().signal,
+            silent: false,
+          };
+          
+          // Call customSendMessage with the action response
+          await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse);
+        }
+      },
+    });
+  }, [useDraft, disableHistory]);
 
   // Load history when threadId changes
   useEffect(() => {
@@ -265,8 +317,7 @@ const CarbonChat = ({
       header={{
         isOn: true,
         showRestartButton: true,
-        showCloseButton: false
-      }}
+      } as any}
       layout={{
         showFrame: false,
         hasContentMaxWidth: true,

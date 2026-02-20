@@ -1840,10 +1840,30 @@ async def save_policies_config(request: Request):
 
 
 @app.get("/api/tools/list")
-async def get_tools_list():
-    """Endpoint to retrieve detailed list of all available tools."""
+async def get_tools_list(request: Request, agent_id: Optional[str] = None, draft: Optional[str] = None):
+    """Endpoint to retrieve detailed list of all available tools.
+
+    Args:
+        agent_id: Optional agent ID to filter tools by agent
+        draft: Optional draft mode parameter (can also use X-Use-Draft header)
+    """
     try:
-        apps = await get_apps()
+        # Check for draft mode from query parameter or header
+        use_draft = False
+        if draft is not None:
+            use_draft = str(draft).lower() in ("1", "true", "yes", "on")
+        else:
+            use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+
+        # Get apps with optional agent_id filter
+        # Note: draft mode for tools/apps would need to be implemented in the registry
+        # For now, we pass agent_id which the registry already supports
+        apps = await get_apps(agent_id=agent_id)
         tools_list = []
         apps_list = []
 
@@ -1872,6 +1892,9 @@ async def get_tools_list():
                     {"name": app.name, "type": getattr(app, "type", "api").upper(), "tool_count": 0}
                 )
 
+        logger.info(
+            f"Retrieved {len(tools_list)} tools from {len(apps_list)} apps (agent_id={agent_id}, draft={use_draft})"
+        )
         return JSONResponse({"tools": tools_list, "apps": apps_list})
     except Exception as e:
         logger.error(f"Failed to get tools list: {e}")
