@@ -19,6 +19,7 @@ import {
   Tile,
   ClickableTile,
   InlineNotification,
+  InlineLoading,
   Layer,
   Accordion,
   AccordionItem,
@@ -51,6 +52,7 @@ export interface AgentConfig {
     enable_todos?: boolean;
     reflection?: boolean;
     max_steps?: number;
+    shortlisting_tool_threshold?: number;
   };
   policies?: { enablePolicies: boolean; policies: unknown[] };
 }
@@ -63,7 +65,7 @@ export interface ConfigVersion {
 const DEFAULT_CONFIG: AgentConfig = {
   llm: { api_key: "", base_url: "", model: "", temperature: 0.7 },
   tools: [],
-  feature_flags: { enable_todos: true, reflection: false, max_steps: 20 },
+  feature_flags: { enable_todos: true, reflection: false, max_steps: 70, shortlisting_tool_threshold: 35 },
 };
 
 const POLICY_TYPE_LABELS: Record<string, string> = {
@@ -122,8 +124,11 @@ export function ManagePage() {
   const [manageSelectedAnswerId, setManageSelectedAnswerId] = useState<string | null>(null);
   const [manageVariablesPanelOpen, setManageVariablesPanelOpen] = useState(false);
   const [currentVersion, setCurrentVersion] = useState<number | "draft" | null>(null);
+  const [draftSaving, setDraftSaving] = useState(false);
   const skipDraftSaveRef = useRef(true);
   const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const configRef = useRef(config);
+  configRef.current = config;
 
   const handleManageVariablesUpdate = useCallback((variables: Record<string, any>, history: Array<any>) => {
     setManageVariables(variables);
@@ -294,6 +299,49 @@ export function ManagePage() {
     loadHistory();
   }, [loadLatest, loadHistory]);
 
+  const performDraftSave = useCallback(async () => {
+    const toSave = configRef.current;
+    setDraftSaving(true);
+    try {
+      const res = await fetch("/api/manage/config/draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ config: toSave }),
+      });
+      setDraftSaving(false);
+      if (res.ok) {
+        const data = await res.json().catch(() => ({}));
+        setCurrentVersion("draft");
+        const hasPartialErrors = data.status === "partial" && (data.tool_errors || data.policy_errors);
+        if (hasPartialErrors) {
+          if (data.tool_errors) {
+            Object.entries(data.tool_errors as Record<string, { error?: string; message?: string; type?: string }>).forEach(
+              ([toolName, err]) => {
+                const msg = err?.error || err?.message || "Unknown error";
+                const type = err?.type ? ` (${err.type})` : "";
+                addToast("warning", `Tool failed: ${toolName}`, `${msg}${type}`);
+              }
+            );
+          }
+          if (data.policy_errors) {
+            const errs = Array.isArray(data.policy_errors) ? data.policy_errors : [data.policy_errors];
+            errs.forEach((e: unknown) => addToast("warning", "Policy error", typeof e === "string" ? e : String(e)));
+          }
+          addToast("info", "Draft saved with warnings", data.message || "Some tools or policies failed to load");
+        } else {
+          addToast("success", "Draft saved", "Your changes have been saved to draft");
+        }
+      } else {
+        const errorMsg = `Failed to save draft (${res.status} ${res.statusText})`;
+        addToast("error", "Draft Save Failed", errorMsg);
+      }
+    } catch (error) {
+      setDraftSaving(false);
+      const errorMsg = error instanceof Error ? error.message : "Network error saving draft";
+      addToast("error", "Draft Save Failed", errorMsg);
+    }
+  }, [addToast]);
+
   useEffect(() => {
     if (skipDraftSaveRef.current) {
       skipDraftSaveRef.current = false;
@@ -301,31 +349,13 @@ export function ManagePage() {
     }
     const t = setTimeout(() => {
       draftSaveTimeoutRef.current = null;
-      fetch("/api/manage/config/draft", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config }),
-      })
-        .then(async (res) => {
-          if (res.ok) {
-            setCurrentVersion("draft");
-          } else {
-            const errorMsg = `Failed to save draft (${res.status} ${res.statusText})`;
-            console.error('[Draft Save Error]', errorMsg);
-            addToast("warning", "Draft Save Failed", errorMsg);
-          }
-        })
-        .catch((error) => {
-          const errorMsg = error instanceof Error ? error.message : "Network error saving draft";
-          console.error('[Draft Save Error]', errorMsg);
-          addToast("warning", "Draft Save Failed", errorMsg);
-        });
+      performDraftSave();
     }, 500);
     draftSaveTimeoutRef.current = t;
     return () => {
       if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current);
     };
-  }, [config, addToast]);
+  }, [JSON.stringify({ llm: config.llm, tools: config.tools, policies: config.policies }), performDraftSave]);
 
   const loadVersion = async (version: number) => {
     try {
@@ -455,6 +485,13 @@ export function ManagePage() {
     setConfig((c: AgentConfig) => ({
       ...c,
       feature_flags: { ...(c.feature_flags ?? {}), max_steps: value },
+    }));
+  };
+
+  const updateShortlistingThreshold = (value: number) => {
+    setConfig((c: AgentConfig) => ({
+      ...c,
+      feature_flags: { ...(c.feature_flags ?? {}), shortlisting_tool_threshold: value },
     }));
   };
 
@@ -615,12 +652,36 @@ export function ManagePage() {
                         label="Max steps"
                         min={1}
                         max={200}
-                        value={flags.max_steps ?? 20}
+                        value={flags.max_steps ?? 70}
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
-                          updateMaxSteps(Number(value) || 20)
+                          updateMaxSteps(Number(value) || 70)
                         }
                       />
                     </FormGroup>
+                    <FormGroup legendText="">
+                      <NumberInput
+                        id="shortlisting_tool_threshold"
+                        label="Shortlisting tool threshold"
+                        min={1}
+                        max={500}
+                        value={flags.shortlisting_tool_threshold ?? 35}
+                        onChange={(_e: unknown, { value }: { value: number | string }) =>
+                          updateShortlistingThreshold(Number(value) || 35)
+                        }
+                        helperText="Enable find_tools when total tools exceed this count"
+                      />
+                    </FormGroup>
+                    <Stack gap={3} orientation="horizontal">
+                      <Button
+                        kind="secondary"
+                        size="sm"
+                        renderIcon={Save}
+                        onClick={() => performDraftSave()}
+                        disabled={draftSaving}
+                      >
+                        {draftSaving ? "Saving…" : "Save Flags"}
+                      </Button>
+                    </Stack>
                   </VStack>
               </AccordionItem>
 
@@ -641,7 +702,8 @@ export function ManagePage() {
                       </div>
                     )}
                     <Button
-                      kind="primary"
+                      kind="secondary"
+                      size="sm"
                       renderIcon={ShieldIcon}
                       onClick={() => setShowPoliciesModal(true)}
                     >
@@ -717,14 +779,17 @@ export function ManagePage() {
                       disabled={saveStatus === "saving"}
                       className="manage-save-bar-button"
                     >
-                      {saveStatus === "idle" && "Save Configuration"}
-                      {saveStatus === "saving" && "Saving…"}
-                      {saveStatus === "success" && "Saved"}
+                      {saveStatus === "idle" && "Publish"}
+                      {saveStatus === "saving" && "Publishing…"}
+                      {saveStatus === "success" && "Published"}
                       {saveStatus === "error" && "Error"}
                     </Button>
                   </div>
-                  {(loadError || currentVersion != null || importStatus !== "idle") && (
+                  {(loadError || currentVersion != null || importStatus !== "idle" || draftSaving) && (
                     <div className="manage-save-bar-status">
+                      {draftSaving && (
+                        <InlineLoading description="Saving draft…" className="manage-draft-saving" />
+                      )}
                       {loadError && (
                         <InlineNotification kind="error" title="Error" subtitle={loadError} lowContrast hideCloseButton />
                       )}
@@ -734,7 +799,7 @@ export function ManagePage() {
                       {!loadError && importStatus === "error" && (
                         <InlineNotification kind="error" title="Error" subtitle="Invalid JSON" lowContrast hideCloseButton />
                       )}
-                      {!loadError && currentVersion != null && (
+                      {!loadError && !draftSaving && currentVersion != null && (
                         <p className="manage-save-bar-version">
                           Version: {currentVersion === "draft" ? "draft" : String(currentVersion)}
                         </p>

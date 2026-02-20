@@ -182,9 +182,8 @@ export async function customSendMessage(
       headers["X-Disable-History"] = "true";
     }
     
-    // Call CUGA backend /stream endpoint
     const body = actionResponse
-      ? JSON.stringify({ ActionResponse: actionResponse })
+      ? JSON.stringify(actionResponse)
       : JSON.stringify({ query: userMessage });
     
     const response = await fetch(`${CUGA_BACKEND_URL}/stream`, {
@@ -384,24 +383,22 @@ export async function customSendMessage(
               }
             }
             
-            // Determine button kind based on color
             let buttonKind: string = BUTTON_KIND.PRIMARY;
             if (actionData.color === 'danger') {
               buttonKind = BUTTON_KIND.DANGER;
             } else if (actionData.color === 'warning') {
-              buttonKind = BUTTON_KIND.PRIMARY; // Use primary for warning
+              buttonKind = BUTTON_KIND.PRIMARY;
             }
-            
-            // Create actions array for the card
-            const actions: any[] = [];
-            
-            // Add primary action button
+
+            const footer: any[] = [];
             if (actionData.button_text) {
-              actions.push({
-                id: `${actionData.action_id}_approve`,
-                kind: buttonKind,
+              footer.push({
+                kind: buttonKind as any,
                 label: actionData.button_text,
-                payload: {
+                button_type: ButtonItemType.CUSTOM_EVENT as any,
+                response_type: MessageResponseTypes.BUTTON,
+                custom_event_name: 'suggest_human_action',
+                user_defined: {
                   action_id: actionData.action_id,
                   approved: true,
                   thread_id: threadId,
@@ -410,14 +407,14 @@ export async function customSendMessage(
                 },
               });
             }
-            
-            // Add deny/cancel button if this is a confirmation type
-            if (actionData.type === "confirmation") {
-              actions.push({
-                id: `${actionData.action_id}_cancel`,
-                kind: 'secondary',
-                label: "Cancel",
-                payload: {
+            if (actionData.type === 'confirmation') {
+              footer.push({
+                kind: BUTTON_KIND.SECONDARY as any,
+                label: 'Cancel',
+                button_type: ButtonItemType.CUSTOM_EVENT as any,
+                response_type: MessageResponseTypes.BUTTON,
+                custom_event_name: 'suggest_human_action',
+                user_defined: {
                   action_id: actionData.action_id,
                   approved: false,
                   thread_id: threadId,
@@ -426,43 +423,15 @@ export async function customSendMessage(
                 },
               });
             }
-            
-            // Add the card with actions
+
             instance.messaging.addMessage({
               output: {
                 generic: [
                   {
                     body: cardBody,
-                    actions: actions,
+                    footer,
                     response_type: MessageResponseTypes.CARD,
-                    onFooterAction: async (action: any) => {
-                      console.log('[SuggestHumanActions] Footer action clicked:', action);
-                      
-                      const payload = action.payload;
-                      const actionResponse = {
-                        action_id: payload.action_id,
-                        approved: payload.approved,
-                        thread_id: payload.thread_id,
-                        callback_url: payload.callback_url,
-                        return_to: payload.return_to,
-                      };
-                      
-                      console.log('[SuggestHumanActions] Sending ActionResponse:', actionResponse);
-                      
-                      // Create a new request to resume the stream
-                      const request: MessageRequest = {
-                        input: { text: '' },
-                      };
-                      
-                      const options: CustomSendMessageOptions = {
-                        signal: new AbortController().signal,
-                        silent: false,
-                      };
-                      
-                      // Call customSendMessage with the action response
-                      await customSendMessage(request, options, instance, useDraft, disableHistory, actionResponse);
-                    },
-                  } as any,
+                  },
                 ],
               },
             });

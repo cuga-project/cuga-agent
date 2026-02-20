@@ -273,6 +273,10 @@ class AgentLoop:
         env_pointer: Optional[BrowserEnvGymAsync | ExtensionEnv] = None,
         logger_name: str = 'agent_loop',
         policy_system: Optional[Any] = None,
+        enable_todos: Optional[bool] = None,
+        reflection_enabled: Optional[bool] = None,
+        shortlisting_tool_threshold: Optional[int] = None,
+        cuga_lite_max_steps: Optional[int] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
@@ -281,6 +285,10 @@ class AgentLoop:
         self.tracker = tracker
         self.logger = logging.getLogger(logger_name)
         self.policy_system = policy_system
+        self.enable_todos = enable_todos
+        self.reflection_enabled = reflection_enabled
+        self.shortlisting_tool_threshold = shortlisting_tool_threshold
+        self.cuga_lite_max_steps = cuga_lite_max_steps
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -477,9 +485,16 @@ class AgentLoop:
             },
         }
 
-        # Add policy_system to configurable if available
         if self.policy_system:
             config["configurable"]["policy_system"] = self.policy_system
+        if self.enable_todos is not None:
+            config["configurable"]["enable_todos"] = self.enable_todos
+        if self.reflection_enabled is not None:
+            config["configurable"]["reflection_enabled"] = self.reflection_enabled
+        if self.shortlisting_tool_threshold is not None:
+            config["configurable"]["shortlisting_tool_threshold"] = self.shortlisting_tool_threshold
+        if self.cuga_lite_max_steps is not None:
+            config["configurable"]["cuga_lite_max_steps"] = self.cuga_lite_max_steps
 
         return self.graph.astream(
             state if state else Command(resume=resume.model_dump()) if not both_none else None,

@@ -242,33 +242,36 @@ def extract_and_combine_codeblocks(text: str) -> str:
 
 
 def append_chat_messages_with_step_limit(
-    state: CugaLiteState, new_messages: List[BaseMessage]
+    state: CugaLiteState,
+    new_messages: List[BaseMessage],
+    max_steps: Optional[int] = None,
 ) -> Tuple[List[BaseMessage], Optional[AIMessage]]:
     """Append new messages to chat_messages with step counting and limit checking.
 
     Args:
         state: Current CugaLiteState
         new_messages: List of new messages to append
+        max_steps: Override from configurable; when None, use settings
 
     Returns:
         Tuple of (updated_chat_messages, error_message)
         - updated_chat_messages: Updated list of chat messages
         - error_message: AIMessage with error if limit reached, None otherwise
     """
-    max_steps = settings.advanced_features.cuga_lite_max_steps
+    limit = max_steps if max_steps is not None else settings.advanced_features.cuga_lite_max_steps
     new_step_count = state.step_count + 1
 
-    if new_step_count > max_steps:
+    if new_step_count > limit:
         error_msg = (
-            f"Maximum step limit ({max_steps}) reached. "
+            f"Maximum step limit ({limit}) reached. "
             f"The task has exceeded the allowed number of execution cycles. "
             f"Please simplify your request or break it into smaller tasks."
         )
-        logger.warning(f"Step limit reached: {new_step_count} > {max_steps}")
+        logger.warning(f"Step limit reached: {new_step_count} > {limit}")
         error_ai_message = AIMessage(content=error_msg)
         return state.chat_messages + new_messages + [error_ai_message], error_ai_message
 
-    logger.debug(f"Step count: {new_step_count}/{max_steps}")
+    logger.debug(f"Step count: {new_step_count}/{limit}")
     return state.chat_messages + new_messages, None
 
 
@@ -457,6 +460,9 @@ def create_cuga_lite_graph(
     """
     Create a unified CugaLite subgraph combining CodeAct and CugaAgent functionality.
 
+    enable_todos and reflection_enabled are read from config["configurable"] at runtime.
+    Fallback to settings.advanced_features when not provided.
+
     Args:
         model: The language model to use
         prompt: Optional static prompt (if None, will be created dynamically from state)
@@ -470,20 +476,17 @@ def create_cuga_lite_graph(
     Returns:
         StateGraph implementing the CugaLite architecture
     """
-
-    # Load prompt template based on todos configuration
-    if settings.advanced_features.enable_todos:
-        prompt_filename = "mcp_prompt_todos.jinja2"
-    else:
-        prompt_filename = "mcp_prompt.jinja2"
-    prompt_path = Path(__file__).parent / "prompts" / prompt_filename
-    prompt_template = load_one_prompt(str(prompt_path), relative_to_caller=False)
+    prompts_dir = Path(__file__).parent / "prompts"
+    prompt_template = load_one_prompt(str(prompts_dir / "mcp_prompt.jinja2"), relative_to_caller=False)
+    prompt_template_todos = load_one_prompt(
+        str(prompts_dir / "mcp_prompt_todos.jinja2"), relative_to_caller=False
+    )
     instructions = get_all_instructions_formatted()
 
-    # Factory function to create prepare_tools_and_apps node with access to tools/config
     def create_prepare_node(
         base_tool_provider,
         base_prompt_template,
+        base_prompt_template_todos,
         base_instructions,
         tools_context_dict,
         base_special_instructions,
@@ -499,8 +502,21 @@ def create_cuga_lite_graph(
             determines if find_tools should be enabled, and prepares the prompt.
             Tools are available via closure (per graph instance), prompt is stored in state.
 
-            Also checks for applicable policies before execution.
+            enable_todos is read from config["configurable"] at runtime.
             """
+            configurable = config.get("configurable", {}) if config else {}
+            enable_todos = (
+                configurable.get("enable_todos")
+                if "enable_todos" in configurable
+                else settings.advanced_features.enable_todos
+            )
+            shortlisting_threshold = (
+                configurable.get("shortlisting_tool_threshold")
+                if "shortlisting_tool_threshold" in configurable
+                else settings.advanced_features.shortlisting_tool_threshold
+            )
+            selected_prompt_template = base_prompt_template_todos if enable_todos else base_prompt_template
+
             logger.debug(
                 f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
             )
@@ -587,13 +603,13 @@ def create_cuga_lite_graph(
                     app_tools = await base_tool_provider.get_tools(app.name)
                     app_to_tools_map[app.name] = app_tools
 
-            # Determine enable_find_tools based on tool count
             tool_count = len(tools_for_execution) if tools_for_execution else 0
-            threshold = settings.advanced_features.shortlisting_tool_threshold
-            enable_find_tools = tool_count > threshold
+            enable_find_tools = tool_count > shortlisting_threshold
 
             if enable_find_tools:
-                logger.info(f"Auto-enabling find_tools: {tool_count} tools exceeds threshold of {threshold}")
+                logger.info(
+                    f"Auto-enabling find_tools: {tool_count} tools exceeds threshold of {shortlisting_threshold}"
+                )
 
             # Prepare prompt
             is_autonomous_subtask = state.sub_task is not None and state.sub_task.strip() != ""
@@ -622,7 +638,7 @@ def create_cuga_lite_graph(
                 )
 
             # Add create_update_todos tool for complex task management if enabled
-            if settings.advanced_features.enable_todos:
+            if enable_todos:
                 # Pass the CugaLiteState so todos updates are reflected in the graph state
                 todos_tool = await create_update_todos_tool(agent_state=state)
                 tools_for_prompt.append(todos_tool)
@@ -692,7 +708,7 @@ def create_cuga_lite_graph(
                     task_loaded_from_file=task_loaded_from_file,
                     is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
                     or is_autonomous_subtask,
-                    prompt_template=base_prompt_template,
+                    prompt_template=selected_prompt_template,
                     enable_find_tools=enable_find_tools,
                     special_instructions=base_special_instructions,
                 )
@@ -715,6 +731,10 @@ def create_cuga_lite_graph(
 
         async def call_model(state: CugaLiteState, config: Optional[RunnableConfig] = None) -> Command:
             """Call the LLM to generate code or text response."""
+            configurable = config.get("configurable", {}) if config else {}
+            max_steps = (
+                configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
+            )
 
             logger.debug(
                 f"[APPROVAL DEBUG] call_model received cuga_lite_metadata: {state.cuga_lite_metadata}"
@@ -894,7 +914,7 @@ def create_cuga_lite_graph(
                         return approval_command
 
                 updated_messages, error_message = append_chat_messages_with_step_limit(
-                    state, [AIMessage(content=content)]
+                    state, [AIMessage(content=content)], max_steps=max_steps
                 )
                 if error_message:
                     return create_error_command(updated_messages, error_message, state.step_count)
@@ -918,7 +938,7 @@ def create_cuga_lite_graph(
                 planning_response = response.content
 
                 updated_messages, error_message = append_chat_messages_with_step_limit(
-                    state, [AIMessage(content=planning_response)]
+                    state, [AIMessage(content=planning_response)], max_steps=max_steps
                 )
                 if error_message:
                     return create_error_command(updated_messages, error_message, state.step_count)
@@ -956,11 +976,18 @@ def create_cuga_lite_graph(
                 if denial_command:
                     return denial_command
 
-            # Get configurable values from config
             configurable = config.get("configurable", {}) if config else {}
+            max_steps = (
+                configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
+            )
             current_thread_id = configurable.get("thread_id", base_thread_id)
             current_apps_list = configurable.get("apps_list", base_apps_list)
             track_tool_calls = configurable.get("track_tool_calls", False)
+            reflection_enabled = (
+                configurable.get("reflection_enabled")
+                if "reflection_enabled" in configurable
+                else settings.advanced_features.reflection_enabled
+            )
 
             # Get existing variables using CugaLiteState's own variables_manager
             existing_vars = {}
@@ -997,7 +1024,7 @@ def create_cuga_lite_graph(
                     )
 
                 reflection_output = ""
-                if settings.advanced_features.reflection_enabled:
+                if reflection_enabled:
                     try:
                         reflection_agent = reflection_task(
                             llm=llm_manager.get_model(settings.agent.planner.model)
@@ -1049,7 +1076,9 @@ def create_cuga_lite_graph(
                 )
 
                 new_message = HumanMessage(content=execution_message_content)
-                updated_messages, error_message = append_chat_messages_with_step_limit(state, [new_message])
+                updated_messages, error_message = append_chat_messages_with_step_limit(
+                    state, [new_message], max_steps=max_steps
+                )
 
                 # Collect tool calls from this execution
                 execution_tool_calls = ToolCallTracker.stop_tracking()
@@ -1085,7 +1114,7 @@ def create_cuga_lite_graph(
                 logger.error(error_msg)
                 new_message = HumanMessage(content=error_msg)
                 updated_messages, limit_error_message = append_chat_messages_with_step_limit(
-                    state, [new_message]
+                    state, [new_message], max_steps=max_steps
                 )
 
                 if limit_error_message:
@@ -1106,7 +1135,12 @@ def create_cuga_lite_graph(
 
     # Create node instances using factories
     prepare_node = create_prepare_node(
-        tool_provider, prompt_template, instructions, tools_context, special_instructions
+        tool_provider,
+        prompt_template,
+        prompt_template_todos,
+        instructions,
+        tools_context,
+        special_instructions,
     )
     call_model_node = create_call_model_node(model, callbacks)
     sandbox_node = create_sandbox_node(tools_context, thread_id, apps_list)

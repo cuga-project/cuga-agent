@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { Tools, Add, Edit, TrashCan, Plug, Filter } from "@carbon/icons-react";
+import { Add, Edit, TrashCan, Filter } from "@carbon/icons-react";
 import {
   ComposedModal,
   ModalHeader,
@@ -8,16 +8,8 @@ import {
   Button,
   Checkbox,
   Stack,
-  VStack,
   HStack,
   Tag,
-  ContainedList,
-  ContainedListItem,
-  StructuredListWrapper,
-  StructuredListHead,
-  StructuredListRow,
-  StructuredListCell,
-  StructuredListBody,
   Tile,
 } from "@carbon/react";
 import type { ToolEntry } from "./types/tools";
@@ -152,91 +144,73 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
   const configuredNames = new Set(tools.map(t => t.name));
   const availableToAdd = connectedApps.filter(app => !configuredNames.has(app.name));
 
+  const displayTools = showAllTools ? tools : tools.slice(0, TOOLS_PREVIEW_COUNT);
+
   return (
     <Stack gap={5} orientation="vertical">
-      {/* Configured Tools Section */}
       {tools.length === 0 ? (
-        <p className="cds--type-body-compact-01 cds--color-text-placeholder">No tools configured yet.</p>
+        <p className="tools-config-empty">No tools configured yet.</p>
       ) : (
-        <StructuredListWrapper>
-          <StructuredListBody>
-            {(showAllTools ? tools : tools.slice(0, TOOLS_PREVIEW_COUNT)).map((t, i) => {
-              const isConnected = connectedTools.some((ct) => ct.app === t.name);
-              return (
-                <StructuredListRow key={i}>
-                  <StructuredListCell>
-                    <VStack gap={2}>
-                      <HStack gap={3}>
-                        <span className="cds--type-body-compact-01 cds--type-semibold">
-                          {t.name || (t.type === "mcp" ? "MCP" : "OpenAPI")}
-                        </span>
-                        <Tag type={t.type === "mcp" ? "blue" : "green"} size="md">
-                          {t.type === "mcp" ? "MCP" : "OpenAPI"}
-                        </Tag>
-                        {isConnected && (
-                          <Tag type="green" size="sm" title="Currently connected">
-                            Connected
-                          </Tag>
-                        )}
-                        {t.include && t.include.length > 0 && (
-                          <Tag type="purple" size="sm">
-                            {t.include.length} tool{t.include.length !== 1 ? "s" : ""}
-                          </Tag>
-                        )}
-                      </HStack>
-                      {t.url && (
-                        <span className="cds--type-helper-text-01" style={{ wordBreak: "break-all" }}>
-                          {t.url}
-                        </span>
-                      )}
-                      {t.command && (
-                        <span className="cds--type-helper-text-01" style={{ wordBreak: "break-all" }}>
-                          {t.command}{t.args?.length ? ` ${t.args.join(" ")}` : ""}
-                        </span>
-                      )}
-                      {t.auth?.type && t.auth.type !== "none" && (
-                        <span className="cds--type-helper-text-01">Auth: {t.auth.type}</span>
-                      )}
-                    </VStack>
-                  </StructuredListCell>
-                  <StructuredListCell>
-                    <HStack gap={2}>
-                      {isConnected && (
-                        <Button
-                          kind="ghost"
-                          size="sm"
-                          hasIconOnly
-                          iconDescription="Select which tools to enable"
-                          renderIcon={Filter}
-                          onClick={() => setToolsModalIndex(i)}
-                        />
-                      )}
+        <Stack gap={3} orientation="vertical" className="tools-config-list">
+          {displayTools.map((t, i) => {
+            const isConnected = connectedTools.some((ct) => ct.app === t.name);
+            const source = t.url || (t.command ? `${t.command}${t.args?.length ? ` ${t.args.join(" ")}` : ""}` : null);
+            const hasSubset = t.include && t.include.length > 0;
+            return (
+              <Tile key={i} className="tools-config-tile">
+                <div className="tools-config-tile-main">
+                  <div className="tools-config-tile-info">
+                    <span className="tools-config-tile-name">{t.name || (t.type === "mcp" ? "MCP" : "OpenAPI")}</span>
+                    <Tag type={t.type === "mcp" ? "blue" : "green"} size="sm">
+                      {t.type === "mcp" ? "MCP" : "OpenAPI"}
+                    </Tag>
+                    {isConnected && <span className="tools-config-tile-badge">Connected</span>}
+                    {hasSubset && (
+                      <span className="tools-config-tile-badge tools-config-tile-badge-subset">
+                        {t.include!.length} selected
+                      </span>
+                    )}
+                  </div>
+                  <HStack gap={1}>
+                    {isConnected && (
                       <Button
                         kind="ghost"
                         size="sm"
                         hasIconOnly
-                        iconDescription="Edit"
-                        renderIcon={Edit}
-                        onClick={() => setEditingIndex(i)}
+                        iconDescription="Select tools"
+                        renderIcon={Filter}
+                        onClick={() => setToolsModalIndex(i)}
                       />
-                      <Button
-                        kind="ghost"
-                        size="sm"
-                        hasIconOnly
-                        iconDescription="Remove"
-                        renderIcon={TrashCan}
-                        onClick={() => handleRemove(i)}
-                      />
-                    </HStack>
-                  </StructuredListCell>
-                </StructuredListRow>
-              );
-            })}
-          </StructuredListBody>
-        </StructuredListWrapper>
+                    )}
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Edit"
+                      renderIcon={Edit}
+                      onClick={() => setEditingIndex(i)}
+                    />
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      hasIconOnly
+                      iconDescription="Remove"
+                      renderIcon={TrashCan}
+                      onClick={() => handleRemove(i)}
+                    />
+                  </HStack>
+                </div>
+                {source && (
+                  <p className="tools-config-tile-source" title={source}>
+                    {source.length > 60 ? `${source.slice(0, 60)}…` : source}
+                  </p>
+                )}
+              </Tile>
+            );
+          })}
+        </Stack>
       )}
-      
-      {/* Action Buttons */}
+
       <HStack gap={3}>
         <Button kind="secondary" size="sm" renderIcon={Add} onClick={() => setModalOpen(true)}>
           Add tool

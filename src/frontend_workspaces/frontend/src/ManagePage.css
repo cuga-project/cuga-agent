@@ -277,6 +277,11 @@
   border-radius: 0;
 }
 
+.manage-draft-saving {
+  font-size: 12px;
+  color: #64748b;
+}
+
 .manage-import-input {
   position: absolute;
   width: 0;

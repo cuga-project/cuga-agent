@@ -85,31 +85,12 @@ export default {
     sideEffects: false,
     splitChunks: {
       chunks: "all",
-      maxSize: 244 * 1024,
       cacheGroups: {
-        carbonIcons: {
-          test: /[\\/]node_modules[\\/]@carbon[\\/]icons-react[\\/]/,
-          name: "carbon-icons",
-          priority: 20,
-          reuseExistingChunk: true,
-        },
-        carbonAI: {
-          test: /[\\/]node_modules[\\/]@carbon[\\/]ai-chat[\\/]/,
-          name: "carbon-ai",
-          priority: 15,
-          reuseExistingChunk: true,
-        },
-        reactVendor: {
-          test: /[\\/]node_modules[\\/](react|react-dom)[\\/]/,
-          name: "react-vendor",
-          priority: 10,
-          reuseExistingChunk: true,
-        },
         vendor: {
           test: /[\\/]node_modules[\\/]/,
           name: "vendors",
-          priority: 5,
-          reuseExistingChunk: true,
+          chunks: "all",
+          enforce: true,
         },
       },
     },

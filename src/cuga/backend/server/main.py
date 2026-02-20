@@ -477,11 +477,18 @@ async def lifespan(app: FastAPI):
         get_include_by_app=_get_draft_include_by_app, agent_id=draft_agent_id
     )
     draft_policy = getattr(draft_app_state, "policy_system", None) or app_state.policy_system
+    from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
+
+    draft_overrides = _extract_agent_feature_overrides(draft_config or {}) if draft_config else {}
     draft_app_state.agent = DynamicAgentGraph(
         None,
         langfuse_handler=langfuse_handler,
         policy_system=draft_policy,
         tool_provider=draft_tool_provider,
+        enable_todos=draft_overrides.get("enable_todos"),
+        reflection_enabled=draft_overrides.get("reflection_enabled"),
+        shortlisting_tool_threshold=draft_overrides.get("shortlisting_tool_threshold"),
+        cuga_lite_max_steps=draft_overrides.get("cuga_lite_max_steps"),
     )
     await draft_app_state.agent.build_graph()
 
@@ -893,6 +900,10 @@ async def event_stream(
         thread_id=thread_id,
         tracker=local_tracker,
         policy_system=run_agent.policy_system,
+        enable_todos=getattr(run_agent, "enable_todos", None),
+        reflection_enabled=getattr(run_agent, "reflection_enabled", None),
+        shortlisting_tool_threshold=getattr(run_agent, "shortlisting_tool_threshold", None),
+        cuga_lite_max_steps=getattr(run_agent, "cuga_lite_max_steps", None),
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 

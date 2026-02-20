@@ -15,6 +15,42 @@ def _app_state(request: Request):
     return getattr(request.app.state, "app_state", None)
 
 
+def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool | int | None]:
+    """Extract enable_todos, reflection_enabled, shortlisting_tool_threshold, cuga_lite_max_steps from config.
+
+    Frontend uses feature_flags.max_steps -> cuga_lite_max_steps.
+    """
+    out: dict[str, bool | int | None] = {
+        "enable_todos": None,
+        "reflection_enabled": None,
+        "shortlisting_tool_threshold": None,
+        "cuga_lite_max_steps": None,
+    }
+    feature_flags = config.get("feature_flags") or {}
+    advanced = config.get("advanced_features") or {}
+    out["enable_todos"] = (
+        feature_flags.get("enable_todos") if "enable_todos" in feature_flags else advanced.get("enable_todos")
+    )
+    out["reflection_enabled"] = (
+        feature_flags.get("reflection")
+        if "reflection" in feature_flags
+        else advanced.get("reflection_enabled")
+    )
+    val = (
+        feature_flags.get("shortlisting_tool_threshold")
+        if "shortlisting_tool_threshold" in feature_flags
+        else advanced.get("shortlisting_tool_threshold")
+    )
+    out["shortlisting_tool_threshold"] = int(val) if val is not None else None
+    max_steps_val = (
+        feature_flags.get("max_steps")
+        if "max_steps" in feature_flags
+        else advanced.get("cuga_lite_max_steps")
+    )
+    out["cuga_lite_max_steps"] = int(max_steps_val) if max_steps_val is not None else None
+    return out
+
+
 def _merge_mcp_yaml_into_config(config: dict[str, Any]) -> None:
     from cuga.backend.server.managed_mcp import get_managed_mcp_path, read_managed_mcp_servers
 
@@ -269,10 +305,17 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
         try:
             logger.info("[DEBUG] Rebuilding draft agent graph with new configuration...")
 
-            # Get the draft agent from state
             draft_agent = getattr(state_to_update, "agent", None)
             if draft_agent:
-                # Rebuild the agent graph to pick up new tools from registry
+                overrides = _extract_agent_feature_overrides(config or {})
+                if overrides["enable_todos"] is not None:
+                    draft_agent.enable_todos = overrides["enable_todos"]
+                if overrides["reflection_enabled"] is not None:
+                    draft_agent.reflection_enabled = overrides["reflection_enabled"]
+                if overrides["shortlisting_tool_threshold"] is not None:
+                    draft_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
+                if overrides["cuga_lite_max_steps"] is not None:
+                    draft_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
                 await draft_agent.build_graph()
                 logger.info("[DEBUG] Draft agent graph rebuilt successfully")
             else:
@@ -336,10 +379,17 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         try:
             logger.info("[DEBUG] Rebuilding production agent graph with new configuration...")
 
-            # Get the production agent from state
             prod_agent = getattr(app_state, "agent", None)
             if prod_agent:
-                # Rebuild the agent graph to pick up new tools from registry
+                overrides = _extract_agent_feature_overrides(config or {})
+                if overrides["enable_todos"] is not None:
+                    prod_agent.enable_todos = overrides["enable_todos"]
+                if overrides["reflection_enabled"] is not None:
+                    prod_agent.reflection_enabled = overrides["reflection_enabled"]
+                if overrides["shortlisting_tool_threshold"] is not None:
+                    prod_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
+                if overrides["cuga_lite_max_steps"] is not None:
+                    prod_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
                 await prod_agent.build_graph()
                 logger.info("[DEBUG] Production agent graph rebuilt successfully")
             else:

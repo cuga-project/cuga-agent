@@ -13,6 +13,8 @@ import {
   TabPanel,
   InlineNotification,
   SkeletonText,
+  ToastNotification,
+  Button,
 } from "@carbon/react";
 import {
   Add,
@@ -27,6 +29,8 @@ import {
   Time,
   SidePanelOpen,
   SidePanelClose,
+  ChevronDown,
+  ChevronUp,
 } from "@carbon/icons-react";
 import "./ChatLanding.css";
 
@@ -147,6 +151,11 @@ const formatTimestamp = (isoString: string): string => {
   return date.toLocaleDateString(undefined, { month: "short", day: "numeric" });
 };
 
+const truncateText = (text: string, maxLength: number = 100): string => {
+  if (text.length <= maxLength) return text;
+  return text.substring(0, maxLength) + "...";
+};
+
 // ─── Inline style constants ───────────────────────────────────────────────────
 
 // Glass / frosted-transparent panel base — floats over the chat
@@ -196,7 +205,10 @@ export function ChatLanding() {
   const [threads, setThreads] = useState<ConversationThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-  const [agentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
+  const [agentConfig, setAgentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
+  const [configLoading, setConfigLoading] = useState(true);
+  const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
+  const [expandedApps, setExpandedApps] = useState<Set<string>>(new Set());
 
   // ── Responsive: auto-collapse on small screens ──────────────────────────────
   useEffect(() => {
@@ -217,6 +229,19 @@ export function ChatLanding() {
 
   const canShowLeft = windowW >= BP_HIDE_LEFT;
   const canShowRight = windowW >= BP_HIDE_RIGHT;
+
+  // Toast notification helpers
+  const addToast = useCallback((kind: "error" | "info" | "success" | "warning", title: string, subtitle: string) => {
+    const id = `toast-${Date.now()}-${Math.random()}`;
+    setToastNotifications((prev) => [...prev, { id, kind, title, subtitle }]);
+    setTimeout(() => {
+      setToastNotifications((prev) => prev.filter((t) => t.id !== id));
+    }, 5000);
+  }, []);
+
+  const removeToast = useCallback((id: string) => {
+    setToastNotifications((prev) => prev.filter((t) => t.id !== id));
+  }, []);
 
   // ── Thread helpers ──────────────────────────────────────────────────────────
   const refreshThreads = useCallback(async () => {
@@ -254,18 +279,102 @@ export function ChatLanding() {
     }
   };
 
+  // Fetch agent configuration
+  useEffect(() => {
+    (async () => {
+      try {
+        const agentId = "cuga-default";
+        const isDraft = false; // Use published config for chat landing
+        
+        // Fetch agent context and tools list with proper parameters
+        const [contextRes, toolsListRes] = await Promise.all([
+          fetch("/api/agent/context"),
+          fetch(`/api/tools/list?agent_id=${agentId}&draft=${isDraft ? "1" : "0"}`),
+        ]);
+
+        let agentName = "CUGA Default Agent";
+        let agentDescription = "A general-purpose assistant with configured tools and workspace access.";
+        
+        // Get agent name from context
+        if (contextRes.ok) {
+          const contextData = await contextRes.json();
+          agentName = contextData.agent_id || agentName;
+        }
+
+        // Get tools from tools/list endpoint and group by app
+        let apps: AppConfig[] = MOCK_AGENT_CONFIG.apps;
+        if (toolsListRes.ok) {
+          const toolsData = await toolsListRes.json();
+          const tools = toolsData.tools || [];
+          
+          if (tools.length > 0) {
+            // Group tools by their app field
+            const toolsByApp = new Map<string, AppTool[]>();
+            
+            tools.forEach((tool: any) => {
+              const appName = tool.app || "Unknown App";
+              if (!toolsByApp.has(appName)) {
+                toolsByApp.set(appName, []);
+              }
+              toolsByApp.get(appName)!.push({
+                name: tool.name,
+                description: tool.description || "No description available",
+              });
+            });
+            
+            // Convert map to apps array
+            apps = [];
+            toolsByApp.forEach((tools, appName) => {
+              apps.push({
+                appName,
+                tools,
+              });
+            });
+          }
+        } else {
+          const errorMsg = `Failed to load tools list (${toolsListRes.status} ${toolsListRes.statusText})`;
+          addToast("warning", "Tools Load Warning", errorMsg);
+        }
+
+        const config: AgentConfig = {
+          name: agentName,
+          description: agentDescription,
+          apps,
+          workspaceFolders: MOCK_AGENT_CONFIG.workspaceFolders, // TODO: Get from API if available
+        };
+        
+        setAgentConfig(config);
+      } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : "Network error loading agent configuration";
+        addToast("error", "Configuration Load Error", errorMsg);
+        console.error("Error fetching agent config:", err);
+        // Keep using MOCK_AGENT_CONFIG as fallback
+      } finally {
+        setConfigLoading(false);
+      }
+    })();
+  }, [addToast]);
+
   useEffect(() => {
     (async () => {
       try {
         const res = await fetch("/api/conversation-threads?agent_id=cuga-default&user_id=default_user");
-        if (res.ok) setThreads((await res.json()).threads || []);
+        if (!res.ok) {
+          const errorMsg = `Failed to load conversation threads (${res.status} ${res.statusText})`;
+          addToast("warning", "Threads Load Warning", errorMsg);
+          console.error(errorMsg);
+        } else {
+          setThreads((await res.json()).threads || []);
+        }
       } catch (err) {
+        const errorMsg = err instanceof Error ? err.message : "Network error loading conversation threads";
+        addToast("error", "Threads Load Error", errorMsg);
         console.error(err);
       } finally {
         setLoading(false);
       }
     })();
-  }, []);
+  }, [addToast]);
 
   const hasReadOnly = agentConfig.workspaceFolders.some((f) => f.readOnly);
   const totalTools = agentConfig.apps.reduce((s, a) => s + a.tools.length, 0);
@@ -477,76 +586,112 @@ export function ChatLanding() {
               {/* ── Configuration tab ── */}
               <TabPanel style={{ padding: "1rem" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-                  {agentConfig.apps.map((app) => (
-                    <div
-                      key={app.appName}
-                      style={{
-                        border: "1px solid var(--cds-border-subtle-01)",
-                        borderRadius: "4px",
-                        overflow: "hidden",
-                        background: "rgba(var(--cds-background-rgb, 255,255,255), 0.4)",
-                      }}
-                    >
+                  {agentConfig.apps.map((app) => {
+                    const isExpanded = expandedApps.has(app.appName);
+                    const visibleTools = isExpanded ? app.tools : app.tools.slice(0, 5);
+                    const hasMore = app.tools.length > 5;
+                    
+                    return (
                       <div
+                        key={app.appName}
                         style={{
-                          background: "rgba(var(--cds-layer-02-rgb, 244,244,244), 0.6)",
-                          padding: "0.5rem 0.75rem",
-                          display: "flex",
-                          alignItems: "center",
-                          justifyContent: "space-between",
-                          borderBottom: "1px solid var(--cds-border-subtle-01)",
+                          border: "1px solid var(--cds-border-subtle-01)",
+                          borderRadius: "4px",
+                          overflow: "hidden",
+                          background: "rgba(var(--cds-background-rgb, 255,255,255), 0.4)",
                         }}
                       >
-                        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                          <Application size={14} style={{ color: "var(--cds-interactive)" }} />
-                          <span style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--cds-text-primary)" }}>
-                            {app.appName}
-                          </span>
+                        <div
+                          style={{
+                            background: "rgba(var(--cds-layer-02-rgb, 244,244,244), 0.6)",
+                            padding: "0.5rem 0.75rem",
+                            display: "flex",
+                            alignItems: "center",
+                            justifyContent: "space-between",
+                            borderBottom: "1px solid var(--cds-border-subtle-01)",
+                          }}
+                        >
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
+                            <Application size={14} style={{ color: "var(--cds-interactive)" }} />
+                            <span style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--cds-text-primary)" }}>
+                              {app.appName}
+                            </span>
+                          </div>
+                          <Tag type="teal" size="sm">
+                            {app.tools.length} tool{app.tools.length !== 1 ? "s" : ""}
+                          </Tag>
                         </div>
-                        <Tag type="teal" size="sm">
-                          {app.tools.length} tool{app.tools.length !== 1 ? "s" : ""}
-                        </Tag>
-                      </div>
 
-                      <div style={{ padding: "0.25rem 0" }}>
-                        {app.tools.map((tool, idx) => (
-                          <div
-                            key={tool.name}
-                            style={{
-                              padding: "0.5rem 0.75rem",
-                              borderBottom:
-                                idx < app.tools.length - 1 ? "1px solid var(--cds-border-subtle-00)" : "none",
-                              display: "flex",
-                              alignItems: "flex-start",
-                              gap: "0.5rem",
-                            }}
-                          >
-                            <ChevronRight
-                              size={12}
-                              style={{ flexShrink: 0, marginTop: "0.2rem", color: "var(--cds-interactive)" }}
-                            />
-                            <div>
-                              <code
-                                style={{
-                                  fontSize: "0.75rem",
-                                  fontWeight: 600,
-                                  color: "var(--cds-text-primary)",
-                                  display: "block",
+                        <div style={{ padding: "0.25rem 0" }}>
+                          {visibleTools.map((tool, idx) => (
+                            <div
+                              key={tool.name}
+                              style={{
+                                padding: "0.5rem 0.75rem",
+                                borderBottom:
+                                  idx < visibleTools.length - 1 || hasMore ? "1px solid var(--cds-border-subtle-00)" : "none",
+                                display: "flex",
+                                alignItems: "flex-start",
+                                gap: "0.5rem",
+                              }}
+                            >
+                              <ChevronRight
+                                size={12}
+                                style={{ flexShrink: 0, marginTop: "0.2rem", color: "var(--cds-interactive)" }}
+                              />
+                              <div>
+                                <code
+                                  style={{
+                                    fontSize: "0.75rem",
+                                    fontWeight: 600,
+                                    color: "var(--cds-text-primary)",
+                                    display: "block",
+                                  }}
+                                >
+                                  {tool.name}
+                                </code>
+                                <span
+                                  style={{
+                                    fontSize: "0.6875rem",
+                                    color: "var(--cds-text-secondary)",
+                                    lineHeight: 1.4,
+                                    display: "block",
+                                    wordBreak: "break-word"
+                                  }}
+                                  title={tool.description}
+                                >
+                                  {truncateText(tool.description, 120)}
+                                </span>
+                              </div>
+                            </div>
+                          ))}
+                          
+                          {hasMore && (
+                            <div style={{ padding: "0.5rem 0.75rem", display: "flex", justifyContent: "center" }}>
+                              <Button
+                                kind="ghost"
+                                size="sm"
+                                renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                                onClick={() => {
+                                  setExpandedApps((prev) => {
+                                    const next = new Set(prev);
+                                    if (isExpanded) {
+                                      next.delete(app.appName);
+                                    } else {
+                                      next.add(app.appName);
+                                    }
+                                    return next;
+                                  });
                                 }}
                               >
-                                {tool.name}
-                              </code>
-                              <span
-                                style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)", lineHeight: 1.4 }}
-                              >
-                                {tool.description}
-                              </span>
+                                {isExpanded ? "Show less" : `Show ${app.tools.length - 5} more`}
+                              </Button>
                             </div>
-                          </div>
-                        ))}
+                          )}
+                        </div>
                       </div>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               </TabPanel>
 
@@ -655,6 +800,32 @@ export function ChatLanding() {
           <SidePanelOpen size={16} style={{ transform: "scaleX(-1)" }} />
         </button>
       )}
+
+      {/* Toast Notifications */}
+      <div
+        style={{
+          position: "fixed",
+          top: "3rem",
+          right: "1rem",
+          zIndex: 9999,
+          display: "flex",
+          flexDirection: "column",
+          gap: "0.5rem",
+          maxWidth: "400px",
+        }}
+      >
+        {toastNotifications.map((toast) => (
+          <ToastNotification
+            key={toast.id}
+            kind={toast.kind}
+            title={toast.title}
+            subtitle={toast.subtitle}
+            timeout={5000}
+            onClose={() => removeToast(toast.id)}
+            lowContrast
+          />
+        ))}
+      </div>
     </div>
   );
 }

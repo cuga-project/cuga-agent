@@ -68,6 +68,10 @@ class DynamicAgentGraph:
         tool_provider: Optional[ToolProviderInterface] = None,
         cuga_folder: Optional[str] = None,
         filesystem_sync: Optional[bool] = None,
+        enable_todos: Optional[bool] = None,
+        reflection_enabled: Optional[bool] = None,
+        shortlisting_tool_threshold: Optional[int] = None,
+        cuga_lite_max_steps: Optional[int] = None,
     ):
         self.task_decomposition_agent = TaskDecompositionNode(TaskDecompositionAgent.create())
         self.plan_controller_agent = PlanControllerNode(PlanControllerAgent.create())
@@ -96,6 +100,10 @@ class DynamicAgentGraph:
         self.filesystem_sync = (
             filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
         )
+        self.enable_todos = enable_todos
+        self.reflection_enabled = reflection_enabled
+        self.shortlisting_tool_threshold = shortlisting_tool_threshold
+        self.cuga_lite_max_steps = cuga_lite_max_steps
         self.graph = None
 
     async def build_graph(self):

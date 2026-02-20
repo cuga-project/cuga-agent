@@ -143,50 +143,32 @@ const CarbonChat = ({
       },
     });
     
-    console.log('[CarbonChat] Setting up custom-event listener');
-    // Handle custom button events (tool approval, human actions, etc.)
+    console.log('[CarbonChat] Setting up MESSAGE_ITEM_CUSTOM listener');
     instance.on({
-      type: 'custom-event' as any,
+      type: BusEventType.MESSAGE_ITEM_CUSTOM,
       handler: async (event: any) => {
-        console.log('[CarbonChat] Custom event received:', event);
-        console.log('[CarbonChat] Event type:', typeof event);
-        console.log('[CarbonChat] Event keys:', Object.keys(event));
-        
-        const { custom_event_name, user_defined } = event;
-        
-        console.log('[CarbonChat] custom_event_name:', custom_event_name);
-        console.log('[CarbonChat] user_defined:', user_defined);
-        
-        // Handle tool approval and human action responses
-        if (custom_event_name === 'tool_approval_response' || user_defined?.action_id) {
+        const buttonItem = event.messageItem;
+        if (!buttonItem) return;
+
+        const custom_event_name = buttonItem.custom_event_name;
+        const user_defined = buttonItem.user_defined ?? {};
+
+        if (custom_event_name === 'tool_approval_response' || custom_event_name === 'suggest_human_action' || user_defined?.action_id) {
           const approved = user_defined?.approved === true;
-          const threadId = user_defined?.thread_id || getOrCreateThreadId();
-          const actionId = user_defined?.action_id || custom_event_name;
-          
-          console.log(`[CarbonChat] Handling action response: ${actionId}, approved: ${approved}`);
-          
-          // Create ActionResponse object
+          const actionId = user_defined?.action_id;
+
           const actionResponse = {
             action_id: actionId,
-            approved: approved,
-            thread_id: threadId,
-            callback_url: user_defined?.callback_url,
-            return_to: user_defined?.return_to,
+            response_type: 'confirmation',
+            timestamp: new Date().toISOString(),
+            confirmed: approved,
           };
-          
-          // Call customSendMessage to resume the stream with the action response
-          const request: MessageRequest = {
-            input: {
-              text: '', // Empty text since we're sending an action
-            },
-          };
-          
+
+          const request: MessageRequest = { input: { text: '' } };
           const options: CustomSendMessageOptions = {
             signal: new AbortController().signal,
             silent: false,
           };
-          
-          // Call customSendMessage with the action response
           await customSendMessageImpl(request, options, instance, useDraft, disableHistory, actionResponse);
         }
       },

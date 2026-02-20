@@ -1,5 +1,56 @@
 /* Carbon-based styling - minimal overrides */
 
+.tools-config-empty {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--cds-text-placeholder, #8d8d8d);
+}
+
+.tools-config-list {
+  margin: 0;
+}
+
+.tools-config-tile {
+  padding: 0.75rem 1rem !important;
+}
+
+.tools-config-tile-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tools-config-tile-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.tools-config-tile-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--cds-text-primary, #161616);
+}
+
+.tools-config-tile-badge {
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+}
+
+.tools-config-tile-badge-subset {
+  color: var(--cds-text-helper, #6f6f6f);
+}
+
+.tools-config-tile-source {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+  word-break: break-all;
+}
+
 .tools-config-connected-list {
   margin-top: 1rem;
   background: transparent !important;
