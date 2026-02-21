@@ -1,1 +1,0 @@
-"use strict";(self.webpackChunk_carbon_ai_chat_examples_web_components_basic=self.webpackChunk_carbon_ai_chat_examples_web_components_basic||[]).push([[8300],{98696:function(_,e,a){a(7378),a(60832),a(79012),a(59732),a(23108)}}]);
