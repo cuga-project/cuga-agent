@@ -5,6 +5,7 @@ output
 cuga_workspace/
 .idea
 node_modules
+.pnpm-store/
 *.log
 /frontend/dist/
 !frontend-workspaces/frontend/dist
