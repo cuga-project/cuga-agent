@@ -1,0 +1,14 @@
+{{- if .Values.persistence.dbs.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "cuga.fullname" . }}-dbs
+  labels:
+    {{- include "cuga.labels" . | nindent 4 }}
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.persistence.dbs.size | default "1Gi" }}
+{{- end }}

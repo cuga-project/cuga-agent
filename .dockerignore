@@ -52,6 +52,9 @@ target/
 .tmp/
 temp/
 
+# Local databases (DBS_DIR = src/cuga/dbs)
+src/cuga/dbs/
+
 # Coverage reports
 coverage/
 .nyc_output/

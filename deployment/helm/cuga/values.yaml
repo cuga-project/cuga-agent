@@ -1,0 +1,24 @@
+replicaCount: 1
+
+image:
+  repository: cuga-agent
+  tag: latest
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 7860
+
+env:
+  OPENAI_API_KEY: ""
+  GROQ_API_KEY: ""
+  OPENAI_BASE_URL: ""
+  MODEL_NAME: "openai/gpt-oss-120b"
+  AGENT_SETTING_CONFIG: "settings.groq.toml"
+
+existingSecret: ""
+
+persistence:
+  dbs:
+    enabled: true
+    size: 1Gi
