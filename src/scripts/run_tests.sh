@@ -95,7 +95,7 @@ else
     run_pytest_with_memory ./src/system_tests/e2e/balanced_test_memory.py
     echo "Running stability tests..."
     # Force unbuffered output for Python to ensure all logs are captured
-    # PYTHONUNBUFFERED=1 uv run run_stability_tests.py --method local
+    PYTHONUNBUFFERED=1 uv run run_stability_tests.py --method local
     ec=$?
     echo "stability tests exited with code $ec"
     if [ $ec -ne 0 ]; then
