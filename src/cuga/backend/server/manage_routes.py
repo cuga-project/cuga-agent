@@ -417,3 +417,20 @@ async def get_manage_config_history():
     except Exception as e:
         logger.error(f"Failed to list config history: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/config")
+async def delete_manage_config(agent_id: Optional[str] = None, reset_db: Optional[bool] = None):
+    """Delete all configs for agent, or reset entire config db. Use ?reset_db=1 for full reset."""
+    try:
+        from cuga.backend.server.config_store import delete_all_configs, reset_config_db
+
+        if reset_db:
+            reset_config_db()
+            return JSONResponse({"status": "success", "message": "Config db reset"})
+        aid = agent_id or "cuga-default"
+        count = delete_all_configs(aid)
+        return JSONResponse({"status": "success", "deleted": count, "agent_id": aid})
+    except Exception as e:
+        logger.error(f"Failed to delete manage config: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

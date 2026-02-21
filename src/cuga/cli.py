@@ -21,6 +21,7 @@ from rich.text import Text
 from cuga.config import PACKAGE_ROOT, TRAJECTORY_DATA_DIR, get_user_data_path, settings
 from cuga.configurations.instructions_manager import InstructionsManager
 from cuga.backend.cuga_graph.policy.cli import app as policy_app
+from cuga.backend.server.demo_manage_setup import setup_demo_manage_config
 from cuga.backend.server.managed_mcp import ensure_managed_mcp_file_exists, get_managed_mcp_path
 
 instructions_manager = InstructionsManager()
@@ -537,6 +538,13 @@ def _start_demo_crm_services(
     service_label = "Supervisor Demo" if enable_supervisor else "CRM Demo"
 
     try:
+        os.environ["CUGA_MANAGER_MODE"] = "true"
+        os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+        os.environ["MCP_SERVERS_FILE"] = "none"
+        ensure_managed_mcp_file_exists(get_managed_mcp_path())
+        logger.info("🧹 Resetting config db and setting up manage demo_crm...")
+        setup_demo_manage_config("demo_crm", no_email=no_email)
+
         # Configure supervisor mode
         if enable_supervisor:
             os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
@@ -740,13 +748,7 @@ The email of my assistant is jane@example.com"""
         logger.info("CRM API server started")
         wait_for_server(crm_port, "CRM API server")
 
-        # Start registry with CRM configuration
-        # Only set MCP_SERVERS_FILE if not already set (e.g., by tests)
-        if "MCP_SERVERS_FILE" not in os.environ:
-            config_file = "mcp_servers_hf.yaml" if no_email else "mcp_servers_crm.yaml"
-            os.environ["MCP_SERVERS_FILE"] = os.path.join(
-                PACKAGE_ROOT, "backend", "tools_env", "registry", "config", config_file
-            )
+        # Registry uses MCP_SERVERS_FILE=none (database mode) - config from setup_demo_manage_config
         registry_process = run_direct_service(
             "registry",
             [
@@ -1016,24 +1018,42 @@ def start(
 
     # Handle direct execution services (demo and registry)
     if service == "demo":
-        # Signal to the demo server to open with ?mode=advanced
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
+        os.environ["CUGA_MANAGER_MODE"] = "true"
+        os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+        os.environ["MCP_SERVERS_FILE"] = "none"
+        ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:
-            # Clean up any existing processes on the ports we need
+            logger.info("🧹 Resetting config db and setting up manage demo...")
+            setup_demo_manage_config("demo")
             logger.info("🧹 Checking for existing processes on required ports...")
             kill_processes_by_port([settings.server_ports.registry, settings.server_ports.demo])
 
-            # Set environment variable for host
             os.environ["CUGA_HOST"] = host
-
-            # If sandbox mode is enabled, update settings dynamically
             if sandbox:
                 logger.info("Starting demo with remote sandbox mode enabled (features.local_sandbox=false)")
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
-            else:
-                # No override - let default configuration be used
-                pass
+
+            fs_port = int(os.environ.get("DYNACONF_SERVER_PORTS__FILESYSTEM_MCP", "8112"))
+            workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
+            os.makedirs(workspace_path, exist_ok=True)
+            copy_workspace_example_files(workspace_path)
+            kill_processes_by_port([fs_port])
+            filesystem_cmd = [
+                "uvx",
+                "--from",
+                "./docs/examples/demo_apps/file_system",
+                "filesystem-server",
+                workspace_path,
+            ]
+            run_direct_service(
+                "filesystem-server",
+                filesystem_cmd,
+                env_vars={"DYNACONF_SERVER_PORTS__FILESYSTEM_MCP": str(fs_port)},
+            )
+            logger.info("Filesystem MCP server started")
+            time.sleep(2)
 
             # Start registry first - using explicit uvicorn command
             registry_process = run_direct_service(
@@ -1101,6 +1121,7 @@ def start(
                 table = Table(show_header=False, box=None, padding=(0, 1))
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
+                table.add_row("Filesystem MCP:", f"http://localhost:{fs_port}/sse")
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
 
@@ -1108,7 +1129,7 @@ def start(
                 console.print(
                     Panel(
                         table,
-                        title="[bold yellow]Demo services are running. Press Ctrl+C to stop[/bold yellow]",
+                        title="[bold yellow]Demo (manage mode) services are running. Press Ctrl+C to stop[/bold yellow]",
                         border_style="cyan",
                         padding=(1, 2),
                     )
@@ -1258,7 +1279,7 @@ def manage_service(action: str, service: str):
     if action == "stop":
         if service in ("demo", "manager"):
             stopped_any = False
-            for service_name in ["registry", "demo"]:
+            for service_name in ["filesystem-server", "registry", "demo"]:
                 if service_name in direct_processes:
                     process = direct_processes[service_name]
                     if process and process.poll() is None:
@@ -1271,7 +1292,14 @@ def manage_service(action: str, service: str):
         elif service in ("demo_crm", "demo_supervisor"):
             # Stop all CRM/supervisor demo services
             stopped_any = False
-            for service_name in ["email-sink", "email-mcp", "crm-api", "registry", "demo"]:
+            for service_name in [
+                "email-sink",
+                "email-mcp",
+                "filesystem-server",
+                "crm-server",
+                "registry",
+                "demo",
+            ]:
                 if service_name in direct_processes:
                     process = direct_processes[service_name]
                     if process and process.poll() is None:

@@ -34,6 +34,18 @@ export function getOrCreateThreadId(): string {
   return currentThreadId;
 }
 
+const DEFAULT_HOMESCREEN = {
+  isOn: true,
+  greeting: 'Hello, how can I help you today?',
+  starters: ['Hi, what can you do for me?'],
+};
+
+interface HomescreenConfig {
+  isOn?: boolean;
+  greeting?: string;
+  starters?: string[];
+}
+
 interface CarbonChatProps {
   className?: string;
   theme?: 'light' | 'dark';
@@ -42,6 +54,7 @@ interface CarbonChatProps {
   threadId?: string | null;
   disableHistory?: boolean;
   isReadonly?: boolean;
+  homescreen?: HomescreenConfig;
   onThreadChange?: (threadId: string) => void;
 }
 
@@ -53,9 +66,13 @@ const CarbonChat = ({
   threadId = null,
   disableHistory = false,
   isReadonly = false,
+  homescreen,
   onThreadChange
 }: CarbonChatProps) => {
+  const hs = homescreen ?? DEFAULT_HOMESCREEN;
+  const starterLabels = (hs.starters ?? DEFAULT_HOMESCREEN.starters ?? []).filter(Boolean).slice(0, 4);
   const chatInstanceRef = useRef<ChatInstance | null>(null);
+  const skipNextHistoryLoadRef = useRef(false);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
   const [isLoadingDebug, setIsLoadingDebug] = useState(false);
@@ -123,8 +140,8 @@ const CarbonChat = ({
     ) => {
       const result = await customSendMessageImpl(request, options, instance, useDraft, disableHistory);
       
-      // Notify parent of thread change after message is sent
       if (onThreadChange && currentThreadId) {
+        skipNextHistoryLoadRef.current = true;
         onThreadChange(currentThreadId);
       }
       
@@ -181,10 +198,11 @@ const CarbonChat = ({
   useEffect(() => {
     if (chatInstanceRef.current) {
       if (threadId) {
-        // Update the global thread ID to match the selected thread
         currentThreadId = threadId;
-        
-        // Load and insert the conversation history
+        if (skipNextHistoryLoadRef.current) {
+          skipNextHistoryLoadRef.current = false;
+          return;
+        }
         const loadAndInsertHistory = async () => {
           if (!chatInstanceRef.current) return;
           
@@ -306,6 +324,13 @@ const CarbonChat = ({
         hideMinimizeButton: true,
         
       } as any}
+      homescreen={{
+        isOn: hs.isOn ?? true,
+        greeting: hs.greeting ?? DEFAULT_HOMESCREEN.greeting,
+        starters: starterLabels.length > 0
+          ? { isOn: true, buttons: starterLabels.map((label) => ({ label })) }
+          : { isOn: false, buttons: [] },
+      }}
       layout={{
         showFrame: false,
         hasContentMaxWidth: true,

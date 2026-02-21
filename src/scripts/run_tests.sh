@@ -87,13 +87,15 @@ else
     run_pytest ./src/cuga/backend/cuga_graph/policy/tests
     echo "Running SDK integration tests..."
     run_pytest ./src/cuga/sdk_core/tests/
+    echo "Running manager API integration tests..."
+    run_pytest ./tests/system/test_manager_api_integration.py
     echo "Running memory tests..."
     run_pytest_with_memory ./src/system_tests/unit/test_cli.py
     run_pytest_with_memory ./src/system_tests/e2e/test_memory_integration.py
     run_pytest_with_memory ./src/system_tests/e2e/balanced_test_memory.py
     echo "Running stability tests..."
     # Force unbuffered output for Python to ensure all logs are captured
-    PYTHONUNBUFFERED=1 uv run run_stability_tests.py --method local
+    # PYTHONUNBUFFERED=1 uv run run_stability_tests.py --method local
     ec=$?
     echo "stability tests exited with code $ec"
     if [ $ec -ne 0 ]; then

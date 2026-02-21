@@ -48,6 +48,12 @@ import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
 
+export interface HomescreenConfig {
+  isOn?: boolean;
+  greeting?: string;
+  starters?: string[];
+}
+
 export interface AgentConfig {
   llm?: { api_key?: string; base_url?: string; model?: string; temperature?: number };
   tools?: ToolEntry[];
@@ -58,7 +64,14 @@ export interface AgentConfig {
     shortlisting_tool_threshold?: number;
   };
   policies?: { enablePolicies: boolean; policies: unknown[] };
+  homescreen?: HomescreenConfig;
 }
+
+const DEFAULT_HOMESCREEN: HomescreenConfig = {
+  isOn: true,
+  greeting: "Hello, how can I help you today?",
+  starters: ["Hi, what can you do for me?"],
+};
 
 export interface ConfigVersion {
   version: number;
@@ -69,6 +82,7 @@ const DEFAULT_CONFIG: AgentConfig = {
   llm: { api_key: "", base_url: "", model: "", temperature: 0.7 },
   tools: [],
   feature_flags: { enable_todos: true, reflection: false, max_steps: 70, shortlisting_tool_threshold: 35 },
+  homescreen: { ...DEFAULT_HOMESCREEN },
 };
 
 const POLICY_TYPE_LABELS: Record<string, string> = {
@@ -232,6 +246,16 @@ export function ManagePage() {
                 out.policies.policies = [];
               }
             }
+            if (data.config.homescreen) {
+              const hs = data.config.homescreen;
+              out.homescreen = {
+                isOn: hs.isOn ?? DEFAULT_HOMESCREEN.isOn,
+                greeting: hs.greeting ?? DEFAULT_HOMESCREEN.greeting,
+                starters: Array.isArray(hs.starters)
+                  ? hs.starters.slice(0, 4).filter((s): s is string => typeof s === "string")
+                  : DEFAULT_HOMESCREEN.starters ?? [],
+              };
+            }
           }
           version = data.version === "draft" ? "draft" : (data.version ?? null);
         }
@@ -254,6 +278,16 @@ export function ManagePage() {
               if (!Array.isArray(out.policies.policies)) {
                 out.policies.policies = [];
               }
+            }
+            if (data.config.homescreen) {
+              const hs = data.config.homescreen;
+              out.homescreen = {
+                isOn: hs.isOn ?? DEFAULT_HOMESCREEN.isOn,
+                greeting: hs.greeting ?? DEFAULT_HOMESCREEN.greeting,
+                starters: Array.isArray(hs.starters)
+                  ? hs.starters.slice(0, 4).filter((s): s is string => typeof s === "string")
+                  : DEFAULT_HOMESCREEN.starters ?? [],
+              };
             }
           }
           version = typeof data.version === "number" ? data.version : null;
@@ -361,7 +395,7 @@ export function ManagePage() {
     return () => {
       if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current);
     };
-  }, [JSON.stringify({ llm: config.llm, tools: config.tools, policies: config.policies }), performDraftSave]);
+  }, [JSON.stringify({ llm: config.llm, tools: config.tools, policies: config.policies, homescreen: config.homescreen }), performDraftSave]);
 
   const loadVersion = async (version: number) => {
     try {
@@ -505,6 +539,31 @@ export function ManagePage() {
     setConfig((c: AgentConfig) => ({ ...c, tools }));
   };
 
+  const updateHomescreen = (field: "isOn" | "greeting", value: boolean | string) => {
+    setConfig((c: AgentConfig) => ({
+      ...c,
+      homescreen: {
+        ...(c.homescreen ?? DEFAULT_HOMESCREEN),
+        [field]: value,
+      },
+    }));
+  };
+
+  const updateStarter = (index: number, value: string) => {
+    setConfig((c: AgentConfig) => {
+      const starters = [...(c.homescreen?.starters ?? DEFAULT_HOMESCREEN.starters ?? [])];
+      while (starters.length <= index) starters.push("");
+      starters[index] = value;
+      return {
+        ...c,
+        homescreen: {
+          ...(c.homescreen ?? DEFAULT_HOMESCREEN),
+          starters: starters.slice(0, 4),
+        },
+      };
+    });
+  };
+
   const handleImportJson = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
       const file = e.target.files?.[0];
@@ -537,6 +596,16 @@ export function ManagePage() {
                 policies: Array.isArray(po.policies) ? po.policies : [],
               };
             }
+          }
+          if (raw.homescreen && typeof raw.homescreen === "object") {
+            const hs = raw.homescreen as HomescreenConfig;
+            out.homescreen = {
+              isOn: hs.isOn ?? DEFAULT_HOMESCREEN.isOn,
+              greeting: hs.greeting ?? DEFAULT_HOMESCREEN.greeting,
+              starters: Array.isArray(hs.starters)
+                ? hs.starters.slice(0, 4).filter((s): s is string => typeof s === "string")
+                : DEFAULT_HOMESCREEN.starters ?? [],
+            };
           }
           setConfig(out);
           setImportStatus("ok");
@@ -632,6 +701,51 @@ export function ManagePage() {
                     agentId= {"cuga-default"}
                     onError={(title, message) => addToast("error", title, message)}
                   />
+              </AccordionItem>
+
+              <AccordionItem title="Welcome Screen">
+                  <VStack gap={5}>
+                    <FormGroup legendText="">
+                      <Checkbox
+                        id="homescreen-isOn"
+                        labelText="Show welcome screen"
+                        checked={config.homescreen?.isOn ?? true}
+                        onChange={(_e, { checked }) => updateHomescreen("isOn", !!checked)}
+                      />
+                    </FormGroup>
+                    <FormGroup legendText="">
+                      <TextInput
+                        id="homescreen-greeting"
+                        labelText="Greeting message"
+                        value={config.homescreen?.greeting ?? DEFAULT_HOMESCREEN.greeting ?? ""}
+                        onChange={(e) => updateHomescreen("greeting", e.target.value)}
+                        placeholder="Hello, how can I help you today?"
+                      />
+                    </FormGroup>
+                    <FormGroup legendText="Starter buttons (max 4)">
+                      {[0, 1, 2, 3].map((i) => (
+                        <TextInput
+                          key={i}
+                          id={`homescreen-starter-${i}`}
+                          labelText={`Starter ${i + 1}`}
+                          value={(config.homescreen?.starters ?? [])[i] ?? ""}
+                          onChange={(e) => updateStarter(i, e.target.value)}
+                          placeholder={i === 0 ? "Hi, what can you do for me?" : "Optional"}
+                        />
+                      ))}
+                    </FormGroup>
+                    <Stack gap={3} orientation="horizontal">
+                      <Button
+                        kind="secondary"
+                        size="sm"
+                        renderIcon={Save}
+                        onClick={() => performDraftSave()}
+                        disabled={draftSaving}
+                      >
+                        {draftSaving ? "Saving…" : "Save welcome screen"}
+                      </Button>
+                    </Stack>
+                  </VStack>
               </AccordionItem>
 
               <AccordionItem title="Feature Flags">
@@ -813,7 +927,16 @@ export function ManagePage() {
                       )}
                       {!loadError && !draftSaving && currentVersion != null && (
                         <p className="manage-save-bar-version">
-                          Version: {currentVersion === "draft" ? "draft" : String(currentVersion)}
+                          Version: {currentVersion === "draft" ? "draft" : `v${currentVersion}`}
+                          {history.length > 0 && (
+                            <span className="manage-save-bar-last-publish">
+                              {" · "}
+                              Last publish: v{history[0].version}
+                              {typeof history[0].created_at === "string" && (
+                                <> ({new Date(history[0].created_at).toLocaleDateString()})</>
+                              )}
+                            </span>
+                          )}
                         </p>
                       )}
                     </div>
@@ -825,7 +948,12 @@ export function ManagePage() {
         <Layer withBackground className="manage-chat-panel">
           <p className="manage-chat-label">Try your configuration</p>
           <div className="manage-chat-wrap">
-            <CarbonChat contained={true} useDraft={true} disableHistory={true} />
+            <CarbonChat
+              contained={true}
+              useDraft={true}
+              disableHistory={true}
+              homescreen={config.homescreen}
+            />
           </div>
         </Layer>
       </div>

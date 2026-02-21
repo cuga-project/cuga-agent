@@ -73,6 +73,12 @@ interface AgentConfig {
   workspaceFolders: WorkspaceFolder[];
 }
 
+interface HomescreenConfig {
+  isOn?: boolean;
+  greeting?: string;
+  starters?: string[];
+}
+
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
 const MOCK_AGENT_CONFIG: AgentConfig = {
@@ -208,6 +214,7 @@ export function ChatLanding() {
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
   const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
+  const [homescreenConfig, setHomescreenConfig] = useState<HomescreenConfig | undefined>(undefined);
   const [configLoading, setConfigLoading] = useState(true);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
   const [expandedApps, setExpandedApps] = useState<Set<string>>(new Set());
@@ -290,10 +297,10 @@ export function ChatLanding() {
         const agentId = "cuga-default";
         const isDraft = false; // Use published config for chat landing
         
-        // Fetch agent context and tools list with proper parameters
-        const [contextRes, toolsListRes] = await Promise.all([
+        const [contextRes, toolsListRes, manageRes] = await Promise.all([
           fetch("/api/agent/context"),
           fetch(`/api/tools/list?agent_id=${agentId}&draft=${isDraft ? "1" : "0"}`),
+          fetch("/api/manage/config"),
         ]);
 
         let agentName = "CUGA Default Agent";
@@ -339,6 +346,18 @@ export function ChatLanding() {
         } else {
           const errorMsg = `Failed to load tools list (${toolsListRes.status} ${toolsListRes.statusText})`;
           addToast("warning", "Tools Load Warning", errorMsg);
+        }
+
+        if (manageRes.ok) {
+          const manageData = await manageRes.json();
+          const hs = manageData.config?.homescreen;
+          if (hs && typeof hs === "object") {
+            setHomescreenConfig({
+              isOn: hs.isOn ?? true,
+              greeting: hs.greeting,
+              starters: Array.isArray(hs.starters) ? hs.starters.slice(0, 4) : undefined,
+            });
+          }
         }
 
         const config: AgentConfig = {
@@ -405,6 +424,7 @@ export function ChatLanding() {
           threadId={selectedThreadId}
           isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
           onThreadChange={handleThreadChange}
+          homescreen={homescreenConfig}
         />
       </div>
 

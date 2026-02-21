@@ -493,7 +493,7 @@ async def lifespan(app: FastAPI):
     await draft_app_state.agent.build_graph()
 
     logger.info("Application finished starting up...")
-    url = f"http://localhost:{settings.server_ports.demo}?t={random_id_with_timestamp()}"
+    url = f"http://localhost:{settings.server_ports.demo}/manage/cuga-default?t={random_id_with_timestamp()}"
     # Set by cli.py only for 'cuga start demo' (not demo_crm)
     if os.getenv("CUGA_DEMO_ADVANCED", "false").lower() in ("true", "1"):
         url += "&mode=advanced"

@@ -313,3 +313,25 @@ def list_agents_with_configs() -> list[dict[str, Any]]:
         ]
     finally:
         conn.close()
+
+
+def delete_all_configs(agent_id: str = "cuga-default") -> int:
+    """Delete all configs for an agent (draft and all versions). Returns count deleted."""
+    base_agent_id = _parse_agent_id(agent_id)
+    conn = _get_conn()
+    try:
+        cur = conn.execute(
+            "DELETE FROM agent_configs WHERE agent_id = ?",
+            (base_agent_id,),
+        )
+        conn.commit()
+        return cur.rowcount
+    finally:
+        conn.close()
+
+
+def reset_config_db() -> None:
+    """Reset config db by deleting the database file. Next access will recreate it."""
+    path = _db_path()
+    if os.path.exists(path):
+        os.remove(path)
