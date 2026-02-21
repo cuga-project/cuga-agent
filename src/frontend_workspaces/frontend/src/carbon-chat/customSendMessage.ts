@@ -14,28 +14,17 @@ import {
   MessageRequest,
   MessageResponseTypes,
   ReasoningStepOpenState,
-  UserType,
   type ReasoningStep,
   type StreamChunk,
 } from "@carbon/ai-chat";
-
-// Button kind constants (matching Carbon Design System)
-const BUTTON_KIND = {
-  PRIMARY: 'primary',
-  SECONDARY: 'secondary',
-  TERTIARY: 'tertiary',
-  GHOST: 'ghost',
-  DANGER: 'danger',
-  DANGER_TERTIARY: 'danger--tertiary',
-  DANGER_GHOST: 'danger--ghost',
-} as const;
-
-const RESPONSE_USER_PROFILE = {
-  id: "cuga-agent",
-  nickname: "CUGA",
-  user_type: UserType.BOT,
-  profile_picture_url: "https://avatars.githubusercontent.com/u/230847519?s=200&v=4",
-};
+import {
+  BUTTON_KIND,
+  RESPONSE_USER_PROFILE,
+  parseReasoningStepContent,
+  parseAnswerEventData,
+  buildToolApprovalCard,
+  createReasoningStep,
+} from "./carbonChatHelpers";
 
 // CUGA backend endpoint - use window location for dynamic backend URL
 const CUGA_BACKEND_URL = typeof window !== 'undefined'
@@ -225,41 +214,14 @@ export async function customSendMessage(
 
       switch (event.name) {
         case "CodeAgent":
-          // Add previous step if exists
           if (currentStepTitle && currentStepContent) {
-            collectedSteps.push({
-              title: currentStepTitle,
-              content: currentStepContent,
-              open_state: ReasoningStepOpenState.OPEN,
-            });
+            collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
           }
-          
-          currentStepTitle = "Code Agent";
-          
-          // Try to parse as JSON and extract code or execution_output
-          try {
-            const parsed = JSON.parse(event.data);
-            if (parsed.code) {
-              // Format code as markdown
-              currentStepContent = `\`\`\`python\n${parsed.code}\n\`\`\``;
-              if (parsed.summary) {
-                currentStepContent = `${parsed.summary}\n\n${currentStepContent}`;
-              }
-            } else if (parsed.execution_output) {
-              // Format execution output as markdown
-              currentStepContent = `**Execution Output:**\n\`\`\`\n${parsed.execution_output}\n\`\`\``;
-              if (parsed.summary) {
-                currentStepContent = `${parsed.summary}\n\n${currentStepContent}`;
-              }
-            } else {
-              // Use the whole JSON formatted
-              currentStepContent = `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
-            }
-          } catch {
-            // Not JSON, use as-is
-            currentStepContent = event.data || "";
-          }
-          
+
+          const codeAgentResult = parseReasoningStepContent(event.data || "", "Code Agent");
+          currentStepTitle = codeAgentResult.title;
+          currentStepContent = codeAgentResult.content;
+
           console.log(`Code Agent step, content: ${currentStepContent}`);
           
           if (currentStepContent) {
@@ -281,18 +243,16 @@ export async function customSendMessage(
         case "Thinking":
         case "Planning":
         case "Analyzing":
-          // Add reasoning step
           if (currentStepTitle && currentStepContent) {
-            collectedSteps.push({
-              title: currentStepTitle,
-              content: currentStepContent,
-              open_state: ReasoningStepOpenState.OPEN,
-            });
+            collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
           }
-          
-          // Use event name as title, data as content
-          currentStepTitle = event.name.replace(/_/g, " "); // Make it readable
-          currentStepContent = event.data || "";
+
+          const reasoningResult = parseReasoningStepContent(
+            event.data || "",
+            event.name.replace(/_/g, " ")
+          );
+          currentStepTitle = reasoningResult.title;
+          currentStepContent = reasoningResult.content;
           
           console.log(`Reasoning step: ${currentStepTitle}, content: ${currentStepContent}`);
           
@@ -314,13 +274,10 @@ export async function customSendMessage(
 
         case "ToolCall":
         case "Action":
-          // Add tool/action as reasoning step
           const toolData = typeof event.data === "string" ? event.data : JSON.stringify(event.data, null, 2);
-          collectedSteps.push({
-            title: event.name,
-            content: `\`\`\`json\n${toolData}\n\`\`\``,
-            open_state: ReasoningStepOpenState.CLOSE,
-          });
+          collectedSteps.push(
+            createReasoningStep(event.name, `\`\`\`json\n${toolData}\n\`\`\``, ReasoningStepOpenState.CLOSE)
+          );
           
           instance.messaging.addMessageChunk({
             partial_item: {
@@ -473,183 +430,34 @@ export async function customSendMessage(
         case "Answer":
         case "FinalAnswer":
           console.log("Received Answer event, finalizing message...");
-          
-          // Parse the answer - it may be JSON with data/variables/policies
-          let answerText = accumulatedText || ""; // Start with any accumulated text from FinalAnswerAgent
-          let policyInfo = null;
-          
+
+          let answerText = accumulatedText || "";
           if (typeof event.data === "string") {
-            try {
-              const parsed = JSON.parse(event.data);
-              
-              // Check if parsed.data is a string that needs further parsing
-              let innerData = parsed.data;
-              if (typeof innerData === "string") {
-                try {
-                  innerData = JSON.parse(innerData);
-                } catch {
-                  // If inner parsing fails, use as-is
-                }
-              }
-              
-              // Check if this is a policy event (either in outer or inner data)
-              const policyData = innerData?.type === "policy" ? innerData :
-                                 (parsed.active_policies && parsed.active_policies.length > 0 ? parsed.active_policies[0] : null);
-              
-              if (policyData && (policyData.policy_blocked || policyData.policy_matched)) {
-                // Extract policy information
-                const isPlaybook = policyData.policy_type === "playbook";
-                const playbookContent = policyData.metadata?.playbook_guidance || policyData.metadata?.playbook_content || policyData.content;
-                
-                policyInfo = {
-                  response_content: policyData.metadata?.response_content || policyData.content || (isPlaybook ? "" : "This action is not allowed."),
-                  policy_reasoning: policyData.metadata?.policy_reasoning || "Policy triggered",
-                  policy_type: policyData.policy_type || policyData.metadata?.policy_type || "unknown",
-                  policy_name: policyData.policy_name || policyData.metadata?.policy_name || "Policy",
-                  is_playbook: isPlaybook,
-                  playbook_content: playbookContent,
-                };
-                
-                // Format the answer based on policy type
-                if (policyData.policy_type === "tool_approval" && policyData.metadata?.approval_required) {
-                  // Tool approval - create interactive card
-                  const approvalMsg = policyData.metadata.approval_message || "This tool requires your approval before execution.";
-                  const toolsList = policyData.metadata.required_tools || [];
-                  const appsList = policyData.metadata.required_apps || [];
-                  const codePreview = policyData.metadata.code_preview || [];
-                  
-                  // Create card body
-                  const cardBody: any[] = [
-                    {
-                      response_type: MessageResponseTypes.TEXT,
-                      text: `### ✋ ${policyInfo.policy_name}`,
-                    },
-                    {
-                      response_type: MessageResponseTypes.TEXT,
-                      text: approvalMsg,
-                    },
-                  ];
-                  
-                  // Add tools list if available
-                  if (toolsList.length > 0) {
-                    const toolsText = toolsList.includes("*")
-                      ? "**Tools requiring approval:** All tools"
-                      : `**Tools requiring approval:** ${toolsList.join(', ')}`;
-                    cardBody.push({
-                      response_type: MessageResponseTypes.TEXT,
-                      text: toolsText,
-                    });
-                  }
-                  
-                  // Add apps list if available
-                  if (appsList.length > 0) {
-                    cardBody.push({
-                      response_type: MessageResponseTypes.TEXT,
-                      text: `**Apps requiring approval:** ${appsList.join(', ')}`,
-                    });
-                  }
-                  
-                  // Add code preview if available
-                  if (codePreview.length > 0) {
-                    cardBody.push({
-                      response_type: MessageResponseTypes.TEXT,
-                      text: "**Code Preview:**",
-                    });
-                    cardBody.push({
-                      response_type: MessageResponseTypes.TEXT,
-                      text: `\`\`\`python\n${codePreview.join('\n')}\n\`\`\``,
-                    });
-                  }
-                  
-                  // Add the card with approval buttons
-                  instance.messaging.addMessage({
-                    output: {
-                      generic: [
-                        {
-                          body: cardBody,
-                          footer: [
-                            {
-                              kind: BUTTON_KIND.PRIMARY as any,
-                              label: "Approve & Execute",
-                              button_type: ButtonItemType.CUSTOM_EVENT as any,
-                              response_type: MessageResponseTypes.BUTTON,
-                              custom_event_name: "tool_approval_response",
-                              user_defined: {
-                                approved: true,
-                                thread_id: threadId,
-                              },
-                            },
-                            {
-                              kind: BUTTON_KIND.DANGER as any,
-                              label: "Deny",
-                              button_type: ButtonItemType.CUSTOM_EVENT as any,
-                              response_type: MessageResponseTypes.BUTTON,
-                              custom_event_name: "tool_approval_response",
-                              user_defined: {
-                                approved: false,
-                                thread_id: threadId,
-                              },
-                            },
-                          ],
-                          response_type: MessageResponseTypes.CARD,
-                        },
-                      ],
-                    },
-                  });
-                  
-                  // Don't finalize yet - wait for user response
-                  return;
-                } else if (isPlaybook) {
-                  // For playbooks: use accumulated answer from FinalAnswerAgent, then show policy info only
-                  if (!answerText) {
-                    // If no FinalAnswerAgent answer yet, use a default message
-                    answerText = "Following the playbook to guide you through this process.";
-                  }
-                  answerText += "\n\n";
-                  answerText += "> ###### 📖 *Playbook Information*\n";
-                  answerText += ">\n";
-                  answerText += `> *Playbook Name:* **${policyInfo.policy_name}**\n`;
-                  answerText += ">\n";
-                  answerText += `> *Reasoning:* ${policyInfo.policy_reasoning}`;
-                } else {
-                  // For blocked policies, show response content and policy info
-                  answerText = policyInfo.response_content;
-                  answerText += "\n\n";
-                  answerText += "> ###### 🛡️ *Policy Information*\n";
-                  answerText += ">\n";
-                  answerText += `> *Policy Name:* **${policyInfo.policy_name}**\n`;
-                  answerText += ">\n";
-                  answerText += `> *Policy Type:* \`${policyInfo.policy_type}\`\n`;
-                  answerText += ">\n";
-                  answerText += `> *Reasoning:* ${policyInfo.policy_reasoning}`;
-                }
-              } else {
-                // No policy - use accumulated text or extract from data
-                if (!answerText) {
-                  answerText = typeof innerData === "string" ? innerData : (parsed.data || event.data);
-                }
-              }
-            } catch (e) {
-              console.error("Error parsing Answer event:", e);
-              // If not JSON, use as-is or accumulated text
-              if (!answerText) {
-                answerText = event.data;
-              }
+            const parsed = parseAnswerEventData(event.data, accumulatedText);
+            if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData) {
+              const { body, footer } = buildToolApprovalCard(
+                parsed.policyInfo,
+                parsed.policyData,
+                threadId
+              );
+              instance.messaging.addMessage({
+                output: {
+                  generic: [
+                    { body, footer, response_type: MessageResponseTypes.CARD },
+                  ],
+                },
+              });
+              return;
             }
-          } else {
-            if (!answerText) {
-              answerText = event.data?.answer || JSON.stringify(event.data);
-            }
+            answerText = parsed.answerText;
+          } else if (!answerText) {
+            answerText = event.data?.answer || JSON.stringify(event.data);
           }
+
+          accumulatedText = answerText;
           
-          accumulatedText = answerText; // Use the answer directly
-          
-          // Finalize the message immediately after Answer
           if (currentStepTitle && currentStepContent) {
-            collectedSteps.push({
-              title: currentStepTitle,
-              content: currentStepContent,
-            });
+            collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
           }
           
           console.log(`Finalizing with ${collectedSteps.length} reasoning steps`);
@@ -698,12 +506,8 @@ export async function customSendMessage(
 
         case "Complete":
         case "Done":
-          // Finalize the message
           if (currentStepTitle) {
-            collectedSteps.push({
-              title: currentStepTitle,
-              content: currentStepContent,
-            });
+            collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
           }
           
           const completeItem = {
@@ -730,14 +534,11 @@ export async function customSendMessage(
           return;
 
         default:
-          // Handle other event types as reasoning steps
           if (event.data) {
             const stepContent = typeof event.data === "string" ? event.data : JSON.stringify(event.data);
-            collectedSteps.push({
-              title: event.name,
-              content: stepContent,
-              open_state: ReasoningStepOpenState.CLOSE,
-            });
+            collectedSteps.push(
+              createReasoningStep(event.name, stepContent, ReasoningStepOpenState.CLOSE)
+            );
             
             instance.messaging.addMessageChunk({
               partial_item: {

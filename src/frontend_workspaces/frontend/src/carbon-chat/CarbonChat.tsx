@@ -325,9 +325,9 @@ const CarbonChat = ({
         
       } as any}
       homescreen={{
-        isOn: hs.isOn ?? true,
+        isOn: !isReadonly && (hs.isOn ?? true),
         greeting: hs.greeting ?? DEFAULT_HOMESCREEN.greeting,
-        starters: starterLabels.length > 0
+        starters: !isReadonly && starterLabels.length > 0
           ? { isOn: true, buttons: starterLabels.map((label) => ({ label })) }
           : { isOn: false, buttons: [] },
       }}

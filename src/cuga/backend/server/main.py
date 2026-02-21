@@ -12,7 +12,6 @@ import json
 from contextlib import asynccontextmanager
 from typing import List, Dict, Any, Union, Optional
 from pathlib import Path
-from cuga.backend.utils.id_utils import random_id_with_timestamp
 import traceback
 from pydantic import BaseModel, ValidationError
 from fastapi import FastAPI, Request, HTTPException
@@ -493,10 +492,7 @@ async def lifespan(app: FastAPI):
     await draft_app_state.agent.build_graph()
 
     logger.info("Application finished starting up...")
-    url = f"http://localhost:{settings.server_ports.demo}/manage/cuga-default?t={random_id_with_timestamp()}"
-    # Set by cli.py only for 'cuga start demo' (not demo_crm)
-    if os.getenv("CUGA_DEMO_ADVANCED", "false").lower() in ("true", "1"):
-        url += "&mode=advanced"
+    url = f"http://localhost:{settings.server_ports.demo}/manage/cuga-default"
     if settings.advanced_features.mode == "api" and os.getenv("CUGA_TEST_ENV", "false").lower() not in (
         "true",
         "1",
@@ -2586,7 +2582,8 @@ async def serve_react(full_path: str, request: Request):
     if not app_state.STATIC_DIR_HTML:
         raise HTTPException(status_code=500, detail="Frontend build directory not found.")
 
-    file_path = os.path.join(app_state.STATIC_DIR_HTML, full_path)
+    lookup_path = full_path[7:] if full_path.startswith("manage/") else full_path
+    file_path = os.path.join(app_state.STATIC_DIR_HTML, lookup_path)
     if os.path.exists(file_path) and os.path.isfile(file_path):
         return FileResponse(file_path)
 

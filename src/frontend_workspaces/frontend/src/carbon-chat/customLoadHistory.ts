@@ -14,17 +14,17 @@ import {
   MessageRequest,
   MessageResponse,
   MessageResponseTypes,
-  ReasoningStepOpenState,
-  UserType,
   type ReasoningStep,
 } from "@carbon/ai-chat";
-
-const RESPONSE_USER_PROFILE = {
-  id: "cuga-agent",
-  nickname: "CUGA",
-  user_type: UserType.BOT,
-  profile_picture_url: "https://avatars.githubusercontent.com/u/230847519?s=200&v=4",
-};
+import {
+  RESPONSE_USER_PROFILE,
+  extractEventData,
+  generateMessageId,
+  parseReasoningStepContent,
+  parseAnswerEventData,
+  buildToolApprovalCard,
+  createReasoningStep,
+} from "./carbonChatHelpers";
 
 interface StreamEvent {
   event_name: string;
@@ -80,24 +80,13 @@ async function customLoadHistory(
     for (const event of events) {
       console.log(`Processing event: ${event.event_name}`, event);
 
-      // Extract the actual data from the SSE format
-      // The event_data contains "event: EventName\ndata: actual_data\n\n"
-      let actualData = event.event_data;
-      if (actualData.includes('data: ')) {
-        const dataMatch = actualData.match(/data: (.+?)(?:\n\n|$)/s);
-        if (dataMatch) {
-          actualData = dataMatch[1].trim();
-        }
-      }
+      const actualData = extractEventData(event.event_data);
 
-      // Process different event types
       switch (event.event_name) {
         case "UserMessage":
-          // User message event - add it to history
-          const userMessageId = `msg-${event.timestamp}-user-${Math.random().toString(36).substring(2, 11)}`;
           history.push({
             message: {
-              id: userMessageId,
+              id: generateMessageId(event.timestamp, "user"),
               input: {
                 text: actualData,
                 message_type: MessageInputType.TEXT,
@@ -107,92 +96,77 @@ async function customLoadHistory(
           });
           break;
 
+        case "FinalAnswerAgent":
+          try {
+            const parsed = JSON.parse(actualData);
+            currentAnswerText = parsed.final_answer || parsed.data || actualData;
+          } catch {
+            currentAnswerText = actualData;
+          }
+          break;
+
         case "CodeAgent":
         case "CodeAgent_Reasoning":
         case "Thinking":
         case "Planning":
-        case "Analyzing":
-          // Parse and add as reasoning step
-          try {
-            const parsed = JSON.parse(actualData);
-            let content = "";
-            let title = event.event_name.replace(/_/g, " ");
-
-            if (parsed.code) {
-              content = `\`\`\`python\n${parsed.code}\n\`\`\``;
-              if (parsed.summary) {
-                content = `${parsed.summary}\n\n${content}`;
-              }
-            } else if (parsed.execution_output) {
-              content = `**Execution Output:**\n\`\`\`\n${parsed.execution_output}\n\`\`\``;
-              if (parsed.summary) {
-                content = `${parsed.summary}\n\n${content}`;
-              }
-            } else {
-              content = `\`\`\`json\n${JSON.stringify(parsed, null, 2)}\n\`\`\``;
-            }
-
-            currentSteps.push({
-              title,
-              content,
-              open_state: ReasoningStepOpenState.OPEN,
-            });
-          } catch {
-            // Not JSON, use as-is
-            currentSteps.push({
-              title: event.event_name.replace(/_/g, " "),
-              content: actualData,
-              open_state: ReasoningStepOpenState.OPEN,
-            });
-          }
+        case "Analyzing": {
+          const stepResult = parseReasoningStepContent(
+            actualData,
+            event.event_name.replace(/_/g, " ")
+          );
+          currentSteps.push(createReasoningStep(stepResult.title, stepResult.content));
           break;
+        }
 
         case "Answer":
-        case "FinalAnswer":
-          // Final answer - create the response with all collected steps
-          try {
-            const parsed = JSON.parse(actualData);
-            currentAnswerText = parsed.data || actualData;
-          } catch {
-            currentAnswerText = actualData;
+        case "FinalAnswer": {
+          const parsed = parseAnswerEventData(actualData, currentAnswerText);
+
+          if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData && threadId) {
+            const { body, footer } = buildToolApprovalCard(
+              parsed.policyInfo,
+              parsed.policyData,
+              threadId
+            );
+            const cardMessage: any = {
+              id: generateMessageId(event.timestamp, "assistant"),
+              output: {
+                generic: [
+                  { body, footer, response_type: MessageResponseTypes.CARD },
+                ],
+              },
+            };
+            cardMessage.message_options = {
+              ...(currentSteps.length > 0 ? { reasoning: { steps: currentSteps } } : {}),
+              response_user_profile: RESPONSE_USER_PROFILE,
+            };
+            history.push({ message: cardMessage as MessageResponse, time: event.timestamp });
+          } else {
+            currentAnswerText = parsed.answerText;
+            const messageResponse: any = {
+              id: generateMessageId(event.timestamp, "assistant"),
+              output: {
+                generic: [
+                  { response_type: MessageResponseTypes.TEXT, text: currentAnswerText },
+                ],
+              },
+            };
+            messageResponse.message_options = {
+              ...(currentSteps.length > 0 ? { reasoning: { steps: currentSteps } } : {}),
+              response_user_profile: RESPONSE_USER_PROFILE,
+            };
+            history.push({ message: messageResponse as MessageResponse, time: event.timestamp });
           }
 
-          // Add assistant response with reasoning steps
-          const assistantMessageId = `msg-${event.timestamp}-assistant-${Math.random().toString(36).substring(2, 11)}`;
-          const messageResponse: any = {
-            id: assistantMessageId,
-            output: {
-              generic: [
-                {
-                  response_type: MessageResponseTypes.TEXT,
-                  text: currentAnswerText,
-                },
-              ],
-            },
-          };
-
-          messageResponse.message_options = {
-            ...(currentSteps.length > 0 ? { reasoning: { steps: currentSteps } } : {}),
-            response_user_profile: RESPONSE_USER_PROFILE,
-          };
-
-          history.push({
-            message: messageResponse as MessageResponse,
-            time: event.timestamp,
-          });
-
-          // Reset for next turn
           currentSteps = [];
           currentAnswerText = "";
           break;
+        }
 
         default:
-          // Other events - add as reasoning steps
-          currentSteps.push({
-            title: event.event_name.replace(/_/g, " "),
-            content: actualData,
-            open_state: ReasoningStepOpenState.OPEN,
-          });
+          currentSteps.push(
+            createReasoningStep(event.event_name.replace(/_/g, " "), actualData)
+          );
           break;
       }
     }
@@ -221,7 +195,7 @@ async function loadBasicMessages(threadId: string): Promise<HistoryItem[]> {
 
     return messages.map((msg) => {
       const isUserMessage = msg.role === "user" || msg.role === "human";
-      const messageId = `msg-${msg.timestamp}-${Math.random().toString(36).substring(2, 11)}`;
+      const messageId = generateMessageId(msg.timestamp, "msg");
 
       if (isUserMessage) {
         return {
