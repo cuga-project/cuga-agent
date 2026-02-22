@@ -22,7 +22,7 @@ from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.configurations.instructions_manager import InstructionsManager
-from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_apis
+from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_apis
 from cuga.cli import start_extension_browser_if_configured
 from cuga.backend.browser_env.browser.extension_env_async import ExtensionEnv
 from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import (
@@ -1867,16 +1867,21 @@ async def get_tools_list(request: Request, agent_id: Optional[str] = None, draft
                 "on",
             )
 
-        # Get apps with optional agent_id filter
-        # Note: draft mode for tools/apps would need to be implemented in the registry
-        # For now, we pass agent_id which the registry already supports
-        apps = await get_apps(agent_id=agent_id)
+        # When draft mode, use draft agent_id so registry returns draft config's tools
+        effective_agent_id = agent_id
+        if use_draft:
+            from cuga.backend.server.config_store import _parse_agent_id
+
+            base = _parse_agent_id(agent_id or get_agent_id() or "cuga-default")
+            effective_agent_id = f"{base}--draft"
+
+        apps = await get_apps(agent_id=effective_agent_id)
         tools_list = []
         apps_list = []
 
         for app in apps:
             try:
-                apis = await get_apis(app.name)
+                apis = await get_apis(app.name, agent_id=effective_agent_id)
                 app_type = getattr(app, "type", "api").upper()
 
                 # Add app to apps list

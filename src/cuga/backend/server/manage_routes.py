@@ -307,6 +307,9 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 
             draft_agent = getattr(state_to_update, "agent", None)
             if draft_agent:
+                tp = getattr(draft_agent, "tool_provider", None)
+                if tp is not None and hasattr(tp, "reset"):
+                    tp.reset()
                 overrides = _extract_agent_feature_overrides(config or {})
                 if overrides["enable_todos"] is not None:
                     draft_agent.enable_todos = overrides["enable_todos"]
@@ -381,6 +384,9 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 
             prod_agent = getattr(app_state, "agent", None)
             if prod_agent:
+                tp = getattr(prod_agent, "tool_provider", None)
+                if tp is not None and hasattr(tp, "reset"):
+                    tp.reset()
                 overrides = _extract_agent_feature_overrides(config or {})
                 if overrides["enable_todos"] is not None:
                     prod_agent.enable_todos = overrides["enable_todos"]

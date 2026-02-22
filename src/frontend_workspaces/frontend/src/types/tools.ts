@@ -6,8 +6,7 @@ export type AuthType =
   | "bearer"
   | "api-key"
   | "basic"
-  | "query"
-  | "oauth2";
+  | "query";
 
 export interface ToolAuth {
   type: AuthType;
@@ -15,7 +14,7 @@ export interface ToolAuth {
   value?: string;
 }
 
-export type McpTransport = "sse" | "stdio";
+export type McpTransport = "sse" | "stdio" | "http";
 
 export interface ToolEntry {
   name: string;
@@ -38,5 +37,4 @@ export const AUTH_TYPE_OPTIONS: { value: AuthType; label: string; needsKey: bool
   { value: "api-key", label: "API key (query)", needsKey: true },
   { value: "basic", label: "Basic (user:pass)", needsKey: false },
   { value: "query", label: "Query parameter", needsKey: true },
-  { value: "oauth2", label: "OAuth 2", needsKey: false },
 ];

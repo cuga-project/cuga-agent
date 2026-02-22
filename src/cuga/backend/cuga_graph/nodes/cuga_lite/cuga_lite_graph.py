@@ -224,9 +224,6 @@ def extract_and_combine_codeblocks(text: str) -> str:
 
         combined_code = "\n\n".join(processed_blocks)
 
-        if "print(" not in combined_code:
-            return ""
-
         return combined_code
 
     stripped_text = text.strip()
@@ -548,6 +545,10 @@ def create_cuga_lite_graph(
             if not base_tool_provider:
                 raise ValueError("tool_provider is required")
 
+            # Get total tool count across ALL apps (for shortlisting threshold - not per app)
+            all_tools_total = await base_tool_provider.get_all_tools()
+            total_tool_count = len(all_tools_total) if all_tools_total else 0
+
             # Get tools from provider
             apps_for_prompt = None
             app_to_tools_map = {}
@@ -597,18 +598,17 @@ def create_cuga_lite_graph(
                 # Get all tools and apps
                 all_apps = await base_tool_provider.get_apps()
                 apps_for_prompt = all_apps
-                tools_for_execution = await base_tool_provider.get_all_tools()
+                tools_for_execution = all_tools_total or []
                 # Build mapping for all apps
                 for app in apps_for_prompt:
                     app_tools = await base_tool_provider.get_tools(app.name)
                     app_to_tools_map[app.name] = app_tools
 
-            tool_count = len(tools_for_execution) if tools_for_execution else 0
-            enable_find_tools = tool_count > shortlisting_threshold
+            enable_find_tools = total_tool_count > shortlisting_threshold
 
             if enable_find_tools:
                 logger.info(
-                    f"Auto-enabling find_tools: {tool_count} tools exceeds threshold of {shortlisting_threshold}"
+                    f"Auto-enabling find_tools: total {total_tool_count} tools (across all apps) exceeds threshold of {shortlisting_threshold}"
                 )
 
             # Prepare prompt

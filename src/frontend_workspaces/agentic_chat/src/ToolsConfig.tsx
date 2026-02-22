@@ -395,11 +395,12 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
                         >
                           <option value="stdio">stdio</option>
                           <option value="sse">sse</option>
+                          <option value="http">http</option>
                         </select>
                       </div>
                     </div>
 
-                    {server.transport !== "sse" && (
+                    {server.transport !== "sse" && server.transport !== "http" && (
                       <div className="form-group">
                         <div className="form-group-header">
                           <label>Arguments</label>
@@ -432,14 +433,14 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
                       </div>
                     )}
 
-                    {server.transport === "sse" && (
+                    {(server.transport === "sse" || server.transport === "http") && (
                       <div className="form-group">
                         <label>URL</label>
                         <input
                           type="text"
                           value={server.url || ""}
                           onChange={(e) => updateMcpServer(serverName, "url", e.target.value)}
-                          placeholder="http://localhost:8000/sse"
+                          placeholder={server.transport === "http" ? "https://example.com/mcp" : "http://localhost:8000/sse"}
                           disabled
                         />
                       </div>

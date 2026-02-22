@@ -135,6 +135,7 @@ export function ManagePage() {
   const [connectedApps, setConnectedApps] = useState<ConnectedApp[]>([]);
   const [connectedTools, setConnectedTools] = useState<ConnectedTool[]>([]);
   const [importStatus, setImportStatus] = useState<"idle" | "ok" | "error">("idle");
+  const [importError, setImportError] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [manageVariables, setManageVariables] = useState<Record<string, any>>({});
   const [manageVariablesHistory, setManageVariablesHistory] = useState<Array<{ id: string; title: string; timestamp: number; variables: Record<string, any> }>>([]);
@@ -142,10 +143,25 @@ export function ManagePage() {
   const [manageVariablesPanelOpen, setManageVariablesPanelOpen] = useState(false);
   const [currentVersion, setCurrentVersion] = useState<number | "draft" | null>(null);
   const [draftSaving, setDraftSaving] = useState(false);
+  const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
   const skipDraftSaveRef = useRef(true);
   const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configRef = useRef(config);
   configRef.current = config;
+
+  useEffect(() => {
+    fetch("/api/agent/context")
+      .then((res) => (res.ok ? res.json() : null))
+      .then(
+        (data) =>
+          data &&
+          setAgentContext({
+            agent_id: data.agent_id ?? "cuga-default",
+            config_version: data.config_version ?? null,
+          })
+      )
+      .catch(() => {});
+  }, []);
 
   const handleManageVariablesUpdate = useCallback((variables: Record<string, any>, history: Array<any>) => {
     setManageVariables(variables);
@@ -213,7 +229,7 @@ export function ManagePage() {
       skipDraftSaveRef.current = true;
       const [draftRes, toolsListRes] = await Promise.all([
         fetch("/api/manage/config?draft=1"),
-        fetch("/api/tools/list"),
+        fetch("/api/tools/list?draft=1"),
       ]);
       
       // Check for HTTP errors
@@ -397,6 +413,12 @@ export function ManagePage() {
     };
   }, [JSON.stringify({ llm: config.llm, tools: config.tools, policies: config.policies, homescreen: config.homescreen }), performDraftSave]);
 
+  useEffect(() => {
+    if (importStatus === "ok") {
+      performDraftSave();
+    }
+  }, [importStatus, performDraftSave]);
+
   const loadVersion = async (version: number) => {
     try {
       const res = await fetch(`/api/manage/config?version=${version}`);
@@ -570,6 +592,7 @@ export function ManagePage() {
       e.target.value = "";
       if (!file) return;
       setImportStatus("idle");
+      setImportError(null);
       const reader = new FileReader();
       reader.onload = () => {
         try {
@@ -609,15 +632,32 @@ export function ManagePage() {
           }
           setConfig(out);
           setImportStatus("ok");
+          setImportError(null);
           setTimeout(() => setImportStatus("idle"), 2500);
         } catch {
+          const msg = "Invalid JSON";
           setImportStatus("error");
-          setTimeout(() => setImportStatus("idle"), 2500);
+          setImportError(msg);
+          addToast("error", "Import failed", msg);
+          setTimeout(() => {
+            setImportStatus("idle");
+            setImportError(null);
+          }, 2500);
         }
+      };
+      reader.onerror = () => {
+        const msg = "Failed to read file";
+        setImportStatus("error");
+        setImportError(msg);
+        addToast("error", "Import failed", msg);
+        setTimeout(() => {
+          setImportStatus("idle");
+          setImportError(null);
+        }, 2500);
       };
       reader.readAsText(file);
     },
-    [normalizeTools]
+    [normalizeTools, addToast]
   );
 
   const llm = config.llm ?? {};
@@ -630,7 +670,8 @@ export function ManagePage() {
   return (
     <div className="manage-page">
       <CugaHeader
-        title={agentId ? `${agentId} — configuration` : "Agent configuration"}
+        title="CUGA Agent"
+        agentContext={agentContext ?? undefined}
         navItems={[
           { label: "Agents", to: `/manage${search}` },
           { label: "Chat", to: search ? `/${search}` : "/chat" },
@@ -896,7 +937,7 @@ export function ManagePage() {
                       onClick={() => fileInputRef.current?.click()}
                       className="manage-save-bar-button"
                     >
-                      Import JSON
+                      Import
                     </Button>
                     <Button
                       kind="primary"
@@ -923,7 +964,7 @@ export function ManagePage() {
                         <InlineNotification kind="success" title="Success" subtitle="Config imported" lowContrast hideCloseButton />
                       )}
                       {!loadError && importStatus === "error" && (
-                        <InlineNotification kind="error" title="Error" subtitle="Invalid JSON" lowContrast hideCloseButton />
+                        <InlineNotification kind="error" title="Import failed" subtitle={importError ?? "Import failed"} lowContrast hideCloseButton />
                       )}
                       {!loadError && !draftSaving && currentVersion != null && (
                         <p className="manage-save-bar-version">

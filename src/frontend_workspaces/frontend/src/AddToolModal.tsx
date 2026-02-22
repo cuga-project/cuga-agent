@@ -26,7 +26,7 @@ interface AddToolModalProps {
 
 const emptyAuth: ToolAuth = { type: "none" };
 
-type McpConnectionMode = "url" | "command";
+type McpConnectionMode = "url" | "url-http" | "command";
 
 // Pre-configured tool templates
 interface ToolTemplate {
@@ -74,7 +74,8 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
       setType(initial.type);
       setUrl(initial.url ?? "");
       const hasCmd = !!(initial.command?.trim());
-      setMcpMode(hasCmd ? "command" : "url");
+      const transport = initial.transport ?? (initial.url ? "sse" : "stdio");
+      setMcpMode(hasCmd ? "command" : transport === "http" ? "url-http" : "url");
       setCommand(initial.command ?? "");
       setArgsText((initial.args ?? []).join("\n"));
       setDescription(initial.description ?? "");
@@ -112,7 +113,7 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
     const tool: ToolEntry = {
       name: name.trim() || (type === "mcp" ? "mcp" : "openapi"),
       type,
-      url: isCommandMcp ? undefined : url.trim() || undefined,
+      url: isCommandMcp ? undefined : (url.trim() || undefined),
       description: description.trim() || undefined,
     };
     if (isCommandMcp) {
@@ -120,7 +121,7 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
       tool.args = args.length ? args : undefined;
       tool.transport = "stdio";
     } else if (type === "mcp" && url.trim()) {
-      tool.transport = "sse";
+      tool.transport = mcpMode === "url-http" ? "http" : "sse";
     }
     if (authType !== "none" && (needsKey ? authKey.trim() : true)) {
       tool.auth = {
@@ -228,6 +229,7 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
                 onChange={(e) => setMcpMode(e.target.value as McpConnectionMode)}
               >
                 <SelectItem value="url" text="URL (SSE)" />
+                <SelectItem value="url-http" text="URL (HTTP)" />
                 <SelectItem value="command" text="Command (stdio)" />
               </Select>
             </FormGroup>
@@ -262,9 +264,21 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
                 labelText="URL"
                 value={url}
                 onChange={(e) => setUrl(e.target.value)}
-                placeholder={type === "mcp" ? "http://localhost:8112/sse" : "http://localhost:8007/openapi.json"}
-                required={type === "openapi" || mcpMode === "url"}
-                helperText={type === "mcp" ? "MCP server SSE or HTTP endpoint" : "OpenAPI spec URL"}
+                placeholder={
+                  type === "mcp"
+                    ? mcpMode === "url-http"
+                      ? "https://example.com/mcp"
+                      : "http://localhost:8112/sse"
+                    : "http://localhost:8007/openapi.json"
+                }
+                required={type === "openapi" || mcpMode === "url" || mcpMode === "url-http"}
+                helperText={
+                  type === "mcp"
+                    ? mcpMode === "url-http"
+                      ? "MCP server Streamable HTTP endpoint"
+                      : "MCP server SSE endpoint (e.g. /sse)"
+                    : "OpenAPI spec URL"
+                }
               />
             </FormGroup>
           )}

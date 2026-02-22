@@ -268,6 +268,13 @@ class CombinedToolProvider(ToolProviderInterface):
         logger.info(f"Found {len(self.apps)} apps: {[app.name for app in self.apps]}")
         self.initialized = True
 
+    def reset(self) -> None:
+        """Reset state so next get_apps/get_tools re-initializes from registry."""
+        self.initialized = False
+        self.apps = []
+        self.tools_cache.clear()
+        self._last_include_version = -1
+
     async def get_apps(self) -> List[AppDefinition]:
         """Get list of available applications."""
         if not self.initialized:
