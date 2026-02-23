@@ -789,7 +789,7 @@ export function ManagePage() {
                   </VStack>
               </AccordionItem>
 
-              <AccordionItem title="Feature Flags">
+              <AccordionItem title="Features">
                   <VStack gap={5}>
                     <FormGroup legendText="">
                       <Checkbox

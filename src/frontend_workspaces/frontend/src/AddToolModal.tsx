@@ -53,6 +53,36 @@ const TOOL_TEMPLATES: ToolTemplate[] = [
       transport: "stdio",
     },
   },
+  {
+    id: "drawio",
+    name: "Drawio",
+    description: "Create and manipulate diagrams using Draw.io",
+    icon: Template,
+    config: {
+      name: "drawio",
+      type: "mcp",
+      mcpMode: "command",
+      command: "npx",
+      argsText: "-y\n@next-ai-drawio/mcp-server@latest",
+      description: "Drawio diagram creation and manipulation server",
+      transport: "stdio",
+    },
+  },
+  {
+    id: "browser_mcp",
+    name: "Browser_MCP",
+    description: "Browser automation and web interaction capabilities",
+    icon: Template,
+    config: {
+      name: "browser_mcp",
+      type: "mcp",
+      mcpMode: "command",
+      command: "npx",
+      argsText: "-y\n@agent-infra/mcp-server-browser@latest",
+      description: "Browser automation and web interaction server",
+      transport: "stdio",
+    },
+  },
 ];
 
 export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
