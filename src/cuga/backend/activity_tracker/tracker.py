@@ -74,7 +74,6 @@ class ActivityTracker(object):
     user_id: str = ""
     intent: str = ""
     session_id: str = ""
-    run_id: str = ""
     dataset_name: str = ""
     prompts: List[Prompt] = []
     current_date: Optional[str] = None
@@ -86,6 +85,7 @@ class ActivityTracker(object):
     token_usage: int = 0
     steps: List[Step] = []
     images: List[str] = []
+    trajectory_messages: List[Dict[str, str]] = []
     score: float = 0.0
     tools: Dict[str, List[StructuredTool]] = {}
     apps: List[AppDefinition] = []
@@ -395,18 +395,15 @@ class ActivityTracker(object):
     def generate_session_id(self):
         self.session_id = random_id_with_timestamp(full_date=True)
 
-    def generate_run_id(self):
-        self.run_id = random_id_with_timestamp(full_date=True)
-
     def reset(self, intent, task_id="default"):
         self.token_usage = 0
         self.start_time = time.time()
         self.current_date = None
         self.pi = None
         self.prompts = []
-        self.run_id = ""
         self.steps = []
         self.images = []
+        self.trajectory_messages = []
         self.actions_count = 0
         self.final_answer = None
         self.task_id = task_id
@@ -570,6 +567,103 @@ class ActivityTracker(object):
             # Assume raw base64 PNG data; prepend appropriate data URL header.
             self.images.append(f"data:image/png;base64,{img}")
 
+    def _ensure_trajectory_seed_message(self) -> None:
+        """Seed trajectory messages with the user intent once."""
+        if self.trajectory_messages:
+            return
+        intent = str(self.intent or "").strip()
+        if intent:
+            self.trajectory_messages.append({"role": "user", "content": intent})
+
+    def _build_trajectory_step_message(self, step: Step, data_json: Any) -> dict[str, str]:
+        """Convert a tracker step into a lightweight assistant message for tip generation."""
+        parts: list[str] = [f"Agent: {step.name or 'UnknownAgent'}"]
+
+        plan = str(step.plan or "").strip()
+        if plan:
+            parts.append(f"Plan: {plan}")
+
+        action = str(step.action_formatted or "").strip()
+        if action:
+            parts.append(f"Action: {action}")
+
+        if isinstance(data_json, dict):
+            summary = data_json.get("summary")
+            thoughts = data_json.get("thoughts")
+            if summary:
+                parts.append(f"Summary: {summary}")
+            elif thoughts:
+                parts.append(f"Thoughts: {thoughts}")
+            else:
+                parts.append(f"Output: {json.dumps(data_json, ensure_ascii=False)}")
+        else:
+            data_text = str(step.data or "").strip()
+            if data_text:
+                parts.append(f"Output: {data_text}")
+
+        content = "\n".join(parts)
+        return {"role": "assistant", "content": content}
+
+    @staticmethod
+    def _extract_agent_id_from_trajectory_messages(trajectory_messages: list[dict[str, str]]) -> str | None:
+        """Extract agent id from the latest assistant trajectory message."""
+        for message in reversed(trajectory_messages):
+            if message.get("role") != "assistant":
+                continue
+            content = str(message.get("content") or "")
+            first_line = content.splitlines()[0].strip() if content else ""
+            if not first_line.startswith("Agent:"):
+                continue
+            agent_id = first_line.partition("Agent:")[2].strip()
+            if agent_id:
+                return agent_id
+        return None
+
+    async def _persist_guidelines_from_trajectory(
+        self,
+        *,
+        namespace_id: str,
+        trajectory_messages: list[dict[str, str]],
+        user_id: str,
+    ) -> None:
+        """Generate and persist guideline entities from trajectory messages."""
+        from kaizen.llm.tips.tips import generate_tips
+        from kaizen.schema.core import Entity
+
+        try:
+            if len(trajectory_messages) < 2:
+                return
+
+            tips = await asyncio.to_thread(generate_tips, trajectory_messages)
+            if not tips:
+                return
+
+            agent_id = self._extract_agent_id_from_trajectory_messages(trajectory_messages) or "UnknownAgent"
+
+            entities = [
+                Entity(
+                    type="guideline",
+                    content=tip.content,
+                    metadata={
+                        "category": tip.category,
+                        "rationale": tip.rationale,
+                        "trigger": tip.trigger,
+                        "agent_id": agent_id,
+                        "user_id": user_id,
+                        "task_id": self.task_id,
+                        "session_id": self.session_id,
+                    },
+                )
+                for tip in tips
+            ]
+            self.memory.update_entities(
+                namespace_id=namespace_id,
+                entities=entities,
+                enable_conflict_resolution=True,
+            )
+        except Exception as e:
+            logger.exception(f"Failed to generate/persist guidelines from trajectory: {e}")
+
     def collect_step(self, step: Step) -> None:
         """
         Collects a step, adding it to the steps list.
@@ -668,47 +762,53 @@ class ActivityTracker(object):
                     )
 
         if settings.advanced_features.enable_memory:
-            from cuga.backend.memory.memory import get_kaizen_namespace_id
-            from cuga.backend.memory.utils.prompts import prompts
-
-            if not all(hasattr(self.memory, method) for method in ("create_run", "add_step", "end_run")):
-                logger.debug(
-                    "Skipping legacy run/tip memory pipeline: Kaizen client does not expose run APIs"
-                )
-                step.prompts = copy.deepcopy(self.prompts)
-                self.prompts = []
-                self.steps.append(step)
-                if settings.advanced_features.tracker_enabled:
-                    self.to_file()
-                return
+            from cuga.backend.memory.memory import get_kaizen_namespace_id, normalize_user_id
+            from kaizen.schema.core import Entity
 
             namespace_id = get_kaizen_namespace_id()
-            step_data = step.model_dump()
-            if len(self.steps) == 0:
-                self.generate_run_id()
-                self.memory.create_run(namespace_id=namespace_id, run_id=self.run_id)
+            normalized_user_id = normalize_user_id(self.user_id)
+            self._ensure_trajectory_seed_message()
+            step_index = len(self.steps)
+            trajectory_step_message = self._build_trajectory_step_message(step=step, data_json=data_json)
+            self.trajectory_messages.append(trajectory_step_message)
 
-                # Include intent in step metadata so it's available during tip extraction
-                step_data['intent'] = self.intent  # Add the user's task intent
-            self.memory.add_step(
-                namespace_id=namespace_id,
-                run_id=self.run_id,
-                step=step_data,
-                prompt=prompts[step.name],
-            )
+            try:
+                self.memory.update_entities(
+                    namespace_id=namespace_id,
+                    entities=[
+                        Entity(
+                            type="trajectory",
+                            content=trajectory_step_message["content"],
+                            metadata={
+                                "message": trajectory_step_message,
+                                "step_index": step_index,
+                                "step_name": step.name,
+                                "intent": self.intent,
+                                "user_id": normalized_user_id,
+                                "task_id": self.task_id,
+                                "session_id": self.session_id,
+                                "timestamp": datetime.utcnow().isoformat(),
+                            },
+                        )
+                    ],
+                    enable_conflict_resolution=False,
+                )
+            except Exception as e:
+                logger.exception(f"Failed to persist trajectory step to memory: {e}")
+
+            if step.name == "FinalAnswerAgent":
+                task = asyncio.create_task(
+                    self._persist_guidelines_from_trajectory(
+                        namespace_id=namespace_id,
+                        trajectory_messages=copy.deepcopy(self.trajectory_messages),
+                        user_id=normalized_user_id,
+                    )
+                )
+                background_tasks.add(task)
+                task.add_done_callback(background_tasks.discard)
         step.prompts = copy.deepcopy(self.prompts)
         self.prompts = []
         self.steps.append(step)
-        if settings.advanced_features.enable_memory and step.name == "FinalAnswerAgent":
-            from cuga.backend.memory.memory import get_kaizen_namespace_id
-
-            # End run and execute any background processing.
-            # If memory is running as a library, process must finish before exiting
-            task = asyncio.create_task(
-                self.memory.end_run(namespace_id=get_kaizen_namespace_id(), run_id=self.run_id)
-            )
-            background_tasks.add(task)
-            task.add_done_callback(background_tasks.discard)
 
         if settings.advanced_features.tracker_enabled:
             self.to_file()

@@ -109,7 +109,7 @@ class ShortlisterAgent(BaseAgent):
 
             rtrvd_tips_formatted = get_formatted_tips(
                 namespace_id=get_kaizen_namespace_id(),
-                agent_id='APIShortlisterAgent',
+                agent_id='ShortlisterAgent',
                 query=input_variables.shortlister_query,
                 limit=3,
             )

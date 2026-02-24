@@ -203,7 +203,7 @@ class ApiPlanner(BaseNode):
                     namespace_id=namespace_id,
                     query=state.input,
                     filters={
-                        "__entity_type": "fact",
+                        "type": "fact",
                         "metadata.user_id": normalize_user_id(state.user_id),
                     },
                 )

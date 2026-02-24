@@ -98,15 +98,12 @@ class FakeKaizenClient:
 
         def matches(entity: RecordedEntity) -> bool:
             for key, value in (filters or {}).items():
-                if key == "__entity_type":
+                if key == "type":
                     if entity.type != value:
                         return False
                 elif key.startswith("metadata."):
                     metadata_key = key.split(".", 1)[1]
                     if (entity.metadata or {}).get(metadata_key) != value:
-                        return False
-                elif key == "type":
-                    if entity.type != value:
                         return False
                 elif key == "id":
                     if entity.id != str(value):
@@ -254,7 +251,7 @@ class TestMemoryBehavior:
         ended = memory.get_run(namespace.id, run.id)
 
         assert ended.ended is True
-        tips = memory.search_entities(namespace.id, query=None, filters={"__entity_type": "tip"}, limit=10)
+        tips = memory.search_entities(namespace.id, query=None, filters={"type": "tip"}, limit=10)
         assert len(tips) >= 1
 
     def test_preference_helpers(self):

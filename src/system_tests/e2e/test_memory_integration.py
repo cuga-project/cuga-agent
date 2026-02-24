@@ -96,12 +96,12 @@ class FakeKaizenClient:
 
         def _matches(entity: RecordedEntity) -> bool:
             for key, value in (filters or {}).items():
-                if key == "__entity_type" and entity.type != value:
+                if key == "type" and entity.type != value:
                     return False
                 if key.startswith("metadata.") and (entity.metadata or {}).get(key.split(".", 1)[1]) != value:
                     return False
                 if (
-                    key not in {"__entity_type"}
+                    key not in {"type"}
                     and not key.startswith("metadata.")
                     and (entity.metadata or {}).get(key) != value
                 ):
@@ -144,7 +144,7 @@ class FakeKaizenClient:
         rows = self.search_entities(
             namespace_id=namespace_id,
             query=query,
-            filters={"__entity_type": "fact", "metadata.user_id": user_id},
+            filters={"type": "fact", "metadata.user_id": user_id},
             limit=limit,
         )
         categorized: dict[str, list[dict[str, str]]] = {}
@@ -207,7 +207,7 @@ class TestMemoryIntegration(unittest.IsolatedAsyncioTestCase):
         facts = memory.search_entities(
             namespace.id,
             query="Python",
-            filters={"__entity_type": "fact", "metadata.user_id": "test_user"},
+            filters={"type": "fact", "metadata.user_id": "test_user"},
             limit=10,
         )
         self.assertGreaterEqual(len(facts), 1)
