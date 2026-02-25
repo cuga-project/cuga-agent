@@ -8,22 +8,16 @@ This module manages agent configurations with version control:
 - Automatic database migration for backward compatibility
 
 Database Schema:
-    agent_configs table:
-        - agent_id (TEXT, PRIMARY KEY part 1): Base agent identifier
-        - version (TEXT, PRIMARY KEY part 2): 'draft' or version number
-        - config_json (TEXT): JSON configuration data
-        - created_at (TEXT): Creation timestamp
-        - updated_at (TEXT): Last update timestamp
-
-Uses SQLite; can be switched to Postgres/py-pglite later.
+    agent_configs table (in cuga.db local / Postgres prod):
+        - agent_id (TEXT), version (TEXT), config_json (TEXT), created_at, updated_at
 """
 
 import json
 import os
-import sqlite3
+from datetime import datetime
 from typing import Any
 
-from cuga.config import DBS_DIR
+from cuga.backend.storage import get_storage
 
 
 def _parse_agent_id(agent_id: str) -> str:
@@ -51,52 +45,28 @@ def _parse_agent_id(agent_id: str) -> str:
     return agent_id
 
 
-def _db_path() -> str:
-    os.makedirs(DBS_DIR, exist_ok=True)
-    return os.path.join(DBS_DIR, "manage_config.db")
+def _get_store():
+    return get_storage().get_relational_store("config")
 
 
-def _get_conn() -> sqlite3.Connection:
-    path = _db_path()
-    conn = sqlite3.connect(path)
-    conn.row_factory = sqlite3.Row
-
-    # Single unified table for all agent configurations
-    conn.execute(
-        """
-        CREATE TABLE IF NOT EXISTS agent_configs (
-            agent_id TEXT NOT NULL,
-            version TEXT NOT NULL DEFAULT 'draft',
-            config_json TEXT NOT NULL,
-            created_at TEXT NOT NULL DEFAULT (datetime('now')),
-            updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-            PRIMARY KEY (agent_id, version)
-        )
-        """
-    )
-
-    # Migration: Add missing columns if they don't exist
-    # Check if version column exists
-    cursor = conn.execute("PRAGMA table_info(agent_configs)")
-    columns = {row[1] for row in cursor.fetchall()}
-
-    if "version" not in columns:
-        # Old schema detected - need to migrate
-        # 1. Add version column with default 'draft'
-        conn.execute("ALTER TABLE agent_configs ADD COLUMN version TEXT NOT NULL DEFAULT 'draft'")
-
-    if "created_at" not in columns:
-        # 2. Add created_at column
-        conn.execute(
-            "ALTER TABLE agent_configs ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'))"
-        )
-
-    # If we added version column, we need to recreate the table with proper primary key
-    if "version" not in columns:
-        # Create new table with correct schema
-        conn.execute(
+def _ensure_schema(store) -> None:
+    if type(store).__name__ == "ProdRelationalStore":
+        store.execute(
             """
-            CREATE TABLE agent_configs_new (
+            CREATE TABLE IF NOT EXISTS agent_configs (
+                agent_id TEXT NOT NULL,
+                version TEXT NOT NULL DEFAULT 'draft',
+                config_json TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
+                updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
+                PRIMARY KEY (agent_id, version)
+            )
+            """
+        )
+    else:
+        store.execute(
+            """
+            CREATE TABLE IF NOT EXISTS agent_configs (
                 agent_id TEXT NOT NULL,
                 version TEXT NOT NULL DEFAULT 'draft',
                 config_json TEXT NOT NULL,
@@ -106,164 +76,189 @@ def _get_conn() -> sqlite3.Connection:
             )
             """
         )
-        # Copy data from old table (all records become 'draft' version)
-        conn.execute(
-            """
-            INSERT INTO agent_configs_new (agent_id, version, config_json, created_at, updated_at)
-            SELECT agent_id, 'draft', config_json, datetime('now'), updated_at
-            FROM agent_configs
-            """
-        )
-        # Drop old table and rename new one
-        conn.execute("DROP TABLE agent_configs")
-        conn.execute("ALTER TABLE agent_configs_new RENAME TO agent_configs")
-
-    conn.commit()
-    return conn
+    if type(store).__name__ == "LocalRelationalStore":
+        try:
+            rows = store.fetchall("PRAGMA table_info(agent_configs)", ())
+            columns = {row[1] for row in rows}
+        except Exception:
+            columns = set()
+        if "version" not in columns:
+            store.execute("ALTER TABLE agent_configs ADD COLUMN version TEXT NOT NULL DEFAULT 'draft'")
+        if "created_at" not in columns:
+            store.execute(
+                "ALTER TABLE agent_configs ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'))"
+            )
+        if "version" not in columns:
+            store.execute(
+                """
+                CREATE TABLE agent_configs_new (
+                    agent_id TEXT NOT NULL,
+                    version TEXT NOT NULL DEFAULT 'draft',
+                    config_json TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (agent_id, version)
+                )
+                """
+            )
+            store.execute(
+                """
+                INSERT INTO agent_configs_new (agent_id, version, config_json, created_at, updated_at)
+                SELECT agent_id, 'draft', config_json, datetime('now'), updated_at
+                FROM agent_configs
+                """
+            )
+            store.execute("DROP TABLE agent_configs")
+            store.execute("ALTER TABLE agent_configs_new RENAME TO agent_configs")
+    store.commit()
 
 
 def save_config(config: dict[str, Any], agent_id: str = "cuga-default") -> str:
     """Save a new published version of config for an agent. Returns version string."""
-    # Parse agent_id to remove version suffix if present
     base_agent_id = _parse_agent_id(agent_id)
-
-    conn = _get_conn()
+    store = _get_store()
     try:
-        # Get next version number for this agent
-        row = conn.execute(
+        _ensure_schema(store)
+        row = store.fetchone(
             """
             SELECT MAX(CAST(version AS INTEGER)) as max_ver
             FROM agent_configs
             WHERE agent_id = ? AND version != 'draft'
             """,
             (base_agent_id,),
-        ).fetchone()
-        next_version = (row["max_ver"] or 0) + 1 if row else 1
+        )
+        max_ver = row["max_ver"] if row and hasattr(row, "keys") else (row[0] if row else None)
+        next_version = (max_ver or 0) + 1
         version_str = str(next_version)
-
-        conn.execute(
+        store.execute(
             """
             INSERT INTO agent_configs (agent_id, version, config_json, updated_at)
             VALUES (?, ?, ?, datetime('now'))
             """,
             (base_agent_id, version_str, json.dumps(config)),
         )
-        conn.commit()
+        store.commit()
         return version_str
     finally:
-        conn.close()
+        store.close()
 
 
 def load_config(
     version: str | None = None, agent_id: str = "cuga-default"
 ) -> tuple[dict[str, Any] | None, str | None]:
     """Load a specific version or latest published version for an agent."""
-    # Parse agent_id to remove version suffix if present
     base_agent_id = _parse_agent_id(agent_id)
-
-    conn = _get_conn()
+    store = _get_store()
     try:
+        _ensure_schema(store)
         if version is not None and version != "draft":
-            row = conn.execute(
+            row = store.fetchone(
                 "SELECT config_json, version FROM agent_configs WHERE agent_id = ? AND version = ?",
                 (base_agent_id, version),
-            ).fetchone()
+            )
         else:
-            # Get latest published version (not draft)
-            row = conn.execute(
+            row = store.fetchone(
                 """
                 SELECT config_json, version FROM agent_configs
                 WHERE agent_id = ? AND version != 'draft'
                 ORDER BY CAST(version AS INTEGER) DESC LIMIT 1
                 """,
                 (base_agent_id,),
-            ).fetchone()
+            )
         if not row:
             return None, None
-        return json.loads(row["config_json"]), row["version"]
+        cj = row["config_json"] if hasattr(row, "keys") else row[0]
+        ver = row["version"] if hasattr(row, "keys") else row[1]
+        return json.loads(cj), ver
     finally:
-        conn.close()
+        store.close()
 
 
 def list_versions(agent_id: str = "cuga-default") -> list[dict[str, Any]]:
     """List all published versions for an agent (excludes draft)."""
-    # Parse agent_id to remove version suffix if present
     base_agent_id = _parse_agent_id(agent_id)
-
-    conn = _get_conn()
+    store = _get_store()
     try:
-        rows = conn.execute(
+        _ensure_schema(store)
+        rows = store.fetchall(
             """
             SELECT version, created_at FROM agent_configs
             WHERE agent_id = ? AND version != 'draft'
             ORDER BY CAST(version AS INTEGER) DESC LIMIT 100
             """,
             (base_agent_id,),
-        ).fetchall()
-        return [{"version": r["version"], "created_at": r["created_at"]} for r in rows]
+        )
+        return [
+            {
+                "version": r["version"] if hasattr(r, "keys") else r[0],
+                "created_at": r["created_at"] if hasattr(r, "keys") else r[1],
+            }
+            for r in rows
+        ]
     finally:
-        conn.close()
+        store.close()
 
 
 def get_latest_version(agent_id: str = "cuga-default") -> tuple[str | None, str | None]:
     """Return (version, created_at) for the latest published config, or (None, None)."""
-    # Parse agent_id to remove version suffix if present
     base_agent_id = _parse_agent_id(agent_id)
-
-    conn = _get_conn()
+    store = _get_store()
     try:
-        row = conn.execute(
+        _ensure_schema(store)
+        row = store.fetchone(
             """
             SELECT version, created_at FROM agent_configs
             WHERE agent_id = ? AND version != 'draft'
             ORDER BY CAST(version AS INTEGER) DESC LIMIT 1
             """,
             (base_agent_id,),
-        ).fetchone()
+        )
         if not row:
             return None, None
-        return row["version"], row["created_at"]
+        ver = row["version"] if hasattr(row, "keys") else row[0]
+        ca = row["created_at"] if hasattr(row, "keys") else row[1]
+        return ver, ca
     finally:
-        conn.close()
+        store.close()
 
 
 def save_draft(config: dict[str, Any], agent_id: str = "cuga-default") -> None:
     """Save draft config for an agent."""
-    # Parse agent_id to remove version suffix if present
     base_agent_id = _parse_agent_id(agent_id)
-
-    conn = _get_conn()
+    store = _get_store()
     try:
-        conn.execute(
+        _ensure_schema(store)
+        now = datetime.utcnow().isoformat()
+        store.execute(
             """
             INSERT INTO agent_configs (agent_id, version, config_json, updated_at)
-            VALUES (?, 'draft', ?, datetime('now'))
+            VALUES (?, 'draft', ?, ?)
             ON CONFLICT(agent_id, version)
-            DO UPDATE SET config_json = excluded.config_json, updated_at = datetime('now')
+            DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at
             """,
-            (base_agent_id, json.dumps(config)),
+            (base_agent_id, json.dumps(config), now),
         )
-        conn.commit()
+        store.commit()
     finally:
-        conn.close()
+        store.close()
 
 
 def load_draft(agent_id: str = "cuga-default") -> dict[str, Any] | None:
     """Load draft config for an agent."""
-    # Parse agent_id to remove version suffix if present
     base_agent_id = _parse_agent_id(agent_id)
-
-    conn = _get_conn()
+    store = _get_store()
     try:
-        row = conn.execute(
+        _ensure_schema(store)
+        row = store.fetchone(
             "SELECT config_json FROM agent_configs WHERE agent_id = ? AND version = 'draft'",
             (base_agent_id,),
-        ).fetchone()
+        )
         if not row:
             return None
-        return json.loads(row["config_json"])
+        cj = row["config_json"] if hasattr(row, "keys") else row[0]
+        return json.loads(cj)
     finally:
-        conn.close()
+        store.close()
 
 
 # ============================================================================
@@ -294,44 +289,46 @@ def get_agent_tools(agent_id: str, version: str = "draft") -> list[dict[str, Any
 
 def list_agents_with_configs() -> list[dict[str, Any]]:
     """List all unique agents that have configs (any version)."""
-    conn = _get_conn()
+    store = _get_store()
     try:
-        rows = conn.execute(
+        _ensure_schema(store)
+        rows = store.fetchall(
             """
             SELECT DISTINCT agent_id, MAX(updated_at) as last_updated
             FROM agent_configs
             GROUP BY agent_id
             ORDER BY agent_id
-            """
-        ).fetchall()
+            """,
+            (),
+        )
         return [
             {
-                "agent_id": row["agent_id"],
-                "last_updated": row["last_updated"],
+                "agent_id": r["agent_id"] if hasattr(r, "keys") else r[0],
+                "last_updated": r["last_updated"] if hasattr(r, "keys") else r[1],
             }
-            for row in rows
+            for r in rows
         ]
     finally:
-        conn.close()
+        store.close()
 
 
 def delete_all_configs(agent_id: str = "cuga-default") -> int:
     """Delete all configs for an agent (draft and all versions). Returns count deleted."""
     base_agent_id = _parse_agent_id(agent_id)
-    conn = _get_conn()
+    store = _get_store()
     try:
-        cur = conn.execute(
-            "DELETE FROM agent_configs WHERE agent_id = ?",
-            (base_agent_id,),
-        )
-        conn.commit()
-        return cur.rowcount
+        _ensure_schema(store)
+        store.execute("DELETE FROM agent_configs WHERE agent_id = ?", (base_agent_id,))
+        store.commit()
+        return getattr(store, "_last_rowcount", 0)
     finally:
-        conn.close()
+        store.close()
 
 
 def reset_config_db() -> None:
     """Reset config db by deleting the database file. Next access will recreate it."""
-    path = _db_path()
+    from cuga.config import DBS_DIR
+
+    path = os.path.join(DBS_DIR, "cuga.db")
     if os.path.exists(path):
         os.remove(path)

@@ -139,6 +139,9 @@ validators = [
     Validator("features.memory_provider", default="mem0"),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),
+    Validator("storage.mode", default="local"),
+    Validator("storage.local_db_path", default=""),
+    Validator("storage.postgres_url", default=""),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

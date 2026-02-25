@@ -22,13 +22,15 @@ vendor
 logs/
 .milvus*
 .bob
+test_workspace/
 *.logs
 
 # Test-related temporary files and folders
 .cuga_*
 .cuga
 .cuga_test_*
-milvus_policies_test_*.db
+policy_db_test_*.db
+.policy_test_tmp_*
 dist_cuga
 agent-analytics
 trajectory

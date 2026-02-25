@@ -370,7 +370,7 @@ This guide helps users complete their purchase successfully.
         logger.warning("⚠️  No embedding function available")
         logger.info("   To enable embeddings:")
         logger.info("   - Set OPENAI_API_KEY environment variable, OR")
-        logger.info("   - Install 'pymilvus[model]' package")
+        logger.info("   - Install 'sentence-transformers' package")
 
     logger.info("=" * 80)
     logger.success("🎉 Integration test completed successfully!")

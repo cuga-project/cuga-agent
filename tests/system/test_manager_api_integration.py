@@ -467,7 +467,7 @@ class TestManagerAPIWorkflow:
         assert response.status_code == 200, f"Failed to publish: {response.text}"
         data = response.json()
         assert data["status"] == "success"
-        assert data["version"] == "1"  # First published version
+        assert data["version"] == "2"  # Manager startup creates v1 via setup_demo_manage_config
         assert data["agent_id"] == TEST_AGENT_ID
 
         logger.info(f"✅ Draft published as version {data['version']}")
@@ -683,24 +683,24 @@ class TestManagerAPIWorkflow:
 
         assert response.status_code == 200
         data = response.json()
-        assert data["version"] == "2"
+        assert data["version"] == "3"  # v1 from manager startup, v2 from test_04, v3 from this publish
 
-        # Verify we can get both versions
-        v1_response = http_client.get(
-            f"{MANAGE_API_URL}/config",
-            params={"agent_id": TEST_AGENT_ID, "version": "1"},
-        )
-        assert v1_response.status_code == 200
-        v1_data = v1_response.json()
-        assert v1_data["config"]["llm"]["temperature"] == 0.1
-
+        # Verify we can get both versions (v2 from test_04 has temp 0.1, v3 has temp 0.5)
         v2_response = http_client.get(
             f"{MANAGE_API_URL}/config",
             params={"agent_id": TEST_AGENT_ID, "version": "2"},
         )
         assert v2_response.status_code == 200
         v2_data = v2_response.json()
-        assert v2_data["config"]["llm"]["temperature"] == 0.5
+        assert v2_data["config"]["llm"]["temperature"] == 0.1
+
+        v3_response = http_client.get(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": TEST_AGENT_ID, "version": "3"},
+        )
+        assert v3_response.status_code == 200
+        v3_data = v3_response.json()
+        assert v3_data["config"]["llm"]["temperature"] == 0.5
 
         logger.info("✅ Multiple versions working correctly")
 

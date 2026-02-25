@@ -453,19 +453,23 @@ async def lifespan(app: FastAPI):
         policy_config = getattr(settings, "policy", None)
         base_name = policy_config.collection_name if policy_config else "cuga_policies"
         draft_collection = f"{base_name}_draft"
+        from cuga.backend.storage.embedding import get_embedding_config
+
+        emb_cfg = get_embedding_config()
         draft_storage = PolicyStorage(
             collection_name=draft_collection,
-            host=getattr(policy_config, "milvus_host", "localhost") if policy_config else "localhost",
-            port=getattr(policy_config, "milvus_port", "19530") if policy_config else "19530",
-            milvus_uri=getattr(policy_config, "milvus_uri", None) if policy_config else None,
-            embedding_provider=os.getenv("POLICY_EMBEDDING_PROVIDER")
-            or getattr(policy_config, "embedding_provider", "auto")
-            if policy_config
-            else "auto",
-            embedding_model=os.getenv("POLICY_EMBEDDING_MODEL")
-            or getattr(policy_config, "embedding_model", None)
-            if policy_config
-            else None,
+            embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+            or os.getenv("POLICY_EMBEDDING_PROVIDER")
+            or emb_cfg["provider"],
+            embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+            or os.getenv("POLICY_EMBEDDING_MODEL")
+            or emb_cfg["model"],
+            embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+            or os.getenv("POLICY_EMBEDDING_BASE_URL")
+            or emb_cfg["base_url"],
+            embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+            or os.getenv("POLICY_EMBEDDING_API_KEY")
+            or emb_cfg["api_key"],
         )
         await draft_storage.initialize_async()
         draft_app_state.policy_system = PolicyConfigurable(storage=draft_storage)
@@ -1648,12 +1652,7 @@ async def get_policies_config(request: Request):
                 policy_config = getattr(settings, "policy", None)
                 base_name = policy_config.collection_name if policy_config else "cuga_policies"
                 draft_collection = f"{base_name}_draft"
-                storage = PolicyStorage(
-                    collection_name=draft_collection,
-                    host=getattr(policy_config, "milvus_host", "localhost") if policy_config else "localhost",
-                    port=getattr(policy_config, "milvus_port", "19530") if policy_config else "19530",
-                    milvus_uri=getattr(policy_config, "milvus_uri", None) if policy_config else None,
-                )
+                storage = PolicyStorage(collection_name=draft_collection)
                 await storage.initialize_async()
                 logger.info(f"Created draft storage for GET (collection: {draft_collection})")
         elif app_state.policy_system and app_state.policy_system.storage:
@@ -1662,16 +1661,7 @@ async def get_policies_config(request: Request):
         else:
             need_disconnect = True
             collection_name = settings.policy.collection_name
-            milvus_host = settings.policy.milvus_host
-            milvus_port = settings.policy.milvus_port
-            milvus_uri = settings.policy.milvus_uri
-
-            storage = PolicyStorage(
-                collection_name=collection_name,
-                host=milvus_host,
-                port=milvus_port,
-                milvus_uri=milvus_uri,
-            )
+            storage = PolicyStorage(collection_name=collection_name)
             await storage.initialize_async()
             logger.info(f"Created new storage instance for GET (collection: {collection_name})")
 
@@ -1765,19 +1755,23 @@ async def save_policies_config(request: Request):
                 policy_config = getattr(settings, "policy", None)
                 base_name = policy_config.collection_name if policy_config else "cuga_policies"
                 draft_collection = f"{base_name}_draft"
+                from cuga.backend.storage.embedding import get_embedding_config
+
+                emb_cfg = get_embedding_config()
                 storage = PolicyStorage(
                     collection_name=draft_collection,
-                    host=getattr(policy_config, "milvus_host", "localhost") if policy_config else "localhost",
-                    port=getattr(policy_config, "milvus_port", "19530") if policy_config else "19530",
-                    milvus_uri=getattr(policy_config, "milvus_uri", None) if policy_config else None,
-                    embedding_provider=os.getenv("POLICY_EMBEDDING_PROVIDER")
-                    or getattr(policy_config, "embedding_provider", "auto")
-                    if policy_config
-                    else "auto",
-                    embedding_model=os.getenv("POLICY_EMBEDDING_MODEL")
-                    or getattr(policy_config, "embedding_model", None)
-                    if policy_config
-                    else None,
+                    embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+                    or os.getenv("POLICY_EMBEDDING_PROVIDER")
+                    or emb_cfg["provider"],
+                    embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+                    or os.getenv("POLICY_EMBEDDING_MODEL")
+                    or emb_cfg["model"],
+                    embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+                    or os.getenv("POLICY_EMBEDDING_BASE_URL")
+                    or emb_cfg["base_url"],
+                    embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+                    or os.getenv("POLICY_EMBEDDING_API_KEY")
+                    or emb_cfg["api_key"],
                 )
                 await storage.initialize_async()
                 logger.info(f"Created draft storage for POST (collection: {draft_collection})")
@@ -1795,25 +1789,28 @@ async def save_policies_config(request: Request):
                 logger.info("Using existing policy system storage")
             else:
                 collection_name = settings.policy.collection_name
-                milvus_host = settings.policy.milvus_host
-                milvus_port = settings.policy.milvus_port
-                milvus_uri = settings.policy.milvus_uri
-                embedding_provider = (
-                    os.getenv("POLICY_EMBEDDING_PROVIDER") or settings.policy.embedding_provider
-                )
-                embedding_model = os.getenv("POLICY_EMBEDDING_MODEL") or settings.policy.embedding_model
+                from cuga.backend.storage.embedding import get_embedding_config
+
+                emb_cfg = get_embedding_config()
                 storage = PolicyStorage(
                     collection_name=collection_name,
-                    host=milvus_host,
-                    port=milvus_port,
-                    milvus_uri=milvus_uri,
-                    embedding_provider=embedding_provider,
-                    embedding_model=embedding_model,
+                    embedding_provider=os.getenv("STORAGE_EMBEDDING_PROVIDER")
+                    or os.getenv("POLICY_EMBEDDING_PROVIDER")
+                    or emb_cfg["provider"],
+                    embedding_model=os.getenv("STORAGE_EMBEDDING_MODEL")
+                    or os.getenv("POLICY_EMBEDDING_MODEL")
+                    or emb_cfg["model"],
+                    embedding_base_url=os.getenv("STORAGE_EMBEDDING_BASE_URL")
+                    or os.getenv("POLICY_EMBEDDING_BASE_URL")
+                    or emb_cfg["base_url"],
+                    embedding_api_key=os.getenv("STORAGE_EMBEDDING_API_KEY")
+                    or os.getenv("POLICY_EMBEDDING_API_KEY")
+                    or emb_cfg["api_key"],
                 )
                 await storage.initialize_async()
                 logger.info(
                     f"Created new storage instance from settings (collection: {collection_name}, "
-                    f"embedding: {embedding_provider}, dim: {storage.embedding_dim})"
+                    f"embedding: {storage.embedding_provider}, dim: {storage.embedding_dim})"
                 )
 
             await apply_policies_data_to_storage(

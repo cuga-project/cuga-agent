@@ -24,9 +24,14 @@ app = typer.Typer(help="CUGA Policy Management CLI")
 console = Console()
 
 
-async def get_storage(host: str = "localhost", port: str = "19530") -> PolicyStorage:
+async def get_storage(policy_db_path: Optional[str] = None) -> PolicyStorage:
     """Get initialized PolicyStorage instance."""
-    storage = PolicyStorage(host=host, port=port)
+    backend = None
+    if policy_db_path:
+        from cuga.backend.storage.policy import LocalPolicyStore
+
+        backend = LocalPolicyStore(policy_db_path, "cuga_policies")
+    storage = PolicyStorage(collection_name="cuga_policies", backend=backend)
     await storage.initialize_async()
     return storage
 
@@ -35,13 +40,14 @@ async def get_storage(host: str = "localhost", port: str = "19530") -> PolicySto
 def list_policies(
     policy_type: Optional[str] = typer.Option(None, help="Filter by policy type"),
     enabled_only: bool = typer.Option(True, help="Show only enabled policies"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(
+        None, help="Path to policy DB file (default: storage config)"
+    ),
 ):
     """List all policies in storage."""
 
     async def _list():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             ptype = PolicyType(policy_type) if policy_type else None
             policies = await storage.list_policies(policy_type=ptype, enabled_only=enabled_only)
@@ -82,13 +88,12 @@ def list_policies(
 @app.command()
 def show_policy(
     policy_id: str = typer.Argument(..., help="Policy ID to show"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Show detailed information about a policy."""
 
     async def _show():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             policy = await storage.get_policy(policy_id)
 
@@ -118,13 +123,12 @@ def show_policy(
 def delete_policy(
     policy_id: str = typer.Argument(..., help="Policy ID to delete"),
     confirm: bool = typer.Option(False, "--yes", "-y", help="Skip confirmation"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Delete a policy from storage."""
 
     async def _delete():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             policy = await storage.get_policy(policy_id)
 
@@ -154,13 +158,12 @@ def delete_policy(
 @app.command()
 def load_from_file(
     file_path: str = typer.Argument(..., help="Path to JSON file with policies"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Load policies from a JSON file."""
 
     async def _load():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             count = await load_policies_from_json(file_path, storage)
             console.print(f"[green]✓ Loaded {count} policies from {file_path}[/green]")
@@ -174,13 +177,12 @@ def load_from_file(
 def export_to_file(
     output_path: str = typer.Argument(..., help="Path to output JSON file"),
     policy_type: Optional[str] = typer.Option(None, help="Filter by policy type"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Export policies to a JSON file."""
 
     async def _export():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             ptype = PolicyType(policy_type) if policy_type else None
             success = await export_policies_to_json(storage, output_path, ptype)
@@ -199,13 +201,12 @@ def export_to_file(
 @app.command()
 def backup(
     backup_dir: str = typer.Argument(..., help="Directory to store backups"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Backup all policies to a directory."""
 
     async def _backup():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             success = await backup_policies(storage, backup_dir)
 
@@ -223,13 +224,12 @@ def backup(
 @app.command()
 def restore(
     backup_dir: str = typer.Argument(..., help="Directory containing backups"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Restore policies from a backup directory."""
 
     async def _restore():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             count = await restore_policies(storage, backup_dir)
             console.print(f"[green]✓ Restored {count} policies from {backup_dir}[/green]")
@@ -241,13 +241,12 @@ def restore(
 
 @app.command()
 def stats(
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Show policy statistics."""
 
     async def _stats():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             statistics = await get_policy_statistics(storage)
 
@@ -273,13 +272,12 @@ def test_match(
     thread_id: Optional[str] = typer.Option(None, help="Thread ID"),
     apps: Optional[str] = typer.Option(None, help="Comma-separated list of active apps"),
     tools: Optional[str] = typer.Option(None, help="Comma-separated list of available tools"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Test policy matching with given context."""
 
     async def _test():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             agent = PolicyAgent(storage=storage)
 
@@ -325,13 +323,12 @@ def test_match(
 @app.command()
 def validate(
     policy_id: str = typer.Argument(..., help="Policy ID to validate"),
-    host: str = typer.Option("localhost", help="Milvus host"),
-    port: str = typer.Option("19530", help="Milvus port"),
+    policy_db_path: Optional[str] = typer.Option(None, help="Path to policy DB file"),
 ):
     """Validate a policy."""
 
     async def _validate():
-        storage = await get_storage(host, port)
+        storage = await get_storage(policy_db_path)
         try:
             policy = await storage.get_policy(policy_id)
 

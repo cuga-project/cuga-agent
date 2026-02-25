@@ -2,35 +2,33 @@
 Test script for conversation history persistence
 """
 
-import sys
 import os
+import sys
+import tempfile
 from pathlib import Path
 
-# Add src to path
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from cuga.backend.server.conversation_history import (
-    ConversationHistoryDB,
-)
+from cuga.backend.server.conversation_history import ConversationHistoryDB
 from cuga.backend.cuga_graph.state.agent_state import default_state
 from langchain_core.messages import HumanMessage, AIMessage
-import tempfile
 
 
 def test_conversation_history_db():
     """Test the conversation history database functionality"""
-
-    # Create a temporary database for testing
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
-
     try:
+        from cuga.backend.storage import facade as storage_facade
+
+        original_local_db_path = storage_facade._local_db_path
+        storage_facade._local_db_path = lambda: db_path
+
         print("=" * 80)
         print("Testing Conversation History Database")
         print("=" * 80)
 
-        # Initialize database
-        db = ConversationHistoryDB(db_path=db_path)
+        db = ConversationHistoryDB()
         print(f"✓ Database initialized at: {db_path}")
 
         # Test data
@@ -135,7 +133,7 @@ def test_conversation_history_db():
 
         # Test 8: Delete entire thread
         print("\n8. Testing delete_thread...")
-        success = db.delete_thread(thread_id, user_id)
+        success = db.delete_thread(agent_id, thread_id, user_id)
         assert success
         history = db.get_thread_history(thread_id, user_id)
         assert len(history) == 0
@@ -146,7 +144,7 @@ def test_conversation_history_db():
         print("=" * 80)
 
     finally:
-        # Cleanup
+        storage_facade._local_db_path = original_local_db_path
         if os.path.exists(db_path):
             os.remove(db_path)
             print(f"\nCleaned up test database: {db_path}")
@@ -154,16 +152,19 @@ def test_conversation_history_db():
 
 def test_with_agent_state():
     """Test saving conversation from AgentState"""
-
     with tempfile.NamedTemporaryFile(suffix=".db", delete=False) as tmp:
         db_path = tmp.name
-
     try:
+        from cuga.backend.storage import facade as storage_facade
+
+        original_local_db_path = storage_facade._local_db_path
+        storage_facade._local_db_path = lambda: db_path
+
         print("\n" + "=" * 80)
         print("Testing with AgentState")
         print("=" * 80)
 
-        db = ConversationHistoryDB(db_path=db_path)
+        db = ConversationHistoryDB()
 
         # Create a mock AgentState with messages
         state = default_state(page=None, observation=None, goal="Test goal")
@@ -213,6 +214,7 @@ def test_with_agent_state():
         print("=" * 80)
 
     finally:
+        storage_facade._local_db_path = original_local_db_path
         if os.path.exists(db_path):
             os.remove(db_path)
 

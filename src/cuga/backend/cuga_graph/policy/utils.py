@@ -20,33 +20,10 @@ from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 
 
 def get_embedding_dimension(provider: str = "auto", model_name: Optional[str] = None) -> int:
-    """
-    Get the embedding dimension for a given provider/model.
+    """Get embedding dimension for provider/model. Delegates to storage.embedding."""
+    from cuga.backend.storage.embedding import get_embedding_dimension as _get_dim
 
-    Args:
-        provider: "openai", "local", or "auto"
-        model_name: Optional model name (for local provider)
-
-    Returns:
-        Embedding dimension
-    """
-    if provider == "openai":
-        return 1536  # text-embedding-3-small
-
-    elif provider == "local":
-        # Common dimensions for PyMilvus sentence-transformers models
-        model_dims = {
-            "all-MiniLM-L6-v2": 384,
-            "all-mpnet-base-v2": 768,
-            "BAAI/bge-small-en-v1.5": 384,
-            "BAAI/bge-base-en-v1.5": 768,
-            "BAAI/bge-large-en-v1.5": 1024,
-        }
-        return model_dims.get(model_name or "all-MiniLM-L6-v2", 384)
-
-    else:  # auto
-        # Default to OpenAI dimensions
-        return 1536
+    return _get_dim(provider, model_name, None, None)
 
 
 def parse_markdown_to_steps(markdown_content: str) -> List[Dict[str, Any]]:
