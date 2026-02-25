@@ -188,4 +188,4 @@ async def test_e2e_playbook_guides_execution_in_cuga_lite():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()

@@ -182,7 +182,7 @@ Make it professional and easy to read.""",
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio
@@ -333,7 +333,7 @@ async def test_e2e_output_formatter_with_natural_language_trigger():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio
@@ -471,7 +471,7 @@ async def test_e2e_output_formatter_no_trigger():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio
@@ -653,7 +653,7 @@ async def test_e2e_output_formatter_json_schema_structured_output():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio
@@ -871,7 +871,7 @@ Do not include any of the original response content. Only return the warning mes
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio

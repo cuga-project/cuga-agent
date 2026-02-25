@@ -38,13 +38,14 @@ async def test_agent_registry_loading_from_db(mock_db_tools):
     """
     agent_id = "cuga-draft"
 
-    # Mock the database call (get_tools_from_agent_config lives in managed_mcp)
+    # Mock the database call (get_tools_from_agent_config lives in managed_mcp, now async)
     with patch(
         'cuga.backend.server.managed_mcp.get_tools_from_agent_config',
+        new_callable=AsyncMock,
         return_value=mock_db_tools,
     ):
         # Load services from database
-        services = load_service_configs_from_db(agent_id)
+        services = await load_service_configs_from_db(agent_id)
 
         # Verify service was loaded
         assert len(services) == 1

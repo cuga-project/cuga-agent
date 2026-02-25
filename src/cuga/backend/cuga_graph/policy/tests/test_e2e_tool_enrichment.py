@@ -267,7 +267,7 @@ When the user mentions 'bbobo', 'special', 'magic', or 'secret', prioritize usin
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio
@@ -569,4 +569,4 @@ For document-related requests, use the file reading tool (`read_file`).
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()

@@ -37,6 +37,7 @@ dependencies = [
     "a2a-sdk[http-server]>=0.3.22",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.2",
+    "asyncpg>=0.30",
 ]
 
 [project.optional-dependencies]

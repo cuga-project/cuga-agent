@@ -1,5 +1,6 @@
 """Helper to setup agent config (draft + v1) for demo and demo_crm with manage experience."""
 
+import asyncio
 import os
 from typing import Any
 
@@ -131,5 +132,9 @@ def setup_demo_manage_config(
         else DEFAULT_HOMESCREEN
     )
     config = {"tools": tools, "policies": [], "homescreen": homescreen}
-    save_draft(config, agent_id)
-    save_config(config, agent_id)
+
+    async def _setup():
+        await save_draft(config, agent_id)
+        await save_config(config, agent_id)
+
+    asyncio.run(_setup())

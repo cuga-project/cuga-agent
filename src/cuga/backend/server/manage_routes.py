@@ -136,14 +136,14 @@ async def get_manage_config(
             agent_id = "cuga-default"
         use_draft = str(draft or "").lower() in ("1", "true", "yes", "on")
         if use_draft:
-            config = load_draft(agent_id)
+            config = await load_draft(agent_id)
             if config is None:
-                config, _ = load_config(None, agent_id)
+                config, _ = await load_config(None, agent_id)
             if config is None:
                 return JSONResponse({"config": {}, "version": "draft", "agent_id": agent_id})
             _merge_mcp_yaml_into_config(config)
             return JSONResponse({"config": config, "version": "draft", "agent_id": agent_id})
-        config, ver = load_config(version, agent_id)
+        config, ver = await load_config(version, agent_id)
         if config is None:
             return JSONResponse({"config": {}, "agent_id": agent_id})
         _merge_mcp_yaml_into_config(config)
@@ -181,7 +181,7 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             logger.info(f"[DEBUG] Policies in config: {config['policies']}")
 
         logger.info(f"[DEBUG] Calling save_draft with agent_id={agent_id}, type={type(agent_id)}")
-        save_draft(config or {}, agent_id)
+        await save_draft(config or {}, agent_id)
         logger.info("[DEBUG] save_draft completed successfully")
 
         # This is the /manage/draft endpoint, so always use draft state
@@ -373,7 +373,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 
         data = await request.json()
         config = data.get("config", data)
-        ver = save_config(config or {}, agent_id)
+        ver = await save_config(config or {}, agent_id)
         app_state.config_version = ver
         app_state.tools_include_version = int(ver) if ver else 0
         await _apply_published_config(app_state, config or {})
@@ -418,7 +418,7 @@ async def get_manage_config_history():
     try:
         from cuga.backend.server.config_store import list_versions
 
-        versions = list_versions()
+        versions = await list_versions()
         return JSONResponse({"versions": versions})
     except Exception as e:
         logger.error(f"Failed to list config history: {e}")
@@ -435,7 +435,7 @@ async def delete_manage_config(agent_id: Optional[str] = None, reset_db: Optiona
             reset_config_db()
             return JSONResponse({"status": "success", "message": "Config db reset"})
         aid = agent_id or "cuga-default"
-        count = delete_all_configs(aid)
+        count = await delete_all_configs(aid)
         return JSONResponse({"status": "success", "deleted": count, "agent_id": aid})
     except Exception as e:
         logger.error(f"Failed to delete manage config: {e}")

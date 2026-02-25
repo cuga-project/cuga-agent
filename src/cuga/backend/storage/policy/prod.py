@@ -19,16 +19,16 @@ class ProdPolicyStore:
             self._embedding_dim = embedding_dim
         return self._store
 
-    def connect(self) -> None:
+    async def connect(self) -> None:
         pass
 
-    def disconnect(self) -> None:
+    async def disconnect(self) -> None:
         pass
 
-    def create_schema(self, embedding_dim: int) -> None:
+    async def create_schema(self, embedding_dim: int) -> None:
         self._get_store(embedding_dim)
 
-    def add_policy(self, policy_data: Dict[str, Any]) -> None:
+    async def add_policy(self, policy_data: Dict[str, Any]) -> None:
         embedding = policy_data.get("embedding")
         if embedding is None:
             raise ValueError("policy_data must contain 'embedding'")
@@ -41,23 +41,24 @@ class ProdPolicyStore:
             "policy_json": policy_data.get("policy_json", "{}"),
         }
         dim = len(embedding)
-        self._get_store(dim).add(policy_id, embedding, meta)
+        store = self._get_store(dim)
+        await store.add(policy_id, embedding, meta)
 
-    def update_policy(self, policy_data: Dict[str, Any]) -> None:
-        self.delete_policy(policy_data["id"])
-        self.add_policy(policy_data)
+    async def update_policy(self, policy_data: Dict[str, Any]) -> None:
+        await self.delete_policy(policy_data["id"])
+        await self.add_policy(policy_data)
 
-    def delete_policy(self, policy_id: str) -> None:
+    async def delete_policy(self, policy_id: str) -> None:
         if self._store is None:
             return
-        self._store.delete(policy_id)
+        await self._store.delete(policy_id)
 
-    def get_policy(self, policy_id: str) -> Optional[Dict[str, Any]]:
+    async def get_policy(self, policy_id: str) -> Optional[Dict[str, Any]]:
         if self._store is None:
             return None
-        return self._store.get(policy_id)
+        return await self._store.get(policy_id)
 
-    def search_policies(
+    async def search_policies(
         self,
         query_embedding: List[float],
         limit: int,
@@ -71,9 +72,9 @@ class ProdPolicyStore:
             filt["policy_type"] = policy_type.value if hasattr(policy_type, "value") else str(policy_type)
         if enabled_only:
             filt["enabled"] = True
-        return self._store.search(query_embedding, limit, filt)
+        return await self._store.search(query_embedding, limit, filt)
 
-    def list_policies(
+    async def list_policies(
         self,
         policy_type: Optional[PolicyType],
         enabled_only: bool,
@@ -86,12 +87,13 @@ class ProdPolicyStore:
             filt["policy_type"] = policy_type.value if hasattr(policy_type, "value") else str(policy_type)
         if enabled_only:
             filt["enabled"] = True
-        return self._store.list(filt, limit)
+        return await self._store.list(filt, limit)
 
-    def count_policies(self, policy_type: Optional[PolicyType]) -> int:
+    async def count_policies(self, policy_type: Optional[PolicyType]) -> int:
         if self._store is None:
             return 0
         filt: Dict[str, Any] = {}
         if policy_type is not None:
             filt["policy_type"] = policy_type.value if hasattr(policy_type, "value") else str(policy_type)
-        return len(self._store.list(filt, 10000))
+        rows = await self._store.list(filt, 10000)
+        return len(rows)

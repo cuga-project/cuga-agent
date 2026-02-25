@@ -200,7 +200,7 @@ async def test_tool_approval_approve_flow():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio
@@ -316,7 +316,7 @@ async def test_tool_approval_deny_flow():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio
@@ -503,4 +503,4 @@ async def test_tool_approval_modification_flow():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()

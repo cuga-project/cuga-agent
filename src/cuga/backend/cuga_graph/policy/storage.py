@@ -52,16 +52,16 @@ class PolicyStorage:
         self._embedding_function: Optional[Callable] = None
         self._embedding_initialized = False
 
-    def connect(self) -> None:
-        self._backend.connect()
+    async def connect(self) -> None:
+        await self._backend.connect()
         self._connected = True
 
-    def disconnect(self) -> None:
-        self._backend.disconnect()
+    async def disconnect(self) -> None:
+        await self._backend.disconnect()
         self._connected = False
 
-    def _create_collection(self) -> None:
-        self._backend.create_schema(self.embedding_dim)
+    async def _create_collection(self) -> None:
+        await self._backend.create_schema(self.embedding_dim)
 
     @property
     def embedding_provider(self) -> str:
@@ -110,13 +110,13 @@ class PolicyStorage:
     async def initialize_async(self):
         """Initialize the storage asynchronously (includes embedding function initialization)."""
         if not self._connected:
-            self.connect()
+            await self.connect()
 
         # Initialize embedding function first (needed to determine correct dimension)
         await self._initialize_embedding_function()
 
         # Create collection with correct dimension
-        self._create_collection()
+        await self._create_collection()
 
     async def _generate_policy_embedding(self, policy: Policy) -> List[float]:
         """
@@ -357,7 +357,7 @@ class PolicyStorage:
         policy_data["embedding"] = embedding
 
         try:
-            self._backend.add_policy(policy_data)
+            await self._backend.add_policy(policy_data)
             logger.info(f"Added policy {policy.id} to storage")
         except Exception as e:
             logger.error(f"Failed to add policy {policy.id}: {e}")
@@ -371,7 +371,7 @@ class PolicyStorage:
         if not self._connected:
             await self.initialize_async()
         try:
-            self._backend.delete_policy(policy_id)
+            await self._backend.delete_policy(policy_id)
             logger.info(f"Deleted policy {policy_id}")
         except Exception as e:
             logger.error(f"Failed to delete policy {policy_id}: {e}")
@@ -381,7 +381,7 @@ class PolicyStorage:
         if not self._connected:
             await self.initialize_async()
         try:
-            data = self._backend.get_policy(policy_id)
+            data = await self._backend.get_policy(policy_id)
             if data:
                 return self._dict_to_policy(data)
             return None
@@ -399,7 +399,7 @@ class PolicyStorage:
         if not self._connected:
             await self.initialize_async()
         try:
-            rows = self._backend.search_policies(query_embedding, limit, policy_type, enabled_only)
+            rows = await self._backend.search_policies(query_embedding, limit, policy_type, enabled_only)
             policies = []
             for row in rows:
                 _, policy_json, distance = row[0], row[1], row[2]
@@ -421,7 +421,7 @@ class PolicyStorage:
         if not self._connected:
             await self.initialize_async()
         try:
-            rows = self._backend.list_policies(policy_type, enabled_only, limit)
+            rows = await self._backend.list_policies(policy_type, enabled_only, limit)
             policies = [self._dict_to_policy(r) for r in rows]
             policies.sort(key=lambda x: x.priority, reverse=True)
             return policies
@@ -433,7 +433,7 @@ class PolicyStorage:
         if not self._connected:
             await self.initialize_async()
         try:
-            return self._backend.count_policies(policy_type)
+            return await self._backend.count_policies(policy_type)
         except Exception as e:
             logger.error(f"Failed to count policies: {e}")
             return 0

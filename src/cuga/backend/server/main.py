@@ -325,7 +325,7 @@ async def lifespan(app: FastAPI):
             from cuga.backend.server.managed_mcp import get_managed_mcp_path, write_managed_mcp_yaml
             from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
 
-            config, version = load_config(None)
+            config, version = await load_config(None)
             app_state.config_version = version
             app_state.agent_id = "cuga-default"
             tools_list = (config or {}).get("tools") or []
@@ -419,9 +419,9 @@ async def lifespan(app: FastAPI):
     )
     await app_state.agent.build_graph()
 
-    draft_config = load_draft()
+    draft_config = await load_draft()
     if draft_config is None:
-        draft_config, _ = load_config(None) or (None, None)
+        draft_config, _ = await load_config(None) or (None, None)
     if draft_config:
         tools_list = (draft_config or {}).get("tools") or []
         draft_app_state.tools_include_by_app = {
@@ -632,41 +632,20 @@ async def setup_page_info(state: AgentState, env: ExtensionEnv | BrowserEnvGymAs
 async def _save_conversation_and_events_async(
     agent_id: str, thread_id: str, user_id: str, state: AgentState, events: List[Dict[str, Any]]
 ):
-    """
-    Asynchronously save conversation history and stream events in a single batch operation.
-    This runs in the background without blocking the event stream.
-    """
+    """Save conversation history and stream events asynchronously."""
     try:
-        # Run the blocking DB operations in a thread pool
-        loop = asyncio.get_event_loop()
-        await loop.run_in_executor(
-            None, _save_conversation_and_events_sync, agent_id, thread_id, user_id, state, events
-        )
+        await save_conversation_to_db(agent_id, thread_id, state, user_id)
+        if events:
+            conversation_db = get_conversation_db()
+            await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
+            logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
     except Exception as e:
         logger.error(f"Error in async save: {e}")
 
 
-def _save_conversation_and_events_sync(
-    agent_id: str, thread_id: str, user_id: str, state: AgentState, events: List[Dict[str, Any]]
+async def save_conversation_to_db(
+    agent_id: str, thread_id: str, state: AgentState, user_id: str = DEFAULT_USER_ID
 ):
-    """
-    Synchronous helper to save both conversation and events.
-    Called from async function via thread pool.
-    """
-    try:
-        # Save conversation history
-        save_conversation_to_db(agent_id, thread_id, state, user_id)
-
-        # Batch save all stream events
-        if events:
-            conversation_db = get_conversation_db()
-            conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
-            logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
-    except Exception as e:
-        logger.error(f"Error in sync save: {e}")
-
-
-def save_conversation_to_db(agent_id: str, thread_id: str, state: AgentState, user_id: str = DEFAULT_USER_ID):
     """
     Save conversation history to database.
 
@@ -683,7 +662,7 @@ def save_conversation_to_db(agent_id: str, thread_id: str, state: AgentState, us
         conversation_db = get_conversation_db()
 
         # Get the latest version and increment
-        latest_version = conversation_db.get_latest_version(agent_id, thread_id, user_id)
+        latest_version = await conversation_db.get_latest_version(agent_id, thread_id, user_id)
         new_version = latest_version + 1
 
         # Debug logging
@@ -762,7 +741,7 @@ def save_conversation_to_db(agent_id: str, thread_id: str, state: AgentState, us
         # Save to database
         if messages:
             logger.info(f"Total messages to save: {len(messages)}")
-            success = conversation_db.save_conversation(
+            success = await conversation_db.save_conversation(
                 agent_id=agent_id,
                 thread_id=thread_id,
                 version=new_version,
@@ -1049,7 +1028,7 @@ async def event_stream(
                             # Batch save all events and conversation history synchronously (for debugging)
                             # Skip saving if disable_history is True
                             if not disable_history:
-                                _save_conversation_and_events_sync(
+                                await _save_conversation_and_events_async(
                                     agent_id=app_state.agent_id,
                                     thread_id=thread_id,
                                     user_id=DEFAULT_USER_ID,
@@ -1395,7 +1374,7 @@ async def get_conversation_threads(agent_id: str = "cuga-default", user_id: str 
     """
     try:
         conversation_db = get_conversation_db()
-        threads = conversation_db.get_all_threads_for_agent(agent_id, user_id)
+        threads = await conversation_db.get_all_threads_for_agent(agent_id, user_id)
         return JSONResponse({"threads": threads})
     except Exception as e:
         logger.error(f"Failed to get conversation threads: {e}")
@@ -1414,13 +1393,13 @@ async def get_conversation_messages(
         conversation_db = get_conversation_db()
 
         # Get the latest version for this thread
-        latest_version = conversation_db.get_latest_version(agent_id, thread_id, user_id)
+        latest_version = await conversation_db.get_latest_version(agent_id, thread_id, user_id)
 
         if latest_version == 0:
             return JSONResponse({"messages": []})
 
         # Get the conversation
-        conversation = conversation_db.get_conversation(agent_id, thread_id, latest_version, user_id)
+        conversation = await conversation_db.get_conversation(agent_id, thread_id, latest_version, user_id)
 
         if not conversation:
             return JSONResponse({"messages": []})
@@ -1445,7 +1424,7 @@ async def get_conversation_stream_events(
         conversation_db = get_conversation_db()
 
         # Get the stream events
-        stream_history = conversation_db.get_stream_events(agent_id, thread_id, user_id)
+        stream_history = await conversation_db.get_stream_events(agent_id, thread_id, user_id)
 
         if not stream_history:
             return JSONResponse({"events": []})
@@ -1593,7 +1572,7 @@ async def delete_conversation(
     """Endpoint to delete a conversation thread and its stream events."""
     try:
         conversation_db = get_conversation_db()
-        success = conversation_db.delete_thread(agent_id, conversation_id, user_id)
+        success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
 
         if success:
             logger.info(f"Deleted conversation and stream events: {conversation_id}")
@@ -1710,7 +1689,7 @@ async def get_policies_config(request: Request):
             policies.append(frontend_policy)
 
         if need_disconnect:
-            storage.disconnect()
+            await storage.disconnect()
 
         logger.info(f"Loaded {len(policies)} policies from storage")
         return JSONResponse({"enablePolicies": settings.policy.enabled, "policies": policies})
@@ -1782,7 +1761,7 @@ async def save_policies_config(request: Request):
                 filesystem_sync=None,
             )
             if draft_need_disconnect:
-                storage.disconnect()
+                await storage.disconnect()
         else:
             if app_state.policy_system and app_state.policy_system.storage:
                 storage = app_state.policy_system.storage
@@ -1821,7 +1800,7 @@ async def save_policies_config(request: Request):
             )
 
             if not (app_state.policy_system and app_state.policy_system.storage):
-                storage.disconnect()
+                await storage.disconnect()
                 logger.info("Storage disconnected")
             else:
                 logger.info("Keeping policy system storage connected")
@@ -2249,7 +2228,7 @@ async def get_agents_list():
         try:
             from cuga.backend.server.config_store import get_latest_version
 
-            latest_version, latest_version_created_at = get_latest_version()
+            latest_version, latest_version_created_at = await get_latest_version()
         except Exception:
             pass
         agents = [

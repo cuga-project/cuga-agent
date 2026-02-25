@@ -131,7 +131,7 @@ def load_service_configs(yaml_path: str) -> Dict[str, ServiceConfig]:
         raise ValueError(f"Invalid YAML configuration in '{yaml_path}': {e}")
 
 
-def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[str, ServiceConfig]:
+async def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[str, ServiceConfig]:
     """
     Load service configurations from database for a specific agent.
     Reads from agent_configs table which stores the full config including tools.
@@ -145,7 +145,7 @@ def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[str, Se
     try:
         from cuga.backend.server.managed_mcp import get_tools_from_agent_config
 
-        tools = get_tools_from_agent_config(agent_id)
+        tools = await get_tools_from_agent_config(agent_id)
         services = {}
 
         for tool in tools:

@@ -277,7 +277,7 @@ async def example_standalone_usage():
         print(explanation)
 
     # Clean up
-    storage.disconnect()
+    await storage.disconnect()
 
 
 if __name__ == "__main__":

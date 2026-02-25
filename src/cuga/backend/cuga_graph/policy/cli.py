@@ -80,7 +80,7 @@ def list_policies(
             console.print(f"\n[bold]Total: {len(policies)} policies[/bold]")
 
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_list())
 
@@ -114,7 +114,7 @@ def show_policy(
                     console.print(f"  - {error}")
 
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_show())
 
@@ -150,7 +150,7 @@ def delete_policy(
             console.print(f"[green]✓ Deleted policy: {policy_id}[/green]")
 
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_delete())
 
@@ -168,7 +168,7 @@ def load_from_file(
             count = await load_policies_from_json(file_path, storage)
             console.print(f"[green]✓ Loaded {count} policies from {file_path}[/green]")
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_load())
 
@@ -193,7 +193,7 @@ def export_to_file(
                 console.print("[red]✗ Failed to export policies[/red]")
 
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_export())
 
@@ -216,7 +216,7 @@ def backup(
                 console.print("[red]✗ Failed to backup policies[/red]")
 
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_backup())
 
@@ -234,7 +234,7 @@ def restore(
             count = await restore_policies(storage, backup_dir)
             console.print(f"[green]✓ Restored {count} policies from {backup_dir}[/green]")
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_restore())
 
@@ -261,7 +261,7 @@ def stats(
                 console.print(f"  {ptype}: {count}")
 
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_stats())
 
@@ -315,7 +315,7 @@ def test_match(
                 console.print(f"Reasoning: {match.reasoning}")
 
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_test())
 
@@ -348,7 +348,7 @@ def validate(
                     console.print(f"  - {error}")
 
         finally:
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(_validate())
 

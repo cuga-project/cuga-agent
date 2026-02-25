@@ -1,3 +1,4 @@
+import asyncio
 import sqlite3
 from typing import Any, Dict, List, Optional
 
@@ -26,7 +27,7 @@ class LocalEmbeddingStore:
 
     def _get_conn(self) -> sqlite3.Connection:
         if self._conn is None:
-            self._conn = sqlite3.connect(self._db_path)
+            self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
             self._conn.enable_load_extension(True)
             try:
                 import sqlite_vec
@@ -59,7 +60,10 @@ class LocalEmbeddingStore:
     def _aux_keys(self) -> List[str]:
         return list(self._schema.auxiliary_columns.keys())
 
-    def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
+    async def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
+        await asyncio.to_thread(self._add_sync, id, embedding, metadata)
+
+    def _add_sync(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
         conn = self._get_conn()
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
@@ -78,7 +82,12 @@ class LocalEmbeddingStore:
         )
         conn.commit()
 
-    def search(
+    async def search(
+        self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
+    ) -> List[tuple]:
+        return await asyncio.to_thread(self._search_sync, query_embedding, limit, metadata_filter)
+
+    def _search_sync(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
     ) -> List[tuple]:
         conn = self._get_conn()
@@ -97,7 +106,10 @@ class LocalEmbeddingStore:
         cur = conn.execute(sql, params)
         return [tuple(row) for row in cur.fetchall()]
 
-    def get(self, id: str) -> Optional[Dict[str, Any]]:
+    async def get(self, id: str) -> Optional[Dict[str, Any]]:
+        return await asyncio.to_thread(self._get_sync, id)
+
+    def _get_sync(self, id: str) -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
@@ -111,13 +123,19 @@ class LocalEmbeddingStore:
             return None
         return dict(zip(cols, row))
 
-    def delete(self, id: str) -> None:
+    async def delete(self, id: str) -> None:
+        await asyncio.to_thread(self._delete_sync, id)
+
+    def _delete_sync(self, id: str) -> None:
         conn = self._get_conn()
         id_col = self._schema.id_column
         conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = ?", (id,))
         conn.commit()
 
-    def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+    async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+        return await asyncio.to_thread(self._list_sync, metadata_filter, limit)
+
+    def _list_sync(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
         conn = self._get_conn()
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()

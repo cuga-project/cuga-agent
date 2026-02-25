@@ -137,4 +137,4 @@ async def test_e2e_intent_guard_blocks_in_cuga_lite():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()

@@ -3,6 +3,10 @@ from typing import Any, Dict, List, Optional
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 
 
+def _placeholders(n: int) -> str:
+    return ", ".join(f"${i + 1}" for i in range(n))
+
+
 def _pg_type(s: str) -> str:
     m = {"text": "TEXT", "integer": "BIGINT", "boolean": "BOOLEAN", "float": "DOUBLE PRECISION"}
     return m.get(s.lower(), "TEXT")
@@ -13,23 +17,31 @@ class ProdEmbeddingStore:
         self._postgres_url = postgres_url
         self._collection_name = collection_name
         self._schema = schema
-        self._conn: Any = None
+        self._pool: Any = None
 
-    def _get_conn(self):
-        if self._conn is None or getattr(self._conn, "closed", True):
-            import psycopg
+    async def _get_pool(self):
+        if self._pool is None:
+            import asyncpg
 
             try:
-                from pgvector.psycopg import register_vector
+                from pgvector.asyncpg import register_vector
             except ImportError:
                 raise ImportError("pgvector is required for storage.mode=prod. Install with: uv add pgvector")
-            self._conn = psycopg.connect(self._postgres_url)
-            self._conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
-            register_vector(self._conn)
-            self._ensure_table()
-        return self._conn
 
-    def _ensure_table(self) -> None:
+            self._pool = await asyncpg.create_pool(
+                self._postgres_url,
+                min_size=1,
+                max_size=4,
+                command_timeout=60,
+            )
+            async with self._pool.acquire() as conn:
+                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                await register_vector(conn)
+            await self._ensure_table()
+        return self._pool
+
+    async def _ensure_table(self) -> None:
+        pool = self._pool
         dim = self._schema.embedding_dim
         id_col = self._schema.id_column
         meta = self._schema.metadata_columns
@@ -42,13 +54,12 @@ class ProdEmbeddingStore:
         for k, v in aux.items():
             parts.append(f"{k} {_pg_type(v)}")
         create_sql = f"CREATE TABLE IF NOT EXISTS {self._collection_name} ({', '.join(parts)})"
-        with self._conn.cursor() as cur:
-            cur.execute(create_sql)
-            cur.execute(
+        async with pool.acquire() as conn:
+            await conn.execute(create_sql)
+            await conn.execute(
                 f"CREATE INDEX IF NOT EXISTS idx_{self._collection_name}_embedding "
                 f"ON {self._collection_name} USING hnsw (embedding vector_cosine_ops)"
             )
-        self._conn.commit()
 
     def _meta_keys(self) -> List[str]:
         return list(self._schema.metadata_columns.keys())
@@ -56,72 +67,70 @@ class ProdEmbeddingStore:
     def _aux_keys(self) -> List[str]:
         return list(self._schema.auxiliary_columns.keys())
 
-    def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
-        conn = self._get_conn()
+    async def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
+        pool = await self._get_pool()
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
         full = {self._schema.id_column: id, **metadata}
         cols = ["embedding"] + meta_keys + aux_keys
-        placeholders = ", ".join("%s" for _ in cols)
+        n = len(cols)
+        ph = _placeholders(n)
         col_list = ", ".join(cols)
         values = [embedding] + [full.get(k) for k in meta_keys] + [full.get(k) for k in aux_keys]
-        with conn.cursor() as cur:
-            cur.execute(
-                f"INSERT INTO {self._collection_name} ({col_list}) VALUES ({placeholders}) "
-                f"ON CONFLICT ({self._schema.id_column}) DO UPDATE SET "
-                + ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys),
-                values,
+        upsert = ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys)
+        async with pool.acquire() as conn:
+            await conn.execute(
+                f"INSERT INTO {self._collection_name} ({col_list}) VALUES ({ph}) "
+                f"ON CONFLICT ({self._schema.id_column}) DO UPDATE SET {upsert}",
+                *values,
             )
-        conn.commit()
 
-    def search(
+    async def search(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
     ) -> List[tuple]:
-        conn = self._get_conn()
+        pool = await self._get_pool()
         id_col = self._schema.id_column
         aux_keys = self._aux_keys()
         where_parts: List[str] = []
         params: List[Any] = []
         for k, v in (metadata_filter or {}).items():
             if k in self._schema.metadata_columns:
-                where_parts.append(f"{k} = %s")
                 params.append(v)
+                where_parts.append(f"{k} = ${len(params)}")
         params.extend([query_embedding, query_embedding, limit])
         where = (" WHERE " + " AND ".join(where_parts) + " ") if where_parts else " "
+        i1, i2, i3 = len(params) - 2, len(params) - 1, len(params)
         sql = (
-            f"SELECT {id_col}, {', '.join(aux_keys)}, (embedding <=> %s) AS distance "
-            f"FROM {self._collection_name}{where}ORDER BY embedding <=> %s LIMIT %s"
+            f"SELECT {id_col}, {', '.join(aux_keys)}, (embedding <=> ${i1}) AS distance "
+            f"FROM {self._collection_name}{where}ORDER BY embedding <=> ${i2} LIMIT ${i3}"
         )
-        with conn.cursor() as cur:
-            cur.execute(sql, params)
-            rows = cur.fetchall()
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(sql, *params)
         return [tuple(r) for r in rows]
 
-    def get(self, id: str) -> Optional[Dict[str, Any]]:
-        conn = self._get_conn()
+    async def get(self, id: str) -> Optional[Dict[str, Any]]:
+        pool = await self._get_pool()
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
         cols = [id_col] + meta_keys + aux_keys
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = %s",
-                (id,),
+        async with pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = $1",
+                id,
             )
-            row = cur.fetchone()
         if not row:
             return None
-        return dict(zip(cols, row))
+        return dict(row)
 
-    def delete(self, id: str) -> None:
-        conn = self._get_conn()
+    async def delete(self, id: str) -> None:
+        pool = await self._get_pool()
         id_col = self._schema.id_column
-        with conn.cursor() as cur:
-            cur.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = %s", (id,))
-        conn.commit()
+        async with pool.acquire() as conn:
+            await conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = $1", id)
 
-    def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
-        conn = self._get_conn()
+    async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
+        pool = await self._get_pool()
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
         cols = [self._schema.id_column] + meta_keys + aux_keys
@@ -129,14 +138,13 @@ class ProdEmbeddingStore:
         params: List[Any] = []
         for k, v in (metadata_filter or {}).items():
             if k in self._schema.metadata_columns:
-                where_parts.append(f"{k} = %s")
                 params.append(v)
+                where_parts.append(f"{k} = ${len(params)}")
         params.append(limit)
         where = (" WHERE " + " AND ".join(where_parts) + " ") if where_parts else " "
-        with conn.cursor() as cur:
-            cur.execute(
-                f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}LIMIT %s",
-                params,
+        async with pool.acquire() as conn:
+            rows = await conn.fetch(
+                f"SELECT {', '.join(cols)} FROM {self._collection_name}{where}LIMIT ${len(params)}",
+                *params,
             )
-            rows = cur.fetchall()
-        return [dict(zip(cols, row)) for row in rows]
+        return [dict(row) for row in rows]

@@ -60,7 +60,7 @@ async def storage():
     for policy in existing_policies:
         await storage.delete_policy(policy.id)
 
-    storage.disconnect()
+    await storage.disconnect()
 
 
 @pytest_asyncio.fixture
@@ -412,6 +412,6 @@ if __name__ == "__main__":
             existing_policies = await storage.list_policies(enabled_only=False)
             for policy in existing_policies:
                 await storage.delete_policy(policy.id)
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(main())

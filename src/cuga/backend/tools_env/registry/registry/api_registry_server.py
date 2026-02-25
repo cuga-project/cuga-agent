@@ -97,7 +97,7 @@ async def _get_or_create_registry(
     logger.info(f"Creating new registry for agent: {agent_id}")
 
     if database_mode:
-        services = load_service_configs_from_db(agent_id)
+        services = await load_service_configs_from_db(agent_id)
 
         # If empty and retry requested, wait and try once more (handles race conditions)
         if not services and retry_on_empty:
@@ -105,7 +105,7 @@ async def _get_or_create_registry(
             import asyncio
 
             await asyncio.sleep(1)
-            services = load_service_configs_from_db(agent_id)
+            services = await load_service_configs_from_db(agent_id)
             if services:
                 logger.info(f"Retry successful - loaded {len(services)} services for agent {agent_id}")
             else:

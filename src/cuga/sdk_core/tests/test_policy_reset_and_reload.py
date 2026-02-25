@@ -148,7 +148,7 @@ async def test_policy_reset_and_reload_on_agent_rerun(unique_test_db):
     # Cleanup agent1
     if hasattr(agent1, '_policy_system') and agent1._policy_system:
         if hasattr(agent1._policy_system, 'storage') and agent1._policy_system.storage:
-            agent1._policy_system.storage.disconnect()
+            await agent1._policy_system.storage.disconnect()
 
     # Create policy system with same database for agent2
     policy_system2 = PolicyConfigurable()
@@ -204,7 +204,7 @@ async def test_policy_reset_and_reload_on_agent_rerun(unique_test_db):
     # Cleanup agent2
     if hasattr(agent2, '_policy_system') and agent2._policy_system:
         if hasattr(agent2._policy_system, 'storage') and agent2._policy_system.storage:
-            agent2._policy_system.storage.disconnect()
+            await agent2._policy_system.storage.disconnect()
 
     logger.info("\n" + "=" * 80)
     logger.info("✅ Test passed: Policy reset and reload works correctly")
@@ -291,7 +291,7 @@ async def test_policy_reset_with_auto_load(unique_test_db):
         # Cleanup agent1
         if hasattr(agent1, '_policy_system') and agent1._policy_system:
             if hasattr(agent1._policy_system, 'storage') and agent1._policy_system.storage:
-                agent1._policy_system.storage.disconnect()
+                await agent1._policy_system.storage.disconnect()
 
         # Step 2: Update policy file
         policy1_updated = (
@@ -341,7 +341,7 @@ async def test_policy_reset_with_auto_load(unique_test_db):
         # Cleanup agent2
         if hasattr(agent2, '_policy_system') and agent2._policy_system:
             if hasattr(agent2._policy_system, 'storage') and agent2._policy_system.storage:
-                agent2._policy_system.storage.disconnect()
+                await agent2._policy_system.storage.disconnect()
 
         logger.info("\n" + "=" * 80)
         logger.info("✅ Test passed: Policy reset with auto load works correctly")
@@ -398,7 +398,7 @@ async def test_policy_reload_without_reset(unique_test_db):
     # Cleanup agent1
     if hasattr(agent1, '_policy_system') and agent1._policy_system:
         if hasattr(agent1._policy_system, 'storage') and agent1._policy_system.storage:
-            agent1._policy_system.storage.disconnect()
+            await agent1._policy_system.storage.disconnect()
 
     # Create policy system with same database for agent2
     policy_system2 = PolicyConfigurable()
@@ -423,7 +423,7 @@ async def test_policy_reload_without_reset(unique_test_db):
     # Cleanup agent2
     if hasattr(agent2, '_policy_system') and agent2._policy_system:
         if hasattr(agent2._policy_system, 'storage') and agent2._policy_system.storage:
-            agent2._policy_system.storage.disconnect()
+            await agent2._policy_system.storage.disconnect()
 
     # Create policy system with same database for agent3
     policy_system3 = PolicyConfigurable()
@@ -447,7 +447,7 @@ async def test_policy_reload_without_reset(unique_test_db):
     # Cleanup agent3
     if hasattr(agent3, '_policy_system') and agent3._policy_system:
         if hasattr(agent3._policy_system, 'storage') and agent3._policy_system.storage:
-            agent3._policy_system.storage.disconnect()
+            await agent3._policy_system.storage.disconnect()
 
     logger.info("\n" + "=" * 80)
     logger.info("✅ Test passed: Policy persistence and reset behavior works correctly")
