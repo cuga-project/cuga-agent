@@ -1,0 +1,27 @@
+image:
+  repository: pgvector/pgvector
+  tag: pg16
+  pullPolicy: IfNotPresent
+
+auth:
+  database: cuga
+  username: cuga
+  password: ""
+  existingSecret: ""
+  existingSecretKey: password
+
+service:
+  type: ClusterIP
+  port: 5432
+
+persistence:
+  enabled: true
+  size: 10Gi
+
+resources: {}
+  # requests:
+  #   memory: 256Mi
+  #   cpu: 100m
+  # limits:
+  #   memory: 512Mi
+  #   cpu: 500m

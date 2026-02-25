@@ -1,0 +1,13 @@
+PostgreSQL with pgvector has been deployed.
+
+1. Get the application URL:
+   export POSTGRES_HOST={{ include "postgres-pgvector.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local
+   export POSTGRES_PORT={{ .Values.service.port }}
+
+2. Connection string for Cuga (storage.mode=prod):
+   postgresql://{{ .Values.auth.username }}:<password>@{{ include "postgres-pgvector.fullname" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.service.port }}/{{ .Values.auth.database }}
+
+   Set storage.postgres_url in Cuga settings or env STORAGE_POSTGRES_URL.
+
+3. Verify pgvector extension:
+   kubectl exec -it {{ include "postgres-pgvector.fullname" . }}-<pod-id> -- psql -U {{ .Values.auth.username }} -d {{ .Values.auth.database }} -c '\dx'
