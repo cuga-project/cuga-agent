@@ -2,6 +2,8 @@ from typing import Any, Dict, List, Optional
 
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 
+SCOPE_COLS = ["tenant_id", "instance_id"]
+
 
 def _placeholders(n: int) -> str:
     return ", ".join(f"${i + 1}" for i in range(n))
@@ -40,19 +42,25 @@ class ProdEmbeddingStore:
             await self._ensure_table()
         return self._pool
 
+    def _scope_cols(self) -> List[str]:
+        meta = self._schema.metadata_columns
+        return [c for c in SCOPE_COLS if c in meta]
+
     async def _ensure_table(self) -> None:
         pool = self._pool
-        dim = self._schema.embedding_dim
         id_col = self._schema.id_column
         meta = self._schema.metadata_columns
         aux = self._schema.auxiliary_columns
-        parts = [f"{id_col} TEXT PRIMARY KEY", f"embedding vector({dim})"]
+        scope = self._scope_cols()
+        pk = f"({', '.join(scope + [id_col])})" if scope else f"({id_col})"
+        parts = [f"{id_col} TEXT", f"embedding vector({self._schema.embedding_dim})"]
         for k, v in meta.items():
             if k == id_col:
                 continue
             parts.append(f"{k} {_pg_type(v)}")
         for k, v in aux.items():
             parts.append(f"{k} {_pg_type(v)}")
+        parts.append(f"PRIMARY KEY {pk}")
         create_sql = f"CREATE TABLE IF NOT EXISTS {self._collection_name} ({', '.join(parts)})"
         async with pool.acquire() as conn:
             await conn.execute(create_sql)
@@ -78,10 +86,12 @@ class ProdEmbeddingStore:
         col_list = ", ".join(cols)
         values = [embedding] + [full.get(k) for k in meta_keys] + [full.get(k) for k in aux_keys]
         upsert = ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys)
+        scope = self._scope_cols()
+        conflict_cols = f"{', '.join(scope + [self._schema.id_column])}" if scope else self._schema.id_column
         async with pool.acquire() as conn:
             await conn.execute(
                 f"INSERT INTO {self._collection_name} ({col_list}) VALUES ({ph}) "
-                f"ON CONFLICT ({self._schema.id_column}) DO UPDATE SET {upsert}",
+                f"ON CONFLICT ({conflict_cols}) DO UPDATE SET {upsert}",
                 *values,
             )
 
@@ -108,26 +118,58 @@ class ProdEmbeddingStore:
             rows = await conn.fetch(sql, *params)
         return [tuple(r) for r in rows]
 
-    async def get(self, id: str) -> Optional[Dict[str, Any]]:
+    async def get(self, id: str, tenant_id: str = "", instance_id: str = "") -> Optional[Dict[str, Any]]:
         pool = await self._get_pool()
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
         cols = [id_col] + meta_keys + aux_keys
-        async with pool.acquire() as conn:
-            row = await conn.fetchrow(
-                f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = $1",
-                id,
-            )
+        scope = self._scope_cols()
+        scope_vals = []
+        if "tenant_id" in scope:
+            scope_vals.append(tenant_id)
+        if "instance_id" in scope:
+            scope_vals.append(instance_id)
+        if scope and any(scope_vals):
+            where_parts = [f"{c} = ${i + 1}" for i, c in enumerate(scope)]
+            where_parts.append(f"{id_col} = ${len(scope) + 1}")
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {' AND '.join(where_parts)}",
+                    *scope_vals,
+                    id,
+                )
+        else:
+            async with pool.acquire() as conn:
+                row = await conn.fetchrow(
+                    f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = $1",
+                    id,
+                )
         if not row:
             return None
         return dict(row)
 
-    async def delete(self, id: str) -> None:
+    async def delete(self, id: str, tenant_id: str = "", instance_id: str = "") -> None:
         pool = await self._get_pool()
         id_col = self._schema.id_column
-        async with pool.acquire() as conn:
-            await conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = $1", id)
+        scope = self._scope_cols()
+        scope_vals = []
+        if "tenant_id" in scope:
+            scope_vals.append(tenant_id)
+        if "instance_id" in scope:
+            scope_vals.append(instance_id)
+        if scope and any(scope_vals):
+            where_parts = [f"{c} = ${i + 1}" for i, c in enumerate(scope)]
+            where_parts.append(f"{id_col} = ${len(scope) + 1}")
+            async with pool.acquire() as conn:
+                await conn.execute(
+                    f"DELETE FROM {self._collection_name} WHERE {' AND '.join(where_parts)}",
+                    *scope_vals,
+                    id,
+                )
+        else:
+            async with pool.acquire() as conn:
+                await conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = $1", id)
 
     async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:
         pool = await self._get_pool()

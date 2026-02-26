@@ -81,3 +81,22 @@
   background: rgba(var(--cds-background-rgb, 255, 255, 255), 0.9) !important;
   border-color: var(--cds-interactive) !important;
 }
+
+.cds--modal-content.chat-landing-file-modal-body,
+.cds--modal-scroll-content.chat-landing-file-modal-body {
+  padding: 1rem !important;
+}
+
+.chat-landing-file-modal-markdown {
+  font-size: 12px;
+  margin-bottom: 2rem;
+}
+
+.chat-landing-file-modal-markdown cds-aichat-markdown,
+.chat-landing-file-modal-markdown .cds-aichat-markdown {
+  font-size: inherit;
+}
+
+.chat-landing-file-modal-footer {
+  margin-top: 1rem;
+}

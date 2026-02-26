@@ -18,6 +18,7 @@ from datetime import datetime
 from typing import Any
 
 from cuga.backend.storage import get_storage
+from cuga.config import get_service_instance_id, get_tenant_id
 
 
 def _parse_agent_id(agent_id: str) -> str:
@@ -30,92 +31,75 @@ def _get_store():
     return get_storage().get_relational_store("config")
 
 
+def _instance_id() -> str:
+    return get_service_instance_id()
+
+
+def _tenant_id() -> str:
+    return get_tenant_id()
+
+
 async def _ensure_schema(store) -> None:
-    if type(store).__name__ == "ProdRelationalStore":
+    is_prod = type(store).__name__ == "ProdRelationalStore"
+    ts_default = "CURRENT_TIMESTAMP::text" if is_prod else "datetime('now')"
+    if is_prod:
         await store.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS agent_configs (
+                tenant_id TEXT NOT NULL DEFAULT '',
+                instance_id TEXT NOT NULL DEFAULT '',
                 agent_id TEXT NOT NULL,
                 version TEXT NOT NULL DEFAULT 'draft',
                 config_json TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
-                updated_at TEXT NOT NULL DEFAULT (CURRENT_TIMESTAMP::text),
-                PRIMARY KEY (agent_id, version)
+                created_at TEXT NOT NULL DEFAULT ({ts_default}),
+                updated_at TEXT NOT NULL DEFAULT ({ts_default}),
+                PRIMARY KEY (tenant_id, instance_id, agent_id, version)
             )
             """
         )
     else:
         await store.execute(
-            """
+            f"""
             CREATE TABLE IF NOT EXISTS agent_configs (
+                tenant_id TEXT NOT NULL DEFAULT '',
+                instance_id TEXT NOT NULL DEFAULT '',
                 agent_id TEXT NOT NULL,
                 version TEXT NOT NULL DEFAULT 'draft',
                 config_json TEXT NOT NULL,
-                created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (agent_id, version)
+                created_at TEXT NOT NULL DEFAULT ({ts_default}),
+                updated_at TEXT NOT NULL DEFAULT ({ts_default}),
+                PRIMARY KEY (tenant_id, instance_id, agent_id, version)
             )
             """
         )
-    if type(store).__name__ == "LocalRelationalStore":
-        try:
-            rows = await store.fetchall("PRAGMA table_info(agent_configs)", ())
-            columns = {r["name"] for r in rows}
-        except Exception:
-            columns = set()
-        if "version" not in columns:
-            await store.execute("ALTER TABLE agent_configs ADD COLUMN version TEXT NOT NULL DEFAULT 'draft'")
-        if "created_at" not in columns:
-            await store.execute(
-                "ALTER TABLE agent_configs ADD COLUMN created_at TEXT NOT NULL DEFAULT (datetime('now'))"
-            )
-        if "version" not in columns:
-            await store.execute(
-                """
-                CREATE TABLE agent_configs_new (
-                    agent_id TEXT NOT NULL,
-                    version TEXT NOT NULL DEFAULT 'draft',
-                    config_json TEXT NOT NULL,
-                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    PRIMARY KEY (agent_id, version)
-                )
-                """
-            )
-            await store.execute(
-                """
-                INSERT INTO agent_configs_new (agent_id, version, config_json, created_at, updated_at)
-                SELECT agent_id, 'draft', config_json, datetime('now'), updated_at
-                FROM agent_configs
-                """
-            )
-            await store.execute("DROP TABLE agent_configs")
-            await store.execute("ALTER TABLE agent_configs_new RENAME TO agent_configs")
     await store.commit()
 
 
 async def save_config(config: dict[str, Any], agent_id: str = "cuga-default") -> str:
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
     try:
         await _ensure_schema(store)
         row = await store.fetchone(
             """
             SELECT MAX(CAST(version AS INTEGER)) as max_ver
             FROM agent_configs
-            WHERE agent_id = ? AND version != 'draft'
+            WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version != 'draft'
             """,
-            (base_agent_id,),
+            (tenant_id, inst_id, base_agent_id),
         )
         max_ver = row["max_ver"] if row and "max_ver" in row else (row[0] if row else None)
         next_version = (max_ver or 0) + 1
         version_str = str(next_version)
+        ts = "CURRENT_TIMESTAMP" if type(store).__name__ == "ProdRelationalStore" else "datetime('now')"
         await store.execute(
-            """
-            INSERT INTO agent_configs (agent_id, version, config_json, updated_at)
-            VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+            f"""
+            INSERT INTO agent_configs (tenant_id, instance_id, agent_id, version, config_json, updated_at)
+            VALUES (?, ?, ?, ?, ?, {ts})
             """,
-            (base_agent_id, version_str, json.dumps(config)),
+            (tenant_id, inst_id, base_agent_id, version_str, json.dumps(config)),
         )
         await store.commit()
         return version_str
@@ -128,21 +112,23 @@ async def load_config(
 ) -> tuple[dict[str, Any] | None, str | None]:
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
     try:
         await _ensure_schema(store)
         if version is not None and version != "draft":
             row = await store.fetchone(
-                "SELECT config_json, version FROM agent_configs WHERE agent_id = ? AND version = ?",
-                (base_agent_id, version),
+                "SELECT config_json, version FROM agent_configs WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version = ?",
+                (tenant_id, inst_id, base_agent_id, version),
             )
         else:
             row = await store.fetchone(
                 """
                 SELECT config_json, version FROM agent_configs
-                WHERE agent_id = ? AND version != 'draft'
+                WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version != 'draft'
                 ORDER BY CAST(version AS INTEGER) DESC LIMIT 1
                 """,
-                (base_agent_id,),
+                (tenant_id, inst_id, base_agent_id),
             )
         if not row:
             return None, None
@@ -156,15 +142,17 @@ async def load_config(
 async def list_versions(agent_id: str = "cuga-default") -> list[dict[str, Any]]:
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
     try:
         await _ensure_schema(store)
         rows = await store.fetchall(
             """
             SELECT version, created_at FROM agent_configs
-            WHERE agent_id = ? AND version != 'draft'
+            WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version != 'draft'
             ORDER BY CAST(version AS INTEGER) DESC LIMIT 100
             """,
-            (base_agent_id,),
+            (tenant_id, inst_id, base_agent_id),
         )
         return [
             {
@@ -180,15 +168,17 @@ async def list_versions(agent_id: str = "cuga-default") -> list[dict[str, Any]]:
 async def get_latest_version(agent_id: str = "cuga-default") -> tuple[str | None, str | None]:
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
     try:
         await _ensure_schema(store)
         row = await store.fetchone(
             """
             SELECT version, created_at FROM agent_configs
-            WHERE agent_id = ? AND version != 'draft'
+            WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version != 'draft'
             ORDER BY CAST(version AS INTEGER) DESC LIMIT 1
             """,
-            (base_agent_id,),
+            (tenant_id, inst_id, base_agent_id),
         )
         if not row:
             return None, None
@@ -202,17 +192,19 @@ async def get_latest_version(agent_id: str = "cuga-default") -> tuple[str | None
 async def save_draft(config: dict[str, Any], agent_id: str = "cuga-default") -> None:
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
     try:
         await _ensure_schema(store)
         now = datetime.utcnow().isoformat()
         await store.execute(
             """
-            INSERT INTO agent_configs (agent_id, version, config_json, updated_at)
-            VALUES (?, 'draft', ?, ?)
-            ON CONFLICT(agent_id, version)
+            INSERT INTO agent_configs (tenant_id, instance_id, agent_id, version, config_json, updated_at)
+            VALUES (?, ?, ?, 'draft', ?, ?)
+            ON CONFLICT(tenant_id, instance_id, agent_id, version)
             DO UPDATE SET config_json = excluded.config_json, updated_at = excluded.updated_at
             """,
-            (base_agent_id, json.dumps(config), now),
+            (tenant_id, inst_id, base_agent_id, json.dumps(config), now),
         )
         await store.commit()
     finally:
@@ -222,11 +214,13 @@ async def save_draft(config: dict[str, Any], agent_id: str = "cuga-default") -> 
 async def load_draft(agent_id: str = "cuga-default") -> dict[str, Any] | None:
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
     try:
         await _ensure_schema(store)
         row = await store.fetchone(
-            "SELECT config_json FROM agent_configs WHERE agent_id = ? AND version = 'draft'",
-            (base_agent_id,),
+            "SELECT config_json FROM agent_configs WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version = 'draft'",
+            (tenant_id, inst_id, base_agent_id),
         )
         if not row:
             return None
@@ -249,16 +243,19 @@ async def get_agent_tools(agent_id: str, version: str = "draft") -> list[dict[st
 
 async def list_agents_with_configs() -> list[dict[str, Any]]:
     store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
     try:
         await _ensure_schema(store)
         rows = await store.fetchall(
             """
             SELECT DISTINCT agent_id, MAX(updated_at) as last_updated
             FROM agent_configs
+            WHERE tenant_id = ? AND instance_id = ?
             GROUP BY agent_id
             ORDER BY agent_id
             """,
-            (),
+            (tenant_id, inst_id),
         )
         return [
             {
@@ -274,9 +271,14 @@ async def list_agents_with_configs() -> list[dict[str, Any]]:
 async def delete_all_configs(agent_id: str = "cuga-default") -> int:
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
     try:
         await _ensure_schema(store)
-        await store.execute("DELETE FROM agent_configs WHERE agent_id = ?", (base_agent_id,))
+        await store.execute(
+            "DELETE FROM agent_configs WHERE tenant_id = ? AND instance_id = ? AND agent_id = ?",
+            (tenant_id, inst_id, base_agent_id),
+        )
         await store.commit()
         return getattr(store, "_last_rowcount", 0)
     finally:

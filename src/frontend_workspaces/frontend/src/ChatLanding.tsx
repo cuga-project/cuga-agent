@@ -11,11 +11,15 @@ import {
   TabList,
   TabPanels,
   TabPanel,
-  InlineNotification,
+  ComposedModal,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
   SkeletonText,
   ToastNotification,
   Button,
 } from "@carbon/react";
+import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import {
   Add,
   TrashCan,
@@ -31,6 +35,7 @@ import {
   SidePanelClose,
   ChevronDown,
   ChevronUp,
+  Download,
 } from "@carbon/icons-react";
 import "./ChatLanding.css";
 
@@ -63,6 +68,13 @@ interface WorkspaceFolder {
   label: string;
   readOnly: boolean;
   children?: WorkspaceChild[];
+}
+
+interface FileNode {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  children?: FileNode[];
 }
 
 interface AgentConfig {
@@ -163,6 +175,8 @@ const truncateText = (text: string, maxLength: number = 100): string => {
   return text.substring(0, maxLength) + "...";
 };
 
+const TEXT_EXTENSIONS = [".txt", ".md", ".json", ".yaml", ".yml", ".log", ".csv", ".html", ".css", ".js", ".ts", ".py"];
+
 // ─── Inline style constants ───────────────────────────────────────────────────
 
 // Glass / frosted-transparent panel base — floats over the chat
@@ -218,6 +232,9 @@ export function ChatLanding() {
   const [configLoading, setConfigLoading] = useState(true);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
   const [expandedApps, setExpandedApps] = useState<Set<string>>(new Set());
+  const [workspaceTree, setWorkspaceTree] = useState<FileNode[]>([]);
+  const [workspaceTreeLoading, setWorkspaceTreeLoading] = useState(true);
+  const [fileModal, setFileModal] = useState<{ path: string; content: string; name: string } | null>(null);
 
   // ── Responsive: auto-collapse on small screens ──────────────────────────────
   useEffect(() => {
@@ -401,10 +418,78 @@ export function ChatLanding() {
     })();
   }, [addToast]);
 
-  const hasReadOnly = agentConfig.workspaceFolders.some((f) => f.readOnly);
+  const fetchWorkspaceTree = useCallback(async () => {
+    try {
+      const res = await fetch("/api/workspace/tree");
+      if (res.ok) {
+        const data = await res.json();
+        setWorkspaceTree(data.tree || []);
+      }
+    } catch (err) {
+      console.error("Error fetching workspace tree:", err);
+    } finally {
+      setWorkspaceTreeLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchWorkspaceTree();
+    const interval = setInterval(fetchWorkspaceTree, 2500);
+    return () => clearInterval(interval);
+  }, [fetchWorkspaceTree]);
+
   const totalTools = agentConfig.apps.reduce((s, a) => s + a.tools.length, 0);
 
-  // ── Toggle handlers passed to ConfigHeader ──────────────────────────────────
+  const handleFileClick = useCallback(async (node: FileNode) => {
+    if (node.type !== "file") return;
+    const isTextFile = TEXT_EXTENSIONS.some((ext) => node.name.toLowerCase().endsWith(ext));
+    if (!isTextFile) {
+      addToast("info", "Preview not available", "Only text and markdown files can be previewed.");
+      return;
+    }
+    try {
+      const res = await fetch(`/api/workspace/file?path=${encodeURIComponent(node.path)}`);
+      if (res.ok) {
+        const data = await res.json();
+        setFileModal({ path: node.path, content: data.content, name: node.name });
+      } else {
+        addToast("error", "Failed to load file", res.statusText);
+      }
+    } catch (err) {
+      addToast("error", "Error loading file", err instanceof Error ? err.message : "Unknown error");
+    }
+  }, [addToast]);
+
+  const renderFileNode = useCallback(
+    (node: FileNode) => (
+      <TreeNode
+        key={node.path}
+        id={node.path}
+        label={
+          <span
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: "0.5rem",
+              fontSize: "0.8125rem",
+              color: "var(--cds-text-primary)",
+              cursor: node.type === "file" ? "pointer" : "default",
+            }}
+            role={node.type === "file" ? "button" : undefined}
+            onClick={node.type === "file" ? (e) => { e.stopPropagation(); handleFileClick(node); } : undefined}
+          >
+            {node.name}
+          </span>
+        }
+        renderIcon={node.type === "directory" ? FolderOpen : DocumentBlank}
+        isExpanded={node.type === "directory"}
+      >
+        {node.type === "directory" && node.children?.map((child) => renderFileNode(child))}
+      </TreeNode>
+    ),
+    [handleFileClick],
+  );
+
   const handleToggleLeft = () => canShowLeft && setLeftOpen((v) => !v);
   const handleToggleWorkspace = () => canShowRight && setRightOpen((v) => !v);
 
@@ -622,7 +707,7 @@ export function ChatLanding() {
                   <Folder size={14} />
                   Workspace
                   <Tag type="blue" size="sm" style={{ marginLeft: "0.25rem" }}>
-                    {agentConfig.workspaceFolders.length}
+                    {workspaceTree.length}
                   </Tag>
                 </span>
               </Tab>
@@ -743,55 +828,27 @@ export function ChatLanding() {
 
               {/* ── Workspace tab ── */}
               <TabPanel style={{ padding: "1rem", overflowY: "scroll" }}>
-                {hasReadOnly && (
-                  <InlineNotification
-                    kind="info"
-                    subtitle="Some folders are read-only."
-                    hideCloseButton
-                    style={{ marginBottom: "0.75rem", maxWidth: "100%" }}
-                  />
+                {workspaceTreeLoading ? (
+                  <div style={{ padding: "1rem" }}>
+                    <SkeletonText paragraph lineCount={5} />
+                  </div>
+                ) : workspaceTree.length === 0 ? (
+                  <div
+                    style={{
+                      padding: "2rem 1rem",
+                      textAlign: "center",
+                      color: "var(--cds-text-secondary)",
+                      fontSize: "0.8125rem",
+                    }}
+                  >
+                    <Folder size={32} style={{ opacity: 0.25, display: "block", margin: "0 auto 0.75rem" }} />
+                    No workspace files.
+                  </div>
+                ) : (
+                  <TreeView label="Workspace" hideLabel>
+                    {workspaceTree.map((node) => renderFileNode(node))}
+                  </TreeView>
                 )}
-                <TreeView label="Workspace" hideLabel>
-                  {agentConfig.workspaceFolders.map((folder) => (
-                    <TreeNode
-                      key={folder.path}
-                      id={folder.path}
-                      label={
-                        <span style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                          <span style={{ fontWeight: 600, fontSize: "0.8125rem", color: "var(--cds-text-primary)" }}>
-                            {folder.label}
-                          </span>
-                          <Tag type={folder.readOnly ? "gray" : "green"} size="sm">
-                            {folder.readOnly ? "read-only" : "read/write"}
-                          </Tag>
-                        </span>
-                      }
-                      renderIcon={FolderOpen}
-                      isExpanded
-                    >
-                      <TreeNode
-                        id={`${folder.path}__path`}
-                        label={
-                          <code style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
-                            {folder.path}
-                          </code>
-                        }
-                      />
-                      {folder.children?.map((child) => (
-                        <TreeNode
-                          key={`${folder.path}/${child.label}`}
-                          id={`${folder.path}/${child.label}`}
-                          label={
-                            <span style={{ fontSize: "0.8125rem", color: "var(--cds-text-primary)" }}>
-                              {child.label}
-                            </span>
-                          }
-                          renderIcon={child.type === "folder" ? Folder : DocumentBlank}
-                        />
-                      ))}
-                    </TreeNode>
-                  ))}
-                </TreeView>
               </TabPanel>
             </TabPanels>
           </Tabs>
@@ -846,6 +903,58 @@ export function ChatLanding() {
           <SidePanelOpen size={16} style={{ transform: "scaleX(-1)" }} />
         </button>
       )}
+
+      <ComposedModal
+        open={!!fileModal}
+        onClose={() => setFileModal(null)}
+        size="lg"
+        isFullWidth
+      >
+        <ModalHeader
+          title={fileModal?.name ?? ""}
+          buttonOnClick={() => setFileModal(null)}
+        />
+        <ModalBody hasScrollingContent className="chat-landing-file-modal-body">
+          {fileModal && (
+            <div className="chat-landing-file-modal-markdown">
+              <Markdown>
+                {fileModal.name.toLowerCase().endsWith(".md")
+                  ? fileModal.content
+                  : `\`\`\`\n${fileModal.content}\n\`\`\``}
+              </Markdown>
+            </div>
+          )}
+        </ModalBody>
+        {fileModal && (
+          <ModalFooter className="chat-landing-file-modal-footer">
+            <Button
+              kind="secondary"
+              renderIcon={Download}
+              onClick={async () => {
+                try {
+                  const res = await fetch(`/api/workspace/download?path=${encodeURIComponent(fileModal.path)}`);
+                  if (res.ok) {
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = fileModal.name;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }
+                } catch (err) {
+                  addToast("error", "Download failed", err instanceof Error ? err.message : "Unknown error");
+                }
+              }}
+            >
+              Download
+            </Button>
+            <Button kind="primary" onClick={() => setFileModal(null)}>
+              Close
+            </Button>
+          </ModalFooter>
+        )}
+      </ComposedModal>
 
       {/* Toast Notifications */}
       <div

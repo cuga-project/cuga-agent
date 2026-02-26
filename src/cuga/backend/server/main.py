@@ -830,6 +830,11 @@ async def event_stream(
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
 
+    if local_state:
+        from cuga.config import get_service_instance_id, get_tenant_id
+
+        local_state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+
     if not api_mode:
         local_obs, _, _, _, local_info = await app_state.env.step("")
         pu_answer = await app_state.env.pu_processor.transform(

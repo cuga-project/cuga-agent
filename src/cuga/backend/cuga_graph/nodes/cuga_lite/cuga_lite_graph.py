@@ -163,6 +163,7 @@ class CugaLiteState(BaseModel):
     - hitl_action: Optional[FollowUpAction] (human-in-the-loop action request)
     - hitl_response: Optional[ActionResponse] (human-in-the-loop response)
     - sender: str (node that sent the current state)
+    - service_scope: Dict[str, str] (tenant_id, instance_id for multi-tenant/prod scoping)
 
     Subgraph-only keys:
     - script, execution_complete, error, metrics
@@ -174,6 +175,9 @@ class CugaLiteState(BaseModel):
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
     thread_id: Optional[str] = None
+    service_scope: Optional[Dict[str, str]] = Field(
+        default_factory=lambda: {"tenant_id": "", "instance_id": ""}
+    )
     pi: Optional[str] = ""
     variables_storage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
     variable_counter_state: int = 0

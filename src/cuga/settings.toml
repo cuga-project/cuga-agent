@@ -79,6 +79,10 @@ filesystem_sync = true  # Enable filesystem sync (.cuga folder) for policies
 cuga_folder = ".cuga"  # Path to .cuga folder for policy files
 auto_load_policies = true  # Automatically load policies from .cuga folder on startup
 
+[service]
+instance_id = ""  # Override with DYNACONF_SERVICE__INSTANCE_ID env var (e.g. K8S pod name, deployment id)
+tenant_id = ""  # Override with DYNACONF_SERVICE__TENANT_ID env var (multi-tenant SaaS)
+
 [server_ports]
 registry = 8001
 # registry_host = "http://localhost:8001"  # Optional: Full registry URL. Falls back to "http://localhost:{registry}"

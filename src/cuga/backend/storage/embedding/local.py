@@ -106,30 +106,62 @@ class LocalEmbeddingStore:
         cur = conn.execute(sql, params)
         return [tuple(row) for row in cur.fetchall()]
 
-    async def get(self, id: str) -> Optional[Dict[str, Any]]:
-        return await asyncio.to_thread(self._get_sync, id)
+    def _scope_cols(self) -> List[str]:
+        meta = self._schema.metadata_columns
+        return [c for c in ["tenant_id", "instance_id"] if c in meta]
 
-    def _get_sync(self, id: str) -> Optional[Dict[str, Any]]:
+    async def get(self, id: str, tenant_id: str = "", instance_id: str = "") -> Optional[Dict[str, Any]]:
+        return await asyncio.to_thread(self._get_sync, id, tenant_id, instance_id)
+
+    def _get_sync(self, id: str, tenant_id: str = "", instance_id: str = "") -> Optional[Dict[str, Any]]:
         conn = self._get_conn()
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
         cols = [id_col] + meta_keys + aux_keys
-        row = conn.execute(
-            f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = ?",
-            (id,),
-        ).fetchone()
+        scope = self._scope_cols()
+        scope_vals = []
+        if "tenant_id" in scope:
+            scope_vals.append(tenant_id)
+        if "instance_id" in scope:
+            scope_vals.append(instance_id)
+        if scope and any(scope_vals):
+            where_parts = [f"{c} = ?" for c in scope]
+            where_parts.append(f"{id_col} = ?")
+            row = conn.execute(
+                f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {' AND '.join(where_parts)}",
+                (*scope_vals, id),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                f"SELECT {', '.join(cols)} FROM {self._collection_name} WHERE {id_col} = ?",
+                (id,),
+            ).fetchone()
         if not row:
             return None
         return dict(zip(cols, row))
 
-    async def delete(self, id: str) -> None:
-        await asyncio.to_thread(self._delete_sync, id)
+    async def delete(self, id: str, tenant_id: str = "", instance_id: str = "") -> None:
+        await asyncio.to_thread(self._delete_sync, id, tenant_id, instance_id)
 
-    def _delete_sync(self, id: str) -> None:
+    def _delete_sync(self, id: str, tenant_id: str = "", instance_id: str = "") -> None:
         conn = self._get_conn()
         id_col = self._schema.id_column
-        conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = ?", (id,))
+        scope = self._scope_cols()
+        scope_vals = []
+        if "tenant_id" in scope:
+            scope_vals.append(tenant_id)
+        if "instance_id" in scope:
+            scope_vals.append(instance_id)
+        if scope and any(scope_vals):
+            where_parts = [f"{c} = ?" for c in scope]
+            where_parts.append(f"{id_col} = ?")
+            conn.execute(
+                f"DELETE FROM {self._collection_name} WHERE {' AND '.join(where_parts)}",
+                (*scope_vals, id),
+            )
+        else:
+            conn.execute(f"DELETE FROM {self._collection_name} WHERE {id_col} = ?", (id,))
         conn.commit()
 
     async def list(self, metadata_filter: Dict[str, Any], limit: int) -> List[Dict[str, Any]]:

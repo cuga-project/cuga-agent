@@ -142,6 +142,8 @@ validators = [
     Validator("storage.mode", default="local"),
     Validator("storage.local_db_path", default=""),
     Validator("storage.postgres_url", default=""),
+    Validator("service.instance_id", default=""),
+    Validator("service.tenant_id", default=""),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")
@@ -274,6 +276,22 @@ def get_app_name_from_url(curr_url):
     parsed_url = urlparse(curr_url)
     host_with_port = f"{parsed_url.hostname}:{parsed_url.port}"
     return app_mapping.get(host_with_port, parsed_url.hostname)
+
+
+def get_service_instance_id() -> str:
+    """Service instance ID for multi-tenant/prod DB scoping. Set via DYNACONF_SERVICE__INSTANCE_ID."""
+    val = os.environ.get("DYNACONF_SERVICE__INSTANCE_ID")
+    if val is not None:
+        return str(val)
+    return str(getattr(getattr(settings, "service", None), "instance_id", "") or "")
+
+
+def get_tenant_id() -> str:
+    """Tenant ID for multi-tenant SaaS DB scoping. Set via DYNACONF_SERVICE__TENANT_ID."""
+    val = os.environ.get("DYNACONF_SERVICE__TENANT_ID")
+    if val is not None:
+        return str(val)
+    return str(getattr(getattr(settings, "service", None), "tenant_id", "") or "")
 
 
 if __name__ == "__main__":

@@ -10,6 +10,8 @@ def policy_embedding_schema(embedding_dim: int) -> EmbeddingSchemaConfig:
         id_column="id",
         metadata_columns={
             "id": "text",
+            "tenant_id": "text",
+            "instance_id": "text",
             "policy_type": "text",
             "enabled": "boolean",
             "priority": "integer",

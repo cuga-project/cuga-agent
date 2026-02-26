@@ -3,6 +3,7 @@ from typing import Any, Dict, List, Optional
 from cuga.backend.cuga_graph.policy.models import PolicyType
 from cuga.backend.storage.embedding.prod import ProdEmbeddingStore
 from cuga.backend.storage.policy.base import policy_embedding_schema
+from cuga.config import get_service_instance_id, get_tenant_id
 
 
 class ProdPolicyStore:
@@ -28,6 +29,12 @@ class ProdPolicyStore:
     async def create_schema(self, embedding_dim: int) -> None:
         self._get_store(embedding_dim)
 
+    def _instance_id(self) -> str:
+        return get_service_instance_id()
+
+    def _tenant_id(self) -> str:
+        return get_tenant_id()
+
     async def add_policy(self, policy_data: Dict[str, Any]) -> None:
         embedding = policy_data.get("embedding")
         if embedding is None:
@@ -35,6 +42,8 @@ class ProdPolicyStore:
         policy_id = policy_data["id"]
         meta = {
             "id": policy_id,
+            "tenant_id": self._tenant_id(),
+            "instance_id": self._instance_id(),
             "policy_type": policy_data.get("policy_type", ""),
             "enabled": policy_data.get("enabled", True),
             "priority": policy_data.get("priority", 0),
@@ -51,12 +60,12 @@ class ProdPolicyStore:
     async def delete_policy(self, policy_id: str) -> None:
         if self._store is None:
             return
-        await self._store.delete(policy_id)
+        await self._store.delete(policy_id, tenant_id=self._tenant_id(), instance_id=self._instance_id())
 
     async def get_policy(self, policy_id: str) -> Optional[Dict[str, Any]]:
         if self._store is None:
             return None
-        return await self._store.get(policy_id)
+        return await self._store.get(policy_id, tenant_id=self._tenant_id(), instance_id=self._instance_id())
 
     async def search_policies(
         self,
@@ -67,7 +76,7 @@ class ProdPolicyStore:
     ) -> List[tuple]:
         if self._store is None:
             return []
-        filt: Dict[str, Any] = {}
+        filt: Dict[str, Any] = {"tenant_id": self._tenant_id(), "instance_id": self._instance_id()}
         if policy_type is not None:
             filt["policy_type"] = policy_type.value if hasattr(policy_type, "value") else str(policy_type)
         if enabled_only:
@@ -82,7 +91,7 @@ class ProdPolicyStore:
     ) -> List[Dict[str, Any]]:
         if self._store is None:
             return []
-        filt: Dict[str, Any] = {}
+        filt: Dict[str, Any] = {"tenant_id": self._tenant_id(), "instance_id": self._instance_id()}
         if policy_type is not None:
             filt["policy_type"] = policy_type.value if hasattr(policy_type, "value") else str(policy_type)
         if enabled_only:
@@ -92,7 +101,7 @@ class ProdPolicyStore:
     async def count_policies(self, policy_type: Optional[PolicyType]) -> int:
         if self._store is None:
             return 0
-        filt: Dict[str, Any] = {}
+        filt: Dict[str, Any] = {"tenant_id": self._tenant_id(), "instance_id": self._instance_id()}
         if policy_type is not None:
             filt["policy_type"] = policy_type.value if hasattr(policy_type, "value") else str(policy_type)
         rows = await self._store.list(filt, 10000)

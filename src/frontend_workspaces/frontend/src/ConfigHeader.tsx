@@ -33,8 +33,8 @@ export function ConfigHeader({
       title="CUGA Agent"
       agentContext={agentContext ?? undefined}
       navItems={[
-        { label: "Sidebar", onClick: onToggleLeftSidebar },
-        { label: "Workspace", onClick: onToggleWorkspace },
+        { label: "Conversations", onClick: onToggleLeftSidebar },
+        { label: "Agent Config", onClick: onToggleWorkspace },
         { label: "Manage", href: "/manage" },
       ]}
     />
