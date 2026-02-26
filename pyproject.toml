@@ -31,6 +31,8 @@ dependencies = [
     "pyyaml>=6.0.3",
     "pymilvus[milvus-lite,model]>=2.6.4",
     "langchain-groq>=0.3.8",
+    "langchain-litellm",
+    "litellm>=1.0.0",
     "tavily-python",
     "torch>=2.2.2",
     "sentence-transformers>=5.1.2",
@@ -96,6 +98,7 @@ code = "evaluation.code_generator:main"
 exp = "scripts.eval_gui:main"
 digital_sales_mcp = "scripts.commands:run_digital_sales_mcp"
 digital_sales_openapi = "scripts.commands:run_digital_sales_openapi"
+test_llm = "scripts.commands:test_llm"
 
 [dependency-groups]
 dev = [

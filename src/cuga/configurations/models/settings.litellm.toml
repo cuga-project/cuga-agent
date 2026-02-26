@@ -1,0 +1,69 @@
+[agent.task_decomposition.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.planner.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.chat.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.shortlister.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.plan_controller.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.final_answer.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.code.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.code_planner.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.qa.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 16000
+
+[agent.action.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 400
+
+[memory.mem0.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 1000
+
+[memory.milvus.step_processing.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 1000
+
+[memory.milvus.fact_extraction.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 1000
+
+[memory.tips_extractor.model]
+platform = "litellm"
+temperature = 0.1
+max_tokens = 5000

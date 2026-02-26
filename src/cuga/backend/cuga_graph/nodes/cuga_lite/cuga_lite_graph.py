@@ -72,6 +72,7 @@ from langgraph.types import Command
 from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.llm.models import LLMManager
+from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt, PromptUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
@@ -888,8 +889,22 @@ def create_cuga_lite_graph(
             configurable = config.get("configurable", {}) if config else {}
             current_callbacks = configurable.get("callbacks", base_callbacks or [])
 
-            # Invoke model with callbacks
-            response = await base_model.ainvoke(messages_for_model, config={"callbacks": current_callbacks})
+            try:
+                response = await base_model.ainvoke(
+                    messages_for_model, config={"callbacks": current_callbacks}
+                )
+            except Exception as e:
+                code = extract_code_from_tool_use_failed(str(e))
+                if code:
+                    logger.warning(
+                        "Model attempted tool call without tools bound (tool_use_failed). "
+                        "Using generated code in sandbox"
+                    )
+                    response = type(
+                        "_FakeResponse", (), {"content": f"```python\n{code}\n```", "additional_kwargs": {}}
+                    )()
+                else:
+                    raise e
 
             content = response.content
             reasoning_content = response.additional_kwargs.get('reasoning_content')

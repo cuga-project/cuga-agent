@@ -4,6 +4,8 @@ from typing import Dict, Any, Optional
 import hashlib
 import json
 import os
+
+import httpx
 from langchain_openai import ChatOpenAI, AzureChatOpenAI
 from langchain_ibm import ChatWatsonx
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -20,6 +22,12 @@ try:
 except ImportError:
     logger.warning("Langchain Google GenAI not installed, using OpenAI instead")
     ChatGoogleGenerativeAI = None
+
+try:
+    from langchain_litellm import ChatLiteLLM
+except ImportError:
+    logger.warning("Langchain ChatLiteLLM not installed (langchain-litellm)")
+    ChatLiteLLM = None
 
 
 class LLMManager:
@@ -238,6 +246,18 @@ class LLMManager:
                 default_model = "anthropic/claude-3.5-sonnet"
                 logger.info(f"No model_name specified for OpenRouter, using default: {default_model}")
                 return default_model
+        elif platform == "litellm":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for LiteLLM: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML: {toml_model_name}")
+                return toml_model_name
+            else:
+                default_model = "gpt-4o"
+                logger.info(f"No model_name specified for LiteLLM, using default: {default_model}")
+                return default_model
         else:
             # For other platforms, use TOML or default
             if toml_model_name:
@@ -247,6 +267,8 @@ class LLMManager:
 
     def _get_api_version(self, model_settings: Dict[str, Any], platform: str) -> str:
         """Get API version with environment variable override support"""
+        if platform == "litellm":
+            return ""
         if platform == "openai":
             # Check environment variable first
             env_api_version = os.environ.get('OPENAI_API_VERSION')
@@ -276,6 +298,54 @@ class LLMManager:
                 api_version = api_version.isoformat()
                 logger.debug(f"Converted date to string: {api_version}")
             return api_version
+
+    def _get_auth_headers(self, model_settings: Dict[str, Any], platform: str) -> Dict[str, str]:
+        """Build auth headers for openai platform. Supports Bearer token and custom header-based auth.
+
+        Config options:
+        - auth_token: env var name; value used as Bearer token (Authorization: Bearer <value>)
+        - api_key: env var name (alias for auth_token)
+        - auth_header: env var name; value is full header value (e.g. "Bearer xyz")
+        - default_headers: dict of header_name -> value; values starting with $ are env var names
+        Env override: LLM_AUTH_HEADER (full header value, e.g. "Bearer <token>")
+        """
+        if platform != "openai":
+            return {}
+
+        headers: Dict[str, str] = {}
+        to_dict = getattr(model_settings, "to_dict", lambda: model_settings)
+        d = to_dict() if callable(to_dict) else model_settings
+
+        if os.environ.get("LLM_AUTH_HEADER"):
+            val = os.environ.get("LLM_AUTH_HEADER", "").strip()
+            headers["Authorization"] = val if val.lower().startswith("bearer ") else f"Bearer {val}"
+            return headers
+
+        token_env = d.get("auth_token") or d.get("api_key") or d.get("apikey_name")
+        if token_env:
+            token = os.environ.get(token_env)
+            if token:
+                headers["Authorization"] = f"Bearer {token}"
+                return headers
+
+        auth_header_env = d.get("auth_header")
+        if isinstance(auth_header_env, str):
+            val = os.environ.get(auth_header_env)
+            if val:
+                headers["Authorization"] = (
+                    val if val.strip().lower().startswith("bearer ") else f"Bearer {val}"
+                )
+                return headers
+
+        default_headers = d.get("default_headers")
+        if isinstance(default_headers, dict):
+            for k, v in default_headers.items():
+                if isinstance(v, str) and v.startswith("$"):
+                    v = os.environ.get(v[1:].strip(), "")
+                if v:
+                    headers[k] = str(v)
+
+        return headers
 
     def _get_base_url(self, model_settings: Dict[str, Any], platform: str) -> str:
         """Get base URL with environment variable override support"""
@@ -313,6 +383,16 @@ class LLMManager:
                 f"No base URL specified for OpenRouter, will raise error if not set, falling back to: {default_openrouter}"
             )
             return default_openrouter
+        elif platform == "litellm":
+            env_base_url = os.environ.get('OPENAI_BASE_URL') or os.environ.get('LITELLM_API_BASE')
+            if env_base_url:
+                logger.info(f"Using base URL from environment for LiteLLM: {env_base_url}")
+                return env_base_url
+            toml_url = model_settings.get('url')
+            if toml_url:
+                logger.debug(f"Using url from TOML: {toml_url}")
+                return toml_url
+            return None
         else:
             # For other platforms, use TOML settings
             return model_settings.get('url')
@@ -361,27 +441,33 @@ class LLMManager:
         elif platform == "openai":
             is_reasoning = self._is_reasoning_model(model_name)
 
-            # Build ChatOpenAI parameters
-            openai_params = {
+            openai_params: Dict[str, Any] = {
                 "model_name": model_name,
                 "max_tokens": max_tokens,
                 "timeout": 61,
             }
 
-            # Only add temperature for non-reasoning models
             if not is_reasoning:
                 openai_params["temperature"] = temperature
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
 
-            # Add API key if specified
-            apikey_name = model_settings.get("apikey_name")
-            if apikey_name:
-                openai_params["openai_api_key"] = os.environ.get(apikey_name)
+            auth_headers = self._get_auth_headers(model_settings, platform)
+            if auth_headers:
+                openai_params["default_headers"] = auth_headers
+                openai_params["openai_api_key"] = "dummy"
+            else:
+                apikey_name = model_settings.get("apikey_name")
+                if apikey_name:
+                    openai_params["openai_api_key"] = os.environ.get(apikey_name)
 
-            # Add base URL if specified
             if base_url:
                 openai_params["openai_api_base"] = base_url
+
+            ssl_verify = os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
+            if not ssl_verify:
+                openai_params["http_client"] = httpx.Client(verify=False)
+                openai_params["http_async_client"] = httpx.AsyncClient(verify=False)
 
             llm = ChatOpenAI(**openai_params)
         elif platform == "groq":
@@ -433,17 +519,14 @@ class LLMManager:
                 max_tokens=max_tokens,
             )
         elif platform == "openrouter":
-            # OpenRouter uses OpenAI-compatible API
             logger.debug(f"Creating OpenRouter model: {model_name}")
             is_reasoning = self._is_reasoning_model(model_name)
 
-            # Get API key from environment
             api_key = os.environ.get("OPENROUTER_API_KEY")
             if not api_key:
                 raise ValueError("OPENROUTER_API_KEY environment variable not set")
 
-            # Build OpenRouter parameters
-            openrouter_params = {
+            openrouter_params: Dict[str, Any] = {
                 "model_name": model_name,
                 "max_tokens": max_tokens,
                 "timeout": 61,
@@ -451,28 +534,51 @@ class LLMManager:
                 "openai_api_base": base_url,
             }
 
-            # Only add temperature for non-reasoning models
             if not is_reasoning:
                 openrouter_params["temperature"] = temperature
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
 
-            # Optional: Add custom headers for OpenRouter features
             default_headers = {}
-
-            # Add site URL and app name for OpenRouter analytics (optional)
             site_url = model_settings.get("site_url") or os.environ.get("OPENROUTER_SITE_URL")
             app_name = model_settings.get("app_name") or os.environ.get("OPENROUTER_APP_NAME")
-
             if site_url:
                 default_headers["HTTP-Referer"] = site_url
             if app_name:
                 default_headers["X-Title"] = app_name
-
             if default_headers:
                 openrouter_params["default_headers"] = default_headers
 
             llm = ChatOpenAI(**openrouter_params)
+        elif platform == "litellm" and ChatLiteLLM is not None:
+            logger.debug(f"Creating LiteLLM model: {model_name}")
+            ssl_verify = os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
+            if not ssl_verify:
+                import litellm
+
+                litellm.ssl_verify = False
+
+            litellm_params: Dict[str, Any] = {
+                "model": model_name,
+                "temperature": temperature,
+                "max_tokens": max_tokens,
+            }
+            if base_url:
+                litellm_params["api_base"] = base_url.rstrip("/")
+            auth_headers = self._get_auth_headers(model_settings, "openai")
+            if auth_headers and "Authorization" in auth_headers:
+                val = auth_headers["Authorization"]
+                litellm_params["api_key"] = (
+                    val.replace("Bearer ", "", 1) if val.lower().startswith("bearer ") else val
+                )
+            else:
+                apikey_name = model_settings.get("apikey_name")
+                api_key = os.environ.get("OPENAI_API_KEY")
+                if apikey_name:
+                    api_key = os.environ.get(apikey_name) or api_key
+                if api_key:
+                    litellm_params["api_key"] = api_key
+            llm = ChatLiteLLM(**litellm_params)
         else:
             raise ValueError(f"Unsupported platform: {platform}")
 

@@ -21,6 +21,11 @@ except ImportError:
     ChatGroq = None
     logger.warning("Langchain Groq not installed, using OpenAI instead")
 
+try:
+    from langchain_litellm import ChatLiteLLM
+except ImportError:
+    ChatLiteLLM = None
+
 from langchain_ibm.chat_models import ChatWatsonx
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_openai import ChatOpenAI
@@ -160,8 +165,12 @@ JSON schema:
             return chain
         elif isinstance(llm, ChatOpenAI) and any(x in llm.model_name for x in ["GCP", "Claude"]):
             logger.debug("Getting model for Claude")
-            # parser = PydanticOutputParser(pydantic_object=schema)
             return prompt_template | llm
+        elif ChatLiteLLM is not None and isinstance(llm, ChatLiteLLM):
+            logger.debug("Loading LLM for LiteLLM")
+            parser = PydanticOutputParser(pydantic_object=schema)
+            chain = prompt_template | llm | parser
+            return chain.with_retry(stop_after_attempt=3)
         elif isinstance(llm, ChatOpenAI) or (ChatGroq is not None and isinstance(llm, ChatGroq)):
             return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
         else:

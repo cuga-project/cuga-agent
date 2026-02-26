@@ -16,7 +16,7 @@ import {
   CarbonTheme,
   BusEventType,
 } from '@carbon/ai-chat';
-import { customSendMessage as customSendMessageImpl } from './customSendMessage';
+import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
 import './CarbonChat.css';
 
@@ -159,6 +159,15 @@ const CarbonChat = ({
       handler: () => {
         console.log('[CarbonChat] RESTART_CONVERSATION event received');
         resetThreadId();
+      },
+    });
+
+    instance.on({
+      type: BusEventType.STOP_STREAMING,
+      handler: () => {
+        const tid = getOrCreateThreadId();
+        console.log('[CarbonChat] STOP_STREAMING event received, calling /stop for thread:', tid);
+        stopCugaAgent(tid);
       },
     });
     
@@ -338,6 +347,7 @@ const CarbonChat = ({
       input={{
         isVisible: true,
       }}
+      
       messaging={{
         customSendMessage: handleCustomSendMessage,
         customLoadHistory: handleCustomLoadHistory,

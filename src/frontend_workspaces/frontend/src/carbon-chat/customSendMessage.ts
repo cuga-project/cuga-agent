@@ -26,19 +26,30 @@ import {
   createReasoningStep,
 } from "./carbonChatHelpers";
 
-// CUGA backend endpoint - use window location for dynamic backend URL
-const CUGA_BACKEND_URL = typeof window !== 'undefined'
-  ? `${window.location.protocol}//${window.location.hostname}:7860`
-  : "http://localhost:7860";
+declare global {
+  interface Window {
+    __CUGA_BACKEND_URL__?: string;
+  }
+}
+
+function getCugaBackendUrl(): string {
+  if (typeof window === 'undefined') return "http://localhost:7860";
+  if (window.__CUGA_BACKEND_URL__) return window.__CUGA_BACKEND_URL__;
+  const envUrl = typeof process !== 'undefined' && (process as any).env?.CUGA_BACKEND_URL;
+  if (envUrl && String(envUrl).trim()) return String(envUrl).trim();
+  const { hostname, protocol, origin } = window.location;
+  if (hostname !== 'localhost' && hostname !== '127.0.0.1') return origin;
+  return `${protocol}//${hostname}:7860`;
+}
 
 // Import thread ID management from CarbonChat
 import { getOrCreateThreadId } from './CarbonChat';
 
-// Function to call CUGA /stop endpoint
-async function stopCugaAgent(threadId: string) {
+export async function stopCugaAgent(threadId: string) {
   try {
+    const url = getCugaBackendUrl();
     console.log(`Calling /stop for thread: ${threadId}`);
-    const response = await fetch(`${CUGA_BACKEND_URL}/stop`, {
+    const response = await fetch(`${url}/stop`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -157,6 +168,7 @@ export async function customSendMessage(
     streaming_metadata: { response_id: responseID },
   });
 
+  const CUGA_BACKEND_URL = getCugaBackendUrl();
   try {
     console.log(`Connecting to CUGA backend at: ${CUGA_BACKEND_URL}/stream`);
     console.log(`Thread ID: ${threadId}`);
@@ -594,11 +606,13 @@ export async function customSendMessage(
         },
       });
     } else {
+      const url = getCugaBackendUrl();
+      const msg = error.message || "Failed to connect to CUGA backend";
       instance.messaging.addMessage({
         output: {
           generic: [{
             response_type: MessageResponseTypes.TEXT,
-            text: `Error: ${error.message || "Failed to connect to CUGA backend"}`,
+            text: `Error: ${msg}. Backend URL: ${url}. Check that the backend is running and reachable (e.g. CORS, firewall, proxy).`,
           }],
         },
       });

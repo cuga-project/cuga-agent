@@ -146,6 +146,20 @@ def test_sandbox(remote: bool = False):
     asyncio.run(_test_sandbox_async(remote))
 
 
+def test_llm():
+    """Send 'hi' to the LLM via LLMManager and print the output."""
+    from langchain_core.messages import HumanMessage
+
+    from cuga.backend.llm.models import LLMManager
+    from cuga.config import settings
+
+    llm_manager = LLMManager()
+    model_config = getattr(settings.agent.chat, "model", None) or settings.agent.code.model
+    model = llm_manager.get_model(model_config)
+    response = model.invoke([HumanMessage(content="hi")])
+    print(response.content)
+
+
 def setup_appworld_environment():
     """Set up the appworld environment with necessary data and installations."""
     import subprocess

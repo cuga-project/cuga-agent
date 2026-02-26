@@ -135,6 +135,7 @@ export default {
     }),
     new webpack.DefinePlugin({
       FAKE_STREAM: JSON.stringify(fakeStream),
+      "process.env.CUGA_BACKEND_URL": JSON.stringify(process.env.CUGA_BACKEND_URL || ""),
     }),
   ],
   devtool: process.env.NODE_ENV === "production" ? false : "source-map",
