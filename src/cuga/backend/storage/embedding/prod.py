@@ -77,17 +77,19 @@ class ProdEmbeddingStore:
 
     async def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
         pool = await self._get_pool()
+        id_col = self._schema.id_column
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
-        full = {self._schema.id_column: id, **metadata}
-        cols = ["embedding"] + meta_keys + aux_keys
+        full = {id_col: id, **metadata}
+        meta_keys_no_id = [k for k in meta_keys if k != id_col]
+        cols = ["embedding", id_col] + meta_keys_no_id + aux_keys
         n = len(cols)
         ph = _placeholders(n)
         col_list = ", ".join(cols)
-        values = [embedding] + [full.get(k) for k in meta_keys] + [full.get(k) for k in aux_keys]
+        values = [embedding, id] + [full.get(k) for k in meta_keys_no_id] + [full.get(k) for k in aux_keys]
         upsert = ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys)
         scope = self._scope_cols()
-        conflict_cols = f"{', '.join(scope + [self._schema.id_column])}" if scope else self._schema.id_column
+        conflict_cols = f"{', '.join(scope + [id_col])}" if scope else id_col
         async with pool.acquire() as conn:
             await conn.execute(
                 f"INSERT INTO {self._collection_name} ({col_list}) VALUES ({ph}) "
