@@ -15,7 +15,7 @@ jobs:
   release-tag:
     name: Create and push tag
     runs-on: ubuntu-latest
-    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && (startsWith(github.event.pull_request.head.ref, 'release/') || contains(github.event.pull_request.title, 'chore: release')))
+    if: github.event_name == 'workflow_dispatch' || (github.event.pull_request.merged == true && (startsWith(github.event.pull_request.head.ref, 'release/') || contains(github.event.pull_request.title, 'release v')))
     permissions:
       contents: write
     steps:
