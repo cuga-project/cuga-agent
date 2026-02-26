@@ -12,6 +12,10 @@ on:
           - patch
           - minor
           - major
+      release_summary:
+        description: 'Release notes (overrides auto-generated PRs/contributors summary)'
+        required: false
+        type: string
 
 jobs:
   release:
@@ -48,6 +52,7 @@ jobs:
       - name: Bump version and release
         env:
           BUMP: ${{ inputs.bump }}
+          RELEASE_SUMMARY: ${{ inputs.release_summary }}
         run: |
           CURRENT=$(grep '^version' pyproject.toml | sed -n 's/version = "\(.*\)"/\1/p')
           MAJOR=$(echo "$CURRENT" | cut -d. -f1)
@@ -66,4 +71,10 @@ jobs:
           git push origin main
           git tag "v$NEW_VERSION"
           git push origin "v$NEW_VERSION"
+          if [ -n "$RELEASE_SUMMARY" ]; then
+            echo "$RELEASE_SUMMARY" > /tmp/release_notes.md
+            gh release create "v$NEW_VERSION" --notes-file /tmp/release_notes.md
+          else
+            gh release create "v$NEW_VERSION" --generate-notes
+          fi
           echo "Released v$NEW_VERSION"
