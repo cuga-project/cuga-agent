@@ -31,5 +31,5 @@ jobs:
         run: uv run playwright install --with-deps chromium
       
       - name: Run unit tests
-        run: bash src/scripts/run_tests.sh unit_tests
+        run: bash src/scripts/run_tests.sh
 
