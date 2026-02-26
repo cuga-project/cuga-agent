@@ -622,7 +622,7 @@ wheels = [
 
 [[package]]
 name = "cuga"
-version = "0.2.9"
+version = "0.2.10"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk", extra = ["http-server"] },
