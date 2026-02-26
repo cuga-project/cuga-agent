@@ -1,0 +1,30 @@
+FROM registry.access.redhat.com/ubi8/python-312:latest
+
+USER root
+RUN dnf install -y curl && dnf clean all
+
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/root/.local/bin/:$PATH"
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+COPY src/ ./src/
+COPY docs/ ./docs/
+
+RUN uv sync
+
+RUN mkdir -p /app/cuga_workspace
+
+COPY docs/examples/huggingface/contacts.txt /app/cuga_workspace/contacts.txt
+COPY docs/examples/huggingface/cuga_knowledge.md /app/cuga_workspace/cuga_knowledge.md
+COPY docs/examples/huggingface/cuga_playbook.md /app/cuga_workspace/cuga_playbook.md
+COPY docs/examples/huggingface/email_template.md /app/cuga_workspace/email_template.md
+
+EXPOSE 7860
+
+ENV CUGA_HOST=0.0.0.0
+ENV DYNACONF_SERVER_PORTS__DEMO=7860
+
+CMD ["uv", "run", "cuga", "start", "manager", "--host", "0.0.0.0", "--crm", "--email", "--filesystem", "--cuga-workspace", "/app/cuga_workspace"]

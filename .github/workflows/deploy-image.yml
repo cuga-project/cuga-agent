@@ -1,0 +1,47 @@
+# Required secrets: RIS_CLOUD_ACCOUNT_API_KEY, IBM_CLOUD_URL, IBM_CLOUD_REGION,
+# IBM_CLOUD_GROUP, IBM_REGISTRY_URL, IBM_CR_NAMESPACE
+# Required variables: IMAGE_NAME, IMAGE_TAG
+name: Deploy Image to IBM Cloud
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.ubi
+          push: false
+          load: true
+          tags: ${{ secrets.IBM_REGISTRY_URL }}/${{ secrets.IBM_CR_NAMESPACE }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_TAG }}
+
+      - name: Install IBM Cloud CLI
+        run: |
+          curl -fsSL https://clis.cloud.ibm.com/download/bluemix-cli/latest/linux64 | tar xz
+          sudo mv Bluemix_CLI/bin/ibmcloud /usr/local/bin/
+          ibmcloud version
+
+      - name: Deploy to IBM Cloud Registry
+        env:
+          RIS_CLOUD_ACCOUNT_API_KEY: ${{ secrets.RIS_CLOUD_ACCOUNT_API_KEY }}
+          TARGET_IBM_CLOUD_URL: ${{ secrets.IBM_CLOUD_URL }}
+          TARGET_IBM_CLOUD_REGION: ${{ secrets.IBM_CLOUD_REGION }}
+          TARGET_IBM_CLOUD_GROUP: ${{ secrets.IBM_CLOUD_GROUP }}
+          TARGET_IBM_REGISTRY_URL: ${{ secrets.IBM_REGISTRY_URL }}
+          CR_NAMESPACE: ${{ secrets.IBM_CR_NAMESPACE }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+          IMAGE_TAG: ${{ vars.IMAGE_TAG }}
+        run: |
+          chmod +x ./scripts/deploy-image.sh
+          ./scripts/deploy-image.sh
