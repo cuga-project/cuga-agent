@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { X, Save, Plus, Trash2, Upload } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import "./ConfigModal.css";
 
 interface KnowledgeSource {
@@ -37,7 +38,7 @@ export default function KnowledgeConfig({ onClose }: KnowledgeConfigProps) {
 
   const loadConfig = async () => {
     try {
-      const response = await fetch('/api/config/knowledge');
+      const response = await apiFetch('/api/config/knowledge');
       if (response.ok) {
         const data = await response.json();
         setConfig(data);
@@ -50,7 +51,7 @@ export default function KnowledgeConfig({ onClose }: KnowledgeConfigProps) {
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
-      const response = await fetch('/api/config/knowledge', {
+      const response = await apiFetch('/api/config/knowledge', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),

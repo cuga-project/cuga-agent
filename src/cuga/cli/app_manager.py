@@ -145,23 +145,28 @@ class AppManager:
 
     def start_demo(self, host: str = "0.0.0.0", sandbox: bool = False):
         """Start demo server. Returns process."""
-        server_path = os.path.join(PACKAGE_ROOT, "backend", "server", "main.py")
+        ssl_keyfile = os.environ.get("SSL_KEYFILE", "").strip()
+        ssl_certfile = os.environ.get("SSL_CERTFILE", "").strip()
+        use_ssl = bool(ssl_keyfile and ssl_certfile)
+
+        app_import = "cuga.backend.server.main:app"
+        uvicorn_base = [
+            "uvicorn",
+            app_import,
+            "--host",
+            host,
+            "--port",
+            str(self.demo_port),
+        ]
+        if use_ssl:
+            uvicorn_base += ["--ssl-keyfile", ssl_keyfile, "--ssl-certfile", ssl_certfile]
+
         if sandbox:
-            cmd = [
-                "uv",
-                "run",
-                "--group",
-                "sandbox",
-                "fastapi",
-                "dev",
-                server_path,
-                "--host",
-                host,
-                "--no-reload",
-                "--port",
-                str(self.demo_port),
-            ]
+            cmd = ["uv", "run", "--group", "sandbox"] + uvicorn_base
+        elif use_ssl:
+            cmd = uvicorn_base
         else:
+            server_path = os.path.join(PACKAGE_ROOT, "backend", "server", "main.py")
             cmd = [
                 "fastapi",
                 "dev",
@@ -172,6 +177,7 @@ class AppManager:
                 "--port",
                 str(self.demo_port),
             ]
+
         proc = self._run("demo", cmd, None)
         if proc:
             self._wait_http(self.demo_port, "Demo server")

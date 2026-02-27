@@ -1,6 +1,7 @@
 import { fetchEventSource } from "@microsoft/fetch-event-source";
 import { ChatInstance } from "@carbon/ai-chat";
 import { API_BASE_URL } from "./constants";
+import { apiFetch } from "../../frontend/src/api";
 
 // Configuration constants
 // When built without a bundler define, `FAKE_STREAM` may be absent. Declare and compute safely.
@@ -81,7 +82,7 @@ export class StreamingManager {
         }
 
         // Send stop request to backend for real stream
-        const stopResponse = await fetch(`${API_BASE_URL}/stop`, {
+        const stopResponse = await apiFetch('/stop', {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           // Use a separate abort controller for the stop request

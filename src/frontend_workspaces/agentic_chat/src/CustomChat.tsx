@@ -7,6 +7,7 @@ import { randomUUID } from "./uuid";
 import { DebugPanel } from "./DebugPanel";
 import { FollowupSuggestions } from "./FollowupSuggestions";
 import { exampleUtterances } from "./exampleUtterances";
+import { apiFetch } from "../../frontend/src/api";
 import "./CustomChat.css";
 
 interface Message {
@@ -341,7 +342,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
     }
     
     try {
-      await fetch('/reset', {
+      await apiFetch('/reset', {
         method: 'POST',
         headers: { 
           'Content-Type': 'application/json',

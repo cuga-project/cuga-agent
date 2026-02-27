@@ -7,6 +7,7 @@ import SubAgentsConfig from "./SubAgentsConfig";
 import ModelConfig from "./ModelConfig";
 import PoliciesConfig from "./PoliciesConfig";
 import AgentHumanConfig from "./AgentHumanConfig";
+import * as api from "../../frontend/src/api";
 
 interface ConfigHeaderProps {
   onToggleLeftSidebar: () => void;
@@ -28,7 +29,7 @@ export function ConfigHeader({
   const [agentContext, setAgentContext] = useState<AgentContext | null>(null);
 
   useEffect(() => {
-    fetch("/api/agent/context")
+    api.getAgentContext()
       .then((res) => (res.ok ? res.json() : null))
       .then(
         (data) =>

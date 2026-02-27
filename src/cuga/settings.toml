@@ -83,6 +83,15 @@ auto_load_policies = true  # Automatically load policies from .cuga folder on st
 instance_id = ""  # Override with DYNACONF_SERVICE__INSTANCE_ID env var (e.g. K8S pod name, deployment id)
 tenant_id = ""  # Override with DYNACONF_SERVICE__TENANT_ID env var (multi-tenant SaaS)
 
+[auth]
+enabled = false
+session_cookie_name = "cuga_session"
+session_max_age = 3600
+jwks_cache_ttl = 3600
+require_https = false
+ssl_keyfile = ""
+ssl_certfile = ""
+
 [server_ports]
 registry = 8001
 # registry_host = "http://localhost:8001"  # Optional: Full registry URL. Falls back to "http://localhost:{registry}"

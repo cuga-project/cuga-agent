@@ -1,5 +1,6 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef } from "react";
+import * as api from "../../frontend/src/api";
 import {
   ComposedModal,
   ModalHeader,
@@ -234,8 +235,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const loadConfig = async () => {
     setIsLoading(true);
     try {
-      const endpoint = draftMode ? "/api/manage/config?draft=1" : "/api/manage/config";
-      const response = await fetch(endpoint);
+      const response = await api.getManageConfig(draftMode);
 
       if (response.ok) {
         const data = await response.json();
@@ -272,8 +272,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const loadTools = async () => {
     setToolsLoading(true);
     try {
-      const endpoint = draftMode ? "/api/tools/list?draft=1" : "/api/tools/list";
-      const response = await fetch(endpoint);
+      const response = await api.getToolsList(draftMode);
 
       if (response.ok) {
         const data = await response.json();
@@ -354,8 +353,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
     setSaveStatus("saving");
 
     try {
-      const loadEndpoint = draftMode ? "/api/manage/config?draft=1" : "/api/manage/config";
-      const loadResponse = await fetch(loadEndpoint);
+      const loadResponse = await api.getManageConfig(draftMode);
       
       let existingConfig = {};
       if (loadResponse.ok) {
@@ -388,12 +386,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         policies: normalizedConfig,
       };
       
-      const endpoint = draftMode ? "/api/manage/config/draft" : "/api/manage/config";
-      const response = await fetch(endpoint, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: fullConfig }),
-      });
+      const response = draftMode
+        ? await api.postManageConfigDraft(fullConfig)
+        : await api.postManageConfig(fullConfig);
 
       if (response.ok) {
         setSaveStatus("success");

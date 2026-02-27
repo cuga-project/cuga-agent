@@ -1,4 +1,4 @@
-import React, { type ReactNode, type ComponentType } from "react";
+import React, { useState, useEffect, useRef, type ReactNode, type ComponentType } from "react";
 import {
   Header,
   HeaderContainer,
@@ -9,8 +9,15 @@ import {
   HeaderGlobalAction,
   HeaderMenuButton,
   HeaderSideNavItems,
+  HeaderPanel,
+  Switcher,
+  SwitcherItem,
+  SwitcherDivider,
   SideNav,
 } from "@carbon/react";
+import { Logout } from "@carbon/icons-react";
+import * as api from "../../frontend/src/api";
+import * as auth from "../../frontend/src/auth";
 import "./CugaHeader.css";
 
 export interface CugaHeaderNavItem {
@@ -37,6 +44,22 @@ export interface CugaHeaderProps {
   linkComponent?: ComponentType<{ href?: string; to?: string; children?: ReactNode; className?: string; onClick?: () => void }>;
 }
 
+interface UserInfo {
+  name?: string;
+  email?: string;
+  sub?: string;
+}
+
+function getInitials(name?: string, email?: string): string {
+  if (name) {
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return parts[0].slice(0, 2).toUpperCase();
+  }
+  if (email) return email[0].toUpperCase();
+  return "?";
+}
+
 export function CugaHeader({
   title,
   prefix,
@@ -45,6 +68,38 @@ export function CugaHeader({
   actions = [],
   linkComponent: LinkComponent,
 }: CugaHeaderProps) {
+  const [authEnabled, setAuthEnabled] = useState(false);
+  const [userPanelOpen, setUserPanelOpen] = useState(false);
+  const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
+  const panelRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    api.getAuthConfig().then((c) => {
+      setAuthEnabled(c.enabled);
+      if (c.enabled) {
+        api.apiFetch("/auth/userinfo")
+          .then((r) => r.ok ? r.json() : null)
+          .then((d) => d && setUserInfo({ name: d.name, email: d.email, sub: d.sub }))
+          .catch(() => {});
+      }
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!userPanelOpen) return;
+    const handler = (e: MouseEvent) => {
+      if (panelRef.current && !panelRef.current.contains(e.target as Node)) {
+        setUserPanelOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, [userPanelOpen]);
+
+  const displayName = userInfo?.name ?? "";
+  const displayEmail = userInfo?.email ?? userInfo?.sub ?? "";
+  const initials = getInitials(userInfo?.name, userInfo?.email ?? userInfo?.sub);
+
   const renderNavItem = (item: CugaHeaderNavItem, onItemClick?: () => void) => {
     const content = item.label;
     if (item.to && LinkComponent) {
@@ -126,8 +181,39 @@ export function CugaHeader({
                   </HeaderGlobalAction>
                 );
               })}
+              {authEnabled && (
+                <HeaderGlobalAction
+                  aria-label="User profile"
+                  title={displayEmail || displayName || "User profile"}
+                  isActive={userPanelOpen}
+                  onClick={() => setUserPanelOpen((o) => !o)}
+                  className="cuga-user-avatar-btn"
+                >
+                  <span className="cuga-user-avatar-initials">{initials}</span>
+                </HeaderGlobalAction>
+              )}
             </HeaderGlobalBar>
           </Header>
+          <div ref={panelRef}>
+            <HeaderPanel expanded={userPanelOpen} aria-label="User panel">
+              <Switcher aria-label="User panel">
+                <div className="cuga-user-panel-info">
+                  <div className="cuga-user-panel-avatar">
+                    <span className="cuga-user-panel-avatar-initials">{initials}</span>
+                  </div>
+                  <div className="cuga-user-panel-details">
+                    {displayName && <p className="cuga-user-panel-name">{displayName}</p>}
+                    {displayEmail && <p className="cuga-user-panel-email">{displayEmail}</p>}
+                  </div>
+                </div>
+                <SwitcherDivider />
+                <SwitcherItem aria-label="Sign out" onClick={() => auth.logout()}>
+                  <Logout size={16} style={{ marginRight: "0.5rem", flexShrink: 0 }} />
+                  Sign out
+                </SwitcherItem>
+              </Switcher>
+            </HeaderPanel>
+          </div>
           {isSideNavExpanded && (
             <SideNav
               aria-label="Side navigation"

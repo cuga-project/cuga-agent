@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Folder, File, ChevronRight, ChevronDown, X, Download, FileText, RefreshCw, Trash2, Info } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import "./WorkspacePanel.css";
 
 interface FileNode {
@@ -72,7 +73,7 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspaceP
 
     setLoading(true);
     try {
-      const response = await fetch(`/api/workspace/file?path=${encodeURIComponent(file.path)}`);
+      const response = await apiFetch(`/api/workspace/file?path=${encodeURIComponent(file.path)}`);
       if (response.ok) {
         const data = await response.json();
         setSelectedFile({
@@ -93,7 +94,7 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspaceP
 
   const handleDownload = async (filePath: string, fileName: string) => {
     try {
-      const response = await fetch(`/api/workspace/download?path=${encodeURIComponent(filePath)}`);
+      const response = await apiFetch(`/api/workspace/download?path=${encodeURIComponent(filePath)}`);
       if (response.ok) {
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
@@ -125,7 +126,7 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspaceP
     setLoading(true);
 
     try {
-      const response = await fetch(`/api/workspace/file?path=${encodeURIComponent(file.path)}`, {
+      const response = await apiFetch(`/api/workspace/file?path=${encodeURIComponent(file.path)}`, {
         method: 'DELETE'
       });
 
@@ -200,7 +201,7 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspaceP
         formData.append('file', file);
 
         // Upload to cuga_workspace directory
-        const response = await fetch('/api/workspace/upload', {
+        const response = await apiFetch('/api/workspace/upload', {
           method: 'POST',
           body: formData,
         });

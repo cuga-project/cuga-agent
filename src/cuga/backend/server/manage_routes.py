@@ -4,11 +4,17 @@ import os
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-router = APIRouter(prefix="/api/manage", tags=["manage"])
+from cuga.backend.server.auth import require_auth
+
+router = APIRouter(
+    prefix="/api/manage",
+    tags=["manage"],
+    dependencies=[Depends(require_auth)],
+)
 
 
 def _app_state(request: Request):

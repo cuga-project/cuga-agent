@@ -144,6 +144,13 @@ validators = [
     Validator("storage.postgres_url", default=""),
     Validator("service.instance_id", default=""),
     Validator("service.tenant_id", default=""),
+    Validator("auth.enabled", default=False),
+    Validator("auth.session_cookie_name", default="cuga_session"),
+    Validator("auth.session_max_age", default=3600),
+    Validator("auth.jwks_cache_ttl", default=3600),
+    Validator("auth.require_https", default=False),
+    Validator("auth.ssl_keyfile", default=""),
+    Validator("auth.ssl_certfile", default=""),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

@@ -1,4 +1,5 @@
 // streamStateManager.ts
+import { apiFetch } from "../../frontend/src/api";
 type StreamStateListener = (isStreaming: boolean) => void;
 
 class StreamStateManager {
@@ -33,7 +34,7 @@ class StreamStateManager {
     }
 
     try {
-      const response = await fetch(`${API_BASE_URL}/stop`, {
+      const response = await apiFetch('/stop', {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

@@ -25,3 +25,79 @@
   align-self: center;
   white-space: nowrap;
 }
+
+/* User avatar button in header bar */
+.cuga-user-avatar-btn {
+  position: relative;
+}
+
+.cuga-user-avatar-initials {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: 50%;
+  background-color: var(--cds-interactive, #0f62fe);
+  color: #fff;
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  line-height: 1;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+/* User profile panel */
+.cuga-user-panel-info {
+  display: flex;
+  align-items: center;
+  gap: 0.875rem;
+  padding: 1.25rem 1rem 1rem;
+}
+
+.cuga-user-panel-avatar {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 2.75rem;
+  height: 2.75rem;
+  border-radius: 50%;
+  background-color: var(--cds-interactive, #0f62fe);
+  flex-shrink: 0;
+}
+
+.cuga-user-panel-avatar-initials {
+  font-size: 1rem;
+  font-weight: 600;
+  color: #fff;
+  letter-spacing: 0.02em;
+  line-height: 1;
+}
+
+.cuga-user-panel-details {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  overflow: hidden;
+  min-width: 0;
+}
+
+.cuga-user-panel-name {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--cds-text-primary, #f4f4f4);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.cuga-user-panel-email {
+  margin: 0;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #c6c6c6);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}

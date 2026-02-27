@@ -26,36 +26,15 @@ import {
   createReasoningStep,
 } from "./carbonChatHelpers";
 
-declare global {
-  interface Window {
-    __CUGA_BACKEND_URL__?: string;
-  }
-}
-
-function getCugaBackendUrl(): string {
-  if (typeof window === 'undefined') return "http://localhost:7860";
-  if (window.__CUGA_BACKEND_URL__) return window.__CUGA_BACKEND_URL__;
-  const envUrl = typeof process !== 'undefined' && (process as any).env?.CUGA_BACKEND_URL;
-  if (envUrl && String(envUrl).trim()) return String(envUrl).trim();
-  const { hostname, protocol, origin } = window.location;
-  if (hostname !== 'localhost' && hostname !== '127.0.0.1') return origin;
-  return `${protocol}//${hostname}:7860`;
-}
+import * as api from "../api";
 
 // Import thread ID management from CarbonChat
 import { getOrCreateThreadId } from './CarbonChat';
 
 export async function stopCugaAgent(threadId: string) {
   try {
-    const url = getCugaBackendUrl();
     console.log(`Calling /stop for thread: ${threadId}`);
-    const response = await fetch(`${url}/stop`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "X-Thread-ID": threadId,
-      },
-    });
+    const response = await api.postStop(threadId);
     
     if (response.ok) {
       const result = await response.json();
@@ -168,9 +147,9 @@ export async function customSendMessage(
     streaming_metadata: { response_id: responseID },
   });
 
-  const CUGA_BACKEND_URL = getCugaBackendUrl();
+  const baseUrl = api.getApiBaseUrl();
   try {
-    console.log(`Connecting to CUGA backend at: ${CUGA_BACKEND_URL}/stream`);
+    console.log(`Connecting to CUGA backend at: ${baseUrl}/stream`);
     console.log(`Thread ID: ${threadId}`);
     console.log(`User message: ${userMessage}`);
     console.log(`Use Draft: ${useDraft}`);
@@ -195,12 +174,15 @@ export async function customSendMessage(
       ? JSON.stringify(actionResponse)
       : JSON.stringify({ query: userMessage });
     
-    const response = await fetch(`${CUGA_BACKEND_URL}/stream`, {
-      method: "POST",
-      headers,
-      body,
-      signal: requestOptions.signal,
-    });
+    const response = await api.postStream(
+      actionResponse || { query: userMessage },
+      {
+        threadId,
+        useDraft,
+        disableHistory,
+        signal: requestOptions.signal,
+      }
+    );
 
     console.log(`Response status: ${response.status}`);
     
@@ -606,7 +588,7 @@ export async function customSendMessage(
         },
       });
     } else {
-      const url = getCugaBackendUrl();
+      const url = api.getApiBaseUrl();
       const msg = error.message || "Failed to connect to CUGA backend";
       instance.messaging.addMessage({
         output: {

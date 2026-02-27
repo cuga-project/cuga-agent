@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from "react";
+import * as api from "./api";
 import { CugaHeader } from "./CugaHeader";
 
 interface ConfigHeaderProps {
@@ -15,7 +16,7 @@ export function ConfigHeader({
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
 
   useEffect(() => {
-    fetch("/api/agent/context")
+    api.getAgentContext()
       .then((res) => (res.ok ? res.json() : null))
       .then(
         (data) =>

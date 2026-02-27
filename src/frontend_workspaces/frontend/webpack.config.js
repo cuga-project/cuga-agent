@@ -149,8 +149,8 @@ export default {
     historyApiFallback: true,
     proxy: [
       {
-        context: ['/api'],
-        target: 'http://localhost:7860',
+        context: ['/api', '/auth', '/stream', '/stop', '/reset', '/health', '/functions'],
+        target: 'https://localhost:7860',
         changeOrigin: true,
         secure: false,
       },

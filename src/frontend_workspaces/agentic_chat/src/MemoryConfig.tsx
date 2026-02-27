@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { X, Save, Plus, Trash2 } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import "./ConfigModal.css";
 
 interface SavedTrajectory {
@@ -72,7 +73,7 @@ export default function MemoryConfig({ onClose }: MemoryConfigProps) {
 
   const loadConfig = async () => {
     try {
-      const response = await fetch('/api/config/memory');
+      const response = await apiFetch('/api/config/memory');
       if (response.ok) {
         const data = await response.json();
         setConfig({
@@ -103,7 +104,7 @@ export default function MemoryConfig({ onClose }: MemoryConfigProps) {
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
-      const response = await fetch('/api/config/memory', {
+      const response = await apiFetch('/api/config/memory', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),

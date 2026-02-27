@@ -16,6 +16,7 @@ import {
   CarbonTheme,
   BusEventType,
 } from '@carbon/ai-chat';
+import * as api from '../api';
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
 import './CarbonChat.css';
@@ -102,11 +103,7 @@ const CarbonChat = ({
     setDebugError(null);
     try {
       const activeThreadId = currentThreadId || getOrCreateThreadId();
-      const response = await fetch(`/api/agent/state?thread_id=${activeThreadId}`, {
-        headers: {
-          'X-Thread-ID': activeThreadId
-        }
-      });
+      const response = await api.getAgentState(activeThreadId);
       if (!response.ok) {
         const errorData = await response.json().catch(() => ({}));
         throw new Error(errorData.detail || `HTTP error! status: ${response.status}`);

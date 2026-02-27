@@ -16,6 +16,7 @@ import {
   MessageResponseTypes,
   type ReasoningStep,
 } from "@carbon/ai-chat";
+import * as api from "../api";
 import {
   RESPONSE_USER_PROFILE,
   extractEventData,
@@ -52,10 +53,7 @@ async function customLoadHistory(
   }
 
   try {
-    // Fetch streaming events
-    const eventsResponse = await fetch(
-      `/api/conversation-stream-events/${threadId}?agent_id=cuga-default&user_id=default_user`
-    );
+    const eventsResponse = await api.getConversationStreamEvents(threadId);
 
     if (!eventsResponse.ok) {
       console.error("Failed to load conversation stream events");
@@ -182,9 +180,7 @@ async function customLoadHistory(
 // Fallback function to load basic messages
 async function loadBasicMessages(threadId: string): Promise<HistoryItem[]> {
   try {
-    const response = await fetch(
-      `/api/conversation-messages/${threadId}?agent_id=cuga-default&user_id=default_user`
-    );
+    const response = await api.getConversationMessages(threadId);
 
     if (!response.ok) {
       return [];

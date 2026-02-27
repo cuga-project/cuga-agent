@@ -43,6 +43,14 @@ The email of my assistant is jane@example.com"""
     return policy
 
 
+def _demo_uses_ssl() -> bool:
+    return bool(os.environ.get("SSL_KEYFILE", "").strip() and os.environ.get("SSL_CERTFILE", "").strip())
+
+
+def _demo_port() -> int:
+    return int(os.environ.get("DYNACONF_SERVER_PORTS__DEMO", str(settings.server_ports.demo)))
+
+
 def _make_app_manager() -> AppManager:
     return AppManager(
         process_registry=direct_processes,
@@ -50,7 +58,7 @@ def _make_app_manager() -> AppManager:
         kill_ports=kill_processes_by_port,
         kill_process=kill_process_tree,
         wait_tcp=lambda p, lbl, r, i: wait_for_tcp_port(p, lbl, max_retries=r, retry_interval=i),
-        wait_http=wait_for_server,
+        wait_http=lambda p, name: wait_for_server(p, name, https=_demo_uses_ssl() and p == _demo_port()),
     )
 
 
@@ -163,7 +171,11 @@ def wait_for_tcp_port(
 
 
 def wait_for_server(
-    port: int, server_name: str = "Server", max_retries: int = None, retry_interval: float = 0.5
+    port: int,
+    server_name: str = "Server",
+    max_retries: int = None,
+    retry_interval: float = 0.5,
+    https: bool = False,
 ):
     """
     Wait for a server to be ready by pinging its health endpoint.
@@ -173,6 +185,7 @@ def wait_for_server(
         server_name: Name of the server for logging (default: "Server")
         max_retries: Maximum number of retry attempts (default: 120 on Unix, 300 on Windows)
         retry_interval: Time in seconds between retries (default: 0.5)
+        https: Whether to use HTTPS (default: False)
 
     Raises:
         TimeoutError: If the server doesn't become ready within max_retries attempts
@@ -181,11 +194,12 @@ def wait_for_server(
     if max_retries is None:
         max_retries = 300 if platform.system() == "Windows" else 120
 
-    url = f"http://127.0.0.1:{port}/"
+    scheme = "https" if https else "http"
+    url = f"{scheme}://127.0.0.1:{port}/"
 
     for attempt in range(max_retries):
         try:
-            with httpx.Client(timeout=1.0) as client:
+            with httpx.Client(timeout=1.0, verify=False) as client:
                 response = client.get(url)
                 if response.status_code == 200:
                     logger.info(f"{server_name} is ready!")

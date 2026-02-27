@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback } from "react";
+import * as api from "./api";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat from "./carbon-chat/CarbonChat";
 import {
@@ -272,7 +273,7 @@ export function ChatLanding() {
   // ── Thread helpers ──────────────────────────────────────────────────────────
   const refreshThreads = useCallback(async () => {
     try {
-      const res = await fetch("/api/conversation-threads?agent_id=cuga-default&user_id=default_user");
+      const res = await api.getConversationThreads();
       if (res.ok) setThreads((await res.json()).threads || []);
     } catch (err) {
       console.error("Error fetching threads:", err);
@@ -294,9 +295,7 @@ export function ChatLanding() {
     if (!window.confirm("Remove all conversations? This cannot be undone.")) return;
     try {
       await Promise.all(
-        threads.map((t) =>
-          fetch(`/api/conversations/${t.thread_id}?agent_id=cuga-default&user_id=default_user`, { method: "DELETE" }),
-        ),
+        threads.map((t) => api.deleteConversation(t.thread_id)),
       );
       setThreads([]);
       setSelectedThreadId(null);
@@ -315,9 +314,9 @@ export function ChatLanding() {
         const isDraft = false; // Use published config for chat landing
         
         const [contextRes, toolsListRes, manageRes] = await Promise.all([
-          fetch("/api/agent/context"),
-          fetch(`/api/tools/list?agent_id=${agentId}&draft=${isDraft ? "1" : "0"}`),
-          fetch("/api/manage/config"),
+          api.getAgentContext(),
+          api.getToolsList(isDraft),
+          api.getManageConfig(),
         ]);
 
         let agentName = "CUGA Default Agent";
@@ -400,7 +399,7 @@ export function ChatLanding() {
   useEffect(() => {
     (async () => {
       try {
-        const res = await fetch("/api/conversation-threads?agent_id=cuga-default&user_id=default_user");
+        const res = await api.getConversationThreads();
         if (!res.ok) {
           const errorMsg = `Failed to load conversation threads (${res.status} ${res.statusText})`;
           addToast("warning", "Threads Load Warning", errorMsg);
@@ -420,7 +419,7 @@ export function ChatLanding() {
 
   const fetchWorkspaceTree = useCallback(async () => {
     try {
-      const res = await fetch("/api/workspace/tree");
+      const res = await api.getWorkspaceTree();
       if (res.ok) {
         const data = await res.json();
         setWorkspaceTree(data.tree || []);
@@ -448,7 +447,7 @@ export function ChatLanding() {
       return;
     }
     try {
-      const res = await fetch(`/api/workspace/file?path=${encodeURIComponent(node.path)}`);
+      const res = await api.getWorkspaceFile(node.path);
       if (res.ok) {
         const data = await res.json();
         setFileModal({ path: node.path, content: data.content, name: node.name });
@@ -932,7 +931,7 @@ export function ChatLanding() {
               renderIcon={Download}
               onClick={async () => {
                 try {
-                  const res = await fetch(`/api/workspace/download?path=${encodeURIComponent(fileModal.path)}`);
+                  const res = await api.getWorkspaceDownload(fileModal.path);
                   if (res.ok) {
                     const blob = await res.blob();
                     const url = URL.createObjectURL(blob);

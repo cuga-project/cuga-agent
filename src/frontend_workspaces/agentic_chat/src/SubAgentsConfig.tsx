@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { X, Save, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import "./ConfigModal.css";
 
 interface Tool {
@@ -84,7 +85,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
 
   const loadConfig = async () => {
     try {
-      const response = await fetch('/api/config/subagents');
+      const response = await apiFetch('/api/config/subagents');
       if (response.ok) {
         const data = await response.json();
         const updatedData = {
@@ -105,7 +106,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
   const loadApps = async () => {
     setLoadingApps(true);
     try {
-      const response = await fetch('/api/apps');
+      const response = await apiFetch('/api/apps');
       if (response.ok) {
         const data = await response.json();
         setAvailableApps(data.apps || []);
@@ -122,7 +123,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
       return appToolsCache[appName];
     }
     try {
-      const response = await fetch(`/api/apps/${encodeURIComponent(appName)}/tools`);
+      const response = await apiFetch(`/api/apps/${encodeURIComponent(appName)}/tools`);
       if (response.ok) {
         const data = await response.json();
         const tools = data.tools || [];
@@ -138,7 +139,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
-      const response = await fetch('/api/config/subagents', {
+      const response = await apiFetch('/api/config/subagents', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),

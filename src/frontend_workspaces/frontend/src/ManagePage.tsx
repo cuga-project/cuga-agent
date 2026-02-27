@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
 import { Link, useParams, useLocation } from "react-router-dom";
+import * as api from "./api";
 import {
   Button,
   TextInput,
@@ -150,7 +151,7 @@ export function ManagePage() {
   configRef.current = config;
 
   useEffect(() => {
-    fetch("/api/agent/context")
+    api.getAgentContext()
       .then((res) => (res.ok ? res.json() : null))
       .then(
         (data) =>
@@ -228,8 +229,8 @@ export function ManagePage() {
     try {
       skipDraftSaveRef.current = true;
       const [draftRes, toolsListRes] = await Promise.all([
-        fetch("/api/manage/config?draft=1"),
-        fetch("/api/tools/list?draft=1"),
+        api.getManageConfig(true),
+        api.getToolsList(true),
       ]);
       
       // Check for HTTP errors
@@ -277,7 +278,7 @@ export function ManagePage() {
         }
       }
       if (version === null) {
-        const publishedRes = await fetch("/api/manage/config");
+        const publishedRes = await api.getManageConfig();
         if (publishedRes.ok) {
           const data = await publishedRes.json();
           if (data.config && Object.keys(data.config).length > 0) {
@@ -341,7 +342,7 @@ export function ManagePage() {
 
   const loadHistory = useCallback(async () => {
     try {
-      const res = await fetch("/api/manage/config/history");
+      const res = await api.getManageConfigHistory();
       if (res.ok) {
         const data = await res.json();
         setHistory(data.versions || []);
@@ -360,11 +361,7 @@ export function ManagePage() {
     const toSave = configRef.current;
     setDraftSaving(true);
     try {
-      const res = await fetch("/api/manage/config/draft", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: toSave }),
-      });
+      const res = await api.postManageConfigDraft(toSave);
       setDraftSaving(false);
       if (res.ok) {
         const data = await res.json().catch(() => ({}));
@@ -421,7 +418,7 @@ export function ManagePage() {
 
   const loadVersion = async (version: number) => {
     try {
-      const res = await fetch(`/api/manage/config?version=${version}`);
+      const res = await api.getManageConfigVersion(version);
       if (res.ok) {
         const data = await res.json();
         const next = { ...DEFAULT_CONFIG, ...data.config };
@@ -455,11 +452,7 @@ export function ManagePage() {
       if (!toSave.policies) {
         toSave.policies = { enablePolicies: true, policies: [] };
       }
-      const res = await fetch("/api/manage/config", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: toSave }),
-      });
+      const res = await api.postManageConfig(toSave);
       if (res.ok) {
         const data = await res.json();
         console.log('[Save Config] Response data:', data);
@@ -905,7 +898,7 @@ export function ManagePage() {
                               renderIcon={DocumentIcon}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                fetch(`/api/manage/config?version=${v.version}`)
+                                api.getManageConfigVersion(v.version)
                                   .then((res) => (res.ok ? res.json() : null))
                                   .then((data) => data && setViewVersion({ version: v.version, config: data.config ?? {} }))
                                   .catch(() => {});

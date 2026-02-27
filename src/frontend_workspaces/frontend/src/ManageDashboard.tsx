@@ -16,6 +16,8 @@ import {
   Settings,
   DocumentMultiple_01,
 } from "@carbon/icons-react";
+import * as api from "./api";
+import { handleOidcCallback } from "./auth";
 import { CugaHeader } from "./CugaHeader";
 import "./ManageDashboard.css";
 
@@ -33,13 +35,39 @@ export function ManageDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
+  const [callbackPending, setCallbackPending] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
+    const params = new URLSearchParams(window.location.search);
+    const code = params.get("code");
+    const state = params.get("state");
+
+    if (code && state) {
+      setCallbackPending(true);
+      handleOidcCallback(code, state)
+        .catch((e) => setError(e instanceof Error ? e.message : "Auth callback failed"))
+        .finally(() => setCallbackPending(false));
+      return;
+    }
+
+    api.getAuthConfig().then((c) => {
+      if (!c.enabled) return;
+      const base = api.getApiBaseUrl();
+      api.apiFetch(`${base}/auth/userinfo`).then((r) => {
+        if (r.status === 401) {
+          window.location.href = `${base}/auth/login`;
+        }
+      }).catch(() => {});
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (callbackPending) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
-    fetch("/api/agents")
+    api.getAgents()
       .then((res) => {
         if (!res.ok) throw new Error(res.statusText);
         return res.json();
@@ -56,10 +84,11 @@ export function ManageDashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [callbackPending]);
 
   useEffect(() => {
-    fetch("/api/agent/context")
+    if (callbackPending) return;
+    api.getAgentContext()
       .then((res) => (res.ok ? res.json() : null))
       .then(
         (data) =>
@@ -70,7 +99,7 @@ export function ManageDashboard() {
           })
       )
       .catch(() => {});
-  }, []);
+  }, [callbackPending]);
 
   return (
     <div className="manage-dashboard-page" style={{ width: "100%", display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -88,8 +117,8 @@ export function ManageDashboard() {
           Select an agent to configure it and try it out.
         </p>
 
-        {loading && (
-          <InlineLoading description="Loading agents…" />
+        {(loading || callbackPending) && (
+          <InlineLoading description={callbackPending ? "Completing sign-in…" : "Loading agents…"} />
         )}
 
         {error && (

@@ -40,6 +40,8 @@ dependencies = [
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.2",
     "asyncpg>=0.30",
+    "PyJWT[crypto]>=2.10.0",
+    "cryptography>=44.0.0",
 ]
 
 [project.optional-dependencies]
