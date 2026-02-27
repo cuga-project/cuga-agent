@@ -2,6 +2,7 @@ import base64
 import hashlib
 import os
 import secrets
+import time
 from typing import Any, Optional
 from urllib.parse import urlencode
 
@@ -36,8 +37,8 @@ class OIDCClient:
         self.jwks_cache_ttl = jwks_cache_ttl
         self._discovery: Optional[dict[str, Any]] = None
         self._validator: Optional[JWTValidator] = None
-        # Maps state → code_verifier for in-flight PKCE flows
-        self._pkce_verifiers: dict[str, str] = {}
+        self._pkce_ttl = 300
+        self._pkce_verifiers: dict[str, tuple[str, float]] = {}
 
     async def get_discovery(self) -> dict[str, Any]:
         if self._discovery is not None:
@@ -62,7 +63,8 @@ class OIDCClient:
         auth_endpoint = discovery["authorization_endpoint"]
         state = state or secrets.token_urlsafe(32)
         verifier, challenge = _pkce_pair()
-        self._pkce_verifiers[state] = verifier
+        expiry = time.time() + self._pkce_ttl
+        self._pkce_verifiers[state] = (verifier, expiry)
         params = {
             "response_type": "code",
             "client_id": self.client_id,
@@ -75,19 +77,37 @@ class OIDCClient:
         url = f"{auth_endpoint}?{urlencode(params)}"
         return url, state
 
+    def _prune_expired_pkce_verifiers(self) -> None:
+        now = time.time()
+        expired = [s for s, (_, exp) in self._pkce_verifiers.items() if now > exp]
+        for s in expired:
+            del self._pkce_verifiers[s]
+
     async def exchange_code(self, code: str, state: str) -> tuple[TokenResponse, UserInfo]:
         discovery = await self.get_discovery()
         token_endpoint = discovery["token_endpoint"]
         jwks_uri = discovery.get("jwks_uri", "")
         issuer = discovery.get("issuer")
 
-        code_verifier = self._pkce_verifiers.pop(state, None)
-        logger.debug(
-            "exchange_code: redirect_uri={} code_verifier_present={} state={}",
-            self.redirect_uri,
-            code_verifier is not None,
-            state[:8] + "…",
-        )
+        self._prune_expired_pkce_verifiers()
+        entry = self._pkce_verifiers.pop(state, None)
+        if entry is None:
+            logger.warning(
+                "exchange_code: PKCE verifier missing or expired for state={} (state not in self._pkce_verifiers); rejecting callback",
+                state[:8] + "…" if len(state) > 8 else state,
+            )
+            raise ValueError(
+                "PKCE verifier missing or expired for this authorization flow; state may be invalid, reused, or expired"
+            )
+        code_verifier, expiry = entry
+        if time.time() > expiry:
+            logger.warning(
+                "exchange_code: PKCE verifier expired for state={}; rejecting callback",
+                state[:8] + "…" if len(state) > 8 else state,
+            )
+            raise ValueError(
+                "PKCE verifier missing or expired for this authorization flow; state may be invalid, reused, or expired"
+            )
 
         token_data: dict[str, str] = {
             "grant_type": "authorization_code",
@@ -95,9 +115,8 @@ class OIDCClient:
             "redirect_uri": self.redirect_uri,
             "client_id": self.client_id,
             "client_secret": self.client_secret,
+            "code_verifier": code_verifier,
         }
-        if code_verifier:
-            token_data["code_verifier"] = code_verifier
 
         async with httpx.AsyncClient() as client:
             resp = await client.post(

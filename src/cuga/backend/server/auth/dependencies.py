@@ -2,6 +2,7 @@ from typing import Optional
 
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from loguru import logger
 
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.auth.jwt_validator import JWTValidator
@@ -17,8 +18,13 @@ def _auth_enabled() -> bool:
 
         auth = getattr(settings, "auth", None)
         return bool(auth and getattr(auth, "enabled", False))
-    except Exception:
-        return False
+    except Exception as e:
+        logger.warning(
+            "auth config check failed (fail-closed): {}",
+            e,
+            exc_info=True,
+        )
+        return True
 
 
 def _session_cookie_name() -> str:

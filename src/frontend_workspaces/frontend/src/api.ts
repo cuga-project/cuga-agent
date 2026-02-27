@@ -4,9 +4,6 @@
 
 export function getApiBaseUrl(): string {
   if (typeof window === "undefined") return "http://localhost:7860";
-  if ((window as any).__CUGA_BACKEND_URL__) return (window as any).__CUGA_BACKEND_URL__;
-  const envUrl = (process as any)?.env?.CUGA_BACKEND_URL;
-  if (envUrl && String(envUrl).trim()) return String(envUrl).trim();
   const { hostname, protocol, origin, port } = window.location;
   if (hostname !== "localhost" && hostname !== "127.0.0.1") return origin;
   if (port === "3002") return origin;
