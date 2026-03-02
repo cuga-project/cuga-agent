@@ -174,9 +174,11 @@ def get_secret_sync(
         )
         done.set()
 
-    t = threading.Thread(target=run)
+    t = threading.Thread(target=run, daemon=True)
     t.start()
-    done.wait(timeout=5.0)
+    finished = done.wait(timeout=5.0)
+    if not finished:
+        raise TimeoutError("get_secret_sync timed out after 5s")
     return result[0]
 
 

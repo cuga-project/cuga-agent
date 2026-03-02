@@ -122,7 +122,13 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
                     llm_cfg.get("model"),
                 )
             except Exception as _e:
-                logger.debug("Failed to create LLM from config: %s", _e)
+                logger.warning(
+                    "Failed to create LLM from saved config (provider=%s model=%s): %s — "
+                    "will use env/TOML settings at request time",
+                    llm_cfg.get("provider"),
+                    llm_cfg.get("model"),
+                    _e,
+                )
                 app_state.current_llm = None
             if llm_cfg.get("model"):
                 os.environ["MODEL_NAME"] = str(llm_cfg["model"])
@@ -418,8 +424,7 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                 if overrides["cuga_lite_max_steps"] is not None:
                     draft_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
                 llm_cfg = (config or {}).get("llm") or {}
-                if llm_cfg:
-                    draft_agent.llm_config = llm_cfg
+                draft_agent.llm_config = llm_cfg if llm_cfg else None
                 await draft_agent.build_graph()
                 logger.info("[DEBUG] Draft agent graph rebuilt successfully")
             else:
@@ -499,8 +504,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     prod_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
                 # Propagate published LLM config so build_graph uses the correct provider/model
                 llm_cfg = (config or {}).get("llm") or {}
-                if llm_cfg:
-                    prod_agent.llm_config = llm_cfg
+                prod_agent.llm_config = llm_cfg if llm_cfg else None
                 await prod_agent.build_graph()
                 logger.info("[DEBUG] Production agent graph rebuilt successfully")
             else:

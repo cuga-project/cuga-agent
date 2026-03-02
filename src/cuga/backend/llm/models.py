@@ -188,8 +188,9 @@ class LLMManager:
 
     def _create_cache_key(self, model_settings: Dict[str, Any]) -> str:
         """Create a unique cache key from model settings including resolved values"""
-        # Sort settings to ensure consistent hashing
-        d = self.convert_dates_to_strings(model_settings.to_dict())
+        to_dict = getattr(model_settings, "to_dict", None)
+        raw = to_dict() if callable(to_dict) else model_settings
+        d = self.convert_dates_to_strings(raw)
         keys_to_delete = [key for key in d if "prompt" in key]
 
         for key in keys_to_delete:
@@ -752,6 +753,9 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
     No caching. Used by manage_routes after publish/draft-save.
     When force_env is true or mode is "local", db:// and vault:// refs are ignored so env vars are used.
     In local mode, provider/platform is taken from settings.agent.code.model (e.g. settings.groq.toml).
+
+    Raises ValueError if the LLM cannot be instantiated (e.g. API key unresolvable).
+    Callers should catch this and fall back to env/TOML settings.
     """
     if not llm_cfg:
         llm_cfg = {}
@@ -801,6 +805,23 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
                 )
         except Exception:
             pass
+
+    # For non-local/non-force_env modes (e.g. vault), verify the API key is actually
+    # resolvable before attempting to instantiate. Providers like openai require a key
+    # and will raise at construction time if it is missing — which would crash startup.
+    if not use_env and platform in ("openai", "azure", "openrouter"):
+        apikey_ref = api_key or llm_cfg.get("apikey_name")
+        resolved_key = _normalize_secret(resolve_secret(apikey_ref)) if apikey_ref else None
+        if not resolved_key:
+            resolved_key = _normalize_secret(resolve_secret("OPENAI_API_KEY")) or os.environ.get(
+                "OPENAI_API_KEY"
+            )
+        if not resolved_key:
+            raise ValueError(
+                f"create_llm_from_config: cannot resolve API key for provider '{platform}' "
+                f"(ref={apikey_ref!r}). Ensure the secret is stored in the configured backend."
+            )
+
     settings_dict = {
         "platform": platform,
         "model": model,

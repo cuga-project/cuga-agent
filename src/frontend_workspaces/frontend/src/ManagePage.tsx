@@ -393,9 +393,14 @@ export function ManagePage() {
     }
   }, []);
 
+  const effectiveAgentId = agentId ?? "cuga-default";
+
   const refreshSecrets = useCallback(async () => {
     try {
-      const [secretsRes, configRes] = await Promise.all([api.getSecrets(), api.getSecretsConfig()]);
+      const [secretsRes, configRes] = await Promise.all([
+        api.getSecrets(effectiveAgentId),
+        api.getSecretsConfig(),
+      ]);
       let mode = "local";
       if (configRes.ok) {
         const cfg = await configRes.json();
@@ -417,7 +422,7 @@ export function ManagePage() {
         })));
       }
     } catch {}
-  }, []);
+  }, [effectiveAgentId]);
 
   useEffect(() => {
     refreshSecrets();
@@ -1037,7 +1042,7 @@ export function ManagePage() {
                     onChange={setTools}
                     connectedApps={connectedApps}
                     connectedTools={connectedTools}
-                    agentId={"cuga-default"}
+                    agentId={effectiveAgentId}
                     onError={(title, message) => addToast("error", title, message)}
                     onOpenSecrets={() => setSecretsModalOpen(true)}
                   />
@@ -1337,7 +1342,7 @@ export function ManagePage() {
         </>
       )}
 
-      <SecretsManager open={secretsModalOpen} onClose={() => { setSecretsModalOpen(false); refreshSecrets(); }} agentId="cuga-default" />
+      <SecretsManager open={secretsModalOpen} onClose={() => { setSecretsModalOpen(false); refreshSecrets(); }} agentId={effectiveAgentId} />
 
       {showPoliciesModal && (
         <PoliciesConfig

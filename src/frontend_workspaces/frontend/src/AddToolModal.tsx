@@ -24,6 +24,7 @@ interface AddToolModalProps {
   onClose: () => void;
   onSave: (tool: ToolEntry) => void;
   initial?: ToolEntry | null;
+  agentId?: string;
 }
 
 const emptyAuth: ToolAuth = { type: "none" };
@@ -87,7 +88,7 @@ const TOOL_TEMPLATES: ToolTemplate[] = [
   },
 ];
 
-export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
+export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModalProps) {
   const [name, setName] = useState("");
   const [type, setType] = useState<"mcp" | "openapi">("mcp");
   const [mcpMode, setMcpMode] = useState<McpConnectionMode>("url");
@@ -108,7 +109,7 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
   const [showTemplates, setShowTemplates] = useState(!initial);
 
   useEffect(() => {
-    Promise.all([api.getSecrets(), api.getSecretsConfig()])
+    Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
       .then(async ([secretsRes, configRes]) => {
         let mode = "local";
         if (configRes.ok) {
@@ -130,7 +131,7 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
         }
       })
       .catch(() => {});
-  }, []);
+  }, [agentId]);
 
   useEffect(() => {
     if (initial) {
@@ -471,13 +472,12 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
                                 ? inlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
                                 : `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
                               const slug = baseSlug || `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
-                              const res = await api.createSecret(slug, inlineCreateValue.trim(), `Auth for ${name.trim() || "tool"}`);
+                              const res = await api.createSecret(slug, inlineCreateValue.trim(), `Auth for ${name.trim() || "tool"}`, undefined, agentId);
                               if (res.ok) {
                                 setAuthValue(`db://${slug}`);
                                 setInlineCreateOpen(false);
-                                setInlineCreateValue("");
                                 setInlineCreateKey("");
-                                api.getSecrets().then((r) => {
+                                api.getSecrets(agentId).then((r) => {
                                   if (r.ok) r.json().then((d) => setSecretsList(d.secrets || d.overrides || []));
                                 });
                               }

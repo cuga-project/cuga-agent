@@ -237,6 +237,7 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
           onClose={() => setModalOpen(false)}
           onSave={handleAdd}
           initial={null}
+          agentId={agentId}
         />
       )}
       {editingIndex !== null && (
@@ -244,6 +245,7 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
           onClose={() => setEditingIndex(null)}
           onSave={handleEdit}
           initial={editingTool}
+          agentId={agentId}
         />
       )}
       {toolsModalServerName && (
