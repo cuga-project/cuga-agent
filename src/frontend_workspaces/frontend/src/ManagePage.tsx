@@ -974,7 +974,6 @@ export function ManagePage() {
                             setLlmModelsLoading(true);
                             try {
                               const res = await api.getLlmModels(
-                                llm.base_url ?? "",
                                 llm.api_key ?? "",
                                 !!llm.disable_ssl,
                                 llm.provider

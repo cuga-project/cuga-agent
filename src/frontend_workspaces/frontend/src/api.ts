@@ -120,18 +120,17 @@ export async function getManageConfigVersion(version: string): Promise<Response>
 }
 
 export async function getLlmModels(
-  baseUrl: string,
   apiKey: string,
   disableSsl?: boolean,
   provider?: string
 ): Promise<Response> {
   const params = new URLSearchParams();
-  if (baseUrl) params.set("base_url", baseUrl);
-  if (apiKey) params.set("api_key", apiKey);
   if (disableSsl) params.set("disable_ssl", "true");
   if (provider) params.set("provider", provider);
   const q = params.toString() ? `?${params.toString()}` : "";
-  return apiFetch(`/api/manage/llm/models${q}`);
+  const headers: Record<string, string> = {};
+  if (apiKey) headers["X-LLM-API-Key"] = apiKey;
+  return apiFetch(`/api/manage/llm/models${q}`, { headers });
 }
 
 export async function getManageConfigHistory(): Promise<Response> {

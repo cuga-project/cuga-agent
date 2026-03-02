@@ -1,3 +1,4 @@
+import re
 import threading
 from datetime import date
 from typing import Dict, Any, Optional
@@ -13,6 +14,25 @@ from loguru import logger
 
 from cuga.backend.secrets import resolve_secret
 from cuga.config import settings
+
+_ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+
+
+def _normalize_secret(val: Optional[str]) -> Optional[str]:
+    """If val looks like an env var ref (e.g. GROQ_API_KEY), resolve from os.environ.
+    Prevents literal env names from being sent as credentials when resolve_secret
+    returns a raw ref (e.g. plain scheme).
+    """
+    if not val or not isinstance(val, str):
+        return None
+    s = val.strip()
+    if not s:
+        return None
+    if _ENV_REF_PATTERN.match(s):
+        actual = os.environ.get(s)
+        return actual if actual else None
+    return s
+
 
 _current_llm_override: Optional[Dict[str, Any]] = None
 
@@ -343,27 +363,27 @@ class LLMManager:
 
         config_api_key = d.get("api_key")
         if config_api_key and isinstance(config_api_key, str):
-            val = resolve_secret(config_api_key)
+            val = _normalize_secret(resolve_secret(config_api_key))
             if val:
                 headers["Authorization"] = val if val.lower().startswith("bearer ") else f"Bearer {val}"
                 return headers
 
         if os.environ.get("LLM_AUTH_HEADER"):
-            val = resolve_secret("LLM_AUTH_HEADER")
+            val = _normalize_secret(resolve_secret("LLM_AUTH_HEADER"))
             if val:
                 headers["Authorization"] = val if val.lower().startswith("bearer ") else f"Bearer {val}"
                 return headers
 
         token_env = d.get("auth_token") or d.get("api_key") or d.get("apikey_name")
         if token_env:
-            token = resolve_secret(token_env)
+            token = _normalize_secret(resolve_secret(token_env))
             if token:
                 headers["Authorization"] = f"Bearer {token}"
                 return headers
 
         auth_header_env = d.get("auth_header")
         if isinstance(auth_header_env, str):
-            val = resolve_secret(auth_header_env)
+            val = _normalize_secret(resolve_secret(auth_header_env))
             if val:
                 headers["Authorization"] = (
                     val if val.strip().lower().startswith("bearer ") else f"Bearer {val}"
@@ -374,7 +394,7 @@ class LLMManager:
         if isinstance(default_headers, dict):
             for k, v in default_headers.items():
                 if isinstance(v, str) and v.startswith("$"):
-                    v = resolve_secret(v[1:].strip()) or ""
+                    v = _normalize_secret(resolve_secret(v[1:].strip())) or ""
                 if v:
                     headers[k] = str(v)
 
@@ -502,13 +522,15 @@ class LLMManager:
             else:
                 apikey_ref = model_settings.get("api_key")
                 if apikey_ref:
-                    openai_params["openai_api_key"] = resolve_secret(apikey_ref) or apikey_ref
+                    openai_params["openai_api_key"] = _normalize_secret(
+                        resolve_secret(apikey_ref)
+                    ) or os.environ.get(apikey_ref)
                 else:
                     apikey_name = model_settings.get("apikey_name")
                     if apikey_name:
-                        openai_params["openai_api_key"] = resolve_secret(apikey_name) or os.environ.get(
-                            apikey_name
-                        )
+                        openai_params["openai_api_key"] = _normalize_secret(
+                            resolve_secret(apikey_name)
+                        ) or os.environ.get(apikey_name)
 
             if base_url:
                 openai_params["openai_api_base"] = base_url
@@ -529,9 +551,9 @@ class LLMManager:
             api_key = None
             apikey_ref = model_settings.get("api_key")
             if apikey_ref:
-                api_key = resolve_secret(apikey_ref) or apikey_ref
+                api_key = _normalize_secret(resolve_secret(apikey_ref)) or os.environ.get(apikey_ref)
             if not api_key:
-                api_key = resolve_secret("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
+                api_key = _normalize_secret(resolve_secret("GROQ_API_KEY")) or os.environ.get("GROQ_API_KEY")
             logger.debug(f"Creating Groq model: {model_name}")
             llm = ChatGroq(
                 groq_api_key=api_key,
@@ -548,7 +570,7 @@ class LLMManager:
             )
         elif platform == "rits":
             apikey_name = model_settings.get("apikey_name")
-            api_key = resolve_secret(apikey_name) if apikey_name else None
+            api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
             if not api_key and apikey_name:
                 api_key = os.environ.get(apikey_name)
             llm = ChatOpenAI(
@@ -560,7 +582,9 @@ class LLMManager:
                 seed=42,
             )
         elif platform == "rits-restricted":
-            api_key = resolve_secret("RITS_API_KEY_RESTRICT") or os.environ.get("RITS_API_KEY_RESTRICT")
+            api_key = _normalize_secret(resolve_secret("RITS_API_KEY_RESTRICT")) or os.environ.get(
+                "RITS_API_KEY_RESTRICT"
+            )
             llm = ChatOpenAI(
                 api_key=api_key,
                 base_url="http://nocodeui.sl.cloud9.ibm.com:4001",
@@ -580,7 +604,8 @@ class LLMManager:
             #     google_params["api_key"] = os.environ.get(apikey_name)
 
             llm = ChatGoogleGenerativeAI(
-                api_key=resolve_secret("GOOGLE_API_kEY") or os.environ.get("GOOGLE_API_kEY"),
+                api_key=_normalize_secret(resolve_secret("GOOGLE_API_KEY"))
+                or os.environ.get("GOOGLE_API_KEY"),
                 model=model_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -589,9 +614,9 @@ class LLMManager:
             logger.debug(f"Creating OpenRouter model: {model_name}")
             is_reasoning = self._is_reasoning_model(model_name)
 
-            api_key = resolve_secret("OPENROUTER_API_KEY")
-            if not api_key:
-                api_key = os.environ.get("OPENROUTER_API_KEY")
+            api_key = _normalize_secret(resolve_secret("OPENROUTER_API_KEY")) or os.environ.get(
+                "OPENROUTER_API_KEY"
+            )
             if not api_key:
                 raise ValueError("OPENROUTER_API_KEY environment variable not set")
 
@@ -649,12 +674,14 @@ class LLMManager:
             else:
                 apikey_ref = model_settings.get("api_key")
                 if apikey_ref:
-                    api_key = resolve_secret(apikey_ref) or apikey_ref
+                    api_key = _normalize_secret(resolve_secret(apikey_ref)) or os.environ.get(apikey_ref)
                 else:
                     apikey_name = model_settings.get("apikey_name")
-                    api_key = resolve_secret(apikey_name) if apikey_name else None
+                    api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
                     if not api_key:
-                        api_key = resolve_secret("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+                        api_key = _normalize_secret(resolve_secret("OPENAI_API_KEY")) or os.environ.get(
+                            "OPENAI_API_KEY"
+                        )
                     if apikey_name and not api_key:
                         api_key = os.environ.get(apikey_name)
                 if api_key:

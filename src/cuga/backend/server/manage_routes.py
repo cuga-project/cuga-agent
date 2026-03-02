@@ -200,38 +200,52 @@ _PROVIDER_MODELS_URL = {
     "openai": "https://api.openai.com/v1/models",
 }
 
+_PROVIDER_API_KEY_REF = {
+    "groq": "GROQ_API_KEY",
+    "openai": "OPENAI_API_KEY",
+}
+
 
 @router.get("/llm/models")
 async def list_llm_models(
-    base_url: str = Query("", alias="base_url"),
-    api_key: str = Query("", alias="api_key"),
+    request: Request,
     disable_ssl: bool = Query(False, alias="disable_ssl"),
-    provider: str = Query("", alias="provider"),
+    provider: str = Query("openai", alias="provider"),
 ):
-    from cuga.backend.secrets import resolve_secret
+    provider_key = (provider or "openai").lower()
+    if provider_key not in _PROVIDER_MODELS_URL:
+        raise HTTPException(status_code=400, detail="provider must be one of: groq, openai")
+    url = _PROVIDER_MODELS_URL[provider_key]
 
-    resolved_key = resolve_secret(api_key) or api_key
-    if base_url:
-        url = base_url.rstrip("/")
-        if not url.endswith("/models"):
-            url = f"{url}/models"
+    auth_header = request.headers.get("Authorization") or request.headers.get("X-LLM-API-Key")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        api_key = auth_header[7:].strip()
+    elif auth_header:
+        api_key = auth_header.strip()
     else:
-        url = _PROVIDER_MODELS_URL.get((provider or "").lower(), _PROVIDER_MODELS_URL["openai"])
+        from cuga.backend.secrets import resolve_secret
+
+        key_ref = _PROVIDER_API_KEY_REF.get(provider_key, "OPENAI_API_KEY")
+        api_key = resolve_secret(key_ref)
+
+    if not api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="API key required: set X-LLM-API-Key header or configure server-side secret",
+        )
+
     try:
-        async with httpx.AsyncClient(verify=not disable_ssl) as client:
-            r = await client.get(
-                url,
-                headers={"Authorization": f"Bearer {resolved_key}"},
-                timeout=10,
-            )
+        headers = {"Authorization": f"Bearer {api_key}"}
+        async with httpx.AsyncClient(verify=not disable_ssl, timeout=10) as client:
+            r = await client.get(url, headers=headers)
             r.raise_for_status()
             data = r.json().get("data", [])
         return {"models": sorted(m["id"] for m in data)}
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=e.response.text or str(e))
-    except Exception as e:
-        logger.warning("list_llm_models failed: %s", e)
-        raise HTTPException(status_code=502, detail=str(e))
+        raise HTTPException(status_code=e.response.status_code, detail="Models fetch failed")
+    except Exception:
+        logger.warning("list_llm_models failed")
+        raise HTTPException(status_code=502, detail="Models fetch failed")
 
 
 @router.post("/config/draft")

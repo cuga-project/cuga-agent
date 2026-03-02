@@ -106,11 +106,11 @@ async def get_secret(
     tenant_id = tenant_id or _tenant_id()
     instance_id = instance_id or _instance_id()
     agent_id = agent_id or "*"
-    store = _get_store()
     fernet = _fernet()
     if not fernet:
         logger.warning("CUGA_SECRET_KEY not set; cannot decrypt DB secrets")
         return None
+    store = _get_store()
     try:
         await ensure_schema(store)
         ph = _placeholders_pg if _is_prod(store) else _placeholders_sqlite
@@ -128,7 +128,7 @@ async def get_secret(
                         "SELECT encrypted_value FROM secrets "
                         "WHERE tenant_id = ? AND instance_id = ? AND agent_id = '*' AND version = ? AND id = ?"
                     ),
-                    (tenant_id, instance_id, "*", version, secret_id),
+                    (tenant_id, instance_id, version, secret_id),
                 )
             if not row:
                 return None

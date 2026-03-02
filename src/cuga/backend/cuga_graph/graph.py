@@ -179,7 +179,10 @@ class DynamicAgentGraph:
         # Build model: from published llm_config (no cache) or TOML + cache
         if self.llm_config:
             model = create_llm_from_config(self.llm_config)
-            model_config = None
+            model_config = settings.agent.code.model.copy()
+            model_config["streaming"] = False
+            if getattr(settings.supervisor, "enabled", False):
+                llm_manager = LLMManager()
             logger.info(
                 "build_graph: using LLM from config — provider=%s model=%s",
                 self.llm_config.get("provider"),
