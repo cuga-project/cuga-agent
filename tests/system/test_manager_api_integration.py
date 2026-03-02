@@ -384,10 +384,10 @@ class TestManagerAPIWorkflow:
 
             logger.info("✅ Draft configuration saved successfully")
 
-            # Draft agent graph is rebuilt after config save (see manage_routes.py)
-            # This starts MCP servers, but they need a moment to initialize
-            logger.info("Waiting 8 seconds for agent rebuild and MCP servers to fully initialize...")
-            time.sleep(8)
+            # Draft agent graph is rebuilt after config save (see manage_routes.py).
+            # Registry reload + MCP subprocess (npx server-filesystem) need time to initialize.
+            logger.info("Waiting 15 seconds for agent rebuild and MCP servers to fully initialize...")
+            time.sleep(15)
             logger.info("✅ Draft configuration saved and MCP servers should be ready")
 
         except httpx.ReadTimeout as e:
