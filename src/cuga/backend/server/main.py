@@ -65,6 +65,15 @@ except ImportError:
     except ImportError:
         CallbackHandler = None
 
+try:
+    import openlit
+except ImportError:
+    openlit = None
+
+if openlit is not None and settings.observability.openlit:
+    openlit.init()
+    logger.info("OpenLit observability initialized")
+
 # Import embedded assets with feature flag
 USE_EMBEDDED_ASSETS = os.getenv("USE_EMBEDDED_ASSETS", "false").lower() in ("true", "1", "yes", "on")
 

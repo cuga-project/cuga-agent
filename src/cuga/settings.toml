@@ -92,6 +92,9 @@ require_https = false
 ssl_keyfile = ""
 ssl_certfile = ""
 
+[observability]
+openlit = false  # Enable OpenLit LLM observability (traces & metrics via OpenTelemetry/OTLP)
+
 [server_ports]
 registry = 8001
 # registry_host = "http://localhost:8001"  # Optional: Full registry URL. Falls back to "http://localhost:{registry}"

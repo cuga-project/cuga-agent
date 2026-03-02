@@ -1,0 +1,55 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8889:8889"   # Prometheus exporter
+    networks:
+      - openlit
+
+  tempo:
+    image: grafana/tempo:2.3.1
+    container_name: tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200"
+      - "4317:4317"   # OTLP gRPC (from collector)
+    networks:
+      - openlit
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command: ["--config.file=/etc/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus.yml
+    ports:
+      - "9090:9090"
+    networks:
+      - openlit
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    volumes:
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+      - tempo
+    networks:
+      - openlit
+
+networks:
+  openlit:
+    driver: bridge

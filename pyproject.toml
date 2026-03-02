@@ -42,6 +42,7 @@ dependencies = [
     "asyncpg>=0.30",
     "PyJWT[crypto]>=2.10.0",
     "cryptography>=44.0.0",
+    "openlit>=1.34.30",
 ]
 
 [project.optional-dependencies]

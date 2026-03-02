@@ -33,6 +33,15 @@ except ImportError:
         logger.warning("Langfuse is not installed, LangfuseCallbackHandler will be None")
         LangfuseCallbackHandler = None
 
+try:
+    import openlit as _openlit
+except ImportError:
+    _openlit = None
+
+if _openlit is not None and settings.observability.openlit:
+    _openlit.init()
+    logger.info("OpenLit observability initialized")
+
 tracker = ActivityTracker()
 
 
