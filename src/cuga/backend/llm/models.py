@@ -11,6 +11,32 @@ from langchain_ibm import ChatWatsonx
 from langchain_core.language_models.chat_models import BaseChatModel
 from loguru import logger
 
+from cuga.backend.secrets import resolve_secret
+from cuga.config import settings
+
+_current_llm_override: Optional[Dict[str, Any]] = None
+
+
+def get_current_llm_override() -> Optional[Dict[str, Any]]:
+    return _current_llm_override
+
+
+def set_current_llm_override(override: Optional[Dict[str, Any]]) -> None:
+    global _current_llm_override
+    _current_llm_override = override
+
+
+class _ModelSettingsWrap:
+    def __init__(self, d: dict):
+        self._d = d
+
+    def get(self, k: str, default: Any = None) -> Any:
+        return self._d.get(k, default)
+
+    def to_dict(self) -> dict:
+        return self._d.copy()
+
+
 try:
     from langchain_groq import ChatGroq
 except ImportError:
@@ -160,8 +186,10 @@ class LLMManager:
         return hashlib.md5(settings_str.encode()).hexdigest()
 
     def _get_model_name(self, model_settings: Dict[str, Any], platform: str) -> str:
-        """Get model name with environment variable override support"""
-        # Check if model_name is defined in TOML settings
+        """Get model name: config (JSON) first, then env, then TOML."""
+        config_model = model_settings.get("model")
+        if config_model and str(config_model).strip():
+            return str(config_model).strip()
         toml_model_name = model_settings.get('model_name')
 
         if platform == "openai":
@@ -286,10 +314,7 @@ class LLMManager:
                 logger.debug(f"Using api_version from TOML: {toml_api_version}")
                 return toml_api_version
 
-            # Default fallback
-            default_openrouter = "https://openrouter.ai/api/v1"
-            logger.info(f"No api_version specified, using default: {default_openrouter}")
-            return default_openrouter
+            return None
         else:
             # For other platforms, use TOML or default
             api_version = model_settings.get('api_version', "2024-08-06")
@@ -316,21 +341,29 @@ class LLMManager:
         to_dict = getattr(model_settings, "to_dict", lambda: model_settings)
         d = to_dict() if callable(to_dict) else model_settings
 
+        config_api_key = d.get("api_key")
+        if config_api_key and isinstance(config_api_key, str):
+            val = resolve_secret(config_api_key)
+            if val:
+                headers["Authorization"] = val if val.lower().startswith("bearer ") else f"Bearer {val}"
+                return headers
+
         if os.environ.get("LLM_AUTH_HEADER"):
-            val = os.environ.get("LLM_AUTH_HEADER", "").strip()
-            headers["Authorization"] = val if val.lower().startswith("bearer ") else f"Bearer {val}"
-            return headers
+            val = resolve_secret("LLM_AUTH_HEADER")
+            if val:
+                headers["Authorization"] = val if val.lower().startswith("bearer ") else f"Bearer {val}"
+                return headers
 
         token_env = d.get("auth_token") or d.get("api_key") or d.get("apikey_name")
         if token_env:
-            token = os.environ.get(token_env)
+            token = resolve_secret(token_env)
             if token:
                 headers["Authorization"] = f"Bearer {token}"
                 return headers
 
         auth_header_env = d.get("auth_header")
         if isinstance(auth_header_env, str):
-            val = os.environ.get(auth_header_env)
+            val = resolve_secret(auth_header_env)
             if val:
                 headers["Authorization"] = (
                     val if val.strip().lower().startswith("bearer ") else f"Bearer {val}"
@@ -341,14 +374,24 @@ class LLMManager:
         if isinstance(default_headers, dict):
             for k, v in default_headers.items():
                 if isinstance(v, str) and v.startswith("$"):
-                    v = os.environ.get(v[1:].strip(), "")
+                    v = resolve_secret(v[1:].strip()) or ""
                 if v:
                     headers[k] = str(v)
 
         return headers
 
     def _get_base_url(self, model_settings: Dict[str, Any], platform: str) -> str:
-        """Get base URL with environment variable override support"""
+        """Get base URL: config (JSON) first, then env, then TOML.
+
+        Groq uses its own fixed endpoint — never apply a base URL for it.
+        """
+        # Groq SDK manages its own endpoint; any URL in config is ignored
+        if platform == "groq":
+            return None
+
+        config_url = model_settings.get("base_url") or model_settings.get("url")
+        if config_url and str(config_url).strip():
+            return str(config_url).strip()
         if platform == "openai":
             # Check environment variable first
             env_base_url = os.environ.get('OPENAI_BASE_URL')
@@ -457,22 +500,41 @@ class LLMManager:
                 openai_params["default_headers"] = auth_headers
                 openai_params["openai_api_key"] = "dummy"
             else:
-                apikey_name = model_settings.get("apikey_name")
-                if apikey_name:
-                    openai_params["openai_api_key"] = os.environ.get(apikey_name)
+                apikey_ref = model_settings.get("api_key")
+                if apikey_ref:
+                    openai_params["openai_api_key"] = resolve_secret(apikey_ref) or apikey_ref
+                else:
+                    apikey_name = model_settings.get("apikey_name")
+                    if apikey_name:
+                        openai_params["openai_api_key"] = resolve_secret(apikey_name) or os.environ.get(
+                            apikey_name
+                        )
 
             if base_url:
                 openai_params["openai_api_base"] = base_url
 
-            ssl_verify = os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
+            disable_ssl = model_settings.get("disable_ssl") or os.environ.get(
+                "CUGA_DISABLE_SSL", ""
+            ).lower() in ("true", "1", "yes")
+            ssl_verify = (
+                os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
+                and not disable_ssl
+            )
             if not ssl_verify:
                 openai_params["http_client"] = httpx.Client(verify=False)
                 openai_params["http_async_client"] = httpx.AsyncClient(verify=False)
 
             llm = ChatOpenAI(**openai_params)
         elif platform == "groq":
+            api_key = None
+            apikey_ref = model_settings.get("api_key")
+            if apikey_ref:
+                api_key = resolve_secret(apikey_ref) or apikey_ref
+            if not api_key:
+                api_key = resolve_secret("GROQ_API_KEY") or os.environ.get("GROQ_API_KEY")
             logger.debug(f"Creating Groq model: {model_name}")
             llm = ChatGroq(
+                groq_api_key=api_key,
                 max_tokens=max_tokens,
                 model=model_name,
                 temperature=temperature,
@@ -485,8 +547,12 @@ class LLMManager:
                 project_id=os.environ['WATSONX_PROJECT_ID'],
             )
         elif platform == "rits":
+            apikey_name = model_settings.get("apikey_name")
+            api_key = resolve_secret(apikey_name) if apikey_name else None
+            if not api_key and apikey_name:
+                api_key = os.environ.get(apikey_name)
             llm = ChatOpenAI(
-                api_key=os.environ.get(model_settings.get('apikey_name')),
+                api_key=api_key,
                 base_url=model_settings.get('url'),
                 max_tokens=max_tokens,
                 model=model_name,
@@ -494,8 +560,9 @@ class LLMManager:
                 seed=42,
             )
         elif platform == "rits-restricted":
+            api_key = resolve_secret("RITS_API_KEY_RESTRICT") or os.environ.get("RITS_API_KEY_RESTRICT")
             llm = ChatOpenAI(
-                api_key=os.environ["RITS_API_KEY_RESTRICT"],
+                api_key=api_key,
                 base_url="http://nocodeui.sl.cloud9.ibm.com:4001",
                 max_tokens=max_tokens,
                 model=model_name,
@@ -513,7 +580,7 @@ class LLMManager:
             #     google_params["api_key"] = os.environ.get(apikey_name)
 
             llm = ChatGoogleGenerativeAI(
-                api_key=os.environ.get("GOOGLE_API_kEY"),
+                api_key=resolve_secret("GOOGLE_API_kEY") or os.environ.get("GOOGLE_API_kEY"),
                 model=model_name,
                 temperature=temperature,
                 max_tokens=max_tokens,
@@ -522,7 +589,9 @@ class LLMManager:
             logger.debug(f"Creating OpenRouter model: {model_name}")
             is_reasoning = self._is_reasoning_model(model_name)
 
-            api_key = os.environ.get("OPENROUTER_API_KEY")
+            api_key = resolve_secret("OPENROUTER_API_KEY")
+            if not api_key:
+                api_key = os.environ.get("OPENROUTER_API_KEY")
             if not api_key:
                 raise ValueError("OPENROUTER_API_KEY environment variable not set")
 
@@ -552,7 +621,13 @@ class LLMManager:
             llm = ChatOpenAI(**openrouter_params)
         elif platform == "litellm" and ChatLiteLLM is not None:
             logger.debug(f"Creating LiteLLM model: {model_name}")
-            ssl_verify = os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
+            disable_ssl = model_settings.get("disable_ssl") or os.environ.get(
+                "CUGA_DISABLE_SSL", ""
+            ).lower() in ("true", "1", "yes")
+            ssl_verify = (
+                os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
+                and not disable_ssl
+            )
             if not ssl_verify:
                 import litellm
 
@@ -572,10 +647,16 @@ class LLMManager:
                     val.replace("Bearer ", "", 1) if val.lower().startswith("bearer ") else val
                 )
             else:
-                apikey_name = model_settings.get("apikey_name")
-                api_key = os.environ.get("OPENAI_API_KEY")
-                if apikey_name:
-                    api_key = os.environ.get(apikey_name) or api_key
+                apikey_ref = model_settings.get("api_key")
+                if apikey_ref:
+                    api_key = resolve_secret(apikey_ref) or apikey_ref
+                else:
+                    apikey_name = model_settings.get("apikey_name")
+                    api_key = resolve_secret(apikey_name) if apikey_name else None
+                    if not api_key:
+                        api_key = resolve_secret("OPENAI_API_KEY") or os.environ.get("OPENAI_API_KEY")
+                    if apikey_name and not api_key:
+                        api_key = os.environ.get(apikey_name)
                 if api_key:
                     litellm_params["api_key"] = api_key
             llm = ChatLiteLLM(**litellm_params)
@@ -590,6 +671,13 @@ class LLMManager:
         Args:
             model_settings: Model configuration dictionary (must contain max_tokens)
         """
+        override = get_current_llm_override()
+        if override:
+            to_dict = getattr(model_settings, "to_dict", None)
+            d = (to_dict() if callable(to_dict) else dict(model_settings)).copy()
+            d.update({k: v for k, v in override.items() if v is not None})
+            model_settings = _ModelSettingsWrap(d)
+
         max_tokens = model_settings.get('max_tokens')
         assert max_tokens is not None, "max_tokens must be specified in model_settings"
         # Check if pre-instantiated model is available
@@ -630,3 +718,76 @@ class LLMManager:
         # Update parameters for the task
         updated_model = self._update_model_parameters(model, temperature=0.1, max_tokens=max_tokens)
         return updated_model
+
+
+def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
+    """Create a fresh LLM instance directly from a UI llm_cfg dict.
+    No caching. Used by manage_routes after publish/draft-save.
+    When force_env is true or mode is "local", db:// and vault:// refs are ignored so env vars are used.
+    In local mode, provider/platform is taken from settings.agent.code.model (e.g. settings.groq.toml).
+    """
+    if not llm_cfg:
+        llm_cfg = {}
+    mgr = LLMManager()
+    try:
+        max_tokens = settings.agent.code.model.get("max_tokens", 16000)
+    except Exception:
+        max_tokens = 16000
+    if not isinstance(max_tokens, int):
+        max_tokens = 16000
+    api_key = llm_cfg.get("api_key") or None
+    _secrets = getattr(settings, "secrets", None)
+    use_env = _secrets and (
+        getattr(_secrets, "force_env", False) or getattr(_secrets, "mode", "local") == "local"
+    )
+    if (
+        use_env
+        and api_key
+        and isinstance(api_key, str)
+        and (api_key.startswith("db://") or api_key.startswith("vault://") or api_key.startswith("aws://"))
+    ):
+        api_key = None
+    platform = llm_cfg.get("provider") or "openai"
+    model = llm_cfg.get("model") or None
+    if use_env:
+        try:
+            code_model = settings.agent.code.model
+            if code_model:
+                toml_platform = (
+                    code_model.get("platform")
+                    if hasattr(code_model, "get")
+                    else getattr(code_model, "platform", None)
+                )
+                toml_model = (
+                    code_model.get("model")
+                    if hasattr(code_model, "get")
+                    else getattr(code_model, "model", None)
+                )
+                if toml_platform:
+                    platform = toml_platform
+                if toml_model:
+                    model = toml_model
+                logger.debug(
+                    "create_llm_from_config: using agent.code from TOML (local mode) — provider=%s model=%s",
+                    platform,
+                    model,
+                )
+        except Exception:
+            pass
+    settings_dict = {
+        "platform": platform,
+        "model": model,
+        "url": llm_cfg.get("base_url") or None,
+        "api_key": api_key,
+        "temperature": llm_cfg.get("temperature", 0.1),
+        "disable_ssl": llm_cfg.get("disable_ssl", False),
+        "auth_type": llm_cfg.get("auth_type"),
+        "auth_header_name": llm_cfg.get("auth_header_name"),
+        "max_tokens": max_tokens,
+        "streaming": False,
+    }
+    wrap = _ModelSettingsWrap(settings_dict)
+    model = mgr._create_llm_instance(wrap)
+    return mgr._update_model_parameters(
+        model, temperature=settings_dict["temperature"], max_tokens=max_tokens
+    )

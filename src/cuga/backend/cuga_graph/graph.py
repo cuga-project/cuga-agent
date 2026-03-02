@@ -54,7 +54,7 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import 
     create_cuga_supervisor_graph,
 )
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-from cuga.backend.llm.models import LLMManager
+from cuga.backend.llm.models import LLMManager, create_llm_from_config
 from cuga.config import settings
 from loguru import logger
 
@@ -72,6 +72,7 @@ class DynamicAgentGraph:
         reflection_enabled: Optional[bool] = None,
         shortlisting_tool_threshold: Optional[int] = None,
         cuga_lite_max_steps: Optional[int] = None,
+        llm_config: Optional[dict] = None,
     ):
         self.task_decomposition_agent = TaskDecompositionNode(TaskDecompositionAgent.create())
         self.plan_controller_agent = PlanControllerNode(PlanControllerAgent.create())
@@ -104,6 +105,7 @@ class DynamicAgentGraph:
         self.reflection_enabled = reflection_enabled
         self.shortlisting_tool_threshold = shortlisting_tool_threshold
         self.cuga_lite_max_steps = cuga_lite_max_steps
+        self.llm_config: Optional[dict] = llm_config
         self.graph = None
 
     async def build_graph(self):
@@ -174,11 +176,21 @@ class DynamicAgentGraph:
         apps = await tool_provider.get_apps()
         apps_list = [app.name for app in apps] if apps else None
 
-        # Initialize LLM
-        llm_manager = LLMManager()
-        model_config = settings.agent.code.model.copy()
-        model_config["streaming"] = False
-        model = llm_manager.get_model(model_config)
+        # Build model: from published llm_config (no cache) or TOML + cache
+        if self.llm_config:
+            model = create_llm_from_config(self.llm_config)
+            model_config = None
+            logger.info(
+                "build_graph: using LLM from config — provider=%s model=%s",
+                self.llm_config.get("provider"),
+                self.llm_config.get("model"),
+            )
+        else:
+            llm_manager = LLMManager()
+            llm_manager._models.clear()
+            model_config = settings.agent.code.model.copy()
+            model_config["streaming"] = False
+            model = llm_manager.get_model(model_config)
 
         # Create the CugaLite subgraph (tools will be fetched dynamically from tool_provider)
         # Note: This subgraph is created at build time (before any invocation).
@@ -192,6 +204,7 @@ class DynamicAgentGraph:
             tool_provider=tool_provider,
             apps_list=apps_list,
             callbacks=[self.langfuse_handler] if self.langfuse_handler else None,
+            model_settings=model_config,
         )
 
         # Compile and add as a subgraph node
@@ -303,9 +316,8 @@ class DynamicAgentGraph:
                     ),
                 }
 
-            # Create supervisor model
-            supervisor_model_config = settings.agent.code.model.copy()
-            supervisor_model_config["streaming"] = False
+            # Create supervisor model — reuse the same merged config as the main agent
+            supervisor_model_config = model_config.copy()
             supervisor_model = llm_manager.get_model(supervisor_model_config)
 
             # Create supervisor subgraph

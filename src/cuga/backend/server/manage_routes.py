@@ -4,7 +4,7 @@ import os
 from typing import Any, Optional
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
@@ -90,10 +90,46 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
     } or None
     llm_cfg = (config or {}).get("llm") or {}
     if isinstance(llm_cfg, dict):
-        if "model" in llm_cfg and llm_cfg["model"]:
-            os.environ["MODEL_NAME"] = str(llm_cfg["model"])
-        if "temperature" in llm_cfg and llm_cfg["temperature"] is not None:
-            os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
+        try:
+            from cuga.backend.llm.models import LLMManager, create_llm_from_config
+            from cuga.config import settings
+
+            _secrets = getattr(settings, "secrets", None)
+            secrets_mode = getattr(_secrets, "mode", "local") or "local"
+            force_env = bool(getattr(_secrets, "force_env", False))
+        except Exception as _e:
+            logger.debug("Failed to get secrets settings: %s", _e)
+            secrets_mode = "local"
+            force_env = False
+
+        if force_env:
+            if "model" in llm_cfg and llm_cfg["model"]:
+                os.environ["MODEL_NAME"] = str(llm_cfg["model"])
+            if "temperature" in llm_cfg and llm_cfg["temperature"] is not None:
+                os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
+            try:
+                LLMManager()._models.clear()
+            except Exception as _e:
+                logger.debug("Failed to clear LLM cache (force_env): %s", _e)
+            app_state.current_llm = None
+        else:
+            try:
+                app_state.current_llm = create_llm_from_config(llm_cfg)
+                logger.info(
+                    "Applied LLM from config (mode=%s): provider=%s model=%s",
+                    secrets_mode,
+                    llm_cfg.get("provider"),
+                    llm_cfg.get("model"),
+                )
+            except Exception as _e:
+                logger.debug("Failed to create LLM from config: %s", _e)
+                app_state.current_llm = None
+            if llm_cfg.get("model"):
+                os.environ["MODEL_NAME"] = str(llm_cfg["model"])
+            if llm_cfg.get("disable_ssl"):
+                os.environ["CUGA_DISABLE_SSL"] = "true"
+            else:
+                os.environ.pop("CUGA_DISABLE_SSL", None)
     raw_policies = (config or {}).get("policies")
     policies_list = (
         raw_policies.get("policies", [])
@@ -157,6 +193,45 @@ async def get_manage_config(
     except Exception as e:
         logger.error(f"Failed to load manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+_PROVIDER_MODELS_URL = {
+    "groq": "https://api.groq.com/openai/v1/models",
+    "openai": "https://api.openai.com/v1/models",
+}
+
+
+@router.get("/llm/models")
+async def list_llm_models(
+    base_url: str = Query("", alias="base_url"),
+    api_key: str = Query("", alias="api_key"),
+    disable_ssl: bool = Query(False, alias="disable_ssl"),
+    provider: str = Query("", alias="provider"),
+):
+    from cuga.backend.secrets import resolve_secret
+
+    resolved_key = resolve_secret(api_key) or api_key
+    if base_url:
+        url = base_url.rstrip("/")
+        if not url.endswith("/models"):
+            url = f"{url}/models"
+    else:
+        url = _PROVIDER_MODELS_URL.get((provider or "").lower(), _PROVIDER_MODELS_URL["openai"])
+    try:
+        async with httpx.AsyncClient(verify=not disable_ssl) as client:
+            r = await client.get(
+                url,
+                headers={"Authorization": f"Bearer {resolved_key}"},
+                timeout=10,
+            )
+            r.raise_for_status()
+            data = r.json().get("data", [])
+        return {"models": sorted(m["id"] for m in data)}
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=e.response.text or str(e))
+    except Exception as e:
+        logger.warning("list_llm_models failed: %s", e)
+        raise HTTPException(status_code=502, detail=str(e))
 
 
 @router.post("/config/draft")
@@ -307,6 +382,9 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             logger.warning(f"Failed to reload registry for {str(agent_id)}: {reload_err}")
             logger.exception("[DEBUG] Full traceback:")
 
+        # Apply LLM config (sets global runtime override so other agents pick it up too)
+        await _apply_published_config(state_to_update, config or {})
+
         # NOW rebuild the draft agent graph AFTER registry has been reloaded
         try:
             logger.info("[DEBUG] Rebuilding draft agent graph with new configuration...")
@@ -325,6 +403,9 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                     draft_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
                 if overrides["cuga_lite_max_steps"] is not None:
                     draft_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
+                llm_cfg = (config or {}).get("llm") or {}
+                if llm_cfg:
+                    draft_agent.llm_config = llm_cfg
                 await draft_agent.build_graph()
                 logger.info("[DEBUG] Draft agent graph rebuilt successfully")
             else:
@@ -384,7 +465,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         app_state.tools_include_version = int(ver) if ver else 0
         await _apply_published_config(app_state, config or {})
 
-        # Rebuild the production agent graph to pick up new tools from registry
+        # Rebuild the production agent graph to pick up new tools + LLM config
         try:
             logger.info("[DEBUG] Rebuilding production agent graph with new configuration...")
 
@@ -402,6 +483,10 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     prod_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
                 if overrides["cuga_lite_max_steps"] is not None:
                     prod_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
+                # Propagate published LLM config so build_graph uses the correct provider/model
+                llm_cfg = (config or {}).get("llm") or {}
+                if llm_cfg:
+                    prod_agent.llm_config = llm_cfg
                 await prod_agent.build_graph()
                 logger.info("[DEBUG] Production agent graph rebuilt successfully")
             else:

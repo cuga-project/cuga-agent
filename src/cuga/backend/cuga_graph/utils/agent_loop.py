@@ -277,6 +277,7 @@ class AgentLoop:
         reflection_enabled: Optional[bool] = None,
         shortlisting_tool_threshold: Optional[int] = None,
         cuga_lite_max_steps: Optional[int] = None,
+        current_llm: Optional[Any] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
@@ -289,6 +290,7 @@ class AgentLoop:
         self.reflection_enabled = reflection_enabled
         self.shortlisting_tool_threshold = shortlisting_tool_threshold
         self.cuga_lite_max_steps = cuga_lite_max_steps
+        self.current_llm = current_llm
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -495,6 +497,8 @@ class AgentLoop:
             config["configurable"]["shortlisting_tool_threshold"] = self.shortlisting_tool_threshold
         if self.cuga_lite_max_steps is not None:
             config["configurable"]["cuga_lite_max_steps"] = self.cuga_lite_max_steps
+        if self.current_llm is not None:
+            config["configurable"]["llm"] = self.current_llm
 
         return self.graph.astream(
             state if state else Command(resume=resume.model_dump()) if not both_none else None,

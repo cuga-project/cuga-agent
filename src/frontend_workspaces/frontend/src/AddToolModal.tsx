@@ -12,10 +12,12 @@ import {
   SelectItem,
   Tile,
   ClickableTile,
+  Checkbox,
 } from "@carbon/react";
 import { Template, Folder } from "@carbon/icons-react";
 import type { ToolEntry, ToolAuth, AuthType } from "./types/tools";
 import { AUTH_TYPE_OPTIONS } from "./types/tools";
+import * as api from "./api";
 import "./AddToolModal.css";
 
 interface AddToolModalProps {
@@ -96,7 +98,39 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
   const [authType, setAuthType] = useState<AuthType>("none");
   const [authKey, setAuthKey] = useState("");
   const [authValue, setAuthValue] = useState("");
+  const [useSavedSecret, setUseSavedSecret] = useState(false);
+  const [saveAsNewSecret, setSaveAsNewSecret] = useState(false);
+  const [saveAsNewSecretKey, setSaveAsNewSecretKey] = useState("");
+  const [secretsList, setSecretsList] = useState<{ id: string; description?: string; ref: string }[]>([]);
+  const [inlineCreateOpen, setInlineCreateOpen] = useState(false);
+  const [inlineCreateValue, setInlineCreateValue] = useState("");
+  const [inlineCreateKey, setInlineCreateKey] = useState("");
   const [showTemplates, setShowTemplates] = useState(!initial);
+
+  useEffect(() => {
+    Promise.all([api.getSecrets(), api.getSecretsConfig()])
+      .then(async ([secretsRes, configRes]) => {
+        let mode = "local";
+        if (configRes.ok) {
+          const cfg = await configRes.json();
+          mode = cfg.mode || "local";
+        }
+        if (secretsRes.ok) {
+          const data = await secretsRes.json();
+          const raw: { id: string; description?: string; source?: string }[] = data.secrets || data.overrides || [];
+          setSecretsList(raw.map((s) => ({
+            id: s.id,
+            description: s.description,
+            ref: s.source === "vault" || mode === "vault"
+              ? `vault://secret/${s.id}#value`
+              : s.source === "env"
+                ? s.id
+                : `db://${s.id}`,
+          })));
+        }
+      })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     if (initial) {
@@ -112,7 +146,10 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
       const auth = initial.auth ?? emptyAuth;
       setAuthType(auth.type === "none" || !auth.type ? "none" : auth.type);
       setAuthKey(auth.key ?? "");
-      setAuthValue(auth.value ?? "");
+      const val = auth.value ?? "";
+      setAuthValue(val);
+      const isRef = typeof val === "string" && (val.startsWith("db://") || val.startsWith("vault://") || val.startsWith("aws://"));
+      setUseSavedSecret(isRef);
       setShowTemplates(false);
     }
   }, [initial]);
@@ -136,7 +173,7 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
   const authOption = AUTH_TYPE_OPTIONS.find((o) => o.value === authType);
   const needsKey = authOption?.needsKey ?? false;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const isCommandMcp = type === "mcp" && mcpMode === "command";
     const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
@@ -154,11 +191,37 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
       tool.transport = mcpMode === "url-http" ? "http" : "sse";
     }
     if (authType !== "none" && (needsKey ? authKey.trim() : true)) {
-      tool.auth = {
-        type: authType,
-        ...(needsKey && { key: authKey.trim() }),
-        ...(authValue.trim() && { value: authValue.trim() }),
-      };
+      let authValueFinal = authValue.trim();
+      if (useSavedSecret && authValueFinal && authValueFinal.startsWith("db://")) {
+        tool.auth = {
+          type: authType,
+          ...(needsKey && { key: authKey.trim() }),
+          value: authValueFinal,
+        };
+      } else if (saveAsNewSecret && authValueFinal) {
+        const baseSlug = saveAsNewSecretKey.trim()
+          ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+          : `${name.trim() || "tool"}-${authType}`.toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-");
+        const slug = baseSlug || `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+        try {
+          const res = await api.createSecret(slug, authValueFinal);
+          if (res.ok) {
+            const data = await res.json();
+            authValueFinal = data.ref || `db://${slug}`;
+          }
+        } catch (_) {}
+        tool.auth = {
+          type: authType,
+          ...(needsKey && { key: authKey.trim() }),
+          value: authValueFinal,
+        };
+      } else if (authValueFinal || useSavedSecret) {
+        tool.auth = {
+          type: authType,
+          ...(needsKey && { key: authKey.trim() }),
+          ...(authValueFinal && { value: authValueFinal }),
+        };
+      }
     }
     onSave(tool);
     onClose();
@@ -342,16 +405,127 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
                 placeholder={authType === "header" ? "X-API-Key" : "api_key"}
               />
             )}
-            {(authType !== "none" || authValue) && (
-              <TextInput
-                id="tool-auth-value"
-                type="password"
-                labelText="Secret / token / value"
-                value={authValue}
-                onChange={(e) => setAuthValue(e.target.value)}
-                placeholder="Leave empty to not store"
-                autoComplete="off"
-              />
+            {authType !== "none" && (
+              <>
+                <Checkbox
+                  id="tool-use-saved-secret"
+                  labelText="Use saved secret"
+                  checked={useSavedSecret}
+                  onChange={(_e, { checked }) => {
+                    setUseSavedSecret(!!checked);
+                    setInlineCreateOpen(false);
+                  }}
+                />
+                {useSavedSecret ? (
+                  <>
+                    <Select
+                      id="tool-auth-secret"
+                      labelText="Secret"
+                      value={authValue}
+                      onChange={(e) => setAuthValue(e.target.value)}
+                    >
+                      <SelectItem value="" text="Select a secret" />
+                      {secretsList.map((s) => (
+                        <SelectItem
+                          key={s.id}
+                          value={s.ref}
+                          text={s.description ? `${s.id} — ${s.description}` : s.id}
+                        />
+                      ))}
+                    </Select>
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      style={{ marginTop: "0.5rem" }}
+                      onClick={() => setInlineCreateOpen((v) => !v)}
+                    >
+                      {inlineCreateOpen ? "Cancel" : "Create new secret"}
+                    </Button>
+                    {inlineCreateOpen && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                        <TextInput
+                          id="tool-inline-secret-key"
+                          type="text"
+                          labelText="Key name"
+                          value={inlineCreateKey}
+                          onChange={(e) => setInlineCreateKey(e.target.value)}
+                          placeholder="e.g. my-tool-api-key"
+                          helperText="Optional; leave empty to auto-generate"
+                        />
+                        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+                          <TextInput
+                            id="tool-inline-secret-value"
+                            type="password"
+                            labelText="New secret value"
+                            value={inlineCreateValue}
+                            onChange={(e) => setInlineCreateValue(e.target.value)}
+                            placeholder="Secret value"
+                            autoComplete="off"
+                          />
+                          <Button
+                            size="sm"
+                            style={{ marginTop: "auto" }}
+                            disabled={!inlineCreateValue.trim()}
+                            onClick={async () => {
+                              const baseSlug = inlineCreateKey.trim()
+                                ? inlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+                                : `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                              const slug = baseSlug || `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                              const res = await api.createSecret(slug, inlineCreateValue.trim(), `Auth for ${name.trim() || "tool"}`);
+                              if (res.ok) {
+                                setAuthValue(`db://${slug}`);
+                                setInlineCreateOpen(false);
+                                setInlineCreateValue("");
+                                setInlineCreateKey("");
+                                api.getSecrets().then((r) => {
+                                  if (r.ok) r.json().then((d) => setSecretsList(d.secrets || d.overrides || []));
+                                });
+                              }
+                            }}
+                          >
+                            Save
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <TextInput
+                      id="tool-auth-value"
+                      type="password"
+                      labelText="Secret / token / value"
+                      value={authValue.startsWith("db://") ? "" : authValue}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        setAuthValue(val);
+                        if (/^[A-Z][A-Z0-9_]{3,}$/.test(val.trim())) {
+                          setUseSavedSecret(true);
+                        }
+                      }}
+                      placeholder="Leave empty to not store"
+                      autoComplete="off"
+                    />
+                    <Checkbox
+                      id="tool-save-as-secret"
+                      labelText="Save as new secret"
+                      checked={saveAsNewSecret}
+                      onChange={(_e, { checked }) => setSaveAsNewSecret(!!checked)}
+                    />
+                    {saveAsNewSecret && (
+                      <TextInput
+                        id="tool-save-as-secret-key"
+                        type="text"
+                        labelText="Key name"
+                        value={saveAsNewSecretKey}
+                        onChange={(e) => setSaveAsNewSecretKey(e.target.value)}
+                        placeholder="e.g. my-tool-api-key"
+                        helperText="Optional; leave empty to auto-generate"
+                      />
+                    )}
+                  </>
+                )}
+              </>
             )}
           </FormGroup>
         </ModalBody>

@@ -26,6 +26,10 @@ import {
   Accordion,
   AccordionItem,
   ToastNotification,
+  Select,
+  SelectItem,
+  RadioButtonGroup,
+  RadioButton,
 } from "@carbon/react";
 import { CugaHeader } from "agentic_chat/CugaHeader";
 import {
@@ -44,6 +48,7 @@ import CarbonChat from "./carbon-chat/CarbonChat";
 import PoliciesConfig from "agentic_chat/PoliciesConfig";
 import VariablesSidebar from "agentic_chat/VariablesSidebar";
 import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfig";
+import { SecretsManager } from "./SecretsManager";
 import type { ToolEntry } from "./types/tools";
 import "./ManagePage.css";
 
@@ -56,7 +61,16 @@ export interface HomescreenConfig {
 }
 
 export interface AgentConfig {
-  llm?: { api_key?: string; base_url?: string; model?: string; temperature?: number };
+  llm?: {
+    provider?: "groq" | "openai" | "litellm";
+    api_key?: string;
+    auth_type?: "api_key" | "auth_header";
+    auth_header_name?: string;
+    base_url?: string;
+    model?: string;
+    temperature?: number;
+    disable_ssl?: boolean;
+  };
   tools?: ToolEntry[];
   feature_flags?: {
     enable_todos?: boolean;
@@ -79,8 +93,23 @@ export interface ConfigVersion {
   created_at: string;
 }
 
+const LLM_PROVIDERS = [
+  { id: "groq", label: "Groq", defaultModel: "llama-3.3-70b-versatile", defaultBase: "" },
+  { id: "openai", label: "OpenAI", defaultModel: "gpt-4o", defaultBase: "" },
+  { id: "litellm", label: "LiteLLM", defaultModel: "", defaultBase: "http://localhost:4000" },
+] as const;
+
 const DEFAULT_CONFIG: AgentConfig = {
-  llm: { api_key: "", base_url: "", model: "", temperature: 0.7 },
+  llm: {
+    provider: "openai",
+    api_key: "",
+    auth_type: "api_key",
+    auth_header_name: "Authorization",
+    base_url: "",
+    model: "",
+    temperature: 0.7,
+    disable_ssl: false,
+  },
   tools: [],
   feature_flags: { enable_todos: true, reflection: false, max_steps: 70, shortlisting_tool_threshold: 35 },
   homescreen: { ...DEFAULT_HOMESCREEN },
@@ -145,8 +174,19 @@ export function ManagePage() {
   const [currentVersion, setCurrentVersion] = useState<number | "draft" | null>(null);
   const [draftSaving, setDraftSaving] = useState(false);
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
+  const [secretsModalOpen, setSecretsModalOpen] = useState(false);
+  const [llmUseSavedSecret, setLlmUseSavedSecret] = useState(false);
+  const [llmSecretsList, setLlmSecretsList] = useState<{ id: string; description?: string; ref: string }[]>([]);
+  const [llmForceEnv, setLlmForceEnv] = useState(false);
+  const [llmInlineCreate, setLlmInlineCreate] = useState(false);
+  const [llmInlineCreateValue, setLlmInlineCreateValue] = useState("");
+  const [llmInlineCreateKey, setLlmInlineCreateKey] = useState("");
+  const [llmModelsLoading, setLlmModelsLoading] = useState(false);
+  const [llmModelsError, setLlmModelsError] = useState<string | null>(null);
+  const [llmModelsList, setLlmModelsList] = useState<string[]>([]);
   const skipDraftSaveRef = useRef(true);
   const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const llmBlurSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const configRef = useRef(config);
   configRef.current = config;
 
@@ -352,13 +392,49 @@ export function ManagePage() {
     }
   }, []);
 
+  const refreshSecrets = useCallback(async () => {
+    try {
+      const [secretsRes, configRes] = await Promise.all([api.getSecrets(), api.getSecretsConfig()]);
+      let mode = "local";
+      if (configRes.ok) {
+        const cfg = await configRes.json();
+        setLlmForceEnv(!!cfg.force_env);
+        mode = cfg.mode || "local";
+      }
+      if (secretsRes.ok) {
+        const data = await secretsRes.json();
+        const raw: { id: string; description?: string; source?: string }[] = data.secrets || data.overrides || [];
+        setLlmSecretsList(raw.map((s) => ({
+          id: s.id,
+          description: s.description,
+          ref: s.source === "vault" || mode === "vault"
+            ? `vault://secret/${s.id}#value`
+            : s.source === "env"
+              ? s.id
+              : `db://${s.id}`,
+        })));
+      }
+    } catch {}
+  }, []);
+
+  useEffect(() => {
+    refreshSecrets();
+  }, [refreshSecrets]);
+
+  useEffect(() => {
+    const key = config.llm?.api_key ?? "";
+    setLlmUseSavedSecret(
+      typeof key === "string" && (key.startsWith("db://") || key.startsWith("vault://") || key.startsWith("aws://"))
+    );
+  }, [config.llm?.api_key]);
+
   useEffect(() => {
     loadLatest();
     loadHistory();
   }, [loadLatest, loadHistory]);
 
-  const performDraftSave = useCallback(async () => {
-    const toSave = configRef.current;
+  const performDraftSave = useCallback(async (partial?: Partial<AgentConfig>) => {
+    const toSave = partial ? { ...configRef.current, ...partial } : configRef.current;
     setDraftSaving(true);
     try {
       const res = await api.postManageConfigDraft(toSave);
@@ -396,6 +472,18 @@ export function ManagePage() {
     }
   }, [addToast]);
 
+  const saveLlmDraft = useCallback(() => {
+    performDraftSave({ llm: configRef.current.llm });
+  }, [performDraftSave]);
+
+  const scheduleLlmDraftSave = useCallback(() => {
+    if (llmBlurSaveRef.current) clearTimeout(llmBlurSaveRef.current);
+    llmBlurSaveRef.current = setTimeout(() => {
+      llmBlurSaveRef.current = null;
+      performDraftSave({ llm: configRef.current.llm });
+    }, 100);
+  }, [performDraftSave]);
+
   useEffect(() => {
     if (skipDraftSaveRef.current) {
       return;
@@ -408,7 +496,7 @@ export function ManagePage() {
     return () => {
       if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current);
     };
-  }, [JSON.stringify({ llm: config.llm, tools: config.tools, policies: config.policies, homescreen: config.homescreen }), performDraftSave]);
+  }, [JSON.stringify({ tools: config.tools, policies: config.policies, homescreen: config.homescreen }), performDraftSave]);
 
   useEffect(() => {
     if (importStatus === "ok") {
@@ -516,7 +604,7 @@ export function ManagePage() {
     }
   };
 
-  const updateLlm = (field: "api_key" | "base_url" | "model", value: string) => {
+  const updateLlm = (field: keyof NonNullable<AgentConfig["llm"]>, value: string | number | boolean) => {
     setConfig((c: AgentConfig) => ({
       ...c,
       llm: { ...(c.llm ?? {}), [field]: value },
@@ -670,6 +758,7 @@ export function ManagePage() {
           { label: "Chat", to: search ? `/${search}` : "/chat" },
         ]}
         linkComponent={Link}
+        onOpenSecrets={() => setSecretsModalOpen(true)}
       />
 
       <div className="manage-layout">
@@ -678,17 +767,168 @@ export function ManagePage() {
             <Layer withBackground>
             <Accordion align="start" size="md">
               <AccordionItem title="LLM Configuration" open>
+                  {llmForceEnv ? (
+                    <InlineNotification
+                      kind="info"
+                      title="Managed via environment"
+                      subtitle="LLM configuration is controlled by settings.toml and environment variables (force_env = true). No UI configuration is needed."
+                      lowContrast
+                      hideCloseButton
+                    />
+                  ) : (
                   <VStack gap={5} className="manage-llm-fields">
-                    <FormGroup legendText="">
-                      <TextInput
-                        type="password"
-                        id="llm-api-key"
-                        labelText="API Key"
-                        value={llm.api_key ?? ""}
-                        onChange={(e) => updateLlm("api_key", e.target.value)}
-                        placeholder="sk-..."
-                      />
+                    <FormGroup legendText="Provider">
+                      <Select
+                        id="llm-provider"
+                        labelText="Provider"
+                        value={llm.provider ?? "openai"}
+                        onChange={(e) => {
+                          const id = (e.target.value || "openai") as "groq" | "openai" | "litellm";
+                          const prov = LLM_PROVIDERS.find((p) => p.id === id);
+                          setConfig((c: AgentConfig) => {
+                            const prev = c.llm ?? {};
+                            const next = { ...prev, provider: id };
+                            // Groq has a fixed endpoint — clear any stale base_url
+                            if (id === "groq") {
+                              next.base_url = "";
+                            } else if (prov && (!prev.model || !prev.base_url) && (prov.defaultBase || prov.defaultModel)) {
+                              if (!prev.model && prov.defaultModel) next.model = prov.defaultModel;
+                              if (!prev.base_url && prov.defaultBase !== undefined) next.base_url = prov.defaultBase;
+                            }
+                            return { ...c, llm: next };
+                          });
+                          setTimeout(() => performDraftSave({ llm: configRef.current.llm }), 0);
+                        }}
+                      >
+                        {LLM_PROVIDERS.map((p) => (
+                          <SelectItem key={p.id} value={p.id} text={p.label} />
+                        ))}
+                      </Select>
                     </FormGroup>
+                    <FormGroup legendText="Auth type">
+                      <RadioButtonGroup
+                        name="llm-auth-type"
+                        valueSelected={llm.auth_type ?? "api_key"}
+                        onChange={(selection) => { updateLlm("auth_type", (selection ?? "api_key") as "api_key" | "auth_header"); setTimeout(saveLlmDraft, 0); }}
+                        orientation="horizontal"
+                      >
+                        <RadioButton labelText="API Key" value="api_key" id="llm-auth-api-key" />
+                        <RadioButton labelText="Auth header" value="auth_header" id="llm-auth-header" />
+                      </RadioButtonGroup>
+                      {(llm.auth_type ?? "api_key") === "auth_header" && (
+                        <TextInput
+                          id="llm-auth-header-name"
+                          labelText="Header name"
+                          value={llm.auth_header_name ?? "Authorization"}
+                          onChange={(e) => updateLlm("auth_header_name", e.target.value)}
+                          onBlur={scheduleLlmDraftSave}
+                          placeholder="Authorization"
+                          style={{ marginTop: "0.5rem" }}
+                        />
+                      )}
+                    </FormGroup>
+                    <FormGroup legendText="">
+                      <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+                        <Checkbox
+                          id="llm-use-saved-secret"
+                          labelText="Use saved secret"
+                          checked={llmUseSavedSecret}
+                          onChange={(_e, { checked }) => {
+                            setLlmUseSavedSecret(!!checked);
+                            setLlmInlineCreate(false);
+                          }}
+                        />
+                        <Button kind="ghost" size="sm" hasIconOnly iconDescription="Manage secrets" renderIcon={KeyIcon} onClick={() => setSecretsModalOpen(true)} />
+                      </div>
+                      {llmUseSavedSecret ? (
+                        <>
+                          <Select
+                            id="llm-api-key-secret"
+                            labelText={llm.auth_type === "auth_header" ? "Header value (saved secret)" : "API Key (saved secret)"}
+                            value={llm.api_key ?? ""}
+                            onChange={(e) => { updateLlm("api_key", e.target.value); setTimeout(saveLlmDraft, 0); }}
+                          >
+                            <SelectItem value="" text="Select a secret" />
+                            {llmSecretsList.map((s) => (
+                              <SelectItem
+                                key={s.id}
+                                value={s.ref}
+                                text={s.description ? `${s.id} — ${s.description}` : s.id}
+                              />
+                            ))}
+                          </Select>
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            renderIcon={KeyIcon}
+                            style={{ marginTop: "0.5rem" }}
+                            onClick={() => setLlmInlineCreate((v) => !v)}
+                          >
+                            {llmInlineCreate ? "Cancel" : "Create new secret"}
+                          </Button>
+                          {llmInlineCreate && (
+                            <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                              <TextInput
+                                id="llm-inline-secret-key"
+                                type="text"
+                                labelText="Key name"
+                                value={llmInlineCreateKey}
+                                onChange={(e) => setLlmInlineCreateKey(e.target.value)}
+                                placeholder="e.g. llm-api-key"
+                                helperText="Optional; leave empty to auto-generate"
+                              />
+                              <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+                                <TextInput
+                                  id="llm-inline-secret-value"
+                                  type="password"
+                                  labelText="New secret value"
+                                  value={llmInlineCreateValue}
+                                  onChange={(e) => setLlmInlineCreateValue(e.target.value)}
+                                  placeholder="sk-..."
+                                  autoComplete="off"
+                                />
+                                <Button
+                                  size="sm"
+                                  style={{ marginTop: "auto" }}
+                                  disabled={!llmInlineCreateValue.trim()}
+                                  onClick={async () => {
+                                    const slug = llmInlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-") || `llm-api-key-${Date.now()}`;
+                                    const res = await api.createSecret(slug, llmInlineCreateValue.trim(), "LLM API Key");
+                                  if (res.ok) {
+                                    const ref = `db://${slug}`;
+                                    setLlmInlineCreate(false);
+                                    setLlmInlineCreateValue("");
+                                    setLlmInlineCreateKey("");
+                                    // Refresh list first so the new secret is available in the dropdown
+                                    await refreshSecrets();
+                                    // Then select it and persist
+                                    updateLlm("api_key", ref);
+                                    setTimeout(saveLlmDraft, 0);
+                                  }
+                                }}
+                              >
+                                Save
+                              </Button>
+                            </div>
+                          </div>
+                          )}
+                        </>
+                      ) : (
+                        <TextInput
+                          type="password"
+                          id="llm-api-key"
+                          labelText={llm.auth_type === "auth_header" ? "Header value" : "API Key"}
+                          value={(llm.api_key ?? "").startsWith("db://") ? "" : (llm.api_key ?? "")}
+                          onChange={(e) => updateLlm("api_key", e.target.value)}
+                          onBlur={scheduleLlmDraftSave}
+                          placeholder="sk-..."
+                        />
+                      )}
+                    </FormGroup>
+                    {/* Groq uses its own fixed endpoint — no base URL needed.
+                        OpenAI defaults to api.openai.com but allow override if already set.
+                        LiteLLM always requires one. */}
+                    {(llm.provider === "litellm" || !["groq"].includes(llm.provider ?? "")) && (
                     <FormGroup legendText="">
                       <TextInput
                         type="text"
@@ -696,19 +936,81 @@ export function ManagePage() {
                         labelText="Base URL"
                         value={llm.base_url ?? ""}
                         onChange={(e) => updateLlm("base_url", e.target.value)}
-                        placeholder="https://api.openai.com/v1"
-                        helperText="Optional; leave empty for default"
+                        onBlur={scheduleLlmDraftSave}
+                        placeholder={llm.provider === "litellm" ? "http://localhost:4000" : "https://api.openai.com/v1"}
+                        helperText={llm.provider === "litellm" ? "Required for LiteLLM proxy" : "Optional; leave empty for default"}
+                      />
+                    </FormGroup>
+                    )}
+                    <FormGroup legendText="">
+                      <Checkbox
+                        id="llm-disable-ssl"
+                        labelText="Disable SSL verification"
+                        checked={!!llm.disable_ssl}
+                        onChange={(_e, { checked }) => { updateLlm("disable_ssl", !!checked); setTimeout(saveLlmDraft, 0); }}
                       />
                     </FormGroup>
                     <FormGroup legendText="">
-                      <TextInput
-                        type="text"
-                        id="llm-model"
-                        labelText="Model"
-                        value={llm.model ?? ""}
-                        onChange={(e) => updateLlm("model", e.target.value)}
-                        placeholder="gpt-4o"
-                      />
+                      <div style={{ display: "flex", alignItems: "flex-end", gap: "0.5rem", flexWrap: "wrap" }}>
+                        <TextInput
+                          type="text"
+                          id="llm-model"
+                          labelText="Model"
+                          value={llm.model ?? ""}
+                          onChange={(e) => updateLlm("model", e.target.value)}
+                          onBlur={scheduleLlmDraftSave}
+                          placeholder="gpt-4o"
+                          style={{ flex: "1", minWidth: "12rem" }}
+                        />
+                        <Button
+                          kind="ghost"
+                          size="md"
+                          disabled={llmModelsLoading}
+                          onClick={async () => {
+                            setLlmModelsError(null);
+                            setLlmModelsList([]);
+                            setLlmModelsLoading(true);
+                            try {
+                              const res = await api.getLlmModels(
+                                llm.base_url ?? "",
+                                llm.api_key ?? "",
+                                !!llm.disable_ssl,
+                                llm.provider
+                              );
+                              if (!res.ok) {
+                                const err = await res.json().catch(() => ({}));
+                                throw new Error(err.detail ?? err.message ?? `${res.status} ${res.statusText}`);
+                              }
+                              const data = await res.json();
+                              setLlmModelsList(Array.isArray(data.models) ? data.models : []);
+                            } catch (e) {
+                              setLlmModelsError(e instanceof Error ? e.message : String(e));
+                            } finally {
+                              setLlmModelsLoading(false);
+                            }
+                          }}
+                        >
+                          {llmModelsLoading ? "Loading…" : "List models"}
+                        </Button>
+                      </div>
+                      {llmModelsLoading && <InlineLoading description="Fetching models…" />}
+                      {llmModelsError && (
+                        <InlineNotification kind="error" title="Error" subtitle={llmModelsError} lowContrast hideCloseButton style={{ marginTop: "0.5rem" }} />
+                      )}
+                      {llmModelsList.length > 0 && (
+                        <Select
+                          id="llm-model-select"
+                          labelText="Choose from list"
+                          value={llm.model ?? ""}
+                          onChange={(e) => { updateLlm("model", e.target.value); setTimeout(saveLlmDraft, 0); }}
+                          style={{ marginTop: "0.5rem" }}
+                        >
+                          <SelectItem value="" text="—" />
+                          {llmModelsList.map((id) => (
+                            <SelectItem key={id} value={id} text={id} />
+                          ))}
+                        </Select>
+                      )}
                     </FormGroup>
                     <FormGroup legendText="">
                       <NumberInput
@@ -721,9 +1023,11 @@ export function ManagePage() {
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
                           updateLlmTemperature(Number(value) || 0.7)
                         }
+                        onBlur={scheduleLlmDraftSave}
                       />
                     </FormGroup>
                   </VStack>
+                  )}
               </AccordionItem>
 
               <AccordionItem title="Tools" open>
@@ -732,8 +1036,9 @@ export function ManagePage() {
                     onChange={setTools}
                     connectedApps={connectedApps}
                     connectedTools={connectedTools}
-                    agentId= {"cuga-default"}
+                    agentId={"cuga-default"}
                     onError={(title, message) => addToast("error", title, message)}
+                    onOpenSecrets={() => setSecretsModalOpen(true)}
                   />
               </AccordionItem>
 
@@ -1030,6 +1335,8 @@ export function ManagePage() {
           )}
         </>
       )}
+
+      <SecretsManager open={secretsModalOpen} onClose={() => { setSecretsModalOpen(false); refreshSecrets(); }} agentId="cuga-default" />
 
       {showPoliciesModal && (
         <PoliciesConfig

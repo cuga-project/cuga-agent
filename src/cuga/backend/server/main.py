@@ -50,6 +50,7 @@ from cuga.config import (
     TRACES_DIR,
 )
 from cuga.backend.server import manage_routes
+from cuga.backend.server import secrets_routes
 from cuga.backend.server.auth import require_auth
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.conversation_history import get_conversation_db
@@ -238,6 +239,13 @@ async def lifespan(app: FastAPI):
     """Asynchronous context manager for application startup and shutdown."""
     logger.info("Application is starting up...")
 
+    try:
+        from cuga.backend.secrets.seed import seed_secrets_from_env
+
+        await seed_secrets_from_env()
+    except Exception as _seed_err:
+        logger.debug("secrets seed skipped: {}", _seed_err)
+
     # Load hardcoded policies if configured via environment variable
     if os.getenv("CUGA_LOAD_POLICIES", "false").lower() in ("true", "1", "yes", "on"):
         try:
@@ -406,6 +414,27 @@ async def lifespan(app: FastAPI):
     from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
     from cuga.backend.server.config_store import load_config, load_draft
 
+    # Load the latest published config so both agents start with the correct LLM.
+    # This ensures that a previously saved provider/model/api_key is applied from
+    # the first request rather than always falling back to .env defaults.
+    _startup_config, _ = await load_config(None) or (None, None)
+    _startup_llm_cfg = (_startup_config or {}).get("llm") or {}
+
+    # Apply the published config at startup so the runtime override is set
+    # immediately (fallback path for call-time resolution).
+    if _startup_config:
+        try:
+            from cuga.backend.server.manage_routes import _apply_published_config
+
+            await _apply_published_config(app_state, _startup_config)
+            logger.info(
+                "Startup: applied saved LLM config — provider=%s model=%s",
+                _startup_llm_cfg.get("provider"),
+                _startup_llm_cfg.get("model"),
+            )
+        except Exception as _cfg_err:
+            logger.warning("Startup: failed to apply saved config: %s", _cfg_err)
+
     def _get_include_by_app():
         return (
             getattr(app_state, "tools_include_by_app", None),
@@ -418,6 +447,7 @@ async def lifespan(app: FastAPI):
         langfuse_handler=langfuse_handler,
         policy_system=app_state.policy_system,
         tool_provider=tool_provider,
+        llm_config=_startup_llm_cfg or None,
     )
     await app_state.agent.build_graph()
 
@@ -485,6 +515,14 @@ async def lifespan(app: FastAPI):
     from cuga.backend.server.manage_routes import _extract_agent_feature_overrides
 
     draft_overrides = _extract_agent_feature_overrides(draft_config or {}) if draft_config else {}
+    _draft_llm_cfg = (draft_config or {}).get("llm") or {}
+    if draft_config:
+        try:
+            from cuga.backend.server.manage_routes import _apply_published_config
+
+            await _apply_published_config(draft_app_state, draft_config)
+        except Exception as _e:
+            logger.debug("Startup: failed to apply draft LLM config: %s", _e)
     draft_app_state.agent = DynamicAgentGraph(
         None,
         langfuse_handler=langfuse_handler,
@@ -494,6 +532,7 @@ async def lifespan(app: FastAPI):
         reflection_enabled=draft_overrides.get("reflection_enabled"),
         shortlisting_tool_threshold=draft_overrides.get("shortlisting_tool_threshold"),
         cuga_lite_max_steps=draft_overrides.get("cuga_lite_max_steps"),
+        llm_config=_draft_llm_cfg or None,
     )
     await draft_app_state.agent.build_graph()
 
@@ -896,6 +935,7 @@ async def event_stream(
         reflection_enabled=getattr(run_agent, "reflection_enabled", None),
         shortlisting_tool_threshold=getattr(run_agent, "shortlisting_tool_threshold", None),
         cuga_lite_max_steps=getattr(run_agent, "cuga_lite_max_steps", None),
+        current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 
@@ -1180,6 +1220,7 @@ app.add_middleware(
 )
 
 app.include_router(manage_routes.router)
+app.include_router(secrets_routes.router)
 
 
 def _auth_enabled() -> bool:

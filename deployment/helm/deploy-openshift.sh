@@ -5,7 +5,7 @@ set -euo pipefail
 # CUGA OpenShift Deployment Script
 #
 # Usage:
-#   ./deploy-openshift.sh [path/to/openshift.env] [--with-postgres]
+#   ./deploy-openshift.sh [path/to/openshift.env] [--with-postgres] [--with-vault]
 #
 # Prerequisites:
 #   - Logged in to OpenShift cluster via `oc login` or `kubectl` with valid kubeconfig
@@ -15,10 +15,13 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WITH_POSTGRES=false
+WITH_VAULT=false
 ENV_FILE=""
 for arg in "$@"; do
   if [[ "$arg" == "--with-postgres" ]]; then
     WITH_POSTGRES=true
+  elif [[ "$arg" == "--with-vault" ]]; then
+    WITH_VAULT=true
   else
     [[ -z "$ENV_FILE" ]] && ENV_FILE="$arg"
   fi
@@ -81,6 +84,7 @@ ENV_SECRET_NAME="${INSTANCE_ID}-env-secret"
 CHART_PATH="${SCRIPT_DIR}/cuga"
 TOTAL_STEPS=6
 [[ "$WITH_POSTGRES" != true ]] && TOTAL_STEPS=5
+[[ "$WITH_VAULT" == true ]] && TOTAL_STEPS=$((TOTAL_STEPS + 1))
 
 echo ""
 echo "========================================"
@@ -91,6 +95,9 @@ echo "  Namespace : ${NAMESPACE}"
 echo "  Hostname  : ${ROUTE_HOSTNAME:-<auto-assigned by OpenShift>}"
 if [[ "$WITH_POSTGRES" == true ]]; then
   echo "  Postgres  : enabled (shared per namespace)"
+fi
+if [[ "$WITH_VAULT" == true ]]; then
+  echo "  Vault     : enabled"
 fi
 echo "========================================"
 echo ""
@@ -155,6 +162,8 @@ SECRET_ARGS=(
 [[ -n "${OIDC_CLIENT_SECRET:-}" ]]        && SECRET_ARGS+=("--from-literal=OIDC_CLIENT_SECRET=${OIDC_CLIENT_SECRET}")
 [[ -n "${OIDC_DISCOVERY_URL:-}" ]]        && SECRET_ARGS+=("--from-literal=OIDC_DISCOVERY_URL=${OIDC_DISCOVERY_URL}")
 [[ -n "${OIDC_REDIRECT_URI:-}" ]]         && SECRET_ARGS+=("--from-literal=OIDC_REDIRECT_URI=${OIDC_REDIRECT_URI}")
+[[ -n "${VAULT_TOKEN:-}" ]]               && SECRET_ARGS+=("--from-literal=VAULT_TOKEN=${VAULT_TOKEN}")
+[[ -n "${CUGA_SECRET_KEY:-}" ]]           && SECRET_ARGS+=("--from-literal=CUGA_SECRET_KEY=${CUGA_SECRET_KEY}")
 
 if [[ "$WITH_POSTGRES" == true ]]; then
   PG_URL="postgresql://${POSTGRES_USER:-cuga}:${POSTGRES_PASSWORD}@postgres-pgvector.${NAMESPACE}.svc.cluster.local:5432/${POSTGRES_DB:-cuga}"
@@ -168,6 +177,35 @@ kubectl create secret generic "${ENV_SECRET_NAME}" \
   --namespace="${NAMESPACE}" \
   --dry-run=client -o yaml | kubectl apply -f -
 ((STEP++))
+
+# ---------------------------------------------------------------------------
+# Optional: Vault deployment
+# ---------------------------------------------------------------------------
+
+if [[ "$WITH_VAULT" == true ]]; then
+  echo "[${STEP}/${TOTAL_STEPS}] Deploying HashiCorp Vault"
+  VAULT_CHART_PATH="${SCRIPT_DIR}/vault"
+
+  helm repo add hashicorp https://helm.releases.hashicorp.com 2>/dev/null || true
+  helm repo update hashicorp 2>/dev/null || true
+  helm dependency update "${VAULT_CHART_PATH}" 2>/dev/null || true
+
+  helm upgrade --install vault "${VAULT_CHART_PATH}" \
+    --namespace "${NAMESPACE}" \
+    -f "${VAULT_CHART_PATH}/values.openshift.yaml" \
+    ${VAULT_TOKEN:+--set "vault.server.extraEnvironmentVars.VAULT_DEV_ROOT_TOKEN_ID=${VAULT_TOKEN}"}
+  ((STEP++))
+
+  echo ""
+  echo "  Vault deployed. Initialize it (first time only):"
+  echo "    kubectl exec -n ${NAMESPACE} -it vault-0 -- vault operator init"
+  echo ""
+  echo "  Add to your env file:"
+  echo "    VAULT_TOKEN=<root-token>"
+  echo "    DYNACONF_SECRETS__MODE=vault"
+  echo "    DYNACONF_SECRETS__VAULT_ADDR=http://vault.${NAMESPACE}.svc.cluster.local:8200"
+  echo ""
+fi
 
 # ---------------------------------------------------------------------------
 # 5. Helm deploy (cuga)
@@ -195,6 +233,19 @@ HELM_ARGS=(
   --set "env.DYNACONF_STORAGE__MODE=${STORAGE_MODE}"
   --set "route.enabled=true"
 )
+
+if [[ "$WITH_VAULT" == true ]]; then
+  VAULT_INTERNAL_ADDR="http://vault.${NAMESPACE}.svc.cluster.local:8200"
+  HELM_ARGS+=(
+    "--set" "env.DYNACONF_SECRETS__MODE=vault"
+    "--set" "env.DYNACONF_SECRETS__VAULT_ADDR=${VAULT_ADDR:-${VAULT_INTERNAL_ADDR}}"
+    "--set" "env.DYNACONF_SECRETS__VAULT_TOKEN_ENV=VAULT_TOKEN"
+  )
+fi
+
+if [[ -n "${DYNACONF_SECRETS__MODE:-}" ]]; then
+  HELM_ARGS+=("--set" "env.DYNACONF_SECRETS__MODE=${DYNACONF_SECRETS__MODE}")
+fi
 
 if [[ -n "${ROUTE_HOSTNAME:-}" ]]; then
   HELM_ARGS+=("--set" "route.hostname=${ROUTE_HOSTNAME}")

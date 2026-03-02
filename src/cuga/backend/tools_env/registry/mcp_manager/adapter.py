@@ -564,27 +564,33 @@ def apply_authentication(auth, headers: dict, query_params: dict):
 
     import base64
 
+    from cuga.backend.secrets import resolve_secret
+
+    value = resolve_secret(auth.value)
+    if not value:
+        return
+
     auth_type = auth.type.lower()
 
     if auth_type == 'bearer':
-        headers['Authorization'] = f"Bearer {auth.value}"
+        headers['Authorization'] = f"Bearer {value}"
 
     elif auth_type == 'basic':
-        if ':' in auth.value:
-            encoded = base64.b64encode(auth.value.encode()).decode()
+        if ':' in value:
+            encoded = base64.b64encode(value.encode()).decode()
             headers['Authorization'] = f"Basic {encoded}"
         else:
             logger.warning("Basic auth requires 'username:password' format in value")
 
     elif auth_type == 'header':
         if auth.key:
-            headers[auth.key] = auth.value
+            headers[auth.key] = value
         else:
             logger.warning("Header auth requires 'key' field to specify header name")
 
     elif auth_type == 'api-key' or auth_type == 'query':
         key = auth.key or 'api_key'
-        query_params[key] = auth.value
+        query_params[key] = value
 
     else:
         logger.warning(f"Unknown auth type: {auth_type}")

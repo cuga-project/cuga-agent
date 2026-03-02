@@ -83,6 +83,17 @@ auto_load_policies = true  # Automatically load policies from .cuga folder on st
 instance_id = ""  # Override with DYNACONF_SERVICE__INSTANCE_ID env var (e.g. K8S pod name, deployment id)
 tenant_id = ""  # Override with DYNACONF_SERVICE__TENANT_ID env var (multi-tenant SaaS)
 
+[secrets]
+mode = "local"  # "local" | "vault"
+force_env = true  # if true, always resolve from os.environ (ignores UI overrides and Vault)
+db_encryption_key_env = "CUGA_SECRET_KEY"
+vault_addr = ""
+vault_token_env = "VAULT_TOKEN"
+vault_mount = "secret"
+vault_kv_version = ""  # "1" or "2"; leave empty to auto-detect
+vault_write_enabled = false
+aws_region = ""
+
 [auth]
 enabled = false
 session_cookie_name = "cuga_session"

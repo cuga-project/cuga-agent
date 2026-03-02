@@ -628,6 +628,7 @@ dependencies = [
     { name = "a2a-sdk", extra = ["http-server"] },
     { name = "aiohttp" },
     { name = "asyncpg" },
+    { name = "boto3" },
     { name = "browsergym-core" },
     { name = "cryptography" },
     { name = "docker" },
@@ -635,6 +636,7 @@ dependencies = [
     { name = "fastapi", extra = ["standard"] },
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "hvac" },
     { name = "langchain" },
     { name = "langchain-core" },
     { name = "langchain-groq" },
@@ -679,6 +681,7 @@ dev = [
     { name = "beartype" },
     { name = "cugaviz" },
     { name = "nltk" },
+    { name = "pip-licenses" },
     { name = "pre-commit" },
     { name = "pytest" },
     { name = "pytest-asyncio" },
@@ -702,6 +705,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = ">=0.3.22" },
     { name = "aiohttp" },
     { name = "asyncpg", specifier = ">=0.30" },
+    { name = "boto3", specifier = ">=1.34.0" },
     { name = "browsergym-core", specifier = "==0.13.0" },
     { name = "cryptography", specifier = ">=44.0.0" },
     { name = "docker" },
@@ -710,6 +714,7 @@ requires-dist = [
     { name = "fastapi", extras = ["standard"] },
     { name = "fastmcp" },
     { name = "httpx" },
+    { name = "hvac", specifier = ">=2.0.0" },
     { name = "langchain", specifier = ">=1.0" },
     { name = "langchain-core" },
     { name = "langchain-groq", specifier = ">=0.3.8" },
@@ -746,6 +751,7 @@ dev = [
     { name = "beartype" },
     { name = "cugaviz" },
     { name = "nltk" },
+    { name = "pip-licenses", specifier = ">=5.5.1" },
     { name = "pre-commit", specifier = ">=4.3.0" },
     { name = "pytest", specifier = ">=8.3.5" },
     { name = "pytest-asyncio", specifier = ">=1.1.0" },
@@ -1768,6 +1774,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/cc/3f/2c29224acb2e2df4d2046e4c73ee2662023c58ff5b113c4c1adac0886c43/humanfriendly-10.0.tar.gz", hash = "sha256:6b0b831ce8f15f7300721aa49829fc4e83921a9a301cc7f606be6686a2288ddc", size = 360702, upload-time = "2021-09-17T21:40:43.31Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/f0/0f/310fb31e39e2d734ccaa2c0fb981ee41f7bd5056ce9bc29b2248bd569169/humanfriendly-10.0-py2.py3-none-any.whl", hash = "sha256:1697e1a8a8f550fd43c2865cd84542fc175a61dcb779b6fee18cf6b6ccba1477", size = 86794, upload-time = "2021-09-17T21:40:39.897Z" },
+]
+
+[[package]]
+name = "hvac"
+version = "2.4.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "requests" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/e2/57/b46c397fb3842cfb02a44609aa834c887f38dd75f290c2fc5a34da4b2fee/hvac-2.4.0.tar.gz", hash = "sha256:e0056ad9064e7923e874e6769015b032580b639e29246f5ab1044f7959c1c7e0", size = 332543, upload-time = "2025-10-30T12:57:47.512Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/55/33/71e45a6bd6875f44a26f99da31c63b6840123e88bedf2c0b1ce429b8be12/hvac-2.4.0-py3-none-any.whl", hash = "sha256:008db5efd8c2f77bd37d2368ea5f713edceae1c65f11fd608393179478649e0f", size = 155921, upload-time = "2025-10-30T12:57:46.253Z" },
 ]
 
 [[package]]
@@ -3878,6 +3896,19 @@ wheels = [
 ]
 
 [[package]]
+name = "pip-licenses"
+version = "5.5.1"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "prettytable" },
+    { name = "tomli", marker = "python_full_version < '3.11'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/44/4c/b4be9024dae3b5b3c0a6c58cc1d4a35fffe51c3adb835350cb7dcd43b5cd/pip_licenses-5.5.1.tar.gz", hash = "sha256:7df370e6e5024a3f7449abf8e4321ef868ba9a795698ad24ab6851f3e7fc65a7", size = 49108, upload-time = "2026-01-27T21:46:41.432Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/a0/a3/0b369cdffef3746157712804f1ded9856c75aa060217ee206f742c74e753/pip_licenses-5.5.1-py3-none-any.whl", hash = "sha256:ed5e229a93760e529cfa7edaec6630b5a2cd3874c1bddb8019e5f18a723fdead", size = 22108, upload-time = "2026-01-27T21:46:39.766Z" },
+]
+
+[[package]]
 name = "platformdirs"
 version = "4.5.1"
 source = { registry = "https://pypi.org/simple" }
@@ -3956,6 +3987,18 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/40/f1/6d86a29246dfd2e9b6237f0b5823717f60cad94d47ddc26afa916d21f525/pre_commit-4.5.1.tar.gz", hash = "sha256:eb545fcff725875197837263e977ea257a402056661f09dae08e4b149b030a61", size = 198232, upload-time = "2025-12-16T21:14:33.552Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/5d/19/fd3ef348460c80af7bb4669ea7926651d1f95c23ff2df18b9d24bab4f3fa/pre_commit-4.5.1-py2.py3-none-any.whl", hash = "sha256:3b3afd891e97337708c1674210f8eba659b52a38ea5f822ff142d10786221f77", size = 226437, upload-time = "2025-12-16T21:14:32.409Z" },
+]
+
+[[package]]
+name = "prettytable"
+version = "3.17.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "wcwidth" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/79/45/b0847d88d6cfeb4413566738c8bbf1e1995fad3d42515327ff32cc1eb578/prettytable-3.17.0.tar.gz", hash = "sha256:59f2590776527f3c9e8cf9fe7b66dd215837cca96a9c39567414cbc632e8ddb0", size = 67892, upload-time = "2025-11-14T17:33:20.212Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/ee/8c/83087ebc47ab0396ce092363001fa37c17153119ee282700c0713a195853/prettytable-3.17.0-py3-none-any.whl", hash = "sha256:aad69b294ddbe3e1f95ef8886a060ed1666a0b83018bbf56295f6f226c43d287", size = 34433, upload-time = "2025-11-14T17:33:19.093Z" },
 ]
 
 [[package]]

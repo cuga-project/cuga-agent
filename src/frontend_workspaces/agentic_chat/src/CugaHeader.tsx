@@ -15,7 +15,7 @@ import {
   SwitcherDivider,
   SideNav,
 } from "@carbon/react";
-import { Logout } from "@carbon/icons-react";
+import { Logout, Password } from "@carbon/icons-react";
 import * as api from "../../frontend/src/api";
 import * as auth from "../../frontend/src/auth";
 import "./CugaHeader.css";
@@ -42,6 +42,7 @@ export interface CugaHeaderProps {
   navItems?: CugaHeaderNavItem[];
   actions?: CugaHeaderAction[];
   linkComponent?: ComponentType<{ href?: string; to?: string; children?: ReactNode; className?: string; onClick?: () => void }>;
+  onOpenSecrets?: () => void;
 }
 
 interface UserInfo {
@@ -67,6 +68,7 @@ export function CugaHeader({
   navItems = [],
   actions = [],
   linkComponent: LinkComponent,
+  onOpenSecrets,
 }: CugaHeaderProps) {
   const [authEnabled, setAuthEnabled] = useState(false);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
@@ -181,6 +183,15 @@ export function CugaHeader({
                   </HeaderGlobalAction>
                 );
               })}
+              {!authEnabled && onOpenSecrets && (
+                <HeaderGlobalAction
+                  aria-label="Manage Secrets"
+                  title="Manage Secrets"
+                  onClick={onOpenSecrets}
+                >
+                  <Password size={20} />
+                </HeaderGlobalAction>
+              )}
               {authEnabled && (
                 <HeaderGlobalAction
                   aria-label="User profile"
@@ -206,6 +217,18 @@ export function CugaHeader({
                     {displayEmail && <p className="cuga-user-panel-email">{displayEmail}</p>}
                   </div>
                 </div>
+                {onOpenSecrets && (
+                  <>
+                    <SwitcherItem
+                      aria-label="Manage Secrets"
+                      onClick={() => { onOpenSecrets(); setUserPanelOpen(false); }}
+                    >
+                      <Password size={16} style={{ marginRight: "0.5rem", flexShrink: 0 }} />
+                      Manage Secrets
+                    </SwitcherItem>
+                    <SwitcherDivider />
+                  </>
+                )}
                 <SwitcherDivider />
                 <SwitcherItem aria-label="Sign out" onClick={() => auth.logout()}>
                   <Logout size={16} style={{ marginRight: "0.5rem", flexShrink: 0 }} />

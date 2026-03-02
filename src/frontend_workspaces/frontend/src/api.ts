@@ -119,6 +119,21 @@ export async function getManageConfigVersion(version: string): Promise<Response>
   return apiFetch(`/api/manage/config?version=${encodeURIComponent(version)}`);
 }
 
+export async function getLlmModels(
+  baseUrl: string,
+  apiKey: string,
+  disableSsl?: boolean,
+  provider?: string
+): Promise<Response> {
+  const params = new URLSearchParams();
+  if (baseUrl) params.set("base_url", baseUrl);
+  if (apiKey) params.set("api_key", apiKey);
+  if (disableSsl) params.set("disable_ssl", "true");
+  if (provider) params.set("provider", provider);
+  const q = params.toString() ? `?${params.toString()}` : "";
+  return apiFetch(`/api/manage/llm/models${q}`);
+}
+
 export async function getManageConfigHistory(): Promise<Response> {
   return apiFetch("/api/manage/config/history");
 }
@@ -172,4 +187,46 @@ export async function getWorkspaceDownload(path: string): Promise<Response> {
 
 export async function getAgents(): Promise<Response> {
   return apiFetch("/api/agents");
+}
+
+export async function getSecrets(agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/secrets${q}`);
+}
+
+export async function getSecretsConfig(): Promise<Response> {
+  return apiFetch("/api/secrets/config");
+}
+
+export async function createSecret(
+  id: string,
+  value: string,
+  description?: string,
+  tags?: Record<string, string>,
+  agentId?: string
+): Promise<Response> {
+  return apiFetch("/api/secrets", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id, value, description, tags, agent_id: agentId }),
+  });
+}
+
+export async function updateSecret(
+  id: string,
+  value: string,
+  description?: string,
+  tags?: Record<string, string>
+): Promise<Response> {
+  return apiFetch(`/api/secrets/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ value, description, tags }),
+  });
+}
+
+export async function deleteSecret(id: string): Promise<Response> {
+  return apiFetch(`/api/secrets/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
 }
