@@ -178,6 +178,7 @@ export function ManagePage() {
   const [llmUseSavedSecret, setLlmUseSavedSecret] = useState(false);
   const [llmSecretsList, setLlmSecretsList] = useState<{ id: string; description?: string; ref: string }[]>([]);
   const [llmForceEnv, setLlmForceEnv] = useState(false);
+  const [llmSecretsMode, setLlmSecretsMode] = useState<string>("local");
   const [llmInlineCreate, setLlmInlineCreate] = useState(false);
   const [llmInlineCreateValue, setLlmInlineCreateValue] = useState("");
   const [llmInlineCreateKey, setLlmInlineCreateKey] = useState("");
@@ -401,6 +402,7 @@ export function ManagePage() {
         setLlmForceEnv(!!cfg.force_env);
         mode = cfg.mode || "local";
       }
+      setLlmSecretsMode(mode);
       if (secretsRes.ok) {
         const data = await secretsRes.json();
         const raw: { id: string; description?: string; source?: string }[] = data.secrets || data.overrides || [];
@@ -767,11 +769,11 @@ export function ManagePage() {
             <Layer withBackground>
             <Accordion align="start" size="md">
               <AccordionItem title="LLM Configuration" open>
-                  {llmForceEnv ? (
+                  {llmSecretsMode === "local" && llmForceEnv ? (
                     <InlineNotification
                       kind="info"
                       title="Managed via environment"
-                      subtitle="LLM configuration is controlled by settings.toml and environment variables (force_env = true). No UI configuration is needed."
+                      subtitle="LLM configuration is controlled by settings.toml and environment variables (mode=local + force_env=true). No UI configuration is needed."
                       lowContrast
                       hideCloseButton
                     />

@@ -209,13 +209,30 @@ async def update_secret(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _vault_delete(secret_id: str) -> bool:
+    """Delete a secret from Vault. Returns True if deleted."""
+    try:
+        from cuga.backend.secrets.backends.vault_backend import VaultBackend
+
+        vb = VaultBackend()
+        return vb.available() and vb.delete(secret_id)
+    except Exception:
+        return False
+
+
 @router.delete("/{secret_id}")
 async def delete_secret(
     secret_id: str,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ) -> dict[str, Any]:
-    """Delete a secret override (creator only)."""
+    """Delete a secret override. In vault mode deletes from Vault; in local mode from DB (creator only)."""
     try:
+        mode = _secrets_mode()
+        if mode == "vault":
+            ok = _vault_delete(secret_id)
+            if not ok:
+                raise HTTPException(status_code=404, detail="Secret not found")
+            return {"deleted": secret_id}
         meta = await secrets_store.get_secret_metadata(secret_id)
         if not meta:
             raise HTTPException(status_code=404, detail="Secret not found")

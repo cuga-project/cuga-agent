@@ -198,3 +198,37 @@ class VaultBackend:
         except Exception as e:
             logger.debug("Vault read failed: {}", e)
             return None
+
+    def delete(self, path: str) -> bool:
+        """Delete a secret from Vault KV. Returns True if deleted, False on error."""
+        client = self._client_or_none()
+        if not client:
+            return False
+        full_path, _ = _parse_vault_path(path)
+        try:
+            from cuga.config import settings
+
+            sec = getattr(settings, "secrets", None)
+            mount = getattr(sec, "vault_mount", "secret") if sec else "secret"
+            kv_version = getattr(sec, "vault_kv_version", "") if sec else ""
+        except Exception:
+            mount = "secret"
+            kv_version = ""
+        mount_point, secret_path = _split_mount_and_path(full_path, default_mount=mount)
+        if not secret_path:
+            return False
+        try:
+            if str(kv_version) == "1":
+                client.secrets.kv.v1.delete_secret(
+                    path=secret_path,
+                    mount_point=mount_point,
+                )
+            else:
+                client.secrets.kv.v2.delete_metadata_and_all_versions(
+                    path=secret_path,
+                    mount_point=mount_point,
+                )
+            return True
+        except Exception as e:
+            logger.debug("Vault delete failed: {}", e)
+            return False
