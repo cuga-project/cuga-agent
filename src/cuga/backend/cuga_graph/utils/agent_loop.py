@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from enum import Enum
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.observability.openlit_init import init_openlit, create_session_span
 
 
 class OutputFormat(str, Enum):
@@ -649,19 +650,22 @@ class AgentLoop:
             return AgentLoopAnswer(end=False, has_tools=True, answer=msg.content, tools=msg.tool_calls)
 
     async def run_stream(self, state: Optional[AgentState] = None, resume=None):
-        event_stream = self.get_stream(state, resume)
-        event = {}
-        async for event in event_stream:
-            event_msg = self.get_event_message(event)
-            # Skip empty events (events with no name or no data)
-            if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
-                logger.debug(
-                    f"Skipping empty event: name='{event_msg.name}', data='{event_msg.data[:50] if event_msg.data else ''}'"
-                )
-                continue
-            # logger.debug(f"current event: {event_msg.format()}")
-            yield event_msg.format()
-        yield self.get_output(event)
+        # Initialize OpenLit and create parent span with session attribute
+        init_openlit()
+        with create_session_span(self.thread_id, "agent_loop_stream"):
+            event_stream = self.get_stream(state, resume)
+            event = {}
+            async for event in event_stream:
+                event_msg = self.get_event_message(event)
+                # Skip empty events (events with no name or no data)
+                if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
+                    logger.debug(
+                        f"Skipping empty event: name='{event_msg.name}', data='{event_msg.data[:50] if event_msg.data else ''}'"
+                    )
+                    continue
+                # logger.debug(f"current event: {event_msg.format()}")
+                yield event_msg.format()
+            yield self.get_output(event)
 
     def get_output_of_obj(self, dict):
         msg = ""
@@ -709,10 +713,13 @@ class AgentLoop:
                 )
 
     async def run(self, state: Optional[AgentState] = None, resume=None):
-        event_stream = self.get_stream(state, resume)
-        event = {}
-        async for event in event_stream:
-            event_msg = self.get_event_message(event)
-            await self.show_chat_even(event_msg)
-            # logger.debug(f"current event: {event_msg.format()}")
-        return self.get_output(event)
+        # Initialize OpenLit and create parent span with session attribute
+        init_openlit()
+        with create_session_span(self.thread_id, "agent_loop_run"):
+            event_stream = self.get_stream(state, resume)
+            event = {}
+            async for event in event_stream:
+                event_msg = self.get_event_message(event)
+                await self.show_chat_even(event_msg)
+                # logger.debug(f"current event: {event_msg.format()}")
+            return self.get_output(event)

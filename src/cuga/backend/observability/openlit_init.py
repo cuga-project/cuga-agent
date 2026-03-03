@@ -229,3 +229,59 @@ def set_session_attribute(session_id: str) -> None:
             span.set_attribute("session.id", session_id)
     except Exception as e:
         logger.debug(f"Could not set session.id span attribute: {e}")
+
+
+def create_session_span(session_id: str, operation_name: str = "agent_execution"):
+    """
+    Create a parent span for the entire agent execution with session.id attribute.
+
+    This ensures the session.id attribute is set on a recording span that exists
+    before any child spans are created by OpenLit's auto-instrumentation.
+
+    Returns a context manager that can be used with 'with' statement.
+
+    Args:
+        session_id: The conversation thread ID for session tracking
+        operation_name: Name for the parent span (default: "agent_execution")
+
+    Returns:
+        Context manager (span or nullcontext if OpenLit is disabled)
+
+    Usage:
+        ```python
+        from cuga.backend.observability.openlit_init import create_session_span
+
+        with create_session_span(session_id, "agent_run"):
+            # Your execution code here
+            result = await agent.run()
+        ```
+
+    No-op if:
+    - OpenLit is not initialized (flag disabled or package not installed)
+    - opentelemetry-api is not installed
+    """
+    if not _initialized or otel_trace is None:
+        from contextlib import nullcontext
+
+        return nullcontext()
+
+    try:
+        tracer = otel_trace.get_tracer(__name__)
+        # start_as_current_span returns a context manager
+        # We need to create a custom context manager that sets the attribute
+        from contextlib import contextmanager
+
+        @contextmanager
+        def session_span_context():
+            with tracer.start_as_current_span(operation_name) as span:
+                # Set session.id attribute on the parent span
+                span.set_attribute("session.id", session_id)
+                yield span
+
+        return session_span_context()
+    except Exception as e:
+        logger.debug(f"Could not create session span: {e}")
+        from contextlib import nullcontext
+
+        return nullcontext()
+        logger.debug(f"Could not set session.id span attribute: {e}")

@@ -33,7 +33,7 @@ except ImportError:
         logger.warning("Langfuse is not installed, LangfuseCallbackHandler will be None")
         LangfuseCallbackHandler = None
 
-from cuga.backend.observability.openlit_init import init_openlit, set_session_attribute
+from cuga.backend.observability.openlit_init import init_openlit, create_session_span
 
 tracker = ActivityTracker()
 
@@ -188,98 +188,104 @@ class AgentRunner:
         session_id: str = None,
     ) -> Optional[ExperimentResult]:
         init_openlit()
-        set_session_attribute(session_id or self.thread_id)
-        langfuse_handler = None
-        if settings.advanced_features.langfuse_tracing and LangfuseCallbackHandler is not None:
-            langfuse_handler = LangfuseCallbackHandler()
-            logger.debug("Langfuse tracing enabled for agent loop")
 
-        agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
-        await agent.build_graph()
-        state: AgentState = default_state(
-            page=self.env.page if self.env else None,
-            observation=self.obs,
-            goal=goal if goal else self.obs['goal'],
-        )
-        state.sites = sites
-        await self.browser_update_state(state)
+        # Create parent span with session attribute to ensure it's captured
+        with create_session_span(session_id or self.thread_id, "agent_task_execution"):
+            langfuse_handler = None
+            if settings.advanced_features.langfuse_tracing and LangfuseCallbackHandler is not None:
+                langfuse_handler = LangfuseCallbackHandler()
+                logger.debug("Langfuse tracing enabled for agent loop")
 
-        self.agent_loop_obj = AgentLoop(
-            thread_id=self.thread_id,
-            langfuse_handler=langfuse_handler,
-            graph=agent.graph,
-            env_pointer=self.env,
-            tracker=tracker,
-            policy_system=agent.policy_system,
-        )
-        state.current_datetime = current_datetime if current_datetime else datetime.datetime.now().isoformat()
-        state.pi = tracker.pi
-        agent_response = await self.agent_loop_obj.run(state=state)
-        reward = 0.0
-        i = 0
-        while True:
-            if agent_response.has_tools:
-                i += 1
-                state = self.get_current_state()
-                feedback = await AgentRunner.process_event_async(
-                    state.messages[-1].tool_calls,
-                    state.elements,
-                    self.env.page,
-                    self.env.tool_implementation_provider,
-                    session_id=session_id,
-                    tool_provider=self.env.tool_implementation_provider,
-                )
-                state.feedback = state.feedback + feedback
-                if len(feedback) > 0 and feedback[-1]['status'] == "alert":
-                    logger.warning(f"Adding to stm the alert {feedback[-1]['message']}")
-                    state.stm_steps_history.append(
-                        "Response of (ActionAgent): {}".format(feedback[-1]['message'])
+            agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
+            await agent.build_graph()
+            state: AgentState = default_state(
+                page=self.env.page if self.env else None,
+                observation=self.obs,
+                goal=goal if goal else self.obs['goal'],
+            )
+            state.sites = sites
+            await self.browser_update_state(state)
+
+            self.agent_loop_obj = AgentLoop(
+                thread_id=self.thread_id,
+                langfuse_handler=langfuse_handler,
+                graph=agent.graph,
+                env_pointer=self.env,
+                tracker=tracker,
+                policy_system=agent.policy_system,
+            )
+            state.current_datetime = (
+                current_datetime if current_datetime else datetime.datetime.now().isoformat()
+            )
+            state.pi = tracker.pi
+            agent_response = await self.agent_loop_obj.run(state=state)
+            reward = 0.0
+            i = 0
+            while True:
+                if agent_response.has_tools:
+                    i += 1
+                    state = self.get_current_state()
+                    feedback = await AgentRunner.process_event_async(
+                        state.messages[-1].tool_calls,
+                        state.elements,
+                        self.env.page,
+                        self.env.tool_implementation_provider,
+                        session_id=session_id,
+                        tool_provider=self.env.tool_implementation_provider,
                     )
-                self.env.messages = state.messages
-                obs, reward, terminated, truncated, info = await self.env.step("")
-                if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
-                    break
-                await self.browser_update_state(state)
-                self.agent_loop_obj.graph.update_state({"configurable": {"thread_id": self.thread_id}}, state)
-                agent_response = await self.agent_loop_obj.run(state=None)
-            elif agent_response.end:
-                tracker.final_answer = agent_response.answer
-                if self.env:
+                    state.feedback = state.feedback + feedback
+                    if len(feedback) > 0 and feedback[-1]['status'] == "alert":
+                        logger.warning(f"Adding to stm the alert {feedback[-1]['message']}")
+                        state.stm_steps_history.append(
+                            "Response of (ActionAgent): {}".format(feedback[-1]['message'])
+                        )
+                    self.env.messages = state.messages
                     obs, reward, terminated, truncated, info = await self.env.step("")
-                break
-            else:
-                raise Exception("Agent stopped but no tools or finish.")
+                    if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
+                        break
+                    await self.browser_update_state(state)
+                    self.agent_loop_obj.graph.update_state(
+                        {"configurable": {"thread_id": self.thread_id}}, state
+                    )
+                    agent_response = await self.agent_loop_obj.run(state=None)
+                elif agent_response.end:
+                    tracker.final_answer = agent_response.answer
+                    if self.env:
+                        obs, reward, terminated, truncated, info = await self.env.step("")
+                    break
+                else:
+                    raise Exception("Agent stopped but no tools or finish.")
 
-        if eval_mode:
-            if self.env.chat:
-                await self.env.chat.add_message(
-                    role="assistant",
-                    msg="Final answer: {}".format(tracker.final_answer),
+            if eval_mode:
+                if self.env.chat:
+                    await self.env.chat.add_message(
+                        role="assistant",
+                        msg="Final answer: {}".format(tracker.final_answer),
+                    )
+                if len(tracker.steps) >= settings.evaluation.max_steps:
+                    tracker.final_answer = "N/A"
+                    obs, reward, terminated, truncated, info = await self.env.step("")
+                if sites and len(sites) > 1:
+                    logger.debug("Sleep on finish if multi site")
+                    await asyncio.sleep(15)
+                    obs, reward, terminated, truncated, info = await self.env.step("")
+
+                tracker.collect_score(score=reward)
+                return ExperimentResult(
+                    score=reward,
+                    messages=state.messages,
+                    answer=tracker.final_answer,
+                    number_of_actions=tracker.actions_count,
+                    steps=tracker.steps,
                 )
-            if len(tracker.steps) >= settings.evaluation.max_steps:
-                tracker.final_answer = "N/A"
-                obs, reward, terminated, truncated, info = await self.env.step("")
-            if sites and len(sites) > 1:
-                logger.debug("Sleep on finish if multi site")
-                await asyncio.sleep(15)
-                obs, reward, terminated, truncated, info = await self.env.step("")
-
-            tracker.collect_score(score=reward)
-            return ExperimentResult(
-                score=reward,
-                messages=state.messages,
-                answer=tracker.final_answer,
-                number_of_actions=tracker.actions_count,
-                steps=tracker.steps,
-            )
-        else:
-            return ExperimentResult(
-                score=0.0,
-                messages=state.messages,
-                answer=tracker.final_answer,
-                number_of_actions=tracker.actions_count,
-                steps=tracker.steps,
-            )
+            else:
+                return ExperimentResult(
+                    score=0.0,
+                    messages=state.messages,
+                    answer=tracker.final_answer,
+                    number_of_actions=tracker.actions_count,
+                    steps=tracker.steps,
+                )
 
     async def run_task_generic_yield(
         self,
@@ -296,102 +302,110 @@ class AgentRunner:
             )
         )
         init_openlit()
-        set_session_attribute(session_id or self.thread_id)
-        langfuse_handler = None
-        if settings.advanced_features.langfuse_tracing and LangfuseCallbackHandler is not None:
-            langfuse_handler = LangfuseCallbackHandler()
-            logger.debug("Langfuse tracing enabled for agent loop")
 
-        agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
-        await agent.build_graph()
-        state: AgentState = default_state(
-            page=self.env.page if self.env else None,
-            observation=self.obs,
-            goal=goal if goal else self.obs['goal'],
-            chat_messages=chat_messages if chat_messages else [],
-        )
-        state.sites = sites
-        await self.browser_update_state(state)
+        # Create parent span with session attribute to ensure it's captured
+        with create_session_span(session_id or self.thread_id, "agent_task_execution_stream"):
+            langfuse_handler = None
+            if settings.advanced_features.langfuse_tracing and LangfuseCallbackHandler is not None:
+                langfuse_handler = LangfuseCallbackHandler()
+                logger.debug("Langfuse tracing enabled for agent loop")
 
-        self.agent_loop_obj = AgentLoop(
-            thread_id=self.thread_id,
-            langfuse_handler=langfuse_handler,
-            graph=agent.graph,
-            tracker=tracker,
-            env_pointer=self.env,
-            policy_system=agent.policy_system,
-        )
-        state.current_datetime = current_datetime if current_datetime else datetime.datetime.now().isoformat()
-        state.pi = tracker.pi
-        reward = 0.0
-        i = 0
-        first_time = True
-        event = None
-        while True:
-            agent_response = self.agent_loop_obj.run_stream(state=state if first_time else None)
-            first_time = False
-            final_event = None
-            async for event in agent_response:
-                final_event = event  # Keep track of the last event
-
-                if isinstance(event, AgentLoopAnswer):
-                    if event.has_tools:
-                        i += 1
-                        state = self.get_current_state()
-                        feedback = await AgentRunner.process_event_async(
-                            state.messages[-1].tool_calls,
-                            state.elements,
-                            self.env.page,
-                            self.env.tool_implementation_provider,
-                            session_id=session_id,
-                        )
-                        state.feedback = state.feedback + feedback
-                        if len(feedback) > 0 and feedback[-1]['status'] == "alert":
-                            logger.warning(f"Adding to stm the alert {feedback[-1]['message']}")
-                            state.stm_steps_history.append(
-                                "Response of (ActionAgent): {}".format(feedback[-1]['message'])
-                            )
-                        self.env.messages = state.messages
-                        obs, reward, terminated, truncated, info = await self.env.step("")
-                        if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
-                            break  # Break to handle final result outside the loop
-                        await self.browser_update_state(state)
-                        self.agent_loop_obj.graph.update_state(
-                            {"configurable": {"thread_id": self.thread_id}}, state
-                        )
-                        # Break out of the async for loop to restart with new agent_response
-                        break
-                    elif event.end:
-                        tracker.final_answer = event.answer
-                        if self.env:
-                            obs, reward, terminated, truncated, info = await self.env.step("")
-                        yield ExperimentResult(
-                            score=0.0,
-                            messages=state.messages,
-                            answer=tracker.final_answer,
-                            number_of_actions=tracker.actions_count,
-                        )
-                        return  # Exit the entire function
-                    else:
-                        raise Exception("Agent stopped but no tools or finish.")
-                else:
-                    yield StreamEvent.parse(event)
-
-            # Handle the case where we broke out due to max_steps or reward == 1.0
-            if eval_mode and (reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps):
-                break
-
-        # Handle final result outside the loop (matching your original structure)
-        if final_event and isinstance(final_event, AgentLoopAnswer):
-            tracker.final_answer = final_event.answer
-            if self.env:
-                obs, reward, terminated, truncated, info = await self.env.step("")
-            yield ExperimentResult(
-                score=0.0,
-                messages=state.messages,
-                answer=tracker.final_answer,
-                number_of_actions=tracker.actions_count,
+            agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
+            await agent.build_graph()
+            state: AgentState = default_state(
+                page=self.env.page if self.env else None,
+                observation=self.obs,
+                goal=goal if goal else self.obs['goal'],
+                chat_messages=chat_messages if chat_messages else [],
             )
+            state.sites = sites
+            await self.browser_update_state(state)
+
+            self.agent_loop_obj = AgentLoop(
+                thread_id=self.thread_id,
+                langfuse_handler=langfuse_handler,
+                graph=agent.graph,
+                tracker=tracker,
+                env_pointer=self.env,
+                policy_system=agent.policy_system,
+            )
+            state.current_datetime = (
+                current_datetime if current_datetime else datetime.datetime.now().isoformat()
+            )
+            state.pi = tracker.pi
+            reward = 0.0
+            i = 0
+            first_time = True
+            event = None
+            while True:
+                agent_response = self.agent_loop_obj.run_stream(state=state if first_time else None)
+                first_time = False
+                final_event = None
+                async for event in agent_response:
+                    final_event = event  # Keep track of the last event
+
+                    if isinstance(event, AgentLoopAnswer):
+                        if event.has_tools:
+                            i += 1
+                            state = self.get_current_state()
+                            feedback = await AgentRunner.process_event_async(
+                                state.messages[-1].tool_calls,
+                                state.elements,
+                                self.env.page,
+                                self.env.tool_implementation_provider,
+                                session_id=session_id,
+                            )
+                            state.feedback = state.feedback + feedback
+                            if len(feedback) > 0 and feedback[-1]['status'] == "alert":
+                                logger.warning(f"Adding to stm the alert {feedback[-1]['message']}")
+                                state.stm_steps_history.append(
+                                    "Response of (ActionAgent): {}".format(feedback[-1]['message'])
+                                )
+                            self.env.messages = state.messages
+                            obs, reward, terminated, truncated, info = await self.env.step("")
+                            if (
+                                eval_mode
+                                and reward == 1.0
+                                or len(tracker.steps) >= settings.evaluation.max_steps
+                            ):
+                                break  # Break to handle final result outside the loop
+                            await self.browser_update_state(state)
+                            self.agent_loop_obj.graph.update_state(
+                                {"configurable": {"thread_id": self.thread_id}}, state
+                            )
+                            # Break out of the async for loop to restart with new agent_response
+                            break
+                        elif event.end:
+                            tracker.final_answer = event.answer
+                            if self.env:
+                                obs, reward, terminated, truncated, info = await self.env.step("")
+                            yield ExperimentResult(
+                                score=0.0,
+                                messages=state.messages,
+                                answer=tracker.final_answer,
+                                number_of_actions=tracker.actions_count,
+                            )
+                            return  # Exit the entire function
+                        else:
+                            raise Exception("Agent stopped but no tools or finish.")
+                    else:
+                        yield StreamEvent.parse(event)
+
+                # Handle the case where we broke out due to max_steps or reward == 1.0
+                if eval_mode and (reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps):
+                    break
+
+            # Handle final result outside the loop (matching your original structure)
+            if final_event and isinstance(final_event, AgentLoopAnswer):
+                tracker.final_answer = final_event.answer
+                if self.env:
+                    obs, reward, terminated, truncated, info = await self.env.step("")
+                yield ExperimentResult(
+                    score=0.0,
+                    messages=state.messages,
+                    answer=tracker.final_answer,
+                    number_of_actions=tracker.actions_count,
+                )
 
 
 async def main():
