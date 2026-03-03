@@ -132,6 +132,11 @@ function policiesSummary(policies: unknown[]): { total: number; byType: Record<s
   return { total: policies.length, byType };
 }
 
+function isSecretRef(v: unknown): boolean {
+  if (typeof v !== "string") return false;
+  return v.startsWith("db://") || v.startsWith("vault://") || v.startsWith("aws://") || v.startsWith("env://");
+}
+
 function maskSecrets(obj: unknown): unknown {
   if (obj === null || obj === undefined) return obj;
   if (Array.isArray(obj)) return obj.map(maskSecrets);
@@ -141,10 +146,11 @@ function maskSecrets(obj: unknown): unknown {
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(obj)) {
       const lower = k.toLowerCase();
-      const shouldMask =
+      const isSensitiveField =
         lower === "api_key" ||
         (isAuth && (lower === "value" || lower === "key"));
-      out[k] = shouldMask && typeof v === "string" && v.length > 0 ? "••••••••" : maskSecrets(v);
+      const shouldMask = isSensitiveField && typeof v === "string" && v.length > 0 && !isSecretRef(v);
+      out[k] = shouldMask ? "••••••••" : maskSecrets(v);
     }
     return out;
   }

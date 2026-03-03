@@ -240,8 +240,9 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
           agentId={agentId}
         />
       )}
-      {editingIndex !== null && (
+      {editingIndex !== null && editingTool !== null && (
         <AddToolModal
+          key={`edit-${editingIndex}`}
           onClose={() => setEditingIndex(null)}
           onSave={handleEdit}
           initial={editingTool}
