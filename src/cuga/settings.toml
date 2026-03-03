@@ -109,3 +109,8 @@ graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
 memory = 8888
+
+[observability]
+openlit = true  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
+                 # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+                 # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)

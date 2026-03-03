@@ -1,0 +1,49 @@
+# Grafana Tempo configuration for Cuga + OpenLit local testing stack.
+#
+# Tempo receives traces from the OTel Collector via gRPC (OTLP) on port 4317
+# and exposes its HTTP API on port 3200 (queried by Grafana).
+#
+# The ingester.lifecycler block is required for single-binary (monolithic) mode.
+# Without it, Tempo's internal ring stays empty and queries fail with:
+#   "error finding partition ring replicas: empty ring"
+
+server:
+  http_listen_port: 3200
+
+# Register the ingester in the in-memory ring so the querier can locate it.
+ingester:
+  lifecycler:
+    address: 127.0.0.1
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s
+  trace_idle_period: 10s
+  max_block_bytes: 1_000_000
+  max_block_duration: 5m
+  complete_block_timeout: 2m
+
+compactor:
+  compaction:
+    compaction_window: 1h
+    max_block_bytes: 100_000_000
+    block_retention: 1h
+    compacted_block_retention: 10m
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          endpoint: 0.0.0.0:4317
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /tmp/tempo/blocks
+    wal:
+      path: /tmp/tempo/wal
+
+# Made with Bob

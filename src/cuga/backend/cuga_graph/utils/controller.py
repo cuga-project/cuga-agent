@@ -33,6 +33,8 @@ except ImportError:
         logger.warning("Langfuse is not installed, LangfuseCallbackHandler will be None")
         LangfuseCallbackHandler = None
 
+from cuga.backend.observability.openlit_init import init_openlit, set_session_attribute
+
 tracker = ActivityTracker()
 
 
@@ -185,6 +187,8 @@ class AgentRunner:
         current_datetime: Optional[str] = None,
         session_id: str = None,
     ) -> Optional[ExperimentResult]:
+        init_openlit()
+        set_session_attribute(session_id or self.thread_id)
         langfuse_handler = None
         if settings.advanced_features.langfuse_tracing and LangfuseCallbackHandler is not None:
             langfuse_handler = LangfuseCallbackHandler()
@@ -291,6 +295,8 @@ class AgentRunner:
                 len(chat_messages) if chat_messages else 0
             )
         )
+        init_openlit()
+        set_session_attribute(session_id or self.thread_id)
         langfuse_handler = None
         if settings.advanced_features.langfuse_tracing and LangfuseCallbackHandler is not None:
             langfuse_handler = LangfuseCallbackHandler()

@@ -76,6 +76,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
+from cuga.backend.observability.openlit_init import init_openlit, set_session_attribute
 
 if TYPE_CHECKING:
     pass
@@ -1304,6 +1305,9 @@ class CugaAgent:
             await agent.initialize()  # Trigger policy loading
             ```
         """
+        # Initialize OpenLit observability (no-op if disabled or not installed)
+        init_openlit()
+
         # Initialize tool provider
         await self._ensure_initialized()
 
@@ -1710,6 +1714,9 @@ class CugaAgent:
         if not thread_id:
             thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
             logger.debug(f"Auto-generated thread_id: {thread_id}")
+
+        # Set session.id on the active OTel span for per-session trace segmentation
+        set_session_attribute(thread_id)
 
         # Setup config early to check for existing state
         run_config["configurable"]["thread_id"] = thread_id
