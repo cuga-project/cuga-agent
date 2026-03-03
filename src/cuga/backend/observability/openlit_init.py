@@ -46,6 +46,37 @@ See deployment/docker-compose/openlit/ for a ready-to-use local stack:
 import os
 from loguru import logger
 
+
+def _merge_otel_resource_attributes(existing: str, new_attrs: dict[str, str]) -> str:
+    """
+    Parse existing OTEL_RESOURCE_ATTRIBUTES, merge with new attributes by key,
+    and return a deduplicated comma-separated string.
+
+    New attributes overwrite existing ones with the same key.
+
+    Args:
+        existing: Current OTEL_RESOURCE_ATTRIBUTES value (comma-separated key=value pairs)
+        new_attrs: Dictionary of new attributes to merge
+
+    Returns:
+        Merged comma-separated string of key=value pairs
+    """
+    # Parse existing attributes into a dict
+    attrs_dict: dict[str, str] = {}
+    if existing:
+        for pair in existing.split(","):
+            pair = pair.strip()
+            if "=" in pair:
+                key, value = pair.split("=", 1)
+                attrs_dict[key.strip()] = value.strip()
+
+    # Merge new attributes (overwriting existing keys)
+    attrs_dict.update(new_attrs)
+
+    # Reconstruct as comma-separated string
+    return ",".join(f"{k}={v}" for k, v in attrs_dict.items())
+
+
 # ---------------------------------------------------------------------------
 # Set OTel env vars at MODULE LEVEL — before any other import that might
 # trigger Langfuse (or another library) to call trace.set_tracer_provider().
@@ -76,14 +107,13 @@ try:
 except Exception:
     _cuga_version = "unknown"
 
-_static_attrs = f"agent.id=CugaAgent,service.version={_cuga_version}"
+# Merge static attributes using key-based deduplication
+_static_attrs_dict = {
+    "agent.id": "CugaAgent",
+    "service.version": _cuga_version,
+}
 _existing = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
-if _existing:
-    # Avoid duplicating if already set (e.g. user pre-set it)
-    if "agent.id" not in _existing:
-        os.environ["OTEL_RESOURCE_ATTRIBUTES"] = f"{_existing},{_static_attrs}"
-else:
-    os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _static_attrs
+os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(_existing, _static_attrs_dict)
 
 try:
     import openlit  # type: ignore[import-untyped]
@@ -151,9 +181,8 @@ def init_openlit() -> None:
         dynamic_attrs["service.instance.id"] = instance_id
 
     if dynamic_attrs:
-        dynamic_str = ",".join(f"{k}={v}" for k, v in dynamic_attrs.items())
         existing = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
-        os.environ["OTEL_RESOURCE_ATTRIBUTES"] = f"{existing},{dynamic_str}" if existing else dynamic_str
+        os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(existing, dynamic_attrs)
 
     logger.debug(f"OpenLit: OTEL_RESOURCE_ATTRIBUTES={os.getenv('OTEL_RESOURCE_ATTRIBUTES', '')}")
 
