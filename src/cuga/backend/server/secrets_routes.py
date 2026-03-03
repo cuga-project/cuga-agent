@@ -47,7 +47,9 @@ async def list_secrets(
     try:
         import os
         from cuga.config import settings
-        from cuga.backend.secrets.seed import SECRET_ENV_SEED_MAP
+        from cuga.backend.secrets.seed import _build_seed_map
+
+        SECRET_ENV_SEED_MAP = _build_seed_map()
 
         sec = getattr(settings, "secrets", None)
         mode = getattr(sec, "mode", "local") if sec else "local"
