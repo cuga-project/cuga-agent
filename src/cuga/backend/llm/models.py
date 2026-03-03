@@ -15,7 +15,7 @@ from loguru import logger
 from cuga.backend.secrets import resolve_secret
 from cuga.config import settings
 
-_ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Za-z0-9_]*$")
+_ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
 
 def _normalize_secret(val: Optional[str]) -> Optional[str]:
@@ -654,16 +654,26 @@ class LLMManager:
                 os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
                 and not disable_ssl
             )
-            if not ssl_verify:
-                import litellm
 
+            # Import litellm and configure global settings
+            import litellm
+
+            litellm.drop_params = True  # Disable default prefix globally
+
+            if not ssl_verify:
                 litellm.ssl_verify = False
 
             litellm_params: Dict[str, Any] = {
                 "model": model_name,
                 "temperature": temperature,
                 "max_tokens": max_tokens,
+                "drop_params": True,
             }
+            # Tell litellm to use the OpenAI-compatible code path without parsing
+            # a provider from the model name (e.g. "ibm-granite/granite-4.0-1b"
+            # would otherwise be misread as provider=ibm-granite).
+            if base_url:
+                litellm_params["custom_llm_provider"] = "openai"
             if base_url:
                 litellm_params["api_base"] = base_url.rstrip("/")
             auth_headers = self._get_auth_headers(model_settings, "openai")
