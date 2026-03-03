@@ -55,6 +55,11 @@ include = [
 ]
 
 [tool.uv]
+override-dependencies = [
+    "pillow>=12.1.1",
+    "urllib3>=2.6.0",
+    "nltk>=3.9.3",
+]
 dev-dependencies = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",

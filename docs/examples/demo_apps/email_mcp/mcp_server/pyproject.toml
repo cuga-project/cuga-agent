@@ -15,6 +15,11 @@ dependencies = [
 
 [tool.uv]
 package = true
+override-dependencies = [
+    "pillow>=12.1.1",
+    "urllib3>=2.6.0",
+    "nltk>=3.9.3",
+]
 
 [project.scripts]
 email_mcp = "server:main"

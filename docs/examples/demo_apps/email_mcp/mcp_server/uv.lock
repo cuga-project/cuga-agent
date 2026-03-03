@@ -2,6 +2,13 @@ version = 1
 revision = 3
 requires-python = ">=3.10, <3.14"
 
+[manifest]
+overrides = [
+    { name = "nltk", specifier = ">=3.9.3" },
+    { name = "pillow", specifier = ">=12.1.1" },
+    { name = "urllib3", specifier = ">=2.6.0" },
+]
+
 [[package]]
 name = "annotated-types"
 version = "0.7.0"

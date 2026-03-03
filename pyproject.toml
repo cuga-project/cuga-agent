@@ -56,6 +56,9 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 
 [tool.uv]
 package = true
+override-dependencies = [
+    "pillow>=12.1.1",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -108,7 +111,7 @@ dev = [
     "ruff>=0.9.4",
     "tabulate",
     "beartype",
-    "nltk",
+    "nltk>=3.9.3",
     "termcolor",
     "rapidfuzz",
     "pytest>=8.3.5",

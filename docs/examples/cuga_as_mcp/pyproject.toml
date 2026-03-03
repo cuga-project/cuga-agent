@@ -17,3 +17,10 @@ build-backend = "hatchling.build"
 
 [tool.uv.sources]
 cuga = { path = "../../../", editable = true }
+
+[tool.uv]
+override-dependencies = [
+    "pillow>=12.1.1",
+    "urllib3>=2.6.0",
+    "nltk>=3.9.3",
+]
