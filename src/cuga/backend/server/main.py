@@ -151,6 +151,7 @@ class AppState:
         self.config_version: Optional[int] = None
         self.tools_include_by_app: Optional[Dict[str, List[str]]] = None
         self.tools_include_version: int = 0
+        self.current_llm: Optional[Any] = None
         self.initialize_sdk()
 
     def initialize_sdk(self):
