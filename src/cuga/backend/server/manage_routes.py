@@ -105,8 +105,12 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
         if force_env:
             if "model" in llm_cfg and llm_cfg["model"]:
                 os.environ["MODEL_NAME"] = str(llm_cfg["model"])
+            else:
+                os.environ.pop("MODEL_NAME", None)
             if "temperature" in llm_cfg and llm_cfg["temperature"] is not None:
                 os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
+            else:
+                os.environ.pop("MODEL_TEMPERATURE", None)
             try:
                 LLMManager()._models.clear()
             except Exception as _e:
@@ -132,6 +136,12 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
                 app_state.current_llm = None
             if llm_cfg.get("model"):
                 os.environ["MODEL_NAME"] = str(llm_cfg["model"])
+            else:
+                os.environ.pop("MODEL_NAME", None)
+            if llm_cfg.get("temperature") is not None:
+                os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
+            else:
+                os.environ.pop("MODEL_TEMPERATURE", None)
             if llm_cfg.get("disable_ssl"):
                 os.environ["CUGA_DISABLE_SSL"] = "true"
             else:
@@ -166,6 +176,90 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
                 r.raise_for_status()
         except Exception as reload_err:
             logger.warning("Manager mode: write YAML/reload failed: %s", reload_err)
+
+
+def _apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
+    """Apply only LLM config to app state (current_llm, env vars). No tools or policies."""
+    if not isinstance(llm_cfg, dict):
+        return
+    try:
+        from cuga.backend.llm.models import LLMManager, create_llm_from_config
+        from cuga.config import settings
+
+        _secrets = getattr(settings, "secrets", None)
+        force_env = bool(getattr(_secrets, "force_env", False))
+    except Exception as _e:
+        logger.debug("Failed to get secrets settings: %s", _e)
+        force_env = False
+
+    if force_env:
+        if llm_cfg.get("model"):
+            os.environ["MODEL_NAME"] = str(llm_cfg["model"])
+        else:
+            os.environ.pop("MODEL_NAME", None)
+        if llm_cfg.get("temperature") is not None:
+            os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
+        else:
+            os.environ.pop("MODEL_TEMPERATURE", None)
+        try:
+            LLMManager()._models.clear()
+        except Exception as _e:
+            logger.debug("Failed to clear LLM cache (force_env): %s", _e)
+        state.current_llm = None
+    else:
+        try:
+            state.current_llm = create_llm_from_config(llm_cfg)
+            logger.info(
+                "Applied LLM from PATCH (provider=%s model=%s)",
+                llm_cfg.get("provider"),
+                llm_cfg.get("model"),
+            )
+        except Exception as _e:
+            logger.warning("Failed to create LLM from PATCH: %s", _e)
+            state.current_llm = None
+        if llm_cfg.get("model"):
+            os.environ["MODEL_NAME"] = str(llm_cfg["model"])
+        else:
+            os.environ.pop("MODEL_NAME", None)
+        if llm_cfg.get("temperature") is not None:
+            os.environ["MODEL_TEMPERATURE"] = str(llm_cfg["temperature"])
+        else:
+            os.environ.pop("MODEL_TEMPERATURE", None)
+        if llm_cfg.get("disable_ssl"):
+            os.environ["CUGA_DISABLE_SSL"] = "true"
+        else:
+            os.environ.pop("CUGA_DISABLE_SSL", None)
+
+
+def _apply_llm_to_draft_state(state: Any, llm_cfg: dict) -> None:
+    """Apply LLM config to draft state only — no os.environ mutation.
+
+    Unlike _apply_llm_to_state / _apply_published_config, this never touches
+    os.environ so the published agent's LLM resolution is not affected.
+    """
+    if not isinstance(llm_cfg, dict):
+        return
+    try:
+        from cuga.backend.llm.models import create_llm_from_config
+
+        state.current_llm = create_llm_from_config(llm_cfg)
+        logger.info(
+            "Applied draft LLM to draft state (provider=%s model=%s)",
+            llm_cfg.get("provider"),
+            llm_cfg.get("model"),
+        )
+    except Exception as _e:
+        logger.warning("Failed to create LLM for draft state: %s", _e)
+        state.current_llm = None
+
+
+async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict[str, Any]:
+    from cuga.backend.server.config_store import load_draft, save_draft
+
+    existing = await load_draft(agent_id) or {}
+    existing[section] = value
+    await save_draft(existing, agent_id)
+    return existing
 
 
 @router.get("/config")
@@ -532,8 +626,11 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             logger.warning(f"Failed to reload registry for {str(agent_id)}: {reload_err}")
             logger.exception("[DEBUG] Full traceback:")
 
-        # Apply LLM config (sets global runtime override so other agents pick it up too)
-        await _apply_published_config(state_to_update, config or {})
+        # Apply LLM config to draft state only — never mutate os.environ here so the
+        # published agent's LLM is not affected before an explicit publish action.
+        if state_to_update:
+            llm_cfg = (config or {}).get("llm") or {}
+            _apply_llm_to_draft_state(state_to_update, llm_cfg)
 
         # NOW rebuild the draft agent graph AFTER registry has been reloaded
         try:
@@ -591,6 +688,142 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
         return JSONResponse(response_data)
     except Exception as e:
         logger.error(f"Failed to save draft: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/config/draft/llm")
+async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
+    """Update only the LLM section of the draft. No registry reload or agent rebuild."""
+    if agent_id is None:
+        agent_id = "cuga-default"
+    try:
+        data = await request.json()
+        llm = data.get("llm", data)
+        full_draft = await _load_and_patch_draft(agent_id, "llm", llm if isinstance(llm, dict) else {})
+        state = getattr(request.app.state, "draft_app_state", None)
+        if state:
+            _apply_llm_to_draft_state(state, full_draft.get("llm") or {})
+            draft_agent = getattr(state, "agent", None)
+            if draft_agent:
+                draft_agent.llm_config = full_draft.get("llm") or None
+        return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except Exception as e:
+        logger.error(f"Failed to patch draft LLM: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/config/draft/tools")
+async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
+    """Update only the tools section of the draft. Triggers registry reload and agent rebuild."""
+    if agent_id is None:
+        agent_id = "cuga-default"
+    try:
+        from cuga.backend.server.config_store import _parse_agent_id
+        from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
+        data = await request.json()
+        tools = data.get("tools", data)
+        tools_list = tools if isinstance(tools, list) else []
+        full_draft = await _load_and_patch_draft(agent_id, "tools", tools_list)
+        state = getattr(request.app.state, "draft_app_state", None)
+        if not state:
+            return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+
+        state.tools_include_by_app = {
+            t["name"]: t["include"]
+            for t in tools_list
+            if isinstance(t, dict)
+            and t.get("name")
+            and isinstance(t.get("include"), list)
+            and len(t["include"]) > 0
+        } or None
+        current_version = getattr(state, "tools_include_version", 0)
+        if isinstance(current_version, str):
+            current_version = int(current_version) if current_version.isdigit() else 0
+        state.tools_include_version = current_version + 1
+
+        tool_errors = {}
+        try:
+            base_agent_id = _parse_agent_id(str(agent_id))
+            draft_agent_id = f"{base_agent_id}--draft"
+            registry_url = get_registry_base_url()
+            async with httpx.AsyncClient() as client:
+                r = await client.post(f"{registry_url}/reload?agent_id={draft_agent_id}", timeout=10.0)
+                r.raise_for_status()
+                reload_data = r.json()
+                if reload_data.get("status") == "partial" and "errors" in reload_data:
+                    tool_errors = reload_data["errors"]
+        except Exception as reload_err:
+            logger.warning("Failed to reload registry for PATCH tools: %s", reload_err)
+
+        _apply_llm_to_draft_state(state, full_draft.get("llm") or {})
+        try:
+            draft_agent = getattr(state, "agent", None)
+            if draft_agent:
+                tp = getattr(draft_agent, "tool_provider", None)
+                if tp is not None and hasattr(tp, "reset"):
+                    tp.reset()
+                overrides = _extract_agent_feature_overrides(full_draft)
+                if overrides["enable_todos"] is not None:
+                    draft_agent.enable_todos = overrides["enable_todos"]
+                if overrides["reflection_enabled"] is not None:
+                    draft_agent.reflection_enabled = overrides["reflection_enabled"]
+                if overrides["shortlisting_tool_threshold"] is not None:
+                    draft_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
+                if overrides["cuga_lite_max_steps"] is not None:
+                    draft_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
+                draft_agent.llm_config = full_draft.get("llm") or None
+                await draft_agent.build_graph()
+        except Exception as rebuild_err:
+            logger.error("Failed to rebuild draft agent graph after PATCH tools: %s", rebuild_err)
+
+        response_data = {
+            "status": "partial" if tool_errors else "success",
+            "version": "draft",
+            "agent_id": agent_id,
+        }
+        if tool_errors:
+            response_data["tool_errors"] = tool_errors
+        return JSONResponse(response_data)
+    except Exception as e:
+        logger.error(f"Failed to patch draft tools: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/config/draft/policies")
+async def patch_draft_policies(request: Request, agent_id: Optional[str] = None):
+    """Update only the policies section of the draft. No registry reload or agent rebuild."""
+    if agent_id is None:
+        agent_id = "cuga-default"
+    try:
+        data = await request.json()
+        policies = data.get("policies", data)
+        full_draft = await _load_and_patch_draft(agent_id, "policies", policies)
+        state = getattr(request.app.state, "draft_app_state", None)
+        if state and state.policy_system and state.policy_system.storage:
+            raw_policies = full_draft.get("policies")
+            policies_list = (
+                raw_policies.get("policies", [])
+                if isinstance(raw_policies, dict) and "policies" in raw_policies
+                else raw_policies
+                if isinstance(raw_policies, list)
+                else []
+            )
+            try:
+                from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+
+                await apply_policies_data_to_storage(
+                    state.policy_system.storage,
+                    policies_list,
+                    clear_existing=True,
+                    filesystem_sync=state.policy_filesystem_sync,
+                )
+                await state.policy_system.initialize()
+            except Exception as policy_err:
+                logger.warning("Failed to apply policies from PATCH: %s", policy_err)
+        return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except Exception as e:
+        logger.error(f"Failed to patch draft policies: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

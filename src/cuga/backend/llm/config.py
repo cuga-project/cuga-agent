@@ -68,7 +68,7 @@ class LiteLLMConfig(LLMConfig):
 
     provider: Literal["litellm"] = Field(default="litellm", description="Provider must be 'litellm'")
 
-    url: str = Field(..., description="LiteLLM proxy/gateway URL (required)")
+    url: str = Field(..., alias="base_url", description="LiteLLM proxy/gateway URL (required)")
 
     auth_type: Literal["api_key", "auth_header"] = Field(
         default="auth_header", description="LiteLLM typically uses custom auth headers"

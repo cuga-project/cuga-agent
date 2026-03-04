@@ -823,9 +823,9 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         apikey_ref = api_key or llm_cfg.get("apikey_name")
         resolved_key = _normalize_secret(resolve_secret(apikey_ref)) if apikey_ref else None
         if not resolved_key:
-            resolved_key = _normalize_secret(resolve_secret("OPENAI_API_KEY")) or os.environ.get(
-                "OPENAI_API_KEY"
-            )
+            # Use platform-specific fallback
+            fallback_key = "OPENROUTER_API_KEY" if platform == "openrouter" else "OPENAI_API_KEY"
+            resolved_key = _normalize_secret(resolve_secret(fallback_key)) or os.environ.get(fallback_key)
         if not resolved_key:
             raise ValueError(
                 f"create_llm_from_config: cannot resolve API key for provider '{platform}' "

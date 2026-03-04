@@ -306,7 +306,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
             <Select
               id="tool-type"
               labelText="Type"
-              defaultValue={type}
+              value={type}
               onChange={(e) => setType(e.target.value as "mcp" | "openapi")}
             >
               <SelectItem value="mcp" text="MCP server" />
@@ -318,7 +318,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               <Select
                 id="tool-mcp-mode"
                 labelText="Connection"
-                defaultValue={mcpMode}
+                value={mcpMode}
                 onChange={(e) => setMcpMode(e.target.value as McpConnectionMode)}
               >
                 <SelectItem value="url" text="URL (SSE)" />
@@ -390,7 +390,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
             <Select
               id="tool-auth-type"
               labelText="Auth type"
-              defaultValue={authType}
+              value={authType}
               onChange={(e) => setAuthType(e.target.value as AuthType)}
             >
               {AUTH_TYPE_OPTIONS.map((opt) => (
@@ -422,7 +422,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                     <Select
                       id="tool-auth-secret"
                       labelText="Secret"
-                      defaultValue={authValue}
+                      value={authValue}
                       onChange={(e) => setAuthValue(e.target.value)}
                     >
                       <SelectItem value="" text="Select a secret" />
@@ -477,9 +477,28 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                                 setAuthValue(`db://${slug}`);
                                 setInlineCreateOpen(false);
                                 setInlineCreateKey("");
-                                api.getSecrets(agentId).then((r) => {
-                                  if (r.ok) r.json().then((d) => setSecretsList(d.secrets || d.overrides || []));
-                                });
+                                Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
+                                  .then(async ([secretsRes, configRes]) => {
+                                    let mode = "local";
+                                    if (configRes.ok) {
+                                      const cfg = await configRes.json();
+                                      mode = cfg.mode || "local";
+                                    }
+                                    if (secretsRes.ok) {
+                                      const data = await secretsRes.json();
+                                      const raw: { id: string; description?: string; source?: string }[] = data.secrets || data.overrides || [];
+                                      setSecretsList(raw.map((s) => ({
+                                        id: s.id,
+                                        description: s.description,
+                                        ref: s.source === "vault" || mode === "vault"
+                                          ? `vault://secret/${s.id}#value`
+                                          : s.source === "env"
+                                            ? s.id
+                                            : `db://${s.id}`,
+                                      })));
+                                    }
+                                  })
+                                  .catch(() => {});
                               }
                             }}
                           >

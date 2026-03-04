@@ -141,7 +141,8 @@ def resolve_llm_api_key_ref() -> str:
         "azure": "azure-openai-api-key",
         "litellm": "litellm-api-key",
     }
-    for hint, slug in provider_hints.items():
+    # Sort hints by length descending to match more specific providers first (e.g., "azure" before "gpt")
+    for hint, slug in sorted(provider_hints.items(), key=lambda x: len(x[0]), reverse=True):
         if hint in model_name:
             return f"db://{slug}"
     for env_var, slug in _build_seed_map().items():

@@ -145,6 +145,33 @@ export async function postManageConfigDraft(config: unknown): Promise<Response> 
   });
 }
 
+export async function patchManageConfigDraftLlm(llm: unknown, agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft/llm${q}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ llm }),
+  });
+}
+
+export async function patchManageConfigDraftTools(tools: unknown, agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft/tools${q}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tools }),
+  });
+}
+
+export async function patchManageConfigDraftPolicies(policies: unknown, agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft/policies${q}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ policies }),
+  });
+}
+
 export async function postManageConfig(config: unknown): Promise<Response> {
   return apiFetch("/api/manage/config", {
     method: "POST",

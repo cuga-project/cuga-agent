@@ -107,7 +107,7 @@ const DEFAULT_CONFIG: AgentConfig = {
     auth_header_name: "Authorization",
     base_url: "",
     model: "",
-    temperature: 0.7,
+    temperature: 0.1,
     disable_ssl: false,
   },
   tools: [],
@@ -161,7 +161,11 @@ export function ManagePage() {
   const { agentId } = useParams<{ agentId: string }>();
   const location = useLocation();
   const search = location.search || "";
-  const [config, setConfig] = useState<AgentConfig>(DEFAULT_CONFIG);
+  const [llmConfig, setLlmConfig] = useState<NonNullable<AgentConfig["llm"]>>(DEFAULT_CONFIG.llm!);
+  const [tools, setToolsState] = useState<ToolEntry[]>(DEFAULT_CONFIG.tools ?? []);
+  const [featureFlags, setFeatureFlags] = useState(DEFAULT_CONFIG.feature_flags!);
+  const [homescreen, setHomescreen] = useState<HomescreenConfig>(DEFAULT_CONFIG.homescreen ?? DEFAULT_HOMESCREEN);
+  const [policies, setPolicies] = useState<NonNullable<AgentConfig["policies"]>>(DEFAULT_CONFIG.policies ?? { enablePolicies: true, policies: [] });
   const [history, setHistory] = useState<ConfigVersion[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -193,9 +197,10 @@ export function ManagePage() {
   const [llmModelsList, setLlmModelsList] = useState<string[]>([]);
   const skipDraftSaveRef = useRef(true);
   const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const toolsSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const llmBlurSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const configRef = useRef(config);
-  configRef.current = config;
+  const llmConfigRef = useRef(llmConfig);
+  llmConfigRef.current = llmConfig;
 
   useEffect(() => {
     api.getAgentContext()
@@ -373,7 +378,11 @@ export function ManagePage() {
         setConnectedApps([]);
         setConnectedTools([]);
       }
-      setConfig(out);
+      setLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
+      setToolsState(Array.isArray(out.tools) ? out.tools : []);
+      setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
+      setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
+      setPolicies(out.policies ?? { enablePolicies: true, policies: [] });
       setCurrentVersion(version);
       setLoadError(null);
       setTimeout(() => {
@@ -424,7 +433,9 @@ export function ManagePage() {
             ? `vault://secret/${s.id}#value`
             : s.source === "env"
               ? s.id
-              : `db://${s.id}`,
+              : s.source === "aws"
+                ? `aws://${s.id}`
+                : `db://${s.id}`,
         })));
       }
     } catch {}
@@ -435,81 +446,132 @@ export function ManagePage() {
   }, [refreshSecrets]);
 
   useEffect(() => {
-    const key = config.llm?.api_key ?? "";
+    const key = llmConfig?.api_key ?? "";
     setLlmUseSavedSecret(
       typeof key === "string" && (key.startsWith("db://") || key.startsWith("vault://") || key.startsWith("aws://"))
     );
-  }, [config.llm?.api_key]);
+  }, [llmConfig?.api_key]);
 
   useEffect(() => {
     loadLatest();
     loadHistory();
   }, [loadLatest, loadHistory]);
 
-  const performDraftSave = useCallback(async (partial?: Partial<AgentConfig>) => {
-    const toSave = partial ? { ...configRef.current, ...partial } : configRef.current;
+  const assembleConfig = useCallback(
+    (overrides?: Partial<AgentConfig>): AgentConfig => {
+      const c: AgentConfig = {
+        llm: llmConfig,
+        tools: tools,
+        feature_flags: featureFlags,
+        homescreen,
+        policies,
+      };
+      return overrides ? { ...c, ...overrides } : c;
+    },
+    [llmConfig, tools, featureFlags, homescreen, policies]
+  );
+
+  const performDraftSave = useCallback(
+    async (partial?: Partial<AgentConfig>) => {
+      const toSave = partial ? { ...assembleConfig(), ...partial } : assembleConfig();
+      setDraftSaving(true);
+      try {
+        const res = await api.postManageConfigDraft(toSave);
+        setDraftSaving(false);
+        if (res.ok) {
+          const data = await res.json().catch(() => ({}));
+          setCurrentVersion("draft");
+          const hasPartialErrors = data.status === "partial" && (data.tool_errors || data.policy_errors);
+          if (hasPartialErrors) {
+            if (data.tool_errors) {
+              Object.entries(data.tool_errors as Record<string, { error?: string; message?: string; type?: string }>).forEach(
+                ([toolName, err]) => {
+                  const msg = err?.error || err?.message || "Unknown error";
+                  const type = err?.type ? ` (${err.type})` : "";
+                  addToast("warning", `Tool failed: ${toolName}`, `${msg}${type}`);
+                }
+              );
+            }
+            if (data.policy_errors) {
+              const errs = Array.isArray(data.policy_errors) ? data.policy_errors : [data.policy_errors];
+              errs.forEach((e: unknown) => addToast("warning", "Policy error", typeof e === "string" ? e : String(e)));
+            }
+            addToast("info", "Draft saved with warnings", data.message || "Some tools or policies failed to load");
+          } else {
+            addToast("success", "Draft saved", "Your changes have been saved to draft");
+          }
+        } else {
+          const errorMsg = `Failed to save draft (${res.status} ${res.statusText})`;
+          addToast("error", "Draft Save Failed", errorMsg);
+        }
+      } catch (error) {
+        setDraftSaving(false);
+        const errorMsg = error instanceof Error ? error.message : "Network error saving draft";
+        addToast("error", "Draft Save Failed", errorMsg);
+      }
+    },
+    [addToast, assembleConfig]
+  );
+
+  const saveLlmDraft = useCallback(async () => {
     setDraftSaving(true);
     try {
-      const res = await api.postManageConfigDraft(toSave);
+      const res = await api.patchManageConfigDraftLlm(llmConfigRef.current, effectiveAgentId);
       setDraftSaving(false);
       if (res.ok) {
-        const data = await res.json().catch(() => ({}));
         setCurrentVersion("draft");
-        const hasPartialErrors = data.status === "partial" && (data.tool_errors || data.policy_errors);
-        if (hasPartialErrors) {
-          if (data.tool_errors) {
-            Object.entries(data.tool_errors as Record<string, { error?: string; message?: string; type?: string }>).forEach(
-              ([toolName, err]) => {
-                const msg = err?.error || err?.message || "Unknown error";
-                const type = err?.type ? ` (${err.type})` : "";
-                addToast("warning", `Tool failed: ${toolName}`, `${msg}${type}`);
-              }
-            );
-          }
-          if (data.policy_errors) {
-            const errs = Array.isArray(data.policy_errors) ? data.policy_errors : [data.policy_errors];
-            errs.forEach((e: unknown) => addToast("warning", "Policy error", typeof e === "string" ? e : String(e)));
-          }
-          addToast("info", "Draft saved with warnings", data.message || "Some tools or policies failed to load");
-        } else {
-          addToast("success", "Draft saved", "Your changes have been saved to draft");
-        }
+        addToast("success", "Draft saved", "LLM settings saved to draft");
       } else {
-        const errorMsg = `Failed to save draft (${res.status} ${res.statusText})`;
-        addToast("error", "Draft Save Failed", errorMsg);
+        addToast("error", "Draft Save Failed", `Failed to save LLM (${res.status} ${res.statusText})`);
       }
     } catch (error) {
       setDraftSaving(false);
-      const errorMsg = error instanceof Error ? error.message : "Network error saving draft";
-      addToast("error", "Draft Save Failed", errorMsg);
+      addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
     }
-  }, [addToast]);
-
-  const saveLlmDraft = useCallback(() => {
-    performDraftSave({ llm: configRef.current.llm });
-  }, [performDraftSave]);
+  }, [addToast, effectiveAgentId]);
 
   const scheduleLlmDraftSave = useCallback(() => {
     if (llmBlurSaveRef.current) clearTimeout(llmBlurSaveRef.current);
     llmBlurSaveRef.current = setTimeout(() => {
       llmBlurSaveRef.current = null;
-      performDraftSave({ llm: configRef.current.llm });
+      saveLlmDraft();
     }, 100);
-  }, [performDraftSave]);
+  }, [saveLlmDraft]);
 
   useEffect(() => {
-    if (skipDraftSaveRef.current) {
-      return;
-    }
+    if (skipDraftSaveRef.current) return;
     const t = setTimeout(() => {
-      draftSaveTimeoutRef.current = null;
-      performDraftSave();
+      toolsSaveTimeoutRef.current = null;
+      (async () => {
+        setDraftSaving(true);
+        try {
+          const res = await api.patchManageConfigDraftTools(tools, effectiveAgentId);
+          setDraftSaving(false);
+          if (res.ok) {
+            setCurrentVersion("draft");
+            const data = await res.json().catch(() => ({}));
+            if (data.status === "partial" && data.tool_errors) {
+              Object.entries(data.tool_errors as Record<string, { error?: string; message?: string }>).forEach(
+                ([toolName, err]) => addToast("warning", `Tool: ${toolName}`, err?.error || err?.message || "Unknown error")
+              );
+            } else {
+              addToast("success", "Draft saved", "Tools saved to draft");
+            }
+          } else {
+            addToast("error", "Draft Save Failed", `Failed to save tools (${res.status} ${res.statusText})`);
+          }
+        } catch (error) {
+          setDraftSaving(false);
+          addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
+        }
+      })();
     }, 500);
-    draftSaveTimeoutRef.current = t;
+    toolsSaveTimeoutRef.current = t;
     return () => {
-      if (draftSaveTimeoutRef.current) clearTimeout(draftSaveTimeoutRef.current);
+      if (toolsSaveTimeoutRef.current) clearTimeout(toolsSaveTimeoutRef.current);
     };
-  }, [JSON.stringify({ tools: config.tools, policies: config.policies, homescreen: config.homescreen }), performDraftSave]);
+  }, [tools, effectiveAgentId, addToast]);
+
 
   useEffect(() => {
     if (importStatus === "ok") {
@@ -519,14 +581,18 @@ export function ManagePage() {
 
   const loadVersion = async (version: number) => {
     try {
-      const res = await api.getManageConfigVersion(version);
+      const res = await api.getManageConfigVersion(String(version));
       if (res.ok) {
         const data = await res.json();
         const next = { ...DEFAULT_CONFIG, ...data.config };
         if (Array.isArray(next.tools)) {
           next.tools = normalizeTools(next.tools);
         }
-        setConfig(next);
+        setLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
+        setToolsState(Array.isArray(next.tools) ? next.tools : []);
+        setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
+        setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
+        setPolicies(next.policies ?? { enablePolicies: true, policies: [] });
         setCurrentVersion(version);
         addToast("success", "Version Loaded", `Loaded version ${version}`);
       } else {
@@ -546,12 +612,9 @@ export function ManagePage() {
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
-      // Policies are now part of the config, no need to fetch separately
-      let toSave = { ...config };
-      
-      // Ensure policies structure exists
+      let toSave = assembleConfig();
       if (!toSave.policies) {
-        toSave.policies = { enablePolicies: true, policies: [] };
+        toSave = { ...toSave, policies: { enablePolicies: true, policies: [] } };
       }
       const res = await api.postManageConfig(toSave);
       if (res.ok) {
@@ -583,16 +646,11 @@ export function ManagePage() {
             addToast("warning", "Partial save error", errorMsg);
           });
         }
-        
-        setConfig(toSave);
         setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
         setSaveStatus("success");
-        
-        // Show success toast only if no errors
         if (!hasPartialErrors && (!data.partial_errors || data.partial_errors.length === 0)) {
           addToast("success", "Configuration saved", "Your configuration has been saved successfully");
         }
-        
         loadHistory();
         setTimeout(() => setSaveStatus("idle"), 2000);
       } else {
@@ -618,65 +676,38 @@ export function ManagePage() {
   };
 
   const updateLlm = (field: keyof NonNullable<AgentConfig["llm"]>, value: string | number | boolean) => {
-    setConfig((c: AgentConfig) => ({
-      ...c,
-      llm: { ...(c.llm ?? {}), [field]: value },
-    }));
+    setLlmConfig((c) => ({ ...(c ?? {}), [field]: value }));
   };
   const updateLlmTemperature = (value: number) => {
-    setConfig((c: AgentConfig) => ({
-      ...c,
-      llm: { ...(c.llm ?? {}), temperature: value },
-    }));
+    setLlmConfig((c) => ({ ...(c ?? {}), temperature: value }));
   };
 
   const updateFeatureFlag = (field: "enable_todos" | "reflection", value: boolean) => {
-    setConfig((c: AgentConfig) => ({
-      ...c,
-      feature_flags: { ...(c.feature_flags ?? {}), [field]: value },
-    }));
+    setFeatureFlags((c) => ({ ...(c ?? {}), [field]: value }));
   };
 
   const updateMaxSteps = (value: number) => {
-    setConfig((c: AgentConfig) => ({
-      ...c,
-      feature_flags: { ...(c.feature_flags ?? {}), max_steps: value },
-    }));
+    setFeatureFlags((c) => ({ ...(c ?? {}), max_steps: value }));
   };
 
   const updateShortlistingThreshold = (value: number) => {
-    setConfig((c: AgentConfig) => ({
-      ...c,
-      feature_flags: { ...(c.feature_flags ?? {}), shortlisting_tool_threshold: value },
-    }));
+    setFeatureFlags((c) => ({ ...(c ?? {}), shortlisting_tool_threshold: value }));
   };
 
-  const setTools = (tools: ToolEntry[]) => {
-    setConfig((c: AgentConfig) => ({ ...c, tools }));
-  };
+  const setTools = useCallback((newTools: ToolEntry[]) => {
+    setToolsState(newTools);
+  }, []);
 
   const updateHomescreen = (field: "isOn" | "greeting", value: boolean | string) => {
-    setConfig((c: AgentConfig) => ({
-      ...c,
-      homescreen: {
-        ...(c.homescreen ?? DEFAULT_HOMESCREEN),
-        [field]: value,
-      },
-    }));
+    setHomescreen((c) => ({ ...(c ?? DEFAULT_HOMESCREEN), [field]: value }));
   };
 
   const updateStarter = (index: number, value: string) => {
-    setConfig((c: AgentConfig) => {
-      const starters = [...(c.homescreen?.starters ?? DEFAULT_HOMESCREEN.starters ?? [])];
+    setHomescreen((c) => {
+      const starters = [...(c?.starters ?? DEFAULT_HOMESCREEN.starters ?? [])];
       while (starters.length <= index) starters.push("");
       starters[index] = value;
-      return {
-        ...c,
-        homescreen: {
-          ...(c.homescreen ?? DEFAULT_HOMESCREEN),
-          starters: starters.slice(0, 4),
-        },
-      };
+      return { ...(c ?? DEFAULT_HOMESCREEN), starters: starters.slice(0, 4) };
     });
   };
 
@@ -724,7 +755,11 @@ export function ManagePage() {
                 : DEFAULT_HOMESCREEN.starters ?? [],
             };
           }
-          setConfig(out);
+          setLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
+          setToolsState(Array.isArray(out.tools) ? out.tools : []);
+          setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
+          setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
+          setPolicies(out.policies ?? { enablePolicies: true, policies: [] });
           setImportStatus("ok");
           setImportError(null);
           setTimeout(() => setImportStatus("idle"), 2500);
@@ -754,12 +789,11 @@ export function ManagePage() {
     [normalizeTools, addToast]
   );
 
-  const llm = config.llm ?? {};
-  const flags = config.feature_flags ?? {};
-  const tools = config.tools ?? [];
-  const policiesList = config.policies?.policies ?? [];
+  const llm = llmConfig ?? {};
+  const flags = featureFlags ?? {};
+  const policiesList = policies?.policies ?? [];
   const summary = policiesSummary(policiesList);
-  const policiesEnabled = config.policies?.enablePolicies ?? false;
+  const policiesEnabled = policies?.enablePolicies ?? false;
 
   return (
     <div className="manage-page">
@@ -793,24 +827,21 @@ export function ManagePage() {
                     <FormGroup legendText="Provider">
                       <Select
                         id="llm-provider"
-                        labelText="Provider"
                         value={llm.provider ?? "openai"}
                         onChange={(e) => {
                           const id = (e.target.value || "openai") as "groq" | "openai" | "litellm";
                           const prov = LLM_PROVIDERS.find((p) => p.id === id);
-                          setConfig((c: AgentConfig) => {
-                            const prev = c.llm ?? {};
-                            const next = { ...prev, provider: id };
-                            // Groq has a fixed endpoint — clear any stale base_url
+                          setLlmConfig((prev) => {
+                            const next = { ...(prev ?? {}), provider: id };
                             if (id === "groq") {
                               next.base_url = "";
-                            } else if (prov && (!prev.model || !prev.base_url) && (prov.defaultBase || prov.defaultModel)) {
-                              if (!prev.model && prov.defaultModel) next.model = prov.defaultModel;
-                              if (!prev.base_url && prov.defaultBase !== undefined) next.base_url = prov.defaultBase;
+                            } else if (prov && (!prev?.model || !prev?.base_url) && (prov.defaultBase || prov.defaultModel)) {
+                              if (!prev?.model && prov.defaultModel) next.model = prov.defaultModel;
+                              if (!prev?.base_url && prov.defaultBase !== undefined) next.base_url = prov.defaultBase;
                             }
-                            return { ...c, llm: next };
+                            return next;
                           });
-                          setTimeout(() => performDraftSave({ llm: configRef.current.llm }), 0);
+                          setTimeout(() => saveLlmDraft(), 0);
                         }}
                       >
                         {LLM_PROVIDERS.map((p) => (
@@ -906,9 +937,10 @@ export function ManagePage() {
                                   disabled={!llmInlineCreateValue.trim()}
                                   onClick={async () => {
                                     const slug = llmInlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-") || `llm-api-key-${Date.now()}`;
-                                    const res = await api.createSecret(slug, llmInlineCreateValue.trim(), "LLM API Key");
+                                    const res = await api.createSecret(slug, llmInlineCreateValue.trim(), "LLM API Key", undefined, effectiveAgentId);
                                   if (res.ok) {
-                                    const ref = `db://${slug}`;
+                                    const data = await res.json();
+                                    const ref = data.ref || `db://${slug}`;
                                     setLlmInlineCreate(false);
                                     setLlmInlineCreateValue("");
                                     setLlmInlineCreateKey("");
@@ -1031,9 +1063,9 @@ export function ManagePage() {
                         min={0}
                         max={2}
                         step={0.1}
-                        value={llm.temperature ?? 0.7}
+                        value={llm.temperature ?? 0.1}
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
-                          updateLlmTemperature(Number(value) || 0.7)
+                          updateLlmTemperature(Number(value) || 0.1)
                         }
                         onBlur={scheduleLlmDraftSave}
                       />
@@ -1060,16 +1092,20 @@ export function ManagePage() {
                       <Checkbox
                         id="homescreen-isOn"
                         labelText="Show welcome screen"
-                        checked={config.homescreen?.isOn ?? true}
-                        onChange={(_e, { checked }) => updateHomescreen("isOn", !!checked)}
+                        checked={homescreen?.isOn ?? true}
+                        onChange={(_e, { checked }) => {
+                          updateHomescreen("isOn", !!checked);
+                          setTimeout(() => performDraftSave(), 0);
+                        }}
                       />
                     </FormGroup>
                     <FormGroup legendText="">
                       <TextInput
                         id="homescreen-greeting"
                         labelText="Greeting message"
-                        value={config.homescreen?.greeting ?? DEFAULT_HOMESCREEN.greeting ?? ""}
+                        value={homescreen?.greeting ?? DEFAULT_HOMESCREEN.greeting ?? ""}
                         onChange={(e) => updateHomescreen("greeting", e.target.value)}
+                        onBlur={() => performDraftSave()}
                         placeholder="Hello, how can I help you today?"
                       />
                     </FormGroup>
@@ -1079,8 +1115,9 @@ export function ManagePage() {
                           key={i}
                           id={`homescreen-starter-${i}`}
                           labelText={`Starter ${i + 1}`}
-                          value={(config.homescreen?.starters ?? [])[i] ?? ""}
+                          value={(homescreen?.starters ?? [])[i] ?? ""}
                           onChange={(e) => updateStarter(i, e.target.value)}
+                          onBlur={() => performDraftSave()}
                           placeholder={i === 0 ? "Hi, what can you do for me?" : "Optional"}
                         />
                       ))}
@@ -1106,7 +1143,10 @@ export function ManagePage() {
                         id="enable_todos"
                         labelText="Enable todos"
                         checked={flags.enable_todos ?? true}
-                        onChange={(_e, { checked }) => updateFeatureFlag("enable_todos", !!checked)}
+                        onChange={(_e, { checked }) => {
+                          updateFeatureFlag("enable_todos", !!checked);
+                          setTimeout(() => performDraftSave(), 0);
+                        }}
                       />
                     </FormGroup>
                     <FormGroup legendText="">
@@ -1114,7 +1154,10 @@ export function ManagePage() {
                         id="reflection"
                         labelText="Reflection"
                         checked={flags.reflection ?? false}
-                        onChange={(_e, { checked }) => updateFeatureFlag("reflection", !!checked)}
+                        onChange={(_e, { checked }) => {
+                          updateFeatureFlag("reflection", !!checked);
+                          setTimeout(() => performDraftSave(), 0);
+                        }}
                       />
                     </FormGroup>
                     <FormGroup legendText="">
@@ -1127,6 +1170,7 @@ export function ManagePage() {
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
                           updateMaxSteps(Number(value) || 70)
                         }
+                        onBlur={() => performDraftSave()}
                       />
                     </FormGroup>
                     <FormGroup legendText="">
@@ -1139,6 +1183,7 @@ export function ManagePage() {
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
                           updateShortlistingThreshold(Number(value) || 35)
                         }
+                        onBlur={() => performDraftSave()}
                         helperText="Enable find_tools when total tools exceed this count"
                       />
                     </FormGroup>
@@ -1215,7 +1260,7 @@ export function ManagePage() {
                               renderIcon={DocumentIcon}
                               onClick={(e) => {
                                 e.stopPropagation();
-                                api.getManageConfigVersion(v.version)
+                                api.getManageConfigVersion(String(v.version))
                                   .then((res) => (res.ok ? res.json() : null))
                                   .then((data) => data && setViewVersion({ version: v.version, config: data.config ?? {} }))
                                   .catch(() => {});
@@ -1303,7 +1348,7 @@ export function ManagePage() {
               contained={true}
               useDraft={true}
               disableHistory={true}
-              homescreen={config.homescreen}
+              homescreen={homescreen}
             />
           </div>
         </Layer>
@@ -1354,7 +1399,7 @@ export function ManagePage() {
         <PoliciesConfig
           draftMode={true}
           onClose={() => setShowPoliciesModal(false)}
-          onSave={(policies) => setConfig((c) => ({ ...c, policies }))}
+          onSave={(policies) => setPolicies(policies)}
         />
       )}
 
@@ -1405,7 +1450,11 @@ export function ManagePage() {
                 if (Array.isArray(next.tools)) {
                   next.tools = normalizeTools(next.tools);
                 }
-                setConfig(next);
+                setLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
+                setToolsState(Array.isArray(next.tools) ? next.tools : []);
+                setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
+                setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
+                setPolicies(next.policies ?? { enablePolicies: true, policies: [] });
                 setCurrentVersion(viewVersion.version);
                 setViewVersion(null);
                 addToast("success", "Version loaded", `Version ${viewVersion.version} is now your current configuration`);

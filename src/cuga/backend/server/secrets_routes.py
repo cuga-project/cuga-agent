@@ -3,6 +3,7 @@
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel
 
 from cuga.backend.secrets import resolve_secret
@@ -99,8 +100,9 @@ async def list_secrets(
             "mode": mode,
             "force_env": force_env,
         }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to list secrets")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/config")
@@ -113,8 +115,9 @@ async def get_secrets_config() -> dict[str, Any]:
         mode = getattr(sec, "mode", "local") if sec else "local"
         force_env = getattr(sec, "force_env", False) if sec else False
         return {"mode": mode, "force_env": force_env}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to get secrets config")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _secrets_mode() -> str:
@@ -156,6 +159,12 @@ async def create_secret(
                 )
             ref = f"vault://secret/{body.id}#value"
             return {"ref": ref, "id": body.id}
+        # Check if secret exists and verify ownership before allowing create/update
+        meta = await secrets_store.get_secret_metadata(body.id)
+        if meta:
+            creator = meta.get("created_by") or ""
+            if creator and _user_id(current_user) != creator:
+                raise HTTPException(status_code=403, detail="Only the creator can update this secret")
         await secrets_store.set_secret(
             body.id,
             body.value,
@@ -173,8 +182,9 @@ async def create_secret(
         if "CUGA_SECRET_KEY" in str(e):
             raise HTTPException(status_code=503, detail=str(e))
         raise HTTPException(status_code=400, detail=str(e))
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to create secret")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.put("/{secret_id}")
@@ -207,8 +217,9 @@ async def update_secret(
         return {"ref": f"db://{secret_id}", "id": secret_id}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to update secret")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 def _vault_delete(secret_id: str) -> bool:
@@ -247,8 +258,9 @@ async def delete_secret(
         return {"deleted": secret_id}
     except HTTPException:
         raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to delete secret")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.post("/resolve")

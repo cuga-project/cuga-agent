@@ -353,14 +353,6 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
     setSaveStatus("saving");
 
     try {
-      const loadResponse = await api.getManageConfig(draftMode);
-      
-      let existingConfig = {};
-      if (loadResponse.ok) {
-        const loadData = await loadResponse.json();
-        existingConfig = loadData.config || {};
-      }
-      
       const normalizedPolicies = config.policies.map((policy) => ({
         ...policy,
         triggers: policy.triggers.map((trigger) => {
@@ -381,14 +373,19 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         policies: normalizedPolicies,
       };
 
-      const fullConfig = {
-        ...existingConfig,
-        policies: normalizedConfig,
-      };
-      
-      const response = draftMode
-        ? await api.postManageConfigDraft(fullConfig)
-        : await api.postManageConfig(fullConfig);
+      let response: Response;
+      if (draftMode) {
+        response = await api.patchManageConfigDraftPolicies(normalizedConfig);
+      } else {
+        const loadResponse = await api.getManageConfig(false);
+        let existingConfig: Record<string, unknown> = {};
+        if (loadResponse.ok) {
+          const loadData = await loadResponse.json();
+          existingConfig = loadData.config || {};
+        }
+        const fullConfig = { ...existingConfig, policies: normalizedConfig };
+        response = await api.postManageConfig(fullConfig);
+      }
 
       if (response.ok) {
         setSaveStatus("success");

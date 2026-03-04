@@ -43,7 +43,7 @@ interface ToolsConfigProps {
 
 const TOOLS_PREVIEW_COUNT = 3;
 
-export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", onError, onOpenSecrets }: ToolsConfigProps) {
+function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", onError, onOpenSecrets }: ToolsConfigProps) {
   const [modalOpen, setModalOpen] = useState(false);
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -270,6 +270,8 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
     </Stack>
   );
 }
+
+export const ToolsConfig = React.memo(ToolsConfigInner);
 
 interface ServerToolsModalProps {
   serverName: string;

@@ -177,6 +177,7 @@ class DraftAppState:
     def __init__(self):
         self.tools_include_by_app: Optional[Dict[str, List[str]]] = None
         self.tools_include_version: int = 0
+        self.current_llm: Optional[Any] = None
         self.agent: Optional[DynamicAgentGraph] = None
         self.policy_system: Optional[Any] = None
         self.policy_filesystem_sync: Optional[Any] = None  # PolicyFilesystemSync instance for draft
