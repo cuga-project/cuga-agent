@@ -48,27 +48,43 @@
   flex-shrink: 0;
 }
 
-/* User profile panel */
-.cuga-user-panel-info {
+/* User profile panel - popover style */
+.cuga-user-panel-wrapper > * {
+  height: fit-content !important;
+  min-height: unset !important;
+  border-radius: 2px;
+  border: 1px solid #e0e0e0;
+  box-shadow: 0 2px 6px rgb(0 0 0 / 0.2);
+  overflow: hidden;
+}
+
+.cuga-user-panel {
+  background: #fff;
+  min-width: 14rem;
+  height: fit-content;
+}
+
+.cuga-user-panel-header {
   display: flex;
   align-items: center;
-  gap: 0.875rem;
-  padding: 1.25rem 1rem 1rem;
+  gap: 0.75rem;
+  padding: 1rem;
+  border-bottom: 1px solid #e0e0e0;
 }
 
 .cuga-user-panel-avatar {
   display: flex;
   align-items: center;
   justify-content: center;
-  width: 2.75rem;
-  height: 2.75rem;
+  width: 2rem;
+  height: 2rem;
   border-radius: 50%;
-  background-color: var(--cds-interactive, #0f62fe);
+  background-color: #0f62fe;
   flex-shrink: 0;
 }
 
 .cuga-user-panel-avatar-initials {
-  font-size: 1rem;
+  font-size: 0.6875rem;
   font-weight: 600;
   color: #fff;
   letter-spacing: 0.02em;
@@ -78,7 +94,7 @@
 .cuga-user-panel-details {
   display: flex;
   flex-direction: column;
-  gap: 0.2rem;
+  gap: 0.125rem;
   overflow: hidden;
   min-width: 0;
 }
@@ -87,17 +103,55 @@
   margin: 0;
   font-size: 0.875rem;
   font-weight: 600;
-  color: var(--cds-text-primary, #f4f4f4);
+  color: #161616;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.28572;
 }
 
 .cuga-user-panel-email {
   margin: 0;
   font-size: 0.75rem;
-  color: var(--cds-text-secondary, #c6c6c6);
+  color: #525252;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+  line-height: 1.33333;
+}
+
+.cuga-user-menu-list {
+  list-style: none;
+  margin: 0;
+  padding: 0.25rem 0;
+}
+
+.cuga-user-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+  padding: 0.6875rem 1rem;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 0.875rem;
+  font-weight: 400;
+  color: #161616;
+  text-align: left;
+  transition: background-color 70ms cubic-bezier(0, 0, 0.38, 0.9);
+}
+
+.cuga-user-menu-item:hover {
+  background-color: #e8e8e8;
+}
+
+.cuga-user-menu-item:active {
+  background-color: #e0e0e0;
+}
+
+.cuga-user-menu-item svg {
+  flex-shrink: 0;
+  fill: currentColor;
 }

@@ -1240,6 +1240,13 @@ async def auth_config():
     return JSONResponse({"enabled": _auth_enabled()})
 
 
+@app.get("/api/ui/config")
+async def ui_config():
+    """Return UI configuration flags from settings."""
+    hide_logo = settings.ui.hide_cuga_logo
+    return JSONResponse({"hide_cuga_logo": hide_logo})
+
+
 @app.get("/auth/login")
 async def auth_login(request: Request):
     if not _auth_enabled():
