@@ -37,6 +37,8 @@ class SecretUpdate(BaseModel):
     value: str
     description: Optional[str] = None
     tags: Optional[dict[str, Any]] = None
+    agent_id: Optional[str] = None
+    version: Optional[str] = None
 
 
 @router.get("")
@@ -201,17 +203,31 @@ async def update_secret(
             if not ok:
                 raise HTTPException(status_code=503, detail="Vault unavailable or write failed.")
             return {"ref": f"vault://secret/{secret_id}#value", "id": secret_id}
-        meta = await secrets_store.get_secret_metadata(secret_id)
+
+        # Get scope from body or default to "*"
+        agent_id = body.agent_id or "*"
+        version = body.version or "*"
+
+        # Fetch metadata with the same scope
+        meta = await secrets_store.get_secret_metadata(
+            secret_id,
+            agent_id=agent_id,
+            version=version,
+        )
         if not meta:
             raise HTTPException(status_code=404, detail="Secret not found")
         creator = meta.get("created_by") or ""
         if creator and _user_id(current_user) != creator:
             raise HTTPException(status_code=403, detail="Only the creator can update this secret")
+
+        # Update with the same scope
         await secrets_store.set_secret(
             secret_id,
             body.value,
             description=body.description if body.description is not None else meta.get("description"),
             tags=body.tags if body.tags is not None else meta.get("tags"),
+            agent_id=agent_id,
+            version=version,
             created_by=creator,
         )
         return {"ref": f"db://{secret_id}", "id": secret_id}
@@ -236,6 +252,8 @@ def _vault_delete(secret_id: str) -> bool:
 @router.delete("/{secret_id}")
 async def delete_secret(
     secret_id: str,
+    agent_id: Optional[str] = None,
+    version: Optional[str] = None,
     current_user: Optional[UserInfo] = Depends(require_auth),
 ) -> dict[str, Any]:
     """Delete a secret override. In vault mode deletes from Vault; in local mode from DB (creator only)."""
@@ -246,13 +264,29 @@ async def delete_secret(
             if not ok:
                 raise HTTPException(status_code=404, detail="Secret not found")
             return {"deleted": secret_id}
-        meta = await secrets_store.get_secret_metadata(secret_id)
+
+        # Get scope from query parameters or default to "*"
+        scope_agent_id = agent_id or "*"
+        scope_version = version or "*"
+
+        # Fetch metadata with the same scope
+        meta = await secrets_store.get_secret_metadata(
+            secret_id,
+            agent_id=scope_agent_id,
+            version=scope_version,
+        )
         if not meta:
             raise HTTPException(status_code=404, detail="Secret not found")
         creator = meta.get("created_by") or ""
         if creator and _user_id(current_user) != creator:
             raise HTTPException(status_code=403, detail="Only the creator can delete this secret")
-        ok = await secrets_store.delete_secret(secret_id)
+
+        # Delete with the same scope
+        ok = await secrets_store.delete_secret(
+            secret_id,
+            agent_id=scope_agent_id,
+            version=scope_version,
+        )
         if not ok:
             raise HTTPException(status_code=404, detail="Secret not found")
         return {"deleted": secret_id}

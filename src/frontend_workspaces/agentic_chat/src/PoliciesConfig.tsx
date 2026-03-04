@@ -378,11 +378,31 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         response = await api.patchManageConfigDraftPolicies(normalizedConfig);
       } else {
         const loadResponse = await api.getManageConfig(false);
-        let existingConfig: Record<string, unknown> = {};
-        if (loadResponse.ok) {
-          const loadData = await loadResponse.json();
-          existingConfig = loadData.config || {};
+        if (!loadResponse.ok) {
+          // Abort save if we cannot load existing config to avoid overwriting other sections
+          const errorText = await loadResponse.text();
+          setSaveStatus("error");
+          
+          let errorMessage = "Failed to load existing configuration";
+          try {
+            const errorData = JSON.parse(errorText);
+            errorMessage = errorData.error || errorData.message || errorMessage;
+          } catch {
+            errorMessage = errorText || errorMessage;
+          }
+          
+          setToastMessage({
+            kind: "error",
+            title: "Save aborted",
+            subtitle: errorMessage,
+          });
+          setTimeout(() => setSaveStatus("idle"), 2000);
+          console.error("Failed to load existing config before save:", errorMessage);
+          return;
         }
+        
+        const loadData = await loadResponse.json();
+        const existingConfig = loadData.config || {};
         const fullConfig = { ...existingConfig, policies: normalizedConfig };
         response = await api.postManageConfig(fullConfig);
       }

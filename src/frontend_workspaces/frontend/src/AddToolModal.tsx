@@ -178,7 +178,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     const isCommandMcp = type === "mcp" && mcpMode === "command";
     const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
     const tool: ToolEntry = {
-      name: name.trim() || (type === "mcp" ? "mcp" : "openapi"),
+      name: name.trim(),
       type,
       url: isCommandMcp ? undefined : (url.trim() || undefined),
       description: description.trim() || undefined,
@@ -225,8 +225,15 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     onClose();
   };
 
+  const NAME_RE = /^[a-z][a-z0-9_]*$/;
+  const nameError = name.trim() === ""
+    ? "Name is required"
+    : !NAME_RE.test(name.trim())
+      ? "Use lowercase letters, digits, and underscores only (e.g. my_tool)"
+      : "";
+
   const isCommandMcp = type === "mcp" && mcpMode === "command";
-  const valid = description.trim().length > 0 && (
+  const valid = !nameError && description.trim().length > 0 && (
     type === "openapi"
       ? url.trim().length > 0
       : isCommandMcp
@@ -298,8 +305,10 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               labelText="Name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={type === "mcp" ? "e.g. filesystem" : "e.g. crm"}
-              helperText="Display name for this tool or server"
+              placeholder={type === "mcp" ? "e.g. my_tool" : "e.g. crm_api"}
+              invalid={name.trim() !== "" && !!nameError}
+              invalidText={nameError}
+              helperText={!nameError || name.trim() === "" ? "Lowercase letters, digits, underscores (e.g. my_tool)" : undefined}
             />
           </FormGroup>
           <FormGroup legendText="">
