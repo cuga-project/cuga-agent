@@ -232,7 +232,10 @@ def init_openlit() -> None:
         existing = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
         os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(existing, dynamic_attrs)
 
-    logger.debug(f"OpenLit: OTEL_RESOURCE_ATTRIBUTES={os.getenv('OTEL_RESOURCE_ATTRIBUTES', '')}")
+    # Log OTEL_RESOURCE_ATTRIBUTES with only keys to avoid exposing sensitive values
+    attrs = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
+    attr_keys = [p.split("=", 1)[0].strip() for p in attrs.split(",") if "=" in p]
+    logger.debug(f"OpenLit: OTEL_RESOURCE_ATTRIBUTES keys={','.join(attr_keys)}")
 
     try:
         # Pass no otlp_endpoint argument so openlit reads OTEL_EXPORTER_OTLP_ENDPOINT
