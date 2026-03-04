@@ -12,9 +12,11 @@ In settings.toml:
 
 ## Install
 
-    pip install cuga[observability]
+    pip install cuga
     # or:
-    uv pip install cuga[observability]
+    uv pip install cuga
+
+Note: OpenLit is included as a core dependency and does not require an extra install.
 
 ## Configure OTLP endpoint
 
@@ -43,8 +45,13 @@ See deployment/docker-compose/openlit/ for a ready-to-use local stack:
 - Fully synchronous — safe to call from any context (sync or async).
 """
 
+import logging
 import os
+from contextvars import ContextVar
 from loguru import logger
+
+# Logger for SessionSpanProcessor exception handling
+_logger = logging.getLogger(__name__)
 
 
 def _merge_otel_resource_attributes(existing: str, new_attrs: dict[str, str]) -> str:
@@ -126,15 +133,18 @@ try:
     from opentelemetry.context import Context  # type: ignore[import-untyped]
 except ImportError:
     otel_trace = None  # type: ignore[assignment]
-    SpanProcessor = None  # type: ignore[assignment]
+    # Provide a safe no-op base class when OpenTelemetry is not available
+    SpanProcessor = type("BaseSpanProcessor", (object,), {})  # type: ignore[assignment,misc]
     ReadableSpan = None  # type: ignore[assignment]
     Context = None  # type: ignore[assignment]
 
 _initialized = False  # Module-level guard: prevents redundant log output on multiple calls
-_current_session_id: str | None = None  # Thread-local session ID for SpanProcessor
+_current_session_id: ContextVar[str | None] = ContextVar(
+    "current_session_id", default=None
+)  # Task-local session ID for SpanProcessor
 
 
-class SessionSpanProcessor(SpanProcessor):
+class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """
     OTel SpanProcessor that automatically tags all spans with session.id.
 
@@ -144,14 +154,14 @@ class SessionSpanProcessor(SpanProcessor):
 
     def on_start(self, span: "ReadableSpan", parent_context: "Context | None" = None) -> None:
         """Called when a span starts — tag it with session.id if available."""
-        global _current_session_id
-        if _current_session_id:
+        session_id = _current_session_id.get()
+        if session_id:
             try:
                 if hasattr(span, 'is_recording') and span.is_recording():
-                    span.set_attribute("session.id", _current_session_id)
+                    span.set_attribute("session.id", session_id)
             except Exception:
-                # Silently ignore errors to avoid breaking OpenLit instrumentation
-                pass
+                # Log the exception at debug level for troubleshooting
+                _logger.debug("Failed to tag span with session.id", exc_info=True)
 
     def on_end(self, span: "ReadableSpan") -> None:
         """Called when a span ends — no-op."""
@@ -199,7 +209,7 @@ def init_openlit() -> None:
     if openlit is None:
         logger.warning(
             "OpenLit observability is enabled in settings but 'openlit' is not installed. "
-            "Install it with: pip install cuga[observability]"
+            "This should not happen as openlit is a core dependency. Please reinstall cuga."
         )
         return
 
@@ -229,7 +239,7 @@ def init_openlit() -> None:
         # from the environment automatically (standard OTel pattern).
         # application_name is the OpenLit-level label; OTEL_SERVICE_NAME (set above)
         # is the OTel resource attribute that Tempo uses for the Service column.
-        openlit.init(application_name="cuga")
+        openlit.init(application_name="cuga", capture_message_content=False)
 
         # Register SessionSpanProcessor to auto-tag spans with session.id
         # This works in server mode where set_session_attribute() is called from AgentLoop
@@ -258,9 +268,10 @@ def set_session_attribute(session_id: str) -> None:
     """
     Set the current session ID for automatic tagging on all spans.
 
-    This function sets a global session ID that the SessionSpanProcessor will
-    automatically apply to all new spans. This works around the timing issue
-    where spans may not be active when this function is called.
+    This function sets a task-local session ID (via ContextVar) that the
+    SessionSpanProcessor will automatically apply to all new spans in the
+    current async context. This ensures each concurrent task maintains its
+    own session ID without interference.
 
     Call this at the start of each agent invocation to enable per-session
     aggregation of token usage and latency in Grafana dashboards.
@@ -270,22 +281,24 @@ def set_session_attribute(session_id: str) -> None:
     Args:
         session_id: The conversation thread ID (e.g. thread_id from AgentRunner or SDK invoke)
     """
-    global _current_session_id
-
     if not _initialized:
         return
 
-    # Set the global session ID — SessionSpanProcessor will pick it up
-    _current_session_id = session_id
+    # Set the task-local session ID — SessionSpanProcessor will pick it up
+    _current_session_id.set(session_id)
 
     # Also try to tag any currently active span (best effort)
     if otel_trace is not None:
         try:
             span = otel_trace.get_current_span()
             if span and span.is_recording():
+                _logger.debug(f"Tagging current span with session.id={session_id}")
                 span.set_attribute("session.id", session_id)
+                _logger.debug(f"Successfully tagged current span with session.id={session_id}")
+            else:
+                _logger.debug(f"No active recording span found to tag with session.id={session_id}")
         except Exception:
-            pass
+            _logger.debug(f"Failed to tag current span with session.id={session_id}", exc_info=True)
 
 
 # ---------------------------------------------------------------------------

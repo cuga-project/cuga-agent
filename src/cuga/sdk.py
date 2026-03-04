@@ -1659,6 +1659,9 @@ class CugaAgent:
 
             run_config["configurable"]["thread_id"] = thread_id
 
+            # Set session.id for OpenLit observability (if enabled)
+            set_session_attribute(thread_id)
+
             # Add policy system to config if available
             if self._policy_system:
                 run_config["configurable"]["policy_system"] = self._policy_system
@@ -1899,6 +1902,9 @@ class CugaAgent:
                 )
 
             run_config["configurable"]["thread_id"] = thread_id
+
+            # Set session.id for OpenLit observability (if enabled)
+            set_session_attribute(thread_id)
 
             # Add policy system to config if available
             if self._policy_system:
@@ -2193,6 +2199,9 @@ class CugaSupervisor:
         if message is None or action_response is not None:
             if not thread_id:
                 raise ValueError("thread_id is required when resuming execution")
+
+            # Set session.id for OpenLit observability (if enabled)
+            set_session_attribute(thread_id)
 
             if action_response:
                 self.graph.update_state(config, {"hitl_response": action_response})
