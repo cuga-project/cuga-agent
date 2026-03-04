@@ -667,6 +667,7 @@ dependencies = [
     { name = "loguru" },
     { name = "markdownify" },
     { name = "mcp", extra = ["cli"] },
+    { name = "openlit" },
     { name = "pgvector" },
     { name = "playwright" },
     { name = "psutil" },
@@ -691,9 +692,6 @@ evaluation = [
 ]
 memory = [
     { name = "mem0ai", extra = ["extras"] },
-]
-observability = [
-    { name = "openlit" },
 ]
 
 [package.dev-dependencies]
@@ -746,7 +744,7 @@ requires-dist = [
     { name = "markdownify" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.23.0" },
     { name = "mem0ai", extras = ["extras"], marker = "extra == 'memory'" },
-    { name = "openlit", marker = "extra == 'observability'", specifier = ">=1.4.0" },
+    { name = "openlit", specifier = ">=1.4.0" },
     { name = "pgvector", specifier = ">=0.4.2" },
     { name = "playwright", specifier = "==1.49.0" },
     { name = "psutil", specifier = ">=7.0.0" },
@@ -762,7 +760,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15.3" },
     { name = "uvicorn" },
 ]
-provides-extras = ["evaluation", "e2b", "memory", "observability"]
+provides-extras = ["evaluation", "e2b", "memory"]
 
 [package.metadata.requires-dev]
 dev = [

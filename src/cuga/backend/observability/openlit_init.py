@@ -122,10 +122,48 @@ except ImportError:
 
 try:
     from opentelemetry import trace as otel_trace  # type: ignore[import-untyped]
+    from opentelemetry.sdk.trace import SpanProcessor, ReadableSpan  # type: ignore[import-untyped]
+    from opentelemetry.context import Context  # type: ignore[import-untyped]
 except ImportError:
     otel_trace = None  # type: ignore[assignment]
+    SpanProcessor = None  # type: ignore[assignment]
+    ReadableSpan = None  # type: ignore[assignment]
+    Context = None  # type: ignore[assignment]
 
 _initialized = False  # Module-level guard: prevents redundant log output on multiple calls
+_current_session_id: str | None = None  # Thread-local session ID for SpanProcessor
+
+
+class SessionSpanProcessor(SpanProcessor):
+    """
+    OTel SpanProcessor that automatically tags all spans with session.id.
+    
+    This processor is added to the TracerProvider and runs on every span start,
+    allowing us to tag spans even if they're created in different async contexts.
+    """
+
+    def on_start(self, span: "ReadableSpan", parent_context: "Context | None" = None) -> None:
+        """Called when a span starts — tag it with session.id if available."""
+        global _current_session_id
+        if _current_session_id:
+            try:
+                if hasattr(span, 'is_recording') and span.is_recording():
+                    span.set_attribute("session.id", _current_session_id)
+            except Exception:
+                # Silently ignore errors to avoid breaking OpenLit instrumentation
+                pass
+
+    def on_end(self, span: "ReadableSpan") -> None:
+        """Called when a span ends — no-op."""
+        pass
+
+    def shutdown(self) -> None:
+        """Called on shutdown — no-op."""
+        pass
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        """Called on flush — no-op."""
+        return True
 
 
 def init_openlit() -> None:
@@ -192,6 +230,19 @@ def init_openlit() -> None:
         # application_name is the OpenLit-level label; OTEL_SERVICE_NAME (set above)
         # is the OTel resource attribute that Tempo uses for the Service column.
         openlit.init(application_name="cuga")
+        
+        # Register SessionSpanProcessor to auto-tag spans with session.id
+        # This works in server mode where set_session_attribute() is called from AgentLoop
+        if otel_trace is not None:
+            try:
+                from opentelemetry import trace as otel_trace_module
+                trace_provider = otel_trace_module.get_tracer_provider()
+                if hasattr(trace_provider, 'add_span_processor'):
+                    trace_provider.add_span_processor(SessionSpanProcessor())
+                    logger.debug("SessionSpanProcessor registered for session tracking")
+            except Exception as e:
+                logger.warning(f"Could not register SessionSpanProcessor: {e}")
+        
         _initialized = True
         logger.info(
             f"✅ OpenLit observability initialized "
@@ -204,84 +255,41 @@ def init_openlit() -> None:
 
 def set_session_attribute(session_id: str) -> None:
     """
-    Set session.id on the current OTel span for per-session trace segmentation.
+    Set the current session ID for automatic tagging on all spans.
 
-    Call this at the start of each agent invocation (inside the active span context)
-    to enable per-session aggregation of token usage and latency in Grafana dashboards.
+    This function sets a global session ID that the SessionSpanProcessor will
+    automatically apply to all new spans. This works around the timing issue
+    where spans may not be active when this function is called.
 
-    No-op if:
-    - OpenLit is not initialized (flag disabled or package not installed)
-    - opentelemetry-api is not installed
-    - There is no active recording span in the current context
+    Call this at the start of each agent invocation to enable per-session
+    aggregation of token usage and latency in Grafana dashboards.
+
+    No-op if OpenLit is not initialized (flag disabled or package not installed).
 
     Args:
         session_id: The conversation thread ID (e.g. thread_id from AgentRunner or SDK invoke)
     """
+    global _current_session_id
+    
     if not _initialized:
         return
 
-    if otel_trace is None:
-        return
-
-    try:
-        span = otel_trace.get_current_span()
-        if span and span.is_recording():
-            span.set_attribute("session.id", session_id)
-    except Exception as e:
-        logger.debug(f"Could not set session.id span attribute: {e}")
-
-
-def create_session_span(session_id: str, operation_name: str = "agent_execution"):
-    """
-    Create a parent span for the entire agent execution with session.id attribute.
-
-    This ensures the session.id attribute is set on a recording span that exists
-    before any child spans are created by OpenLit's auto-instrumentation.
-
-    Returns a context manager that can be used with 'with' statement.
-
-    Args:
-        session_id: The conversation thread ID for session tracking
-        operation_name: Name for the parent span (default: "agent_execution")
-
-    Returns:
-        Context manager (span or nullcontext if OpenLit is disabled)
-
-    Usage:
-        ```python
-        from cuga.backend.observability.openlit_init import create_session_span
-
-        with create_session_span(session_id, "agent_run"):
-            # Your execution code here
-            result = await agent.run()
-        ```
-
-    No-op if:
-    - OpenLit is not initialized (flag disabled or package not installed)
-    - opentelemetry-api is not installed
-    """
-    if not _initialized or otel_trace is None:
-        from contextlib import nullcontext
-
-        return nullcontext()
-
-    try:
-        tracer = otel_trace.get_tracer(__name__)
-        # start_as_current_span returns a context manager
-        # We need to create a custom context manager that sets the attribute
-        from contextlib import contextmanager
-
-        @contextmanager
-        def session_span_context():
-            with tracer.start_as_current_span(operation_name) as span:
-                # Set session.id attribute on the parent span
+    # Set the global session ID — SessionSpanProcessor will pick it up
+    _current_session_id = session_id
+    
+    # Also try to tag any currently active span (best effort)
+    if otel_trace is not None:
+        try:
+            span = otel_trace.get_current_span()
+            if span and span.is_recording():
                 span.set_attribute("session.id", session_id)
-                yield span
+        except Exception:
+            pass
 
-        return session_span_context()
-    except Exception as e:
-        logger.debug(f"Could not create session span: {e}")
-        from contextlib import nullcontext
 
-        return nullcontext()
-        logger.debug(f"Could not set session.id span attribute: {e}")
+# ---------------------------------------------------------------------------
+# Initialize OpenLit at module import time (process level).
+# This ensures instrumentation is set up before any LLM libraries are used,
+# regardless of entry point (server, SDK, CLI, tests).
+# ---------------------------------------------------------------------------
+init_openlit()

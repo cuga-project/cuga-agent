@@ -76,7 +76,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
-from cuga.backend.observability.openlit_init import init_openlit, create_session_span
+from cuga.backend.observability.openlit_init import init_openlit, set_session_attribute
 
 if TYPE_CHECKING:
     pass
@@ -1718,126 +1718,127 @@ class CugaAgent:
             thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
             logger.debug(f"Auto-generated thread_id: {thread_id}")
 
-        # Create parent span with session attribute to ensure it's captured
-        with create_session_span(thread_id, "sdk_invoke"):
-            # Setup config early to check for existing state
-            run_config["configurable"]["thread_id"] = thread_id
+        # Setup config early to check for existing state
+        run_config["configurable"]["thread_id"] = thread_id
 
-            # Try to get existing state for this thread_id
-            existing_state = None
-            try:
-                state_snapshot = self.graph.get_state(run_config)
-                if state_snapshot and state_snapshot.values:
-                    existing_state = AgentState(**state_snapshot.values)
-                    logger.debug(f"Found existing state for thread_id: {thread_id}")
-            except Exception as e:
-                logger.debug(f"No existing state found for thread_id {thread_id}: {e}")
+        # Try to get existing state for this thread_id
+        existing_state = None
+        try:
+            state_snapshot = self.graph.get_state(run_config)
+            if state_snapshot and state_snapshot.values:
+                existing_state = AgentState(**state_snapshot.values)
+                logger.debug(f"Found existing state for thread_id: {thread_id}")
+        except Exception as e:
+            logger.debug(f"No existing state found for thread_id {thread_id}: {e}")
 
-            # Build state: use existing state if available, otherwise create new
-            if existing_state:
-                # Append new messages to existing chat history
-                existing_chat_messages = existing_state.chat_messages or []
-                updated_chat_messages = existing_chat_messages + new_messages
+        # Build state: use existing state if available, otherwise create new
+        if existing_state:
+            # Append new messages to existing chat history
+            existing_chat_messages = existing_state.chat_messages or []
+            updated_chat_messages = existing_chat_messages + new_messages
 
-                # Update existing state with new messages
-                initial_state_dict = existing_state.model_dump()
-                initial_state_dict["chat_messages"] = updated_chat_messages
-                initial_state_dict["input"] = new_messages[-1].content if new_messages else ""
+            # Update existing state with new messages
+            initial_state_dict = existing_state.model_dump()
+            initial_state_dict["chat_messages"] = updated_chat_messages
+            initial_state_dict["input"] = new_messages[-1].content if new_messages else ""
 
-                # Update user_context (pi) if provided
-                if user_context:
-                    initial_state_dict["pi"] = user_context
+            # Update user_context (pi) if provided
+            if user_context:
+                initial_state_dict["pi"] = user_context
 
-                # Inject variables if provided (from supervisor delegation)
-                if variables:
-                    from cuga.backend.cuga_graph.state.agent_state import StateVariablesManager
+            # Inject variables if provided (from supervisor delegation)
+            if variables:
+                from cuga.backend.cuga_graph.state.agent_state import StateVariablesManager
 
-                    var_manager = StateVariablesManager(existing_state)
-                    for var_name, var_value in variables.items():
-                        var_manager.add_variable(
-                            var_value, name=var_name, description=f"Passed from supervisor: {var_name}"
-                        )
-                    initial_state_dict["variables_storage"] = existing_state.variables_storage
-
-                initial_state_pydantic = AgentState(**initial_state_dict)
-                logger.debug(
-                    f"Appended {len(new_messages)} new message(s) to existing conversation "
-                    f"({len(existing_chat_messages)} existing messages)"
-                )
-            else:
-                # Create new state for HITL wrapper graph (uses AgentState format)
-                # The wrapper will pass this to CugaLiteSubgraph which expects CugaLiteState format
-                initial_state = {
-                    "chat_messages": new_messages,
-                    "thread_id": thread_id,
-                    "pi": user_context,
-                    "input": new_messages[-1].content if new_messages else "",
-                    "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
-                }
-                initial_state_pydantic = AgentState(**initial_state)
-
-                # Inject variables if provided (from supervisor delegation)
-                if variables:
-                    from cuga.backend.cuga_graph.state.agent_state import StateVariablesManager
-
-                    var_manager = StateVariablesManager(initial_state_pydantic)
-                    for var_name, var_value in variables.items():
-                        var_manager.add_variable(
-                            var_value, name=var_name, description=f"Passed from supervisor: {var_name}"
-                        )
-                    logger.debug(
-                        f"Injected {len(variables)} variables into new state: {list(variables.keys())}"
+                var_manager = StateVariablesManager(existing_state)
+                for var_name, var_value in variables.items():
+                    var_manager.add_variable(
+                        var_value, name=var_name, description=f"Passed from supervisor: {var_name}"
                     )
+                initial_state_dict["variables_storage"] = existing_state.variables_storage
 
-                logger.debug(f"Created new state for thread_id: {thread_id}")
+            initial_state_pydantic = AgentState(**initial_state_dict)
+            logger.debug(
+                f"Appended {len(new_messages)} new message(s) to existing conversation "
+                f"({len(existing_chat_messages)} existing messages)"
+            )
+        else:
+            # Create new state for HITL wrapper graph (uses AgentState format)
+            # The wrapper will pass this to CugaLiteSubgraph which expects CugaLiteState format
+            initial_state = {
+                "chat_messages": new_messages,
+                "thread_id": thread_id,
+                "pi": user_context,
+                "input": new_messages[-1].content if new_messages else "",
+                "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
+            }
+            initial_state_pydantic = AgentState(**initial_state)
 
-            # Add policy system to config if available
-            if self._policy_system:
-                run_config["configurable"]["policy_system"] = self._policy_system
+            # Inject variables if provided (from supervisor delegation)
+            if variables:
+                from cuga.backend.cuga_graph.state.agent_state import StateVariablesManager
 
-            # Add callbacks to config (both top-level and configurable for nodes)
-            if self._callbacks:
-                run_config["callbacks"] = self._callbacks
-                run_config["configurable"]["callbacks"] = self._callbacks
+                var_manager = StateVariablesManager(initial_state_pydantic)
+                for var_name, var_value in variables.items():
+                    var_manager.add_variable(
+                        var_value, name=var_name, description=f"Passed from supervisor: {var_name}"
+                    )
                 logger.debug(
-                    f"Added {len(self._callbacks)} callback(s) to config: {[type(cb).__name__ for cb in self._callbacks]}"
+                    f"Injected {len(variables)} variables into new state: {list(variables.keys())}"
                 )
 
-            # Invoke the graph
-            total_messages = len(initial_state_pydantic.chat_messages or [])
-            logger.debug(f"Invoking agent with {total_messages} total message(s) in conversation")
-            result = await self.graph.ainvoke(initial_state_pydantic, config=run_config)
+            logger.debug(f"Created new state for thread_id: {thread_id}")
+        
+        # Set session.id for OpenLit observability (if enabled)
+        set_session_attribute(thread_id)
 
-            # Extract final answer and error
-            final_answer = result.get("final_answer", "")
-            error_msg = None
+        # Add policy system to config if available
+        if self._policy_system:
+            run_config["configurable"]["policy_system"] = self._policy_system
 
-            if not final_answer and result.get("error"):
-                error_msg = result['error']
-                final_answer = f"Error: {error_msg}"
-
-            # Check if graph interrupted for approval
-            if not final_answer:
-                try:
-                    state = self.graph.get_state(run_config)
-                    if state.next:  # Has pending nodes = interrupted
-                        logger.info("Graph interrupted for human-in-the-loop interaction")
-                        final_answer = (
-                            "⏸️ Execution paused for approval. "
-                            "Use agent.graph.get_state() and agent.graph.update_state() to handle the interrupt."
-                        )
-                except Exception as e:
-                    logger.debug(f"Could not check interrupt state: {e}")
-
-            # Get tool calls from result (only if tracking was enabled)
-            tool_calls = result.get("tool_calls", []) if track_tool_calls else []
-
-            return InvokeResult(
-                answer=final_answer,
-                tool_calls=tool_calls,
-                thread_id=thread_id,
-                error=error_msg,
+        # Add callbacks to config (both top-level and configurable for nodes)
+        if self._callbacks:
+            run_config["callbacks"] = self._callbacks
+            run_config["configurable"]["callbacks"] = self._callbacks
+            logger.debug(
+                f"Added {len(self._callbacks)} callback(s) to config: {[type(cb).__name__ for cb in self._callbacks]}"
             )
+
+        # Invoke the graph
+        total_messages = len(initial_state_pydantic.chat_messages or [])
+        logger.debug(f"Invoking agent with {total_messages} total message(s) in conversation")
+        result = await self.graph.ainvoke(initial_state_pydantic, config=run_config)
+
+        # Extract final answer and error
+        final_answer = result.get("final_answer", "")
+        error_msg = None
+
+        if not final_answer and result.get("error"):
+            error_msg = result['error']
+            final_answer = f"Error: {error_msg}"
+
+        # Check if graph interrupted for approval
+        if not final_answer:
+            try:
+                state = self.graph.get_state(run_config)
+                if state.next:  # Has pending nodes = interrupted
+                    logger.info("Graph interrupted for human-in-the-loop interaction")
+                    final_answer = (
+                        "⏸️ Execution paused for approval. "
+                        "Use agent.graph.get_state() and agent.graph.update_state() to handle the interrupt."
+                    )
+            except Exception as e:
+                logger.debug(f"Could not check interrupt state: {e}")
+
+        # Get tool calls from result (only if tracking was enabled)
+        tool_calls = result.get("tool_calls", []) if track_tool_calls else []
+
+        return InvokeResult(
+            answer=final_answer,
+            tool_calls=tool_calls,
+            thread_id=thread_id,
+            error=error_msg,
+        )
 
     async def stream(
         self,
@@ -1899,34 +1900,32 @@ class CugaAgent:
                     "thread_id is required when resuming execution (message=None or action_response provided)"
                 )
 
-            # Create parent span with session attribute to ensure it's captured
-            with create_session_span(thread_id, "sdk_stream_resume"):
-                run_config["configurable"]["thread_id"] = thread_id
+            run_config["configurable"]["thread_id"] = thread_id
 
-                # Add policy system to config if available
-                if self._policy_system:
-                    run_config["configurable"]["policy_system"] = self._policy_system
+            # Add policy system to config if available
+            if self._policy_system:
+                run_config["configurable"]["policy_system"] = self._policy_system
 
-                # Add callbacks to config (both top-level and configurable for nodes)
-                if self._callbacks:
-                    run_config["callbacks"] = self._callbacks
-                    run_config["configurable"]["callbacks"] = self._callbacks
+            # Add callbacks to config (both top-level and configurable for nodes)
+            if self._callbacks:
+                run_config["callbacks"] = self._callbacks
+                run_config["configurable"]["callbacks"] = self._callbacks
 
-                # If action_response provided, update state with it
-                if action_response:
-                    self.graph.update_state(run_config, {"hitl_response": action_response})
-                    logger.info(
-                        f"Streaming resume after HITL response (action_id: {action_response.action_id})"
-                    )
+            # If action_response provided, update state with it
+            if action_response:
+                self.graph.update_state(run_config, {"hitl_response": action_response})
+                logger.info(
+                    f"Streaming resume after HITL response (action_id: {action_response.action_id})"
+                )
 
-                # Stream resume by invoking with None
-                async for state in self.graph.astream(
-                    None,
-                    config=run_config,
-                    stream_mode="updates",
-                    subgraphs=True,
-                ):
-                    yield state
+            # Stream resume by invoking with None
+            async for state in self.graph.astream(
+                None,
+                config=run_config,
+                stream_mode="updates",
+                subgraphs=True,
+            ):
+                yield state
             return
 
         # Normal streaming case
@@ -1941,36 +1940,37 @@ class CugaAgent:
             thread_id = f"sdk_{uuid.uuid4().hex[:8]}"
             logger.debug(f"Auto-generated thread_id: {thread_id}")
 
-        # Create parent span with session attribute to ensure it's captured
-        with create_session_span(thread_id, "sdk_stream"):
-            # Create initial state for HITL wrapper graph (uses AgentState format)
-            initial_state = {
-                "chat_messages": messages,
-                "thread_id": thread_id,
-                "input": messages[-1].content if messages else "",
-                "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
-            }
+        # Create initial state for HITL wrapper graph (uses AgentState format)
+        initial_state = {
+            "chat_messages": messages,
+            "thread_id": thread_id,
+            "input": messages[-1].content if messages else "",
+            "url": "",  # Required by AgentState (used for web navigation, empty for SDK)
+        }
 
-            run_config["configurable"]["thread_id"] = thread_id
+        run_config["configurable"]["thread_id"] = thread_id
+        
+        # Set session.id for OpenLit observability (if enabled)
+        set_session_attribute(thread_id)
 
-            # Add policy system to config if available
-            if self._policy_system:
-                run_config["configurable"]["policy_system"] = self._policy_system
+        # Add policy system to config if available
+        if self._policy_system:
+            run_config["configurable"]["policy_system"] = self._policy_system
 
-            # Add callbacks to config (both top-level and configurable for nodes)
-            if self._callbacks:
-                run_config["callbacks"] = self._callbacks
-                run_config["configurable"]["callbacks"] = self._callbacks
+        # Add callbacks to config (both top-level and configurable for nodes)
+        if self._callbacks:
+            run_config["callbacks"] = self._callbacks
+            run_config["configurable"]["callbacks"] = self._callbacks
 
-            # Stream the graph with subgraph updates enabled
-            logger.debug(f"Streaming agent with {len(messages)} messages")
-            async for state in self.graph.astream(
-                initial_state,
-                config=run_config,
-                stream_mode="updates",  # Stream node updates (including subgraph internals)
-                subgraphs=True,  # Include subgraph updates
-            ):
-                yield state
+        # Stream the graph with subgraph updates enabled
+        logger.debug(f"Streaming agent with {len(messages)} messages")
+        async for state in self.graph.astream(
+            initial_state,
+            config=run_config,
+            stream_mode="updates",  # Stream node updates (including subgraph internals)
+            subgraphs=True,  # Include subgraph updates
+        ):
+            yield state
 
     def add_tool(self, tool: BaseTool):
         """

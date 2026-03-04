@@ -19,11 +19,12 @@ from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, Red
 from fastapi.middleware.cors import CORSMiddleware
 
 # Import openlit_init BEFORE any other Cuga imports.
-# This sets OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES at module level so that
-# whichever library creates the OTel TracerProvider first (e.g. Langfuse via e2b_sandbox)
-# will pick up the correct resource attributes (agent.id, service.version, etc.).
+# This triggers process-level initialization of OpenLit observability (if enabled).
+# The module sets OTEL_SERVICE_NAME and OTEL_RESOURCE_ATTRIBUTES at import time,
+# ensuring whichever library creates the OTel TracerProvider first (e.g. Langfuse)
+# picks up the correct resource attributes (agent.id, service.version, etc.).
+# The module also calls init_openlit() at import time to set up instrumentation.
 import cuga.backend.observability.openlit_init as _openlit_init  # noqa: F401
-from cuga.backend.observability.openlit_init import init_openlit
 
 from langchain_core.messages import AIMessage, HumanMessage
 from loguru import logger
@@ -245,9 +246,6 @@ async def manage_save_reuse_server():
 async def lifespan(app: FastAPI):
     """Asynchronous context manager for application startup and shutdown."""
     logger.info("Application is starting up...")
-
-    # Initialize OpenLit observability (no-op if disabled or not installed)
-    init_openlit()
 
     # Load hardcoded policies if configured via environment variable
     if os.getenv("CUGA_LOAD_POLICIES", "false").lower() in ("true", "1", "yes", "on"):

@@ -42,14 +42,13 @@ dependencies = [
     "asyncpg>=0.30",
     "PyJWT[crypto]>=2.10.0",
     "cryptography>=44.0.0",
+    "openlit>=1.4.0", # 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard.
 ]
 
 [project.optional-dependencies]
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
-# 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard.
-observability = ["openlit>=1.4.0"]
 
 [project.urls]
 Homepage = "https://cuga.dev"
