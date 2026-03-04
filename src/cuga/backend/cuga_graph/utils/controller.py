@@ -193,24 +193,22 @@ class AgentRunner:
         agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
         await agent.build_graph()
         state: AgentState = default_state(
-                page=self.env.page if self.env else None,
-                observation=self.obs,
+            page=self.env.page if self.env else None,
+            observation=self.obs,
             goal=goal if goal else self.obs['goal'],
         )
         state.sites = sites
         await self.browser_update_state(state)
 
         self.agent_loop_obj = AgentLoop(
-                thread_id=self.thread_id,
-                langfuse_handler=langfuse_handler,
-                graph=agent.graph,
-                env_pointer=self.env,
-                tracker=tracker,
-                policy_system=agent.policy_system,
+            thread_id=self.thread_id,
+            langfuse_handler=langfuse_handler,
+            graph=agent.graph,
+            env_pointer=self.env,
+            tracker=tracker,
+            policy_system=agent.policy_system,
         )
-        state.current_datetime = (
-            current_datetime if current_datetime else datetime.datetime.now().isoformat()
-        )
+        state.current_datetime = current_datetime if current_datetime else datetime.datetime.now().isoformat()
         state.pi = tracker.pi
         agent_response = await self.agent_loop_obj.run(state=state)
         reward = 0.0
@@ -220,11 +218,11 @@ class AgentRunner:
                 i += 1
                 state = self.get_current_state()
                 feedback = await AgentRunner.process_event_async(
-                        state.messages[-1].tool_calls,
-                        state.elements,
-                        self.env.page,
-                        self.env.tool_implementation_provider,
-                        session_id=session_id,
+                    state.messages[-1].tool_calls,
+                    state.elements,
+                    self.env.page,
+                    self.env.tool_implementation_provider,
+                    session_id=session_id,
                     tool_provider=self.env.tool_implementation_provider,
                 )
                 state.feedback = state.feedback + feedback
@@ -238,9 +236,7 @@ class AgentRunner:
                 if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
                     break
                 await self.browser_update_state(state)
-                self.agent_loop_obj.graph.update_state(
-                    {"configurable": {"thread_id": self.thread_id}}, state
-                )
+                self.agent_loop_obj.graph.update_state({"configurable": {"thread_id": self.thread_id}}, state)
                 agent_response = await self.agent_loop_obj.run(state=None)
             elif agent_response.end:
                 tracker.final_answer = agent_response.answer
@@ -303,25 +299,23 @@ class AgentRunner:
         agent = DynamicAgentGraph(None, langfuse_handler=langfuse_handler)
         await agent.build_graph()
         state: AgentState = default_state(
-                page=self.env.page if self.env else None,
-                observation=self.obs,
-                goal=goal if goal else self.obs['goal'],
+            page=self.env.page if self.env else None,
+            observation=self.obs,
+            goal=goal if goal else self.obs['goal'],
             chat_messages=chat_messages if chat_messages else [],
         )
         state.sites = sites
         await self.browser_update_state(state)
 
         self.agent_loop_obj = AgentLoop(
-                thread_id=self.thread_id,
-                langfuse_handler=langfuse_handler,
-                graph=agent.graph,
-                tracker=tracker,
-                env_pointer=self.env,
-                policy_system=agent.policy_system,
+            thread_id=self.thread_id,
+            langfuse_handler=langfuse_handler,
+            graph=agent.graph,
+            tracker=tracker,
+            env_pointer=self.env,
+            policy_system=agent.policy_system,
         )
-        state.current_datetime = (
-            current_datetime if current_datetime else datetime.datetime.now().isoformat()
-        )
+        state.current_datetime = current_datetime if current_datetime else datetime.datetime.now().isoformat()
         state.pi = tracker.pi
         reward = 0.0
         i = 0
@@ -339,10 +333,10 @@ class AgentRunner:
                         i += 1
                         state = self.get_current_state()
                         feedback = await AgentRunner.process_event_async(
-                                state.messages[-1].tool_calls,
-                                state.elements,
-                                self.env.page,
-                                self.env.tool_implementation_provider,
+                            state.messages[-1].tool_calls,
+                            state.elements,
+                            self.env.page,
+                            self.env.tool_implementation_provider,
                             session_id=session_id,
                         )
                         state.feedback = state.feedback + feedback
@@ -353,11 +347,7 @@ class AgentRunner:
                             )
                         self.env.messages = state.messages
                         obs, reward, terminated, truncated, info = await self.env.step("")
-                        if (
-                            eval_mode
-                            and reward == 1.0
-                            or len(tracker.steps) >= settings.evaluation.max_steps
-                        ):
+                        if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
                             break  # Break to handle final result outside the loop
                         await self.browser_update_state(state)
                         self.agent_loop_obj.graph.update_state(

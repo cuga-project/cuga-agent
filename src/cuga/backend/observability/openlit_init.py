@@ -137,7 +137,7 @@ _current_session_id: str | None = None  # Thread-local session ID for SpanProces
 class SessionSpanProcessor(SpanProcessor):
     """
     OTel SpanProcessor that automatically tags all spans with session.id.
-    
+
     This processor is added to the TracerProvider and runs on every span start,
     allowing us to tag spans even if they're created in different async contexts.
     """
@@ -230,19 +230,20 @@ def init_openlit() -> None:
         # application_name is the OpenLit-level label; OTEL_SERVICE_NAME (set above)
         # is the OTel resource attribute that Tempo uses for the Service column.
         openlit.init(application_name="cuga")
-        
+
         # Register SessionSpanProcessor to auto-tag spans with session.id
         # This works in server mode where set_session_attribute() is called from AgentLoop
         if otel_trace is not None:
             try:
                 from opentelemetry import trace as otel_trace_module
+
                 trace_provider = otel_trace_module.get_tracer_provider()
                 if hasattr(trace_provider, 'add_span_processor'):
                     trace_provider.add_span_processor(SessionSpanProcessor())
                     logger.debug("SessionSpanProcessor registered for session tracking")
             except Exception as e:
                 logger.warning(f"Could not register SessionSpanProcessor: {e}")
-        
+
         _initialized = True
         logger.info(
             f"✅ OpenLit observability initialized "
@@ -270,13 +271,13 @@ def set_session_attribute(session_id: str) -> None:
         session_id: The conversation thread ID (e.g. thread_id from AgentRunner or SDK invoke)
     """
     global _current_session_id
-    
+
     if not _initialized:
         return
 
     # Set the global session ID — SessionSpanProcessor will pick it up
     _current_session_id = session_id
-    
+
     # Also try to tag any currently active span (best effort)
     if otel_trace is not None:
         try:

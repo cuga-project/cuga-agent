@@ -1783,12 +1783,10 @@ class CugaAgent:
                     var_manager.add_variable(
                         var_value, name=var_name, description=f"Passed from supervisor: {var_name}"
                     )
-                logger.debug(
-                    f"Injected {len(variables)} variables into new state: {list(variables.keys())}"
-                )
+                logger.debug(f"Injected {len(variables)} variables into new state: {list(variables.keys())}")
 
             logger.debug(f"Created new state for thread_id: {thread_id}")
-        
+
         # Set session.id for OpenLit observability (if enabled)
         set_session_attribute(thread_id)
 
@@ -1914,9 +1912,7 @@ class CugaAgent:
             # If action_response provided, update state with it
             if action_response:
                 self.graph.update_state(run_config, {"hitl_response": action_response})
-                logger.info(
-                    f"Streaming resume after HITL response (action_id: {action_response.action_id})"
-                )
+                logger.info(f"Streaming resume after HITL response (action_id: {action_response.action_id})")
 
             # Stream resume by invoking with None
             async for state in self.graph.astream(
@@ -1949,7 +1945,7 @@ class CugaAgent:
         }
 
         run_config["configurable"]["thread_id"] = thread_id
-        
+
         # Set session.id for OpenLit observability (if enabled)
         set_session_attribute(thread_id)
 

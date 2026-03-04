@@ -653,13 +653,13 @@ class AgentLoop:
         event_stream = self.get_stream(state, resume)
         event = {}
         session_tagged = False  # Track if we've set session.id yet
-        
+
         async for event in event_stream:
             # Tag session.id on the first event (when spans are active)
             if not session_tagged:
                 set_session_attribute(self.thread_id)
                 session_tagged = True
-            
+
             event_msg = self.get_event_message(event)
             # Skip empty events (events with no name or no data)
             if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
@@ -720,13 +720,13 @@ class AgentLoop:
         event_stream = self.get_stream(state, resume)
         event = {}
         session_tagged = False  # Track if we've set session.id yet
-        
+
         async for event in event_stream:
             # Tag session.id on the first event (when spans are active)
             if not session_tagged:
                 set_session_attribute(self.thread_id)
                 session_tagged = True
-            
+
             event_msg = self.get_event_message(event)
             await self.show_chat_even(event_msg)
             # logger.debug(f"current event: {event_msg.format()}")
