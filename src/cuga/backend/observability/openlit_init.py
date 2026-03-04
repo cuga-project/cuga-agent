@@ -47,6 +47,7 @@ See deployment/docker-compose/openlit/ for a ready-to-use local stack:
 
 import logging
 import os
+import threading
 from contextvars import ContextVar
 from loguru import logger
 
@@ -139,6 +140,7 @@ except ImportError:
     Context = None  # type: ignore[assignment]
 
 _initialized = False  # Module-level guard: prevents redundant log output on multiple calls
+_init_lock = threading.Lock()  # Protects initialization from race conditions
 _current_session_id: ContextVar[str | None] = ContextVar(
     "current_session_id", default=None
 )  # Task-local session ID for SpanProcessor
@@ -194,77 +196,82 @@ def init_openlit() -> None:
     if _initialized:
         return
 
-    # Check if OpenLit is enabled in settings
-    try:
-        from cuga.config import settings
-
-        openlit_enabled = getattr(getattr(settings, "observability", None), "openlit", False)
-        if not openlit_enabled:
+    with _init_lock:
+        # Double-check inside the lock to prevent race conditions
+        if _initialized:
             return
-    except Exception as e:
-        logger.warning(f"OpenLit: could not read observability settings: {e}")
-        return
 
-    # Graceful no-op if openlit is not installed
-    if openlit is None:
-        logger.warning(
-            "OpenLit observability is enabled in settings but 'openlit' is not installed. "
-            "This should not happen as openlit is a core dependency. Please reinstall cuga."
-        )
-        return
+        # Check if OpenLit is enabled in settings
+        try:
+            from cuga.config import settings
 
-    # Determine OTLP endpoint for logging purposes (openlit reads the env var itself)
-    otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
-    cuga_version = _cuga_version  # set at module level
+            openlit_enabled = getattr(getattr(settings, "observability", None), "openlit", False)
+            if not openlit_enabled:
+                return
+        except Exception as e:
+            logger.warning(f"OpenLit: could not read observability settings: {e}")
+            return
 
-    # Add dynamic resource attributes from settings (tenant.id, service.instance.id).
-    # Static attrs (agent.id, service.version) were already set at module level.
-    # These must be appended before openlit.init() creates the TracerProvider.
-    tenant_id = getattr(getattr(settings, "service", None), "tenant_id", "") or ""
-    instance_id = getattr(getattr(settings, "service", None), "instance_id", "") or ""
-    dynamic_attrs: dict = {}
-    if tenant_id:
-        dynamic_attrs["tenant.id"] = tenant_id
-    if instance_id:
-        dynamic_attrs["service.instance.id"] = instance_id
+        # Graceful no-op if openlit is not installed
+        if openlit is None:
+            logger.warning(
+                "OpenLit observability is enabled in settings but 'openlit' is not installed. "
+                "This should not happen as openlit is a core dependency. Please reinstall cuga."
+            )
+            return
 
-    if dynamic_attrs:
-        existing = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
-        os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(existing, dynamic_attrs)
+        # Determine OTLP endpoint for logging purposes (openlit reads the env var itself)
+        otlp_endpoint = os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT", "http://localhost:4318")
+        cuga_version = _cuga_version  # set at module level
 
-    # Log OTEL_RESOURCE_ATTRIBUTES with only keys to avoid exposing sensitive values
-    attrs = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
-    attr_keys = [p.split("=", 1)[0].strip() for p in attrs.split(",") if "=" in p]
-    logger.debug(f"OpenLit: OTEL_RESOURCE_ATTRIBUTES keys={','.join(attr_keys)}")
+        # Add dynamic resource attributes from settings (tenant.id, service.instance.id).
+        # Static attrs (agent.id, service.version) were already set at module level.
+        # These must be appended before openlit.init() creates the TracerProvider.
+        tenant_id = getattr(getattr(settings, "service", None), "tenant_id", "") or ""
+        instance_id = getattr(getattr(settings, "service", None), "instance_id", "") or ""
+        dynamic_attrs: dict = {}
+        if tenant_id:
+            dynamic_attrs["tenant.id"] = tenant_id
+        if instance_id:
+            dynamic_attrs["service.instance.id"] = instance_id
 
-    try:
-        # Pass no otlp_endpoint argument so openlit reads OTEL_EXPORTER_OTLP_ENDPOINT
-        # from the environment automatically (standard OTel pattern).
-        # application_name is the OpenLit-level label; OTEL_SERVICE_NAME (set above)
-        # is the OTel resource attribute that Tempo uses for the Service column.
-        openlit.init(application_name="cuga", capture_message_content=False)
+        if dynamic_attrs:
+            existing = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
+            os.environ["OTEL_RESOURCE_ATTRIBUTES"] = _merge_otel_resource_attributes(existing, dynamic_attrs)
 
-        # Register SessionSpanProcessor to auto-tag spans with session.id
-        # This works in server mode where set_session_attribute() is called from AgentLoop
-        if otel_trace is not None:
-            try:
-                from opentelemetry import trace as otel_trace_module
+        # Log OTEL_RESOURCE_ATTRIBUTES with only keys to avoid exposing sensitive values
+        attrs = os.getenv("OTEL_RESOURCE_ATTRIBUTES", "")
+        attr_keys = [p.split("=", 1)[0].strip() for p in attrs.split(",") if "=" in p]
+        logger.debug(f"OpenLit: OTEL_RESOURCE_ATTRIBUTES keys={','.join(attr_keys)}")
 
-                trace_provider = otel_trace_module.get_tracer_provider()
-                if hasattr(trace_provider, 'add_span_processor'):
-                    trace_provider.add_span_processor(SessionSpanProcessor())
-                    logger.debug("SessionSpanProcessor registered for session tracking")
-            except Exception as e:
-                logger.warning(f"Could not register SessionSpanProcessor: {e}")
+        try:
+            # Pass no otlp_endpoint argument so openlit reads OTEL_EXPORTER_OTLP_ENDPOINT
+            # from the environment automatically (standard OTel pattern).
+            # application_name is the OpenLit-level label; OTEL_SERVICE_NAME (set above)
+            # is the OTel resource attribute that Tempo uses for the Service column.
+            openlit.init(application_name="cuga", capture_message_content=False)
 
-        _initialized = True
-        logger.info(
-            f"✅ OpenLit observability initialized "
-            f"(OTLP: {otlp_endpoint}, version: {cuga_version}, "
-            f"tenant: {tenant_id or 'unset'}, instance: {instance_id or 'unset'})"
-        )
-    except Exception as e:
-        logger.error(f"Failed to initialize OpenLit: {e}")
+            # Register SessionSpanProcessor to auto-tag spans with session.id
+            # This works in server mode where set_session_attribute() is called from AgentLoop
+            if otel_trace is not None:
+                try:
+                    from opentelemetry import trace as otel_trace_module
+
+                    trace_provider = otel_trace_module.get_tracer_provider()
+                    if hasattr(trace_provider, 'add_span_processor'):
+                        trace_provider.add_span_processor(SessionSpanProcessor())
+                        logger.debug("SessionSpanProcessor registered for session tracking")
+                except Exception as e:
+                    logger.warning(f"Could not register SessionSpanProcessor: {e}")
+
+            _initialized = True
+            logger.info(
+                f"✅ OpenLit observability initialized "
+                f"(OTLP: {otlp_endpoint}, version: {cuga_version}, "
+                f"tenant: {tenant_id or 'unset'}, instance: {instance_id or 'unset'})"
+            )
+        except Exception as e:
+            logger.error(f"Failed to initialize OpenLit: {e}")
 
 
 def set_session_attribute(session_id: str) -> None:
@@ -295,13 +302,13 @@ def set_session_attribute(session_id: str) -> None:
         try:
             span = otel_trace.get_current_span()
             if span and span.is_recording():
-                _logger.debug(f"Tagging current span with session.id={session_id}")
+                _logger.debug("Tagging current span with session.id=<redacted>")
                 span.set_attribute("session.id", session_id)
-                _logger.debug(f"Successfully tagged current span with session.id={session_id}")
+                _logger.debug("Successfully tagged current span with session.id=<redacted>")
             else:
-                _logger.debug(f"No active recording span found to tag with session.id={session_id}")
+                _logger.debug("No active recording span found to tag with session.id=<redacted>")
         except Exception:
-            _logger.debug(f"Failed to tag current span with session.id={session_id}", exc_info=True)
+            _logger.debug("Failed to tag current span with session.id=<redacted>", exc_info=True)
 
 
 # ---------------------------------------------------------------------------
