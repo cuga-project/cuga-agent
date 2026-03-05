@@ -115,11 +115,7 @@ dev = [
     "ruff>=0.9.4",
     "tabulate",
     "beartype",
-    # CVE-2025-14009: Zip Slip vulnerability in NLTK
-    # No patched PyPI release available as of 2026-03-05
-    # NLTK is dev-only dependency (not runtime)
-    # Track upstream: https://github.com/nltk/nltk/issues
-    "nltk",
+    "nltk>=3.9.3",
     "termcolor",
     "rapidfuzz",
     "pytest>=8.3.5",
