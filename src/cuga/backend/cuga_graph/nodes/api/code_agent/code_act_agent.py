@@ -265,7 +265,15 @@ def create_codeact(
             else:
                 output, new_vars = await eval_fn(state["script"], context)
             tracker.collect_step(step=Step(name="User_output", data=output))
-            tracker.collect_step(step=Step(name="User_output_variables", data=json.dumps(new_vars)))
+            tracker.collect_step(
+                step=Step(
+                    name="User_output_variables",
+                    data=json.dumps(
+                        new_vars,
+                        default=lambda o: o.model_dump() if hasattr(o, "model_dump") else str(o),
+                    ),
+                )
+            )
 
             # 📝 Code Execution Result
             logger.debug(
