@@ -20,6 +20,7 @@ class LocalExecutor(BaseExecutor):
         'json',
         'pandas',
         'numpy',
+        'pydantic',
         'datetime',
         '_strptime',
         'time',
