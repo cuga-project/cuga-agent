@@ -41,6 +41,14 @@ class VariableUtils:
         except ImportError:
             pass
 
+        try:
+            from pydantic import BaseModel
+
+            if isinstance(value, BaseModel):
+                return True
+        except ImportError:
+            pass
+
         return False
 
     @staticmethod
@@ -177,13 +185,30 @@ class VariableUtils:
         if not new_vars:
             return result
 
+        existing_names = (
+            set(var_manager.get_variable_names()) if hasattr(var_manager, 'get_variable_names') else set()
+        )
+        created_names = []
+        updated_names = []
+
         for var_name, var_value in new_vars.items():
+            if var_name in existing_names:
+                updated_names.append(var_name)
+            else:
+                created_names.append(var_name)
             var_manager.add_variable(var_value, name=var_name, description="Created during code execution")
 
         try:
-            variables_summary = var_manager.get_variables_summary(variable_names=list(new_vars.keys()))
+            all_names = list(new_vars.keys())
+            variables_summary = var_manager.get_variables_summary(variable_names=all_names)
             if variables_summary and variables_summary != "# No variables stored":
-                result += f"\n\n## New Variables Created:\n{variables_summary}"
+                if created_names and updated_names:
+                    header = "## New Variables Created / Updated:"
+                elif updated_names:
+                    header = "## Variables Updated:"
+                else:
+                    header = "## New Variables Created:"
+                result += f"\n\n{header}\n{variables_summary}"
         except Exception as e:
             logger.debug(f"Could not generate variables summary: {e}")
 
