@@ -249,7 +249,28 @@ def init_openlit() -> None:
             # from the environment automatically (standard OTel pattern).
             # application_name is the OpenLit-level label; OTEL_SERVICE_NAME (set above)
             # is the OTel resource attribute that Tempo uses for the Service column.
-            openlit.init(application_name="cuga", capture_message_content=False)
+            openlit.init(
+                application_name="cuga",
+                capture_message_content=False,
+            )
+
+            # Security: Uninstrument FastAPI and httpx to prevent HTTP-level spans
+            # from capturing auth cookies (cuga_session JWT) or headers.
+            # OpenLIT instruments these via standard OTel contrib packages.
+            # We only need LLM/agent tracing (OpenAI, LangChain, LangGraph, MCP, etc.).
+            try:
+                from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+                FastAPIInstrumentor().uninstrument()
+                logger.debug("FastAPI instrumentation disabled for security")
+            except ImportError:
+                pass
+
+            try:
+                from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+                HTTPXClientInstrumentor().uninstrument()
+                logger.debug("httpx instrumentation disabled for security")
+            except ImportError:
+                pass
 
             # Register SessionSpanProcessor to auto-tag spans with session.id
             # This works in server mode where set_session_attribute() is called from AgentLoop
