@@ -25,6 +25,10 @@
     "./CugaHeader": {
       "import": "./src/CugaHeader.tsx",
       "default": "./src/CugaHeader.tsx"
+    },
+    "./SubAgentsConfig": {
+      "import": "./src/SubAgentsConfig.tsx",
+      "default": "./src/SubAgentsConfig.tsx"
     }
   },
   "scripts": {

@@ -1,5 +1,5 @@
 import React, { useState, useMemo } from "react";
-import { Add, Edit, TrashCan, Filter } from "@carbon/icons-react";
+import { Add, Edit, TrashCan, Filter, Key } from "@carbon/icons-react";
 import {
   ComposedModal,
   ModalHeader,
@@ -14,6 +14,7 @@ import {
 } from "@carbon/react";
 import type { ToolEntry } from "./types/tools";
 import { AddToolModal } from "./AddToolModal";
+import { SecretsManager } from "./SecretsManager";
 import "./ToolsConfig.css";
 
 export interface ConnectedTool {
@@ -37,12 +38,14 @@ interface ToolsConfigProps {
   connectedTools?: ConnectedTool[];
   agentId?: string;
   onError?: (title: string, message: string) => void;
+  onOpenSecrets?: () => void;
 }
 
 const TOOLS_PREVIEW_COUNT = 3;
 
-export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", onError }: ToolsConfigProps) {
+function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", onError, onOpenSecrets }: ToolsConfigProps) {
   const [modalOpen, setModalOpen] = useState(false);
+  const [secretsOpen, setSecretsOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
   const [toolsModalIndex, setToolsModalIndex] = useState<number | null>(null);
   const [toolsModalAppName, setToolsModalAppName] = useState<string | null>(null);
@@ -212,6 +215,7 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
       )}
 
       <HStack gap={3}>
+        <Button kind="ghost" size="sm" hasIconOnly iconDescription="Manage secrets" renderIcon={Key} onClick={() => (onOpenSecrets ? onOpenSecrets() : setSecretsOpen(true))} />
         <Button kind="secondary" size="sm" renderIcon={Add} onClick={() => setModalOpen(true)}>
           Add tool
         </Button>
@@ -233,13 +237,16 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
           onClose={() => setModalOpen(false)}
           onSave={handleAdd}
           initial={null}
+          agentId={agentId}
         />
       )}
-      {editingIndex !== null && (
+      {editingIndex !== null && editingTool !== null && (
         <AddToolModal
+          key={`edit-${editingIndex}`}
           onClose={() => setEditingIndex(null)}
           onSave={handleEdit}
           initial={editingTool}
+          agentId={agentId}
         />
       )}
       {toolsModalServerName && (
@@ -259,9 +266,12 @@ export function ToolsConfig({ tools, onChange, connectedApps = [], connectedTool
           }}
         />
       )}
+      <SecretsManager open={secretsOpen} onClose={() => setSecretsOpen(false)} agentId={agentId} />
     </Stack>
   );
 }
+
+export const ToolsConfig = React.memo(ToolsConfigInner);
 
 interface ServerToolsModalProps {
   serverName: string;

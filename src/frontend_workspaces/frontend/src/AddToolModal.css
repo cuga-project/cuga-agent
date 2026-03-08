@@ -1,6 +1,8 @@
 .cds--modal-content.add-tool-modal-body,
 .cds--modal-scroll-content.add-tool-modal-body {
-  padding: 1.5rem 2rem !important;
+  padding: 1.5rem 2rem 2.5rem 2rem !important;
+  overflow-y: auto !important;
+  max-height: 70vh;
 }
 
 .add-tool-modal-body .cds--form-group {

@@ -1,0 +1,12 @@
+HashiCorp Vault has been deployed.
+
+To initialize and unseal Vault (first time only):
+  kubectl exec -n {{ .Release.Namespace }} -it vault-0 -- vault operator init
+  kubectl exec -n {{ .Release.Namespace }} -it vault-0 -- vault operator unseal <unseal-key>
+
+Then configure CUGA to use it by setting in openshift.env:
+  VAULT_ADDR=http://vault.<namespace>.svc.cluster.local:8200
+  VAULT_TOKEN=<root-or-app-token>
+  DYNACONF_SECRETS__MODE=vault
+  DYNACONF_SECRETS__VAULT_ADDR=http://vault.{{ .Release.Namespace }}.svc.cluster.local:8200
+  DYNACONF_SECRETS__VAULT_TOKEN_ENV=VAULT_TOKEN

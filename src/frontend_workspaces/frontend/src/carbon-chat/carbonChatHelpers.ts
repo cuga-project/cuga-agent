@@ -14,13 +14,48 @@ import {
   UserType,
   type ReasoningStep,
 } from "@carbon/ai-chat";
+import * as api from "../api";
 
+let cachedProfileUrl: string | undefined = undefined;
+let profileUrlFetched = false;
+
+async function getProfilePictureUrl(): Promise<string | undefined> {
+  if (profileUrlFetched) return cachedProfileUrl;
+  
+  try {
+    const config = await api.getUiConfig();
+    cachedProfileUrl = config.hide_cuga_logo ? undefined : "https://avatars.githubusercontent.com/u/230847519?s=200&v=4";
+    profileUrlFetched = true;
+    return cachedProfileUrl;
+  } catch {
+    cachedProfileUrl = undefined;
+    profileUrlFetched = true;
+    return cachedProfileUrl;
+  }
+}
+
+export async function getResponseUserProfile() {
+  const profile_picture_url = await getProfilePictureUrl();
+  return {
+    id: "cuga-agent",
+    nickname: "CUGA",
+    user_type: UserType.BOT,
+    profile_picture_url,
+  };
+}
+
+// Legacy export for backward compatibility - will have undefined profile_picture_url initially
 export const RESPONSE_USER_PROFILE = {
   id: "cuga-agent",
   nickname: "CUGA",
   user_type: UserType.BOT,
-  profile_picture_url: "https://avatars.githubusercontent.com/u/230847519?s=200&v=4",
+  profile_picture_url: undefined as string | undefined,
 };
+
+// Initialize the profile picture URL
+getProfilePictureUrl().then(url => {
+  RESPONSE_USER_PROFILE.profile_picture_url = url;
+});
 
 export const BUTTON_KIND = {
   PRIMARY: "primary",

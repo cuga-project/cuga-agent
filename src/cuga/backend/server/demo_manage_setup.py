@@ -131,7 +131,17 @@ def setup_demo_manage_config(
         if use_crm_starters
         else DEFAULT_HOMESCREEN
     )
-    config = {"tools": tools, "policies": [], "homescreen": homescreen}
+    llm_api_key_ref = ""
+    try:
+        from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+
+        llm_api_key_ref = resolve_llm_api_key_ref()
+    except Exception:
+        pass
+    llm_cfg: dict[str, Any] = {"model": os.environ.get("MODEL_NAME", "")}
+    if llm_api_key_ref:
+        llm_cfg["api_key"] = llm_api_key_ref
+    config = {"tools": tools, "policies": [], "homescreen": homescreen, "llm": llm_cfg}
 
     async def _setup():
         await save_draft(config, agent_id)

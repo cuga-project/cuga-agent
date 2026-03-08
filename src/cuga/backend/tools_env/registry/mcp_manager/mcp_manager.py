@@ -710,7 +710,17 @@ class MCPManager:
             if not config.command:
                 raise Exception(f"STDIO transport requires 'command' for {name}")
 
-            return StdioTransport(command=config.command, args=config.args or [], env=config.env or {})
+            from cuga.backend.secrets import resolve_secret
+
+            raw_env = config.env or {}
+            resolved_env = {}
+            for k, v in raw_env.items():
+                if isinstance(v, str):
+                    resolved = resolve_secret(v)
+                    resolved_env[k] = resolved if resolved is not None else v
+                else:
+                    resolved_env[k] = v
+            return StdioTransport(command=config.command, args=config.args or [], env=resolved_env)
 
         elif transport_type == 'sse':
             if not SSETransport:

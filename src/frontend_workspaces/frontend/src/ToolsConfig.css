@@ -122,7 +122,9 @@
 
 .cds--modal-content.server-tools-modal-body,
 .cds--modal-scroll-content.server-tools-modal-body {
-  padding: 1rem !important;
+  padding: 1rem 1rem 2rem 1rem !important;
+  overflow-y: auto !important;
+  max-height: 70vh;
 }
 
 .tools-config-tools-checkbox-row {

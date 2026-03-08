@@ -12,16 +12,19 @@ import {
   SelectItem,
   Tile,
   ClickableTile,
+  Checkbox,
 } from "@carbon/react";
 import { Template, Folder } from "@carbon/icons-react";
 import type { ToolEntry, ToolAuth, AuthType } from "./types/tools";
 import { AUTH_TYPE_OPTIONS } from "./types/tools";
+import * as api from "./api";
 import "./AddToolModal.css";
 
 interface AddToolModalProps {
   onClose: () => void;
   onSave: (tool: ToolEntry) => void;
   initial?: ToolEntry | null;
+  agentId?: string;
 }
 
 const emptyAuth: ToolAuth = { type: "none" };
@@ -85,37 +88,71 @@ const TOOL_TEMPLATES: ToolTemplate[] = [
   },
 ];
 
-export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
-  const [name, setName] = useState("");
-  const [type, setType] = useState<"mcp" | "openapi">("mcp");
-  const [mcpMode, setMcpMode] = useState<McpConnectionMode>("url");
-  const [url, setUrl] = useState("");
-  const [command, setCommand] = useState("");
-  const [argsText, setArgsText] = useState("");
-  const [description, setDescription] = useState("");
-  const [authType, setAuthType] = useState<AuthType>("none");
-  const [authKey, setAuthKey] = useState("");
-  const [authValue, setAuthValue] = useState("");
+function initFromTool(initial: ToolEntry | null | undefined) {
+  const auth = initial?.auth ?? emptyAuth;
+  const val = auth.value ?? "";
+  const hasCmd = !!(initial?.command?.trim());
+  const transport = initial?.transport ?? (initial?.url ? "sse" : "stdio");
+  return {
+    name: initial?.name ?? "",
+    type: (initial?.type ?? "mcp") as "mcp" | "openapi",
+    mcpMode: (hasCmd ? "command" : transport === "http" ? "url-http" : "url") as McpConnectionMode,
+    url: initial?.url ?? "",
+    command: initial?.command ?? "",
+    argsText: (initial?.args ?? []).join("\n"),
+    description: initial?.description ?? "",
+    authType: (!auth.type || auth.type === "none" ? "none" : auth.type) as AuthType,
+    authKey: auth.key ?? "",
+    authValue: val,
+    useSavedSecret: typeof val === "string" && (val.startsWith("db://") || val.startsWith("vault://") || val.startsWith("aws://")),
+  };
+}
+
+export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModalProps) {
+  const init = initFromTool(initial);
+  const [name, setName] = useState(init.name);
+  const [type, setType] = useState<"mcp" | "openapi">(init.type);
+  const [mcpMode, setMcpMode] = useState<McpConnectionMode>(init.mcpMode);
+  const [url, setUrl] = useState(init.url);
+  const [command, setCommand] = useState(init.command);
+  const [argsText, setArgsText] = useState(init.argsText);
+  const [description, setDescription] = useState(init.description);
+  const [authType, setAuthType] = useState<AuthType>(init.authType);
+  const [authKey, setAuthKey] = useState(init.authKey);
+  const [authValue, setAuthValue] = useState(init.authValue);
+  const [useSavedSecret, setUseSavedSecret] = useState(init.useSavedSecret);
+  const [saveAsNewSecret, setSaveAsNewSecret] = useState(false);
+  const [saveAsNewSecretKey, setSaveAsNewSecretKey] = useState("");
+  const [secretsList, setSecretsList] = useState<{ id: string; description?: string; ref: string }[]>([]);
+  const [inlineCreateOpen, setInlineCreateOpen] = useState(false);
+  const [inlineCreateValue, setInlineCreateValue] = useState("");
+  const [inlineCreateKey, setInlineCreateKey] = useState("");
   const [showTemplates, setShowTemplates] = useState(!initial);
 
   useEffect(() => {
-    if (initial) {
-      setName(initial.name);
-      setType(initial.type);
-      setUrl(initial.url ?? "");
-      const hasCmd = !!(initial.command?.trim());
-      const transport = initial.transport ?? (initial.url ? "sse" : "stdio");
-      setMcpMode(hasCmd ? "command" : transport === "http" ? "url-http" : "url");
-      setCommand(initial.command ?? "");
-      setArgsText((initial.args ?? []).join("\n"));
-      setDescription(initial.description ?? "");
-      const auth = initial.auth ?? emptyAuth;
-      setAuthType(auth.type === "none" || !auth.type ? "none" : auth.type);
-      setAuthKey(auth.key ?? "");
-      setAuthValue(auth.value ?? "");
-      setShowTemplates(false);
-    }
-  }, [initial]);
+    Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
+      .then(async ([secretsRes, configRes]) => {
+        let mode = "local";
+        if (configRes.ok) {
+          const cfg = await configRes.json();
+          mode = cfg.mode || "local";
+        }
+        if (secretsRes.ok) {
+          const data = await secretsRes.json();
+          const raw: { id: string; description?: string; source?: string }[] = data.secrets || data.overrides || [];
+          setSecretsList(raw.map((s) => ({
+            id: s.id,
+            description: s.description,
+            ref: s.source === "vault" || mode === "vault"
+              ? `vault://secret/${s.id}#value`
+              : s.source === "env"
+                ? s.id
+                : `db://${s.id}`,
+          })));
+        }
+      })
+      .catch(() => {});
+  }, [agentId]);
 
   const applyTemplate = (template: ToolTemplate) => {
     const config = template.config;
@@ -136,12 +173,12 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
   const authOption = AUTH_TYPE_OPTIONS.find((o) => o.value === authType);
   const needsKey = authOption?.needsKey ?? false;
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     const isCommandMcp = type === "mcp" && mcpMode === "command";
     const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
     const tool: ToolEntry = {
-      name: name.trim() || (type === "mcp" ? "mcp" : "openapi"),
+      name: name.trim(),
       type,
       url: isCommandMcp ? undefined : (url.trim() || undefined),
       description: description.trim() || undefined,
@@ -153,23 +190,56 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
     } else if (type === "mcp" && url.trim()) {
       tool.transport = mcpMode === "url-http" ? "http" : "sse";
     }
-    if (authType !== "none" && (needsKey ? authKey.trim() : true)) {
-      tool.auth = {
-        type: authType,
-        ...(needsKey && { key: authKey.trim() }),
-        ...(authValue.trim() && { value: authValue.trim() }),
-      };
+    if (authType !== "none") {
+      let authValueFinal = authValue.trim();
+
+      if (saveAsNewSecret && authValueFinal) {
+        const baseSlug = saveAsNewSecretKey.trim()
+          ? saveAsNewSecretKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+          : `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+        const slug = baseSlug;
+        try {
+          const res = await api.createSecret(slug, authValueFinal, `Auth for ${name.trim() || "tool"}`, undefined, agentId);
+          if (res.ok) {
+            const data = await res.json();
+            authValueFinal = data.ref || `db://${slug}`;
+          }
+        } catch (_) {}
+      }
+
+      if (authValueFinal) {
+        tool.auth = {
+          type: authType,
+          ...(needsKey && authKey.trim() && { key: authKey.trim() }),
+          value: authValueFinal,
+        };
+      } else if (initial?.auth && initial.auth.type !== "none") {
+        tool.auth = {
+          ...initial.auth,
+          type: authType,
+          ...(needsKey && authKey.trim() && { key: authKey.trim() }),
+        };
+      }
     }
     onSave(tool);
     onClose();
   };
 
+  const NAME_RE = /^[a-z][a-z0-9_]*$/;
+  const nameError = name.trim() === ""
+    ? "Name is required"
+    : !NAME_RE.test(name.trim())
+      ? "Use lowercase letters, digits, and underscores only (e.g. my_tool)"
+      : "";
+
   const isCommandMcp = type === "mcp" && mcpMode === "command";
-  const valid = type === "openapi"
-    ? url.trim().length > 0
-    : isCommandMcp
-      ? command.trim().length > 0
-      : url.trim().length > 0;
+  const valid = !nameError && description.trim().length > 0 && (
+    type === "openapi"
+      ? url.trim().length > 0
+      : isCommandMcp
+        ? command.trim().length > 0
+        : url.trim().length > 0
+  );
 
   return (
     <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
@@ -235,8 +305,10 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
               labelText="Name"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder={type === "mcp" ? "e.g. filesystem" : "e.g. crm"}
-              helperText="Display name for this tool or server"
+              placeholder={type === "mcp" ? "e.g. my_tool" : "e.g. crm_api"}
+              invalid={name.trim() !== "" && !!nameError}
+              invalidText={nameError}
+              helperText={!nameError || name.trim() === "" ? "Lowercase letters, digits, underscores (e.g. my_tool)" : undefined}
             />
           </FormGroup>
           <FormGroup legendText="">
@@ -315,11 +387,12 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
           <FormGroup legendText="">
             <TextArea
               id="tool-description"
-              labelText="Description (optional)"
+              labelText="Description"
               value={description}
               onChange={(e) => setDescription(e.target.value)}
               placeholder="Short description of what this tool provides"
               rows={2}
+              required
             />
           </FormGroup>
           <FormGroup legendText="Authentication">
@@ -342,16 +415,139 @@ export function AddToolModal({ onClose, onSave, initial }: AddToolModalProps) {
                 placeholder={authType === "header" ? "X-API-Key" : "api_key"}
               />
             )}
-            {(authType !== "none" || authValue) && (
-              <TextInput
-                id="tool-auth-value"
-                type="password"
-                labelText="Secret / token / value"
-                value={authValue}
-                onChange={(e) => setAuthValue(e.target.value)}
-                placeholder="Leave empty to not store"
-                autoComplete="off"
-              />
+            {authType !== "none" && (
+              <>
+                <Checkbox
+                  id="tool-use-saved-secret"
+                  labelText="Use saved secret"
+                  checked={useSavedSecret}
+                  onChange={(_e, { checked }) => {
+                    setUseSavedSecret(!!checked);
+                    setInlineCreateOpen(false);
+                  }}
+                />
+                {useSavedSecret ? (
+                  <>
+                    <Select
+                      id="tool-auth-secret"
+                      labelText="Secret"
+                      value={authValue}
+                      onChange={(e) => setAuthValue(e.target.value)}
+                    >
+                      <SelectItem value="" text="Select a secret" />
+                      {secretsList.map((s) => (
+                        <SelectItem
+                          key={s.id}
+                          value={s.ref}
+                          text={s.description ? `${s.id} — ${s.description}` : s.id}
+                        />
+                      ))}
+                    </Select>
+                    <Button
+                      kind="ghost"
+                      size="sm"
+                      style={{ marginTop: "0.5rem" }}
+                      onClick={() => setInlineCreateOpen((v) => !v)}
+                    >
+                      {inlineCreateOpen ? "Cancel" : "Create new secret"}
+                    </Button>
+                    {inlineCreateOpen && (
+                      <div style={{ display: "flex", flexDirection: "column", gap: "0.5rem", marginTop: "0.5rem" }}>
+                        <TextInput
+                          id="tool-inline-secret-key"
+                          type="text"
+                          labelText="Key name"
+                          value={inlineCreateKey}
+                          onChange={(e) => setInlineCreateKey(e.target.value)}
+                          placeholder="e.g. my-tool-api-key"
+                          helperText="Optional; leave empty to auto-generate"
+                        />
+                        <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap", alignItems: "flex-end" }}>
+                          <TextInput
+                            id="tool-inline-secret-value"
+                            type="password"
+                            labelText="New secret value"
+                            value={inlineCreateValue}
+                            onChange={(e) => setInlineCreateValue(e.target.value)}
+                            placeholder="Secret value"
+                            autoComplete="off"
+                          />
+                          <Button
+                            size="sm"
+                            style={{ marginTop: "auto" }}
+                            disabled={!inlineCreateValue.trim()}
+                            onClick={async () => {
+                              const baseSlug = inlineCreateKey.trim()
+                                ? inlineCreateKey.trim().toLowerCase().replace(/\s+/g, "-").replace(/[^a-z0-9-]/g, "-")
+                                : `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                              const slug = baseSlug || `${name.trim() || "tool"}-${authType}-${Date.now()}`.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+                              const res = await api.createSecret(slug, inlineCreateValue.trim(), `Auth for ${name.trim() || "tool"}`, undefined, agentId);
+                              if (res.ok) {
+                                setAuthValue(`db://${slug}`);
+                                setInlineCreateOpen(false);
+                                setInlineCreateKey("");
+                                Promise.all([api.getSecrets(agentId), api.getSecretsConfig()])
+                                  .then(async ([secretsRes, configRes]) => {
+                                    let mode = "local";
+                                    if (configRes.ok) {
+                                      const cfg = await configRes.json();
+                                      mode = cfg.mode || "local";
+                                    }
+                                    if (secretsRes.ok) {
+                                      const data = await secretsRes.json();
+                                      const raw: { id: string; description?: string; source?: string }[] = data.secrets || data.overrides || [];
+                                      setSecretsList(raw.map((s) => ({
+                                        id: s.id,
+                                        description: s.description,
+                                        ref: s.source === "vault" || mode === "vault"
+                                          ? `vault://secret/${s.id}#value`
+                                          : s.source === "env"
+                                            ? s.id
+                                            : `db://${s.id}`,
+                                      })));
+                                    }
+                                  })
+                                  .catch(() => {});
+                              }
+                            }}
+                          >
+                            Save
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : (
+                  <>
+                    <TextInput
+                      id="tool-auth-value"
+                      type="password"
+                      labelText="Secret / token / value"
+                      value={authValue}
+                      onChange={(e) => setAuthValue(e.target.value)}
+                      placeholder="Leave empty to keep existing"
+                      autoComplete="off"
+                    />
+                    <Checkbox
+                      id="tool-save-as-secret"
+                      labelText="Save as new secret"
+                      checked={saveAsNewSecret}
+                      onChange={(_e, { checked }) => setSaveAsNewSecret(!!checked)}
+                    />
+                    {saveAsNewSecret && (
+                      <TextInput
+                        id="tool-save-as-secret-key"
+                        type="text"
+                        labelText="Key name"
+                        value={saveAsNewSecretKey}
+                        onChange={(e) => setSaveAsNewSecretKey(e.target.value)}
+                        placeholder="e.g. my-tool-api-key"
+                        helperText="Optional; leave empty to auto-generate"
+                      />
+                    )}
+                  </>
+                )}
+              </>
             )}
           </FormGroup>
         </ModalBody>

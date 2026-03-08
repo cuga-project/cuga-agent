@@ -1,7 +1,31 @@
 import React, { useState, useEffect } from "react";
-import { X, Save, Plus, Trash2, ChevronDown, ChevronUp } from "lucide-react";
+import {
+  ComposedModal,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+  TextInput,
+  TextArea,
+  Select,
+  SelectItem,
+  Checkbox,
+  Toggle,
+  Tile,
+  Tag,
+  Stack,
+  InlineNotification,
+  IconButton
+} from "@carbon/react";
+import { 
+  Add, 
+  Save, 
+  TrashCan, 
+  ChevronDown, 
+  ChevronUp, 
+  Close 
+} from "@carbon/icons-react";
 import { apiFetch } from "../../frontend/src/api";
-import "./ConfigModal.css";
 
 interface Tool {
   name: string;
@@ -186,9 +210,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
   };
 
   const createAgent = () => {
-    const sourceConfig: AgentSourceConfig = {
-      type: newAgentSource,
-    };
+    const sourceConfig: AgentSourceConfig = { type: newAgentSource };
 
     if (newAgentSource === "a2a" || newAgentSource === "mcp") {
       if (newAgentSource === "a2a") {
@@ -234,10 +256,7 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
   const assignApp = async (agentId: string, appName: string) => {
     const agent = config.subAgents.find(a => a.id === agentId);
     if (!agent) return;
-
-    if (agent.assignedApps.some(a => a.appName === appName)) {
-      return;
-    }
+    if (agent.assignedApps.some(a => a.appName === appName)) return;
 
     const tools = await loadAppTools(appName);
     const newAssignedApp: AssignedApp = {
@@ -329,479 +348,425 @@ export default function SubAgentsConfig({ onClose }: SubAgentsConfigProps) {
   };
 
   return (
-    <div className="config-modal-overlay" onClick={onClose}>
-      <div className="config-modal" onClick={(e) => e.stopPropagation()}>
-        <div className="config-modal-header">
-          <h2>Sub-Agents Configuration</h2>
-          <button className="config-modal-close" onClick={onClose}>
-            <X size={20} />
-          </button>
-        </div>
+    <>
+      <ComposedModal open={true} onClose={onClose} size="lg">
+        <ModalHeader title="Sub-Agents Configuration" buttonOnClick={onClose} />
+        <ModalBody hasForm>
+          <Stack gap={6}>
+            {saveStatus === "success" && (
+              <InlineNotification kind="success" title="Success" subtitle="Configuration saved successfully" />
+            )}
+            {saveStatus === "error" && (
+              <InlineNotification kind="error" title="Error" subtitle="Failed to save configuration" />
+            )}
 
-        <div className="config-modal-content">
-          {config.mode === "supervisor" && (
-            <div className="config-card">
-              <div className="section-header">
-                <h3>Sub-Agents</h3>
-                <button className="add-btn" onClick={openAddAgentModal}>
-                  <Plus size={16} />
-                  Add Agent
-                </button>
-              </div>
+            {config.mode === "supervisor" && (
+              <>
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <h4 className="cds--type-heading-03">Sub-Agents</h4>
+                  <Button renderIcon={Add} size="sm" onClick={openAddAgentModal}>
+                    Add Agent
+                  </Button>
+                </div>
 
-              <div className="sources-list">
-                {config.subAgents.map((agent) => {
-                  const isExpanded = expandedAgent === agent.id;
-                  const enabledTools = agent.tools.filter(t => t.enabled).length;
-                  const totalAppTools = agent.assignedApps.reduce(
-                    (sum, app) => sum + app.tools.filter(t => t.enabled).length,
-                    0
-                  );
-                  
-                  return (
-                    <div key={agent.id} className="agent-config-card">
-                      <div className="agent-config-header">
-                        <div className="agent-config-top">
-                          <input
-                            type="checkbox"
-                            checked={agent.enabled}
-                            onChange={(e) => updateAgent(agent.id, { enabled: e.target.checked })}
-                          />
-                          <input
-                            type="text"
-                            value={agent.name}
-                            onChange={(e) => updateAgent(agent.id, { name: e.target.value })}
-                            className="agent-config-name"
-                            placeholder="Agent Name"
-                          />
-                          <input
-                            type="text"
-                            value={agent.role}
-                            onChange={(e) => updateAgent(agent.id, { role: e.target.value })}
-                            placeholder="Role"
-                            style={{ width: "120px" }}
-                          />
-                          <button
-                            className="expand-btn"
-                            onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
-                          >
-                            {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                          </button>
-                          <button
-                            className="delete-btn"
-                            onClick={() => removeAgent(agent.id)}
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </div>
-                        
-                        {!isExpanded && (
-                          <div className="agent-summary">
-                            {agent.source && (
-                              <span className="agent-summary-item" title={`Source: ${agent.source.type.toUpperCase()}${agent.source.url ? ` - ${agent.source.url}` : ''}`}>
-                                {agent.source.type === "direct" ? "Direct" : agent.source.type === "a2a" ? "A2A" : "MCP"}
-                              </span>
-                            )}
-                            <span className="agent-summary-item">
-                              {agent.assignedApps.length} app{agent.assignedApps.length !== 1 ? 's' : ''}
-                            </span>
-                            <span className="agent-summary-item">
-                              {totalAppTools + enabledTools} tool{(totalAppTools + enabledTools) !== 1 ? 's' : ''}
-                            </span>
-                            <span className="agent-summary-item">
-                              {agent.policies.length} polic{agent.policies.length !== 1 ? 'ies' : 'y'}
-                            </span>
+                <Stack gap={5}>
+                  {config.subAgents.map((agent) => {
+                    const isExpanded = expandedAgent === agent.id;
+                    const enabledTools = agent.tools.filter(t => t.enabled).length;
+                    const totalAppTools = agent.assignedApps.reduce(
+                      (sum, app) => sum + app.tools.filter(t => t.enabled).length,
+                      0
+                    );
+
+                    return (
+                      <Tile key={agent.id}>
+                        <Stack gap={5}>
+                          {/* Header Row */}
+                          <div style={{ display: 'flex', gap: '1rem', alignItems: 'center', flexWrap: 'wrap' }}>
+                            <Toggle
+                              id={`toggle-${agent.id}`}
+                              size="sm"
+                              labelA="Disabled"
+                              labelB="Enabled"
+                              toggled={agent.enabled}
+                              onToggle={(checked) => updateAgent(agent.id, { enabled: checked })}
+                            />
+                            <div style={{ flex: 1, minWidth: '200px' }}>
+                              <TextInput
+                                id={`name-${agent.id}`}
+                                labelText="Agent Name"
+                                hideLabel
+                                value={agent.name}
+                                placeholder="Agent Name"
+                                onChange={(e) => updateAgent(agent.id, { name: e.target.value })}
+                              />
+                            </div>
+                            <div style={{ width: '150px' }}>
+                              <TextInput
+                                id={`role-${agent.id}`}
+                                labelText="Role"
+                                hideLabel
+                                value={agent.role}
+                                placeholder="Role"
+                                onChange={(e) => updateAgent(agent.id, { role: e.target.value })}
+                              />
+                            </div>
+                            <IconButton
+                              kind="ghost"
+                              label="Expand/Collapse"
+                              onClick={() => setExpandedAgent(isExpanded ? null : agent.id)}
+                            >
+                              {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
+                            </IconButton>
+                            <IconButton
+                              kind="danger--ghost"
+                              label="Delete Agent"
+                              onClick={() => removeAgent(agent.id)}
+                            >
+                              <TrashCan size={16} />
+                            </IconButton>
                           </div>
-                        )}
-                      </div>
 
-                      {isExpanded && (
-                        <div className="agent-config-details">
-                          {agent.source && (
-                            <div className="form-group">
-                              <label>Source Configuration</label>
-                              <div className="source-info-card">
-                                <div className="source-info-row">
-                                  <strong>Type:</strong>
-                                  <span>{agent.source.type === "direct" ? "Direct" : agent.source.type === "a2a" ? "A2A Protocol" : "MCP Server"}</span>
-                                </div>
-                                {agent.source.url && (
-                                  <div className="source-info-row">
-                                    <strong>URL:</strong>
-                                    <span>{agent.source.url}</span>
-                                  </div>
-                                )}
-                                {agent.source.name && (
-                                  <div className="source-info-row">
-                                    <strong>Name:</strong>
-                                    <span>{agent.source.name}</span>
-                                  </div>
-                                )}
-                                {agent.source.streamType && (
-                                  <div className="source-info-row">
-                                    <strong>Stream Type:</strong>
-                                    <span>{agent.source.streamType.toUpperCase()}</span>
-                                  </div>
-                                )}
-                                {agent.source.envVars && Object.keys(agent.source.envVars).length > 0 && (
-                                  <div className="source-info-row">
-                                    <strong>Environment Variables:</strong>
-                                    <div className="env-vars-display">
-                                      {Object.entries(agent.source.envVars).map(([key, value]) => (
-                                        <div key={key} className="env-var-display-item">
-                                          <code>{key}</code>
-                                          <span>=</span>
-                                          <code>{value}</code>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  </div>
-                                )}
-                              </div>
+                          {/* Collapsed Summary */}
+                          {!isExpanded && (
+                            <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+                              {agent.source && (
+                                <Tag type="blue">
+                                  Source: {agent.source.type.toUpperCase()}
+                                </Tag>
+                              )}
+                              <Tag type="cyan">{agent.assignedApps.length} App(s)</Tag>
+                              <Tag type="teal">{totalAppTools + enabledTools} Tool(s)</Tag>
+                              <Tag type="purple">{agent.policies.length} Polic(ies)</Tag>
                             </div>
                           )}
-                          <div className="form-group">
-                            <label>Description</label>
-                            <textarea
-                              value={agent.description}
-                              onChange={(e) => updateAgent(agent.id, { description: e.target.value })}
-                              placeholder="What this agent does..."
-                              rows={2}
-                            />
-                          </div>
 
-                          <div className="form-group">
-                            <label>Capabilities</label>
-                            <input
-                              type="text"
-                              value={agent.capabilities.join(", ")}
-                              onChange={(e) => updateAgent(agent.id, { 
-                                capabilities: e.target.value.split(",").map(c => c.trim()).filter(c => c)
-                              })}
-                              placeholder="research, code, planning, analysis"
-                            />
-                            <small>Comma-separated list of capabilities</small>
-                          </div>
-
-                          <div className="form-group">
-                            <div className="form-group-header">
-                              <label>Assigned Apps</label>
-                              <select
-                                value=""
-                                onChange={(e) => {
-                                  if (e.target.value) {
-                                    assignApp(agent.id, e.target.value);
-                                    e.target.value = "";
-                                  }
-                                }}
-                                style={{ width: "200px", marginLeft: "auto" }}
-                              >
-                                <option value="">Select an app to assign...</option>
-                                {availableApps
-                                  .filter(app => !agent.assignedApps.some(a => a.appName === app.name))
-                                  .map(app => (
-                                    <option key={app.name} value={app.name}>
-                                      {app.name}
-                                    </option>
-                                  ))}
-                              </select>
-                            </div>
-                            {agent.assignedApps.length === 0 ? (
-                              <div className="policies-empty">
-                                No apps assigned. Select an app from the dropdown above.
-                              </div>
-                            ) : (
-                              <div className="apps-list">
-                                {agent.assignedApps.map((assignedApp) => {
-                                  const app = availableApps.find(a => a.name === assignedApp.appName);
-                                  const enabledCount = assignedApp.tools.filter(t => t.enabled).length;
-                                  return (
-                                    <div key={assignedApp.appName} className="app-config-section">
-                                      <div className="app-config-header">
-                                        <div>
-                                          <strong>{assignedApp.appName}</strong>
-                                          {app?.description && (
-                                            <small style={{ display: "block", color: "#666", marginTop: "4px" }}>
-                                              {app.description}
-                                            </small>
-                                          )}
-                                        </div>
-                                        <button
-                                          className="remove-btn"
-                                          onClick={() => unassignApp(agent.id, assignedApp.appName)}
-                                          title="Remove app"
-                                        >
-                                          <X size={14} />
-                                        </button>
-                                      </div>
-                                      <div className="app-tools-section">
-                                        <div className="form-group-header" style={{ marginTop: "8px", marginBottom: "8px" }}>
-                                          <label style={{ fontSize: "0.9em", margin: 0 }}>
-                                            Tools ({enabledCount}/{assignedApp.tools.length} enabled)
-                                          </label>
-                                        </div>
-                                        <div className="tools-grid">
-                                          {assignedApp.tools.map((tool) => (
-                                            <label key={tool.name} className="tool-checkbox-label">
-                                              <input
-                                                type="checkbox"
-                                                checked={tool.enabled}
-                                                onChange={() => toggleAppTool(agent.id, assignedApp.appName, tool.name)}
-                                              />
-                                              <span>{tool.name}</span>
-                                            </label>
+                          {/* Expanded Details */}
+                          {isExpanded && (
+                            <Stack gap={6} style={{ marginTop: '1rem', paddingTop: '1rem', borderTop: '1px solid #e0e0e0' }}>
+                              {agent.source && (
+                                <Tile className="cds--tile--light">
+                                  <h5 className="cds--type-heading-01" style={{ marginBottom: '1rem' }}>Source Configuration</h5>
+                                  <Stack gap={3}>
+                                    <div><strong>Type:</strong> {agent.source.type.toUpperCase()}</div>
+                                    {agent.source.url && <div><strong>URL:</strong> {agent.source.url}</div>}
+                                    {agent.source.name && <div><strong>Name:</strong> {agent.source.name}</div>}
+                                    {agent.source.streamType && <div><strong>Stream Type:</strong> {agent.source.streamType.toUpperCase()}</div>}
+                                    {agent.source.envVars && Object.keys(agent.source.envVars).length > 0 && (
+                                      <div>
+                                        <strong>Environment Variables:</strong>
+                                        <ul style={{ paddingLeft: '1rem', listStyleType: 'disc' }}>
+                                          {Object.entries(agent.source.envVars).map(([key, value]) => (
+                                            <li key={key}><code>{key}</code> = <code>{value}</code></li>
                                           ))}
-                                        </div>
+                                        </ul>
                                       </div>
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            )}
-                            <small>Assign apps and configure which tools from each app this agent can use</small>
-                          </div>
-
-                          <div className="form-group">
-                            <div className="form-group-header">
-                              <label>Legacy Tools</label>
-                              <span className="tools-count-small">{enabledTools}/{agent.tools.length} enabled</span>
-                            </div>
-                            <div className="tools-grid">
-                              {agent.tools.map((tool) => (
-                                <label key={tool.name} className="tool-checkbox-label">
-                                  <input
-                                    type="checkbox"
-                                    checked={tool.enabled}
-                                    onChange={() => toggleTool(agent.id, tool.name)}
-                                  />
-                                  <span>{tool.name}</span>
-                                </label>
-                              ))}
-                            </div>
-                            <small>Legacy tool configuration (deprecated - use apps above)</small>
-                          </div>
-
-                          <div className="form-group">
-                            <div className="form-group-header">
-                              <label>Policies (Natural Language)</label>
-                              <button 
-                                className="add-small-btn" 
-                                onClick={() => addPolicy(agent.id)}
-                              >
-                                <Plus size={12} />
-                                Add Policy
-                              </button>
-                            </div>
-                            <div className="policies-list">
-                              {agent.policies.length === 0 ? (
-                                <div className="policies-empty">
-                                  No policies defined. Add policies to control agent behavior.
-                                </div>
-                              ) : (
-                                agent.policies.map((policy, index) => (
-                                  <div key={index} className="policy-item">
-                                    <textarea
-                                      value={policy}
-                                      onChange={(e) => updatePolicy(agent.id, index, e.target.value)}
-                                      placeholder="e.g., Always verify information from multiple sources before making decisions"
-                                      rows={2}
-                                    />
-                                    <button
-                                      className="remove-btn"
-                                      onClick={() => removePolicy(agent.id, index)}
-                                    >
-                                      <X size={14} />
-                                    </button>
-                                  </div>
-                                ))
+                                    )}
+                                  </Stack>
+                                </Tile>
                               )}
-                            </div>
-                            <small>Define behavior rules in plain English</small>
-                          </div>
-                        </div>
-                      )}
-                    </div>
-                  );
-                })}
-              </div>
 
-              {config.subAgents.length === 0 && (
-                <div className="empty-state">
-                  <p>No sub-agents configured. Click "Add Agent" to create one.</p>
-                </div>
-              )}
-            </div>
-          )}
-        </div>
+                              <TextArea
+                                id={`desc-${agent.id}`}
+                                labelText="Description"
+                                placeholder="What this agent does..."
+                                value={agent.description}
+                                onChange={(e) => updateAgent(agent.id, { description: e.target.value })}
+                                rows={2}
+                              />
 
-        <div className="config-modal-footer">
-          <button className="cancel-btn" onClick={onClose}>
+                              <TextInput
+                                id={`cap-${agent.id}`}
+                                labelText="Capabilities"
+                                helperText="Comma-separated list of capabilities (e.g., research, code, analysis)"
+                                value={agent.capabilities.join(", ")}
+                                onChange={(e) => updateAgent(agent.id, { 
+                                  capabilities: e.target.value.split(",").map(c => c.trim()).filter(c => c)
+                                })}
+                              />
+
+                              {/* Apps Assignment */}
+                              <Stack gap={4}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-end' }}>
+                                  <h5 className="cds--label">Assigned Apps</h5>
+                                  <Select
+                                    id={`assign-app-${agent.id}`}
+                                    labelText="Assign an app"
+                                    hideLabel
+                                    inline
+                                    value=""
+                                    onChange={(e) => {
+                                      if (e.target.value) {
+                                        assignApp(agent.id, e.target.value);
+                                        e.target.value = "";
+                                      }
+                                    }}
+                                  >
+                                    <SelectItem value="" text="Select an app to assign..." />
+                                    {availableApps
+                                      .filter(app => !agent.assignedApps.some(a => a.appName === app.name))
+                                      .map(app => (
+                                        <SelectItem key={app.name} value={app.name} text={app.name} />
+                                      ))}
+                                  </Select>
+                                </div>
+
+                                {agent.assignedApps.length === 0 ? (
+                                  <p className="cds--type-helper-text">No apps assigned. Select an app from the dropdown above.</p>
+                                ) : (
+                                  <Stack gap={4}>
+                                    {agent.assignedApps.map((assignedApp) => {
+                                      const app = availableApps.find(a => a.name === assignedApp.appName);
+                                      const enabledCount = assignedApp.tools.filter(t => t.enabled).length;
+                                      
+                                      return (
+                                        <Tile key={assignedApp.appName} className="cds--tile--light">
+                                          <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '1rem' }}>
+                                            <div>
+                                              <strong>{assignedApp.appName}</strong>
+                                              {app?.description && <p className="cds--type-helper-text">{app.description}</p>}
+                                            </div>
+                                            <IconButton kind="ghost" label="Remove App" size="sm" onClick={() => unassignApp(agent.id, assignedApp.appName)}>
+                                              <Close size={16} />
+                                            </IconButton>
+                                          </div>
+                                          
+                                          <p className="cds--label" style={{ marginBottom: '0.5rem' }}>
+                                            Tools ({enabledCount}/{assignedApp.tools.length} enabled)
+                                          </p>
+                                          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '1rem' }}>
+                                            {assignedApp.tools.map((tool) => (
+                                              <Checkbox
+                                                key={tool.name}
+                                                id={`tool-${agent.id}-${assignedApp.appName}-${tool.name}`}
+                                                labelText={tool.name}
+                                                checked={tool.enabled}
+                                                onChange={(_, { checked }) => toggleAppTool(agent.id, assignedApp.appName, tool.name)}
+                                              />
+                                            ))}
+                                          </div>
+                                        </Tile>
+                                      );
+                                    })}
+                                  </Stack>
+                                )}
+                              </Stack>
+
+                              {/* Legacy Tools */}
+                              <Stack gap={3}>
+                                <h5 className="cds--label">Legacy Tools ({enabledTools}/{agent.tools.length} enabled)</h5>
+                                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: '1rem' }}>
+                                  {agent.tools.map((tool) => (
+                                    <Checkbox
+                                      key={tool.name}
+                                      id={`legacy-${agent.id}-${tool.name}`}
+                                      labelText={tool.name}
+                                      checked={tool.enabled}
+                                      onChange={(_, { checked }) => toggleTool(agent.id, tool.name)}
+                                    />
+                                  ))}
+                                </div>
+                                <p className="cds--type-helper-text">Legacy tool configuration (deprecated - use apps above)</p>
+                              </Stack>
+
+                              {/* Policies */}
+                              <Stack gap={4}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                  <h5 className="cds--label">Policies (Natural Language)</h5>
+                                  <Button kind="ghost" size="sm" renderIcon={Add} onClick={() => addPolicy(agent.id)}>
+                                    Add Policy
+                                  </Button>
+                                </div>
+                                
+                                {agent.policies.length === 0 ? (
+                                  <p className="cds--type-helper-text">No policies defined. Add policies to control agent behavior.</p>
+                                ) : (
+                                  <Stack gap={3}>
+                                    {agent.policies.map((policy, index) => (
+                                      <div key={index} style={{ display: 'flex', gap: '1rem', alignItems: 'flex-start' }}>
+                                        <TextArea
+                                          id={`policy-${agent.id}-${index}`}
+                                          labelText={`Policy ${index + 1}`}
+                                          hideLabel
+                                          value={policy}
+                                          onChange={(e) => updatePolicy(agent.id, index, e.target.value)}
+                                          placeholder="e.g., Always verify information from multiple sources before making decisions"
+                                          rows={2}
+                                          style={{ flex: 1 }}
+                                        />
+                                        <IconButton kind="danger--ghost" label="Remove Policy" onClick={() => removePolicy(agent.id, index)}>
+                                          <TrashCan size={16} />
+                                        </IconButton>
+                                      </div>
+                                    ))}
+                                  </Stack>
+                                )}
+                              </Stack>
+                            </Stack>
+                          )}
+                        </Stack>
+                      </Tile>
+                    );
+                  })}
+                </Stack>
+
+                {config.subAgents.length === 0 && (
+                  <div style={{ textAlign: 'center', padding: '3rem', backgroundColor: '#f4f4f4' }}>
+                    <p className="cds--type-body-long-01">No sub-agents configured. Click "Add Agent" to create one.</p>
+                  </div>
+                )}
+              </>
+            )}
+          </Stack>
+        </ModalBody>
+        <ModalFooter>
+          <Button kind="secondary" onClick={onClose}>
             Cancel
-          </button>
-          <button 
-            className={`save-btn ${saveStatus}`}
-            onClick={saveConfig}
+          </Button>
+          <Button 
+            kind="primary" 
+            onClick={saveConfig} 
             disabled={saveStatus === "saving"}
+            renderIcon={Save}
           >
-            <Save size={16} />
             {saveStatus === "idle" && "Save Changes"}
             {saveStatus === "saving" && "Saving..."}
             {saveStatus === "success" && "Saved!"}
             {saveStatus === "error" && "Error!"}
-          </button>
-        </div>
-      </div>
+          </Button>
+        </ModalFooter>
+      </ComposedModal>
 
+      {/* Add New Agent Modal */}
       {showAddAgentModal && (
-        <div className="config-modal-overlay" onClick={closeAddAgentModal}>
-          <div className="config-modal add-agent-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="config-modal-header">
-              <h2>Add New Sub-Agent</h2>
-              <button className="config-modal-close" onClick={closeAddAgentModal}>
-                <X size={20} />
-              </button>
-            </div>
-
-            <div className="config-modal-content">
-              <div className="config-card">
-                <h3>Agent Source</h3>
-                <div className="config-form">
-                  <div className="form-group">
-                    <label>How to create this agent?</label>
-                    <select
-                      value={newAgentSource}
-                      onChange={(e) => setNewAgentSource(e.target.value as AgentSourceType)}
-                    >
-                      <option value="direct">Direct (Local Agent)</option>
-                      <option value="a2a">A2A Protocol</option>
-                      <option value="mcp">MCP Server</option>
-                    </select>
-                    <small>
-                      {newAgentSource === "direct" && "Create a local agent directly"}
-                      {newAgentSource === "a2a" && "Connect via A2A protocol"}
-                      {newAgentSource === "mcp" && "Connect to an MCP server via HTTP or SSE"}
-                    </small>
-                  </div>
-
-                  {newAgentSource === "a2a" && (
-                    <>
-                      <div className="form-group">
-                        <label>Agent Name</label>
-                        <input
-                          type="text"
-                          value={newAgentName}
-                          onChange={(e) => setNewAgentName(e.target.value)}
-                          placeholder="e.g., research-agent"
-                        />
-                        <small>Name identifier for the A2A agent</small>
-                      </div>
-                      <div className="form-group">
-                        <label>URL</label>
-                        <input
-                          type="text"
-                          value={newAgentUrl}
-                          onChange={(e) => setNewAgentUrl(e.target.value)}
-                          placeholder="e.g., http://localhost:8080"
-                        />
-                        <small>A2A protocol endpoint URL</small>
-                      </div>
-                    </>
-                  )}
-
-                  {newAgentSource === "mcp" && (
-                    <>
-                      <div className="form-group">
-                        <label>MCP Server URL</label>
-                        <input
-                          type="text"
-                          value={newAgentUrl}
-                          onChange={(e) => setNewAgentUrl(e.target.value)}
-                          placeholder="e.g., http://localhost:8001"
-                        />
-                        <small>MCP server endpoint URL</small>
-                      </div>
-                      <div className="form-group">
-                        <label>Stream Type</label>
-                        <select
-                          value={newAgentStreamType}
-                          onChange={(e) => setNewAgentStreamType(e.target.value as "http" | "sse")}
-                        >
-                          <option value="http">HTTP (Streamable)</option>
-                          <option value="sse">SSE (Server-Sent Events)</option>
-                        </select>
-                        <small>Communication protocol for MCP server</small>
-                      </div>
-                    </>
-                  )}
-
-                  {(newAgentSource === "a2a" || newAgentSource === "mcp") && (
-                    <div className="form-group">
-                      <div className="form-group-header">
-                        <label>Environment Variables</label>
-                        <button className="add-small-btn" onClick={addEnvVar}>
-                          <Plus size={12} />
-                          Add Variable
-                        </button>
-                      </div>
-                      {newAgentEnvVars.length === 0 ? (
-                        <div className="policies-empty">
-                          No environment variables. Click "Add Variable" to add one.
-                        </div>
-                      ) : (
-                        <div className="env-list">
-                          {newAgentEnvVars.map((env, index) => (
-                            <div key={index} className="env-item">
-                              <input
-                                type="text"
-                                value={env.key}
-                                onChange={(e) => updateEnvVar(index, e.target.value, env.value)}
-                                placeholder="Variable name"
-                                style={{ width: "200px" }}
-                              />
-                              <span>=</span>
-                              <input
-                                type="text"
-                                value={env.value}
-                                onChange={(e) => updateEnvVar(index, env.key, e.target.value)}
-                                placeholder="Variable value"
-                                style={{ flex: 1 }}
-                              />
-                              <button
-                                className="remove-btn"
-                                onClick={() => removeEnvVar(index)}
-                              >
-                                <X size={14} />
-                              </button>
-                            </div>
-                          ))}
-                        </div>
-                      )}
-                      <small>Environment variables to pass to the agent</small>
-                    </div>
-                  )}
-                </div>
-              </div>
-            </div>
-
-            <div className="config-modal-footer">
-              <button className="cancel-btn" onClick={closeAddAgentModal}>
-                Cancel
-              </button>
-              <button
-                className="save-btn"
-                onClick={createAgent}
-                disabled={
-                  (newAgentSource === "a2a" && (!newAgentUrl || !newAgentName)) ||
-                  (newAgentSource === "mcp" && !newAgentUrl)
+        <ComposedModal open={true} onClose={closeAddAgentModal} size="sm">
+          <ModalHeader title="Add New Sub-Agent" buttonOnClick={closeAddAgentModal} />
+          <ModalBody hasForm>
+            <Stack gap={5}>
+              <h4 className="cds--type-heading-02">Agent Source</h4>
+              
+              <Select
+                id="agent-source-select"
+                labelText="How to create this agent?"
+                helperText={
+                  newAgentSource === "direct" ? "Create a local agent directly" :
+                  newAgentSource === "a2a" ? "Connect via A2A protocol" :
+                  "Connect to an MCP server via HTTP or SSE"
                 }
+                value={newAgentSource}
+                onChange={(e) => setNewAgentSource(e.target.value as AgentSourceType)}
               >
-                Create Agent
-              </button>
-            </div>
-          </div>
-        </div>
+                <SelectItem value="direct" text="Direct (Local Agent)" />
+                <SelectItem value="a2a" text="A2A Protocol" />
+                <SelectItem value="mcp" text="MCP Server" />
+              </Select>
+
+              {newAgentSource === "a2a" && (
+                <>
+                  <TextInput
+                    id="a2a-agent-name"
+                    labelText="Agent Name"
+                    helperText="Name identifier for the A2A agent"
+                    value={newAgentName}
+                    onChange={(e) => setNewAgentName(e.target.value)}
+                    placeholder="e.g., research-agent"
+                  />
+                  <TextInput
+                    id="a2a-agent-url"
+                    labelText="URL"
+                    helperText="A2A protocol endpoint URL"
+                    value={newAgentUrl}
+                    onChange={(e) => setNewAgentUrl(e.target.value)}
+                    placeholder="e.g., http://localhost:8080"
+                  />
+                </>
+              )}
+
+              {newAgentSource === "mcp" && (
+                <>
+                  <TextInput
+                    id="mcp-agent-url"
+                    labelText="MCP Server URL"
+                    helperText="MCP server endpoint URL"
+                    value={newAgentUrl}
+                    onChange={(e) => setNewAgentUrl(e.target.value)}
+                    placeholder="e.g., http://localhost:8001"
+                  />
+                  <Select
+                    id="mcp-stream-type"
+                    labelText="Stream Type"
+                    helperText="Communication protocol for MCP server"
+                    value={newAgentStreamType}
+                    onChange={(e) => setNewAgentStreamType(e.target.value as "http" | "sse")}
+                  >
+                    <SelectItem value="http" text="HTTP (Streamable)" />
+                    <SelectItem value="sse" text="SSE (Server-Sent Events)" />
+                  </Select>
+                </>
+              )}
+
+              {(newAgentSource === "a2a" || newAgentSource === "mcp") && (
+                <Stack gap={3}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <h5 className="cds--label">Environment Variables</h5>
+                    <Button kind="ghost" size="sm" renderIcon={Add} onClick={addEnvVar}>
+                      Add Variable
+                    </Button>
+                  </div>
+                  
+                  {newAgentEnvVars.length === 0 ? (
+                    <p className="cds--type-helper-text">No environment variables. Click "Add Variable" to add one.</p>
+                  ) : (
+                    <Stack gap={3}>
+                      {newAgentEnvVars.map((env, index) => (
+                        <div key={index} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+                          <TextInput
+                            id={`env-key-${index}`}
+                            labelText={`Variable ${index} key`}
+                            hideLabel
+                            value={env.key}
+                            onChange={(e) => updateEnvVar(index, e.target.value, env.value)}
+                            placeholder="Key"
+                            style={{ flex: 1 }}
+                          />
+                          <span>=</span>
+                          <TextInput
+                            id={`env-val-${index}`}
+                            labelText={`Variable ${index} value`}
+                            hideLabel
+                            value={env.value}
+                            onChange={(e) => updateEnvVar(index, env.key, e.target.value)}
+                            placeholder="Value"
+                            style={{ flex: 2 }}
+                          />
+                          <IconButton kind="danger--ghost" label="Remove Variable" onClick={() => removeEnvVar(index)}>
+                            <TrashCan size={16} />
+                          </IconButton>
+                        </div>
+                      ))}
+                    </Stack>
+                  )}
+                </Stack>
+              )}
+            </Stack>
+          </ModalBody>
+          <ModalFooter>
+            <Button kind="secondary" onClick={closeAddAgentModal}>
+              Cancel
+            </Button>
+            <Button
+              kind="primary"
+              onClick={createAgent}
+              disabled={
+                (newAgentSource === "a2a" && (!newAgentUrl || !newAgentName)) ||
+                (newAgentSource === "mcp" && !newAgentUrl)
+              }
+            >
+              Create Agent
+            </Button>
+          </ModalFooter>
+        </ComposedModal>
       )}
-    </div>
+    </>
   );
 }
-

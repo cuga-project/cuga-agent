@@ -384,10 +384,10 @@ class TestManagerAPIWorkflow:
 
             logger.info("✅ Draft configuration saved successfully")
 
-            # Draft agent graph is rebuilt after config save (see manage_routes.py)
-            # This starts MCP servers, but they need a moment to initialize
-            logger.info("Waiting 8 seconds for agent rebuild and MCP servers to fully initialize...")
-            time.sleep(8)
+            # Draft agent graph is rebuilt after config save (see manage_routes.py).
+            # Registry reload + MCP subprocess (npx server-filesystem) need time to initialize.
+            logger.info("Waiting 15 seconds for agent rebuild and MCP servers to fully initialize...")
+            time.sleep(15)
             logger.info("✅ Draft configuration saved and MCP servers should be ready")
 
         except httpx.ReadTimeout as e:
@@ -966,6 +966,163 @@ class TestManagerAPIWorkflow:
         logger.info("  ✓ Policies are properly isolated between versions")
         logger.info("  ✓ Each version maintains its own policy configuration")
         logger.info("=" * 80)
+
+
+class TestPatchDraftEndpoints:
+    """Test PATCH /config/draft/llm, /tools, /policies section-only updates."""
+
+    def test_patch_llm_draft(self, http_client: httpx.Client, test_agent_config: Dict[str, Any]):
+        """PATCH llm section only; GET draft and assert only llm changed."""
+        agent_id = f"{TEST_AGENT_ID}-patch-llm"
+        full = dict(test_agent_config)
+        full["llm"] = {"model": "openai/gpt-4o", "temperature": 0.1}
+        full["tools"] = [
+            {
+                "name": "filesystem",
+                "type": "mcp",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "transport": "stdio",
+            }
+        ]
+        response = http_client.post(
+            f"{MANAGE_API_URL}/config/draft",
+            params={"agent_id": agent_id},
+            json={"config": full},
+        )
+        assert response.status_code == 200, response.text
+        patch_res = http_client.patch(
+            f"{MANAGE_API_URL}/config/draft/llm",
+            params={"agent_id": agent_id},
+            json={"llm": {"model": "openai/gpt-4o", "temperature": 0.9}},
+        )
+        assert patch_res.status_code == 200, patch_res.text
+        data = patch_res.json()
+        assert data.get("status") == "success"
+        assert data.get("version") == "draft"
+        get_res = http_client.get(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": agent_id, "draft": "1"},
+        )
+        assert get_res.status_code == 200, get_res.text
+        draft = get_res.json()
+        assert draft["config"]["llm"]["temperature"] == 0.9
+        assert draft["config"]["llm"].get("model") == "openai/gpt-4o"
+        assert len(draft["config"].get("tools", [])) == 1
+        assert draft["config"]["tools"][0]["name"] == "filesystem"
+        logger.info("✅ PATCH draft LLM: only llm section updated")
+
+    def test_patch_tools_draft(self, http_client: httpx.Client, test_agent_config: Dict[str, Any]):
+        """PATCH tools section only; GET draft and assert only tools changed."""
+        agent_id = f"{TEST_AGENT_ID}-patch-tools"
+        full = dict(test_agent_config)
+        full["llm"] = {"model": "gpt-4o", "temperature": 0.2}
+        full["tools"] = [
+            {
+                "name": "filesystem",
+                "type": "mcp",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "transport": "stdio",
+            },
+        ]
+        response = http_client.post(
+            f"{MANAGE_API_URL}/config/draft",
+            params={"agent_id": agent_id},
+            json={"config": full},
+        )
+        assert response.status_code == 200, response.text
+        new_tools = [
+            {
+                "name": "filesystem",
+                "type": "mcp",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "transport": "stdio",
+            },
+            {
+                "name": "extra_tool",
+                "type": "mcp",
+                "url": "http://localhost:9999",
+                "description": "Placeholder",
+            },
+        ]
+        patch_res = http_client.patch(
+            f"{MANAGE_API_URL}/config/draft/tools",
+            params={"agent_id": agent_id},
+            json={"tools": new_tools},
+        )
+        assert patch_res.status_code == 200, patch_res.text
+        data = patch_res.json()
+        assert data.get("status") in ("success", "partial")
+        assert data.get("version") == "draft"
+        get_res = http_client.get(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": agent_id, "draft": "1"},
+        )
+        assert get_res.status_code == 200, get_res.text
+        draft = get_res.json()
+        assert len(draft["config"].get("tools", [])) == 2
+        assert draft["config"]["tools"][1]["name"] == "extra_tool"
+        assert draft["config"]["llm"].get("temperature") == 0.2
+        logger.info("✅ PATCH draft tools: only tools section updated")
+
+    def test_patch_policies_draft(self, http_client: httpx.Client, test_agent_config: Dict[str, Any]):
+        """PATCH policies section only; GET draft and assert only policies changed."""
+        agent_id = f"{TEST_AGENT_ID}-patch-policies"
+        full = dict(test_agent_config)
+        full["tools"] = [
+            {
+                "name": "filesystem",
+                "type": "mcp",
+                "command": "npx",
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "transport": "stdio",
+            }
+        ]
+        response = http_client.post(
+            f"{MANAGE_API_URL}/config/draft",
+            params={"agent_id": agent_id},
+            json={"config": full},
+        )
+        assert response.status_code == 200, response.text
+        new_policies = {
+            "enablePolicies": True,
+            "policies": [
+                {
+                    "id": "patch_guard",
+                    "name": "Patch test guard",
+                    "policy_type": "intent_guard",
+                    "enabled": True,
+                    "triggers": [
+                        {"type": "keyword", "value": ["patch"], "target": "intent", "operator": "or"}
+                    ],
+                    "response": {"response_type": "natural_language", "content": "Patch policy applied."},
+                    "priority": 50,
+                }
+            ],
+        }
+        patch_res = http_client.patch(
+            f"{MANAGE_API_URL}/config/draft/policies",
+            params={"agent_id": agent_id},
+            json={"policies": new_policies},
+        )
+        assert patch_res.status_code == 200, patch_res.text
+        data = patch_res.json()
+        assert data.get("status") == "success"
+        assert data.get("version") == "draft"
+        get_res = http_client.get(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": agent_id, "draft": "1"},
+        )
+        assert get_res.status_code == 200, get_res.text
+        draft = get_res.json()
+        policies = draft["config"].get("policies") or {}
+        assert policies.get("enablePolicies") is True
+        assert len(policies.get("policies", [])) == 1
+        assert policies["policies"][0]["name"] == "Patch test guard"
+        assert len(draft["config"].get("tools", [])) == 1
+        logger.info("✅ PATCH draft policies: only policies section updated")
 
 
 if __name__ == "__main__":
