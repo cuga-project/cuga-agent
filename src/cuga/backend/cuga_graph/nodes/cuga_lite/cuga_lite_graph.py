@@ -1041,7 +1041,15 @@ def create_cuga_lite_graph(
                 )
 
                 tracker.collect_step(step=Step(name="User_output", data=output))
-                tracker.collect_step(step=Step(name="User_output_variables", data=json.dumps(new_vars)))
+                tracker.collect_step(
+                    step=Step(
+                        name="User_output_variables",
+                        data=json.dumps(
+                            new_vars,
+                            default=lambda o: o.model_dump() if hasattr(o, "model_dump") else str(o),
+                        ),
+                    )
+                )
 
                 # Output is already formatted and trimmed by code_executor
                 logger.debug(f"\n\n------\n\n📝 Execution output:\n\n{output}\n\n------\n\n")

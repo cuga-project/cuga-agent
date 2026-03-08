@@ -412,6 +412,14 @@ class VariablesManager(object):
 
                 return "{" + ", ".join(parts) + "}"
 
+            try:
+                from pydantic import BaseModel
+
+                if isinstance(val, BaseModel):
+                    return shorten(val.model_dump(), depth + 1, current_length)
+            except ImportError:
+                pass
+
             return repr(val)
 
         preview = shorten(value, 0, 0)

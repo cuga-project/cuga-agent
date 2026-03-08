@@ -16,6 +16,7 @@ class SecurityValidator:
         'json',
         'pandas',
         'numpy',
+        'pydantic',
         'statistics',
         'datetime',
         '_strptime',

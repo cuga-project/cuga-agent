@@ -76,6 +76,7 @@ from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
+from cuga.backend.observability.openlit_init import init_openlit, set_session_attribute
 
 if TYPE_CHECKING:
     pass
@@ -1304,6 +1305,9 @@ class CugaAgent:
             await agent.initialize()  # Trigger policy loading
             ```
         """
+        # Initialize OpenLit observability (no-op if disabled or not installed)
+        init_openlit()
+
         # Initialize tool provider
         await self._ensure_initialized()
 
@@ -1624,6 +1628,9 @@ class CugaAgent:
             result = await agent.invoke(None, thread_id="user-123", action_response=approval)
             ```
         """
+        # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
+        init_openlit()
+
         await self._ensure_initialized()
 
         # Initialize policy system if auto_load_policies is enabled and not yet initialized
@@ -1651,6 +1658,9 @@ class CugaAgent:
                 )
 
             run_config["configurable"]["thread_id"] = thread_id
+
+            # Set session.id for OpenLit observability (if enabled)
+            set_session_attribute(thread_id)
 
             # Add policy system to config if available
             if self._policy_system:
@@ -1780,6 +1790,9 @@ class CugaAgent:
 
             logger.debug(f"Created new state for thread_id: {thread_id}")
 
+        # Set session.id for OpenLit observability (if enabled)
+        set_session_attribute(thread_id)
+
         # Add policy system to config if available
         if self._policy_system:
             run_config["configurable"]["policy_system"] = self._policy_system
@@ -1865,6 +1878,9 @@ class CugaAgent:
                 print(f"Resuming: {state}")
             ```
         """
+        # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
+        init_openlit()
+
         await self._ensure_initialized()
 
         # Initialize policy system if auto_load_policies is enabled and not yet initialized
@@ -1886,6 +1902,9 @@ class CugaAgent:
                 )
 
             run_config["configurable"]["thread_id"] = thread_id
+
+            # Set session.id for OpenLit observability (if enabled)
+            set_session_attribute(thread_id)
 
             # Add policy system to config if available
             if self._policy_system:
@@ -1932,6 +1951,9 @@ class CugaAgent:
         }
 
         run_config["configurable"]["thread_id"] = thread_id
+
+        # Set session.id for OpenLit observability (if enabled)
+        set_session_attribute(thread_id)
 
         # Add policy system to config if available
         if self._policy_system:
@@ -2158,6 +2180,9 @@ class CugaSupervisor:
         Returns:
             InvokeResult containing answer and metadata
         """
+        # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
+        init_openlit()
+
         import uuid
         from langchain_core.messages import HumanMessage
 
@@ -2174,6 +2199,9 @@ class CugaSupervisor:
         if message is None or action_response is not None:
             if not thread_id:
                 raise ValueError("thread_id is required when resuming execution")
+
+            # Set session.id for OpenLit observability (if enabled)
+            set_session_attribute(thread_id)
 
             if action_response:
                 self.graph.update_state(config, {"hitl_response": action_response})

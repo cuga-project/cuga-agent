@@ -103,6 +103,9 @@ require_https = false
 ssl_keyfile = ""
 ssl_certfile = ""
 
+[ui]
+hide_cuga_logo = false  # Set to true to hide the CUGA logo in the header
+
 [server_ports]
 registry = 8001
 # registry_host = "http://localhost:8001"  # Optional: Full registry URL. Falls back to "http://localhost:{registry}"
@@ -120,3 +123,8 @@ graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
 memory = 8888
+
+[observability]
+openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
+                 # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+                 # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)

@@ -44,12 +44,12 @@ dependencies = [
     "cryptography>=44.0.0",
     "hvac>=2.0.0",
     "boto3>=1.34.0",
+    "openlit>=1.4.0", # 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard
 ]
 
 [project.optional-dependencies]
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
-
 memory = ["mem0ai[extras]"]
 
 [project.urls]

@@ -21,6 +21,17 @@ export async function getAuthConfig(): Promise<{ enabled: boolean }> {
   return authConfigCache;
 }
 
+let uiConfigCache: { hide_cuga_logo: boolean } | null = null;
+
+export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean }> {
+  if (uiConfigCache !== null) return uiConfigCache;
+  const base = getApiBaseUrl();
+  const res = await fetch(`${base}/api/ui/config`, { credentials: "include" });
+  const data = await res.json().catch(() => ({ hide_cuga_logo: false }));
+  uiConfigCache = { hide_cuga_logo: !!data.hide_cuga_logo };
+  return uiConfigCache;
+}
+
 export async function apiFetch(
   url: string | URL,
   init?: RequestInit
