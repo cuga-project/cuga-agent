@@ -304,45 +304,95 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
     }
   };
 
-  const importPolicies = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const importPolicies = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const importedData = JSON.parse(e.target?.result as string);
-        if (importedData.policies && Array.isArray(importedData.policies)) {
-          const normalizedPolicies = importedData.policies.map((policy: Policy) => ({
-            ...policy,
-            triggers: policy.triggers.map((trigger: PolicyTrigger) => {
-              if (trigger.type === "natural_language" && trigger.value !== undefined) {
-                const normalizedValue = Array.isArray(trigger.value)
-                  ? trigger.value
-                  : typeof trigger.value === "string"
-                  ? [trigger.value]
-                  : [];
-                return { ...trigger, value: normalizedValue };
-              }
-              return trigger;
-            }),
-          }));
-
-          setConfig({
-            enablePolicies: importedData.enablePolicies ?? config.enablePolicies,
-            policies: normalizedPolicies,
-          });
-          alert(`Successfully imported ${normalizedPolicies.length} policies!`);
-        } else {
-          alert('Invalid policies file format. Expected a JSON file with a "policies" array.');
-        }
-      } catch (error) {
-        console.error("[PoliciesConfig] Import error:", error);
-        alert("Failed to import policies. Please check the file format.");
-      }
-    };
-    reader.readAsText(file);
+    const text = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target?.result as string);
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsText(file);
+    });
     event.target.value = "";
+
+    try {
+      const importedData = JSON.parse(text);
+      if (!importedData.policies || !Array.isArray(importedData.policies)) {
+        setToastMessage({
+          kind: "error",
+          title: "Invalid import",
+          subtitle: 'Expected a JSON file with a "policies" array.',
+        });
+        return;
+      }
+
+      const normalizedPolicies = importedData.policies.map((policy: Policy) => ({
+        ...policy,
+        triggers: (policy.triggers || []).map((trigger: PolicyTrigger) => {
+          if (trigger.type === "natural_language" && trigger.value !== undefined) {
+            const normalizedValue = Array.isArray(trigger.value)
+              ? trigger.value
+              : typeof trigger.value === "string"
+                ? [trigger.value]
+                : [];
+            return { ...trigger, value: normalizedValue };
+          }
+          return trigger;
+        }),
+      }));
+
+      const normalizedConfig = {
+        enablePolicies: importedData.enablePolicies ?? config.enablePolicies,
+        policies: normalizedPolicies,
+      };
+
+      setConfig(normalizedConfig);
+
+      let response: Response;
+      if (draftMode) {
+        response = await api.patchManageConfigDraftPolicies(normalizedConfig);
+      } else {
+        const loadResponse = await api.getManageConfig(false);
+        if (!loadResponse.ok) {
+          setToastMessage({
+            kind: "error",
+            title: "Import aborted",
+            subtitle: "Failed to load existing configuration",
+          });
+          return;
+        }
+        const loadData = await loadResponse.json();
+        const existingConfig = loadData.config || {};
+        const fullConfig = { ...existingConfig, policies: normalizedConfig };
+        response = await api.postManageConfig(fullConfig);
+      }
+
+      if (response.ok) {
+        setToastMessage({
+          kind: "success",
+          title: "Policies imported",
+          subtitle: `${normalizedPolicies.length} ${normalizedPolicies.length === 1 ? "policy" : "policies"} imported and saved`,
+        });
+        onSave?.(normalizedConfig);
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        setToastMessage({
+          kind: "error",
+          title: "Import failed",
+          subtitle: (errorData as { error?: string; message?: string }).error
+            || (errorData as { error?: string; message?: string }).message
+            || "Failed to save imported policies",
+        });
+      }
+    } catch (error) {
+      console.error("[PoliciesConfig] Import error:", error);
+      setToastMessage({
+        kind: "error",
+        title: "Import failed",
+        subtitle: error instanceof Error ? error.message : "Invalid JSON or file format",
+      });
+    }
   };
 
   const saveConfig = async () => {
@@ -592,40 +642,41 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         <ModalBody hasScrollingContent>
           <Theme theme="white">
             <Stack gap={6} style={{ paddingBottom: "2rem" }}>
-              {/* Actions Header Row */}
-              {/* <Stack orientation="horizontal" gap={3} style={{ justifyContent: "flex-end" }}>
-                <Button kind="secondary" size="sm" renderIcon={Download} onClick={exportPolicies} disabled={config.policies.length === 0}>
-                  Export
-                </Button>
-                <Button kind="secondary" size="sm" renderIcon={Upload} onClick={() => importInputRef.current?.click()}>
-                  Import
-                </Button>
-                <input ref={importInputRef} type="file" accept=".json" onChange={importPolicies} style={{ display: "none" }} />
-              </Stack> */}
-
-              {/* Global Settings Block */}
               {isLoading ? (
                 <Tile>
                   <p>Loading policies...</p>
                 </Tile>
               ) : (
                 <Tile>
-                  <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
-                    <Stack gap={2}>
-                      <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>Global Policy System</h3>
-                      <p style={{ color: "var(--cds-text-secondary)", fontSize: "0.875rem" }}>
-                        Master switch for all policy enforcement ({config.policies.length} policies configured)
-                      </p>
+                  <Stack gap={4}>
+                    <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <Stack gap={2}>
+                        <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>Global Policy System</h3>
+                        <p style={{ color: "var(--cds-text-secondary)", fontSize: "0.875rem" }}>
+                          Master switch for all policy enforcement ({config.policies.length} policies configured)
+                        </p>
+                      </Stack>
+                      <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexShrink: 0 }}>
+                        <Stack orientation="horizontal" gap={2}>
+                          <Button kind="tertiary" size="sm" renderIcon={Download} onClick={exportPolicies} disabled={config.policies.length === 0}>
+                            Export
+                          </Button>
+                          <Button kind="tertiary" size="sm" renderIcon={Upload} onClick={() => importInputRef.current?.click()}>
+                            Import
+                          </Button>
+                          <input ref={importInputRef} type="file" accept=".json" onChange={importPolicies} style={{ display: "none" }} />
+                        </Stack>
+                        <Toggle
+                          id="enable-policies-toggle"
+                          labelText="Enable Policy System"
+                          labelA="Disabled"
+                          labelB="Enabled"
+                          toggled={config.enablePolicies}
+                          onToggle={(checked) => setConfig({ ...config, enablePolicies: checked })}
+                          hideLabel
+                        />
+                      </Stack>
                     </Stack>
-                    <Toggle
-                      id="enable-policies-toggle"
-                      labelText="Enable Policy System"
-                      labelA="Disabled"
-                      labelB="Enabled"
-                      toggled={config.enablePolicies}
-                      onToggle={(checked) => setConfig({ ...config, enablePolicies: checked })}
-                      hideLabel
-                    />
                   </Stack>
                 </Tile>
               )}
