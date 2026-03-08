@@ -260,6 +260,7 @@ def init_openlit() -> None:
             # We only need LLM/agent tracing (OpenAI, LangChain, LangGraph, MCP, etc.).
             try:
                 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
                 FastAPIInstrumentor().uninstrument()
                 logger.debug("FastAPI instrumentation disabled for security")
             except ImportError:
@@ -267,6 +268,7 @@ def init_openlit() -> None:
 
             try:
                 from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+
                 HTTPXClientInstrumentor().uninstrument()
                 logger.debug("httpx instrumentation disabled for security")
             except ImportError:
