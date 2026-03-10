@@ -278,6 +278,55 @@ class ChatAgent(BaseAgent):
         apps = await self.tool_provider.get_apps()
         apps_list = "\n".join([f"- {app.name}: {app.description or 'No description'}" for app in apps])
 
+        # Manage context before LLM invocation
+        # Extract model and tools from chain for context management
+        model = None
+        model_name = None
+        tools_for_context = None
+        system_prompt_text = None
+
+        try:
+            # Try to extract model from chain
+            if hasattr(self.chain, 'steps'):
+                for step in self.chain.steps:
+                    if hasattr(step, 'bound') and hasattr(step.bound, 'model_name'):
+                        model = step.bound
+                        model_name = step.bound.model_name
+                        break
+
+            # Try to extract tools from chain
+            if hasattr(self.chain, 'steps'):
+                for step in self.chain.steps:
+                    if hasattr(step, 'tools'):
+                        tools_for_context = step.tools
+                        break
+
+            # Try to extract system prompt from chain
+            if hasattr(self.chain, 'steps'):
+                for step in self.chain.steps:
+                    if hasattr(step, 'prompt'):
+                        prompt_template = step.prompt
+                        if hasattr(prompt_template, 'messages'):
+                            for msg_template in prompt_template.messages:
+                                if hasattr(msg_template, 'prompt') and hasattr(
+                                    msg_template.prompt, 'template'
+                                ):
+                                    system_prompt_text = msg_template.prompt.template
+                                    break
+        except Exception as e:
+            logger.debug(f"ChatAgent: Could not extract context info from chain: {e}")
+
+        # Call context management
+        logger.info(
+            f"ChatAgent: Calling manage_message_context with model_name={model_name}, "
+            f"tools={len(tools_for_context) if tools_for_context else 0}, "
+            f"system_prompt={len(system_prompt_text) if system_prompt_text else 0} chars"
+        )
+        state.manage_message_context(
+            model=model, model_name=model_name, tools=tools_for_context, system_prompt=system_prompt_text
+        )
+        logger.info("ChatAgent: manage_message_context completed successfully")
+
         res = await self.chain.ainvoke(
             {
                 "conversation": self.map_chat_messages(chat_messages),

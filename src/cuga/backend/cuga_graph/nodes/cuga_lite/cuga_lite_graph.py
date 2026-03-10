@@ -900,6 +900,93 @@ def create_cuga_lite_graph(
             current_callbacks = configurable.get("callbacks", base_callbacks or [])
             active_model = configurable.get("llm") or base_model
 
+            # Manage context before LLM invocation
+            # Create temporary AgentState for context management (CugaLiteState is different)
+            try:
+                initial_message_count = len(state.chat_messages) if state.chat_messages else 0
+
+                # Get model name
+                model_name = getattr(active_model, 'model_name', 'gpt-4')
+
+                # Get tools for context calculation
+                # Note: In CugaLite, tools are managed via sandbox context, not state
+                # For context summarization, we'll pass None since tools aren't directly available
+                tools_for_later_context = None
+
+                logger.debug(
+                    f"CugaLite: Calling manage_message_context with model_name={model_name}, "
+                    f"{len(tools_for_later_context) if tools_for_later_context else 0} tools, "
+                    f"system_prompt={len(dynamic_prompt) if dynamic_prompt else 0} chars"
+                )
+
+                # Convert CugaLiteState to AgentState-compatible for context management
+                temp_agent_state = AgentState(
+                    input="",  # Required by AgentState but not used for context management
+                    url="",  # Required by AgentState but not used for context management
+                    chat_messages=state.chat_messages,
+                    variables_storage=state.variables_storage,
+                    variable_counter_state=state.variable_counter_state,
+                    variable_creation_order=state.variable_creation_order,
+                )
+
+                # Pass tools and system_prompt for accurate context calculation
+                temp_agent_state.manage_message_context(
+                    model=active_model,
+                    model_name=model_name,
+                    tools=tools_for_later_context,
+                    system_prompt=dynamic_prompt,
+                )
+
+                # Copy back the potentially summarized messages
+                state.chat_messages = temp_agent_state.chat_messages
+                final_message_count = len(state.chat_messages) if state.chat_messages else 0
+
+                # Log if summarization occurred
+                if final_message_count < initial_message_count:
+                    logger.info(
+                        f"CugaLite: Context summarization reduced messages from {initial_message_count} to {final_message_count}"
+                    )
+
+                # Check if summarization occurred and log metrics
+                if (
+                    hasattr(temp_agent_state, 'last_summarization_metrics')
+                    and temp_agent_state.last_summarization_metrics
+                ):
+                    metrics = temp_agent_state.last_summarization_metrics.get('chat_messages', {})
+                    if metrics:
+                        logger.info(
+                            f"📊 CugaLite Context Summarization Results:\n"
+                            f"  Messages: {metrics['before']['message_count']} → {metrics['after']['message_count']}\n"
+                            f"  Tokens: {metrics['before']['token_count']} → {metrics['after']['token_count']} "
+                            f"(saved {metrics['tokens_saved']} tokens)\n"
+                            f"  Compression: {(1 - metrics['compression_ratio']):.1%} (retained {metrics['compression_ratio']:.1%})\n"
+                            f"  Messages summarized: {metrics['messages_summarized']}, kept: {metrics['messages_kept']}"
+                        )
+
+                        # Record summarization event in tracker for SDK users
+                        try:
+                            tracker.collect_step(
+                                step=Step(
+                                    name="ContextSummarization",
+                                    data=json.dumps(
+                                        {
+                                            "before": metrics['before'],
+                                            "after": metrics['after'],
+                                            "tokens_saved": metrics['tokens_saved'],
+                                            "compression_ratio": metrics['compression_ratio'],
+                                            "messages_summarized": metrics['messages_summarized'],
+                                            "messages_kept": metrics['messages_kept'],
+                                        }
+                                    ),
+                                )
+                            )
+                        except Exception as e:
+                            logger.debug(f"Failed to record summarization in tracker: {e}")
+
+            except Exception as e:
+                logger.exception(f"Context management failed in CugaLite: {e}")
+                # Continue with LLM call anyway
+
             try:
                 response = await active_model.ainvoke(
                     messages_for_model, config={"callbacks": current_callbacks}
