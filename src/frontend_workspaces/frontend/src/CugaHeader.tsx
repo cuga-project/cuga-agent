@@ -10,6 +10,7 @@ import {
   HeaderPanel,
 } from "@carbon/react";
 import { Logout, Password } from "@carbon/icons-react";
+import { useAuth } from "./AuthContext";
 import * as api from "./api";
 import * as auth from "./auth";
 import "./CugaHeader.css";
@@ -43,6 +44,7 @@ interface UserInfo {
   name?: string;
   email?: string;
   sub?: string;
+  roles?: string[];
 }
 
 function getInitials(name?: string, email?: string): string {
@@ -64,9 +66,9 @@ export function CugaHeader({
   linkComponent: LinkComponent,
   onOpenSecrets,
 }: CugaHeaderProps) {
+  const { user: userInfo } = useAuth();
   const [authEnabled, setAuthEnabled] = useState(false);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
-  const [userInfo, setUserInfo] = useState<UserInfo | null>(null);
   const [hideLogo, setHideLogo] = useState(true);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -85,12 +87,6 @@ export function CugaHeader({
   useEffect(() => {
     api.getAuthConfig().then((c) => {
       setAuthEnabled(c.enabled);
-      if (c.enabled) {
-        api.apiFetch("/auth/userinfo")
-          .then((r) => r.ok ? r.json() : null)
-          .then((d) => d && setUserInfo({ name: d.name, email: d.email, sub: d.sub }))
-          .catch(() => {});
-      }
     }).catch(() => {});
 
     api.getUiConfig().then((c) => setHideLogo(c.hide_cuga_logo)).catch(() => {});

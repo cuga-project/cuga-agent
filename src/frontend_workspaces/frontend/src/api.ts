@@ -10,14 +10,17 @@ export function getApiBaseUrl(): string {
   return `${protocol}//${hostname}:7860`;
 }
 
-let authConfigCache: { enabled: boolean } | null = null;
+let authConfigCache: { enabled: boolean; authorization_enabled: boolean } | null = null;
 
-export async function getAuthConfig(): Promise<{ enabled: boolean }> {
+export async function getAuthConfig(): Promise<{ enabled: boolean; authorization_enabled: boolean }> {
   if (authConfigCache !== null) return authConfigCache;
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/auth/config`, { credentials: "include" });
-  const data = await res.json().catch(() => ({ enabled: false }));
-  authConfigCache = { enabled: !!data.enabled };
+  const data = await res.json().catch(() => ({ enabled: false, authorization_enabled: false }));
+  authConfigCache = {
+    enabled: !!data.enabled,
+    authorization_enabled: !!data.authorization_enabled
+  };
   return authConfigCache;
 }
 
@@ -48,6 +51,17 @@ export async function apiFetch(
     if (config.enabled) {
       const loginUrl = `${base}/auth/login`;
       window.location.href = loginUrl;
+    }
+  }
+  if (res.status === 403) {
+    // User lacks required role - redirect to unauthorized page
+    const currentPath = window.location.pathname;
+    if (currentPath !== "/unauthorized") {
+      console.warn("Access denied (403). Redirecting to unauthorized page.");
+      window.location.href = "/unauthorized";
+    } else {
+      // Already on unauthorized page, just log the error - don't redirect
+      console.warn(`Access denied (403) for ${url}. User may lack required role.`);
     }
   }
   return res;

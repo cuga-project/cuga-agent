@@ -96,6 +96,9 @@ aws_region = ""
 
 [auth]
 enabled = false
+authorization_enabled = false
+manage_roles = ["ServiceOwner", "ServiceAdmin"]
+chat_roles = ["ServiceOwner", "ServiceAdmin", "ServiceUser"]
 session_cookie_name = "cuga_session"
 session_max_age = 3600
 jwks_cache_ttl = 3600

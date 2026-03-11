@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from cuga.backend.server.auth import require_auth
+from cuga.backend.server.auth import require_manage_access, require_chat_access
 
 router = APIRouter(
     prefix="/api/manage",
     tags=["manage"],
-    dependencies=[Depends(require_auth)],
+    dependencies=[Depends(require_manage_access)],
 )
 
 
@@ -262,7 +262,7 @@ async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict
     return existing
 
 
-@router.get("/config")
+@router.get("/config", dependencies=[Depends(require_chat_access)])
 async def get_manage_config(
     request: Request,
     version: Optional[str] = None,

@@ -60,7 +60,7 @@ from cuga.config import (
 )
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
-from cuga.backend.server.auth import require_auth
+from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.conversation_history import get_conversation_db
 
@@ -1239,6 +1239,11 @@ def _auth_enabled() -> bool:
     return bool(auth and getattr(auth, "enabled", False))
 
 
+def _authorization_enabled() -> bool:
+    auth = getattr(settings, "auth", None)
+    return bool(auth and getattr(auth, "authorization_enabled", False))
+
+
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok"})
@@ -1246,7 +1251,7 @@ async def health():
 
 @app.get("/api/auth/config")
 async def auth_config():
-    return JSONResponse({"enabled": _auth_enabled()})
+    return JSONResponse({"enabled": _auth_enabled(), "authorization_enabled": _authorization_enabled()})
 
 
 @app.get("/api/ui/config")
@@ -1446,7 +1451,7 @@ if getattr(settings.advanced_features, "use_extension", False):
 @app.post("/stream")
 async def stream(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -1493,7 +1498,7 @@ async def stream(
 
 
 @app.post("/stop")
-async def stop(request: Request, current_user: Optional[UserInfo] = Depends(require_auth)):
+async def stop(request: Request, current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to stop the agent execution for a specific thread."""
     # Get thread_id from header or body
     thread_id = request.headers.get("X-Thread-ID")
@@ -1522,7 +1527,7 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
 @app.post("/reset")
 async def reset_agent_state(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to reset the agent state to default values."""
     logger.info("Received reset request")
@@ -1571,7 +1576,7 @@ async def reset_agent_state(
 @app.get("/api/conversation-threads")
 async def get_conversation_threads(
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Retrieve all conversation threads for an agent."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -1588,7 +1593,7 @@ async def get_conversation_threads(
 async def get_conversation_messages(
     thread_id: str,
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Retrieve all messages for a specific conversation thread."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -1617,7 +1622,7 @@ async def get_conversation_messages(
 async def get_conversation_stream_events(
     thread_id: str,
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Retrieve all streaming events for a specific conversation thread."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -1743,7 +1748,7 @@ async def save_knowledge_config(
 
 
 @app.get("/api/conversations")
-async def get_conversations(current_user: Optional[UserInfo] = Depends(require_auth)):
+async def get_conversations(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve conversation history."""
     try:
         # TODO: Implement actual conversation storage
@@ -1757,7 +1762,7 @@ async def get_conversations(current_user: Optional[UserInfo] = Depends(require_a
 @app.post("/api/conversations")
 async def create_conversation(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to create a new conversation."""
     try:
@@ -1780,7 +1785,7 @@ async def create_conversation(
 async def delete_conversation(
     conversation_id: str,
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Delete a conversation thread and its stream events."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -2050,7 +2055,7 @@ async def get_tools_list(
     request: Request,
     agent_id: Optional[str] = None,
     draft: Optional[str] = None,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to retrieve detailed list of all available tools.
 
@@ -2118,7 +2123,7 @@ async def get_tools_list(
 
 
 @app.get("/api/tools/status")
-async def get_tools_status(current_user: Optional[UserInfo] = Depends(require_auth)):
+async def get_tools_status(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve tools connection status."""
     try:
         # Get available apps and their tools
@@ -2187,7 +2192,7 @@ async def save_mode_config(
 @app.get("/api/agent/state")
 async def get_agent_state(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to retrieve agent state for a specific thread."""
     try:
@@ -2450,7 +2455,7 @@ async def save_agent_mode_config(
 
 
 @app.get("/api/agents")
-async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_auth)):
+async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_manage_access)):
     """List configured agents (dashboard)."""
     try:
         tools_count = 0
@@ -2502,7 +2507,7 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
 
 
 @app.get("/api/workspace/tree")
-async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_auth)):
+async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve the workspace folder tree."""
     try:
         workspace_path = Path(os.getcwd()) / "cuga_workspace"
@@ -2542,7 +2547,7 @@ async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_
 @app.get("/api/workspace/file")
 async def get_workspace_file(
     path: str,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to retrieve a file's content from the workspace."""
     try:
@@ -2589,7 +2594,7 @@ async def get_workspace_file(
 @app.get("/api/workspace/download")
 async def download_workspace_file(
     path: str,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Download a file from the workspace."""
     try:
