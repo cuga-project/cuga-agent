@@ -5,6 +5,8 @@ These tests verify that context summarization works correctly when using the SDK
 with CugaAgent.invoke() and CugaAgent.stream().
 """
 
+import uuid
+
 import pytest
 from langchain_core.tools import tool
 
@@ -58,7 +60,7 @@ class TestSDKContextSummarization:
             settings.reload()
 
             agent = CugaAgent(tools=[])
-            thread_id = "test-context-basic"
+            thread_id = str(uuid.uuid4())
 
             # Message 1: Establish context
             result1 = await agent.invoke("My name is Alice and I live in New York.", thread_id=thread_id)
@@ -117,7 +119,7 @@ class TestSDKContextSummarization:
             settings.reload()
 
             agent = CugaAgent(tools=[])
-            thread_id = "test-context-continuity"
+            thread_id = str(uuid.uuid4())
 
             # Message 1: Establish specific information
             result1 = await agent.invoke(
@@ -279,7 +281,7 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             settings.reload()
 
             agent = CugaAgent(tools=[])
-            thread_id = "test-large-context-summarization"
+            thread_id = str(uuid.uuid4())
 
             # Generate large context history (~96k tokens)
             print("\n=== Generating large context history ===")
@@ -486,7 +488,7 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             settings.reload()
 
             agent = CugaAgent(tools=[])
-            thread_id = "test-large-context"
+            thread_id = str(uuid.uuid4())
 
             # Create a large pre-defined conversation with important details mixed with filler
             # This simulates a long conversation that should trigger summarization
@@ -650,12 +652,14 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             # First invocation without thread_id
             result1 = await agent.invoke("My name is Alice.")
             assert result1 is not None
+            assert "Alice" in result1.answer, "Agent should acknowledge the name Alice in first invocation"
 
             # Second invocation without thread_id - should not remember Alice
             result2 = await agent.invoke("What's my name?")
             assert result2 is not None
             # Without thread_id, agent shouldn't know the name
             # (it might say it doesn't know, or ask for clarification)
+            assert "Alice" not in result2.answer, "Agent should NOT remember Alice without thread_id (isolation failure)"
 
         finally:
             # Restore original settings

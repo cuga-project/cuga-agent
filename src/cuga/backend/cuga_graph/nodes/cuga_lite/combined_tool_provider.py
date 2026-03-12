@@ -229,8 +229,8 @@ class CombinedToolProvider(ToolProviderInterface):
             tracker_apps = tracker.apps
 
         registry_apps = []
-        # Check if registry is enabled (attribute may not exist in all configurations)
-        if getattr(settings.advanced_features, 'registry', False):
+        # Check if registry is enabled (default is True per config.py validator)
+        if getattr(settings.advanced_features, 'registry', True):
             try:
                 registry_apps = await get_apps(agent_id=self.agent_id)
             except Exception as e:
@@ -329,7 +329,7 @@ class CombinedToolProvider(ToolProviderInterface):
             logger.debug(f"Checking tracker for runtime tools: {app_name}")
             tracker_tools_dict = tracker.get_tools_by_server(app_name)
 
-            if not getattr(settings.advanced_features, 'registry', False):
+            if not getattr(settings.advanced_features, 'registry', True):
                 logger.debug("Registry is not enabled, using tracker tools only")
                 if tracker_tools_dict:
                     tools = []
@@ -357,7 +357,7 @@ class CombinedToolProvider(ToolProviderInterface):
         except Exception as e:
             logger.warning(f"Error getting tools from tracker for {app_name}: {e}")
 
-        if getattr(settings.advanced_features, 'registry', False):
+        if getattr(settings.advanced_features, 'registry', True):
             try:
                 logger.debug(f"Getting tools from registry for: {app_name} (agent_id={self.agent_id})")
                 registry_base = get_registry_base_url()

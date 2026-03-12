@@ -48,6 +48,7 @@ def convert_to_proper_message_type(message: BaseMessage) -> BaseMessage:
             additional_kwargs=message.additional_kwargs,
             response_metadata=getattr(message, 'response_metadata', {}),
             id=message.id,
+            tool_calls=getattr(message, 'tool_calls', []),
         )
     elif msg_type == 'human' or msg_type == 'HumanMessage':
         return HumanMessage(

@@ -374,9 +374,12 @@ class ContextSummarizer:
             logger.warning(f"Message content exceeds max length ({len(content)} > {max_length}), truncating")
             content = content[:max_length]
 
-        # Basic validation - ensure content is not empty after stripping
-        content = content.strip()
-        if not content:
+        # Basic validation - preserve exact empty strings (e.g., for tool calls),
+        # but replace whitespace-only or None-like content with placeholder
+        stripped_content = content.strip()
+        if stripped_content:
+            content = stripped_content
+        elif content != "":
             content = "[empty message]"
 
         return content
