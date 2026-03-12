@@ -659,7 +659,9 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             assert result2 is not None
             # Without thread_id, agent shouldn't know the name
             # (it might say it doesn't know, or ask for clarification)
-            assert "Alice" not in result2.answer, "Agent should NOT remember Alice without thread_id (isolation failure)"
+            assert "Alice" not in result2.answer, (
+                "Agent should NOT remember Alice without thread_id (isolation failure)"
+            )
 
         finally:
             # Restore original settings
