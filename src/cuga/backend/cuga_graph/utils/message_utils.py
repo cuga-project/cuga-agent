@@ -34,8 +34,8 @@ def convert_to_proper_message_type(message: BaseMessage) -> BaseMessage:
         logger.warning(f"Message missing content attribute or content is None: {message}")
         return HumanMessage(content='')
 
-    # If already a specific subclass, return as-is
-    if not isinstance(message, BaseMessage) or type(message) is not BaseMessage:
+    # If already a specific subclass (not just BaseMessage), return as-is
+    if type(message) is not BaseMessage:
         return message
 
     # Try to infer the correct type from message attributes
@@ -59,7 +59,10 @@ def convert_to_proper_message_type(message: BaseMessage) -> BaseMessage:
         )
     elif msg_type == 'tool' or msg_type == 'ToolMessage':
         # ToolMessage requires tool_call_id
-        tool_call_id = message.additional_kwargs.get('tool_call_id', 'unknown')
+        # First try to get tool_call_id from direct attribute, then fall back to additional_kwargs
+        tool_call_id = getattr(message, 'tool_call_id', None) or message.additional_kwargs.get(
+            'tool_call_id', 'unknown'
+        )
         return ToolMessage(
             content=message.content,
             tool_call_id=tool_call_id,

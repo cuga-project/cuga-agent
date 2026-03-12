@@ -808,128 +808,32 @@ def create_cuga_lite_graph(
                             "Will inject playbook guidance into current user message (first time only)"
                         )
 
-            for i, msg in enumerate(state.chat_messages):
-                msg_type = type(msg).__name__
-                msg_role = getattr(msg, 'type', None)
-                logger.debug(
-                    f"Message {i}: type={msg_type}, role={msg_role}, isinstance(HumanMessage)={isinstance(msg, HumanMessage)}, isinstance(AIMessage)={isinstance(msg, AIMessage)}"
-                )
-
-                if isinstance(msg, HumanMessage):
-                    content = msg.content
-                    content_modified = False
-
-                    # Add personal information (pi) to the FIRST user message only
-                    if (
-                        state.pi
-                        and not pi_added
-                        and "## User Context" not in content
-                        and len(state.chat_messages) == 1
-                    ):
-                        content = f"{content}\n\n## User Context\n{state.pi}"
-                        pi_added = True
-                        content_modified = True
-                        logger.debug("Added personal information (pi) to first user message")
-
-                    # Add playbook guidance to the LAST user message only
-                    if playbook_guidance and i == len(state.chat_messages) - 1:
-                        content = f"{content}\n\n## Task Guidance\n{playbook_guidance}"
-                        content_modified = True
-                        logger.debug("Added playbook guidance to last user message")
-
-                    # Add variables summary to the LAST user message only
-                    if variables_summary_text and i == len(state.chat_messages) - 1:
-                        content = content + variables_addendum
-                        content_modified = True
-                        logger.debug("Added variables summary to last user message")
-
-                    # Update state.chat_messages directly if content was modified (so it persists across turns)
-                    if content_modified:
-                        state.chat_messages[i] = HumanMessage(content=content)
-                        logger.debug(
-                            f"Updated state.chat_messages[{i}] with modified content (playbook/pi/variables)"
-                        )
-
-                    messages_for_model.append({"role": "user", "content": content})
-                elif isinstance(msg, AIMessage):
-                    messages_for_model.append({"role": "assistant", "content": msg.content})
-                else:
-                    # Handle generic BaseMessage by checking the 'type' attribute
-                    if msg_role == 'human' or msg_role == 'user':
-                        content = msg.content
-                        content_modified = False
-
-                        # Add personal information (pi) to the FIRST user message only
-                        if state.pi and not pi_added:
-                            content = f"{content}\n\n## User Context\n{state.pi}"
-                            pi_added = True
-                            content_modified = True
-                            logger.debug("Added personal information (pi) to first user message")
-
-                        # Add playbook guidance to the LAST user message only
-                        if playbook_guidance and i == len(state.chat_messages) - 1:
-                            content = f"{content}\n\n## Task Guidance\n{playbook_guidance}"
-                            content_modified = True
-                            logger.debug("Added playbook guidance to last user message")
-
-                        if variables_summary_text and i == len(state.chat_messages) - 1:
-                            content = content + variables_addendum
-                            content_modified = True
-
-                        # Update state.chat_messages directly if content was modified (so it persists across turns)
-                        if content_modified:
-                            state.chat_messages[i] = HumanMessage(content=content)
-                            logger.debug(
-                                f"Updated state.chat_messages[{i}] with modified content (playbook/pi/variables)"
-                            )
-
-                        messages_for_model.append({"role": "user", "content": content})
-                        logger.debug(f"Added BaseMessage as user message (role={msg_role})")
-                    elif msg_role == 'ai' or msg_role == 'assistant':
-                        messages_for_model.append({"role": "assistant", "content": msg.content})
-                        logger.debug(f"Added BaseMessage as assistant message (role={msg_role})")
-                    else:
-                        logger.warning(
-                            f"Skipping message {i} with unknown type: {msg_type}, role: {msg_role}"
-                        )
-
-            logger.debug(f"Total messages for model (including system): {len(messages_for_model)}")
-
             # Get configurable values from config
             configurable = config.get("configurable", {}) if config else {}
             current_callbacks = configurable.get("callbacks", base_callbacks or [])
             active_model = configurable.get("llm") or base_model
 
-            # Manage context before LLM invocation
-            # Create temporary AgentState for context management (CugaLiteState is different)
+            # ── Context management BEFORE building messages_for_model ────────────
+            effective_chat_messages = state.chat_messages or []
             try:
-                initial_message_count = len(state.chat_messages) if state.chat_messages else 0
-
-                # Get model name
+                initial_message_count = len(effective_chat_messages)
                 model_name = getattr(active_model, 'model_name', 'gpt-4')
-
-                # Get tools for context calculation
-                # Note: In CugaLite, tools are managed via sandbox context, not state
-                # For context summarization, we'll pass None since tools aren't directly available
                 tools_for_later_context = None
 
                 logger.debug(
                     f"CugaLite: Calling manage_message_context with model_name={model_name}, "
-                    f"{len(tools_for_later_context) if tools_for_later_context else 0} tools, "
-                    f"system_prompt={len(dynamic_prompt) if dynamic_prompt else 0} chars"
+                    f"0 tools, system_prompt={len(dynamic_prompt) if dynamic_prompt else 0} chars"
                 )
 
-                # Convert CugaLiteState to AgentState-compatible for context management
                 temp_agent_state = AgentState(
-                    input="",  # Required by AgentState but not used for context management
-                    url="",  # Required by AgentState but not used for context management
-                    chat_messages=state.chat_messages,
+                    input="",
+                    url="",
+                    chat_messages=list(effective_chat_messages),  # pass a copy
                     variables_storage=state.variables_storage,
                     variable_counter_state=state.variable_counter_state,
                     variable_creation_order=state.variable_creation_order,
                 )
 
-                # Pass tools and system_prompt for accurate context calculation
                 temp_agent_state.manage_message_context(
                     model=active_model,
                     model_name=model_name,
@@ -937,17 +841,16 @@ def create_cuga_lite_graph(
                     system_prompt=dynamic_prompt,
                 )
 
-                # Copy back the potentially summarized messages
-                state.chat_messages = temp_agent_state.chat_messages
-                final_message_count = len(state.chat_messages) if state.chat_messages else 0
+                # Use the (possibly summarized) messages locally — do NOT mutate state
+                effective_chat_messages = temp_agent_state.chat_messages or []
+                final_message_count = len(effective_chat_messages)
 
-                # Log if summarization occurred
                 if final_message_count < initial_message_count:
                     logger.info(
-                        f"CugaLite: Context summarization reduced messages from {initial_message_count} to {final_message_count}"
+                        f"CugaLite: Context summarization reduced messages "
+                        f"from {initial_message_count} to {final_message_count}"
                     )
 
-                # Check if summarization occurred and log metrics
                 if (
                     hasattr(temp_agent_state, 'last_summarization_metrics')
                     and temp_agent_state.last_summarization_metrics
@@ -959,11 +862,11 @@ def create_cuga_lite_graph(
                             f"  Messages: {metrics['before']['message_count']} → {metrics['after']['message_count']}\n"
                             f"  Tokens: {metrics['before']['token_count']} → {metrics['after']['token_count']} "
                             f"(saved {metrics['tokens_saved']} tokens)\n"
-                            f"  Compression: {(1 - metrics['compression_ratio']):.1%} (retained {metrics['compression_ratio']:.1%})\n"
-                            f"  Messages summarized: {metrics['messages_summarized']}, kept: {metrics['messages_kept']}"
+                            f"  Compression: {(1 - metrics['compression_ratio']):.1%} "
+                            f"(retained {metrics['compression_ratio']:.1%})\n"
+                            f"  Messages summarized: {metrics['messages_summarized']}, "
+                            f"kept: {metrics['messages_kept']}"
                         )
-
-                        # Record summarization event in tracker for SDK users
                         try:
                             tracker.collect_step(
                                 step=Step(
@@ -985,7 +888,103 @@ def create_cuga_lite_graph(
 
             except Exception as e:
                 logger.exception(f"Context management failed in CugaLite: {e}")
-                # Continue with LLM call anyway
+                # effective_chat_messages remains as original state.chat_messages
+            # ─────────────────────────────────────────────────────────────────────
+
+            # Build messages_for_model from effective_chat_messages (post-summarization)
+            # Also build modified_chat_messages with playbook/pi/variables injected
+            modified_chat_messages = []
+            for i, msg in enumerate(effective_chat_messages):
+                msg_type = type(msg).__name__
+                msg_role = getattr(msg, 'type', None)
+                logger.debug(
+                    f"Message {i}: type={msg_type}, role={msg_role}, "
+                    f"isinstance(HumanMessage)={isinstance(msg, HumanMessage)}, "
+                    f"isinstance(AIMessage)={isinstance(msg, AIMessage)}"
+                )
+
+                if isinstance(msg, HumanMessage):
+                    content = msg.content
+                    content_modified = False
+
+                    # Add personal information (pi) to the FIRST user message only
+                    if (
+                        state.pi
+                        and not pi_added
+                        and "## User Context" not in content
+                        and len(effective_chat_messages) == 1
+                    ):
+                        content = f"{content}\n\n## User Context\n{state.pi}"
+                        pi_added = True
+                        content_modified = True
+                        logger.debug("Added personal information (pi) to first user message")
+
+                    # Add playbook guidance to the LAST user message only
+                    if playbook_guidance and i == len(effective_chat_messages) - 1:
+                        content = f"{content}\n\n## Task Guidance\n{playbook_guidance}"
+                        content_modified = True
+                        logger.debug("Added playbook guidance to last user message")
+
+                    # Add variables summary to the LAST user message only
+                    if variables_summary_text and i == len(effective_chat_messages) - 1:
+                        content = content + variables_addendum
+                        content_modified = True
+                        logger.debug("Added variables summary to last user message")
+
+                    # Build new message if modified, otherwise keep original
+                    if content_modified:
+                        modified_chat_messages.append(HumanMessage(content=content))
+                        logger.debug(f"Created modified message at index {i} with playbook/pi/variables")
+                    else:
+                        modified_chat_messages.append(msg)
+
+                    messages_for_model.append({"role": "user", "content": content})
+                elif isinstance(msg, AIMessage):
+                    modified_chat_messages.append(msg)
+                    messages_for_model.append({"role": "assistant", "content": msg.content})
+                else:
+                    # Handle generic BaseMessage by checking the 'type' attribute
+                    if msg_role == 'human' or msg_role == 'user':
+                        content = msg.content
+                        content_modified = False
+
+                        # Add personal information (pi) to the FIRST user message only
+                        if state.pi and not pi_added:
+                            content = f"{content}\n\n## User Context\n{state.pi}"
+                            pi_added = True
+                            content_modified = True
+                            logger.debug("Added personal information (pi) to first user message")
+
+                        # Add playbook guidance to the LAST user message only
+                        if playbook_guidance and i == len(effective_chat_messages) - 1:
+                            content = f"{content}\n\n## Task Guidance\n{playbook_guidance}"
+                            content_modified = True
+                            logger.debug("Added playbook guidance to last user message")
+
+                        if variables_summary_text and i == len(effective_chat_messages) - 1:
+                            content = content + variables_addendum
+                            content_modified = True
+
+                        # Build new message if modified, otherwise keep original
+                        if content_modified:
+                            modified_chat_messages.append(HumanMessage(content=content))
+                            logger.debug(f"Created modified message at index {i} with playbook/pi/variables")
+                        else:
+                            modified_chat_messages.append(msg)
+
+                        messages_for_model.append({"role": "user", "content": content})
+                        logger.debug(f"Added BaseMessage as user message (role={msg_role})")
+                    elif msg_role == 'ai' or msg_role == 'assistant':
+                        modified_chat_messages.append(msg)
+                        messages_for_model.append({"role": "assistant", "content": msg.content})
+                        logger.debug(f"Added BaseMessage as assistant message (role={msg_role})")
+                    else:
+                        modified_chat_messages.append(msg)
+                        logger.warning(
+                            f"Skipping message {i} with unknown type: {msg_type}, role: {msg_role}"
+                        )
+
+            logger.debug(f"Total messages for model (including system): {len(messages_for_model)}")
 
             try:
                 response = await active_model.ainvoke(
@@ -1030,11 +1029,25 @@ def create_cuga_lite_graph(
                     if approval_command:
                         return approval_command
 
-                updated_messages, error_message = append_chat_messages_with_step_limit(
-                    state, [AIMessage(content=content)], max_steps=max_steps
-                )
-                if error_message:
-                    return create_error_command(updated_messages, error_message, state.step_count)
+                # Build updated messages from modified_chat_messages + new AI response
+                updated_messages = modified_chat_messages + [AIMessage(content=content)]
+                new_step_count = state.step_count + 1
+
+                # Check step limit
+                limit = max_steps if max_steps is not None else settings.advanced_features.cuga_lite_max_steps
+                if new_step_count > limit:
+                    error_msg = (
+                        f"Maximum step limit ({limit}) reached. "
+                        f"The task has exceeded the allowed number of execution cycles. "
+                        f"Please simplify your request or break it into smaller tasks."
+                    )
+                    logger.warning(f"Step limit reached: {new_step_count} > {limit}")
+                    error_ai_message = AIMessage(content=error_msg)
+                    return create_error_command(
+                        updated_messages + [error_ai_message], error_ai_message, state.step_count
+                    )
+
+                logger.debug(f"Step count: {new_step_count}/{limit}")
 
                 # Update metadata to mark playbook guidance as added
                 updated_metadata = state.cuga_lite_metadata or {}
@@ -1046,7 +1059,7 @@ def create_cuga_lite_graph(
                     update={
                         "chat_messages": updated_messages,
                         "script": code,
-                        "step_count": state.step_count + 1,
+                        "step_count": new_step_count,
                         "cuga_lite_metadata": updated_metadata,
                     },
                 )
@@ -1054,11 +1067,25 @@ def create_cuga_lite_graph(
                 tracker.collect_step(step=Step(name="Assistant_nl", data=content))
                 planning_response = response.content
 
-                updated_messages, error_message = append_chat_messages_with_step_limit(
-                    state, [AIMessage(content=planning_response)], max_steps=max_steps
-                )
-                if error_message:
-                    return create_error_command(updated_messages, error_message, state.step_count)
+                # Build updated messages from modified_chat_messages + new AI response
+                updated_messages = modified_chat_messages + [AIMessage(content=planning_response)]
+                new_step_count = state.step_count + 1
+
+                # Check step limit
+                limit = max_steps if max_steps is not None else settings.advanced_features.cuga_lite_max_steps
+                if new_step_count > limit:
+                    error_msg = (
+                        f"Maximum step limit ({limit}) reached. "
+                        f"The task has exceeded the allowed number of execution cycles. "
+                        f"Please simplify your request or break it into smaller tasks."
+                    )
+                    logger.warning(f"Step limit reached: {new_step_count} > {limit}")
+                    error_ai_message = AIMessage(content=error_msg)
+                    return create_error_command(
+                        updated_messages + [error_ai_message], error_ai_message, state.step_count
+                    )
+
+                logger.debug(f"Step count: {new_step_count}/{limit}")
 
                 # Update metadata to mark playbook guidance as added
                 updated_metadata = state.cuga_lite_metadata or {}
@@ -1072,7 +1099,7 @@ def create_cuga_lite_graph(
                         "script": None,
                         "final_answer": planning_response,
                         "execution_complete": True,
-                        "step_count": state.step_count + 1,
+                        "step_count": new_step_count,
                         "cuga_lite_metadata": updated_metadata,
                     },
                 )

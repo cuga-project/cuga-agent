@@ -432,3 +432,93 @@ class TestContextSummarizationWithActivityTracker:
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v", "-s"])
+
+
+# ============================================================================
+# SUPERVISOR FLOW TESTS
+# ============================================================================
+# These tests verify context summarization in the Supervisor flow specifically,
+# testing multi-agent delegation, supervisor_chat_messages handling, and
+# variable passing between agents after summarization.
+# ============================================================================
+
+
+class TestSupervisorContextSummarization:
+    """Integration tests for supervisor flow context summarization."""
+
+    @pytest.mark.slow
+    @pytest.mark.asyncio
+    async def test_supervisor_multi_agent_delegation(self, enable_summarization):
+        """
+        Test supervisor with multiple agent delegations and context summarization.
+
+        This specifically tests:
+        1. Supervisor flow (not CugaLite/SDK flow)
+        2. supervisor_chat_messages handling
+        3. Multiple agent delegations
+        4. Context maintained across summarization
+        """
+        from cuga import CugaAgent, CugaSupervisor
+        from langchain_core.tools import tool
+
+        @tool
+        def get_customer_info(customer_id: str) -> dict:
+            """Get customer information."""
+            return {"name": "Alice", "tier": "gold"}
+
+        @tool
+        def calculate_discount(tier: str, amount: float) -> float:
+            """Calculate discount."""
+            return amount * 0.20 if tier == "gold" else amount * 0.10
+
+        # Configure aggressive summarization
+        import os
+        from cuga.config import settings
+
+        original_fraction = settings.context_summarization.trigger_fraction
+        original_keep = settings.context_summarization.keep_last_n_messages
+        original_enabled = settings.context_summarization.enabled
+
+        try:
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = "true"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = "0.01"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = "2"
+            settings.reload()
+
+            # Create supervisor with multiple agents
+            crm_agent = CugaAgent(tools=[get_customer_info])
+            pricing_agent = CugaAgent(tools=[calculate_discount])
+
+            supervisor = CugaSupervisor(agents={"crm": crm_agent, "pricing": pricing_agent})
+
+            thread_id = "test-supervisor-integration"
+
+            # Build up context with multiple interactions
+            # Task 1: Get customer info
+            result1 = await supervisor.invoke("Get info for customer C001", thread_id=thread_id)
+            assert result1 is not None
+
+            # Task 2: Calculate discount
+            result2 = await supervisor.invoke("Calculate discount for gold tier on $100", thread_id=thread_id)
+            assert result2 is not None
+            assert "20" in result2.answer
+
+            # Task 3: Add more context
+            result3 = await supervisor.invoke("Remember that Alice is a VIP customer", thread_id=thread_id)
+            assert result3 is not None
+
+            # Task 4: Add even more context
+            result4 = await supervisor.invoke("Note that the discount was $20", thread_id=thread_id)
+            assert result4 is not None
+
+            # Task 5: Verify context is maintained (should have triggered summarization by now)
+            result5 = await supervisor.invoke("What discount did we calculate?", thread_id=thread_id)
+            assert result5 is not None
+            # Should remember the $20 discount even after summarization
+            assert "20" in result5.answer
+
+        finally:
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            settings.reload()

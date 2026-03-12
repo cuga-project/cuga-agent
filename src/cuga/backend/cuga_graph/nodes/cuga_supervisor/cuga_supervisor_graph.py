@@ -25,6 +25,7 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import 
     CugaSupervisorState,
     AgentInfo,
 )
+from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.sdk import CugaAgent
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
@@ -395,6 +396,87 @@ def _create_supervisor_conversational_graph(
 
         async def call_model(state: CugaSupervisorState, config: Optional[RunnableConfig] = None) -> Command:
             """Call the LLM to generate code or text response."""
+            # ============================================================================
+            # CONTEXT SUMMARIZATION - Manage context before LLM invocation
+            # ============================================================================
+            try:
+                initial_message_count = len(state.supervisor_chat_messages or [])
+
+                # Get model name for token counting
+                model_name = getattr(base_model, 'model_name', 'gpt-4')
+
+                # Get dynamic prompt for accurate context calculation
+                dynamic_prompt = state.prepared_prompt
+
+                logger.debug(
+                    f"Supervisor: Checking context summarization with model_name={model_name}, "
+                    f"{initial_message_count} messages, "
+                    f"system_prompt={len(dynamic_prompt) if dynamic_prompt else 0} chars"
+                )
+
+                # Convert CugaSupervisorState to AgentState for context management
+                # IMPORTANT: Use supervisor_chat_messages (not chat_messages)
+                temp_agent_state = AgentState(
+                    input="",  # Required by AgentState but not used for context management
+                    url="",  # Required by AgentState but not used for context management
+                    chat_messages=state.supervisor_chat_messages or [],
+                    variables_storage=state.supervisor_variables,
+                    variable_counter_state=state.variable_counter_state,
+                    variable_creation_order=state.variable_creation_order,
+                )
+
+                # Trigger context summarization
+                # Note: Supervisor uses agent delegation functions, not traditional tools
+                # Pass None for tools since they're not directly available
+                temp_agent_state.manage_message_context(
+                    model=base_model,
+                    model_name=model_name,
+                    tools=None,  # Supervisor doesn't use traditional tools
+                    system_prompt=dynamic_prompt,
+                )
+
+                # Copy back the potentially summarized messages
+                state.supervisor_chat_messages = temp_agent_state.chat_messages
+                final_message_count = len(state.supervisor_chat_messages or [])
+
+                # Log if summarization occurred
+                if final_message_count < initial_message_count:
+                    logger.info(
+                        f"Supervisor: Context summarization reduced messages from "
+                        f"{initial_message_count} to {final_message_count}"
+                    )
+
+                # Log detailed metrics if available
+                if (
+                    hasattr(temp_agent_state, 'last_summarization_metrics')
+                    and temp_agent_state.last_summarization_metrics
+                ):
+                    metrics = temp_agent_state.last_summarization_metrics.get('chat_messages', {})
+                    if metrics:
+                        logger.info(
+                            f"📊 Supervisor Context Summarization Results:\n"
+                            f"  Messages: {metrics['before']['message_count']} → {metrics['after']['message_count']}\n"
+                            f"  Tokens: {metrics['before']['token_count']} → {metrics['after']['token_count']} "
+                            f"(saved {metrics['tokens_saved']} tokens)\n"
+                            f"  Compression: {(1 - metrics['compression_ratio']):.1%} "
+                            f"(retained {metrics['compression_ratio']:.1%})\n"
+                            f"  Messages summarized: {metrics['messages_summarized']}, "
+                            f"kept: {metrics['messages_kept']}"
+                        )
+
+                        # Store metrics in supervisor_metadata for tracking
+                        if not state.supervisor_metadata:
+                            state.supervisor_metadata = {}
+                        state.supervisor_metadata['last_summarization'] = metrics
+
+            except Exception as e:
+                logger.exception(f"Context management failed in Supervisor: {e}")
+                # Continue with LLM call anyway - don't fail the entire request
+
+            # ============================================================================
+            # END CONTEXT SUMMARIZATION BLOCK
+            # ============================================================================
+
             logger.info("Supervisor conversational: calling model")
 
             # Get prompt from state

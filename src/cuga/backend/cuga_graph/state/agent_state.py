@@ -1065,8 +1065,12 @@ class AgentState(BaseModel):
 
             # Create ContextSummarizer instance
             summarizer = ContextSummarizer(model, model_name, tracker=tracker)
+            if not summarizer.middleware:
+                logger.warning("Context summarizer unavailable; falling back to sliding window")
+                self.apply_message_sliding_window()
+                return
 
-            # Summarize both message lists
+            # Summarize all three message lists
             self.chat_messages = self._summarize_message_list(
                 self.chat_messages,
                 "chat_messages",
@@ -1078,6 +1082,14 @@ class AgentState(BaseModel):
             self.chat_agent_messages = self._summarize_message_list(
                 self.chat_agent_messages,
                 "chat_agent_messages",
+                summarizer,
+                store_metrics=False,
+                tools=tools,
+                system_prompt=system_prompt,
+            )
+            self.supervisor_chat_messages = self._summarize_message_list(
+                self.supervisor_chat_messages,
+                "supervisor_chat_messages",
                 summarizer,
                 store_metrics=False,
                 tools=tools,

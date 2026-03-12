@@ -480,6 +480,9 @@ class TestStateCorruption:
         # All should complete
         assert len(results) + len(errors) == 10
 
+        # Ensure at least one worker succeeded
+        assert len(results) > 0, "All workers failed - expected at least one successful result"
+
         # Verify all results are valid
         for result, metrics in results:
             assert isinstance(result, list)

@@ -9,7 +9,7 @@ import time
 import traceback
 from typing import List, Optional, Tuple, Dict, Any
 
-from langchain_core.messages import BaseMessage, HumanMessage, AIMessage, SystemMessage
+from langchain_core.messages import BaseMessage
 from langchain.agents.middleware import SummarizationMiddleware
 from loguru import logger
 
@@ -397,20 +397,13 @@ class ContextSummarizer:
         for msg in messages:
             # Convert to proper type using shared utility
             converted_msg = convert_to_proper_message_type(msg)
-
             # Sanitize content before adding to list
             sanitized_content = self._sanitize_content(converted_msg.content)
-
-            # Create new message with sanitized content, preserving the type
-            if isinstance(converted_msg, AIMessage):
-                typed_messages.append(AIMessage(content=sanitized_content))
-            elif isinstance(converted_msg, HumanMessage):
-                typed_messages.append(HumanMessage(content=sanitized_content))
-            elif isinstance(converted_msg, SystemMessage):
-                typed_messages.append(SystemMessage(content=sanitized_content))
+            # Preserve all existing fields/tool metadata while only normalizing content.
+            if hasattr(converted_msg, "model_copy"):
+                typed_messages.append(converted_msg.model_copy(update={"content": sanitized_content}))
             else:
-                # For other message types, use the converted message as-is
-                typed_messages.append(converted_msg)
+                typed_messages.append(converted_msg.copy(update={"content": sanitized_content}))
         return typed_messages
 
     def _invoke_middleware(
