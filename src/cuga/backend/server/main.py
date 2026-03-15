@@ -61,6 +61,7 @@ from cuga.config import (
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
+from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.conversation_history import get_conversation_db
 
@@ -1232,16 +1233,6 @@ app.add_middleware(
 
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
-
-
-def _auth_enabled() -> bool:
-    auth = getattr(settings, "auth", None)
-    return bool(auth and getattr(auth, "enabled", False))
-
-
-def _authorization_enabled() -> bool:
-    auth = getattr(settings, "auth", None)
-    return bool(auth and getattr(auth, "authorization_enabled", False))
 
 
 @app.get("/health")
