@@ -16,13 +16,25 @@ from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
 @pytest.fixture(scope="function", autouse=True)
 def ensure_settings_validated():
     """Ensure settings validators are applied before each test to prevent CI failures."""
-    from cuga.config import settings
+    from cuga.config import settings, validators
+    import dynaconf
+
+    # Re-register all validators to ensure they're present
+    # This is safe to do multiple times
+    for validator in validators:
+        try:
+            settings.validators.register(validator)
+        except Exception:
+            # Validator might already be registered, that's fine
+            pass
 
     # Ensure validators are applied (idempotent operation)
+    # validate_all() is idempotent - calling it multiple times is safe
     try:
         settings.validators.validate_all()
-    except Exception:
-        # If validation fails, it's already been validated or there's a config issue
+    except dynaconf.ValidationError:
+        # ValidationError means validators were already applied and some failed
+        # This is expected and we can continue
         pass
 
     yield
