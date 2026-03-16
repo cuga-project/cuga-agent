@@ -13,6 +13,23 @@ from langchain_core.tools import tool
 from cuga import CugaAgent
 
 
+@pytest.fixture(scope="function", autouse=True)
+def ensure_settings_validated():
+    """Ensure settings validators are applied before each test to prevent CI failures."""
+    from cuga.config import settings
+
+    # Ensure validators are applied (idempotent operation)
+    try:
+        settings.validators.validate_all()
+    except Exception:
+        # If validation fails, it's already been validated or there's a config issue
+        pass
+
+    yield
+
+    # No cleanup needed - settings is a module-level singleton
+
+
 # Test tools
 @tool
 def add_numbers(a: int, b: int) -> int:
