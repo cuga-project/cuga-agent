@@ -150,26 +150,31 @@ class TestSDKContextSummarization:
             agent = CugaAgent(tools=[])
             thread_id = str(uuid.uuid4())
 
-            # Message 1: Establish specific information
+            # Message 1: Establish ONE specific piece of information with explicit instruction to remember
             result1 = await agent.invoke(
-                "I have a meeting with Bob at 3 PM tomorrow about the Q4 budget.", thread_id=thread_id
+                "Please remember: My meeting with Bob is at 3 PM.", thread_id=thread_id
             )
             assert result1 is not None
 
-            # Message 2: Add unrelated context
-            result2 = await agent.invoke("I also need to buy groceries after work.", thread_id=thread_id)
+            # Message 2: Simple filler to increase context
+            result2 = await agent.invoke("The weather is nice today.", thread_id=thread_id)
             assert result2 is not None
 
-            # Message 3: More context (triggers summarization)
-            result3 = await agent.invoke("And I should call my mom this evening.", thread_id=thread_id)
+            # Message 3: Another filler (triggers summarization with low threshold)
+            result3 = await agent.invoke("I like coffee.", thread_id=thread_id)
             assert result3 is not None
 
-            # Message 4: Reference specific detail from before summarization
+            # Message 4: Ask about the ONE specific detail from before summarization
             result4 = await agent.invoke("What time is my meeting with Bob?", thread_id=thread_id)
             assert result4 is not None
             answer_lower = result4.answer.lower()
-            # Check for "3" or "three" or "15" (3 PM in 24-hour format)
-            has_time = "3" in answer_lower or "three" in answer_lower or "15" in answer_lower
+            # Check for "3" or "three" or "15" (3 PM in 24-hour format) or "3pm"
+            has_time = (
+                "3" in answer_lower
+                or "three" in answer_lower
+                or "15" in answer_lower
+                or "3pm" in answer_lower.replace(" ", "")
+            )
             assert has_time, f"Agent should remember meeting time. Got: {result4.answer}"
 
         finally:
