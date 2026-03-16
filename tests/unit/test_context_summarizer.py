@@ -13,6 +13,23 @@ from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
 
 
+@pytest.fixture(scope="function", autouse=True)
+def ensure_settings_validated():
+    """Ensure settings validators are applied before each test to prevent CI failures."""
+    from cuga.config import settings
+
+    # Ensure validators are applied (idempotent operation)
+    try:
+        settings.validators.validate_all()
+    except Exception:
+        # If validation fails, it's already been validated or there's a config issue
+        pass
+
+    yield
+
+    # No cleanup needed - settings is a module-level singleton
+
+
 @pytest.fixture
 def mock_model():
     """Create a mock LLM model with profile information."""
@@ -331,7 +348,10 @@ class TestEdgeCases:
 
     async def test_model_error_handling(self, mock_model, mock_settings, sample_messages):
         """Test error handling when middleware fails."""
+        from unittest.mock import AsyncMock
+
         mock_middleware_error = Mock()
+        mock_middleware_error.abefore_model = AsyncMock(side_effect=Exception("Middleware error"))
         mock_middleware_error.before_model.side_effect = Exception("Middleware error")
 
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
@@ -449,21 +469,20 @@ class TestStateCorruption:
         # Original list should not be modified
         assert sample_messages == original_messages
 
-    async def test_model_failure_preserves_state(self, mock_model, sample_messages):
+    async def test_model_failure_preserves_state(self, mock_model, mock_settings, sample_messages):
         """Test that model failures don't corrupt state."""
-        from cuga.config import settings
-
         mock_model.invoke.side_effect = Exception("Model API error")
 
-        summarizer = ContextSummarizer(mock_model, "gpt-4")
-        result_messages, metrics = await summarizer.summarize_messages(sample_messages)
+        with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
+            summarizer = ContextSummarizer(mock_model, "gpt-4")
+            result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
-        # Middleware creates error summary + keeps last N messages
-        # Expected: 1 error summary + keep_last_n_messages from settings
-        keep_n = settings.context_summarization.keep_last_n_messages
-        expected_count = 1 + keep_n
-        assert len(result_messages) == expected_count
-        assert 'Error generating summary' in result_messages[0].content
+            # Middleware creates error summary + keeps last N messages
+            # Expected: 1 error summary + keep_last_n_messages from settings
+            keep_n = mock_settings.context_summarization.keep_last_n_messages
+            expected_count = 1 + keep_n
+            assert len(result_messages) == expected_count
+            assert 'Error generating summary' in result_messages[0].content
 
     async def test_concurrent_summarization_thread_safety(self, mock_model, sample_messages):
         """Test concurrent summarization doesn't corrupt state."""
@@ -486,9 +505,8 @@ class TestStateCorruption:
 
         # All should complete
         assert len(results) + len(errors) == 10
-
-        # Ensure at least one worker succeeded
-        assert len(results) > 0, "All workers failed - expected at least one successful result"
+        assert not errors, f"Concurrent summarize_messages calls failed: {errors!r}"
+        assert len(results) == 10
 
         # Verify all results are valid
         for result, metrics in results:
@@ -767,15 +785,12 @@ class TestSummaryQualityValidation:
 class TestHardcodedTriggerOverride:
     """Test hardcoded trigger override behavior (Issue #1 from ISSUES.md)."""
 
-    async def test_middleware_configured_with_low_trigger(self, mock_model, sample_messages):
+    async def test_middleware_configured_with_low_trigger(self, mock_model, mock_settings, sample_messages):
         """Verify middleware is configured with 1 token trigger."""
-        from cuga.config import settings
-
         # Set high trigger fraction that shouldn't trigger
-        original_fraction = settings.context_summarization.trigger_fraction
-        try:
-            settings.context_summarization.trigger_fraction = 0.99  # 99%
+        mock_settings.context_summarization.trigger_fraction = 0.99  # 99%
 
+        with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             summarizer = ContextSummarizer(mock_model, "gpt-4")
 
             # Check middleware exists
@@ -787,9 +802,6 @@ class TestHardcodedTriggerOverride:
             # With high fraction, should not trigger
             # But middleware is configured with 1 token, creating inconsistency
             # This demonstrates Issue #1
-
-        finally:
-            settings.context_summarization.trigger_fraction = original_fraction
 
 
 class TestImportFailureRecovery:

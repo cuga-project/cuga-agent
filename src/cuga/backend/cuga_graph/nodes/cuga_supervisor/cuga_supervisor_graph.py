@@ -399,7 +399,7 @@ def _create_supervisor_conversational_graph(
             # ============================================================================
             # CONTEXT SUMMARIZATION - Manage context before LLM invocation
             # ============================================================================
-            state.supervisor_chat_messages = await apply_context_summarization(
+            effective_chat_messages = await apply_context_summarization(
                 state.supervisor_chat_messages or [],
                 base_model,
                 system_prompt=state.prepared_prompt,
@@ -434,10 +434,13 @@ def _create_supervisor_conversational_graph(
                 variables_addendum = f"\n\n## Available Variables\n\n{variables_summary_text}\n\nYou can use these variables directly by their names."
 
             logger.info(
-                f"Processing {len(state.supervisor_chat_messages or [])} supervisor_chat_messages for model invocation"
+                f"Processing {len(effective_chat_messages)} supervisor_chat_messages for model invocation"
             )
 
-            for i, msg in enumerate(state.supervisor_chat_messages or []):
+            # Create a copy of the messages list to avoid mutating the original until we return
+            modified_chat_messages = list(effective_chat_messages)
+
+            for i, msg in enumerate(modified_chat_messages):
                 msg_type = type(msg).__name__
                 msg_role = getattr(msg, 'type', None)
                 logger.debug(
@@ -449,17 +452,15 @@ def _create_supervisor_conversational_graph(
                     content_modified = False
 
                     # Add variables summary to the LAST user message only
-                    if variables_summary_text and i == len(state.supervisor_chat_messages) - 1:
+                    if variables_summary_text and i == len(modified_chat_messages) - 1:
                         content = content + variables_addendum
                         content_modified = True
                         logger.debug("Added variables summary to last user message")
 
-                    # Update state.supervisor_chat_messages directly if content was modified (so it persists across turns)
+                    # Update the local copy if content was modified
                     if content_modified:
-                        state.supervisor_chat_messages[i] = HumanMessage(content=content)
-                        logger.debug(
-                            f"Updated state.supervisor_chat_messages[{i}] with modified content (variables)"
-                        )
+                        modified_chat_messages[i] = HumanMessage(content=content)
+                        logger.debug(f"Updated modified_chat_messages[{i}] with modified content (variables)")
 
                     messages_for_model.append({"role": "user", "content": content})
                 elif isinstance(msg, AIMessage):
@@ -475,16 +476,16 @@ def _create_supervisor_conversational_graph(
                         content_modified = False
 
                         # Add variables summary to the LAST user message only
-                        if variables_summary_text and i == len(state.supervisor_chat_messages) - 1:
+                        if variables_summary_text and i == len(modified_chat_messages) - 1:
                             content = content + variables_addendum
                             content_modified = True
                             logger.debug("Added variables summary to last user message")
 
-                        # Update state.supervisor_chat_messages directly if content was modified (so it persists across turns)
+                        # Update the local copy if content was modified
                         if content_modified:
-                            state.supervisor_chat_messages[i] = HumanMessage(content=content)
+                            modified_chat_messages[i] = HumanMessage(content=content)
                             logger.debug(
-                                f"Updated state.supervisor_chat_messages[{i}] with modified content (variables)"
+                                f"Updated modified_chat_messages[{i}] with modified content (variables)"
                             )
 
                         messages_for_model.append({"role": "user", "content": content})
@@ -515,37 +516,61 @@ def _create_supervisor_conversational_graph(
 
             if code:
                 logger.info(f"Supervisor conversational: extracted code block ({len(code)} chars)")
-                updated_messages, error_message = append_chat_messages_with_step_limit(
-                    state, [AIMessage(content=content)]
-                )
-                if error_message:
-                    return create_error_command(updated_messages, error_message, state.step_count)
+                # Append AI response to our local modified_chat_messages
+                final_messages = modified_chat_messages + [AIMessage(content=content)]
+
+                # Check step limit
+                max_steps = getattr(settings.advanced_features, 'cuga_lite_max_steps', 50)
+                new_step_count = state.step_count + 1
+
+                if new_step_count > max_steps:
+                    error_msg = (
+                        f"Maximum step limit ({max_steps}) reached. "
+                        f"The task has exceeded the allowed number of execution cycles. "
+                        f"Please simplify your request or break it into smaller tasks."
+                    )
+                    logger.warning(f"Step limit reached: {new_step_count} > {max_steps}")
+                    error_ai_message = AIMessage(content=error_msg)
+                    final_messages = final_messages + [error_ai_message]
+                    return create_error_command(final_messages, error_ai_message, state.step_count)
 
                 return Command(
                     goto="execute_agent_tool",
                     update={
-                        "supervisor_chat_messages": updated_messages,
+                        "supervisor_chat_messages": final_messages,
                         "script": code,
-                        "step_count": state.step_count + 1,
+                        "step_count": new_step_count,
                     },
                 )
             else:
                 # No code - final text answer
                 logger.info("Supervisor conversational: final text answer (no code)")
-                updated_messages, error_message = append_chat_messages_with_step_limit(
-                    state, [AIMessage(content=content)]
-                )
-                if error_message:
-                    return create_error_command(updated_messages, error_message, state.step_count)
+                # Append AI response to our local modified_chat_messages
+                final_messages = modified_chat_messages + [AIMessage(content=content)]
+
+                # Check step limit
+                max_steps = getattr(settings.advanced_features, 'cuga_lite_max_steps', 50)
+                new_step_count = state.step_count + 1
+
+                if new_step_count > max_steps:
+                    error_msg = (
+                        f"Maximum step limit ({max_steps}) reached. "
+                        f"The task has exceeded the allowed number of execution cycles. "
+                        f"Please simplify your request or break it into smaller tasks."
+                    )
+                    logger.warning(f"Step limit reached: {new_step_count} > {max_steps}")
+                    error_ai_message = AIMessage(content=error_msg)
+                    final_messages = final_messages + [error_ai_message]
+                    return create_error_command(final_messages, error_ai_message, state.step_count)
 
                 return Command(
                     goto=END,
                     update={
-                        "supervisor_chat_messages": updated_messages,
+                        "supervisor_chat_messages": final_messages,
                         "script": None,
                         "final_answer": content,
                         "execution_complete": True,
-                        "step_count": state.step_count + 1,
+                        "step_count": new_step_count,
                     },
                 )
 

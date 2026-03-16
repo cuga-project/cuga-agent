@@ -33,6 +33,21 @@ from cuga.config import settings
 pytestmark = pytest.mark.skipif(not os.getenv("OPENAI_API_KEY"), reason="OPENAI_API_KEY not set")
 
 
+@pytest.fixture(scope="function", autouse=True)
+def ensure_settings_validated():
+    """Ensure settings validators are applied before each test to prevent CI failures."""
+    # Ensure validators are applied (idempotent operation)
+    try:
+        settings.validators.validate_all()
+    except Exception:
+        # If validation fails, it's already been validated or there's a config issue
+        pass
+
+    yield
+
+    # No cleanup needed - settings is a module-level singleton
+
+
 @pytest.fixture
 def real_model():
     """Create a real ChatOpenAI model for testing."""

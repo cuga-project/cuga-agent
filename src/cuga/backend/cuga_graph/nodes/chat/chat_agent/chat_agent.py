@@ -325,14 +325,16 @@ class ChatAgent(BaseAgent):
             f"tools={len(tools_for_context) if tools_for_context else 0}, "
             f"system_prompt={len(system_prompt_text) if system_prompt_text else 0} chars"
         )
+        state.chat_messages = list(chat_messages)
         await state.manage_message_context(
             model=model, model_name=model_name, tools=tools_for_context, system_prompt=system_prompt_text
         )
+        effective_chat_messages = state.chat_messages or []
         logger.info("ChatAgent: manage_message_context completed successfully")
 
         res = await self.chain.ainvoke(
             {
-                "conversation": self.map_chat_messages(chat_messages),
+                "conversation": self.map_chat_messages(effective_chat_messages),
                 "variables_history": state.variables_manager.get_variables_summary(last_n=10),
                 "apps_list": apps_list or "No apps available",
             }
