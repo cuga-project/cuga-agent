@@ -573,8 +573,9 @@ def _start_demo_crm_services(
 
         start_filesystem = "filesystem" in tool_names if tools else True
         start_crm = "crm" in tool_names if tools else True
+        start_docs = "docs" in tool_names if tools else False
 
-        ports_to_clean = app_mgr.ports_for_apps(start_email, start_filesystem, start_crm)
+        ports_to_clean = app_mgr.ports_for_apps(start_email, start_filesystem, start_crm, start_docs)
         ports_to_clean.extend([settings.server_ports.registry, settings.server_ports.demo])
         logger.info("🧹 Checking for existing processes on required ports...")
         kill_processes_by_port(ports_to_clean)
@@ -597,6 +598,9 @@ def _start_demo_crm_services(
         if start_crm:
             crm_db_path = app_mgr.prepare_crm_db(workspace_path)
             app_mgr.start_crm(crm_db_path)
+
+        if start_docs:
+            app_mgr.start_docs()
 
         registry_process = app_mgr.start_registry(host)
         if registry_process is None or registry_process.poll() is not None:
@@ -623,6 +627,8 @@ def _start_demo_crm_services(
                 services_table.add_row("• Filesystem MCP Server", f"http://localhost:{app_mgr.fs_port}/sse")
             if start_crm:
                 services_table.add_row("• CRM API Server", f"http://localhost:{app_mgr.crm_port}")
+            if start_docs:
+                services_table.add_row("• Docs MCP Server", f"http://localhost:{app_mgr.docs_port}/sse")
             services_table.add_row("• Registry Server", f"http://localhost:{settings.server_ports.registry}")
             services_table.add_row("• Demo Server", f"http://localhost:{settings.server_ports.demo}")
 
@@ -665,7 +671,16 @@ def _start_demo_crm_services(
 # Helper function to validate service
 def validate_service(service: str):
     """Validate service name."""
-    valid_services = ["demo", "demo_crm", "demo_supervisor", "manager", "registry", "appworld", "memory"]
+    valid_services = [
+        "demo",
+        "demo_crm",
+        "demo_docs",
+        "demo_supervisor",
+        "manager",
+        "registry",
+        "appworld",
+        "memory",
+    ]
 
     if service not in valid_services:
         logger.error(f"Unknown service: {service}. Valid options are: {', '.join(valid_services)}")
@@ -677,16 +692,18 @@ def _resolve_apps(
     crm: bool,
     email: bool,
     digital_sales: bool,
+    docs: bool,
     filesystem: bool,
     no_email: bool,
-) -> tuple[bool, bool, bool, bool]:
-    """Resolve app flags from preset + optional overrides. Returns (crm, email, digital_sales, filesystem)."""
+) -> tuple[bool, bool, bool, bool, bool]:
+    """Resolve app flags from preset + optional overrides. Returns (crm, email, digital_sales, docs, filesystem)."""
     defaults = get_default_apps_for_preset(service)
     email_default = defaults["email"] and not no_email
     return (
         defaults["crm"] or crm,
         email_default or email,
         defaults["digital_sales"] or digital_sales,
+        defaults["docs"] or docs,
         defaults["filesystem"] or filesystem,
     )
 
@@ -695,7 +712,7 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_crm, demo_supervisor, manager, registry, appworld, or memory",
+        help="Service to start: demo, demo_crm, demo_docs, demo_supervisor, manager, registry, appworld, or memory",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -742,6 +759,11 @@ def start(
         "--filesystem",
         help="Enable filesystem app (included by default for demo/demo_crm/manager)",
     ),
+    docs: bool = typer.Option(
+        False,
+        "--docs",
+        help="Enable IBM Docs MCP server (search, summarize, ask questions on pages)",
+    ),
     cuga_workspace: str | None = typer.Option(
         None,
         "--cuga-workspace",
@@ -755,12 +777,13 @@ def start(
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
+      - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
       - manager: Manage-config mode: registry uses managed MCP YAML, policy filesync off, demo on 7860
       - registry: Starts only the registry service directly (uvicorn on port 8001)
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
       - memory: Starts the memory service directly (uvicorn on port 8888)
 
-    App flags (--crm, --email, --digital-sales, --filesystem) add apps to the preset:
+    App flags (--crm, --email, --digital-sales, --docs, --filesystem) add apps to the preset:
       - demo: default = digital_sales + filesystem
       - demo_crm: default = crm + filesystem + email
       - manager: default = filesystem only
@@ -772,6 +795,8 @@ def start(
       cuga start demo_crm --no-email      # crm + filesystem only
       cuga start manager --crm --email    # filesystem + crm + email
       cuga start manager --digital-sales  # filesystem + digital_sales
+      cuga start manager --docs  # add IBM Docs MCP server
+      cuga start demo_docs  # registry + demo + IBM Docs MCP only
       cuga start manager --cuga-workspace /path/to/workspace  # custom workspace + policy
       cuga start demo --sandbox           # with remote sandbox
       cuga start registry                 # registry only
@@ -780,13 +805,14 @@ def start(
     """
     validate_service(service)
 
-    app_crm, app_email, app_digital_sales, app_filesystem = _resolve_apps(
-        service, crm, email, digital_sales, filesystem, no_email
+    app_crm, app_email, app_digital_sales, app_docs, app_filesystem = _resolve_apps(
+        service, crm, email, digital_sales, docs, filesystem, no_email
     )
     resolved_tools = build_tools_from_apps(
         crm=app_crm,
         email=app_email,
         digital_sales=app_digital_sales,
+        docs=app_docs,
         filesystem=app_filesystem,
     )
 
@@ -806,7 +832,7 @@ def start(
                 workspace_abs, include_email=app_email
             )
             os.environ["CUGA_LOAD_POLICIES"] = "true"
-            ports_to_kill = app_mgr.ports_for_apps(app_email, app_filesystem, app_crm)
+            ports_to_kill = app_mgr.ports_for_apps(app_email, app_filesystem, app_crm, app_docs)
             ports_to_kill.extend([settings.server_ports.registry, settings.server_ports.demo])
             kill_processes_by_port(ports_to_kill)
             os.environ["CUGA_HOST"] = host
@@ -820,6 +846,8 @@ def start(
             if app_crm:
                 crm_db_path = app_mgr.prepare_crm_db(workspace_path)
                 app_mgr.start_crm(crm_db_path)
+            if app_docs:
+                app_mgr.start_docs()
 
             registry_process = app_mgr.start_registry(host)
             if registry_process is None or registry_process.poll() is not None:
@@ -842,6 +870,8 @@ def start(
                     table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
                 if app_crm:
                     table.add_row("CRM API:", f"http://localhost:{app_mgr.crm_port}")
+                if app_docs:
+                    table.add_row("Docs MCP:", f"http://localhost:{app_mgr.docs_port}/sse")
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
                 console.print()
@@ -875,7 +905,7 @@ def start(
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False))
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, app_docs))
             kill_processes_by_port(ports_to_clean)
 
             os.environ["CUGA_HOST"] = host
@@ -885,6 +915,8 @@ def start(
 
             app_mgr.prepare_workspace(workspace_path)
             app_mgr.start_filesystem(workspace_path)
+            if app_docs:
+                app_mgr.start_docs()
 
             registry_process = app_mgr.start_registry(host)
             if registry_process is None or registry_process.poll() is not None:
@@ -904,6 +936,8 @@ def start(
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
                 table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                if app_docs:
+                    table.add_row("Docs MCP:", f"http://localhost:{app_mgr.docs_port}/sse")
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
 
@@ -920,6 +954,62 @@ def start(
 
         except Exception as e:
             logger.error(f"Error starting demo services: {e}")
+            stop_direct_processes()
+            raise typer.Exit(1)
+        return
+
+    if service == "demo_docs":
+        os.environ["CUGA_DEMO_ADVANCED"] = "true"
+        os.environ["CUGA_MANAGER_MODE"] = "true"
+        os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+        os.environ["MCP_SERVERS_FILE"] = "none"
+        ensure_managed_mcp_file_exists(get_managed_mcp_path())
+
+        try:
+            logger.info("🧹 Resetting config db and setting up manage demo_docs (docs only)...")
+            setup_demo_manage_config("demo_docs", tools=resolved_tools)
+            logger.info("🧹 Checking for existing processes on required ports...")
+            app_mgr = _make_app_manager()
+            ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, False, False, True))
+            kill_processes_by_port(ports_to_clean)
+
+            os.environ["CUGA_HOST"] = host
+            app_mgr.start_docs()
+
+            registry_process = app_mgr.start_registry(host)
+            if registry_process is None or registry_process.poll() is not None:
+                logger.error("Registry service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            demo_process = app_mgr.start_demo(host, sandbox=sandbox)
+            if demo_process is None or demo_process.poll() is not None:
+                logger.error("Demo service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            if direct_processes:
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Service", style="bold white")
+                table.add_column("URL", style="cyan")
+                table.add_row("Docs MCP:", f"http://localhost:{app_mgr.docs_port}/sse")
+                table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
+                table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
+
+                console.print()
+                console.print(
+                    Panel(
+                        table,
+                        title="[bold yellow]Demo Docs (docs-only mode). Press Ctrl+C to stop[/bold yellow]",
+                        border_style="cyan",
+                        padding=(1, 2),
+                    )
+                )
+                wait_for_direct_processes()
+
+        except Exception as e:
+            logger.error(f"Error starting demo_docs services: {e}")
             stop_direct_processes()
             raise typer.Exit(1)
         return

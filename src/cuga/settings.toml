@@ -50,7 +50,7 @@ cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
-execution_output_max_length = 3500  # Maximum characters to show in execution output (prevents token overflow)
+execution_output_max_length = 50000  # Maximum characters to show in execution output (prevents token overflow)
 
 [supervisor]
 enabled = false  # Enable CugaSupervisor for multi-agent coordination
@@ -107,7 +107,7 @@ ssl_keyfile = ""
 ssl_certfile = ""
 
 [ui]
-hide_cuga_logo = false  # Set to true to hide the CUGA logo in the header
+hide_cuga_logo = false  # Set to true to hide the logo in the header
 
 [server_ports]
 registry = 8001
@@ -119,6 +119,7 @@ crm_api = 8007
 saved_flows = 8003
 environment_url = 8000
 filesystem_mcp = 8112
+docs_mcp = 8113
 digital_sales_api = 8000
 mcp_server = 8000
 petstore_api = 8081

@@ -50,6 +50,10 @@ class AppManager:
         return int(os.environ.get("DYNACONF_SERVER_PORTS__CRM_API", str(settings.server_ports.crm_api)))
 
     @property
+    def docs_port(self) -> int:
+        return _port("DOCS_MCP", str(getattr(settings.server_ports, "docs_mcp", 8113)))
+
+    @property
     def registry_port(self) -> int:
         return settings.server_ports.registry
 
@@ -62,6 +66,7 @@ class AppManager:
         email: bool = False,
         filesystem: bool = False,
         crm: bool = False,
+        docs: bool = False,
     ) -> list[int]:
         """Return ports to clean for given app flags."""
         ports: list[int] = []
@@ -71,6 +76,8 @@ class AppManager:
             ports.extend([self.email_sink_port, self.email_mcp_port])
         if crm:
             ports.append(self.crm_port)
+        if docs:
+            ports.append(self.docs_port)
         return ports
 
     def start_email(self, use_cache: bool = True) -> tuple[int, int]:
@@ -112,6 +119,16 @@ class AppManager:
         logger.info("Filesystem MCP server started")
         time.sleep(2)
         return self.fs_port
+
+    def start_docs(self, use_cache: bool = True) -> int:
+        """Start docs MCP server. Returns docs_port."""
+        port = self.docs_port
+        logger.info(f"Starting docs MCP server on port {port}")
+        cmd = ["uv", "run", "python", "docs/examples/docs_mcp/docs_mcp_server.py"]
+        self._run("docs-mcp", cmd, {"DYNACONF_SERVER_PORTS__DOCS_MCP": str(port)})
+        logger.info("Docs MCP server started")
+        time.sleep(2)
+        return port
 
     def start_crm(self, crm_db_path: str, use_cache: bool = True) -> int:
         """Start CRM API server. Returns crm_port."""
@@ -238,11 +255,20 @@ class AppManager:
                 self._kill_process(proc.pid)
             del self._processes["crm-server"]
 
+    def stop_docs(self) -> None:
+        """Stop docs MCP server if running."""
+        if "docs-mcp" in self._processes:
+            proc = self._processes["docs-mcp"]
+            if proc and proc.poll() is None:
+                self._kill_process(proc.pid)
+            del self._processes["docs-mcp"]
+
     def stop_apps(
         self,
         email: bool = False,
         filesystem: bool = False,
         crm: bool = False,
+        docs: bool = False,
     ) -> None:
         """Stop specified app servers."""
         if email:
@@ -251,6 +277,8 @@ class AppManager:
             self.stop_filesystem()
         if crm:
             self.stop_crm()
+        if docs:
+            self.stop_docs()
 
     def prepare_workspace(self, workspace_path: str, copy_examples: bool = True) -> list[str]:
         """Create workspace dir and optionally copy example files. Returns list of copied paths."""

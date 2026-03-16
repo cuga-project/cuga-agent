@@ -111,7 +111,7 @@ const DEFAULT_CONFIG: AgentConfig = {
     disable_ssl: false,
   },
   tools: [],
-  feature_flags: { enable_todos: true, reflection: false, max_steps: 70, shortlisting_tool_threshold: 35 },
+  feature_flags: { enable_todos: false, reflection: false, max_steps: 70, shortlisting_tool_threshold: 35 },
   homescreen: { ...DEFAULT_HOMESCREEN },
 };
 
@@ -305,9 +305,7 @@ export function ManagePage() {
             if (Array.isArray(out.tools)) {
               out.tools = normalizeTools(out.tools);
             }
-            // Policies are now included in the config from manage API
-            if (out.policies) {
-              // Ensure policies structure is correct
+            if (out.policies !== undefined && out.policies && typeof out.policies === "object") {
               if (!out.policies.enablePolicies && out.policies.enablePolicies !== false) {
                 out.policies.enablePolicies = true;
               }
@@ -338,9 +336,7 @@ export function ManagePage() {
             if (Array.isArray(out.tools)) {
               out.tools = normalizeTools(out.tools);
             }
-            // Policies are now included in the config from manage API
-            if (out.policies) {
-              // Ensure policies structure is correct
+            if (out.policies !== undefined && out.policies && typeof out.policies === "object") {
               if (!out.policies.enablePolicies && out.policies.enablePolicies !== false) {
                 out.policies.enablePolicies = true;
               }
@@ -1142,7 +1138,7 @@ export function ManagePage() {
                       <Checkbox
                         id="enable_todos"
                         labelText="Enable todos"
-                        checked={flags.enable_todos ?? true}
+                        checked={flags.enable_todos ?? false}
                         onChange={(_e, { checked }) => {
                           updateFeatureFlag("enable_todos", !!checked);
                           setTimeout(() => performDraftSave(), 0);
