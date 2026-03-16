@@ -27,6 +27,49 @@ def _auth_enabled() -> bool:
         return True
 
 
+def _authorization_enabled() -> bool:
+    try:
+        from cuga.config import settings
+
+        auth = getattr(settings, "auth", None)
+        return bool(auth and getattr(auth, "authorization_enabled", False))
+    except Exception as e:
+        logger.warning(
+            "authorization config check failed (fail-open): {}",
+            e,
+            exc_info=True,
+        )
+        return False
+
+
+def _get_manage_roles() -> list[str]:
+    try:
+        from cuga.config import settings
+
+        auth = getattr(settings, "auth", None)
+        return (
+            list(getattr(auth, "manage_roles", ["ServiceOwner", "ServiceAdmin"]))
+            if auth
+            else ["ServiceOwner", "ServiceAdmin"]
+        )
+    except Exception:
+        return ["ServiceOwner", "ServiceAdmin"]
+
+
+def _get_chat_roles() -> list[str]:
+    try:
+        from cuga.config import settings
+
+        auth = getattr(settings, "auth", None)
+        return (
+            list(getattr(auth, "chat_roles", ["ServiceOwner", "ServiceAdmin", "ServiceUser"]))
+            if auth
+            else ["ServiceOwner", "ServiceAdmin", "ServiceUser"]
+        )
+    except Exception:
+        return ["ServiceOwner", "ServiceAdmin", "ServiceUser"]
+
+
 def _session_cookie_name() -> str:
     try:
         from cuga.config import settings
@@ -96,4 +139,50 @@ async def require_auth(request: Request) -> Optional[UserInfo]:
     user = await get_current_user(request)
     if _auth_enabled() and user is None:
         raise HTTPException(status_code=401, detail="Authentication required")
+    return user
+
+
+async def require_manage_access(request: Request) -> Optional[UserInfo]:
+    """Require authentication and manage role authorization."""
+    user = await require_auth(request)
+
+    # If authorization is disabled, pass through
+    if not _authorization_enabled():
+        return user
+
+    # If auth is disabled entirely, user will be None - pass through
+    if user is None:
+        return user
+
+    # Check if user has any of the required manage roles
+    manage_roles = _get_manage_roles()
+    user_roles = user.roles or []
+
+    if not any(role in manage_roles for role in user_roles):
+        raise HTTPException(
+            status_code=403, detail=f"Access denied. Required roles: {', '.join(manage_roles)}"
+        )
+
+    return user
+
+
+async def require_chat_access(request: Request) -> Optional[UserInfo]:
+    """Require authentication and chat role authorization."""
+    user = await require_auth(request)
+
+    # If authorization is disabled, pass through
+    if not _authorization_enabled():
+        return user
+
+    # If auth is disabled entirely, user will be None - pass through
+    if user is None:
+        return user
+
+    # Check if user has any of the required chat roles
+    chat_roles = _get_chat_roles()
+    user_roles = user.roles or []
+
+    if not any(role in chat_roles for role in user_roles):
+        raise HTTPException(status_code=403, detail=f"Access denied. Required roles: {', '.join(chat_roles)}")
+
     return user

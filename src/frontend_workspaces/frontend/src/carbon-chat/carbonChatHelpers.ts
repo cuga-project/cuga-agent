@@ -16,12 +16,22 @@ import {
 } from "@carbon/ai-chat";
 import * as api from "../api";
 
+const DEFAULT_NICKNAME = "CUGA";
+
 let cachedProfileUrl: string | undefined = undefined;
 let profileUrlFetched = false;
 
+const nicknameCache: Record<"draft" | "published", string> = {
+  draft: DEFAULT_NICKNAME,
+  published: DEFAULT_NICKNAME,
+};
+const nicknameFetched: Record<"draft" | "published", boolean> = {
+  draft: false,
+  published: false,
+};
+
 async function getProfilePictureUrl(): Promise<string | undefined> {
   if (profileUrlFetched) return cachedProfileUrl;
-  
   try {
     const config = await api.getUiConfig();
     cachedProfileUrl = config.hide_cuga_logo ? undefined : "https://avatars.githubusercontent.com/u/230847519?s=200&v=4";
@@ -34,27 +44,58 @@ async function getProfilePictureUrl(): Promise<string | undefined> {
   }
 }
 
-export async function getResponseUserProfile() {
-  const profile_picture_url = await getProfilePictureUrl();
+async function getAgentNickname(useDraft: boolean): Promise<string> {
+  const key: "draft" | "published" = useDraft ? "draft" : "published";
+  if (nicknameFetched[key]) return nicknameCache[key];
+  try {
+    const res = await api.getManageConfig(useDraft);
+    if (res.ok) {
+      const data = await res.json();
+      const name = data?.config?.agent?.name;
+      if (name && typeof name === "string" && name.trim()) {
+        nicknameCache[key] = String(name).trim();
+      }
+    }
+    nicknameFetched[key] = true;
+    return nicknameCache[key];
+  } catch {
+    nicknameFetched[key] = true;
+    return nicknameCache[key];
+  }
+}
+
+export async function getResponseUserProfile(useDraft = false) {
+  const [profile_picture_url, nickname] = await Promise.all([
+    getProfilePictureUrl(),
+    getAgentNickname(useDraft),
+  ]);
   return {
     id: "cuga-agent",
-    nickname: "CUGA",
+    nickname,
     user_type: UserType.BOT,
     profile_picture_url,
   };
 }
 
-// Legacy export for backward compatibility - will have undefined profile_picture_url initially
 export const RESPONSE_USER_PROFILE = {
   id: "cuga-agent",
-  nickname: "CUGA",
+  nickname: DEFAULT_NICKNAME,
   user_type: UserType.BOT,
   profile_picture_url: undefined as string | undefined,
 };
 
-// Initialize the profile picture URL
-getProfilePictureUrl().then(url => {
+export async function initAgentProfile(useDraft: boolean) {
+  const [url, nick] = await Promise.all([
+    getProfilePictureUrl(),
+    getAgentNickname(useDraft),
+  ]);
   RESPONSE_USER_PROFILE.profile_picture_url = url;
+  RESPONSE_USER_PROFILE.nickname = nick;
+}
+
+Promise.all([getProfilePictureUrl(), getAgentNickname(false)]).then(([url, nick]) => {
+  RESPONSE_USER_PROFILE.profile_picture_url = url;
+  RESPONSE_USER_PROFILE.nickname = nick;
 });
 
 export const BUTTON_KIND = {

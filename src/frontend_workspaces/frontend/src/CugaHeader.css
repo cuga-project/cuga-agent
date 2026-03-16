@@ -16,36 +16,39 @@
   object-fit: cover;
 }
 
-.cuga-header-agent-context {
-  font-size: 0.75rem;
-  font-weight: 400;
-  opacity: 0.9;
-  margin-left: 0.5rem;
-  margin-right: 0.75rem;
-  align-self: center;
-  white-space: nowrap;
-}
-
 /* User avatar button in header bar */
 .cuga-user-avatar-btn {
   position: relative;
 }
 
-.cuga-user-avatar-initials {
+.cuga-user-avatar-initials,
+.cuga-user-avatar-empty {
   display: flex;
   align-items: center;
   justify-content: center;
   width: 1.75rem;
   height: 1.75rem;
   border-radius: 50%;
+  pointer-events: none;
+  flex-shrink: 0;
+}
+
+.cuga-user-avatar-initials {
   background-color: var(--cds-interactive, #0f62fe);
   color: #fff;
   font-size: 0.6875rem;
   font-weight: 600;
   letter-spacing: 0.02em;
   line-height: 1;
-  pointer-events: none;
-  flex-shrink: 0;
+}
+
+.cuga-user-avatar-empty {
+  background-color: var(--cds-layer-02, #e0e0e0);
+  color: var(--cds-text-secondary, #525252);
+}
+
+.cuga-user-avatar-empty svg {
+  fill: currentColor;
 }
 
 /* User profile panel - popover style */
@@ -83,12 +86,27 @@
   flex-shrink: 0;
 }
 
+.cuga-user-panel-avatar-initials,
+.cuga-user-panel-avatar-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
 .cuga-user-panel-avatar-initials {
   font-size: 0.6875rem;
   font-weight: 600;
   color: #fff;
   letter-spacing: 0.02em;
   line-height: 1;
+}
+
+.cuga-user-panel-avatar-icon {
+  color: #fff;
+}
+
+.cuga-user-panel-avatar-icon svg {
+  fill: currentColor;
 }
 
 .cuga-user-panel-details {
@@ -118,6 +136,16 @@
   overflow: hidden;
   text-overflow: ellipsis;
   line-height: 1.33333;
+}
+
+.cuga-user-panel-agent {
+  margin: 0.25rem 0 0;
+  font-size: 0.6875rem;
+  color: #6f6f6f;
+  font-family: var(--cds-mono-font);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .cuga-user-menu-list {
