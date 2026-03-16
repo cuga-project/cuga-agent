@@ -79,6 +79,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
+from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 from cuga.backend.llm.utils.helpers import load_one_prompt
@@ -814,81 +815,17 @@ def create_cuga_lite_graph(
             active_model = configurable.get("llm") or base_model
 
             # ── Context management BEFORE building messages_for_model ────────────
-            effective_chat_messages = state.chat_messages or []
-            try:
-                initial_message_count = len(effective_chat_messages)
-                model_name = getattr(active_model, 'model_name', 'gpt-4')
-                tools_for_later_context = None
-
-                logger.debug(
-                    f"CugaLite: Calling manage_message_context with model_name={model_name}, "
-                    f"0 tools, system_prompt={len(dynamic_prompt) if dynamic_prompt else 0} chars"
-                )
-
-                temp_agent_state = AgentState(
-                    input="",
-                    url="",
-                    chat_messages=list(effective_chat_messages),  # pass a copy
-                    variables_storage=state.variables_storage,
-                    variable_counter_state=state.variable_counter_state,
-                    variable_creation_order=state.variable_creation_order,
-                )
-
-                temp_agent_state.manage_message_context(
-                    model=active_model,
-                    model_name=model_name,
-                    tools=tools_for_later_context,
-                    system_prompt=dynamic_prompt,
-                )
-
-                # Use the (possibly summarized) messages locally — do NOT mutate state
-                effective_chat_messages = temp_agent_state.chat_messages or []
-                final_message_count = len(effective_chat_messages)
-
-                if final_message_count < initial_message_count:
-                    logger.info(
-                        f"CugaLite: Context summarization reduced messages "
-                        f"from {initial_message_count} to {final_message_count}"
-                    )
-
-                if (
-                    hasattr(temp_agent_state, 'last_summarization_metrics')
-                    and temp_agent_state.last_summarization_metrics
-                ):
-                    metrics = temp_agent_state.last_summarization_metrics.get('chat_messages', {})
-                    if metrics:
-                        logger.info(
-                            f"📊 CugaLite Context Summarization Results:\n"
-                            f"  Messages: {metrics['before']['message_count']} → {metrics['after']['message_count']}\n"
-                            f"  Tokens: {metrics['before']['token_count']} → {metrics['after']['token_count']} "
-                            f"(saved {metrics['tokens_saved']} tokens)\n"
-                            f"  Compression: {(1 - metrics['compression_ratio']):.1%} "
-                            f"(retained {metrics['compression_ratio']:.1%})\n"
-                            f"  Messages summarized: {metrics['messages_summarized']}, "
-                            f"kept: {metrics['messages_kept']}"
-                        )
-                        try:
-                            tracker.collect_step(
-                                step=Step(
-                                    name="ContextSummarization",
-                                    data=json.dumps(
-                                        {
-                                            "before": metrics['before'],
-                                            "after": metrics['after'],
-                                            "tokens_saved": metrics['tokens_saved'],
-                                            "compression_ratio": metrics['compression_ratio'],
-                                            "messages_summarized": metrics['messages_summarized'],
-                                            "messages_kept": metrics['messages_kept'],
-                                        }
-                                    ),
-                                )
-                            )
-                        except Exception as e:
-                            logger.debug(f"Failed to record summarization in tracker: {e}")
-
-            except Exception as e:
-                logger.exception(f"Context management failed in CugaLite: {e}")
-                # effective_chat_messages remains as original state.chat_messages
+            effective_chat_messages = apply_context_summarization(
+                state.chat_messages or [],
+                active_model,
+                system_prompt=dynamic_prompt,
+                tools=None,
+                tracker=tracker,
+                variables_storage=state.variables_storage,
+                variable_counter_state=state.variable_counter_state,
+                variable_creation_order=state.variable_creation_order,
+            )
+            # effective_chat_messages may contain summarized messages if context limit exceeded
             # ─────────────────────────────────────────────────────────────────────
 
             # Build messages_for_model from effective_chat_messages (post-summarization)

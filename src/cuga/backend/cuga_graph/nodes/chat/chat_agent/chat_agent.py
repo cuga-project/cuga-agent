@@ -314,7 +314,10 @@ class ChatAgent(BaseAgent):
                                     system_prompt_text = msg_template.prompt.template
                                     break
         except Exception as e:
-            logger.debug(f"ChatAgent: Could not extract context info from chain: {e}")
+            logger.warning(
+                f"ChatAgent: Failed to extract context info from chain: {e}. "
+                f"Context management will proceed with incomplete information."
+            )
 
         # Call context management
         logger.info(

@@ -667,6 +667,3 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             # Restore original settings
             os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
             settings.reload()
-
-
-# Made with Bob
