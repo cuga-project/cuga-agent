@@ -14,7 +14,7 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 
 
-def apply_context_summarization(
+async def apply_context_summarization(
     messages: List[BaseMessage],
     model: Any,
     *,
@@ -68,7 +68,7 @@ def apply_context_summarization(
         temp_state = AgentState(**state_kwargs)
 
         # Apply context management
-        temp_state.manage_message_context(
+        await temp_state.manage_message_context(
             model=model,
             model_name=model_name,
             tools=tools,

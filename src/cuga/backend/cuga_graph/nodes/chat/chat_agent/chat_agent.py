@@ -325,7 +325,7 @@ class ChatAgent(BaseAgent):
             f"tools={len(tools_for_context) if tools_for_context else 0}, "
             f"system_prompt={len(system_prompt_text) if system_prompt_text else 0} chars"
         )
-        state.manage_message_context(
+        await state.manage_message_context(
             model=model, model_name=model_name, tools=tools_for_context, system_prompt=system_prompt_text
         )
         logger.info("ChatAgent: manage_message_context completed successfully")

@@ -399,7 +399,7 @@ def _create_supervisor_conversational_graph(
             # ============================================================================
             # CONTEXT SUMMARIZATION - Manage context before LLM invocation
             # ============================================================================
-            state.supervisor_chat_messages = apply_context_summarization(
+            state.supervisor_chat_messages = await apply_context_summarization(
                 state.supervisor_chat_messages or [],
                 base_model,
                 system_prompt=state.prepared_prompt,

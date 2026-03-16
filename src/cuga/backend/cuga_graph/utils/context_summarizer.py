@@ -311,7 +311,9 @@ class ContextSummarizer:
         # Count messages after the last summary (or all if no summary found)
         return len(messages) - (last_summary_idx + 1) if last_summary_idx >= 0 else len(messages)
 
-    def summarize_messages(self, messages: List[BaseMessage]) -> Tuple[List[BaseMessage], Dict[str, Any]]:
+    async def summarize_messages(
+        self, messages: List[BaseMessage]
+    ) -> Tuple[List[BaseMessage], Dict[str, Any]]:
         """
         Summarize older messages while keeping recent ones.
 
@@ -340,7 +342,7 @@ class ContextSummarizer:
 
         try:
             typed_messages = self._convert_messages_to_typed(messages)
-            result = self._invoke_middleware(typed_messages, messages, keep_n)
+            result = await self._invoke_middleware(typed_messages, messages, keep_n)
 
             if result is None:
                 return messages, {"skipped": "middleware decided not to summarize"}
@@ -409,7 +411,7 @@ class ContextSummarizer:
                 typed_messages.append(converted_msg.copy(update={"content": sanitized_content}))
         return typed_messages
 
-    def _invoke_middleware(
+    async def _invoke_middleware(
         self, typed_messages: List[BaseMessage], original_messages: List[BaseMessage], keep_n: int
     ) -> Optional[Dict[str, Any]]:
         """
@@ -439,7 +441,12 @@ class ContextSummarizer:
         try:
             state = LangChainAgentState(messages=typed_messages)  # type: ignore
             runtime = Runtime()  # type: ignore
-            return self.middleware.before_model(state, runtime)
+            # Check if middleware has async method, otherwise use sync
+            if hasattr(self.middleware, 'abefore_model'):
+                return await self.middleware.abefore_model(state, runtime)
+            else:
+                # Fallback to sync method if async not available
+                return self.middleware.before_model(state, runtime)
         except ImportError as e:
             logger.error(f"Import error during middleware invocation: {e}")
             logger.error(f"Traceback: {traceback.format_exc()}")

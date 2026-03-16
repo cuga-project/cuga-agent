@@ -1034,7 +1034,7 @@ class AgentState(BaseModel):
     def format_subtask(self):
         return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, self.sub_task_app[:30])
 
-    def manage_message_context(
+    async def manage_message_context(
         self,
         model=None,
         model_name: Optional[str] = None,
@@ -1071,7 +1071,7 @@ class AgentState(BaseModel):
                 return
 
             # Summarize all three message lists
-            self.chat_messages = self._summarize_message_list(
+            self.chat_messages = await self._summarize_message_list(
                 self.chat_messages,
                 "chat_messages",
                 summarizer,
@@ -1079,7 +1079,7 @@ class AgentState(BaseModel):
                 tools=tools,
                 system_prompt=system_prompt,
             )
-            self.chat_agent_messages = self._summarize_message_list(
+            self.chat_agent_messages = await self._summarize_message_list(
                 self.chat_agent_messages,
                 "chat_agent_messages",
                 summarizer,
@@ -1087,7 +1087,7 @@ class AgentState(BaseModel):
                 tools=tools,
                 system_prompt=system_prompt,
             )
-            self.supervisor_chat_messages = self._summarize_message_list(
+            self.supervisor_chat_messages = await self._summarize_message_list(
                 self.supervisor_chat_messages,
                 "supervisor_chat_messages",
                 summarizer,
@@ -1099,7 +1099,7 @@ class AgentState(BaseModel):
             # Fall back to original rolling window approach
             self.apply_message_sliding_window()
 
-    def _summarize_message_list(
+    async def _summarize_message_list(
         self,
         messages: Optional[List[BaseMessage]],
         list_name: str,
@@ -1141,7 +1141,7 @@ class AgentState(BaseModel):
             )
 
             # Perform summarization
-            messages, summary_metrics = summarizer.summarize_messages(messages)
+            messages, summary_metrics = await summarizer.summarize_messages(messages)
 
             # Handle different result types
             if "skipped" in summary_metrics:
@@ -1166,10 +1166,10 @@ class AgentState(BaseModel):
 
         return messages
 
-    def manage_rolling_window(self):
+    async def manage_rolling_window(self):
         """
         Deprecated: Use manage_message_context() instead.
 
         This method is kept for backward compatibility and calls manage_message_context().
         """
-        self.manage_message_context()
+        await self.manage_message_context()

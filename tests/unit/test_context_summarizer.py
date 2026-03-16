@@ -37,7 +37,7 @@ def mock_middleware():
     middleware = Mock()
 
     # Mock the before_model method to return summarized messages
-    def mock_before_model(state, runtime):
+    async def mock_abefore_model(state, runtime):
         messages = state.messages if hasattr(state, 'messages') else state.get('messages', [])
         if len(messages) <= 10:
             return None  # Don't summarize
@@ -50,7 +50,9 @@ def mock_middleware():
 
         return {"messages": [summary_msg] + recent_messages}
 
-    middleware.before_model = Mock(side_effect=mock_before_model)
+    # Support both sync and async methods
+    middleware.abefore_model = Mock(side_effect=mock_abefore_model)
+    middleware.before_model = Mock(side_effect=lambda s, r: None)  # Fallback
     return middleware
 
 
@@ -85,7 +87,7 @@ def sample_messages():
 class TestContextSummarizerInitialization:
     """Test ContextSummarizer initialization."""
 
-    def test_init_with_enabled_config(self, mock_model, mock_settings):
+    async def test_init_with_enabled_config(self, mock_model, mock_settings):
         """Test initialization when summarization is enabled."""
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             summarizer = ContextSummarizer(mock_model, "gpt-4")
@@ -95,7 +97,7 @@ class TestContextSummarizerInitialization:
             assert summarizer.config == mock_settings.context_summarization
             assert hasattr(summarizer, 'middleware')
 
-    def test_init_with_disabled_config(self, mock_model, mock_settings):
+    async def test_init_with_disabled_config(self, mock_model, mock_settings):
         """Test initialization when summarization is disabled."""
         mock_settings.context_summarization.enabled = False
 
@@ -106,7 +108,7 @@ class TestContextSummarizerInitialization:
             # Middleware is still created but won't be used
             assert not summarizer.config.enabled
 
-    def test_init_with_tracker(self, mock_model, mock_settings):
+    async def test_init_with_tracker(self, mock_model, mock_settings):
         """Test initialization with ActivityTracker."""
         mock_tracker = Mock()
 
@@ -120,7 +122,7 @@ class TestContextSummarizerInitialization:
 class TestShouldSummarize:
     """Test should_summarize trigger detection."""
 
-    def test_should_summarize_disabled(self, mock_model, mock_settings, sample_messages):
+    async def test_should_summarize_disabled(self, mock_model, mock_settings, sample_messages):
         """Test that summarization is skipped when disabled."""
         mock_settings.context_summarization.enabled = False
 
@@ -131,7 +133,7 @@ class TestShouldSummarize:
             assert not should_trigger
             assert metrics == {}
 
-    def test_should_summarize_empty_messages(self, mock_model, mock_settings):
+    async def test_should_summarize_empty_messages(self, mock_model, mock_settings):
         """Test with empty message list."""
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             summarizer = ContextSummarizer(mock_model, "gpt-4")
@@ -140,7 +142,7 @@ class TestShouldSummarize:
             assert not should_trigger
             assert metrics == {}
 
-    def test_should_summarize_fraction_trigger(self, mock_model, mock_settings):
+    async def test_should_summarize_fraction_trigger(self, mock_model, mock_settings):
         """Test fraction-based trigger."""
         # Create messages that exceed 75% of context
         large_messages: List[BaseMessage] = [HumanMessage(content="x" * 1000) for _ in range(100)]
@@ -160,7 +162,7 @@ class TestShouldSummarize:
                 assert 'trigger_reason' in metrics
                 assert 'fraction' in metrics['trigger_reason']
 
-    def test_should_summarize_token_trigger(self, mock_model, mock_settings):
+    async def test_should_summarize_token_trigger(self, mock_model, mock_settings):
         """Test token-based trigger."""
         mock_settings.context_summarization.trigger_tokens = 1000
         messages: List[BaseMessage] = [HumanMessage(content="x" * 500) for _ in range(10)]
@@ -173,7 +175,7 @@ class TestShouldSummarize:
                 assert should_trigger
                 assert 'tokens' in metrics['trigger_reason']
 
-    def test_should_summarize_message_trigger(self, mock_model, mock_settings, sample_messages):
+    async def test_should_summarize_message_trigger(self, mock_model, mock_settings, sample_messages):
         """Test message count trigger."""
         mock_settings.context_summarization.trigger_messages = 20
 
@@ -189,31 +191,31 @@ class TestShouldSummarize:
 class TestSummarizeMessages:
     """Test message summarization logic."""
 
-    def test_summarize_disabled(self, mock_model, mock_settings, sample_messages):
+    async def test_summarize_disabled(self, mock_model, mock_settings, sample_messages):
         """Test that summarization returns original messages when disabled."""
         mock_settings.context_summarization.enabled = False
 
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             summarizer = ContextSummarizer(mock_model, "gpt-4")
-            result_messages, metrics = summarizer.summarize_messages(sample_messages)
+            result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
             assert result_messages == sample_messages
             assert 'skipped' in metrics
             assert metrics['skipped'] == "summarization disabled or no messages"
 
-    def test_summarize_insufficient_messages(self, mock_model, mock_settings):
+    async def test_summarize_insufficient_messages(self, mock_model, mock_settings):
         """Test with fewer messages than keep_last_n."""
         messages: List[BaseMessage] = [HumanMessage(content=f"Message {i}") for i in range(5)]
         mock_settings.context_summarization.keep_last_n_messages = 10
 
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             summarizer = ContextSummarizer(mock_model, "gpt-4")
-            result_messages, metrics = summarizer.summarize_messages(messages)
+            result_messages, metrics = await summarizer.summarize_messages(messages)
 
             assert result_messages == messages
             assert 'skipped' in metrics
 
-    def test_summarize_success(self, mock_model, mock_settings, mock_middleware, sample_messages):
+    async def test_summarize_success(self, mock_model, mock_settings, mock_middleware, sample_messages):
         """Test successful summarization."""
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             with patch(
@@ -223,7 +225,7 @@ class TestSummarizeMessages:
                 summarizer = ContextSummarizer(mock_model, "gpt-4")
                 summarizer.middleware = mock_middleware  # Inject mock middleware
 
-                result_messages, metrics = summarizer.summarize_messages(sample_messages)
+                result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
                 # Should have summary + last 10 messages = 11 total
                 assert len(result_messages) == 11
@@ -242,7 +244,9 @@ class TestSummarizeMessages:
                 assert 'tokens_saved' in metrics
                 assert 'compression_ratio' in metrics
 
-    def test_summarize_model_invocation(self, mock_model, mock_settings, mock_middleware, sample_messages):
+    async def test_summarize_model_invocation(
+        self, mock_model, mock_settings, mock_middleware, sample_messages
+    ):
         """Test that middleware is invoked correctly."""
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             with patch(
@@ -252,12 +256,14 @@ class TestSummarizeMessages:
                 summarizer = ContextSummarizer(mock_model, "gpt-4")
                 summarizer.middleware = mock_middleware
 
-                summarizer.summarize_messages(sample_messages)
+                await summarizer.summarize_messages(sample_messages)
 
-                # Verify middleware was called
-                mock_middleware.before_model.assert_called_once()
+                # Verify middleware was called (async version)
+                mock_middleware.abefore_model.assert_called_once()
 
-    def test_summarize_with_custom_prompt(self, mock_model, mock_settings, mock_middleware, sample_messages):
+    async def test_summarize_with_custom_prompt(
+        self, mock_model, mock_settings, mock_middleware, sample_messages
+    ):
         """Test summarization with custom prompt template."""
         custom_prompt = "Custom summary prompt: {messages}"
         mock_settings.context_summarization.custom_summary_prompt = custom_prompt
@@ -270,13 +276,13 @@ class TestSummarizeMessages:
                 summarizer = ContextSummarizer(mock_model, "gpt-4")
                 summarizer.middleware = mock_middleware
 
-                result_messages, metrics = summarizer.summarize_messages(sample_messages)
+                result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
                 # Verify summarization occurred
                 assert len(result_messages) == 11
                 assert 'before' in metrics
 
-    def test_summarize_with_tracker(self, mock_model, mock_settings, mock_middleware, sample_messages):
+    async def test_summarize_with_tracker(self, mock_model, mock_settings, mock_middleware, sample_messages):
         """Test that ActivityTracker is available during summarization."""
         mock_tracker = Mock()
 
@@ -288,7 +294,7 @@ class TestSummarizeMessages:
                 summarizer = ContextSummarizer(mock_model, "gpt-4", tracker=mock_tracker)
                 summarizer.middleware = mock_middleware
 
-                result_messages, metrics = summarizer.summarize_messages(sample_messages)
+                result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
                 # Verify summarization completed
                 assert len(result_messages) == 11
@@ -298,32 +304,32 @@ class TestSummarizeMessages:
 class TestEdgeCases:
     """Test edge cases and error handling."""
 
-    def test_single_message(self, mock_model, mock_settings):
+    async def test_single_message(self, mock_model, mock_settings):
         """Test with single message."""
         messages: List[BaseMessage] = [HumanMessage(content="Single message")]
 
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             summarizer = ContextSummarizer(mock_model, "gpt-4")
-            result_messages, metrics = summarizer.summarize_messages(messages)
+            result_messages, metrics = await summarizer.summarize_messages(messages)
 
             # Should skip summarization
             assert result_messages == messages
             assert 'skipped' in metrics
 
-    def test_exactly_keep_n_messages(self, mock_model, mock_settings):
+    async def test_exactly_keep_n_messages(self, mock_model, mock_settings):
         """Test with exactly keep_last_n messages."""
         messages: List[BaseMessage] = [HumanMessage(content=f"Message {i}") for i in range(10)]
         mock_settings.context_summarization.keep_last_n_messages = 10
 
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             summarizer = ContextSummarizer(mock_model, "gpt-4")
-            result_messages, metrics = summarizer.summarize_messages(messages)
+            result_messages, metrics = await summarizer.summarize_messages(messages)
 
             # Should skip summarization
             assert result_messages == messages
             assert 'skipped' in metrics
 
-    def test_model_error_handling(self, mock_model, mock_settings, sample_messages):
+    async def test_model_error_handling(self, mock_model, mock_settings, sample_messages):
         """Test error handling when middleware fails."""
         mock_middleware_error = Mock()
         mock_middleware_error.before_model.side_effect = Exception("Middleware error")
@@ -337,13 +343,13 @@ class TestEdgeCases:
                 summarizer.middleware = mock_middleware_error
 
                 # Should fall back to keeping recent messages
-                result_messages, metrics = summarizer.summarize_messages(sample_messages)
+                result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
                 # Should return last 10 messages as fallback
                 assert len(result_messages) == 10
                 assert 'error' in metrics or 'fallback' in metrics
 
-    def test_empty_summary_response(self, mock_model, mock_settings, mock_middleware, sample_messages):
+    async def test_empty_summary_response(self, mock_model, mock_settings, mock_middleware, sample_messages):
         """Test handling when middleware returns result."""
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             with patch(
@@ -353,7 +359,7 @@ class TestEdgeCases:
                 summarizer = ContextSummarizer(mock_model, "gpt-4")
                 summarizer.middleware = mock_middleware
 
-                result_messages, metrics = summarizer.summarize_messages(sample_messages)
+                result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
                 # Should create summary message
                 assert len(result_messages) == 11
@@ -363,7 +369,9 @@ class TestEdgeCases:
 class TestMetricsCalculation:
     """Test metrics calculation accuracy."""
 
-    def test_tokens_saved_calculation(self, mock_model, mock_settings, mock_middleware, sample_messages):
+    async def test_tokens_saved_calculation(
+        self, mock_model, mock_settings, mock_middleware, sample_messages
+    ):
         """Test that tokens_saved is calculated correctly."""
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             with patch(
@@ -373,7 +381,7 @@ class TestMetricsCalculation:
                 summarizer = ContextSummarizer(mock_model, "gpt-4")
                 summarizer.middleware = mock_middleware
 
-                result_messages, metrics = summarizer.summarize_messages(sample_messages)
+                result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
                 before_tokens = metrics['before']['token_count']
                 after_tokens = metrics['after']['token_count']
@@ -382,7 +390,9 @@ class TestMetricsCalculation:
                 assert tokens_saved == before_tokens - after_tokens
                 assert tokens_saved > 0  # Should save tokens
 
-    def test_compression_ratio_calculation(self, mock_model, mock_settings, mock_middleware, sample_messages):
+    async def test_compression_ratio_calculation(
+        self, mock_model, mock_settings, mock_middleware, sample_messages
+    ):
         """Test that compression_ratio is calculated correctly."""
         with patch('cuga.backend.cuga_graph.utils.context_summarizer.settings', mock_settings):
             with patch(
@@ -392,7 +402,7 @@ class TestMetricsCalculation:
                 summarizer = ContextSummarizer(mock_model, "gpt-4")
                 summarizer.middleware = mock_middleware
 
-                result_messages, metrics = summarizer.summarize_messages(sample_messages)
+                result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
                 before_tokens = metrics['before']['token_count']
                 after_tokens = metrics['after']['token_count']
@@ -403,7 +413,7 @@ class TestMetricsCalculation:
 class TestStateCorruption:
     """Test state corruption scenarios (Issue #12 from ISSUES.md)."""
 
-    def test_original_messages_not_modified(self, mock_model, sample_messages):
+    async def test_original_messages_not_modified(self, mock_model, sample_messages):
         """Verify original message list is never modified."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -413,7 +423,7 @@ class TestStateCorruption:
         original_ids = [id(msg) for msg in sample_messages]
 
         # Perform summarization
-        result_messages, metrics = summarizer.summarize_messages(sample_messages)
+        result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         # Verify original list unchanged
         assert len(sample_messages) == original_length
@@ -423,14 +433,14 @@ class TestStateCorruption:
         # Result should be different list
         assert result_messages is not sample_messages
 
-    def test_middleware_exception_preserves_state(self, mock_model, sample_messages):
+    async def test_middleware_exception_preserves_state(self, mock_model, sample_messages):
         """Test that middleware exceptions don't corrupt state."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
         original_messages = sample_messages.copy()
 
         # Mock middleware to raise exception
         with patch.object(summarizer, '_invoke_middleware', side_effect=Exception("Middleware crash")):
-            result_messages, metrics = summarizer.summarize_messages(sample_messages)
+            result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         # On error, falls back to sliding window (keeps last N messages)
         # This is the actual behavior - not returning all original messages
@@ -439,14 +449,14 @@ class TestStateCorruption:
         # Original list should not be modified
         assert sample_messages == original_messages
 
-    def test_model_failure_preserves_state(self, mock_model, sample_messages):
+    async def test_model_failure_preserves_state(self, mock_model, sample_messages):
         """Test that model failures don't corrupt state."""
         from cuga.config import settings
 
         mock_model.invoke.side_effect = Exception("Model API error")
 
         summarizer = ContextSummarizer(mock_model, "gpt-4")
-        result_messages, metrics = summarizer.summarize_messages(sample_messages)
+        result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         # Middleware creates error summary + keeps last N messages
         # Expected: 1 error summary + keep_last_n_messages from settings
@@ -455,27 +465,24 @@ class TestStateCorruption:
         assert len(result_messages) == expected_count
         assert 'Error generating summary' in result_messages[0].content
 
-    def test_concurrent_summarization_thread_safety(self, mock_model, sample_messages):
+    async def test_concurrent_summarization_thread_safety(self, mock_model, sample_messages):
         """Test concurrent summarization doesn't corrupt state."""
-        import threading
+        import asyncio
 
         summarizer = ContextSummarizer(mock_model, "gpt-4")
         results = []
         errors = []
 
-        def summarize_thread():
+        async def summarize_task():
             try:
-                result, metrics = summarizer.summarize_messages(sample_messages)
+                result, metrics = await summarizer.summarize_messages(sample_messages)
                 results.append((result, metrics))
             except Exception as e:
                 errors.append(e)
 
-        # Run 10 concurrent threads
-        threads = [threading.Thread(target=summarize_thread) for _ in range(10)]
-        for thread in threads:
-            thread.start()
-        for thread in threads:
-            thread.join()
+        # Run 10 concurrent tasks
+        tasks = [summarize_task() for _ in range(10)]
+        await asyncio.gather(*tasks, return_exceptions=True)
 
         # All should complete
         assert len(results) + len(errors) == 10
@@ -489,20 +496,20 @@ class TestStateCorruption:
             assert len(result) > 0
             assert isinstance(metrics, dict)
 
-    def test_recovery_after_multiple_failures(self, mock_model, sample_messages):
+    async def test_recovery_after_multiple_failures(self, mock_model, sample_messages):
         """Test system recovers after multiple failures."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
         # Multiple failed attempts
         for i in range(5):
             with patch.object(summarizer, '_invoke_middleware', side_effect=Exception(f"Failure {i}")):
-                result, metrics = summarizer.summarize_messages(sample_messages)
+                result, metrics = await summarizer.summarize_messages(sample_messages)
                 # Falls back to sliding window (keeps last N)
                 assert isinstance(result, list)
                 assert len(result) <= len(sample_messages)
 
         # Final successful attempt should work
-        result_final, metrics_final = summarizer.summarize_messages(sample_messages)
+        result_final, metrics_final = await summarizer.summarize_messages(sample_messages)
         assert isinstance(result_final, list)
         assert isinstance(metrics_final, dict)
 
@@ -510,7 +517,7 @@ class TestStateCorruption:
 class TestMalformedMessages:
     """Test handling of malformed messages."""
 
-    def test_none_content(self, mock_model):
+    async def test_none_content(self, mock_model):
         """Test that None content raises validation error (expected behavior)."""
         ContextSummarizer(mock_model, "gpt-4")
 
@@ -523,7 +530,7 @@ class TestMalformedMessages:
                 HumanMessage(content=None),
             ] * 5
 
-    def test_empty_string_content(self, mock_model):
+    async def test_empty_string_content(self, mock_model):
         """Test messages with empty string content."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -533,10 +540,10 @@ class TestMalformedMessages:
             HumanMessage(content="Valid"),
         ] * 5
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
         assert isinstance(result_messages, list)
 
-    def test_invalid_message_types(self, mock_model):
+    async def test_invalid_message_types(self, mock_model):
         """Test with invalid types in message list."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -551,7 +558,7 @@ class TestMalformedMessages:
 
         # Should handle or raise appropriate error
         try:
-            result_messages, metrics = summarizer.summarize_messages(messages)
+            result_messages, metrics = await summarizer.summarize_messages(messages)
             # If succeeds, all results should be BaseMessage
             for msg in result_messages:
                 assert isinstance(msg, BaseMessage)
@@ -559,7 +566,7 @@ class TestMalformedMessages:
             # Acceptable to raise error for invalid types
             pass
 
-    def test_message_with_tool_calls(self, mock_model):
+    async def test_message_with_tool_calls(self, mock_model):
         """Test messages with tool_calls attribute."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -572,11 +579,11 @@ class TestMalformedMessages:
             HumanMessage(content="Result: 4"),
         ] * 5
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
         assert isinstance(result_messages, list)
         assert len(result_messages) > 0
 
-    def test_message_with_additional_kwargs(self, mock_model):
+    async def test_message_with_additional_kwargs(self, mock_model):
         """Test messages with additional_kwargs."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -585,14 +592,14 @@ class TestMalformedMessages:
             AIMessage(content="Response", additional_kwargs={"model": "gpt-4"}),
         ] * 8
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
         assert isinstance(result_messages, list)
 
 
 class TestUnicodeHandling:
     """Test unicode and special character handling."""
 
-    def test_emoji_content(self, mock_model):
+    async def test_emoji_content(self, mock_model):
         """Test messages with emojis."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -602,13 +609,13 @@ class TestUnicodeHandling:
             HumanMessage(content="Emoji test: 😀😃😄😁😆😅🤣😂"),
         ] * 5
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
 
         assert isinstance(result_messages, list)
         for msg in result_messages:
             assert isinstance(msg.content, str)
 
-    def test_multilingual_content(self, mock_model):
+    async def test_multilingual_content(self, mock_model):
         """Test messages with multiple languages."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -619,13 +626,13 @@ class TestUnicodeHandling:
             AIMessage(content="Γεια σου! שלום! สวัสดี"),
         ] * 4
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
 
         assert isinstance(result_messages, list)
         for msg in result_messages:
             assert isinstance(msg.content, str)
 
-    def test_special_characters(self, mock_model):
+    async def test_special_characters(self, mock_model):
         """Test messages with special characters."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -636,10 +643,10 @@ class TestUnicodeHandling:
             AIMessage(content="Unicode: \u0000\u001f\u007f"),
         ] * 4
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
         assert isinstance(result_messages, list)
 
-    def test_rtl_languages(self, mock_model):
+    async def test_rtl_languages(self, mock_model):
         """Test right-to-left languages."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -649,14 +656,14 @@ class TestUnicodeHandling:
             HumanMessage(content="Mixed: Hello שלום مرحبا"),
         ] * 5
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
         assert isinstance(result_messages, list)
 
 
 class TestContentTruncation:
     """Test content truncation at 100k chars (Issue #4 from ISSUES.md)."""
 
-    def test_truncation_at_100k_chars(self, mock_model):
+    async def test_truncation_at_100k_chars(self, mock_model):
         """Test that content is truncated at 100k characters."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -667,14 +674,14 @@ class TestContentTruncation:
             AIMessage(content="Short response"),
         ] * 6
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
 
         # Verify truncation occurred
         for msg in result_messages:
             if msg.content:
                 assert len(msg.content) <= 100000, f"Content length {len(msg.content)} exceeds 100k"
 
-    def test_truncation_preserves_message_structure(self, mock_model):
+    async def test_truncation_preserves_message_structure(self, mock_model):
         """Test that truncation doesn't break message structure."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -684,14 +691,14 @@ class TestContentTruncation:
             AIMessage(content="Response"),
         ] * 5
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
 
         # All results should still be valid messages
         for msg in result_messages:
             assert isinstance(msg, BaseMessage)
             assert hasattr(msg, 'content')
 
-    def test_no_truncation_for_short_content(self, mock_model):
+    async def test_no_truncation_for_short_content(self, mock_model):
         """Test that short content is not truncated."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -701,7 +708,7 @@ class TestContentTruncation:
             AIMessage(content=short_content),
         ] * 10
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
 
         # Short content should remain unchanged (if not summarized)
         # Note: After summarization, content will be different
@@ -713,11 +720,11 @@ class TestContentTruncation:
 class TestSummaryQualityValidation:
     """Test summary quality validation (Issue #8 from ISSUES.md)."""
 
-    def test_summary_contains_conversation_keywords(self, mock_model, sample_messages):
+    async def test_summary_contains_conversation_keywords(self, mock_model, sample_messages):
         """Test that summary contains expected keywords."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
-        result_messages, metrics = summarizer.summarize_messages(sample_messages)
+        result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         if 'skipped' not in metrics and len(result_messages) < len(sample_messages):
             # First message should be summary
@@ -730,11 +737,11 @@ class TestSummaryQualityValidation:
             # Note: This is basic validation, not comprehensive quality check
             assert has_keyword or len(summary_content) > 10
 
-    def test_summary_not_empty(self, mock_model, sample_messages):
+    async def test_summary_not_empty(self, mock_model, sample_messages):
         """Test that summary is not empty."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
-        result_messages, metrics = summarizer.summarize_messages(sample_messages)
+        result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         if 'skipped' not in metrics and len(result_messages) < len(sample_messages):
             # Summary should have content
@@ -742,14 +749,14 @@ class TestSummaryQualityValidation:
             assert summary.content
             assert len(summary.content) > 0
 
-    def test_empty_summary_handling(self, mock_model, sample_messages):
+    async def test_empty_summary_handling(self, mock_model, sample_messages):
         """Test handling of empty summary from model."""
         # Mock model to return empty summary
         mock_model.invoke.return_value.content = ""
 
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
-        result_messages, metrics = summarizer.summarize_messages(sample_messages)
+        result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         # Should handle empty summary gracefully
         # Middleware creates error message for empty summaries
@@ -760,7 +767,7 @@ class TestSummaryQualityValidation:
 class TestHardcodedTriggerOverride:
     """Test hardcoded trigger override behavior (Issue #1 from ISSUES.md)."""
 
-    def test_middleware_configured_with_low_trigger(self, mock_model, sample_messages):
+    async def test_middleware_configured_with_low_trigger(self, mock_model, sample_messages):
         """Verify middleware is configured with 1 token trigger."""
         from cuga.config import settings
 
@@ -788,13 +795,13 @@ class TestHardcodedTriggerOverride:
 class TestImportFailureRecovery:
     """Test import failure recovery (Issue #3 from ISSUES.md)."""
 
-    def test_graceful_degradation_to_sliding_window(self, mock_model, sample_messages):
+    async def test_graceful_degradation_to_sliding_window(self, mock_model, sample_messages):
         """Test fallback to sliding window when middleware fails."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
         # Mock middleware to fail
         with patch.object(summarizer, '_invoke_middleware', return_value=None):
-            result_messages, metrics = summarizer.summarize_messages(sample_messages)
+            result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         # Should fall back to returning original messages
         assert len(result_messages) == len(sample_messages)
@@ -804,14 +811,14 @@ class TestImportFailureRecovery:
 class TestRollbackMechanism:
     """Test rollback mechanism (Issue #12 from ISSUES.md)."""
 
-    def test_no_partial_state_on_failure(self, mock_model, sample_messages):
+    async def test_no_partial_state_on_failure(self, mock_model, sample_messages):
         """Verify no partial state changes on failure."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
         original_messages = sample_messages.copy()
 
         # Simulate failure during summarization
         with patch.object(summarizer, '_invoke_middleware', side_effect=Exception("Partial failure")):
-            result_messages, metrics = summarizer.summarize_messages(sample_messages)
+            result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         # On failure, falls back to sliding window (not full original)
         # The key is: original list is not modified, result is valid
@@ -820,7 +827,7 @@ class TestRollbackMechanism:
         # Original should not be modified
         assert sample_messages == original_messages
 
-    def test_atomic_summarization(self, mock_model, sample_messages):
+    async def test_atomic_summarization(self, mock_model, sample_messages):
         """Test that summarization is atomic (all or nothing)."""
         summarizer = ContextSummarizer(mock_model, "gpt-4")
 
@@ -828,7 +835,7 @@ class TestRollbackMechanism:
         incomplete_result = [HumanMessage(content="Partial summary")]
 
         with patch.object(summarizer, '_invoke_middleware', return_value=incomplete_result):
-            result_messages, metrics = summarizer.summarize_messages(sample_messages)
+            result_messages, metrics = await summarizer.summarize_messages(sample_messages)
 
         # Should accept the result (even if incomplete) or return original
         # The key is it shouldn't be in a corrupted state
@@ -839,7 +846,7 @@ class TestRollbackMechanism:
 class TestTokenCounterEdgeCases:
     """Test token counter edge cases."""
 
-    def test_token_counter_with_invalid_model_name(self, mock_model):
+    async def test_token_counter_with_invalid_model_name(self, mock_model):
         """Test token counter with unknown model name."""
         from cuga.backend.cuga_graph.utils.token_counter import TokenCounter
 
@@ -856,7 +863,7 @@ class TestTokenCounterEdgeCases:
         context_size = counter.get_model_context_size(mock_model)
         assert context_size > 0  # Should use fallback
 
-    def test_token_counter_with_missing_profile(self, mock_model):
+    async def test_token_counter_with_missing_profile(self, mock_model):
         """Test token counter when model has no profile."""
         from cuga.backend.cuga_graph.utils.token_counter import TokenCounter
 

@@ -101,7 +101,7 @@ def create_large_conversation(num_messages: int = 15) -> List[BaseMessage]:
 class TestContextSummarizationIntegration:
     """Integration tests for context summarization with real LLM."""
 
-    def test_token_counter_with_real_messages(self, real_model):
+    async def test_token_counter_with_real_messages(self, real_model):
         """Test TokenCounter with real messages and model."""
         counter = TokenCounter(model=real_model, model_name="gpt-4o-mini")
 
@@ -124,7 +124,7 @@ class TestContextSummarizationIntegration:
         usage_pct = counter.calculate_usage_percentage(messages, real_model)
         assert 0 < usage_pct < 1  # Should be very low for 3 short messages
 
-    def test_token_counter_with_activity_tracker(self, real_model, activity_tracker):
+    async def test_token_counter_with_activity_tracker(self, real_model, activity_tracker):
         """Test TokenCounter integration with ActivityTracker."""
         counter = TokenCounter(model=real_model, model_name="gpt-4o-mini", tracker=activity_tracker)
 
@@ -138,7 +138,7 @@ class TestContextSummarizationIntegration:
         assert counter.get_cumulative_usage() == 0
 
     @pytest.mark.slow
-    def test_summarization_with_real_llm(self, real_model, enable_summarization):
+    async def test_summarization_with_real_llm(self, real_model, enable_summarization):
         """
         Test actual summarization with real LLM.
 
@@ -170,7 +170,7 @@ class TestContextSummarizationIntegration:
             assert should_trigger, "Should trigger with 15 messages (> 12 threshold)"
 
             # Perform summarization
-            summarized_messages, summary_metrics = summarizer.summarize_messages(messages)
+            summarized_messages, summary_metrics = await summarizer.summarize_messages(messages)
 
             print("\nAfter summarization:")
             print(f"  Messages: {summary_metrics['after']['message_count']}")
@@ -200,7 +200,7 @@ class TestContextSummarizationIntegration:
             )
 
     @pytest.mark.slow
-    def test_multiple_summarization_cycles(self, real_model, enable_summarization):
+    async def test_multiple_summarization_cycles(self, real_model, enable_summarization):
         """
         Test multiple summarization cycles.
 
@@ -217,7 +217,7 @@ class TestContextSummarizationIntegration:
         messages = create_large_conversation(15)
 
         # First summarization
-        summarized_once, metrics1 = summarizer.summarize_messages(messages)
+        summarized_once, metrics1 = await summarizer.summarize_messages(messages)
 
         print("\nFirst summarization:")
         if 'before' in metrics1:
@@ -238,7 +238,7 @@ class TestContextSummarizationIntegration:
                 summarized_once.append(AIMessage(content=f"New response {i}"))
 
         # Second summarization
-        summarized_twice, metrics2 = summarizer.summarize_messages(summarized_once)
+        summarized_twice, metrics2 = await summarizer.summarize_messages(summarized_once)
 
         print("\nSecond summarization:")
         if 'before' in metrics2:
@@ -259,7 +259,7 @@ class TestContextSummarizationIntegration:
             # If summarization was skipped, just verify we have messages
             assert len(summarized_twice) > 0
 
-    def test_summarization_disabled(self, real_model):
+    async def test_summarization_disabled(self, real_model):
         """Test that summarization is skipped when disabled."""
         # Temporarily disable
         with patch.object(settings.context_summarization, 'enabled', False):
@@ -273,17 +273,17 @@ class TestContextSummarizationIntegration:
             assert metrics == {}
 
             # Should return original messages
-            result_messages, result_metrics = summarizer.summarize_messages(messages)
+            result_messages, result_metrics = await summarizer.summarize_messages(messages)
             assert result_messages == messages
             assert 'skipped' in result_metrics
 
-    def test_summarization_with_custom_prompt(self, real_model, enable_summarization):
+    async def test_summarization_with_custom_prompt(self, real_model, enable_summarization):
         """Test summarization with custom prompt template."""
         # Skip this test - custom_summary_prompt is optional and commented out in settings
         # This feature works but requires settings.toml modification
         pytest.skip("custom_summary_prompt is optional feature, tested in unit tests")
 
-    def test_error_handling_with_invalid_model(self, enable_summarization):
+    async def test_error_handling_with_invalid_model(self, enable_summarization):
         """Test error handling when model fails."""
         # Create a mock model that will fail
         mock_model = Mock()
@@ -295,7 +295,7 @@ class TestContextSummarizationIntegration:
         messages = create_large_conversation(15)  # Use optimized count
 
         # Should handle error gracefully and fall back
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
 
         # Middleware handles the error and creates an error summary message
         # Result: 1 summary message (with error) + 10 kept messages = 11 total
@@ -308,7 +308,7 @@ class TestContextSummarizationIntegration:
         # First message should be the error summary
         assert 'Error generating summary' in result_messages[0].content
 
-    def test_trigger_conditions(self, real_model, enable_summarization):
+    async def test_trigger_conditions(self, real_model, enable_summarization):
         """Test different trigger conditions."""
         # Test fraction trigger (the only one enabled by default)
         # Lower threshold to guarantee trigger with 15 messages
@@ -324,7 +324,7 @@ class TestContextSummarizationIntegration:
                 f"Expected 'fraction' in trigger_reason, got: {metrics.get('trigger_reason')}"
             )
 
-    def test_metrics_accuracy(self, real_model, enable_summarization):
+    async def test_metrics_accuracy(self, real_model, enable_summarization):
         """Test that metrics are calculated accurately."""
         summarizer = ContextSummarizer(real_model, "gpt-4o-mini")
 
@@ -335,7 +335,7 @@ class TestContextSummarizationIntegration:
         before_tokens = summarizer.token_counter.count_message_tokens(messages)
 
         # Summarize
-        summarized_messages, metrics = summarizer.summarize_messages(messages)
+        summarized_messages, metrics = await summarizer.summarize_messages(messages)
 
         if 'skipped' not in metrics:
             # Verify metrics match actual results
@@ -359,7 +359,7 @@ class TestContextSummarizationIntegration:
 class TestContextSummarizationEdgeCases:
     """Test edge cases and boundary conditions."""
 
-    def test_empty_messages(self, real_model, enable_summarization):
+    async def test_empty_messages(self, real_model, enable_summarization):
         """Test with empty message list."""
         summarizer = ContextSummarizer(real_model, "gpt-4o-mini")
 
@@ -367,32 +367,32 @@ class TestContextSummarizationEdgeCases:
         assert not should_trigger
         assert metrics == {}
 
-        result_messages, result_metrics = summarizer.summarize_messages([])
+        result_messages, result_metrics = await summarizer.summarize_messages([])
         assert result_messages == []
         assert 'skipped' in result_metrics
 
-    def test_single_message(self, real_model, enable_summarization):
+    async def test_single_message(self, real_model, enable_summarization):
         """Test with single message."""
         summarizer = ContextSummarizer(real_model, "gpt-4o-mini")
 
         messages: List[BaseMessage] = [HumanMessage(content="Single message")]
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
         assert result_messages == messages
         assert 'skipped' in metrics
 
-    def test_exactly_keep_n_messages(self, real_model, enable_summarization):
+    async def test_exactly_keep_n_messages(self, real_model, enable_summarization):
         """Test with exactly keep_last_n_messages."""
         summarizer = ContextSummarizer(real_model, "gpt-4o-mini")
 
         # Create exactly 10 messages (default keep_last_n)
         messages = create_large_conversation(10)
 
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
         assert result_messages == messages
         assert 'skipped' in metrics
 
-    def test_very_long_messages(self, real_model, enable_summarization):
+    async def test_very_long_messages(self, real_model, enable_summarization):
         """Test with very long individual messages."""
         summarizer = ContextSummarizer(real_model, "gpt-4o-mini")
 
@@ -407,7 +407,7 @@ class TestContextSummarizationEdgeCases:
         assert token_count > 1000
 
         # Summarization should work
-        result_messages, metrics = summarizer.summarize_messages(messages)
+        result_messages, metrics = await summarizer.summarize_messages(messages)
         if 'skipped' not in metrics:
             assert len(result_messages) < len(messages)
 
@@ -415,14 +415,14 @@ class TestContextSummarizationEdgeCases:
 class TestContextSummarizationWithActivityTracker:
     """Test integration with ActivityTracker."""
 
-    def test_tracker_integration(self, real_model, activity_tracker, enable_summarization):
+    async def test_tracker_integration(self, real_model, activity_tracker, enable_summarization):
         """Test that ActivityTracker receives token usage."""
         summarizer = ContextSummarizer(real_model, "gpt-4o-mini", tracker=activity_tracker)
 
         messages = create_large_conversation(30)
 
         # Perform summarization (which calls the LLM)
-        summarized_messages, metrics = summarizer.summarize_messages(messages)
+        summarized_messages, metrics = await summarizer.summarize_messages(messages)
 
         # Note: ActivityTracker tracks actual LLM responses
         # The middleware handles token tracking internally

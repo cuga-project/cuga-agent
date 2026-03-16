@@ -815,7 +815,7 @@ def create_cuga_lite_graph(
             active_model = configurable.get("llm") or base_model
 
             # ── Context management BEFORE building messages_for_model ────────────
-            effective_chat_messages = apply_context_summarization(
+            effective_chat_messages = await apply_context_summarization(
                 state.chat_messages or [],
                 active_model,
                 system_prompt=dynamic_prompt,
