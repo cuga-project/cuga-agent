@@ -1249,7 +1249,8 @@ async def auth_config():
 async def ui_config():
     """Return UI configuration flags from settings."""
     hide_logo = settings.ui.hide_cuga_logo
-    return JSONResponse({"hide_cuga_logo": hide_logo})
+    brand_name = getattr(settings.ui, "brand_name", "CUGA Agent") or "CUGA Agent"
+    return JSONResponse({"hide_cuga_logo": hide_logo, "brand_name": brand_name})
 
 
 @app.get("/auth/login")
@@ -2470,10 +2471,27 @@ async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_man
             latest_version, latest_version_created_at = await get_latest_version()
         except Exception:
             pass
+
+        name = "CUGA Default Agent"
+        description = "Default CUGA agent with policy engine, tools, and chat."
+        try:
+            from cuga.backend.server.config_store import load_config
+
+            config, _ = await load_config(None, "cuga-default")
+            if config and isinstance(config.get("agent"), dict):
+                ag = config["agent"]
+                if isinstance(ag.get("name"), str) and ag["name"].strip():
+                    name = ag["name"].strip()
+                if isinstance(ag.get("description"), str) and ag["description"].strip():
+                    description = ag["description"].strip()
+        except Exception:
+            pass
+
         agents = [
             {
                 "id": "cuga-default",
-                "description": "Default CUGA agent with policy engine, tools, and chat.",
+                "name": name,
+                "description": description,
                 "tools_count": tools_count,
                 "logs_url": logs_url,
                 "latest_version": latest_version,

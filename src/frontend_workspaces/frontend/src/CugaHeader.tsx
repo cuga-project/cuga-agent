@@ -9,7 +9,7 @@ import {
   HeaderGlobalAction,
   HeaderPanel,
 } from "@carbon/react";
-import { Logout, Password } from "@carbon/icons-react";
+import { Logout, Password, User } from "@carbon/icons-react";
 import { useAuth } from "./AuthContext";
 import * as api from "./api";
 import * as auth from "./auth";
@@ -47,14 +47,14 @@ interface UserInfo {
   roles?: string[];
 }
 
-function getInitials(name?: string, email?: string): string {
+function getInitials(name?: string, email?: string): string | null {
   if (name) {
     const parts = name.trim().split(/\s+/);
     if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
     return parts[0].slice(0, 2).toUpperCase();
   }
   if (email) return email[0].toUpperCase();
-  return "?";
+  return null;
 }
 
 export function CugaHeader({
@@ -70,6 +70,7 @@ export function CugaHeader({
   const [authEnabled, setAuthEnabled] = useState(false);
   const [userPanelOpen, setUserPanelOpen] = useState(false);
   const [hideLogo, setHideLogo] = useState(true);
+  const [brandName, setBrandName] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -89,8 +90,13 @@ export function CugaHeader({
       setAuthEnabled(c.enabled);
     }).catch(() => {});
 
-    api.getUiConfig().then((c) => setHideLogo(c.hide_cuga_logo)).catch(() => {});
+    api.getUiConfig().then((c) => {
+      setHideLogo(c.hide_cuga_logo);
+      setBrandName(c.brand_name);
+    }).catch(() => {});
   }, []);
+
+  const displayTitle = brandName ?? title;
 
   const displayName = userInfo?.name ?? "";
   const displayEmail = userInfo?.email ?? userInfo?.sub ?? "";
@@ -134,14 +140,8 @@ export function CugaHeader({
               </a>
             )}
             <HeaderName href="/" prefix={prefix ?? ""}>
-              {title}
+              {displayTitle}
             </HeaderName>
-            {agentContext && (
-              <span className="cuga-header-agent-context" title={`Config v${agentContext.config_version ?? "—"}`}>
-                {agentContext.agent_id}
-                {agentContext.config_version != null ? ` · v${agentContext.config_version}` : ""}
-              </span>
-            )}
             <HeaderNavigation aria-label="CUGA">
               {navItems.map((item) => renderNavItem(item))}
             </HeaderNavigation>
@@ -182,61 +182,83 @@ export function CugaHeader({
                   <Password size={20} />
                 </HeaderGlobalAction>
               )}
-              {authEnabled && (
-                <HeaderGlobalAction
-                  aria-label="User profile"
-                  title={displayEmail || displayName || "User profile"}
-                  isActive={userPanelOpen}
-                  aria-expanded={userPanelOpen}
-                  onClick={() => setUserPanelOpen((o) => !o)}
-                  className="cuga-user-avatar-btn"
-                >
+              <HeaderGlobalAction
+                aria-label="User profile"
+                title={displayEmail || displayName || "User profile"}
+                isActive={userPanelOpen}
+                aria-expanded={userPanelOpen}
+                onClick={() => setUserPanelOpen((o) => !o)}
+                className="cuga-user-avatar-btn"
+              >
+                {initials ? (
                   <span className="cuga-user-avatar-initials">{initials}</span>
-                </HeaderGlobalAction>
-              )}
+                ) : (
+                  <span className="cuga-user-avatar-empty">
+                    <User size={20} />
+                  </span>
+                )}
+              </HeaderGlobalAction>
             </HeaderGlobalBar>
           </Header>
-          {authEnabled && (
-            <div ref={panelRef} className="cuga-user-panel-wrapper">
-              <HeaderPanel expanded={userPanelOpen} aria-label="User profile">
-                <div className="cuga-user-panel">
-                  <div className="cuga-user-panel-header">
-                <div className="cuga-user-panel-avatar">
-                  <span className="cuga-user-panel-avatar-initials">{initials}</span>
+          <div ref={panelRef} className="cuga-user-panel-wrapper">
+            <HeaderPanel expanded={userPanelOpen} aria-label="User profile">
+              <div className="cuga-user-panel">
+                <div className="cuga-user-panel-header">
+                  <div className="cuga-user-panel-avatar">
+                    {initials ? (
+                      <span className="cuga-user-panel-avatar-initials">{initials}</span>
+                    ) : (
+                      <span className="cuga-user-panel-avatar-icon">
+                        <User size={16} />
+                      </span>
+                    )}
+                  </div>
+                  <div className="cuga-user-panel-details">
+                    {authEnabled ? (
+                      <>
+                        {displayName && <p className="cuga-user-panel-name">{displayName}</p>}
+                        {displayEmail && <p className="cuga-user-panel-email">{displayEmail}</p>}
+                      </>
+                    ) : (
+                      <p className="cuga-user-panel-name">Guest</p>
+                    )}
+                    {agentContext && (
+                      <p className="cuga-user-panel-agent">
+                        {agentContext.agent_id}
+                        {agentContext.config_version != null ? ` · v${agentContext.config_version}` : ""}
+                      </p>
+                    )}
+                  </div>
                 </div>
-                <div className="cuga-user-panel-details">
-                  {displayName && <p className="cuga-user-panel-name">{displayName}</p>}
-                  {displayEmail && <p className="cuga-user-panel-email">{displayEmail}</p>}
-                </div>
-              </div>
-              <ul className="cuga-user-menu-list">
-                {onOpenSecrets && (
-                  <li>
-                    <button
-                      type="button"
-                      className="cuga-user-menu-item"
-                      onClick={() => { onOpenSecrets(); setUserPanelOpen(false); }}
-                    >
-                      <Password size={16} />
-                      Manage Secrets
-                    </button>
-                  </li>
-                )}
-                <li>
-                  <button
-                    type="button"
-                    className="cuga-user-menu-item"
-                    onClick={() => auth.logout()}
-                  >
-                    <Logout size={16} />
-                    Sign out
-                  </button>
-                  </li>
+                <ul className="cuga-user-menu-list">
+                  {onOpenSecrets && (
+                    <li>
+                      <button
+                        type="button"
+                        className="cuga-user-menu-item"
+                        onClick={() => { onOpenSecrets(); setUserPanelOpen(false); }}
+                      >
+                        <Password size={16} />
+                        Manage Secrets
+                      </button>
+                    </li>
+                  )}
+                  {authEnabled && (
+                    <li>
+                      <button
+                        type="button"
+                        className="cuga-user-menu-item"
+                        onClick={() => auth.logout()}
+                      >
+                        <Logout size={16} />
+                        Sign out
+                      </button>
+                    </li>
+                  )}
                 </ul>
-                </div>
-              </HeaderPanel>
-            </div>
-          )}
+              </div>
+            </HeaderPanel>
+          </div>
         </div>
       )}
     />

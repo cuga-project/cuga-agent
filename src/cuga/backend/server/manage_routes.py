@@ -790,6 +790,25 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.patch("/config/draft/agent")
+async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
+    """Update only the agent (name, description) section of the draft."""
+    if agent_id is None:
+        agent_id = "cuga-default"
+    try:
+        data = await request.json()
+        agent_meta = data.get("agent", data)
+        if isinstance(agent_meta, dict):
+            name = agent_meta.get("name")
+            if not name or not str(name).strip():
+                raise HTTPException(status_code=400, detail="Agent name is required")
+            await _load_and_patch_draft(agent_id, "agent", agent_meta)
+        return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except Exception as e:
+        logger.error(f"Failed to patch draft agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.patch("/config/draft/policies")
 async def patch_draft_policies(request: Request, agent_id: Optional[str] = None):
     """Update only the policies section of the draft. No registry reload or agent rebuild."""
@@ -837,12 +856,20 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     app_state = _app_state(request)
     if app_state is None:
         raise HTTPException(status_code=500, detail="App state not available")
+
+    data = await request.json()
+    config = data.get("config", data) or {}
+    agent_meta = config.get("agent")
+    if not isinstance(agent_meta, dict) or not (agent_meta.get("name") or "").strip():
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Agent name is required"},
+        )
+
     try:
         from cuga.backend.server.config_store import save_config
 
-        data = await request.json()
-        config = data.get("config", data)
-        ver = await save_config(config or {}, agent_id)
+        ver = await save_config(config, agent_id)
         app_state.config_version = ver
         app_state.tools_include_version = int(ver) if ver else 0
         await _apply_published_config(app_state, config or {})
@@ -879,18 +906,21 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             # Don't fail the request if rebuild fails, just log it
 
         return JSONResponse({"status": "success", "version": ver, "agent_id": agent_id})
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to save manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/config/history")
-async def get_manage_config_history():
+async def get_manage_config_history(agent_id: Optional[str] = None):
     """List published config versions (newest first)."""
     try:
         from cuga.backend.server.config_store import list_versions
 
-        versions = await list_versions()
+        aid = agent_id or "cuga-default"
+        versions = await list_versions(aid)
         return JSONResponse({"versions": versions})
     except Exception as e:
         logger.error(f"Failed to list config history: {e}")

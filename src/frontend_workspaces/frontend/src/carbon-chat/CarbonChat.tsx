@@ -19,6 +19,7 @@ import {
 import * as api from '../api';
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
+import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
 import './CarbonChat.css';
 
 // Reset thread ID when conversation restarts
@@ -89,6 +90,12 @@ const CarbonChat = ({
   const [isLoadingDebug, setIsLoadingDebug] = useState(false);
   const [debugError, setDebugError] = useState<string | null>(null);
   const [lastUpdateTime, setLastUpdateTime] = useState<Date | null>(null);
+  const [assistantName, setAssistantName] = useState("CUGA Agent");
+
+  useEffect(() => {
+    initAgentProfile(useDraft);
+    getResponseUserProfile(useDraft).then((p) => setAssistantName(p.nickname || "CUGA Agent"));
+  }, [useDraft]);
 
   // Format relative time (e.g., "2 seconds ago", "5 minutes ago")
   const formatRelativeTime = useCallback((date: Date) => {
@@ -331,7 +338,7 @@ const CarbonChat = ({
       className={`${contained ? 'carbon-chat-contained' : 'carbon-chat-fullscreen'} ${className}`}
       injectCarbonTheme={theme === 'dark' ? CarbonTheme.G100 : CarbonTheme.WHITE}
       openChatByDefault={true}
-      assistantName="CUGA Agent"
+      assistantName={assistantName}
       isReadonly={isReadonly}
       header={{
         isOn: true,

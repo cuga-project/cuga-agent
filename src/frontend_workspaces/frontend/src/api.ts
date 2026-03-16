@@ -24,14 +24,17 @@ export async function getAuthConfig(): Promise<{ enabled: boolean; authorization
   return authConfigCache;
 }
 
-let uiConfigCache: { hide_cuga_logo: boolean } | null = null;
+let uiConfigCache: { hide_cuga_logo: boolean; brand_name: string } | null = null;
 
-export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean }> {
+export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_name: string }> {
   if (uiConfigCache !== null) return uiConfigCache;
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/ui/config`, { credentials: "include" });
-  const data = await res.json().catch(() => ({ hide_cuga_logo: false }));
-  uiConfigCache = { hide_cuga_logo: !!data.hide_cuga_logo };
+  const data = await res.json().catch(() => ({ hide_cuga_logo: false, brand_name: "CUGA Agent" }));
+  uiConfigCache = {
+    hide_cuga_logo: !!data.hide_cuga_logo,
+    brand_name: data.brand_name && String(data.brand_name).trim() ? String(data.brand_name).trim() : "CUGA Agent",
+  };
   return uiConfigCache;
 }
 
@@ -135,13 +138,18 @@ export async function getConversationMessages(threadId: string): Promise<Respons
   );
 }
 
-export async function getManageConfig(draft?: boolean): Promise<Response> {
-  const q = draft ? "?draft=1" : "";
+export async function getManageConfig(draft?: boolean, agentId?: string): Promise<Response> {
+  const params = new URLSearchParams();
+  if (draft) params.set("draft", "1");
+  if (agentId) params.set("agent_id", agentId);
+  const q = params.toString() ? `?${params.toString()}` : "";
   return apiFetch(`/api/manage/config${q}`);
 }
 
-export async function getManageConfigVersion(version: string): Promise<Response> {
-  return apiFetch(`/api/manage/config?version=${encodeURIComponent(version)}`);
+export async function getManageConfigVersion(version: string, agentId?: string): Promise<Response> {
+  const params = new URLSearchParams({ version });
+  if (agentId) params.set("agent_id", agentId);
+  return apiFetch(`/api/manage/config?${params.toString()}`);
 }
 
 export async function getLlmModels(
@@ -158,15 +166,29 @@ export async function getLlmModels(
   return apiFetch(`/api/manage/llm/models${q}`, { headers });
 }
 
-export async function getManageConfigHistory(): Promise<Response> {
-  return apiFetch("/api/manage/config/history");
+export async function getManageConfigHistory(agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/history${q}`);
 }
 
-export async function postManageConfigDraft(config: unknown): Promise<Response> {
-  return apiFetch("/api/manage/config/draft", {
+export async function postManageConfigDraft(config: unknown, agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ config }),
+  });
+}
+
+export async function patchManageConfigDraftAgent(
+  agent: { name?: string; description?: string },
+  agentId?: string
+): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft/agent${q}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent }),
   });
 }
 
@@ -197,8 +219,9 @@ export async function patchManageConfigDraftPolicies(policies: unknown, agentId?
   });
 }
 
-export async function postManageConfig(config: unknown): Promise<Response> {
-  return apiFetch("/api/manage/config", {
+export async function postManageConfig(config: unknown, agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config${q}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ config }),

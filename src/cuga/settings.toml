@@ -108,6 +108,7 @@ ssl_certfile = ""
 
 [ui]
 hide_cuga_logo = false  # Set to true to hide the CUGA logo in the header
+brand_name = "CUGA Agent"  # App name shown in the header
 
 [server_ports]
 registry = 8001
