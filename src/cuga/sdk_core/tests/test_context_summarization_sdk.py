@@ -5,12 +5,31 @@ These tests verify that context summarization works correctly when using the SDK
 with CugaAgent.invoke() and CugaAgent.stream().
 """
 
+import json
+from pathlib import Path
+
 import uuid
 
 import pytest
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.tools import tool
 
 from cuga import CugaAgent
+from cuga.backend.cuga_graph.policy.tests.helpers import setup_langfuse_tracing
+
+
+def _load_conversation_messages(json_path: Path):
+    """Load and convert conversation_messages.json to LangChain messages."""
+    data = json.loads(json_path.read_text())
+    messages = []
+    for m in data[1:]:
+        role = m.get("role", "user")
+        content = m.get("content", "")
+        if role == "user":
+            messages.append(HumanMessage(content=content))
+        else:
+            messages.append(AIMessage(content=content))
+    return messages
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -702,3 +721,44 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             # Restore original settings
             os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
             settings.reload()
+
+    @pytest.mark.asyncio
+    async def test_conversation_messages_triggers_summarization(self):
+        """
+        Test that CugaAgent with conversation_messages.json (~106k tokens before last message)
+        triggers context summarization when processing the last message.
+
+        Uses Langfuse for tracing. Minimal output - prints what it did.
+        """
+
+        json_path = Path(__file__).parent / "conversation_messages.json"
+        if not json_path.exists():
+            pytest.skip(f"conversation_messages.json not found at {json_path}")
+
+        langfuse_handler = setup_langfuse_tracing()
+        callbacks = [langfuse_handler] if langfuse_handler else []
+        messages = _load_conversation_messages(json_path)
+        history = messages
+        last_user_msg = HumanMessage(content="Write nice poem about the weather at least 600 words")
+        all_messages = history + [last_user_msg]
+
+        agent = CugaAgent(tools=[], callbacks=callbacks)
+        thread_id = str(uuid.uuid4())
+
+        result = await agent.invoke(all_messages, thread_id=thread_id)
+        result_2 = await agent.invoke(
+            "Now give me a peom about weather at most 20 words", thread_id=thread_id
+        )
+
+        assert result is not None
+        assert result.error is None
+
+        assert result_2 is not None
+        assert result_2.error is None
+
+        print(
+            f"Loaded {len(messages)} msgs from conversation_messages.json, "
+            f"invoked CugaAgent with {len(all_messages)} msgs (~106k tokens); summarization should have triggered"
+        )
+        if langfuse_handler and hasattr(langfuse_handler, "get_trace_url"):
+            print(f"Langfuse trace: {langfuse_handler.get_trace_url()}")
