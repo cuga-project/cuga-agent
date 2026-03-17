@@ -412,6 +412,14 @@ class VariablesManager(object):
 
                 return "{" + ", ".join(parts) + "}"
 
+            try:
+                from pydantic import BaseModel
+
+                if isinstance(val, BaseModel):
+                    return shorten(val.model_dump(), depth + 1, current_length)
+            except ImportError:
+                pass
+
             return repr(val)
 
         preview = shorten(value, 0, 0)
@@ -882,9 +890,13 @@ class StateVariablesManager(VariablesManager):
 
 
 def default_state(page, observation, goal, chat_messages=None):
-    return AgentState(
+    from cuga.config import get_service_instance_id, get_tenant_id
+
+    state = AgentState(
         input=goal, url=page.url if page else "", chat_messages=chat_messages if chat_messages else []
     )
+    state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+    return state
 
 
 class SubTaskHistory(BaseModel):
@@ -905,6 +917,10 @@ class AgentState(BaseModel):
     # page: Page  # The Playwright web page lets us interact with the web environment
     user_id: Optional[str] = "default"  # TODO: this should be updated in multi user scenario
     thread_id: Optional[str] = None  # Thread ID for multi-user isolation
+    service_scope: Optional[Dict[str, str]] = Field(
+        default_factory=lambda: {"tenant_id": "", "instance_id": ""},
+        description="Tenant and instance context for multi-tenant/prod DB scoping",
+    )
     current_datetime: Optional[str] = ""
     lite_mode: Optional[bool] = None  # If set, overrides settings.advanced_features.lite_mode
     variables_storage: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
@@ -916,6 +932,9 @@ class AgentState(BaseModel):
     guidance: Optional[str] = None
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     chat_agent_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
+    supervisor_chat_messages: Optional[List[BaseMessage]] = Field(
+        default_factory=list
+    )  # Supervisor's conversation history
     api_intent_relevant_apps: Optional[List[AnalyzeTaskAppsOutput]] = None
     api_intent_relevant_apps_current: Optional[List[AnalyzeTaskAppsOutput]] = None
     shortlister_relevant_apps: Optional[List[str]] = None
@@ -1000,6 +1019,12 @@ class AgentState(BaseModel):
                 f"Applying sliding window: trimming chat_agent_messages from {len(self.chat_agent_messages)} to {limit}"
             )
             self.chat_agent_messages = self.chat_agent_messages[-limit:]
+
+        if self.supervisor_chat_messages and len(self.supervisor_chat_messages) > limit:
+            logger.info(
+                f"Applying sliding window: trimming supervisor_chat_messages from {len(self.supervisor_chat_messages)} to {limit}"
+            )
+            self.supervisor_chat_messages = self.supervisor_chat_messages[-limit:]
 
     def format_subtask(self):
         return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, self.sub_task_app[:30])

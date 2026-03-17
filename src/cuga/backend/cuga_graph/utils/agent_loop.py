@@ -32,6 +32,7 @@ from pydantic import BaseModel
 from enum import Enum
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.observability.openlit_init import set_session_attribute
 
 
 class OutputFormat(str, Enum):
@@ -273,6 +274,11 @@ class AgentLoop:
         env_pointer: Optional[BrowserEnvGymAsync | ExtensionEnv] = None,
         logger_name: str = 'agent_loop',
         policy_system: Optional[Any] = None,
+        enable_todos: Optional[bool] = None,
+        reflection_enabled: Optional[bool] = None,
+        shortlisting_tool_threshold: Optional[int] = None,
+        cuga_lite_max_steps: Optional[int] = None,
+        current_llm: Optional[Any] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
@@ -281,6 +287,11 @@ class AgentLoop:
         self.tracker = tracker
         self.logger = logging.getLogger(logger_name)
         self.policy_system = policy_system
+        self.enable_todos = enable_todos
+        self.reflection_enabled = reflection_enabled
+        self.shortlisting_tool_threshold = shortlisting_tool_threshold
+        self.cuga_lite_max_steps = cuga_lite_max_steps
+        self.current_llm = current_llm
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -477,9 +488,18 @@ class AgentLoop:
             },
         }
 
-        # Add policy_system to configurable if available
         if self.policy_system:
             config["configurable"]["policy_system"] = self.policy_system
+        if self.enable_todos is not None:
+            config["configurable"]["enable_todos"] = self.enable_todos
+        if self.reflection_enabled is not None:
+            config["configurable"]["reflection_enabled"] = self.reflection_enabled
+        if self.shortlisting_tool_threshold is not None:
+            config["configurable"]["shortlisting_tool_threshold"] = self.shortlisting_tool_threshold
+        if self.cuga_lite_max_steps is not None:
+            config["configurable"]["cuga_lite_max_steps"] = self.cuga_lite_max_steps
+        if self.current_llm is not None:
+            config["configurable"]["llm"] = self.current_llm
 
         return self.graph.astream(
             state if state else Command(resume=resume.model_dump()) if not both_none else None,
@@ -636,7 +656,14 @@ class AgentLoop:
     async def run_stream(self, state: Optional[AgentState] = None, resume=None):
         event_stream = self.get_stream(state, resume)
         event = {}
+        session_tagged = False  # Track if we've set session.id yet
+
         async for event in event_stream:
+            # Tag session.id on the first event (when spans are active)
+            if not session_tagged:
+                set_session_attribute(self.thread_id)
+                session_tagged = True
+
             event_msg = self.get_event_message(event)
             # Skip empty events (events with no name or no data)
             if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
@@ -696,7 +723,14 @@ class AgentLoop:
     async def run(self, state: Optional[AgentState] = None, resume=None):
         event_stream = self.get_stream(state, resume)
         event = {}
+        session_tagged = False  # Track if we've set session.id yet
+
         async for event in event_stream:
+            # Tag session.id on the first event (when spans are active)
+            if not session_tagged:
+                set_session_attribute(self.thread_id)
+                session_tagged = True
+
             event_msg = self.get_event_message(event)
             await self.show_chat_even(event_msg)
             # logger.debug(f"current event: {event_msg.format()}")

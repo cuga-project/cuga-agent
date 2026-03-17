@@ -65,7 +65,7 @@ async def unique_test_db():
 
     # Create unique database file path
     test_id = str(uuid.uuid4())[:8]
-    db_file = f"./milvus_policies_test_{test_id}.db"
+    db_file = f"./policy_db_test_{test_id}.db"
 
     # Cleanup before test (just in case)
     if os.path.exists(db_file):
@@ -112,7 +112,7 @@ async def test_policy_reset_and_reload_on_agent_rerun(unique_test_db):
 
     # Create policy system with unique database
     policy_system1 = PolicyConfigurable()
-    await policy_system1.initialize(milvus_uri=unique_test_db)
+    await policy_system1.initialize(policy_db_path=unique_test_db)
 
     # Step 1: Create first agent and add policies
     logger.info("\n📝 Step 1: Create first agent and add initial policies")
@@ -148,11 +148,11 @@ async def test_policy_reset_and_reload_on_agent_rerun(unique_test_db):
     # Cleanup agent1
     if hasattr(agent1, '_policy_system') and agent1._policy_system:
         if hasattr(agent1._policy_system, 'storage') and agent1._policy_system.storage:
-            agent1._policy_system.storage.disconnect()
+            await agent1._policy_system.storage.disconnect()
 
     # Create policy system with same database for agent2
     policy_system2 = PolicyConfigurable()
-    await policy_system2.initialize(milvus_uri=unique_test_db)
+    await policy_system2.initialize(policy_db_path=unique_test_db)
 
     # Step 2: Create second agent with reset_policy_storage=True
     logger.info("\n🔄 Step 2: Create second agent with reset_policy_storage=True")
@@ -204,7 +204,7 @@ async def test_policy_reset_and_reload_on_agent_rerun(unique_test_db):
     # Cleanup agent2
     if hasattr(agent2, '_policy_system') and agent2._policy_system:
         if hasattr(agent2._policy_system, 'storage') and agent2._policy_system.storage:
-            agent2._policy_system.storage.disconnect()
+            await agent2._policy_system.storage.disconnect()
 
     logger.info("\n" + "=" * 80)
     logger.info("✅ Test passed: Policy reset and reload works correctly")
@@ -223,18 +223,17 @@ async def test_policy_reset_with_auto_load(unique_test_db):
     3. Verify that old policies are cleared before new ones are loaded
     """
     from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
-    import tempfile
     import os
 
     logger.info("\n" + "=" * 80)
     logger.info("Test: Policy Reset with Auto Load")
     logger.info("=" * 80)
 
-    # Use unique .cuga folder to avoid conflicts with workspace .cuga
+    # Use unique .cuga folder inside workspace to avoid sandbox issues with /var/folders
     test_id = str(uuid.uuid4())[:8]
-
-    # Create a temporary .cuga folder with policies
-    with tempfile.TemporaryDirectory() as tmpdir:
+    tmpdir = os.path.join(os.getcwd(), f".policy_test_tmp_{test_id}")
+    os.makedirs(tmpdir, exist_ok=True)
+    try:
         cuga_folder = os.path.join(tmpdir, f".cuga_test_{test_id}")
         os.makedirs(cuga_folder)
 
@@ -244,22 +243,23 @@ async def test_policy_reset_with_auto_load(unique_test_db):
 
         # Create first policy file
         policy1_file = os.path.join(tool_approvals_folder, "policy1.md")
+        policy1_content = (
+            "---\n"
+            "name: Auto-loaded Policy 1\n"
+            "type: tool_approval\n"
+            "enabled: true\n"
+            "required_tools:\n"
+            "- test_tool_1\n"
+            "---\n\n"
+            "## Description\n"
+            "First auto-loaded policy\n"
+        )
         with open(policy1_file, "w") as f:
-            f.write("""---
-name: Auto-loaded Policy 1
-type: tool_approval
-enabled: true
-required_tools:
-- test_tool_1
----
-
-## Description
-First auto-loaded policy
-""")
+            f.write(policy1_content)
 
         # Create policy system with unique database
         policy_system1 = PolicyConfigurable()
-        await policy_system1.initialize(milvus_uri=unique_test_db)
+        await policy_system1.initialize(policy_db_path=unique_test_db)
 
         # Step 1: Create first agent with auto_load_policies=True
         logger.info("\n📝 Step 1: Create first agent with auto_load_policies=True")
@@ -291,25 +291,26 @@ First auto-loaded policy
         # Cleanup agent1
         if hasattr(agent1, '_policy_system') and agent1._policy_system:
             if hasattr(agent1._policy_system, 'storage') and agent1._policy_system.storage:
-                agent1._policy_system.storage.disconnect()
+                await agent1._policy_system.storage.disconnect()
 
         # Step 2: Update policy file
+        policy1_updated = (
+            "---\n"
+            "name: Auto-loaded Policy 1 Updated\n"
+            "type: tool_approval\n"
+            "enabled: true\n"
+            "required_tools:\n"
+            "  - test_tool_2\n"
+            "---\n\n"
+            "## Description\n"
+            "Updated auto-loaded policy\n"
+        )
         with open(policy1_file, "w") as f:
-            f.write("""---
-name: Auto-loaded Policy 1 Updated
-type: tool_approval
-enabled: true
-required_tools:
-  - test_tool_2
----
-
-## Description
-Updated auto-loaded policy
-""")
+            f.write(policy1_updated)
 
         # Create policy system with same database for agent2
         policy_system2 = PolicyConfigurable()
-        await policy_system2.initialize(milvus_uri=unique_test_db)
+        await policy_system2.initialize(policy_db_path=unique_test_db)
 
         # Step 3: Create second agent with reset_policy_storage=True
         logger.info("\n🔄 Step 2: Create second agent with reset_policy_storage=True")
@@ -340,11 +341,16 @@ Updated auto-loaded policy
         # Cleanup agent2
         if hasattr(agent2, '_policy_system') and agent2._policy_system:
             if hasattr(agent2._policy_system, 'storage') and agent2._policy_system.storage:
-                agent2._policy_system.storage.disconnect()
+                await agent2._policy_system.storage.disconnect()
 
-    logger.info("\n" + "=" * 80)
-    logger.info("✅ Test passed: Policy reset with auto load works correctly")
-    logger.info("=" * 80)
+        logger.info("\n" + "=" * 80)
+        logger.info("✅ Test passed: Policy reset with auto load works correctly")
+        logger.info("=" * 80)
+    finally:
+        import shutil
+
+        if os.path.exists(tmpdir):
+            shutil.rmtree(tmpdir, ignore_errors=True)
 
 
 @pytest.mark.asyncio
@@ -367,7 +373,7 @@ async def test_policy_reload_without_reset(unique_test_db):
 
     # Create policy system with unique database
     policy_system1 = PolicyConfigurable()
-    await policy_system1.initialize(milvus_uri=unique_test_db)
+    await policy_system1.initialize(policy_db_path=unique_test_db)
 
     # Step 1: Create first agent and add policies
     logger.info("\n📝 Step 1: Create first agent and add policies")
@@ -392,11 +398,11 @@ async def test_policy_reload_without_reset(unique_test_db):
     # Cleanup agent1
     if hasattr(agent1, '_policy_system') and agent1._policy_system:
         if hasattr(agent1._policy_system, 'storage') and agent1._policy_system.storage:
-            agent1._policy_system.storage.disconnect()
+            await agent1._policy_system.storage.disconnect()
 
     # Create policy system with same database for agent2
     policy_system2 = PolicyConfigurable()
-    await policy_system2.initialize(milvus_uri=unique_test_db)
+    await policy_system2.initialize(policy_db_path=unique_test_db)
 
     # Step 2: Create second agent WITHOUT reset
     logger.info("\n🔄 Step 2: Create second agent without reset_policy_storage")
@@ -417,11 +423,11 @@ async def test_policy_reload_without_reset(unique_test_db):
     # Cleanup agent2
     if hasattr(agent2, '_policy_system') and agent2._policy_system:
         if hasattr(agent2._policy_system, 'storage') and agent2._policy_system.storage:
-            agent2._policy_system.storage.disconnect()
+            await agent2._policy_system.storage.disconnect()
 
     # Create policy system with same database for agent3
     policy_system3 = PolicyConfigurable()
-    await policy_system3.initialize(milvus_uri=unique_test_db)
+    await policy_system3.initialize(policy_db_path=unique_test_db)
 
     # Step 3: Create third agent WITH reset
     logger.info("\n🔄 Step 3: Create third agent WITH reset_policy_storage=True")
@@ -441,7 +447,7 @@ async def test_policy_reload_without_reset(unique_test_db):
     # Cleanup agent3
     if hasattr(agent3, '_policy_system') and agent3._policy_system:
         if hasattr(agent3._policy_system, 'storage') and agent3._policy_system.storage:
-            agent3._policy_system.storage.disconnect()
+            await agent3._policy_system.storage.disconnect()
 
     logger.info("\n" + "=" * 80)
     logger.info("✅ Test passed: Policy persistence and reset behavior works correctly")

@@ -1,0 +1,47 @@
+supervisor:
+  model:
+    provider: groq
+    model_name: openai/gpt-oss-120b
+  description: "Supervisor for coordinating CRM, Email, and Filesystem agents"
+
+agents:
+  - name: crm_agent
+    type: internal
+    description: "CRM specialist for managing customer relationships and sales data"
+    apps:
+      - crm  # App name from registry
+    special_instructions: "You are a CRM specialist. Focus on customer data management, account information, and sales operations."
+
+  - name: email_agent
+    type: internal
+    description: "Email communication specialist for sending and managing emails"
+    apps:
+      - email  # App name from registry (if email is registered as an app)
+    # Alternative: use mcp_servers if email is an MCP server
+    # mcp_servers:
+    #   - name: email
+    #     url: http://localhost:8000/sse
+    special_instructions: "You are an email specialist. Focus on email communication, templates, and email campaigns."
+
+  - name: filesystem_agent
+    type: internal
+    description: "Filesystem specialist for file operations and data storage"
+    apps:
+      - filesystem  # App name from registry (if filesystem is registered as an app)
+    # Alternative: use mcp_servers if filesystem is an MCP server
+    # mcp_servers:
+    #   - name: filesystem
+    #     url: http://localhost:8112/sse
+    special_instructions: "You are a filesystem specialist. Focus on file operations, reading and writing files, and organizing documents."
+
+a2a:
+  protocol_version: "1.0"
+  communication:
+    type: http
+    timeout: 30
+    retry_policy:
+      max_retries: 3
+      backoff: exponential
+  message_format:
+    schema: json
+    validation: strict

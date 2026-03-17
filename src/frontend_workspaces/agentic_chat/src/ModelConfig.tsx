@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { X, Save } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import "./ConfigModal.css";
 
 interface ModelConfigData {
@@ -31,7 +32,7 @@ export default function ModelConfig({ onClose }: ModelConfigProps) {
 
   const loadConfig = async () => {
     try {
-      const response = await fetch('/api/config/model');
+      const response = await apiFetch('/api/config/model');
       if (response.ok) {
         const data = await response.json();
         setConfig(data);
@@ -44,7 +45,7 @@ export default function ModelConfig({ onClose }: ModelConfigProps) {
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
-      const response = await fetch('/api/config/model', {
+      const response = await apiFetch('/api/config/model', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),

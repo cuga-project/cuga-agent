@@ -1,0 +1,10 @@
+apiVersion: v2
+name: postgres-pgvector
+description: PostgreSQL with pgvector extension for Cuga agent production storage
+type: application
+version: 0.1.0
+appVersion: "16"
+keywords:
+  - postgresql
+  - pgvector
+  - cuga

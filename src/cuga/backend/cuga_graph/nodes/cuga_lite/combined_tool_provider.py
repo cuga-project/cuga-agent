@@ -5,7 +5,7 @@ Provides tools from both runtime tracker tools and registry.
 First checks tracker for runtime tools, then falls back to registry.
 """
 
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional, Any, Callable, Tuple
 import aiohttp
 import asyncio
 
@@ -13,7 +13,7 @@ from loguru import logger
 from langchain_core.tools import StructuredTool
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_registry_base_url
+from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_registry_base_url, get_agent_id
 from cuga.backend.tools_env.registry.utils.types import AppDefinition
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
     ToolProviderInterface,
@@ -196,21 +196,33 @@ class CombinedToolProvider(ToolProviderInterface):
     First checks tracker for runtime tools, then tries registry with try/catch.
     """
 
-    def __init__(self, app_names: Optional[List[str]] = None):
+    def __init__(
+        self,
+        app_names: Optional[List[str]] = None,
+        get_include_by_app: Optional[Callable[[], Tuple[Optional[Dict[str, List[str]]], int]]] = None,
+        agent_id: Optional[str] = None,
+    ):
         """
         Initialize the combined tool provider.
 
         Args:
             app_names: Optional list of specific app names to load. If None, loads all.
+            get_include_by_app: Optional callable returning (include_by_app, version).
+                If provided, only tools whose name is in include_by_app[app_name] are returned
+                (when that list is non-empty). Version change clears the tools cache.
+            agent_id: Optional agent ID for database mode. If None, uses environment variable or defaults.
         """
         self.app_names = app_names
+        self.get_include_by_app = get_include_by_app
+        self.agent_id = agent_id
         self.apps: List[AppDefinition] = []
         self.tools_cache: Dict[str, List[StructuredTool]] = {}
+        self._last_include_version: int = -1
         self.initialized = False
 
     async def initialize(self):
         """Load apps from tracker and registry."""
-        logger.info("Initializing CombinedToolProvider...")
+        logger.info(f"Initializing CombinedToolProvider (agent_id={self.agent_id})...")
 
         tracker_apps = []
         if hasattr(tracker, 'apps') and tracker.apps:
@@ -219,7 +231,7 @@ class CombinedToolProvider(ToolProviderInterface):
         registry_apps = []
         if settings.advanced_features.registry:
             try:
-                registry_apps = await get_apps()
+                registry_apps = await get_apps(agent_id=self.agent_id)
             except Exception as e:
                 logger.warning(f"Failed to get apps from registry: {e}")
 
@@ -256,29 +268,59 @@ class CombinedToolProvider(ToolProviderInterface):
         logger.info(f"Found {len(self.apps)} apps: {[app.name for app in self.apps]}")
         self.initialized = True
 
+    def reset(self) -> None:
+        """Reset state so next get_apps/get_tools re-initializes from registry."""
+        self.initialized = False
+        self.apps = []
+        self.tools_cache.clear()
+        self._last_include_version = -1
+
     async def get_apps(self) -> List[AppDefinition]:
         """Get list of available applications."""
         if not self.initialized:
             await self.initialize()
         return self.apps
 
+    def _filter_tools_by_include(
+        self, tools: List[StructuredTool], app_name: str, include_ids: List[str]
+    ) -> List[StructuredTool]:
+        if not include_ids:
+            return tools
+        include_set = set(include_ids)
+        out = []
+        for t in tools:
+            if t.name in include_set:
+                out.append(t)
+                continue
+            raw = t.name.replace(f"{app_name}_", "", 1) if t.name.startswith(f"{app_name}_") else t.name
+            if raw in include_set:
+                out.append(t)
+        return out
+
     async def get_tools(self, app_name: str) -> List[StructuredTool]:
         """
         Get tools for a specific application.
 
         First checks tracker for runtime tools, then tries registry.
-
-        Args:
-            app_name: Name of the application
-
-        Returns:
-            List of LangChain StructuredTool objects
+        If get_include_by_app is set, filters to only tools in the include list for this app.
         """
         if not self.initialized:
             await self.initialize()
 
+        if self.get_include_by_app:
+            include_by_app, version = self.get_include_by_app()
+            if version != self._last_include_version:
+                self._last_include_version = version
+                self.tools_cache.clear()
+
         if app_name in self.tools_cache:
-            return self.tools_cache[app_name]
+            cached = self.tools_cache[app_name]
+            if self.get_include_by_app:
+                include_by_app, _ = self.get_include_by_app()
+                include_ids = (include_by_app or {}).get(app_name) if include_by_app else None
+                if include_ids is not None and len(include_ids) > 0:
+                    return self._filter_tools_by_include(cached, app_name, include_ids)
+            return cached
 
         all_tools = []
 
@@ -304,7 +346,9 @@ class CombinedToolProvider(ToolProviderInterface):
             if tracker_tools_dict:
                 for tool_name, tool_def in tracker_tools_dict.items():
                     try:
-                        tool = create_tool_from_api_dict(tool_name, tool_def, app_name)
+                        tool = create_tool_from_api_dict(
+                            tool_name, tool_def, app_name, agent_id=self.agent_id
+                        )
                         all_tools.append(tool)
                     except Exception as e:
                         logger.warning(f"Failed to create tool {tool_name} from tracker: {e}")
@@ -314,9 +358,15 @@ class CombinedToolProvider(ToolProviderInterface):
 
         if settings.advanced_features.registry:
             try:
-                logger.debug(f"Getting tools from registry for: {app_name}")
+                logger.debug(f"Getting tools from registry for: {app_name} (agent_id={self.agent_id})")
                 registry_base = get_registry_base_url()
                 url = f'{registry_base}/applications/{app_name}/apis?include_response_schema=true'
+
+                # Add agent_id parameter if available
+                agent_id = self.agent_id or get_agent_id()
+                if agent_id:
+                    url += f'&agent_id={agent_id}'
+
                 headers = {'accept': 'application/json'}
 
                 async with aiohttp.ClientSession() as session:
@@ -328,7 +378,9 @@ class CombinedToolProvider(ToolProviderInterface):
                                     if any(tool.name == tool_name for tool in all_tools):
                                         continue
                                     try:
-                                        tool = create_tool_from_api_dict(tool_name, tool_def, app_name)
+                                        tool = create_tool_from_api_dict(
+                                            tool_name, tool_def, app_name, agent_id=self.agent_id
+                                        )
                                         all_tools.append(tool)
                                         logger.debug(f"  ✓ {tool_name}")
                                     except Exception as e:
@@ -343,6 +395,13 @@ class CombinedToolProvider(ToolProviderInterface):
                 logger.warning(f"Error getting tools from registry for {app_name}: {e}")
 
         self.tools_cache[app_name] = all_tools
+        if self.get_include_by_app:
+            include_by_app, _ = self.get_include_by_app()
+            include_ids = (include_by_app or {}).get(app_name) if include_by_app else None
+            if include_ids and len(include_ids) > 0:
+                all_tools = self._filter_tools_by_include(all_tools, app_name, include_ids)
+                logger.info(f"Loaded {len(all_tools)} tools for '{app_name}' (filtered by include)")
+                return all_tools
         logger.info(f"Loaded {len(all_tools)} tools for '{app_name}'")
         return all_tools
 

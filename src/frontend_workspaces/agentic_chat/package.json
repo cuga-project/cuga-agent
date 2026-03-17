@@ -7,7 +7,28 @@
   "module": "./src/App.tsx",
   "exports": {
     ".": {
-      "import": "./src/App.tsx"
+      "import": "./src/App.tsx",
+      "default": "./src/App.tsx"
+    },
+    "./CustomChat": {
+      "import": "./src/CustomChat.tsx",
+      "default": "./src/CustomChat.tsx"
+    },
+    "./PoliciesConfig": {
+      "import": "./src/PoliciesConfig.tsx",
+      "default": "./src/PoliciesConfig.tsx"
+    },
+    "./VariablesSidebar": {
+      "import": "./src/VariablesSidebar.tsx",
+      "default": "./src/VariablesSidebar.tsx"
+    },
+    "./CugaHeader": {
+      "import": "./src/CugaHeader.tsx",
+      "default": "./src/CugaHeader.tsx"
+    },
+    "./SubAgentsConfig": {
+      "import": "./src/SubAgentsConfig.tsx",
+      "default": "./src/SubAgentsConfig.tsx"
     }
   },
   "scripts": {
@@ -77,7 +98,7 @@
     "loglevel-plugin-prefix": "^0.8.4",
     "marked": "^16.3.0",
     "reflect-metadata": "^0.2.2",
-    "tar": "^7.5.7",
+    "tar": "^7.5.8",
     "use-immer": "^0.11.0",
     "uuid": "^10.0.0",
     "webextension-polyfill": "^0.10.0"

@@ -1,0 +1,164 @@
+/* Carbon-based styling - minimal overrides */
+
+.tools-config-empty {
+  margin: 0;
+  font-size: 0.875rem;
+  color: var(--cds-text-placeholder, #8d8d8d);
+}
+
+.tools-config-list {
+  margin: 0;
+}
+
+.tools-config-tile {
+  padding: 0.75rem 1rem !important;
+}
+
+.tools-config-tile-main {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.tools-config-tile-info {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.tools-config-tile-name {
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--cds-text-primary, #161616);
+}
+
+.tools-config-tile-badge {
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+}
+
+.tools-config-tile-badge-subset {
+  color: var(--cds-text-helper, #6f6f6f);
+}
+
+.tools-config-tile-source {
+  margin: 0.5rem 0 0 0;
+  font-size: 0.75rem;
+  color: var(--cds-text-secondary, #525252);
+  word-break: break-all;
+}
+
+.tools-config-connected-list {
+  margin-top: 1rem;
+  background: transparent !important;
+}
+
+.tools-config-connected-list .cds--contained-list__header {
+  min-width: 0;
+  background: transparent !important;
+  position: static !important;
+}
+
+.tools-config-connected-list .cds--contained-list__header .cds--contained-list__label,
+.tools-config-connected-list .cds--contained-list__header [class*="label"],
+.tools-config-connected-list .cds--contained-list__header > * {
+  min-width: 0;
+  overflow-wrap: break-word;
+  word-break: break-word;
+}
+
+.tools-config-connected-list .cds--contained-list-item {
+  background: transparent !important;
+  border: none !important;
+  padding: 0.75rem 0 !important;
+}
+
+.tools-config-connected-list .cds--contained-list-item:not(:last-child) {
+  border-bottom: 1px solid var(--cds-border-subtle-01, #e0e0e0) !important;
+}
+
+.tools-config-connected-label {
+  display: flex;
+  align-items: center;
+  margin-bottom: 0.5rem;
+}
+
+.tools-config-connected-hint {
+  margin: 0;
+  color: var(--cds-text-secondary, #525252);
+}
+
+.tools-config-connected-item-header {
+  flex-wrap: wrap;
+  align-items: center;
+}
+
+.tools-config-connected-sublist {
+  margin-top: 0.5rem;
+  background: var(--cds-layer-01, #f4f4f4) !important;
+  border-radius: 0.25rem;
+}
+
+.tools-config-connected-sublist .cds--contained-list-item {
+  background: transparent !important;
+  padding: 0.5rem 0.75rem !important;
+}
+
+.tools-config-modal-new-hint {
+  margin: 0 0 1rem 0;
+  padding: 0.75rem 1rem;
+  font-size: 0.875rem;
+  color: var(--cds-text-secondary, #525252);
+  background: var(--cds-layer-01, #f4f4f4);
+  border-radius: 0.25rem;
+}
+
+.tools-config-modal-new-hint strong {
+  color: var(--cds-text-primary, #161616);
+}
+
+.cds--modal-content.server-tools-modal-body,
+.cds--modal-scroll-content.server-tools-modal-body {
+  padding: 1rem 1rem 2rem 1rem !important;
+  overflow-y: auto !important;
+  max-height: 70vh;
+}
+
+.tools-config-tools-checkbox-row {
+  margin-bottom: 1rem;
+  padding-bottom: 1rem;
+  border-bottom: 1px solid var(--cds-border-subtle-01, #e0e0e0);
+}
+
+.tools-config-tools-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.tools-config-tools-list-item {
+  margin: 0;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--cds-border-subtle-00, #f4f4f4);
+}
+
+.tools-config-tools-list-item:last-child {
+  border-bottom: none;
+}
+
+.tools-config-tool-id {
+  font-family: 'IBM Plex Mono', 'Menlo', 'DejaVu Sans Mono', 'Bitstream Vera Sans Mono', Courier, monospace;
+  font-size: 0.875rem;
+  color: var(--cds-text-primary, #161616);
+  display: block;
+  margin-bottom: 0.25rem;
+}
+
+.tools-config-tool-desc {
+  color: var(--cds-text-secondary, #525252);
+  font-size: 0.875rem;
+  display: block;
+}

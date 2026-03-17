@@ -1,7 +1,7 @@
 import asyncio
 from typing import Dict, Literal, Optional
 
-import html2text
+from markdownify import markdownify
 from loguru import logger
 from playwright.async_api import BrowserContext
 from playwright.async_api import Error as PlaywrightError
@@ -59,9 +59,8 @@ class PageUnderstandingExtractor:
                 axtree = await extract_merged_axtree(page)
                 focused_element_bid = await extract_focused_element_bid(page)
                 extra_properties = extract_dom_extra_properties(dom)
-                h = html2text.HTML2Text()
                 img = await extract_screenshot_base64(page)
-                page_content = h.handle(await page.inner_html("body"))
+                page_content = markdownify(await page.inner_html("body"))
                 if nocodeui_pu:
                     nocodeui_pu = await analyze_current_page_async(context)
             except (PlaywrightError, MarkingError) as e:

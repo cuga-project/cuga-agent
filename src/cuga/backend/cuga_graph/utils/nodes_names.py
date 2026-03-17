@@ -11,6 +11,7 @@ class NodeNames:
     SUGGEST_HUMAN_ACTIONS = "SuggestHumanActions"
     REUSE_AGENT = "ReuseAgent"
     CUGA_LITE = "CugaLite"
+    CUGA_SUPERVISOR = "CugaSupervisor"
     API_CODE_PLANNER_AGENT = "APICodePlannerAgent"
     SHORTLISTER_AGENT = "ShortlisterAgent"
     DECOMPOSITION_AGENT = "TaskDecompositionAgent"
@@ -34,6 +35,7 @@ class ActionIds:
     NEW_FLOW_APPROVE = "new_flow_approve"
     CONSULT_WITH_HUMAN = "consult_with_human"
     TOOL_APPROVAL = "tool_approval"
+    AGENT_APPROVAL = "agent_approval"
 
 
 # Message Prefixes

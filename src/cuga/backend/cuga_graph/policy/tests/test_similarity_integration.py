@@ -60,7 +60,7 @@ async def storage():
     for policy in existing_policies:
         await storage.delete_policy(policy.id)
 
-    storage.disconnect()
+    await storage.disconnect()
 
 
 @pytest_asyncio.fixture
@@ -370,7 +370,7 @@ This guide helps users complete their purchase successfully.
         logger.warning("⚠️  No embedding function available")
         logger.info("   To enable embeddings:")
         logger.info("   - Set OPENAI_API_KEY environment variable, OR")
-        logger.info("   - Install 'pymilvus[model]' package")
+        logger.info("   - Install 'sentence-transformers' package")
 
     logger.info("=" * 80)
     logger.success("🎉 Integration test completed successfully!")
@@ -412,6 +412,6 @@ if __name__ == "__main__":
             existing_policies = await storage.list_policies(enabled_only=False)
             for policy in existing_policies:
                 await storage.delete_policy(policy.id)
-            storage.disconnect()
+            await storage.disconnect()
 
     asyncio.run(main())

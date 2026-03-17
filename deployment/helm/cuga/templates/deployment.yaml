@@ -1,0 +1,82 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cuga.fullname" . }}
+  labels:
+    {{- include "cuga.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "cuga.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "cuga.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 7860
+              protocol: TCP
+          env:
+            {{- if .Values.persistence.dbs.enabled }}
+            - name: CUGA_DBS_DIR
+              value: "/data/dbs"
+            {{- end }}
+            {{- $secret := .Values.existingSecret }}
+            {{- $sensitiveKeys := list "GROQ_API_KEY" "OIDC_CLIENT_SECRET" "OIDC_CLIENT_ID" "OIDC_DISCOVERY_URL" "OIDC_REDIRECT_URI" "DYNACONF_STORAGE__POSTGRES_URL" }}
+            {{- range $key, $value := .Values.env }}
+            - name: {{ $key }}
+              {{- if and $secret (has $key $sensitiveKeys) }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $secret }}
+                  key: {{ $key }}
+                  optional: true
+              {{- else }}
+              value: {{ $value | quote }}
+              {{- end }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 120
+            periodSeconds: 15
+            failureThreshold: 5
+            timeoutSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 90
+            periodSeconds: 10
+            failureThreshold: 10
+            timeoutSeconds: 10
+          startupProbe:
+            httpGet:
+              path: /
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 10
+            failureThreshold: 18
+            timeoutSeconds: 10
+          {{- if .Values.persistence.dbs.enabled }}
+          volumeMounts:
+            - name: dbs
+              mountPath: /data/dbs
+          {{- end }}
+      {{- if .Values.persistence.dbs.enabled }}
+      volumes:
+        - name: dbs
+          persistentVolumeClaim:
+            claimName: {{ include "cuga.fullname" . }}-dbs
+      {{- end }}

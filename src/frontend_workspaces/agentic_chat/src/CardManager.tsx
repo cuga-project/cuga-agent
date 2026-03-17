@@ -43,6 +43,7 @@ const HIGHLIGHT_COLOR = "#4e00ec";
 interface CardManagerProps {
   chatInstance: ChatInstance;
   threadId?: string;
+  useDraftAgent?: boolean;
 }
 
 // Extend the global interface typing to include the new loader API
@@ -62,7 +63,7 @@ declare global {
   }
 }
 
-const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId }) => {
+const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDraftAgent }) => {
   const [currentSteps, setCurrentSteps] = useState<Step[]>([]);
   const [currentCardId, setCurrentCardId] = useState<string | null>(null);
   const [isProcessingComplete, setIsProcessingComplete] = useState(false);
@@ -1691,7 +1692,7 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId }) => 
                     console.log("📤 Using threadId:", threadId);
                     // Mark this step as completed before proceeding
                     markStepCompleted(step.id);
-                    await fetchStreamingData(chatInstance, "", d, threadId);
+                    await fetchStreamingData(chatInstance, "", d, threadId, useDraftAgent);
                   }}
                 />
               );

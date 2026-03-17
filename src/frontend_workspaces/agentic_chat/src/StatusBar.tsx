@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Wrench, Zap, CheckCircle2, AlertCircle, Users, User, MoreHorizontal, Lightbulb } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import { exampleUtterances } from "./exampleUtterances";
 import "./StatusBar.css";
 
@@ -135,7 +136,7 @@ export function StatusBar({ threadId }: StatusBarProps) {
 
   const loadTools = async () => {
     try {
-      const response = await fetch('/api/tools/status');
+      const response = await apiFetch('/api/tools/status');
       if (response.ok) {
         const data = await response.json();
         setTools(data.tools || []);
@@ -148,7 +149,7 @@ export function StatusBar({ threadId }: StatusBarProps) {
 
   const loadSubAgents = async () => {
     try {
-      const response = await fetch('/api/config/subagents');
+      const response = await apiFetch('/api/config/subagents');
       if (response.ok) {
         const data = await response.json();
         setSubAgents(data.subAgents || []);
@@ -176,7 +177,7 @@ export function StatusBar({ threadId }: StatusBarProps) {
       setSelectedAgent(null);
       setAgentMode(newMode);
       // Send agent mode change to backend
-      fetch('/api/config/agent-mode', {
+      apiFetch('/api/config/agent-mode', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ mode: newMode, selectedAgent: null }),
@@ -189,7 +190,7 @@ export function StatusBar({ threadId }: StatusBarProps) {
     setAgentMode("single");
     setShowAgentSelector(false);
     // Send agent selection to backend
-    fetch('/api/config/agent-mode', {
+    apiFetch('/api/config/agent-mode', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ mode: "single", selectedAgent: agentName }),
@@ -208,7 +209,7 @@ export function StatusBar({ threadId }: StatusBarProps) {
     setSubAgents(updatedAgents);
 
     // Send update to backend
-    fetch('/api/config/subagents', {
+    apiFetch('/api/config/subagents', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({

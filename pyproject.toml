@@ -1,6 +1,6 @@
 [project]
 name = "cuga"
-version = "0.2.9"
+version = "0.2.10"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
@@ -14,7 +14,7 @@ dependencies = [
     "httpx",
     "docker",
     "langgraph",
-    "html2text",
+    "markdownify",
     "uvicorn",
     "fastapi[standard]",
     "langfuse",
@@ -31,15 +31,25 @@ dependencies = [
     "pyyaml>=6.0.3",
     "pymilvus[milvus-lite,model]>=2.6.4",
     "langchain-groq>=0.3.8",
+    "langchain-litellm",
+    "litellm>=1.0.0",
     "tavily-python",
     "torch>=2.2.2",
     "sentence-transformers>=5.1.2",
+    "a2a-sdk[http-server]>=0.3.22",
+    "sqlite-vec>=0.1.6",
+    "pgvector>=0.4.2",
+    "asyncpg>=0.30",
+    "PyJWT[crypto]>=2.10.0",
+    "cryptography>=44.0.0",
+    "hvac>=2.0.0",
+    "boto3>=1.34.0",
+    "openlit>=1.4.0", # 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard
 ]
 
 [project.optional-dependencies]
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
-
 memory = ["mem0ai[extras]"]
 
 [project.urls]
@@ -48,6 +58,11 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 
 [tool.uv]
 package = true
+constraint-dependencies = [
+    "pillow>=12.1.1",  # CVE-2026-25990: Out-of-bounds write in PSD loading
+    "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441
+    "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
@@ -92,6 +107,7 @@ code = "evaluation.code_generator:main"
 exp = "scripts.eval_gui:main"
 digital_sales_mcp = "scripts.commands:run_digital_sales_mcp"
 digital_sales_openapi = "scripts.commands:run_digital_sales_openapi"
+test_llm = "scripts.commands:test_llm"
 
 [dependency-groups]
 dev = [
@@ -99,7 +115,7 @@ dev = [
     "ruff>=0.9.4",
     "tabulate",
     "beartype",
-    "nltk",
+    "nltk>=3.9.3",
     "termcolor",
     "rapidfuzz",
     "pytest>=8.3.5",
@@ -108,6 +124,7 @@ dev = [
     "pre-commit>=4.3.0",
     "questionary>=2.1.1",
     "rich>=14.2.0",
+    "pip-licenses>=5.5.1",
 ]
 google-genai = [
     "langchain-google-genai>=2.0.11",

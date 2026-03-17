@@ -4,7 +4,7 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 
 import functools
 import json
-from typing import List
+from typing import Any, List, Optional
 from loguru import logger
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
@@ -175,6 +175,7 @@ class PromptUtils:
         query: str,
         all_tools: List[StructuredTool],
         all_apps: List[AppDefinition],
+        llm: Optional[Any] = None,
     ) -> str:
         """
         Search tools from given applications and return the top 4 matching tools with reasoning.
@@ -249,7 +250,7 @@ class PromptUtils:
         from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 
         llm_manager = LLMManager()
-        model = llm_manager.get_model(settings.agent.code.model)
+        model = llm or llm_manager.get_model(settings.agent.code.model)
         chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
         response = await chain.ainvoke(
             {

@@ -69,9 +69,9 @@ async def setup_policy_storage(
         raise ValueError(
             f"Failed to initialize embedding function with provider '{final_provider}' and model '{final_model}'. "
             f"Please ensure:\n"
-            f"  1. For 'local' provider: Install 'pymilvus[model]' package\n"
+            f"  1. For 'local' provider: Install 'sentence-transformers' package\n"
             f"  2. For 'openai' provider: Set OPENAI_API_KEY environment variable\n"
-            f"  3. For 'auto' provider: Either install 'pymilvus[model]' or set OPENAI_API_KEY"
+            f"  3. For 'auto' provider: Either install 'sentence-transformers' or set OPENAI_API_KEY"
         )
 
     return storage

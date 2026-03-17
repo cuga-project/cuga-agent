@@ -334,11 +334,15 @@ export const FollowupAction = ({ followupAction, callback }: FollowupActionProps
         );
 
       case "confirmation":
-        // Check if this is a tool approval action with code preview
+        // Check if this is a tool approval or agent approval action
         const isToolApproval = action_id === "tool_approval";
+        const isAgentApproval = action_id === "agent_approval";
         const toolData = followupAction.additional_data?.tool;
         const codePreview = toolData?.code_preview || [];
         const requiredTools = toolData?.required_tools || [];
+        const agentNames = toolData?.agent_names || [];
+        const tasks = toolData?.tasks || {};
+        const taskDescriptions = toolData?.task_descriptions || "";
         
         return (
           <div className="space-y-3">
@@ -368,6 +372,30 @@ export const FollowupAction = ({ followupAction, callback }: FollowupActionProps
               </div>
             )}
             
+            {/* Show agent approval details if available */}
+            {isAgentApproval && agentNames.length > 0 && (
+              <div className="bg-blue-50 border border-blue-200 rounded p-3 text-sm">
+                <div className="mb-2">
+                  <span className="font-semibold text-blue-900">Agents to be executed:</span>
+                  <div className="mt-1 flex flex-wrap gap-1">
+                    {agentNames.map((agent: string, idx: number) => (
+                      <span key={idx} className="inline-block bg-blue-100 text-blue-800 px-2 py-0.5 rounded text-xs font-medium">
+                        {agent}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+                {taskDescriptions && (
+                  <div className="mt-2">
+                    <span className="font-semibold text-blue-900">Tasks for each agent:</span>
+                    <div className="mt-1 bg-white border border-blue-200 rounded p-2 text-xs">
+                      <div className="whitespace-pre-wrap text-gray-700">{taskDescriptions}</div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+            
             {/* Confirmation buttons */}
             <div className="flex gap-3">
               <button
@@ -376,13 +404,15 @@ export const FollowupAction = ({ followupAction, callback }: FollowupActionProps
                 className={`flex-1 px-4 py-3 ${
                   isToolApproval 
                     ? "bg-amber-500 hover:bg-amber-600" 
+                    : isAgentApproval
+                    ? "bg-blue-500 hover:bg-blue-600"
                     : "bg-green-500 hover:bg-green-600"
                 } text-white rounded font-medium flex items-center justify-center gap-2 ${
                   isSubmitted ? "opacity-50 cursor-not-allowed" : ""
                 }`}
               >
                 <Check className="w-4 h-4" />
-                {isToolApproval ? "Approve & Execute" : "Confirm"}
+                {isToolApproval ? "Approve & Execute" : isAgentApproval ? "Approve & Execute Agents" : "Confirm"}
               </button>
               <button
                 onClick={() => handleConfirmation(false)}
@@ -392,7 +422,7 @@ export const FollowupAction = ({ followupAction, callback }: FollowupActionProps
                 }`}
               >
                 <X className="w-4 h-4" />
-                {isToolApproval ? "Deny" : "Cancel"}
+                {isToolApproval || isAgentApproval ? "Deny" : "Cancel"}
               </button>
             </div>
           </div>

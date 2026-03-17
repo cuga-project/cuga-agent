@@ -1,0 +1,9 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "postgres-pgvector.fullname" . }}-init
+  labels:
+    {{- include "postgres-pgvector.labels" . | nindent 4 }}
+data:
+  01-init-pgvector.sql: |
+    CREATE EXTENSION IF NOT EXISTS vector;

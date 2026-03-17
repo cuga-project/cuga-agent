@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { X, Save, Plus, Trash2, UserCog, Zap, Users as UsersIcon, Shield } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import "./ConfigModal.css";
 
 interface HumanInterventionRule {
@@ -73,7 +74,7 @@ export default function AgentHumanConfig({ onClose }: AgentHumanConfigProps) {
 
   const loadConfig = async () => {
     try {
-      const response = await fetch('/api/config/agent-human');
+      const response = await apiFetch('/api/config/agent-human');
       if (response.ok) {
         const data = await response.json();
         setConfig({
@@ -110,7 +111,7 @@ export default function AgentHumanConfig({ onClose }: AgentHumanConfigProps) {
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
-      const response = await fetch('/api/config/agent-human', {
+      const response = await apiFetch('/api/config/agent-human', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(config),

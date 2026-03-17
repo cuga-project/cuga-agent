@@ -1,0 +1,66 @@
+# Required secret: RIS_CLOUD_ACCOUNT_API_KEY
+# Required vars: IBM_CLOUD_URL, IBM_CLOUD_REGION, IBM_CLOUD_GROUP, IBM_REGISTRY_URL,
+# IBM_CR_NAMESPACE, IMAGE_NAME, IMAGE_TAG
+name: Deploy Image to IBM Cloud
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    name: Build and push image
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Validate vars
+        run: |
+          missing=""
+          [ -z "${{ vars.IBM_CLOUD_URL }}" ] && missing="$missing IBM_CLOUD_URL"
+          [ -z "${{ vars.IBM_CLOUD_REGION }}" ] && missing="$missing IBM_CLOUD_REGION"
+          [ -z "${{ vars.IBM_CLOUD_GROUP }}" ] && missing="$missing IBM_CLOUD_GROUP"
+          [ -z "${{ vars.IBM_REGISTRY_URL }}" ] && missing="$missing IBM_REGISTRY_URL"
+          [ -z "${{ vars.IBM_CR_NAMESPACE }}" ] && missing="$missing IBM_CR_NAMESPACE"
+          [ -z "${{ vars.IMAGE_NAME }}" ] && missing="$missing IMAGE_NAME"
+          [ -z "${{ vars.IMAGE_TAG }}" ] && missing="$missing IMAGE_TAG"
+          if [ -n "$missing" ]; then
+            echo "::error::Missing repository variables:$missing"
+            echo "Set them in: Settings → Secrets and variables → Actions → Variables"
+            exit 1
+          fi
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.ubi
+          push: false
+          load: true
+          tags: ${{ vars.IBM_REGISTRY_URL }}/${{ vars.IBM_CR_NAMESPACE }}/${{ vars.IMAGE_NAME }}:${{ vars.IMAGE_TAG }}
+
+      - name: Install IBM Cloud CLI
+        uses: IBM/actions-ibmcloud-cli@v1
+        with:
+          api_key: ${{ secrets.RIS_CLOUD_ACCOUNT_API_KEY }}
+          region: ${{ vars.IBM_CLOUD_REGION }}
+          group: ${{ vars.IBM_CLOUD_GROUP }}
+          api: ${{ vars.IBM_CLOUD_URL }}
+          plugins: container-registry
+
+      - name: Deploy to IBM Cloud Registry
+        env:
+          RIS_CLOUD_ACCOUNT_API_KEY: ${{ secrets.RIS_CLOUD_ACCOUNT_API_KEY }}
+          TARGET_IBM_CLOUD_URL: ${{ vars.IBM_CLOUD_URL }}
+          TARGET_IBM_CLOUD_REGION: ${{ vars.IBM_CLOUD_REGION }}
+          TARGET_IBM_CLOUD_GROUP: ${{ vars.IBM_CLOUD_GROUP }}
+          TARGET_IBM_REGISTRY_URL: ${{ vars.IBM_REGISTRY_URL }}
+          CR_NAMESPACE: ${{ vars.IBM_CR_NAMESPACE }}
+          IMAGE_NAME: ${{ vars.IMAGE_NAME }}
+          IMAGE_TAG: ${{ vars.IMAGE_TAG }}
+        run: |
+          chmod +x ./scripts/deploy-image.sh
+          ./scripts/deploy-image.sh "$TARGET_IBM_CLOUD_URL" "$TARGET_IBM_CLOUD_REGION" "$TARGET_IBM_CLOUD_GROUP" "$TARGET_IBM_REGISTRY_URL" "$CR_NAMESPACE" "$IMAGE_NAME" "$IMAGE_TAG"

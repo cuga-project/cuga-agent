@@ -59,6 +59,9 @@ export default {
     alias: {
       react: reactPath,
       "react-dom": reactDomPath,
+      "@ibm/plex": path.resolve(__dirname, "node_modules/@ibm/plex"),
+      "agentic_chat/CustomChat": path.resolve(__dirname, "../agentic_chat/src/CustomChat.tsx"),
+      "agentic_chat/PoliciesConfig": path.resolve(__dirname, "../agentic_chat/src/PoliciesConfig.tsx"),
     },
   },
   optimization: {
@@ -82,31 +85,12 @@ export default {
     sideEffects: false,
     splitChunks: {
       chunks: "all",
-      maxSize: 244 * 1024,
       cacheGroups: {
-        carbonIcons: {
-          test: /[\\/]node_modules[\\/]@carbon[\\/]icons-react[\\/]/,
-          name: "carbon-icons",
-          priority: 20,
-          reuseExistingChunk: true,
-        },
-        carbonAI: {
-          test: /[\\/]node_modules[\\/]@carbon[\\/]ai-chat[\\/]/,
-          name: "carbon-ai",
-          priority: 15,
-          reuseExistingChunk: true,
-        },
-        reactVendor: {
-          test: /[\\/]node_modules[\\/](react|react-dom)[\\/]/,
-          name: "react-vendor",
-          priority: 10,
-          reuseExistingChunk: true,
-        },
         vendor: {
           test: /[\\/]node_modules[\\/]/,
           name: "vendors",
-          priority: 5,
-          reuseExistingChunk: true,
+          chunks: "all",
+          enforce: true,
         },
       },
     },
@@ -132,11 +116,12 @@ export default {
         use: ["style-loader", "css-loader"],
       },
       {
-        test: /\.(woff|woff2|eot|ttf|otf)$/i,
-        type: 'asset/resource',
-        generator: {
-          emit: false,
-        },
+        test: /\.scss$/,
+        use: [
+          "style-loader",
+          { loader: "css-loader", options: { url: false } },
+          "sass-loader",
+        ],
       },
     ],
   },
@@ -160,10 +145,11 @@ export default {
     allowedHosts: "all",
     open: true,
     hot: true,
+    historyApiFallback: true,
     proxy: [
       {
-        context: ['/api'],
-        target: 'http://localhost:7860',
+        context: ['/api', '/auth', '/stream', '/stop', '/reset', '/health', '/functions'],
+        target: process.env.CUGA_BACKEND_URL || 'http://localhost:7860',
         changeOrigin: true,
         secure: false,
       },

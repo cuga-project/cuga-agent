@@ -1,0 +1,6 @@
+apiVersion: v2
+name: cuga
+description: CUGA agent - generalist agent for enterprise task execution
+type: application
+version: 0.1.0
+appVersion: "0.2.9"

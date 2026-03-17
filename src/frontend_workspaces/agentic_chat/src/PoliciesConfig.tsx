@@ -1,7 +1,34 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef } from "react";
-import { X, Save, Plus, Trash2, ChevronDown, ChevronUp, Shield, Search, Download, Upload } from "lucide-react";
-import "./ConfigModal.css";
+import * as api from "../../frontend/src/api";
+import {
+  ComposedModal,
+  ModalHeader,
+  ModalBody,
+  ModalFooter,
+  Button,
+  ToastNotification,
+  TextInput,
+  TextArea,
+  Checkbox,
+  NumberInput,
+  Select,
+  SelectItem,
+  MultiSelect,
+  Tag,
+  Theme,
+  Slider,
+  Tabs,
+  TabList,
+  Tab,
+  TabPanels,
+  TabPanel,
+  Stack,
+  FormGroup,
+  Tile,
+  Toggle,
+} from "@carbon/react";
+import { Save, Add, TrashCan, ChevronDown, ChevronUp, Download, Upload } from "@carbon/icons-react";
 
 interface PolicyTrigger {
   type: "keyword" | "natural_language" | "app" | "always";
@@ -96,6 +123,8 @@ interface PoliciesConfigData {
 
 interface PoliciesConfigProps {
   onClose: () => void;
+  draftMode?: boolean;
+  onSave?: (policies: { enablePolicies: boolean; policies: unknown[] }) => void;
 }
 
 interface ToolInfo {
@@ -111,202 +140,17 @@ interface AppInfo {
   tool_count: number;
 }
 
-interface MultiSelectProps {
-  items: Array<{ value: string; label: string; description?: string }>;
-  selectedValues: string[];
-  onChange: (values: string[]) => void;
-  placeholder?: string;
-  disabled?: boolean;
-  allowWildcard?: boolean;
-}
-
-function MultiSelect({ items, selectedValues, onChange, placeholder, disabled, allowWildcard }: MultiSelectProps) {
-  const [isOpen, setIsOpen] = useState(false);
-  const [searchTerm, setSearchTerm] = useState("");
-  const dropdownRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    function handleClickOutside(event: MouseEvent) {
-      if (dropdownRef.current && !dropdownRef.current.contains(event.target as Node)) {
-        setIsOpen(false);
-      }
-    }
-    document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
-
-  const filteredItems = items.filter(
-    (item) =>
-      item.label.toLowerCase().includes(searchTerm.toLowerCase()) ||
-      item.description?.toLowerCase().includes(searchTerm.toLowerCase())
-  );
-
-  const hasWildcard = selectedValues.includes("*");
-
-  const toggleItem = (value: string) => {
-    if (value === "*") {
-      onChange(hasWildcard ? [] : ["*"]);
-    } else {
-      if (hasWildcard) {
-        onChange([value]);
-      } else {
-        const newValues = selectedValues.includes(value)
-          ? selectedValues.filter((v) => v !== value)
-          : [...selectedValues, value];
-        onChange(newValues);
-      }
-    }
-  };
-
-  const displayText = hasWildcard
-    ? "All (*)"
-    : selectedValues.length === 0
-    ? placeholder || "Select..."
-    : `${selectedValues.length} selected`;
-
-  return (
-    <div ref={dropdownRef} style={{ position: "relative", width: "100%" }}>
-      <div
-        onClick={() => !disabled && setIsOpen(!isOpen)}
-        style={{
-          padding: "8px 12px",
-          border: "1px solid #e5e7eb",
-          borderRadius: "6px",
-          cursor: disabled ? "not-allowed" : "pointer",
-          backgroundColor: disabled ? "#f9fafb" : "#fff",
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-        }}
-      >
-        <span style={{ color: selectedValues.length === 0 ? "#9ca3af" : "#111827" }}>{displayText}</span>
-        <ChevronDown
-          size={16}
-          style={{ transform: isOpen ? "rotate(180deg)" : "none", transition: "transform 0.2s" }}
-        />
-      </div>
-
-      {isOpen && (
-        <div
-          style={{
-            position: "absolute",
-            top: "100%",
-            left: 0,
-            right: 0,
-            marginTop: "4px",
-            backgroundColor: "#fff",
-            border: "1px solid #e5e7eb",
-            borderRadius: "6px",
-            boxShadow: "0 4px 6px -1px rgba(0, 0, 0, 0.1)",
-            maxHeight: "300px",
-            overflow: "hidden",
-            zIndex: 1000,
-            display: "flex",
-            flexDirection: "column",
-          }}
-        >
-          <div style={{ padding: "8px", borderBottom: "1px solid #e5e7eb" }}>
-            <div style={{ position: "relative" }}>
-              <Search
-                size={16}
-                style={{
-                  position: "absolute",
-                  left: "8px",
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                  color: "#9ca3af",
-                }}
-              />
-              <input
-                type="text"
-                value={searchTerm}
-                onChange={(e) => setSearchTerm(e.target.value)}
-                placeholder="Search..."
-                style={{
-                  width: "100%",
-                  padding: "6px 6px 6px 32px",
-                  border: "1px solid #e5e7eb",
-                  borderRadius: "4px",
-                  fontSize: "13px",
-                }}
-                onClick={(e) => e.stopPropagation()}
-              />
-            </div>
-          </div>
-
-          <div style={{ overflowY: "auto", maxHeight: "240px" }}>
-            {allowWildcard && (
-              <div
-                onClick={() => toggleItem("*")}
-                style={{
-                  padding: "8px 12px",
-                  cursor: "pointer",
-                  backgroundColor: hasWildcard ? "#eff6ff" : "transparent",
-                  borderBottom: "1px solid #f3f4f6",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                }}
-              >
-                <input type="checkbox" checked={hasWildcard} readOnly style={{ cursor: "pointer" }} />
-                <div>
-                  <div style={{ fontWeight: 600, fontSize: "13px" }}>All (*)</div>
-                  <div style={{ fontSize: "12px", color: "#6b7280" }}>Select all items</div>
-                </div>
-              </div>
-            )}
-
-            {filteredItems.map((item) => (
-              <div
-                key={item.value}
-                onClick={() => toggleItem(item.value)}
-                style={{
-                  padding: "8px 12px",
-                  cursor: "pointer",
-                  backgroundColor: selectedValues.includes(item.value) ? "#eff6ff" : "transparent",
-                  borderBottom: "1px solid #f3f4f6",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "8px",
-                }}
-              >
-                <input
-                  type="checkbox"
-                  checked={selectedValues.includes(item.value)}
-                  readOnly
-                  style={{ cursor: "pointer" }}
-                />
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontWeight: 500, fontSize: "13px" }}>{item.label}</div>
-                  {item.description && (
-                    <div style={{ fontSize: "12px", color: "#6b7280", marginTop: "2px" }}>{item.description}</div>
-                  )}
-                </div>
-              </div>
-            ))}
-
-            {filteredItems.length === 0 && (
-              <div style={{ padding: "16px", textAlign: "center", color: "#9ca3af", fontSize: "13px" }}>
-                No items found
-              </div>
-            )}
-          </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
 interface TagInputProps {
   values: string[];
   onChange: (values: string[]) => void;
   placeholder?: string;
   disabled?: boolean;
+  labelText?: string;
+  helperText?: string;
 }
 
-function TagInput({ values, onChange, placeholder, disabled }: TagInputProps) {
+function TagInput({ values, onChange, placeholder, disabled, labelText, helperText }: TagInputProps) {
   const [inputValue, setInputValue] = useState("");
-  const inputRef = useRef<HTMLInputElement>(null);
 
   const addTag = (tag: string) => {
     const trimmed = tag.trim();
@@ -330,102 +174,58 @@ function TagInput({ values, onChange, placeholder, disabled }: TagInputProps) {
   };
 
   return (
-    <div
-      onClick={() => !disabled && inputRef.current?.focus()}
-      style={{
-        border: "1px solid #e5e7eb",
-        borderRadius: "6px",
-        padding: "6px",
-        minHeight: "42px",
-        display: "flex",
-        flexWrap: "wrap",
-        gap: "6px",
-        alignItems: "center",
-        cursor: disabled ? "not-allowed" : "text",
-        backgroundColor: disabled ? "#f9fafb" : "#fff",
-      }}
-    >
-      {values.map((tag, index) => (
-        <div
-          key={index}
-          style={{
-            display: "flex",
-            alignItems: "center",
-            gap: "4px",
-            padding: "4px 8px",
-            backgroundColor: "#eff6ff",
-            border: "1px solid #dbeafe",
-            borderRadius: "4px",
-            fontSize: "13px",
-            color: "#1e40af",
+    <FormGroup legendText={labelText}>
+      <Stack gap={4}>
+        {values.length > 0 && (
+          <Stack orientation="horizontal" gap={2} style={{ flexWrap: "wrap" }}>
+            {values.map((tag, index) => (
+              <Tag
+                key={index}
+                type="blue"
+                filter
+                onClose={() => !disabled && removeTag(index)}
+                disabled={disabled}
+              >
+                {tag}
+              </Tag>
+            ))}
+          </Stack>
+        )}
+        <TextInput
+          id={`tag-input-${Math.random().toString(36).substr(2, 9)}`}
+          labelText={values.length === 0 ? "" : "Add another tag"}
+          hideLabel={values.length > 0}
+          value={inputValue}
+          onChange={(e) => setInputValue(e.target.value)}
+          onKeyDown={handleKeyDown}
+          onBlur={() => {
+            if (inputValue.trim()) {
+              addTag(inputValue);
+            }
           }}
-        >
-          <span>{tag}</span>
-          {!disabled && (
-            <button
-              onClick={(e) => {
-                e.stopPropagation();
-                removeTag(index);
-              }}
-              style={{
-                background: "none",
-                border: "none",
-                cursor: "pointer",
-                padding: "0",
-                display: "flex",
-                alignItems: "center",
-                color: "#3b82f6",
-                fontSize: "16px",
-                lineHeight: "1",
-              }}
-              title="Remove"
-            >
-              ×
-            </button>
-          )}
-        </div>
-      ))}
-      <input
-        ref={inputRef}
-        type="text"
-        value={inputValue}
-        onChange={(e) => setInputValue(e.target.value)}
-        onKeyDown={handleKeyDown}
-        onBlur={() => {
-          if (inputValue.trim()) {
-            addTag(inputValue);
-          }
-        }}
-        placeholder={values.length === 0 ? placeholder : ""}
-        disabled={disabled}
-        style={{
-          border: "none",
-          outline: "none",
-          flex: 1,
-          minWidth: "120px",
-          padding: "4px",
-          fontSize: "13px",
-          backgroundColor: "transparent",
-        }}
-      />
-    </div>
+          placeholder={values.length === 0 ? placeholder : "Type and press enter..."}
+          disabled={disabled}
+          helperText={helperText}
+        />
+      </Stack>
+    </FormGroup>
   );
 }
 
-export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
+export default function PoliciesConfig({ onClose, draftMode = false, onSave }: PoliciesConfigProps) {
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [config, setConfig] = useState<PoliciesConfigData>({
     enablePolicies: true,
     policies: [],
   });
-  const [activeTab, setActiveTab] = useState<
-    "intent_guard" | "playbook" | "tool_guide" | "tool_approval" | "output_formatter"
-  >("intent_guard");
+  
   const [expandedPolicy, setExpandedPolicy] = useState<string | null>(null);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [isLoading, setIsLoading] = useState(true);
   const [availableTools, setAvailableTools] = useState<ToolInfo[]>([]);
   const [availableApps, setAvailableApps] = useState<AppInfo[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
+  const [toastMessage, setToastMessage] = useState<{ kind: "success" | "error" | "warning"; title: string; subtitle: string } | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -435,20 +235,17 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
   const loadConfig = async () => {
     setIsLoading(true);
     try {
-      console.log("[PoliciesConfig] Loading policies from server...");
-      const response = await fetch("/api/config/policies");
-      console.log("[PoliciesConfig] Response status:", response.status);
+      const response = await api.getManageConfig(draftMode);
 
       if (response.ok) {
         const data = await response.json();
-        console.log("[PoliciesConfig] Loaded policies:", data);
-
-        // Normalize natural_language trigger values to always be arrays (for backward compatibility)
-        const normalizedPolicies = (data.policies ?? []).map((policy: Policy) => ({
+        const configData = data.config || {};
+        const policiesData = configData.policies || {};
+        
+        const normalizedPolicies = (policiesData.policies ?? []).map((policy: Policy) => ({
           ...policy,
           triggers: policy.triggers.map((trigger: PolicyTrigger) => {
             if (trigger.type === "natural_language" && trigger.value !== undefined) {
-              // Ensure value is always an array for natural_language triggers
               const normalizedValue = Array.isArray(trigger.value)
                 ? trigger.value
                 : typeof trigger.value === "string"
@@ -461,12 +258,9 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
         }));
 
         setConfig({
-          enablePolicies: data.enablePolicies ?? true,
+          enablePolicies: policiesData.enablePolicies ?? true,
           policies: normalizedPolicies,
         });
-      } else {
-        const errorText = await response.text();
-        console.error("[PoliciesConfig] Failed to load policies:", response.status, errorText);
       }
     } catch (error) {
       console.error("[PoliciesConfig] Error loading config:", error);
@@ -478,16 +272,12 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
   const loadTools = async () => {
     setToolsLoading(true);
     try {
-      console.log("[PoliciesConfig] Loading tools from server...");
-      const response = await fetch("/api/tools/list");
+      const response = await api.getToolsList(draftMode);
 
       if (response.ok) {
         const data = await response.json();
-        console.log("[PoliciesConfig] Loaded tools:", data);
         setAvailableTools(data.tools || []);
         setAvailableApps(data.apps || []);
-      } else {
-        console.error("[PoliciesConfig] Failed to load tools:", response.status);
       }
     } catch (error) {
       console.error("[PoliciesConfig] Error loading tools:", error);
@@ -508,133 +298,204 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
       link.click();
       document.body.removeChild(link);
       URL.revokeObjectURL(url);
-      console.log("[PoliciesConfig] Exported policies:", config.policies.length);
     } catch (error) {
       console.error("[PoliciesConfig] Export error:", error);
       alert("Failed to export policies. Check console for details.");
     }
   };
 
-  const importPolicies = (event: React.ChangeEvent<HTMLInputElement>) => {
+  const importPolicies = async (event: React.ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     if (!file) return;
 
-    const reader = new FileReader();
-    reader.onload = (e) => {
-      try {
-        const importedData = JSON.parse(e.target?.result as string);
-        if (importedData.policies && Array.isArray(importedData.policies)) {
-          // Normalize natural_language trigger values to always be arrays (for backward compatibility)
-          const normalizedPolicies = importedData.policies.map((policy: Policy) => ({
-            ...policy,
-            triggers: policy.triggers.map((trigger: PolicyTrigger) => {
-              if (trigger.type === "natural_language" && trigger.value !== undefined) {
-                // Ensure value is always an array for natural_language triggers
-                const normalizedValue = Array.isArray(trigger.value)
-                  ? trigger.value
-                  : typeof trigger.value === "string"
-                  ? [trigger.value]
-                  : [];
-                return { ...trigger, value: normalizedValue };
-              }
-              return trigger;
-            }),
-          }));
-
-          setConfig({
-            enablePolicies: importedData.enablePolicies ?? config.enablePolicies,
-            policies: normalizedPolicies,
-          });
-          console.log("[PoliciesConfig] Imported policies:", normalizedPolicies.length);
-          alert(`Successfully imported ${normalizedPolicies.length} policies!`);
-        } else {
-          alert('Invalid policies file format. Expected a JSON file with a "policies" array.');
-        }
-      } catch (error) {
-        console.error("[PoliciesConfig] Import error:", error);
-        alert("Failed to import policies. Please check the file format.");
-      }
-    };
-    reader.readAsText(file);
-    // Reset input so the same file can be imported again
+    const text = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = (e) => resolve(e.target?.result as string);
+      reader.onerror = () => reject(new Error("Failed to read file"));
+      reader.readAsText(file);
+    });
     event.target.value = "";
+
+    try {
+      const importedData = JSON.parse(text);
+      if (!importedData.policies || !Array.isArray(importedData.policies)) {
+        setToastMessage({
+          kind: "error",
+          title: "Invalid import",
+          subtitle: 'Expected a JSON file with a "policies" array.',
+        });
+        return;
+      }
+
+      const normalizedPolicies = importedData.policies.map((policy: Policy) => ({
+        ...policy,
+        triggers: (policy.triggers || []).map((trigger: PolicyTrigger) => {
+          if (trigger.type === "natural_language" && trigger.value !== undefined) {
+            const normalizedValue = Array.isArray(trigger.value)
+              ? trigger.value
+              : typeof trigger.value === "string"
+                ? [trigger.value]
+                : [];
+            return { ...trigger, value: normalizedValue };
+          }
+          return trigger;
+        }),
+      }));
+
+      const normalizedConfig = {
+        enablePolicies: importedData.enablePolicies ?? config.enablePolicies,
+        policies: normalizedPolicies,
+      };
+
+      setConfig(normalizedConfig);
+
+      let response: Response;
+      if (draftMode) {
+        response = await api.patchManageConfigDraftPolicies(normalizedConfig);
+      } else {
+        const loadResponse = await api.getManageConfig(false);
+        if (!loadResponse.ok) {
+          setToastMessage({
+            kind: "error",
+            title: "Import aborted",
+            subtitle: "Failed to load existing configuration",
+          });
+          return;
+        }
+        const loadData = await loadResponse.json();
+        const existingConfig = loadData.config || {};
+        const fullConfig = { ...existingConfig, policies: normalizedConfig };
+        response = await api.postManageConfig(fullConfig);
+      }
+
+      if (response.ok) {
+        setToastMessage({
+          kind: "success",
+          title: "Policies imported",
+          subtitle: `${normalizedPolicies.length} ${normalizedPolicies.length === 1 ? "policy" : "policies"} imported and saved`,
+        });
+        onSave?.(normalizedConfig);
+      } else {
+        const errorData = await response.json().catch(() => ({}));
+        setToastMessage({
+          kind: "error",
+          title: "Import failed",
+          subtitle: (errorData as { error?: string; message?: string }).error
+            || (errorData as { error?: string; message?: string }).message
+            || "Failed to save imported policies",
+        });
+      }
+    } catch (error) {
+      console.error("[PoliciesConfig] Import error:", error);
+      setToastMessage({
+        kind: "error",
+        title: "Import failed",
+        subtitle: error instanceof Error ? error.message : "Invalid JSON or file format",
+      });
+    }
   };
 
   const saveConfig = async () => {
-    // Force blur on any focused input to ensure pending changes are saved
     if (document.activeElement instanceof HTMLElement) {
       document.activeElement.blur();
     }
-
-    // Small delay to ensure blur event handlers complete
     await new Promise((resolve) => setTimeout(resolve, 50));
-
     setSaveStatus("saving");
+
     try {
-      // Normalize natural_language trigger values to always be arrays
+      const normalizedPolicies = config.policies.map((policy) => ({
+        ...policy,
+        triggers: policy.triggers.map((trigger) => {
+          if (trigger.type === "natural_language" && trigger.value !== undefined) {
+            const normalizedValue = Array.isArray(trigger.value)
+              ? trigger.value
+              : typeof trigger.value === "string"
+              ? [trigger.value]
+              : [];
+            return { ...trigger, value: normalizedValue };
+          }
+          return trigger;
+        }),
+      }));
+
       const normalizedConfig = {
-        ...config,
-        policies: config.policies.map((policy) => ({
-          ...policy,
-          triggers: policy.triggers.map((trigger) => {
-            if (trigger.type === "natural_language" && trigger.value !== undefined) {
-              // Ensure value is always an array for natural_language triggers
-              const normalizedValue = Array.isArray(trigger.value)
-                ? trigger.value
-                : typeof trigger.value === "string"
-                ? [trigger.value]
-                : [];
-              return { ...trigger, value: normalizedValue };
-            }
-            return trigger;
-          }),
-        })),
+        enablePolicies: config.enablePolicies,
+        policies: normalizedPolicies,
       };
 
-      console.log("[PoliciesConfig] Saving config:", normalizedConfig);
-      console.log("[PoliciesConfig] Policies count:", normalizedConfig.policies.length);
-      normalizedConfig.policies.forEach((policy, idx) => {
-        console.log(`[PoliciesConfig] Policy ${idx}: ${policy.name}`);
-        console.log(`[PoliciesConfig] Policy ${idx} triggers:`, policy.triggers);
-        // Log keyword trigger operators specifically
-        policy.triggers.forEach((trigger, triggerIdx) => {
-          if (trigger.type === "keyword") {
-            console.log(
-              `[PoliciesConfig] Policy ${idx} trigger ${triggerIdx}: type=keyword, operator=${
-                trigger.operator || "MISSING"
-              }, keywords=${JSON.stringify(trigger.value)}`
-            );
-          } else if (trigger.type === "natural_language") {
-            console.log(
-              `[PoliciesConfig] Policy ${idx} trigger ${triggerIdx}: type=natural_language, values=${JSON.stringify(
-                trigger.value
-              )}`
-            );
+      let response: Response;
+      if (draftMode) {
+        response = await api.patchManageConfigDraftPolicies(normalizedConfig);
+      } else {
+        const loadResponse = await api.getManageConfig(false);
+        if (!loadResponse.ok) {
+          // Abort save if we cannot load existing config to avoid overwriting other sections
+          const errorText = await loadResponse.text();
+          setSaveStatus("error");
+          
+          let errorMessage = "Failed to load existing configuration";
+          try {
+            const errorData = JSON.parse(errorText);
+            errorMessage = errorData.error || errorData.message || errorMessage;
+          } catch {
+            errorMessage = errorText || errorMessage;
           }
-        });
-      });
-      const response = await fetch("/api/config/policies", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(normalizedConfig),
-      });
-
-      console.log("[PoliciesConfig] Response status:", response.status);
+          
+          setToastMessage({
+            kind: "error",
+            title: "Save aborted",
+            subtitle: errorMessage,
+          });
+          setTimeout(() => setSaveStatus("idle"), 2000);
+          console.error("Failed to load existing config before save:", errorMessage);
+          return;
+        }
+        
+        const loadData = await loadResponse.json();
+        const existingConfig = loadData.config || {};
+        const fullConfig = { ...existingConfig, policies: normalizedConfig };
+        response = await api.postManageConfig(fullConfig);
+      }
 
       if (response.ok) {
-        const result = await response.json();
-        console.log("[PoliciesConfig] Save successful:", result);
         setSaveStatus("success");
-        setTimeout(() => setSaveStatus("idle"), 2000);
+        setToastMessage({
+          kind: "success",
+          title: "Policies saved successfully",
+          subtitle: `${normalizedConfig.policies.length} ${normalizedConfig.policies.length === 1 ? 'policy' : 'policies'} saved`,
+        });
+        onSave?.(normalizedConfig);
+        setTimeout(() => {
+          setSaveStatus("idle");
+          onClose();
+        }, 1500);
       } else {
         const errorText = await response.text();
-        console.error("[PoliciesConfig] Save failed:", response.status, errorText);
         setSaveStatus("error");
+        
+        let errorMessage = "Failed to save policies";
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.error || errorData.message || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        
+        setToastMessage({
+          kind: "error",
+          title: "Save failed",
+          subtitle: errorMessage,
+        });
         setTimeout(() => setSaveStatus("idle"), 2000);
       }
     } catch (error) {
-      console.error("[PoliciesConfig] Save error:", error);
       setSaveStatus("error");
+      const errorMessage = error instanceof Error ? error.message : "Network error occurred";
+      setToastMessage({
+        kind: "error",
+        title: "Save failed",
+        subtitle: errorMessage,
+      });
       setTimeout(() => setSaveStatus("idle"), 2000);
     }
   };
@@ -662,10 +523,7 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
       allow_override: false,
       priority: 50,
     };
-    setConfig({
-      ...config,
-      policies: [...config.policies, newPolicy],
-    });
+    setConfig({ ...config, policies: [...config.policies, newPolicy] });
   };
 
   const addPlaybook = () => {
@@ -695,10 +553,7 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
       ],
       priority: 50,
     };
-    setConfig({
-      ...config,
-      policies: [...config.policies, newPolicy],
-    });
+    setConfig({ ...config, policies: [...config.policies, newPolicy] });
   };
 
   const addToolGuide = () => {
@@ -708,21 +563,14 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
       description: "Add additional context to tool descriptions",
       policy_type: "tool_guide",
       enabled: true,
-      triggers: [
-        {
-          type: "always",
-        },
-      ],
+      triggers: [{ type: "always" }],
       target_tools: ["*"],
       target_apps: undefined,
       guide_content: "## Additional Guidelines\n\n- Follow best practices\n- Consider security implications",
       prepend: false,
       priority: 50,
     };
-    setConfig({
-      ...config,
-      policies: [...config.policies, newPolicy],
-    });
+    setConfig({ ...config, policies: [...config.policies, newPolicy] });
   };
 
   const addToolApproval = () => {
@@ -732,7 +580,7 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
       description: "Require approval before executing specific tools",
       policy_type: "tool_approval",
       enabled: true,
-      triggers: [], // ToolApproval policies don't use triggers - they're checked after code generation
+      triggers: [], 
       required_tools: [],
       required_apps: undefined,
       approval_message: "This tool requires your approval before execution.",
@@ -740,10 +588,7 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
       auto_approve_after: undefined,
       priority: 50,
     };
-    setConfig({
-      ...config,
-      policies: [...config.policies, newPolicy],
-    });
+    setConfig({ ...config, policies: [...config.policies, newPolicy] });
   };
 
   const addOutputFormatter = () => {
@@ -766,10 +611,7 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
       format_config: "Format the response in a clear, structured way with proper headings and bullet points.",
       priority: 50,
     };
-    setConfig({
-      ...config,
-      policies: [...config.policies, newPolicy],
-    });
+    setConfig({ ...config, policies: [...config.policies, newPolicy] });
   };
 
   const updatePolicy = (id: string, updates: Partial<Policy>) => {
@@ -790,1326 +632,1242 @@ export default function PoliciesConfig({ onClose }: PoliciesConfigProps) {
   const playbooks = config.policies.filter((p) => p.policy_type === "playbook") as PlaybookPolicy[];
   const ToolGuides = config.policies.filter((p) => p.policy_type === "tool_guide") as ToolGuidePolicy[];
   const toolApprovals = config.policies.filter((p) => p.policy_type === "tool_approval") as ToolApprovalPolicy[];
-  const outputFormatters = config.policies.filter(
-    (p) => p.policy_type === "output_formatter"
-  ) as OutputFormatterPolicy[];
+  const outputFormatters = config.policies.filter((p) => p.policy_type === "output_formatter") as OutputFormatterPolicy[];
 
   return (
-    <div className="config-modal-overlay">
-      <div className="config-modal">
-        <div className="config-modal-header">
-          <div style={{ display: "flex", alignItems: "center", gap: "12px" }}>
-            <Shield size={24} style={{ color: "#4e00ec" }} />
-            <h2>Policies Configuration</h2>
-          </div>
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
-            <button
-              onClick={exportPolicies}
-              disabled={config.policies.length === 0}
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "6px 12px",
-                backgroundColor: config.policies.length === 0 ? "#e5e7eb" : "#f3f4f6",
-                border: "1px solid #d1d5db",
-                borderRadius: "6px",
-                cursor: config.policies.length === 0 ? "not-allowed" : "pointer",
-                fontSize: "13px",
-                fontWeight: 500,
-                color: config.policies.length === 0 ? "#9ca3af" : "#374151",
-              }}
-              title="Export all policies as JSON"
-            >
-              <Download size={16} />
-              Export
-            </button>
-            <label
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "6px",
-                padding: "6px 12px",
-                backgroundColor: "#f3f4f6",
-                border: "1px solid #d1d5db",
-                borderRadius: "6px",
-                cursor: "pointer",
-                fontSize: "13px",
-                fontWeight: 500,
-                color: "#374151",
-              }}
-              title="Import policies from JSON"
-            >
-              <Upload size={16} />
-              Import
-              <input type="file" accept=".json" onChange={importPolicies} style={{ display: "none" }} />
-            </label>
-            <button className="config-modal-close" onClick={onClose}>
-              <X size={20} />
-            </button>
-          </div>
-        </div>
+    <>
+      <ComposedModal open onClose={onClose} size="lg" isFullWidth preventCloseOnClickOutside>
+        <ModalHeader title="Policies Configuration" buttonOnClick={onClose} />
 
-        <div className="config-modal-tabs">
-          <button
-            className={`config-tab ${activeTab === "intent_guard" ? "active" : ""}`}
-            onClick={() => setActiveTab("intent_guard")}
-          >
-            Intent Guards ({intentGuards.length})
-          </button>
-          <button
-            className={`config-tab ${activeTab === "playbook" ? "active" : ""}`}
-            onClick={() => setActiveTab("playbook")}
-          >
-            Playbooks ({playbooks.length})
-          </button>
-          <button
-            className={`config-tab ${activeTab === "tool_guide" ? "active" : ""}`}
-            onClick={() => setActiveTab("tool_guide")}
-          >
-            Tool Guide ({ToolGuides.length})
-          </button>
-          <button
-            className={`config-tab ${activeTab === "tool_approval" ? "active" : ""}`}
-            onClick={() => setActiveTab("tool_approval")}
-          >
-            Tool Approval ({toolApprovals.length})
-          </button>
-          <button
-            className={`config-tab ${activeTab === "output_formatter" ? "active" : ""}`}
-            onClick={() => setActiveTab("output_formatter")}
-          >
-            Output Formatter ({outputFormatters.length})
-          </button>
-        </div>
+        <ModalBody hasScrollingContent>
+          <Theme theme="white">
+            <Stack gap={6} style={{ paddingBottom: "2rem" }}>
+              {isLoading ? (
+                <Tile>
+                  <p>Loading policies...</p>
+                </Tile>
+              ) : (
+                <Tile>
+                  <Stack gap={4}>
+                    <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "flex-start" }}>
+                      <Stack gap={2}>
+                        <h3 style={{ fontSize: "1rem", fontWeight: 600 }}>Global Policy System</h3>
+                        <p style={{ color: "var(--cds-text-secondary)", fontSize: "0.875rem" }}>
+                          Master switch for all policy enforcement ({config.policies.length} policies configured)
+                        </p>
+                      </Stack>
+                      <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexShrink: 0 }}>
+                        <Stack orientation="horizontal" gap={2}>
+                          <Button kind="tertiary" size="sm" renderIcon={Download} onClick={exportPolicies} disabled={config.policies.length === 0}>
+                            Export
+                          </Button>
+                          <Button kind="tertiary" size="sm" renderIcon={Upload} onClick={() => importInputRef.current?.click()}>
+                            Import
+                          </Button>
+                          <input ref={importInputRef} type="file" accept=".json" onChange={importPolicies} style={{ display: "none" }} />
+                        </Stack>
+                        <Toggle
+                          id="enable-policies-toggle"
+                          labelText="Enable Policy System"
+                          labelA="Disabled"
+                          labelB="Enabled"
+                          toggled={config.enablePolicies}
+                          onToggle={(checked) => setConfig({ ...config, enablePolicies: checked })}
+                          hideLabel
+                        />
+                      </Stack>
+                    </Stack>
+                  </Stack>
+                </Tile>
+              )}
 
-        <div className="config-modal-content">
-          {isLoading ? (
-            <div className="config-card" style={{ textAlign: "center", padding: "40px" }}>
-              <p>Loading policies...</p>
-            </div>
-          ) : (
-            <>
-              <div className="config-card">
-                <h3>Global Settings</h3>
-                <div className="config-form">
-                  <div className="form-group">
-                    <label className="checkbox-label">
-                      <input
-                        type="checkbox"
-                        checked={config.enablePolicies}
-                        onChange={(e) => setConfig({ ...config, enablePolicies: e.target.checked })}
-                      />
-                      <span>Enable Policy System</span>
-                    </label>
-                    <small>
-                      Master switch for all policy enforcement ({config.policies.length} policies configured)
-                    </small>
-                  </div>
-                </div>
-              </div>
-
-              {activeTab === "intent_guard" && renderIntentGuards()}
-              {activeTab === "playbook" && renderPlaybooks()}
-              {activeTab === "tool_guide" && renderToolGuides()}
-              {activeTab === "tool_approval" && renderToolApprovals()}
-              {activeTab === "output_formatter" && renderOutputFormatters()}
-            </>
-          )}
-        </div>
-
-        <div className="config-modal-footer">
-          <button className="cancel-btn" onClick={onClose}>
+              {/* Centralized Carbon Native Tabs */}
+              {!isLoading && (
+                <Tabs>
+                  <TabList aria-label="Policy Types">
+                    <Tab>Intent Guards ({intentGuards.length})</Tab>
+                    <Tab>Playbooks ({playbooks.length})</Tab>
+                    <Tab>Tool Guide ({ToolGuides.length})</Tab>
+                    <Tab>Tool Approval ({toolApprovals.length})</Tab>
+                    <Tab>Output Formatter ({outputFormatters.length})</Tab>
+                  </TabList>
+                  <TabPanels>
+                    <TabPanel>{renderIntentGuards()}</TabPanel>
+                    <TabPanel>{renderPlaybooks()}</TabPanel>
+                    <TabPanel>{renderToolGuides()}</TabPanel>
+                    <TabPanel>{renderToolApprovals()}</TabPanel>
+                    <TabPanel>{renderOutputFormatters()}</TabPanel>
+                  </TabPanels>
+                </Tabs>
+              )}
+            </Stack>
+          </Theme>
+        </ModalBody>
+        <ModalFooter>
+          <Button kind="secondary" onClick={onClose}>
             Cancel
-          </button>
-          <button className={`save-btn ${saveStatus}`} onClick={saveConfig} disabled={saveStatus === "saving"}>
-            <Save size={16} />
+          </Button>
+          <Button
+            kind="primary"
+            renderIcon={Save}
+            onClick={saveConfig}
+            disabled={saveStatus === "saving"}
+          >
             {saveStatus === "idle" && "Save Changes"}
             {saveStatus === "saving" && "Saving..."}
             {saveStatus === "success" && "Saved!"}
             {saveStatus === "error" && "Error!"}
-          </button>
+          </Button>
+        </ModalFooter>
+      </ComposedModal>
+
+      {/* Toast Notification */}
+      {toastMessage && (
+        <div style={{ position: "fixed", top: "3rem", right: "1rem", zIndex: 10000, maxWidth: "400px" }}>
+          <ToastNotification
+            kind={toastMessage.kind}
+            title={toastMessage.title}
+            subtitle={toastMessage.subtitle}
+            timeout={5000}
+            onClose={() => setToastMessage(null)}
+            lowContrast
+          />
         </div>
-      </div>
-    </div>
+      )}
+    </>
   );
 
   function renderIntentGuards() {
     return (
-      <div className="config-card">
-        <div className="section-header">
-          <h3>Intent Guards</h3>
-          <button className="add-btn" onClick={addIntentGuard} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+      <Stack gap={5} style={{ paddingTop: "1rem" }}>
+        <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h4 style={{ fontSize: "1.25rem", fontWeight: 400 }}>Intent Guards</h4>
+          <Button size="sm" renderIcon={Add} onClick={addIntentGuard} disabled={!config.enablePolicies}>
             Add Intent Guard
-          </button>
-        </div>
+          </Button>
+        </Stack>
 
-        <div className="sources-list">
-          {intentGuards.map((policy) => {
-            const isExpanded = expandedPolicy === policy.id;
-            const keywordTrigger = policy.triggers.find((t) => t.type === "keyword");
-            const keywords = keywordTrigger && Array.isArray(keywordTrigger.value) ? keywordTrigger.value : [];
+        {intentGuards.length === 0 ? (
+          <Tile>
+            <p style={{ color: "var(--cds-text-secondary)" }}>No intent guards configured. Click "Add Intent Guard" to create one.</p>
+          </Tile>
+        ) : (
+          <Stack gap={4}>
+            {intentGuards.map((policy) => {
+              const isExpanded = expandedPolicy === policy.id;
+              const keywordTrigger = policy.triggers.find((t) => t.type === "keyword");
+              const keywords = keywordTrigger && Array.isArray(keywordTrigger.value) ? keywordTrigger.value : [];
 
-            return (
-              <div key={policy.id} className="agent-config-card">
-                <div className="agent-config-header">
-                  <div className="agent-config-top">
-                    <input
-                      type="checkbox"
-                      checked={policy.enabled}
-                      onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
-                      disabled={!config.enablePolicies}
-                    />
-                    <input
-                      type="text"
-                      value={policy.name}
-                      onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
-                      className="agent-config-name"
-                      placeholder="Policy Name"
-                      disabled={!config.enablePolicies}
-                    />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
-                      className="delete-btn"
-                      onClick={() => removePolicy(policy.id)}
-                      disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                  {!isExpanded && (
-                    <div className="agent-summary">
-                      {keywords.length > 0 && (
-                        <span className="agent-summary-item">
-                          {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
-                        </span>
-                      )}
-                      {policy.triggers.some((t) => t.type === "natural_language") && (
-                        <span className="agent-summary-item">AI trigger</span>
-                      )}
-                      <span className="agent-summary-item">Priority: {policy.priority}</span>
-                    </div>
-                  )}
-                </div>
-
-                {isExpanded && (
-                  <div className="agent-config-details">
-                    <div className="form-group">
-                      <label>Description</label>
-                      <textarea
-                        value={policy.description}
-                        onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
-                        placeholder="What this policy does..."
-                        rows={2}
-                        disabled={!config.enablePolicies}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>Trigger Keywords (Optional)</label>
-                      <TagInput
-                        values={keywords}
-                        onChange={(newKeywords) => {
-                          const updatedTriggers = policy.triggers.filter((t) => t.type !== "keyword");
-                          if (newKeywords.length > 0) {
-                            const existingKeywordTrigger = policy.triggers.find((t) => t.type === "keyword");
-                            updatedTriggers.push({
-                              type: "keyword",
-                              value: newKeywords,
-                              target: "intent",
-                              case_sensitive: false,
-                              operator: existingKeywordTrigger?.operator || "and",
-                            });
-                          }
-                          updatePolicy(policy.id, { triggers: updatedTriggers });
-                        }}
-                        placeholder="Type keyword and press Enter or comma"
-                        disabled={!config.enablePolicies}
-                      />
-                      <small>Type keywords and press Enter or comma to add. Click × to remove.</small>
-                    </div>
-
-                    {keywords.length > 1 && (
-                      <div className="form-group">
-                        <label>Keyword Matching</label>
-                        <select
-                          value={keywordTrigger?.operator || "and"}
-                          onChange={(e) => {
-                            const operator = e.target.value as "and" | "or";
-                            const updatedTriggers = policy.triggers.map((t) =>
-                              t.type === "keyword" ? { ...t, operator } : t
-                            );
-                            updatePolicy(policy.id, { triggers: updatedTriggers });
-                          }}
-                          disabled={!config.enablePolicies}
-                        >
-                          <option value="and">Match ALL keywords (AND)</option>
-                          <option value="or">Match ANY keyword (OR)</option>
-                        </select>
-                        <small>Choose whether all keywords or any keyword should trigger this policy</small>
-                      </div>
-                    )}
-
-                    {(() => {
-                      const nlTrigger = policy.triggers.find((t) => t.type === "natural_language");
-                      const nlTriggerValues = nlTrigger
-                        ? Array.isArray(nlTrigger.value)
-                          ? nlTrigger.value
-                          : nlTrigger.value
-                          ? [nlTrigger.value]
-                          : []
-                        : [];
-
-                      return (
-                        <div className="form-group">
-                          <label>Natural Language Triggers</label>
-                          {nlTrigger ? (
-                            <>
-                              <TagInput
-                                values={nlTriggerValues}
-                                onChange={(newValues) => {
-                                  const updatedTriggers = policy.triggers.map((t) =>
-                                    t.type === "natural_language" ? { ...t, value: newValues } : t
-                                  );
-                                  updatePolicy(policy.id, { triggers: updatedTriggers });
-                                }}
-                                placeholder="Type natural language trigger and press Enter"
-                                disabled={!config.enablePolicies}
-                              />
-                              <div className="form-group" style={{ marginTop: "12px" }}>
-                                <label>Similarity Threshold</label>
-                                <input
-                                  type="range"
-                                  min="0.5"
-                                  max="1.0"
-                                  step="0.05"
-                                  value={nlTrigger.threshold || 0.7}
-                                  onChange={(e) => {
-                                    const updatedTriggers = policy.triggers.map((t) =>
-                                      t.type === "natural_language"
-                                        ? { ...t, threshold: parseFloat(e.target.value) }
-                                        : t
-                                    );
-                                    updatePolicy(policy.id, { triggers: updatedTriggers });
-                                  }}
-                                  disabled={!config.enablePolicies}
-                                />
-                                <small>
-                                  Threshold: {(nlTrigger.threshold || 0.7).toFixed(2)} (higher = more strict matching)
-                                </small>
-                              </div>
-                              <button
-                                onClick={() => {
-                                  const updatedTriggers = policy.triggers.filter((t) => t.type !== "natural_language");
-                                  updatePolicy(policy.id, { triggers: updatedTriggers });
-                                }}
-                                disabled={!config.enablePolicies}
-                                style={{
-                                  marginTop: "8px",
-                                  padding: "6px 12px",
-                                  backgroundColor: "#ef4444",
-                                  color: "white",
-                                  border: "none",
-                                  borderRadius: "4px",
-                                  cursor: config.enablePolicies ? "pointer" : "not-allowed",
-                                  fontSize: "12px",
-                                }}
-                              >
-                                Remove Natural Language Trigger
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              onClick={() => {
-                                const newTrigger: PolicyTrigger = {
-                                  type: "natural_language",
-                                  value: [],
-                                  target: "intent",
-                                  threshold: 0.7,
-                                };
-                                updatePolicy(policy.id, { triggers: [...policy.triggers, newTrigger] });
-                              }}
-                              disabled={!config.enablePolicies}
-                              style={{
-                                padding: "6px 12px",
-                                backgroundColor: "#3b82f6",
-                                color: "white",
-                                border: "none",
-                                borderRadius: "4px",
-                                cursor: config.enablePolicies ? "pointer" : "not-allowed",
-                                fontSize: "13px",
-                              }}
-                            >
-                              + Add Natural Language Trigger
-                            </button>
-                          )}
-                          <small>
-                            Type natural language triggers and press Enter to add. AI will match similar intents using
-                            semantic understanding.
-                          </small>
-                        </div>
-                      );
-                    })()}
-
-                    <div className="form-group">
-                      <label>Response Message</label>
-                      <textarea
-                        value={policy.response.content}
-                        onChange={(e) =>
-                          updatePolicy(policy.id, {
-                            response: { ...policy.response, content: e.target.value },
-                          })
-                        }
-                        placeholder="This action is not allowed."
-                        rows={3}
-                        disabled={!config.enablePolicies}
-                      />
-                    </div>
-
-                    <div className="form-row">
-                      <div className="form-group">
-                        <label>Priority</label>
-                        <input
-                          type="number"
-                          value={policy.priority}
-                          onChange={(e) => updatePolicy(policy.id, { priority: parseInt(e.target.value) })}
-                          min="0"
-                          max="100"
+              return (
+                <Tile key={policy.id} style={{ padding: 0, border: "1px solid var(--cds-border-subtle)" }}>
+                  <div style={{ padding: "1rem", backgroundColor: isExpanded ? "var(--cds-layer-01)" : "transparent" }}>
+                    <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                      <Stack orientation="horizontal" gap={4} style={{ alignItems: "center", flex: 1 }}>
+                        <Checkbox
+                          id={`enabled-${policy.id}`}
+                          labelText="Enable Policy"
+                          hideLabel
+                          checked={policy.enabled}
+                          onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
                           disabled={!config.enablePolicies}
                         />
-                        <small>Higher priority policies are checked first</small>
-                      </div>
-
-                      <div className="form-group">
-                        <label className="checkbox-label">
-                          <input
-                            type="checkbox"
-                            checked={policy.allow_override}
-                            onChange={(e) => updatePolicy(policy.id, { allow_override: e.target.checked })}
+                        <div style={{ flex: 1, maxWidth: "400px" }}>
+                          <TextInput
+                            id={`name-${policy.id}`}
+                            labelText="Policy Name"
+                            hideLabel
+                            value={policy.name}
+                            onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
+                            placeholder="Policy Name"
                             disabled={!config.enablePolicies}
                           />
-                          <span>Allow Override</span>
-                        </label>
-                        <small>User can bypass this policy</small>
-                      </div>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
+                        </div>
+                      </Stack>
+                      <Stack orientation="horizontal" gap={2}>
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                          iconDescription={isExpanded ? "Collapse" : "Expand"}
+                          tooltipPosition="bottom"
+                          onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                        />
+                        <Button
+                          kind="danger--ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={TrashCan}
+                          iconDescription="Delete"
+                          tooltipPosition="bottom"
+                          onClick={() => removePolicy(policy.id)}
+                          disabled={!config.enablePolicies}
+                        />
+                      </Stack>
+                    </Stack>
 
-        {intentGuards.length === 0 && (
-          <div className="empty-state">
-            <p>No intent guards configured. Click "Add Intent Guard" to create one.</p>
-          </div>
+                    {!isExpanded && (
+                      <Stack orientation="horizontal" gap={4} style={{ marginTop: "0.5rem", marginLeft: "2.5rem", color: "var(--cds-text-secondary)", fontSize: "0.75rem" }}>
+                        {keywords.length > 0 && <span>{keywords.length} keyword{keywords.length !== 1 ? "s" : ""}</span>}
+                        {policy.triggers.some((t) => t.type === "natural_language") && <span>AI trigger</span>}
+                        <span>Priority: {policy.priority}</span>
+                      </Stack>
+                    )}
+                  </div>
+
+                  {isExpanded && (
+                    <div style={{ padding: "1.5rem", borderTop: "1px solid var(--cds-border-subtle)", backgroundColor: "var(--cds-layer-00)" }}>
+                      <Stack gap={6}>
+                        <TextArea
+                          id={`description-${policy.id}`}
+                          labelText="Description"
+                          value={policy.description}
+                          onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
+                          placeholder="What this policy does..."
+                          rows={2}
+                          disabled={!config.enablePolicies}
+                        />
+
+                        <TagInput
+                          labelText="Trigger Keywords (Optional)"
+                          values={keywords}
+                          onChange={(newKeywords) => {
+                            const updatedTriggers = policy.triggers.filter((t) => t.type !== "keyword");
+                            if (newKeywords.length > 0) {
+                              const existingKeywordTrigger = policy.triggers.find((t) => t.type === "keyword");
+                              updatedTriggers.push({
+                                type: "keyword",
+                                value: newKeywords,
+                                target: "intent",
+                                case_sensitive: false,
+                                operator: existingKeywordTrigger?.operator || "and",
+                              });
+                            }
+                            updatePolicy(policy.id, { triggers: updatedTriggers });
+                          }}
+                          placeholder="Type keyword and press Enter or comma"
+                          disabled={!config.enablePolicies}
+                          helperText="Type keywords and press Enter or comma to add. Click × to remove."
+                        />
+
+                        {keywords.length > 1 && (
+                          <Select
+                            id={`keyword-operator-${policy.id}`}
+                            labelText="Keyword Matching"
+                            value={keywordTrigger?.operator || "and"}
+                            onChange={(e) => {
+                              const operator = e.target.value as "and" | "or";
+                              const updatedTriggers = policy.triggers.map((t) =>
+                                t.type === "keyword" ? { ...t, operator } : t
+                              );
+                              updatePolicy(policy.id, { triggers: updatedTriggers });
+                            }}
+                            disabled={!config.enablePolicies}
+                            helperText="Choose whether all keywords or any keyword should trigger this policy"
+                          >
+                            <SelectItem value="and" text="Match ALL keywords (AND)" />
+                            <SelectItem value="or" text="Match ANY keyword (OR)" />
+                          </Select>
+                        )}
+
+                        {(() => {
+                          const nlTrigger = policy.triggers.find((t) => t.type === "natural_language");
+                          const nlTriggerValues = nlTrigger ? (Array.isArray(nlTrigger.value) ? nlTrigger.value : nlTrigger.value ? [nlTrigger.value] : []) : [];
+
+                          return (
+                            <Stack gap={5}>
+                              {nlTrigger ? (
+                                <>
+                                  <TagInput
+                                    labelText="Natural Language Triggers"
+                                    values={nlTriggerValues}
+                                    onChange={(newValues) => {
+                                      const updatedTriggers = policy.triggers.map((t) =>
+                                        t.type === "natural_language" ? { ...t, value: newValues } : t
+                                      );
+                                      updatePolicy(policy.id, { triggers: updatedTriggers });
+                                    }}
+                                    placeholder="Type natural language trigger and press Enter"
+                                    disabled={!config.enablePolicies}
+                                    helperText="Type natural language triggers and press Enter to add. AI will match similar intents."
+                                  />
+                                  <Slider
+                                    id={`threshold-${policy.id}`}
+                                    labelText={`Similarity Threshold: ${(nlTrigger.threshold || 0.7).toFixed(2)}`}
+                                    min={0.5}
+                                    max={1.0}
+                                    step={0.05}
+                                    value={nlTrigger.threshold || 0.7}
+                                    onChange={(e) => {
+                                      const updatedTriggers = policy.triggers.map((t) =>
+                                        t.type === "natural_language" ? { ...t, threshold: e.value } : t
+                                      );
+                                      updatePolicy(policy.id, { triggers: updatedTriggers });
+                                    }}
+                                    disabled={!config.enablePolicies}
+                                  />
+                                  <Button
+                                    kind="danger"
+                                    size="sm"
+                                    onClick={() => {
+                                      const updatedTriggers = policy.triggers.filter((t) => t.type !== "natural_language");
+                                      updatePolicy(policy.id, { triggers: updatedTriggers });
+                                    }}
+                                    disabled={!config.enablePolicies}
+                                  >
+                                    Remove Natural Language Trigger
+                                  </Button>
+                                </>
+                              ) : (
+                                <div>
+                                  <Button
+                                    kind="tertiary"
+                                    size="sm"
+                                    renderIcon={Add}
+                                    onClick={() => {
+                                      const newTrigger: PolicyTrigger = { type: "natural_language", value: [], target: "intent", threshold: 0.7 };
+                                      updatePolicy(policy.id, { triggers: [...policy.triggers, newTrigger] });
+                                    }}
+                                    disabled={!config.enablePolicies}
+                                  >
+                                    Add Natural Language Trigger
+                                  </Button>
+                                </div>
+                              )}
+                            </Stack>
+                          );
+                        })()}
+
+                        <TextArea
+                          id={`response-${policy.id}`}
+                          labelText="Response Message"
+                          value={policy.response.content}
+                          onChange={(e) =>
+                            updatePolicy(policy.id, {
+                              response: { ...policy.response, content: e.target.value },
+                            })
+                          }
+                          placeholder="This action is not allowed."
+                          rows={3}
+                          disabled={!config.enablePolicies}
+                        />
+
+                        <Stack orientation="horizontal" gap={5}>
+                          <NumberInput
+                            id={`priority-${policy.id}`}
+                            label="Priority"
+                            value={policy.priority}
+                            onChange={(e, { value }) => updatePolicy(policy.id, { priority: typeof value === 'number' ? value : 0 })}
+                            min={0}
+                            max={100}
+                            disabled={!config.enablePolicies}
+                            helperText="Higher priority policies are checked first"
+                          />
+
+                          <div style={{ paddingTop: "1.5rem" }}>
+                            <Checkbox
+                              id={`allow-override-${policy.id}`}
+                              labelText="Allow Override"
+                              checked={policy.allow_override}
+                              onChange={(e) => updatePolicy(policy.id, { allow_override: e.target.checked })}
+                              disabled={!config.enablePolicies}
+                            />
+                            <div style={{ color: "var(--cds-text-secondary)", fontSize: "0.75rem", marginTop: "0.25rem" }}>
+                              User can bypass this policy
+                            </div>
+                          </div>
+                        </Stack>
+                      </Stack>
+                    </div>
+                  )}
+                </Tile>
+              );
+            })}
+          </Stack>
         )}
-      </div>
+      </Stack>
     );
   }
 
   function renderPlaybooks() {
     return (
-      <div className="config-card">
-        <div className="section-header">
-          <h3>Playbooks</h3>
-          <button className="add-btn" onClick={addPlaybook} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+      <Stack gap={5} style={{ paddingTop: "1rem" }}>
+        <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h4 style={{ fontSize: "1.25rem", fontWeight: 400 }}>Playbooks</h4>
+          <Button size="sm" renderIcon={Add} onClick={addPlaybook} disabled={!config.enablePolicies}>
             Add Playbook
-          </button>
-        </div>
+          </Button>
+        </Stack>
 
-        <div className="sources-list">
-          {playbooks.map((policy) => {
-            const isExpanded = expandedPolicy === policy.id;
-            const keywordTrigger = policy.triggers.find((t) => t.type === "keyword");
-            const keywords = keywordTrigger && Array.isArray(keywordTrigger.value) ? keywordTrigger.value : [];
+        {playbooks.length === 0 ? (
+          <Tile>
+            <p style={{ color: "var(--cds-text-secondary)" }}>No playbooks configured. Click "Add Playbook" to create one.</p>
+          </Tile>
+        ) : (
+          <Stack gap={4}>
+            {playbooks.map((policy) => {
+              const isExpanded = expandedPolicy === policy.id;
+              const keywordTrigger = policy.triggers.find((t) => t.type === "keyword");
+              const keywords = keywordTrigger && Array.isArray(keywordTrigger.value) ? keywordTrigger.value : [];
 
-            return (
-              <div key={policy.id} className="agent-config-card">
-                <div className="agent-config-header">
-                  <div className="agent-config-top">
-                    <input
-                      type="checkbox"
-                      checked={policy.enabled}
-                      onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
-                      disabled={!config.enablePolicies}
-                    />
-                    <input
-                      type="text"
-                      value={policy.name}
-                      onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
-                      className="agent-config-name"
-                      placeholder="Playbook Name"
-                      disabled={!config.enablePolicies}
-                    />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
-                      className="delete-btn"
-                      onClick={() => removePolicy(policy.id)}
-                      disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                  {!isExpanded && (
-                    <div className="agent-summary">
-                      <span className="agent-summary-item">
-                        {policy.steps.length} step{policy.steps.length !== 1 ? "s" : ""}
-                      </span>
-                      {policy.triggers.length > 0 && (
-                        <span className="agent-summary-item">
-                          {policy.triggers[0].type === "natural_language"
-                            ? "AI trigger"
-                            : `${keywords.length} keyword${keywords.length !== 1 ? "s" : ""}`}
-                        </span>
-                      )}
-                    </div>
-                  )}
-                </div>
-
-                {isExpanded && (
-                  <div className="agent-config-details">
-                    <div className="form-group">
-                      <label>Description</label>
-                      <textarea
-                        value={policy.description}
-                        onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
-                        placeholder="What this playbook guides the user through..."
-                        rows={2}
-                        disabled={!config.enablePolicies}
-                      />
-                    </div>
-
-                    <div className="form-group">
-                      <label>Trigger Type</label>
-                      <select
-                        value={
-                          policy.triggers.length > 0 && policy.triggers[0].type === "natural_language"
-                            ? "natural_language"
-                            : "keyword"
-                        }
-                        onChange={(e) => {
-                          const triggerType = e.target.value as "keyword" | "natural_language";
-                          if (triggerType === "natural_language") {
-                            updatePolicy(policy.id, {
-                              triggers: [
-                                {
-                                  type: "natural_language",
-                                  value: [],
-                                  target: "intent",
-                                  threshold: 0.7,
-                                },
-                              ],
-                            });
-                          } else {
-                            updatePolicy(policy.id, {
-                              triggers: [
-                                {
-                                  type: "keyword",
-                                  value: [],
-                                  target: "intent",
-                                  case_sensitive: false,
-                                  operator: "and",
-                                },
-                              ],
-                            });
-                          }
-                        }}
-                        disabled={!config.enablePolicies}
-                      >
-                        <option value="keyword">Keywords (Exact Match)</option>
-                        <option value="natural_language">Natural Language (AI Match)</option>
-                      </select>
-                      <small>Choose how this playbook should be triggered</small>
-                    </div>
-
-                    {policy.triggers.length > 0 && policy.triggers[0].type === "keyword" && (
-                      <>
-                        <div className="form-group">
-                          <label>Trigger Keywords</label>
-                          <TagInput
-                            values={keywords}
-                            onChange={(newKeywords) => {
-                              const newTriggers = policy.triggers.map((t) =>
-                                t.type === "keyword" ? { ...t, value: newKeywords } : t
-                              );
-                              updatePolicy(policy.id, { triggers: newTriggers });
-                            }}
-                            placeholder="Type keyword and press Enter or comma"
+              return (
+                <Tile key={policy.id} style={{ padding: 0, border: "1px solid var(--cds-border-subtle)" }}>
+                  <div style={{ padding: "1rem", backgroundColor: isExpanded ? "var(--cds-layer-01)" : "transparent" }}>
+                    <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                      <Stack orientation="horizontal" gap={4} style={{ alignItems: "center", flex: 1 }}>
+                        <Checkbox
+                          id={`enabled-playbook-${policy.id}`}
+                          labelText="Enable Policy"
+                          hideLabel
+                          checked={policy.enabled}
+                          onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
+                          disabled={!config.enablePolicies}
+                        />
+                        <div style={{ flex: 1, maxWidth: "400px" }}>
+                          <TextInput
+                            id={`name-playbook-${policy.id}`}
+                            labelText="Policy Name"
+                            hideLabel
+                            value={policy.name}
+                            onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
+                            placeholder="Playbook Name"
                             disabled={!config.enablePolicies}
                           />
-                          <small>Type keywords and press Enter or comma to add. Click × to remove.</small>
                         </div>
+                      </Stack>
+                      <Stack orientation="horizontal" gap={2}>
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                          iconDescription={isExpanded ? "Collapse" : "Expand"}
+                          tooltipPosition="bottom"
+                          onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                        />
+                        <Button
+                          kind="danger--ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={TrashCan}
+                          iconDescription="Delete"
+                          tooltipPosition="bottom"
+                          onClick={() => removePolicy(policy.id)}
+                          disabled={!config.enablePolicies}
+                        />
+                      </Stack>
+                    </Stack>
+                    {!isExpanded && (
+                      <Stack orientation="horizontal" gap={4} style={{ marginTop: "0.5rem", marginLeft: "2.5rem", color: "var(--cds-text-secondary)", fontSize: "0.75rem" }}>
+                        <span>{policy.steps.length} step{policy.steps.length !== 1 ? "s" : ""}</span>
+                        {policy.triggers.length > 0 && (
+                          <span>
+                            {policy.triggers[0].type === "natural_language"
+                              ? "AI trigger"
+                              : `${keywords.length} keyword${keywords.length !== 1 ? "s" : ""}`}
+                          </span>
+                        )}
+                      </Stack>
+                    )}
+                  </div>
 
-                        {keywords.length > 1 && (
-                          <div className="form-group">
-                            <label>Keyword Matching</label>
-                            <select
-                              value={keywordTrigger?.operator || "and"}
-                              onChange={(e) => {
-                                const operator = e.target.value as "and" | "or";
+                  {isExpanded && (
+                    <div style={{ padding: "1.5rem", borderTop: "1px solid var(--cds-border-subtle)", backgroundColor: "var(--cds-layer-00)" }}>
+                      <Stack gap={6}>
+                        <TextArea
+                          id={`description-playbook-${policy.id}`}
+                          labelText="Description"
+                          value={policy.description}
+                          onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
+                          placeholder="What this playbook guides the user through..."
+                          rows={2}
+                          disabled={!config.enablePolicies}
+                        />
+
+                        <Select
+                          id={`trigger-type-playbook-${policy.id}`}
+                          labelText="Trigger Type"
+                          value={
+                            policy.triggers.length > 0 && policy.triggers[0].type === "natural_language"
+                              ? "natural_language"
+                              : "keyword"
+                          }
+                          onChange={(e) => {
+                            const triggerType = e.target.value as "keyword" | "natural_language";
+                            if (triggerType === "natural_language") {
+                              updatePolicy(policy.id, {
+                                triggers: [{ type: "natural_language", value: [], target: "intent", threshold: 0.7 }],
+                              });
+                            } else {
+                              updatePolicy(policy.id, {
+                                triggers: [{ type: "keyword", value: [], target: "intent", case_sensitive: false, operator: "and" }],
+                              });
+                            }
+                          }}
+                          disabled={!config.enablePolicies}
+                        >
+                          <SelectItem value="keyword" text="Keywords (Exact Match)" />
+                          <SelectItem value="natural_language" text="Natural Language (AI Match)" />
+                        </Select>
+
+                        {policy.triggers.length > 0 && policy.triggers[0].type === "keyword" && (
+                          <Stack gap={5}>
+                            <TagInput
+                              labelText="Trigger Keywords"
+                              values={keywords}
+                              onChange={(newKeywords) => {
                                 const newTriggers = policy.triggers.map((t) =>
-                                  t.type === "keyword" ? { ...t, operator } : t
+                                  t.type === "keyword" ? { ...t, value: newKeywords } : t
+                                );
+                                updatePolicy(policy.id, { triggers: newTriggers });
+                              }}
+                              placeholder="Type keyword and press Enter or comma"
+                              disabled={!config.enablePolicies}
+                              helperText="Type keywords and press Enter or comma to add."
+                            />
+
+                            {keywords.length > 1 && (
+                              <Select
+                                id={`keyword-operator-playbook-${policy.id}`}
+                                labelText="Keyword Matching"
+                                value={keywordTrigger?.operator || "and"}
+                                onChange={(e) => {
+                                  const operator = e.target.value as "and" | "or";
+                                  const newTriggers = policy.triggers.map((t) =>
+                                    t.type === "keyword" ? { ...t, operator } : t
+                                  );
+                                  updatePolicy(policy.id, { triggers: newTriggers });
+                                }}
+                                disabled={!config.enablePolicies}
+                                helperText="Choose whether all keywords or any keyword should trigger this playbook"
+                              >
+                                <SelectItem value="and" text="Match ALL keywords (AND)" />
+                                <SelectItem value="or" text="Match ANY keyword (OR)" />
+                              </Select>
+                            )}
+                          </Stack>
+                        )}
+
+                        {policy.triggers.length > 0 && policy.triggers[0].type === "natural_language" && (
+                          <Stack gap={5}>
+                            <TagInput
+                              labelText="Natural Language Triggers"
+                              values={
+                                Array.isArray(policy.triggers[0].value)
+                                  ? policy.triggers[0].value
+                                  : policy.triggers[0].value
+                                  ? [policy.triggers[0].value]
+                                  : []
+                              }
+                              onChange={(newTriggers) => {
+                                const updatedTriggers = policy.triggers.map((t, idx) =>
+                                  idx === 0 ? { ...t, value: newTriggers } : t
+                                );
+                                updatePolicy(policy.id, { triggers: updatedTriggers });
+                              }}
+                              placeholder="Type trigger and press Enter"
+                              disabled={!config.enablePolicies}
+                              helperText="Type natural language triggers and press Enter to add. AI will match similar user requests."
+                            />
+
+                            <Slider
+                              id={`threshold-playbook-${policy.id}`}
+                              labelText={`Similarity Threshold: ${(policy.triggers[0].threshold || 0.7).toFixed(2)}`}
+                              min={0.5}
+                              max={1.0}
+                              step={0.05}
+                              value={policy.triggers[0].threshold || 0.7}
+                              onChange={(e) => {
+                                const newTriggers = policy.triggers.map((t, idx) =>
+                                  idx === 0 ? { ...t, threshold: e.value } : t
                                 );
                                 updatePolicy(policy.id, { triggers: newTriggers });
                               }}
                               disabled={!config.enablePolicies}
-                            >
-                              <option value="and">Match ALL keywords (AND)</option>
-                              <option value="or">Match ANY keyword (OR)</option>
-                            </select>
-                            <small>Choose whether all keywords or any keyword should trigger this playbook</small>
-                          </div>
+                            />
+                          </Stack>
                         )}
-                      </>
-                    )}
 
-                    {policy.triggers.length > 0 && policy.triggers[0].type === "natural_language" && (
-                      <>
-                        <div className="form-group">
-                          <label>Natural Language Triggers</label>
-                          <TagInput
-                            values={
-                              Array.isArray(policy.triggers[0].value)
-                                ? policy.triggers[0].value
-                                : policy.triggers[0].value
-                                ? [policy.triggers[0].value]
-                                : []
-                            }
-                            onChange={(newTriggers) => {
-                              const updatedTriggers = policy.triggers.map((t, idx) =>
-                                idx === 0 ? { ...t, value: newTriggers } : t
-                              );
-                              updatePolicy(policy.id, { triggers: updatedTriggers });
-                            }}
-                            placeholder="Type trigger and press Enter"
-                            disabled={!config.enablePolicies}
-                          />
-                          <small>
-                            Type natural language triggers and press Enter to add. AI will match similar user requests.
-                          </small>
-                        </div>
+                        <TextArea
+                          id={`markdown-playbook-${policy.id}`}
+                          labelText="Markdown Content"
+                          value={policy.markdown_content}
+                          onChange={(e) => updatePolicy(policy.id, { markdown_content: e.target.value })}
+                          placeholder="# Task Guide&#10;&#10;## Steps:&#10;&#10;1. First step&#10;2. Second step"
+                          rows={8}
+                          disabled={!config.enablePolicies}
+                          helperText="Markdown-formatted guidance that will be shown to the agent"
+                        />
 
-                        <div className="form-group">
-                          <label>Similarity Threshold</label>
-                          <input
-                            type="range"
-                            min="0.5"
-                            max="1.0"
-                            step="0.05"
-                            value={policy.triggers[0].threshold || 0.7}
-                            onChange={(e) => {
-                              const newTriggers = policy.triggers.map((t, idx) =>
-                                idx === 0 ? { ...t, threshold: parseFloat(e.target.value) } : t
-                              );
-                              updatePolicy(policy.id, { triggers: newTriggers });
-                            }}
-                            disabled={!config.enablePolicies}
-                          />
-                          <small>
-                            Threshold: {(policy.triggers[0].threshold || 0.7).toFixed(2)} (higher = more strict
-                            matching)
-                          </small>
-                        </div>
-                      </>
-                    )}
-
-                    <div className="form-group">
-                      <label>Markdown Content</label>
-                      <textarea
-                        value={policy.markdown_content}
-                        onChange={(e) => updatePolicy(policy.id, { markdown_content: e.target.value })}
-                        placeholder="# Task Guide&#10;&#10;## Steps:&#10;&#10;1. First step&#10;2. Second step"
-                        rows={8}
-                        disabled={!config.enablePolicies}
-                        style={{ fontFamily: "monospace", fontSize: "13px" }}
-                      />
-                      <small>Markdown-formatted guidance that will be shown to the agent</small>
+                        <NumberInput
+                          id={`priority-playbook-${policy.id}`}
+                          label="Priority"
+                          value={policy.priority}
+                          onChange={(e, { value }) => updatePolicy(policy.id, { priority: typeof value === 'number' ? value : 0 })}
+                          min={0}
+                          max={100}
+                          disabled={!config.enablePolicies}
+                          helperText="Higher priority playbooks are checked first"
+                        />
+                      </Stack>
                     </div>
-
-                    <div className="form-group">
-                      <label>Priority</label>
-                      <input
-                        type="number"
-                        value={policy.priority}
-                        onChange={(e) => updatePolicy(policy.id, { priority: parseInt(e.target.value) })}
-                        min="0"
-                        max="100"
-                        disabled={!config.enablePolicies}
-                      />
-                      <small>Higher priority playbooks are checked first</small>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {playbooks.length === 0 && (
-          <div className="empty-state">
-            <p>No playbooks configured. Click "Add Playbook" to create one.</p>
-          </div>
+                  )}
+                </Tile>
+              );
+            })}
+          </Stack>
         )}
-      </div>
+      </Stack>
     );
   }
 
   function renderToolGuides() {
     return (
-      <div className="config-card">
-        <div className="section-header">
-          <h3>Tool Guide Policies</h3>
-          <button className="add-btn" onClick={addToolGuide} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+      <Stack gap={5} style={{ paddingTop: "1rem" }}>
+        <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h4 style={{ fontSize: "1.25rem", fontWeight: 400 }}>Tool Guide Policies</h4>
+          <Button size="sm" renderIcon={Add} onClick={addToolGuide} disabled={!config.enablePolicies}>
             Add Tool Guide
-          </button>
-        </div>
+          </Button>
+        </Stack>
 
-        <div className="sources-list">
-          {ToolGuides.map((policy) => {
-            const isExpanded = expandedPolicy === policy.id;
-            return (
-              <div key={policy.id} className="agent-config-card">
-                <div className="agent-config-header">
-                  <div className="agent-config-top">
-                    <input
-                      type="checkbox"
-                      checked={policy.enabled}
-                      onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
-                      disabled={!config.enablePolicies}
-                    />
-                    <input
-                      type="text"
-                      value={policy.name}
-                      onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
-                      className="agent-config-name"
-                      placeholder="Policy Name"
-                      disabled={!config.enablePolicies}
-                    />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
-                      className="delete-btn"
-                      onClick={() => removePolicy(policy.id)}
-                      disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+        {ToolGuides.length === 0 ? (
+          <Tile>
+            <p style={{ color: "var(--cds-text-secondary)" }}>No tool guide policies configured. Click "Add Tool Guide" to create one.</p>
+          </Tile>
+        ) : (
+          <Stack gap={4}>
+            {ToolGuides.map((policy) => {
+              const isExpanded = expandedPolicy === policy.id;
+              return (
+                <Tile key={policy.id} style={{ padding: 0, border: "1px solid var(--cds-border-subtle)" }}>
+                  <div style={{ padding: "1rem", backgroundColor: isExpanded ? "var(--cds-layer-01)" : "transparent" }}>
+                    <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                      <Stack orientation="horizontal" gap={4} style={{ alignItems: "center", flex: 1 }}>
+                        <Checkbox
+                          id={`enabled-toolguide-${policy.id}`}
+                          labelText="Enable Policy"
+                          hideLabel
+                          checked={policy.enabled}
+                          onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
+                          disabled={!config.enablePolicies}
+                        />
+                        <div style={{ flex: 1, maxWidth: "400px" }}>
+                          <TextInput
+                            id={`name-toolguide-${policy.id}`}
+                            labelText="Policy Name"
+                            hideLabel
+                            value={policy.name}
+                            onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
+                            placeholder="Policy Name"
+                            disabled={!config.enablePolicies}
+                          />
+                        </div>
+                      </Stack>
+                      <Stack orientation="horizontal" gap={2}>
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                          iconDescription={isExpanded ? "Collapse" : "Expand"}
+                          tooltipPosition="bottom"
+                          onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                        />
+                        <Button
+                          kind="danger--ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={TrashCan}
+                          iconDescription="Delete"
+                          tooltipPosition="bottom"
+                          onClick={() => removePolicy(policy.id)}
+                          disabled={!config.enablePolicies}
+                        />
+                      </Stack>
+                    </Stack>
+                    {!isExpanded && (
+                      <Stack orientation="horizontal" gap={4} style={{ marginTop: "0.5rem", marginLeft: "2.5rem", color: "var(--cds-text-secondary)", fontSize: "0.75rem" }}>
+                        <span>{policy.target_tools.includes("*") ? "All tools" : `${policy.target_tools.length} tool(s)`}</span>
+                        {policy.target_apps && policy.target_apps.length > 0 && <span>{policy.target_apps.length} app(s)</span>}
+                        <span>Priority: {policy.priority}</span>
+                      </Stack>
+                    )}
                   </div>
-                  {!isExpanded && (
-                    <div className="agent-summary">
-                      <span className="agent-summary-item">
-                        {policy.target_tools.includes("*") ? "All tools" : `${policy.target_tools.length} tool(s)`}
-                      </span>
-                      {policy.target_apps && policy.target_apps.length > 0 && (
-                        <span className="agent-summary-item">{policy.target_apps.length} app(s)</span>
-                      )}
-                      <span className="agent-summary-item">Priority: {policy.priority}</span>
-                    </div>
-                  )}
-                </div>
 
-                {isExpanded && (
-                  <div className="agent-config-details">
-                    <div className="form-group">
-                      <label>Description</label>
-                      <textarea
-                        value={policy.description}
-                        onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
-                        rows={2}
-                        disabled={!config.enablePolicies}
-                      />
-                    </div>
+                  {isExpanded && (
+                    <div style={{ padding: "1.5rem", borderTop: "1px solid var(--cds-border-subtle)", backgroundColor: "var(--cds-layer-00)" }}>
+                      <Stack gap={6}>
+                        <TextArea
+                          id={`description-toolguide-${policy.id}`}
+                          labelText="Description"
+                          value={policy.description}
+                          onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
+                          rows={2}
+                          disabled={!config.enablePolicies}
+                        />
 
-                    <div className="form-group">
-                      <label>Target Tools</label>
-                      <MultiSelect
-                        items={availableTools.map((tool) => ({
-                          value: tool.name,
-                          label: tool.name,
-                          description: `${tool.app} - ${tool.description.substring(0, 60)}${
-                            tool.description.length > 60 ? "..." : ""
-                          }`,
-                        }))}
-                        selectedValues={policy.target_tools}
-                        onChange={(values) => updatePolicy(policy.id, { target_tools: values })}
-                        placeholder={toolsLoading ? "Loading tools..." : "Select tools to enrich"}
-                        disabled={!config.enablePolicies || toolsLoading}
-                        allowWildcard={true}
-                      />
-                      <small>Select specific tools to enrich, or use * to enrich all tools</small>
-                    </div>
+                        <MultiSelect
+                          id={`target-tools-${policy.id}`}
+                          titleText="Target Tools"
+                          label={toolsLoading ? "Loading tools..." : "Select tools to enrich"}
+                          items={availableTools.map((tool) => ({
+                            id: tool.name,
+                            label: tool.name,
+                            text: `${tool.name} (${tool.app})`,
+                          }))}
+                          initialSelectedItems={availableTools
+                            .filter((tool) => policy.target_tools.includes(tool.name))
+                            .map((tool) => ({
+                              id: tool.name,
+                              label: tool.name,
+                              text: `${tool.name} (${tool.app})`,
+                            }))}
+                          onChange={(e) => {
+                            const selectedIds = e.selectedItems?.map((item: any) => item.id) || [];
+                            updatePolicy(policy.id, { target_tools: selectedIds });
+                          }}
+                          disabled={!config.enablePolicies || toolsLoading}
+                          helperText="Select specific tools to enrich, or use * to enrich all tools"
+                        />
 
-                    <div className="form-group">
-                      <label>Target Apps (optional)</label>
-                      <MultiSelect
-                        items={availableApps.map((app) => ({
-                          value: app.name,
-                          label: app.name,
-                          description: `${app.type} - ${app.tool_count} tool(s)`,
-                        }))}
-                        selectedValues={policy.target_apps || []}
-                        onChange={(values) =>
-                          updatePolicy(policy.id, { target_apps: values.length > 0 ? values : undefined })
-                        }
-                        placeholder={toolsLoading ? "Loading apps..." : "Select apps (optional)"}
-                        disabled={!config.enablePolicies || toolsLoading}
-                        allowWildcard={false}
-                      />
-                      <small>Optionally filter by app name</small>
-                    </div>
+                        <MultiSelect
+                          id={`target-apps-${policy.id}`}
+                          titleText="Target Apps (Optional)"
+                          label={toolsLoading ? "Loading apps..." : "Select apps (optional)"}
+                          items={availableApps.map((app) => ({
+                            id: app.name,
+                            label: app.name,
+                            text: `${app.name} (${app.type})`,
+                          }))}
+                          initialSelectedItems={availableApps
+                            .filter((app) => policy.target_apps?.includes(app.name))
+                            .map((app) => ({
+                              id: app.name,
+                              label: app.name,
+                              text: `${app.name} (${app.type})`,
+                            }))}
+                          onChange={(e) => {
+                            const selectedIds = e.selectedItems?.map((item: any) => item.id) || [];
+                            updatePolicy(policy.id, { target_apps: selectedIds.length > 0 ? selectedIds : undefined });
+                          }}
+                          disabled={!config.enablePolicies || toolsLoading}
+                          helperText="Optionally filter by app name"
+                        />
 
-                    <div className="form-group">
-                      <label>Guide Content (Markdown)</label>
-                      <textarea
-                        value={policy.guide_content}
-                        onChange={(e) => updatePolicy(policy.id, { guide_content: e.target.value })}
-                        placeholder="## Additional Guidelines&#10;&#10;- Follow best practices&#10;- Consider security"
-                        rows={6}
-                        disabled={!config.enablePolicies}
-                        style={{ fontFamily: "monospace", fontSize: "13px" }}
-                      />
-                      <small>Markdown content to add to tool descriptions</small>
-                    </div>
+                        <TextArea
+                          id={`guide-content-${policy.id}`}
+                          labelText="Guide Content (Markdown)"
+                          value={policy.guide_content}
+                          onChange={(e) => updatePolicy(policy.id, { guide_content: e.target.value })}
+                          placeholder="## Additional Guidelines&#10;&#10;- Follow best practices&#10;- Consider security"
+                          rows={6}
+                          disabled={!config.enablePolicies}
+                          helperText="Markdown content to add to tool descriptions"
+                        />
 
-                    <div className="form-group">
-                      <label>
-                        <input
-                          type="checkbox"
+                        <Checkbox
+                          id={`prepend-${policy.id}`}
+                          labelText="Prepend content (add before existing description)"
                           checked={policy.prepend}
                           onChange={(e) => updatePolicy(policy.id, { prepend: e.target.checked })}
                           disabled={!config.enablePolicies}
                         />
-                        Prepend content (add before existing description)
-                      </label>
-                    </div>
 
-                    <div className="form-group">
-                      <label>Priority</label>
-                      <input
-                        type="number"
-                        value={policy.priority}
-                        onChange={(e) => updatePolicy(policy.id, { priority: parseInt(e.target.value) })}
-                        min="0"
-                        max="100"
-                        disabled={!config.enablePolicies}
-                      />
-                      <small>Higher priority guides are applied first</small>
+                        <NumberInput
+                          id={`priority-toolguide-${policy.id}`}
+                          label="Priority"
+                          value={policy.priority}
+                          onChange={(e, { value }) => updatePolicy(policy.id, { priority: typeof value === 'number' ? value : 0 })}
+                          min={0}
+                          max={100}
+                          disabled={!config.enablePolicies}
+                          helperText="Higher priority guides are applied first"
+                        />
+                      </Stack>
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {ToolGuides.length === 0 && (
-          <div className="empty-state">
-            <p>No tool guide policies configured. Click "Add Tool Guide" to create one.</p>
-          </div>
+                  )}
+                </Tile>
+              );
+            })}
+          </Stack>
         )}
-      </div>
+      </Stack>
     );
   }
 
   function renderToolApprovals() {
     return (
-      <div className="config-card">
-        <div className="section-header">
-          <h3>Tool Approval Policies</h3>
-          <button className="add-btn" onClick={addToolApproval} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+      <Stack gap={5} style={{ paddingTop: "1rem" }}>
+        <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h4 style={{ fontSize: "1.25rem", fontWeight: 400 }}>Tool Approval Policies</h4>
+          <Button size="sm" renderIcon={Add} onClick={addToolApproval} disabled={!config.enablePolicies}>
             Add Tool Approval
-          </button>
-        </div>
+          </Button>
+        </Stack>
 
-        <div className="policies-list">
-          {toolApprovals.map((policy) => {
-            const isExpanded = expandedPolicy === policy.id;
-            return (
-              <div key={policy.id} className="agent-config-card">
-                <div className="agent-config-header">
-                  <div className="agent-config-top">
-                    <input
-                      type="checkbox"
-                      checked={policy.enabled}
-                      onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
-                      disabled={!config.enablePolicies}
-                    />
-                    <input
-                      type="text"
-                      value={policy.name}
-                      onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
-                      className="agent-config-name"
-                      placeholder="Policy Name"
-                      disabled={!config.enablePolicies}
-                    />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
-                      className="delete-btn"
-                      onClick={() => removePolicy(policy.id)}
-                      disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
+        {toolApprovals.length === 0 ? (
+          <Tile>
+            <p style={{ color: "var(--cds-text-secondary)" }}>No tool approval policies configured. Click "Add Tool Approval" to create one.</p>
+          </Tile>
+        ) : (
+          <Stack gap={4}>
+            {toolApprovals.map((policy) => {
+              const isExpanded = expandedPolicy === policy.id;
+              return (
+                <Tile key={policy.id} style={{ padding: 0, border: "1px solid var(--cds-border-subtle)" }}>
+                  <div style={{ padding: "1rem", backgroundColor: isExpanded ? "var(--cds-layer-01)" : "transparent" }}>
+                    <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                      <Stack orientation="horizontal" gap={4} style={{ alignItems: "center", flex: 1 }}>
+                        <Checkbox
+                          id={`enabled-toolapproval-${policy.id}`}
+                          labelText="Enable Policy"
+                          hideLabel
+                          checked={policy.enabled}
+                          onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
+                          disabled={!config.enablePolicies}
+                        />
+                        <div style={{ flex: 1, maxWidth: "400px" }}>
+                          <TextInput
+                            id={`name-toolapproval-${policy.id}`}
+                            labelText="Policy Name"
+                            hideLabel
+                            value={policy.name}
+                            onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
+                            placeholder="Policy Name"
+                            disabled={!config.enablePolicies}
+                          />
+                        </div>
+                      </Stack>
+                      <Stack orientation="horizontal" gap={2}>
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                          iconDescription={isExpanded ? "Collapse" : "Expand"}
+                          tooltipPosition="bottom"
+                          onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                        />
+                        <Button
+                          kind="danger--ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={TrashCan}
+                          iconDescription="Delete"
+                          tooltipPosition="bottom"
+                          onClick={() => removePolicy(policy.id)}
+                          disabled={!config.enablePolicies}
+                        />
+                      </Stack>
+                    </Stack>
+                    {!isExpanded && (
+                      <Stack orientation="horizontal" gap={4} style={{ marginTop: "0.5rem", marginLeft: "2.5rem", color: "var(--cds-text-secondary)", fontSize: "0.75rem" }}>
+                        <span>
+                          {policy.required_tools.length === 0
+                            ? "No tools selected"
+                            : policy.required_tools.includes("*")
+                            ? "All tools"
+                            : `${policy.required_tools.length} tool(s)`}
+                        </span>
+                        {policy.required_apps && policy.required_apps.length > 0 && <span>{policy.required_apps.length} app(s)</span>}
+                        <span>Priority: {policy.priority}</span>
+                      </Stack>
+                    )}
                   </div>
-                  {!isExpanded && (
-                    <div className="agent-summary">
-                      <span className="agent-summary-item">
-                        {policy.required_tools.length === 0
-                          ? "No tools selected"
-                          : policy.required_tools.includes("*")
-                          ? "All tools"
-                          : `${policy.required_tools.length} tool(s)`}
-                      </span>
-                      {policy.required_apps && policy.required_apps.length > 0 && (
-                        <span className="agent-summary-item">{policy.required_apps.length} app(s)</span>
-                      )}
-                      <span className="agent-summary-item">Priority: {policy.priority}</span>
-                    </div>
-                  )}
-                </div>
 
-                {isExpanded && (
-                  <div className="agent-config-details">
-                    <div className="form-group">
-                      <label>Description</label>
-                      <textarea
-                        value={policy.description}
-                        onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
-                        rows={2}
-                        disabled={!config.enablePolicies}
-                      />
-                    </div>
+                  {isExpanded && (
+                    <div style={{ padding: "1.5rem", borderTop: "1px solid var(--cds-border-subtle)", backgroundColor: "var(--cds-layer-00)" }}>
+                      <Stack gap={6}>
+                        <TextArea
+                          id={`description-toolapproval-${policy.id}`}
+                          labelText="Description"
+                          value={policy.description}
+                          onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
+                          rows={2}
+                          disabled={!config.enablePolicies}
+                        />
 
-                    <div className="form-group">
-                      <label>Required Tools</label>
-                      <MultiSelect
-                        items={availableTools.map((tool) => ({
-                          value: tool.name,
-                          label: tool.name,
-                          description: `${tool.app} - ${tool.description.substring(0, 60)}${
-                            tool.description.length > 60 ? "..." : ""
-                          }`,
-                        }))}
-                        selectedValues={policy.required_tools}
-                        onChange={(values) => updatePolicy(policy.id, { required_tools: values })}
-                        placeholder={toolsLoading ? "Loading tools..." : "Select tools requiring approval"}
-                        disabled={!config.enablePolicies || toolsLoading}
-                        allowWildcard={true}
-                      />
-                      <small>Tools that require approval before execution</small>
-                    </div>
+                        <MultiSelect
+                          id={`required-tools-${policy.id}`}
+                          titleText="Required Tools"
+                          label={toolsLoading ? "Loading tools..." : "Select tools requiring approval"}
+                          items={availableTools.map((tool) => ({
+                            id: tool.name,
+                            label: tool.name,
+                            text: `${tool.name} (${tool.app})`,
+                          }))}
+                          initialSelectedItems={availableTools
+                            .filter((tool) => policy.required_tools.includes(tool.name))
+                            .map((tool) => ({
+                              id: tool.name,
+                              label: tool.name,
+                              text: `${tool.name} (${tool.app})`,
+                            }))}
+                          onChange={(e) => {
+                            const selectedIds = e.selectedItems?.map((item: any) => item.id) || [];
+                            updatePolicy(policy.id, { required_tools: selectedIds });
+                          }}
+                          disabled={!config.enablePolicies || toolsLoading}
+                          helperText="Tools that require approval before execution"
+                        />
 
-                    <div className="form-group">
-                      <label>Required Apps (optional)</label>
-                      <MultiSelect
-                        items={availableApps.map((app) => ({
-                          value: app.name,
-                          label: app.name,
-                          description: `${app.type} - ${app.tool_count} tool(s)`,
-                        }))}
-                        selectedValues={policy.required_apps || []}
-                        onChange={(values) =>
-                          updatePolicy(policy.id, { required_apps: values.length > 0 ? values : undefined })
-                        }
-                        placeholder={toolsLoading ? "Loading apps..." : "Select apps (optional)"}
-                        disabled={!config.enablePolicies || toolsLoading}
-                        allowWildcard={false}
-                      />
-                      <small>Optionally require approval for all tools from specific apps</small>
-                    </div>
+                        <MultiSelect
+                          id={`required-apps-${policy.id}`}
+                          titleText="Required Apps (Optional)"
+                          label={toolsLoading ? "Loading apps..." : "Select apps (optional)"}
+                          items={availableApps.map((app) => ({
+                            id: app.name,
+                            label: app.name,
+                            text: `${app.name} (${app.type})`,
+                          }))}
+                          initialSelectedItems={availableApps
+                            .filter((app) => policy.required_apps?.includes(app.name))
+                            .map((app) => ({
+                              id: app.name,
+                              label: app.name,
+                              text: `${app.name} (${app.type})`,
+                            }))}
+                          onChange={(e) => {
+                            const selectedIds = e.selectedItems?.map((item: any) => item.id) || [];
+                            updatePolicy(policy.id, { required_apps: selectedIds.length > 0 ? selectedIds : undefined });
+                          }}
+                          disabled={!config.enablePolicies || toolsLoading}
+                          helperText="Optionally require approval for all tools from specific apps"
+                        />
 
-                    <div className="form-group">
-                      <label>Approval Message (optional)</label>
-                      <textarea
-                        value={policy.approval_message || ""}
-                        onChange={(e) => updatePolicy(policy.id, { approval_message: e.target.value || undefined })}
-                        placeholder="This tool requires your approval before execution."
-                        rows={3}
-                        disabled={!config.enablePolicies}
-                      />
-                      <small>Custom message shown when requesting approval</small>
-                    </div>
+                        <TextArea
+                          id={`approval-message-${policy.id}`}
+                          labelText="Approval Message (optional)"
+                          value={policy.approval_message || ""}
+                          onChange={(e) => updatePolicy(policy.id, { approval_message: e.target.value || undefined })}
+                          placeholder="This tool requires your approval before execution."
+                          rows={3}
+                          disabled={!config.enablePolicies}
+                          helperText="Custom message shown when requesting approval"
+                        />
 
-                    <div className="form-group">
-                      <label>
-                        <input
-                          type="checkbox"
+                        <Checkbox
+                          id={`show-code-${policy.id}`}
+                          labelText="Show code preview in approval request"
                           checked={policy.show_code_preview}
                           onChange={(e) => updatePolicy(policy.id, { show_code_preview: e.target.checked })}
                           disabled={!config.enablePolicies}
                         />
-                        Show code preview in approval request
-                      </label>
-                    </div>
 
-                    <div className="form-group">
-                      <label>Auto-approve after (seconds, optional)</label>
-                      <input
-                        type="number"
-                        value={policy.auto_approve_after || ""}
-                        onChange={(e) => {
-                          const value = e.target.value ? parseInt(e.target.value) : undefined;
-                          updatePolicy(policy.id, { auto_approve_after: value });
-                        }}
-                        min="1"
-                        placeholder="Leave empty for no auto-approve"
-                        disabled={!config.enablePolicies}
-                      />
-                      <small>Automatically approve after N seconds (leave empty to disable)</small>
-                    </div>
+                        <NumberInput
+                          id={`auto-approve-${policy.id}`}
+                          label="Auto-approve after (seconds, optional)"
+                          value={policy.auto_approve_after || 0}
+                          onChange={(e, { value }) => {
+                            const val = typeof value === 'number' && value > 0 ? value : undefined;
+                            updatePolicy(policy.id, { auto_approve_after: val });
+                          }}
+                          min={1}
+                          placeholder="Leave empty for no auto-approve"
+                          disabled={!config.enablePolicies}
+                          helperText="Automatically approve after N seconds (leave empty to disable)"
+                        />
 
-                    <div className="form-group">
-                      <label>Priority</label>
-                      <input
-                        type="number"
-                        value={policy.priority}
-                        onChange={(e) => updatePolicy(policy.id, { priority: parseInt(e.target.value) })}
-                        min="0"
-                        max="100"
-                        disabled={!config.enablePolicies}
-                      />
-                      <small>Higher priority approval policies are checked first</small>
+                        <NumberInput
+                          id={`priority-toolapproval-${policy.id}`}
+                          label="Priority"
+                          value={policy.priority}
+                          onChange={(e, { value }) => updatePolicy(policy.id, { priority: typeof value === 'number' ? value : 0 })}
+                          min={0}
+                          max={100}
+                          disabled={!config.enablePolicies}
+                          helperText="Higher priority approval policies are checked first"
+                        />
+                      </Stack>
                     </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {toolApprovals.length === 0 && (
-          <div className="empty-state">
-            <p>No tool approval policies configured. Click "Add Tool Approval" to create one.</p>
-          </div>
+                  )}
+                </Tile>
+              );
+            })}
+          </Stack>
         )}
-      </div>
+      </Stack>
     );
   }
 
   function renderOutputFormatters() {
     return (
-      <div className="config-card">
-        <div className="section-header">
-          <h3>Output Formatter Policies</h3>
-          <button className="add-btn" onClick={addOutputFormatter} disabled={!config.enablePolicies}>
-            <Plus size={16} />
+      <Stack gap={5} style={{ paddingTop: "1rem" }}>
+        <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+          <h4 style={{ fontSize: "1.25rem", fontWeight: 400 }}>Output Formatter Policies</h4>
+          <Button size="sm" renderIcon={Add} onClick={addOutputFormatter} disabled={!config.enablePolicies}>
             Add Output Formatter
-          </button>
-        </div>
+          </Button>
+        </Stack>
 
-        <div className="policies-list">
-          {outputFormatters.map((policy) => {
-            const isExpanded = expandedPolicy === policy.id;
-            const keywordTrigger = policy.triggers.find((t) => t.type === "keyword");
-            const keywords = keywordTrigger && Array.isArray(keywordTrigger.value) ? keywordTrigger.value : [];
+        {outputFormatters.length === 0 ? (
+          <Tile>
+            <p style={{ color: "var(--cds-text-secondary)" }}>No output formatter policies configured. Click "Add Output Formatter" to create one.</p>
+          </Tile>
+        ) : (
+          <Stack gap={4}>
+            {outputFormatters.map((policy) => {
+              const isExpanded = expandedPolicy === policy.id;
+              const keywordTrigger = policy.triggers.find((t) => t.type === "keyword");
+              const keywords = keywordTrigger && Array.isArray(keywordTrigger.value) ? keywordTrigger.value : [];
 
-            return (
-              <div key={policy.id} className="agent-config-card">
-                <div className="agent-config-header">
-                  <div className="agent-config-top">
-                    <input
-                      type="checkbox"
-                      checked={policy.enabled}
-                      onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
-                      disabled={!config.enablePolicies}
-                    />
-                    <input
-                      type="text"
-                      value={policy.name}
-                      onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
-                      className="agent-config-name"
-                      placeholder="Policy Name"
-                      disabled={!config.enablePolicies}
-                    />
-                    <button className="expand-btn" onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}>
-                      {isExpanded ? <ChevronUp size={16} /> : <ChevronDown size={16} />}
-                    </button>
-                    <button
-                      className="delete-btn"
-                      onClick={() => removePolicy(policy.id)}
-                      disabled={!config.enablePolicies}
-                    >
-                      <Trash2 size={16} />
-                    </button>
-                  </div>
-                  {!isExpanded && (
-                    <div className="agent-summary">
-                      <span className="agent-summary-item">
-                        {policy.format_type === "direct"
-                          ? "Direct"
-                          : policy.format_type === "markdown"
-                          ? "Markdown (LLM)"
-                          : "JSON (LLM)"}
-                      </span>
-                      {keywords.length > 0 && (
-                        <span className="agent-summary-item">
-                          {keywords.length} keyword{keywords.length !== 1 ? "s" : ""}
+              return (
+                <Tile key={policy.id} style={{ padding: 0, border: "1px solid var(--cds-border-subtle)" }}>
+                  <div style={{ padding: "1rem", backgroundColor: isExpanded ? "var(--cds-layer-01)" : "transparent" }}>
+                    <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                      <Stack orientation="horizontal" gap={4} style={{ alignItems: "center", flex: 1 }}>
+                        <Checkbox
+                          id={`enabled-outputformatter-${policy.id}`}
+                          labelText="Enable Policy"
+                          hideLabel
+                          checked={policy.enabled}
+                          onChange={(e) => updatePolicy(policy.id, { enabled: e.target.checked })}
+                          disabled={!config.enablePolicies}
+                        />
+                        <div style={{ flex: 1, maxWidth: "400px" }}>
+                          <TextInput
+                            id={`name-outputformatter-${policy.id}`}
+                            labelText="Policy Name"
+                            hideLabel
+                            value={policy.name}
+                            onChange={(e) => updatePolicy(policy.id, { name: e.target.value })}
+                            placeholder="Policy Name"
+                            disabled={!config.enablePolicies}
+                          />
+                        </div>
+                      </Stack>
+                      <Stack orientation="horizontal" gap={2}>
+                        <Button
+                          kind="ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={isExpanded ? ChevronUp : ChevronDown}
+                          iconDescription={isExpanded ? "Collapse" : "Expand"}
+                          tooltipPosition="bottom"
+                          onClick={() => setExpandedPolicy(isExpanded ? null : policy.id)}
+                        />
+                        <Button
+                          kind="danger--ghost"
+                          size="sm"
+                          hasIconOnly
+                          renderIcon={TrashCan}
+                          iconDescription="Delete"
+                          tooltipPosition="bottom"
+                          onClick={() => removePolicy(policy.id)}
+                          disabled={!config.enablePolicies}
+                        />
+                      </Stack>
+                    </Stack>
+                    {!isExpanded && (
+                      <Stack orientation="horizontal" gap={4} style={{ marginTop: "0.5rem", marginLeft: "2.5rem", color: "var(--cds-text-secondary)", fontSize: "0.75rem" }}>
+                        <span>
+                          {policy.format_type === "direct"
+                            ? "Direct"
+                            : policy.format_type === "markdown"
+                            ? "Markdown (LLM)"
+                            : "JSON (LLM)"}
                         </span>
-                      )}
-                      {policy.triggers.some((t) => t.type === "natural_language") && (
-                        <span className="agent-summary-item">AI trigger</span>
-                      )}
-                      <span className="agent-summary-item">Priority: {policy.priority}</span>
-                    </div>
-                  )}
-                </div>
+                        {keywords.length > 0 && <span>{keywords.length} keyword{keywords.length !== 1 ? "s" : ""}</span>}
+                        {policy.triggers.some((t) => t.type === "natural_language") && <span>AI trigger</span>}
+                        <span>Priority: {policy.priority}</span>
+                      </Stack>
+                    )}
+                  </div>
 
-                {isExpanded && (
-                  <div className="agent-config-details">
-                    <div className="form-group">
-                      <label>Description</label>
-                      <textarea
-                        value={policy.description}
-                        onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
-                        rows={2}
-                        disabled={!config.enablePolicies}
-                      />
-                    </div>
+                  {isExpanded && (
+                    <div style={{ padding: "1.5rem", borderTop: "1px solid var(--cds-border-subtle)", backgroundColor: "var(--cds-layer-00)" }}>
+                      <Stack gap={6}>
+                        <TextArea
+                          id={`description-outputformatter-${policy.id}`}
+                          labelText="Description"
+                          value={policy.description}
+                          onChange={(e) => updatePolicy(policy.id, { description: e.target.value })}
+                          rows={2}
+                          disabled={!config.enablePolicies}
+                        />
 
-                    <div className="form-group">
-                      <label>Trigger Keywords (Optional)</label>
-                      <TagInput
-                        values={keywords}
-                        onChange={(newKeywords) => {
-                          const updatedTriggers = policy.triggers.filter((t) => t.type !== "keyword");
-                          if (newKeywords.length > 0) {
-                            const existingKeywordTrigger = policy.triggers.find((t) => t.type === "keyword");
-                            updatedTriggers.push({
-                              type: "keyword",
-                              value: newKeywords,
-                              target: "agent_response",
-                              case_sensitive: false,
-                              operator: existingKeywordTrigger?.operator || "and",
-                            });
-                          }
-                          updatePolicy(policy.id, { triggers: updatedTriggers });
-                        }}
-                        placeholder="Type keyword and press Enter or comma"
-                        disabled={!config.enablePolicies}
-                      />
-                      <small>
-                        Keywords to match against the last AI message content. Leave empty to always format.
-                      </small>
-                    </div>
-
-                    {keywords.length > 1 && (
-                      <div className="form-group">
-                        <label>Keyword Matching</label>
-                        <select
-                          value={keywordTrigger?.operator || "and"}
-                          onChange={(e) => {
-                            const operator = e.target.value as "and" | "or";
-                            const updatedTriggers = policy.triggers.map((t) =>
-                              t.type === "keyword" ? { ...t, operator } : t
-                            );
+                        <TagInput
+                          labelText="Trigger Keywords (Optional)"
+                          values={keywords}
+                          onChange={(newKeywords) => {
+                            const updatedTriggers = policy.triggers.filter((t) => t.type !== "keyword");
+                            if (newKeywords.length > 0) {
+                              const existingKeywordTrigger = policy.triggers.find((t) => t.type === "keyword");
+                              updatedTriggers.push({
+                                type: "keyword",
+                                value: newKeywords,
+                                target: "agent_response",
+                                case_sensitive: false,
+                                operator: existingKeywordTrigger?.operator || "and",
+                              });
+                            }
                             updatePolicy(policy.id, { triggers: updatedTriggers });
                           }}
+                          placeholder="Type keyword and press Enter or comma"
                           disabled={!config.enablePolicies}
+                          helperText="Keywords to match against the last AI message content. Leave empty to always format."
+                        />
+
+                        {keywords.length > 1 && (
+                          <Select
+                            id={`keyword-operator-outputformatter-${policy.id}`}
+                            labelText="Keyword Matching"
+                            value={keywordTrigger?.operator || "and"}
+                            onChange={(e) => {
+                              const operator = e.target.value as "and" | "or";
+                              const updatedTriggers = policy.triggers.map((t) =>
+                                t.type === "keyword" ? { ...t, operator } : t
+                              );
+                              updatePolicy(policy.id, { triggers: updatedTriggers });
+                            }}
+                            disabled={!config.enablePolicies}
+                            helperText="Choose whether all keywords or any keyword should trigger this formatter"
+                          >
+                            <SelectItem value="and" text="Match ALL keywords (AND)" />
+                            <SelectItem value="or" text="Match ANY keyword (OR)" />
+                          </Select>
+                        )}
+
+                        {(() => {
+                          const nlTrigger = policy.triggers.find((t) => t.type === "natural_language");
+                          const nlTriggerValues = nlTrigger ? (Array.isArray(nlTrigger.value) ? nlTrigger.value : nlTrigger.value ? [nlTrigger.value] : []) : [];
+
+                          return (
+                            <Stack gap={5}>
+                              {nlTrigger ? (
+                                <>
+                                  <TagInput
+                                    labelText="Natural Language Triggers"
+                                    values={nlTriggerValues}
+                                    onChange={(newValues) => {
+                                      const updatedTriggers = policy.triggers.map((t) =>
+                                        t.type === "natural_language" ? { ...t, value: newValues } : t
+                                      );
+                                      updatePolicy(policy.id, { triggers: updatedTriggers });
+                                    }}
+                                    placeholder="Type natural language trigger and press Enter"
+                                    disabled={!config.enablePolicies}
+                                    helperText="Type natural language triggers and press Enter to add. AI will match similar responses."
+                                  />
+                                  <Slider
+                                    id={`threshold-output-${policy.id}`}
+                                    labelText={`Similarity Threshold: ${(nlTrigger.threshold || 0.7).toFixed(2)}`}
+                                    min={0.5}
+                                    max={1.0}
+                                    step={0.05}
+                                    value={nlTrigger.threshold || 0.7}
+                                    onChange={(e) => {
+                                      const updatedTriggers = policy.triggers.map((t) =>
+                                        t.type === "natural_language" ? { ...t, threshold: e.value } : t
+                                      );
+                                      updatePolicy(policy.id, { triggers: updatedTriggers });
+                                    }}
+                                    disabled={!config.enablePolicies}
+                                  />
+                                  <Button
+                                    kind="danger"
+                                    size="sm"
+                                    onClick={() => {
+                                      const updatedTriggers = policy.triggers.filter((t) => t.type !== "natural_language");
+                                      updatePolicy(policy.id, { triggers: updatedTriggers });
+                                    }}
+                                    disabled={!config.enablePolicies}
+                                  >
+                                    Remove Natural Language Trigger
+                                  </Button>
+                                </>
+                              ) : (
+                                <div>
+                                  <Button
+                                    kind="tertiary"
+                                    size="sm"
+                                    renderIcon={Add}
+                                    onClick={() => {
+                                      const newTrigger: PolicyTrigger = { type: "natural_language", value: [], target: "agent_response", threshold: 0.7 };
+                                      updatePolicy(policy.id, { triggers: [...policy.triggers, newTrigger] });
+                                    }}
+                                    disabled={!config.enablePolicies}
+                                  >
+                                    Add Natural Language Trigger
+                                  </Button>
+                                </div>
+                              )}
+                            </Stack>
+                          );
+                        })()}
+
+                        <Select
+                          id={`format-type-${policy.id}`}
+                          labelText="Format Type"
+                          value={policy.format_type}
+                          onChange={(e) =>
+                            updatePolicy(policy.id, {
+                              format_type: e.target.value as "markdown" | "json_schema" | "direct",
+                            })
+                          }
+                          disabled={!config.enablePolicies}
+                          helperText={
+                            policy.format_type === "direct"
+                              ? "Directly replace the response with the provided string (no LLM processing)"
+                              : policy.format_type === "markdown"
+                              ? "Use LLM to reformat the response according to markdown instructions"
+                              : "Use LLM to extract and format the response as JSON matching the schema"
+                          }
                         >
-                          <option value="and">Match ALL keywords (AND)</option>
-                          <option value="or">Match ANY keyword (OR)</option>
-                        </select>
-                        <small>Choose whether all keywords or any keyword should trigger this formatter</small>
-                      </div>
-                    )}
+                          <SelectItem value="direct" text="Direct Answer (No LLM)" />
+                          <SelectItem value="markdown" text="Markdown Instructions (LLM)" />
+                          <SelectItem value="json_schema" text="JSON Schema (LLM)" />
+                        </Select>
 
-                    {(() => {
-                      const nlTrigger = policy.triggers.find((t) => t.type === "natural_language");
-                      const nlTriggerValues = nlTrigger
-                        ? Array.isArray(nlTrigger.value)
-                          ? nlTrigger.value
-                          : nlTrigger.value
-                          ? [nlTrigger.value]
-                          : []
-                        : [];
+                        <TextArea
+                          id={`format-config-${policy.id}`}
+                          labelText={
+                            policy.format_type === "direct"
+                              ? "Direct Answer String"
+                              : policy.format_type === "markdown"
+                              ? "Formatting Instructions (Markdown)"
+                              : "JSON Schema"
+                          }
+                          value={policy.format_config}
+                          onChange={(e) => updatePolicy(policy.id, { format_config: e.target.value })}
+                          placeholder={
+                            policy.format_type === "direct"
+                              ? "You are not allowed to view this sensitive data"
+                              : policy.format_type === "markdown"
+                              ? "Format the response in a clear, structured way with proper headings and bullet points."
+                              : '{\n  "type": "object",\n  "properties": {\n    "summary": {"type": "string"},\n    "details": {"type": "array"}\n  }\n}'
+                          }
+                          rows={policy.format_type === "json_schema" ? 12 : policy.format_type === "direct" ? 4 : 8}
+                          disabled={!config.enablePolicies}
+                          helperText={
+                            policy.format_type === "direct"
+                              ? "This exact string will replace the AI response when triggers match (no LLM processing)"
+                              : policy.format_type === "markdown"
+                              ? "Markdown instructions for how to format the AI response (processed by LLM)"
+                              : "JSON schema that the formatted response must match (processed by LLM)"
+                          }
+                        />
 
-                      return (
-                        <div className="form-group">
-                          <label>Natural Language Triggers</label>
-                          {nlTrigger ? (
-                            <>
-                              <TagInput
-                                values={nlTriggerValues}
-                                onChange={(newValues) => {
-                                  const updatedTriggers = policy.triggers.map((t) =>
-                                    t.type === "natural_language" ? { ...t, value: newValues } : t
-                                  );
-                                  updatePolicy(policy.id, { triggers: updatedTriggers });
-                                }}
-                                placeholder="Type natural language trigger and press Enter"
-                                disabled={!config.enablePolicies}
-                              />
-                              <div className="form-group" style={{ marginTop: "12px" }}>
-                                <label>Similarity Threshold</label>
-                                <input
-                                  type="range"
-                                  min="0.5"
-                                  max="1.0"
-                                  step="0.05"
-                                  value={nlTrigger.threshold || 0.7}
-                                  onChange={(e) => {
-                                    const updatedTriggers = policy.triggers.map((t) =>
-                                      t.type === "natural_language"
-                                        ? { ...t, threshold: parseFloat(e.target.value) }
-                                        : t
-                                    );
-                                    updatePolicy(policy.id, { triggers: updatedTriggers });
-                                  }}
-                                  disabled={!config.enablePolicies}
-                                />
-                                <small>
-                                  Threshold: {(nlTrigger.threshold || 0.7).toFixed(2)} (higher = more strict matching)
-                                </small>
-                              </div>
-                              <button
-                                onClick={() => {
-                                  const updatedTriggers = policy.triggers.filter((t) => t.type !== "natural_language");
-                                  updatePolicy(policy.id, { triggers: updatedTriggers });
-                                }}
-                                disabled={!config.enablePolicies}
-                                style={{
-                                  marginTop: "8px",
-                                  padding: "6px 12px",
-                                  backgroundColor: "#ef4444",
-                                  color: "white",
-                                  border: "none",
-                                  borderRadius: "4px",
-                                  cursor: config.enablePolicies ? "pointer" : "not-allowed",
-                                  fontSize: "12px",
-                                }}
-                              >
-                                Remove Natural Language Trigger
-                              </button>
-                            </>
-                          ) : (
-                            <button
-                              onClick={() => {
-                                const newTrigger: PolicyTrigger = {
-                                  type: "natural_language",
-                                  value: [],
-                                  target: "agent_response",
-                                  threshold: 0.7,
-                                };
-                                updatePolicy(policy.id, { triggers: [...policy.triggers, newTrigger] });
-                              }}
-                              disabled={!config.enablePolicies}
-                              style={{
-                                padding: "6px 12px",
-                                backgroundColor: "#3b82f6",
-                                color: "white",
-                                border: "none",
-                                borderRadius: "4px",
-                                cursor: config.enablePolicies ? "pointer" : "not-allowed",
-                                fontSize: "13px",
-                              }}
-                            >
-                              + Add Natural Language Trigger
-                            </button>
-                          )}
-                          <small>
-                            Type natural language triggers and press Enter to add. AI will match similar responses using
-                            semantic understanding.
-                          </small>
-                        </div>
-                      );
-                    })()}
-
-                    <div className="form-group">
-                      <label>Format Type</label>
-                      <select
-                        value={policy.format_type}
-                        onChange={(e) =>
-                          updatePolicy(policy.id, {
-                            format_type: e.target.value as "markdown" | "json_schema" | "direct",
-                          })
-                        }
-                        disabled={!config.enablePolicies}
-                      >
-                        <option value="direct">Direct Answer (No LLM)</option>
-                        <option value="markdown">Markdown Instructions (LLM)</option>
-                        <option value="json_schema">JSON Schema (LLM)</option>
-                      </select>
-                      <small>
-                        {policy.format_type === "direct"
-                          ? "Directly replace the response with the provided string (no LLM processing)"
-                          : policy.format_type === "markdown"
-                          ? "Use LLM to reformat the response according to markdown instructions"
-                          : "Use LLM to extract and format the response as JSON matching the schema"}
-                      </small>
+                        <NumberInput
+                          id={`priority-outputformatter-${policy.id}`}
+                          label="Priority"
+                          value={policy.priority}
+                          onChange={(e, { value }) => updatePolicy(policy.id, { priority: Number(value) })}
+                          min={0}
+                          max={100}
+                          disabled={!config.enablePolicies}
+                          helperText="Higher priority formatters are checked first"
+                        />
+                      </Stack>
                     </div>
-
-                    <div className="form-group">
-                      <label>
-                        {policy.format_type === "direct"
-                          ? "Direct Answer String"
-                          : policy.format_type === "markdown"
-                          ? "Formatting Instructions (Markdown)"
-                          : "JSON Schema"}
-                      </label>
-                      <textarea
-                        value={policy.format_config}
-                        onChange={(e) => updatePolicy(policy.id, { format_config: e.target.value })}
-                        placeholder={
-                          policy.format_type === "direct"
-                            ? "You are not allowed to view this sensitive data"
-                            : policy.format_type === "markdown"
-                            ? "Format the response in a clear, structured way with proper headings and bullet points."
-                            : '{\n  "type": "object",\n  "properties": {\n    "summary": {"type": "string"},\n    "details": {"type": "array"}\n  }\n}'
-                        }
-                        rows={policy.format_type === "json_schema" ? 12 : policy.format_type === "direct" ? 4 : 8}
-                        disabled={!config.enablePolicies}
-                        style={{
-                          fontFamily: policy.format_type === "direct" ? "inherit" : "monospace",
-                          fontSize: "13px",
-                        }}
-                      />
-                      <small>
-                        {policy.format_type === "direct"
-                          ? "This exact string will replace the AI response when triggers match (no LLM processing)"
-                          : policy.format_type === "markdown"
-                          ? "Markdown instructions for how to format the AI response (processed by LLM)"
-                          : "JSON schema that the formatted response must match (processed by LLM)"}
-                      </small>
-                    </div>
-
-                    <div className="form-group">
-                      <label>Priority</label>
-                      <input
-                        type="number"
-                        value={policy.priority}
-                        onChange={(e) => updatePolicy(policy.id, { priority: parseInt(e.target.value) })}
-                        min="0"
-                        max="100"
-                        disabled={!config.enablePolicies}
-                      />
-                      <small>Higher priority formatters are checked first</small>
-                    </div>
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        {outputFormatters.length === 0 && (
-          <div className="empty-state">
-            <p>No output formatter policies configured. Click "Add Output Formatter" to create one.</p>
-          </div>
+                  )}
+                </Tile>
+              );
+            })}
+          </Stack>
         )}
-      </div>
+      </Stack>
     );
   }
 }

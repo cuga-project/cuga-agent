@@ -1,5 +1,6 @@
 """LangGraph configurable integration for policy system."""
 
+import os
 from typing import Any, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
@@ -10,7 +11,7 @@ from cuga.backend.cuga_graph.policy.agent import PolicyAgent, PolicyContext
 from cuga.backend.cuga_graph.policy.models import PolicyMatch, PolicyType
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 from cuga.backend.llm.models import LLMManager
-from cuga.config import settings
+from cuga.config import settings, DBS_DIR
 
 
 class PolicyConfigurable:
@@ -90,13 +91,13 @@ class PolicyConfigurable:
 
     async def initialize(
         self,
-        milvus_host: Optional[str] = None,
-        milvus_port: Optional[str] = None,
-        milvus_uri: Optional[str] = None,
+        policy_db_path: Optional[str] = None,
         collection_name: Optional[str] = None,
         embedding_dim: Optional[int] = None,
         embedding_provider: Optional[str] = None,
         embedding_model: Optional[str] = None,
+        embedding_base_url: Optional[str] = None,
+        embedding_api_key: Optional[str] = None,
     ):
         """
         Initialize the policy system (storage, agent, etc.).
@@ -104,8 +105,8 @@ class PolicyConfigurable:
         All parameters are optional and will fall back to settings.toml [policy] section.
 
         Args:
-            milvus_host: Milvus server host
-            milvus_port: Milvus server port
+            policy_db_path: Optional path for policy DB; when set, uses this instead of storage.default
+            collection_name: Collection name for policies
             embedding_dim: Embedding dimension
         """
         if self._initialized:
@@ -113,41 +114,47 @@ class PolicyConfigurable:
             return
 
         try:
-            # Get policy settings from config
-            policy_config = getattr(settings, 'policy', None)
-
-            # Use provided values or fall back to settings.toml
+            policy_config = getattr(settings, "policy", None)
             final_collection_name = collection_name or (
                 policy_config.collection_name if policy_config else "cuga_policies"
             )
-            final_milvus_host = milvus_host or (policy_config.milvus_host if policy_config else "localhost")
-            final_milvus_port = milvus_port or (policy_config.milvus_port if policy_config else "19530")
-            final_milvus_uri = milvus_uri or (
-                policy_config.milvus_uri if policy_config else "./milvus_policies.db"
-            )
-            final_embedding_dim = embedding_dim or (policy_config.embedding_dim if policy_config else 1536)
-            final_embedding_provider = embedding_provider or (
-                policy_config.embedding_provider if policy_config else "auto"
-            )
-            final_embedding_model = embedding_model or (
-                policy_config.embedding_model if policy_config else None
-            )
+
+            configured_path = (policy_db_path or getattr(policy_config, "policy_db_path", None) or "").strip()
+            if configured_path:
+                if not os.path.isabs(configured_path):
+                    os.makedirs(DBS_DIR, exist_ok=True)
+                    final_policy_db_path = os.path.join(DBS_DIR, configured_path)
+                else:
+                    final_policy_db_path = configured_path
+            else:
+                final_policy_db_path = None
+            from cuga.backend.storage.embedding import get_embedding_config
+
+            emb_cfg = get_embedding_config()
+            final_embedding_dim = embedding_dim or emb_cfg["dim"]
+            final_embedding_provider = embedding_provider or emb_cfg["provider"]
+            final_embedding_model = embedding_model or emb_cfg["model"]
+            final_embedding_base_url = embedding_base_url or emb_cfg["base_url"]
+            final_embedding_api_key = embedding_api_key or emb_cfg["api_key"]
 
             logger.info("Initializing policy system with:")
             logger.info(f"  Collection: {final_collection_name}")
-            logger.info(f"  Milvus: {final_milvus_host}:{final_milvus_port} (fallback: {final_milvus_uri})")
             logger.info(f"  Embedding: provider={final_embedding_provider}, dim={final_embedding_dim}")
 
-            # Initialize storage if not provided
             if self.storage is None:
+                backend = None
+                if final_policy_db_path:
+                    from cuga.backend.storage.policy import LocalPolicyStore
+
+                    backend = LocalPolicyStore(final_policy_db_path, final_collection_name)
                 self.storage = PolicyStorage(
                     collection_name=final_collection_name,
-                    host=final_milvus_host,
-                    port=final_milvus_port,
-                    milvus_uri=final_milvus_uri,
+                    backend=backend,
                     embedding_dim=final_embedding_dim,
                     embedding_provider=final_embedding_provider,
                     embedding_model=final_embedding_model,
+                    embedding_base_url=final_embedding_base_url,
+                    embedding_api_key=final_embedding_api_key,
                 )
                 # Use async initialization to also initialize embedding function
                 await self.storage.initialize_async()

@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { X, Save } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import "./ConfigModal.css";
 
 interface AgentBehaviorConfigProps {
@@ -27,7 +28,7 @@ export default function AgentBehaviorConfig({ onClose }: AgentBehaviorConfigProp
 
   const fetchBehaviorSettings = async () => {
     try {
-      const response = await fetch("/api/agent/behavior");
+      const response = await apiFetch("/api/agent/behavior");
       if (response.ok) {
         const data = await response.json();
         setSettings(data);
@@ -40,7 +41,7 @@ export default function AgentBehaviorConfig({ onClose }: AgentBehaviorConfigProp
   const handleSave = async () => {
     setSaveStatus("saving");
     try {
-      const response = await fetch("/api/agent/behavior", {
+      const response = await apiFetch("/api/agent/behavior", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(settings)

@@ -198,4 +198,4 @@ Respond to the user with the following information:
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()

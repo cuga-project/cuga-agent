@@ -1,0 +1,42 @@
+# OpenShift-specific overrides for the vault sub-chart.
+# Use: helm upgrade --install vault ./vault -f values.openshift.yaml
+
+vault:
+  global:
+    openshift: true
+    tlsDisable: true
+
+  server:
+    standalone:
+      enabled: true
+
+    # OpenShift requires non-root UID; Vault image supports this via securityContext.
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: null
+      runAsGroup: null
+      fsGroup: null
+
+    route:
+      enabled: true
+      host: ""
+      tls:
+        termination: edge
+        insecureEdgeTerminationPolicy: Redirect
+
+    dataStorage:
+      enabled: true
+      size: 2Gi
+      storageClass: ""
+      accessMode: ReadWriteOnce
+
+  ui:
+    enabled: true
+    serviceType: ClusterIP
+
+  injector:
+    enabled: false
+
+route:
+  enabled: true
+  hostname: ""

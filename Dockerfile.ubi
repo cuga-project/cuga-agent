@@ -1,0 +1,48 @@
+FROM registry.access.redhat.com/ubi8/python-312:latest
+
+USER root
+RUN dnf install -y curl && dnf clean all
+
+ADD https://astral.sh/uv/install.sh /uv-installer.sh
+RUN UV_INSTALL_DIR=/usr/local/bin sh /uv-installer.sh && rm /uv-installer.sh
+ENV PATH="/usr/local/bin:$PATH"
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock README.md ./
+COPY src/ ./src/
+COPY docs/ ./docs/
+
+RUN uv sync --no-editable
+
+COPY docs/examples/huggingface/contacts.txt /app/cuga_workspace/contacts.txt
+COPY docs/examples/huggingface/cuga_knowledge.md /app/cuga_workspace/cuga_knowledge.md
+COPY docs/examples/huggingface/cuga_playbook.md /app/cuga_workspace/cuga_playbook.md
+COPY docs/examples/huggingface/email_template.md /app/cuga_workspace/email_template.md
+COPY scripts/docker-entrypoint.sh /app/scripts/docker-entrypoint.sh
+
+# Fix ownership for OpenShift arbitrary UID (group 0 is always granted)
+RUN mkdir -p /app/cuga_workspace /app/crm_tmp && \
+    chown -R 1001:0 /app && \
+    chmod -R g=u /app && \
+    chmod +x /app/scripts/docker-entrypoint.sh
+
+USER 1001
+
+EXPOSE 7860
+
+# Runtime config
+ENV CUGA_HOST=0.0.0.0
+ENV DYNACONF_SERVER_PORTS__DEMO=7860
+ENV CUGA_DEMO_MODE=default
+
+# Redirect all writable paths to /tmp (OpenShift runs as non-root, /tmp is always writable)
+ENV HOME=/tmp
+ENV UV_CACHE_DIR=/tmp/uv-cache
+ENV UV_TOOL_DIR=/tmp/uv-tools
+ENV CUGA_LOGGING_DIR=/tmp/cuga-logging
+ENV CUGA_DBS_DIR=/data/dbs
+ENV DYNACONF_CRM_DB_PATH=/tmp/crm_tmp/crm_db_default
+
+ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
+CMD []

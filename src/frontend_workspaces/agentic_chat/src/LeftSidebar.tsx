@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from "react";
 import { MessageSquare, Database, ChevronLeft, ChevronRight, Plus, Trash2, Workflow, Info, HelpCircle } from "lucide-react";
+import { apiFetch } from "../../frontend/src/api";
 import "./LeftSidebar.css";
 import VariablesSidebar from "./VariablesSidebar";
 
@@ -77,7 +78,7 @@ export function LeftSidebar({
 
   const loadConversations = async () => {
     try {
-      const response = await fetch('/api/conversations');
+      const response = await apiFetch('/api/conversations');
       if (response.ok) {
         const data = await response.json();
         setConversations(data);
@@ -102,7 +103,7 @@ export function LeftSidebar({
 
     // Try to sync with API (but don't fail if API is unavailable)
     try {
-      const response = await fetch('/api/conversations', {
+      const response = await apiFetch('/api/conversations', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -148,7 +149,7 @@ export function LeftSidebar({
   const deleteConversation = async (id: string, e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      const response = await fetch(`/api/conversations/${id}`, {
+      const response = await apiFetch(`/api/conversations/${id}`, {
         method: 'DELETE'
       });
       
@@ -165,7 +166,7 @@ export function LeftSidebar({
 
   const loadSavedFlows = async () => {
     try {
-      const response = await fetch('/api/flows');
+      const response = await apiFetch('/api/flows');
       if (response.ok) {
         const data = await response.json();
         setSavedFlows(data.flows || []);

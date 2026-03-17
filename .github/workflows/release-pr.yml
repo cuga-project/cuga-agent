@@ -1,0 +1,68 @@
+name: Release PR
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: 'Version bump type'
+        required: true
+        default: 'patch'
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+
+jobs:
+  release-pr:
+    name: Create release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Configure Git
+        run: |
+          git config user.name "cuga-agent[bot]"
+          git config user.email "cuga-agent[bot]@users.noreply.github.com"
+
+      - name: Create release branch and PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUMP: ${{ inputs.bump }}
+        run: |
+          git fetch origin main
+          git checkout main
+          git pull origin main
+          CURRENT=$(grep '^version' pyproject.toml | sed -n 's/version = "\(.*\)"/\1/p')
+          MAJOR=$(echo "$CURRENT" | cut -d. -f1)
+          MINOR=$(echo "$CURRENT" | cut -d. -f2)
+          PATCH=$(echo "$CURRENT" | cut -d. -f3)
+          case "$BUMP" in
+            major) NEW_VERSION=$((MAJOR+1)).0.0 ;;
+            minor) NEW_VERSION=$MAJOR.$((MINOR+1)).0 ;;
+            patch) NEW_VERSION=$MAJOR.$MINOR.$((PATCH+1)) ;;
+            *) echo "Invalid bump: $BUMP"; exit 1 ;;
+          esac
+          BRANCH="release/v$NEW_VERSION"
+          git checkout -b "$BRANCH"
+          sed -i "s/^version = \".*\"/version = \"$NEW_VERSION\"/" pyproject.toml
+          uv sync
+          git add pyproject.toml uv.lock
+          git commit -m "chore: release v$NEW_VERSION"
+          git push origin "$BRANCH"
+          gh pr create --base main --head "$BRANCH" --title "chore: release v$NEW_VERSION" --body "Release v$NEW_VERSION. Merge to complete release, then run the Release Tag workflow."
+          echo "Created PR for v$NEW_VERSION"

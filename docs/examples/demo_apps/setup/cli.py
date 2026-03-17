@@ -772,6 +772,11 @@ def main():
     )
     parser.add_argument('--local', action='store_true', help='Use local demo apps instead of git installs')
     parser.add_argument(
+        '--cuga_workspace',
+        default=None,
+        help='Path to cuga workspace; when set, configures policy env so all file operations use this dir',
+    )
+    parser.add_argument(
         'workspace_path', nargs='?', default=None, help='Path to workspace directory (optional)'
     )
 
@@ -807,11 +812,15 @@ def main():
     if not check_and_handle_ports(include_email=args.email):
         sys.exit(1)
 
-    # Get workspace path from arguments
-    workspace_path = args.workspace_path
+    workspace_path = args.cuga_workspace or args.workspace_path
 
-    # Create workspace
     workspace = create_workspace(workspace_path)
+
+    policy = f"## Plan\nFor the filesystem application: write or read files only from `{workspace}`"
+    if args.email:
+        policy += "\nFor the email application: send emails only using the local SMTP sink"
+    os.environ["CUGA_POLICIES_CONTENT"] = policy
+    os.environ["CUGA_LOAD_POLICIES"] = "true"
 
     # Create contacts file
     create_contacts_file(workspace)

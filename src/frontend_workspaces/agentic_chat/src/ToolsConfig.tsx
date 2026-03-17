@@ -1,6 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { X, Plus, Trash2, Save, Upload, Download } from "lucide-react";
 import yaml from "js-yaml";
+import { apiFetch } from "../../frontend/src/api";
 import "./ConfigModal.css";
 
 interface Service {
@@ -59,7 +60,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
     setLoading(true);
     try {
       // Load tools config (includes services and mcpServers)
-      const configResponse = await fetch('/api/config/tools');
+      const configResponse = await apiFetch('/api/config/tools');
       let configData: ToolsConfigData = {
         services: [],
         mcpServers: {},
@@ -78,7 +79,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
       }
 
       // Load available apps
-      const appsResponse = await fetch('/api/apps');
+      const appsResponse = await apiFetch('/api/apps');
       if (appsResponse.ok) {
         const appsData = await appsResponse.json();
         const apps: App[] = appsData.apps || [];
@@ -88,7 +89,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
         const appTools: Record<string, Tool[]> = {};
         for (const app of apps) {
           try {
-            const toolsResponse = await fetch(`/api/apps/${app.name}/tools`);
+            const toolsResponse = await apiFetch(`/api/apps/${app.name}/tools`);
             if (toolsResponse.ok) {
               const toolsData = await toolsResponse.json();
               appTools[app.name] = toolsData.tools || [];
@@ -113,7 +114,7 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
   const saveConfig = async () => {
     setSaveStatus("saving");
     try {
-      const response = await fetch('/api/config/tools', {
+      const response = await apiFetch('/api/config/tools', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -395,11 +396,12 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
                         >
                           <option value="stdio">stdio</option>
                           <option value="sse">sse</option>
+                          <option value="http">http</option>
                         </select>
                       </div>
                     </div>
 
-                    {server.transport !== "sse" && (
+                    {server.transport !== "sse" && server.transport !== "http" && (
                       <div className="form-group">
                         <div className="form-group-header">
                           <label>Arguments</label>
@@ -432,14 +434,14 @@ export default function ToolsConfig({ onClose }: ToolsConfigProps) {
                       </div>
                     )}
 
-                    {server.transport === "sse" && (
+                    {(server.transport === "sse" || server.transport === "http") && (
                       <div className="form-group">
                         <label>URL</label>
                         <input
                           type="text"
                           value={server.url || ""}
                           onChange={(e) => updateMcpServer(serverName, "url", e.target.value)}
-                          placeholder="http://localhost:8000/sse"
+                          placeholder={server.transport === "http" ? "https://example.com/mcp" : "http://localhost:8000/sse"}
                           disabled
                         />
                       </div>

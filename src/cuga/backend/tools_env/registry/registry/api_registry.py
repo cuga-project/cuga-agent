@@ -85,7 +85,7 @@ class ApiRegistry:
             return self.mcp_client.get_apis_for_application(app_name, include_response_schema)
         except KeyError:
             logger.error(
-                f"Application '{app_name}' not found in registry. Available apps: {[app.name for app in self.mcp_client.get_apps()]}"
+                f"Application '{app_name}' not found in registry. Available apps: {self.mcp_client.get_app_names()}"
             )
             raise HTTPException(status_code=404, detail=f"Application '{app_name}' not found in registry")
         except Exception as e:

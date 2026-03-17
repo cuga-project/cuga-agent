@@ -243,4 +243,4 @@ async def test_e2e_playbook_refinement_with_progress():
         # Restore original setting
         settings.policy.playbook_refine = original_refine_setting
         if storage:
-            storage.disconnect()
+            await storage.disconnect()

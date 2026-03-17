@@ -5,6 +5,7 @@ output
 cuga_workspace/
 .idea
 node_modules
+.pnpm-store/
 *.log
 /frontend/dist/
 !frontend-workspaces/frontend/dist
@@ -20,12 +21,16 @@ test_results.json
 vendor
 logs/
 .milvus*
+.bob
+test_workspace/
+*.logs
 
 # Test-related temporary files and folders
 .cuga_*
 .cuga
 .cuga_test_*
-milvus_policies_test_*.db
+policy_db_test_*.db
+.policy_test_tmp_*
 dist_cuga
 agent-analytics
 trajectory
@@ -63,3 +68,12 @@ cuga.egg-info
 
 # IDE and editor files
 .cursor/
+
+# Local TLS certs for HTTPS (e.g. IBM Verify)
+deployment/certs/*.key
+deployment/certs/*.crt
+
+# OpenShift env files with real secrets (keep only openshift.example.env)
+deployment/helm/openshift.env
+deployment/helm/*.env
+!deployment/helm/openshift.example.env

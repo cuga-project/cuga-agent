@@ -1,5 +1,6 @@
 // Shared workspace service with enforced throttling
 // Ensures /api/workspace/tree is NEVER called more frequently than once per 3 seconds
+import { apiFetch } from "../../frontend/src/api";
 
 interface FileNode {
   name: string;
@@ -101,7 +102,7 @@ class WorkspaceService {
    */
   private async fetchWorkspaceData(): Promise<WorkspaceData> {
     try {
-      const response = await fetch('/api/workspace/tree');
+      const response = await apiFetch('/api/workspace/tree');
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }

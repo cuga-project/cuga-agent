@@ -1,5 +1,6 @@
 import json
-from typing import List
+import os
+from typing import List, Optional
 
 import aiohttp
 
@@ -9,6 +10,16 @@ from loguru import logger
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 
 tracker = ActivityTracker()
+
+
+def get_agent_id() -> Optional[str]:
+    """
+    Get the current agent ID from environment variable.
+
+    Returns:
+        Agent ID if set, None otherwise
+    """
+    return os.environ.get("AGENT_ID")
 
 
 def get_registry_base_url() -> str:
@@ -29,10 +40,13 @@ def get_registry_base_url() -> str:
         return f'http://localhost:{settings.server_ports.registry}'
 
 
-async def get_apis(app_name: str):
+async def get_apis(app_name: str, agent_id: Optional[str] = None):
     """
-    Execute an asynchronous GET request to retrieve Petstore APIs from localhost:8001
-    and return the result as formatted JSON.
+    Execute an asynchronous GET request to retrieve APIs from the registry.
+
+    Args:
+        app_name: Name of the application
+        agent_id: Optional agent ID for database mode (uses AGENT_ID env var if not provided)
 
     Returns:
         dict: The JSON response data as a Python dictionary
@@ -57,6 +71,13 @@ async def get_apis(app_name: str):
     # Get tools from API
     registry_base = get_registry_base_url()
     url = f'{registry_base}/applications/{app_name}/apis?include_response_schema=true'
+
+    # Add agent_id parameter if provided or available from environment
+    if agent_id is None:
+        agent_id = get_agent_id()
+    if agent_id:
+        url += f'&agent_id={agent_id}'
+
     headers = {'accept': 'application/json'}
 
     try:
@@ -82,13 +103,15 @@ async def get_apis(app_name: str):
             raise e
 
 
-async def get_apps() -> List[AppDefinition]:
+async def get_apps(agent_id: Optional[str] = None) -> List[AppDefinition]:
     """
-    Execute an asynchronous GET request to retrieve Petstore APIs from localhost:8001
-    and return the result as formatted JSON.
+    Execute an asynchronous GET request to retrieve applications from the registry.
+
+    Args:
+        agent_id: Optional agent ID for database mode (uses AGENT_ID env var if not provided)
 
     Returns:
-        dict: The JSON response data as a Python dictionary
+        List of AppDefinition objects
 
     Raises:
         Exception: If the request fails or the response is not valid JSON
@@ -97,6 +120,13 @@ async def get_apps() -> List[AppDefinition]:
 
     registry_base = get_registry_base_url()
     url = f'{registry_base}/applications'
+
+    # Add agent_id parameter if provided or available from environment
+    if agent_id is None:
+        agent_id = get_agent_id()
+    if agent_id:
+        url += f'?agent_id={agent_id}'
+
     headers = {'accept': 'application/json'}
     external_apps = tracker.apps
     if not settings.advanced_features.registry:

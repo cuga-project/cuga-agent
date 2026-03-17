@@ -178,7 +178,7 @@ When working with customer data:
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()
 
 
 @pytest.mark.asyncio
@@ -338,4 +338,4 @@ async def test_multiple_intent_guards_all_checked():
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()

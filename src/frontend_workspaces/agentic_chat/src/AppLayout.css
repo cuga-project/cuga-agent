@@ -20,6 +20,7 @@
 
 .main-layout {
   display: flex;
+  margin-top: 50px;
   flex: 1;
   overflow: hidden;
   position: relative;

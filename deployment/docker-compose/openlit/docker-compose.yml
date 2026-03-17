@@ -1,0 +1,68 @@
+# Local observability stack for testing OpenLit integration with Cuga.
+#
+# Services:
+#   otel-collector  - Receives OTLP from OpenLit, forwards traces to Tempo and metrics to Prometheus
+#   tempo           - Distributed tracing backend (stores and queries traces)
+#   prometheus      - Metrics backend (scrapes OTel Collector's Prometheus exporter)
+#   grafana         - Visualization (pre-configured with Tempo and Prometheus datasources)
+#
+# Usage:
+#   1. Start the stack:
+#        docker compose up -d
+#
+#   2. Enable OpenLit in settings.toml:
+#        [observability]
+#        openlit = true
+#
+#   3. Set the OTLP endpoint in your .env:
+#        OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+#
+#   4. Run the agent:
+#        cuga start demo_crm
+#
+#   5. Open Grafana at http://localhost:3000
+#      - Traces: Explore → Tempo datasource
+#      - Metrics: Explore → Prometheus datasource
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib
+    container_name: otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
+    ports:
+      - "4318:4318"   # OTLP HTTP receiver (OpenLit sends here)
+      - "8889:8889"   # Prometheus exporter (Prometheus scrapes here)
+
+  tempo:
+    image: grafana/tempo:2.4.1  # pinned: "latest" has breaking config changes between major versions
+    container_name: tempo
+    command: ["-config.file=/etc/tempo.yaml"]
+    volumes:
+      - ./tempo.yaml:/etc/tempo.yaml
+    ports:
+      - "3200:3200"   # Tempo HTTP API (Grafana queries here)
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    command: ["--config.file=/etc/prometheus.yml"]
+    volumes:
+      - ./prometheus.yml:/etc/prometheus.yml
+    ports:
+      - "9090:9090"   # Prometheus UI and API
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    volumes:
+      - ./grafana-datasources.yaml:/etc/grafana/provisioning/datasources/datasources.yaml
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Admin
+    ports:
+      - "3000:3000"   # Grafana UI
+    depends_on:
+      - prometheus
+      - tempo

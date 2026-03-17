@@ -1,12 +1,11 @@
-"""Policy storage using Milvus for vector indexing and retrieval."""
+"""Policy storage using pluggable backend (SQLite+sqlite-vec local, Postgres+pgvector prod)."""
 
 import json
-import os
-import uuid
-from typing import Any, Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, TYPE_CHECKING
 
 from loguru import logger
-from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
+
+from cuga.backend.storage.embedding import create_embedding_function
 
 from cuga.backend.cuga_graph.policy.models import (
     Policy,
@@ -20,290 +19,83 @@ from cuga.backend.cuga_graph.policy.models import (
     NaturalLanguageTrigger,
 )
 
+if TYPE_CHECKING:
+    from cuga.backend.storage.policy.base import PolicyStoreBackend
+
 
 class PolicyStorage:
-    """Storage and retrieval of policies using Milvus vector database."""
-
-    # Class-level cache for embedding models (shared across all instances)
-    _embedding_model_cache: Dict[str, Any] = {}
+    """Storage and retrieval of policies using pluggable backend (storage layer)."""
 
     def __init__(
         self,
         collection_name: str = "cuga_policies",
-        host: str = "localhost",
-        port: str = "19530",
-        milvus_uri: Optional[str] = None,
+        backend: Optional["PolicyStoreBackend"] = None,
         embedding_dim: Optional[int] = None,
-        embedding_provider: str = "auto",
+        embedding_provider: Optional[str] = None,
         embedding_model: Optional[str] = None,
+        embedding_base_url: Optional[str] = None,
+        embedding_api_key: Optional[str] = None,
     ):
-        """
-        Initialize PolicyStorage.
-
-        Args:
-            collection_name: Name of the Milvus collection
-            host: Milvus server host
-            port: Milvus server port
-            milvus_uri: Milvus Lite URI for embedded mode (e.g., "./milvus_policies.db")
-            embedding_dim: Dimension of embedding vectors (optional, will be auto-detected during initialization)
-            embedding_provider: "openai", "local", or "auto" (default: auto)
-            embedding_model: Optional model name for local embeddings
-        """
         self.collection_name = collection_name
-        self.host = host
-        self.port = port
-        self.milvus_uri = milvus_uri or "./milvus_policies.db"
-        # embedding_dim will be auto-detected during initialize_async() if None
-        # Default to 1536 (OpenAI) as fallback, but will be updated based on actual model
-        self.embedding_dim = embedding_dim or 1536
-        self.embedding_provider = embedding_provider
-        self.embedding_model = embedding_model
-        self.collection: Optional[Collection] = None
+        if backend is not None:
+            self._backend = backend
+        else:
+            from cuga.backend.storage import get_storage
+
+            self._backend = get_storage().get_policy_store_backend(collection_name)
+        self.embedding_dim = embedding_dim
+        self._embedding_provider = embedding_provider
+        self._embedding_model = embedding_model
+        self._embedding_base_url = embedding_base_url
+        self._embedding_api_key = embedding_api_key
         self._connected = False
         self._embedding_function: Optional[Callable] = None
         self._embedding_initialized = False
-        # Use unique connection alias to avoid conflicts when multiple instances exist
-        self._connection_alias = f"policy_storage_{uuid.uuid4().hex[:8]}"
 
-    def connect(self):
-        """Connect to Milvus server or use Milvus Lite for local testing."""
-        # If milvus_uri is a .db file, skip server connection and use Milvus Lite directly
-        # This saves ~10 seconds per connection by avoiding server connection timeout
-        if self.milvus_uri and self.milvus_uri.endswith('.db'):
-            logger.info(f"Using Milvus Lite (embedded mode) at {self.milvus_uri}")
-            try:
-                connections.connect(
-                    alias=self._connection_alias,
-                    uri=self.milvus_uri,
-                )
-                self._connected = True
-                logger.info(
-                    f"Connected to Milvus Lite at {self.milvus_uri} (alias: {self._connection_alias})"
-                )
-                return
-            except Exception as lite_error:
-                logger.error(f"Failed to connect to Milvus Lite: {lite_error}")
-                raise
+    async def connect(self) -> None:
+        await self._backend.connect()
+        self._connected = True
 
-        # Otherwise, try to connect to Milvus server first
-        try:
-            connections.connect(
-                alias=self._connection_alias,
-                host=self.host,
-                port=self.port,
-            )
-            self._connected = True
-            logger.info(f"Connected to Milvus at {self.host}:{self.port} (alias: {self._connection_alias})")
-        except Exception as e:
-            # Fall back to Milvus Lite (embedded) for testing
-            logger.warning(f"Failed to connect to Milvus server: {e}")
-            logger.info(f"Attempting to use Milvus Lite (embedded mode) at {self.milvus_uri}")
-            try:
-                connections.connect(
-                    alias=self._connection_alias,
-                    uri=self.milvus_uri,
-                )
-                self._connected = True
-                logger.info(
-                    f"Connected to Milvus Lite at {self.milvus_uri} (alias: {self._connection_alias})"
-                )
-            except Exception as lite_error:
-                logger.error(f"Failed to connect to Milvus Lite: {lite_error}")
-                raise
+    async def disconnect(self) -> None:
+        await self._backend.disconnect()
+        self._connected = False
 
-    def disconnect(self):
-        """Disconnect from Milvus server."""
-        if self._connected:
-            connections.disconnect(alias=self._connection_alias)
-            self._connected = False
-            logger.info(f"Disconnected from Milvus (alias: {self._connection_alias})")
+    async def _create_collection(self) -> None:
+        await self._backend.create_schema(self.embedding_dim)
 
-    def _create_collection(self):
-        """Create the Milvus collection schema."""
-        if utility.has_collection(self.collection_name, using=self._connection_alias):
-            logger.info(f"Collection {self.collection_name} already exists")
-            self.collection = Collection(self.collection_name, using=self._connection_alias)
+    @property
+    def embedding_provider(self) -> str:
+        from cuga.backend.storage.embedding import get_embedding_config
 
-            # Check if the existing collection has the correct embedding dimension
-            for field in self.collection.schema.fields:
-                if field.name == "embedding" and field.params.get("dim") != self.embedding_dim:
-                    logger.warning(
-                        f"⚠️  Collection '{self.collection_name}' has embedding dim={field.params.get('dim')}, "
-                        f"but storage expects dim={self.embedding_dim}. Dropping and recreating collection."
-                    )
-                    utility.drop_collection(self.collection_name, using=self._connection_alias)
-                    logger.info(f"Dropped collection '{self.collection_name}'")
-                    break
-            else:
-                # Collection exists and has correct dimensions
-                return
-
-        fields = [
-            FieldSchema(name="id", dtype=DataType.VARCHAR, is_primary=True, max_length=256),
-            FieldSchema(name="policy_type", dtype=DataType.VARCHAR, max_length=64),
-            FieldSchema(name="name", dtype=DataType.VARCHAR, max_length=512),
-            FieldSchema(name="description", dtype=DataType.VARCHAR, max_length=2048),
-            FieldSchema(name="embedding", dtype=DataType.FLOAT_VECTOR, dim=self.embedding_dim),
-            FieldSchema(name="policy_json", dtype=DataType.VARCHAR, max_length=65535),
-            FieldSchema(name="priority", dtype=DataType.INT64),
-            FieldSchema(name="enabled", dtype=DataType.BOOL),
-            FieldSchema(name="metadata_json", dtype=DataType.VARCHAR, max_length=8192),
-        ]
-
-        schema = CollectionSchema(fields=fields, description="CUGA Policy Storage")
-        self.collection = Collection(name=self.collection_name, schema=schema, using=self._connection_alias)
-
-        # Create index for vector search
-        index_params = {
-            "metric_type": "COSINE",
-            "index_type": "IVF_FLAT",
-            "params": {"nlist": 128},
-        }
-        self.collection.create_index(field_name="embedding", index_params=index_params)
-        logger.info(f"Created collection {self.collection_name}")
-
-    async def _create_openai_embedding_function(self):
-        """Create an OpenAI embedding function using the API key from environment."""
-        try:
-            from langchain_openai import OpenAIEmbeddings
-
-            api_key = os.getenv("OPENAI_API_KEY")
-            if not api_key:
-                logger.warning("OPENAI_API_KEY not found in environment")
-                return None
-
-            embeddings = OpenAIEmbeddings(
-                model="text-embedding-3-small",
-                openai_api_key=api_key,
-            )
-
-            async def embed_text(text: str) -> List[float]:
-                result = await embeddings.aembed_query(text)
-                return result
-
-            logger.info("✅ OpenAI embedding function created (text-embedding-3-small, 1536 dims)")
-            return embed_text
-
-        except ImportError:
-            logger.warning("langchain_openai not installed, cannot create OpenAI embeddings")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to create OpenAI embedding function: {e}")
-            return None
-
-    async def _create_local_embedding_function(self, model_name: str = "all-MiniLM-L6-v2"):
-        """Create a local embedding function using PyMilvus's built-in model support with caching."""
-        try:
-            from pymilvus import model
-            import torch
-
-            # Check if model is already cached
-            cache_key = f"{model_name}"
-            if cache_key in PolicyStorage._embedding_model_cache:
-                logger.info(f"Using cached embedding model: {model_name}")
-                embedding_fn = PolicyStorage._embedding_model_cache[cache_key]
-                embedding_dim = embedding_fn.dim
-            else:
-                logger.info(f"Loading local embedding model: {model_name}")
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-
-                # Create PyMilvus sentence transformer embedding function
-                embedding_fn = model.dense.SentenceTransformerEmbeddingFunction(
-                    model_name=model_name, device=device
-                )
-
-                embedding_dim = embedding_fn.dim
-
-                # Cache the model for future use
-                PolicyStorage._embedding_model_cache[cache_key] = embedding_fn
-
-                logger.info(f"✅ Local embedding model loaded on {device}")
-                logger.info(f"   Model: {model_name}")
-                logger.info(f"   Dimensions: {embedding_dim}")
-                logger.info("   Cached for reuse across PolicyStorage instances")
-
-            async def embed_text(text: str) -> List[float]:
-                # PyMilvus encode_queries is synchronous, so we run it in executor
-                import asyncio
-
-                loop = asyncio.get_event_loop()
-                # Use encode_queries for single text (returns list of embeddings)
-                embeddings = await loop.run_in_executor(None, lambda: embedding_fn.encode_queries([text]))
-                return embeddings[0].tolist()
-
-            return embed_text
-
-        except ImportError as e:
-            logger.warning(f"pymilvus[model] not installed: {e}")
-            logger.warning("Install with: pip install 'pymilvus[model]'")
-            return None
-        except Exception as e:
-            logger.error(f"Failed to create local embedding function: {e}")
-            return None
-
-    async def _create_embedding_function(self, provider: str = "auto", model_name: Optional[str] = None):
-        """Create an embedding function based on provider preference."""
-        if provider == "openai":
-            return await self._create_openai_embedding_function()
-
-        elif provider == "local":
-            return await self._create_local_embedding_function(model_name or "all-MiniLM-L6-v2")
-
-        elif provider == "auto":
-            # Try OpenAI first
-            openai_func = await self._create_openai_embedding_function()
-            if openai_func:
-                return openai_func
-
-            # Fall back to local
-            logger.info("OpenAI not available, trying local embedding model...")
-            return await self._create_local_embedding_function(model_name or "all-MiniLM-L6-v2")
-
-        else:
-            logger.error(f"Unknown embedding provider: {provider}")
-            return None
+        c = get_embedding_config()
+        return self._embedding_provider or c["provider"]
 
     async def _initialize_embedding_function(self):
-        """Initialize the embedding function based on provider settings."""
+        """Initialize embedding function from storage.embedding config (with optional overrides)."""
         if self._embedding_initialized:
             return
 
         try:
-            from cuga.backend.cuga_graph.policy.utils import get_embedding_dimension
-
-            self._embedding_function = await self._create_embedding_function(
-                provider=self.embedding_provider,
-                model_name=self.embedding_model,
+            fn, dim = await create_embedding_function(
+                provider=self._embedding_provider,
+                model=self._embedding_model,
+                base_url=self._embedding_base_url,
+                api_key=self._embedding_api_key,
+                dim=self.embedding_dim,
             )
 
-            if self._embedding_function:
-                # Always update embedding_dim based on actual model (auto-detect)
-                # This ensures we use the correct dimension regardless of what was passed
-                actual_dim = get_embedding_dimension(
-                    "local"
-                    if (self.embedding_provider == "auto" or self.embedding_provider == "local")
-                    else self.embedding_provider,
-                    self.embedding_model or "all-MiniLM-L6-v2",
-                )
-                if actual_dim != self.embedding_dim:
-                    if self.embedding_dim != 1536 or actual_dim != 1536:  # Only log if not default
-                        logger.info(
-                            f"📏 Auto-detected embedding dimension: {actual_dim} "
-                            f"(was {self.embedding_dim}, updated to match model)"
-                        )
-                    self.embedding_dim = actual_dim
-
+            if fn:
+                self._embedding_function = fn
+                self.embedding_dim = dim
                 logger.info(
                     f"✅ Embedding function initialized (provider: {self.embedding_provider}, dim: {self.embedding_dim})"
                 )
             else:
                 error_msg = (
-                    f"Failed to initialize embedding function with provider '{self.embedding_provider}' "
-                    f"and model '{self.embedding_model or 'default'}'. "
-                    f"Embeddings are required. Please ensure:\n"
-                    f"  1. For 'local' provider: Install 'pymilvus[model]' package\n"
-                    f"  2. For 'openai' provider: Set OPENAI_API_KEY environment variable\n"
-                    f"  3. For 'auto' provider: Either install 'pymilvus[model]' or set OPENAI_API_KEY"
+                    "Failed to initialize embedding function. Please ensure:\n"
+                    "  1. For 'local' provider: Install 'sentence-transformers' package\n"
+                    "  2. For 'openai' provider: Set OPENAI_API_KEY or storage.embedding.api_key\n"
+                    "  3. For 'auto' provider: Either install 'sentence-transformers' or set OPENAI_API_KEY"
                 )
                 logger.error(error_msg)
                 raise ValueError(error_msg)
@@ -318,13 +110,13 @@ class PolicyStorage:
     async def initialize_async(self):
         """Initialize the storage asynchronously (includes embedding function initialization)."""
         if not self._connected:
-            self.connect()
+            await self.connect()
 
         # Initialize embedding function first (needed to determine correct dimension)
         await self._initialize_embedding_function()
 
         # Create collection with correct dimension
-        self._create_collection()
+        await self._create_collection()
 
     async def _generate_policy_embedding(self, policy: Policy) -> List[float]:
         """
@@ -352,9 +144,7 @@ class PolicyStorage:
         if not self._embedding_function:
             raise ValueError(
                 f"No embedding function available for policy '{policy.name}'. "
-                f"Either:\n"
-                f"  1. Set OPENAI_API_KEY environment variable, OR\n"
-                f"  2. Install 'pymilvus[model]' for local embeddings"
+                f"Either set OPENAI_API_KEY or install 'sentence-transformers' for local embeddings."
             )
 
         try:
@@ -555,25 +345,11 @@ class PolicyStorage:
             raise
 
     async def add_policy(self, policy: Policy, embedding: Optional[List[float]] = None):
-        """
-        Add a policy to storage.
-
-        If no embedding is provided, one will be generated automatically using
-        the configured embedding provider.
-
-        Args:
-            policy: Policy object to store
-            embedding: Optional pre-computed vector embedding. If None, will be generated.
-        """
-        # Initialize embedding function first to get correct dimensions
         if not self._embedding_initialized:
             await self._initialize_embedding_function()
-
-        # Now initialize storage with correct dimensions
         if not self._connected:
             await self.initialize_async()
 
-        # Generate embedding if not provided
         if embedding is None:
             embedding = await self._generate_policy_embedding(policy)
 
@@ -581,67 +357,33 @@ class PolicyStorage:
         policy_data["embedding"] = embedding
 
         try:
-            self.collection.insert([policy_data])
-            self.collection.flush()
+            await self._backend.add_policy(policy_data)
             logger.info(f"Added policy {policy.id} to storage")
         except Exception as e:
             logger.error(f"Failed to add policy {policy.id}: {e}")
             raise
 
     async def update_policy(self, policy: Policy, embedding: Optional[List[float]] = None):
-        """
-        Update an existing policy.
-
-        If no embedding is provided, one will be generated automatically.
-
-        Args:
-            policy: Updated policy object
-            embedding: Optional new embedding. If None, will be generated automatically.
-        """
-        # Delete old version
         await self.delete_policy(policy.id)
-        # Insert new version (embedding will be generated if not provided)
         await self.add_policy(policy, embedding)
 
     async def delete_policy(self, policy_id: str):
-        """
-        Delete a policy from storage.
-
-        Args:
-            policy_id: ID of the policy to delete
-        """
         if not self._connected:
             await self.initialize_async()
-
         try:
-            expr = f'id == "{policy_id}"'
-            self.collection.delete(expr)
-            self.collection.flush()
+            await self._backend.delete_policy(policy_id)
             logger.info(f"Deleted policy {policy_id}")
         except Exception as e:
             logger.error(f"Failed to delete policy {policy_id}: {e}")
             raise
 
     async def get_policy(self, policy_id: str) -> Optional[Policy]:
-        """
-        Retrieve a policy by ID.
-
-        Args:
-            policy_id: ID of the policy to retrieve
-
-        Returns:
-            Policy object or None if not found
-        """
         if not self._connected:
             await self.initialize_async()
-
         try:
-            self.collection.load()
-            expr = f'id == "{policy_id}"'
-            results = self.collection.query(expr=expr, output_fields=["policy_json"])
-
-            if results:
-                return self._dict_to_policy(results[0])
+            data = await self._backend.get_policy(policy_id)
+            if data:
+                return self._dict_to_policy(data)
             return None
         except Exception as e:
             logger.error(f"Failed to get policy {policy_id}: {e}")
@@ -654,54 +396,17 @@ class PolicyStorage:
         policy_type: Optional[PolicyType] = None,
         enabled_only: bool = True,
     ) -> List[tuple[Policy, float]]:
-        """
-        Search for policies using vector similarity.
-
-        Args:
-            query_embedding: Query vector embedding
-            limit: Maximum number of results to return
-            policy_type: Filter by policy type (optional)
-            enabled_only: Only return enabled policies
-
-        Returns:
-            List of (Policy, similarity_score) tuples
-        """
         if not self._connected:
             await self.initialize_async()
-
         try:
-            self.collection.load()
-
-            # Build filter expression
-            filter_expr = []
-            if enabled_only:
-                filter_expr.append("enabled == true")
-            if policy_type:
-                filter_expr.append(f'policy_type == "{policy_type.value}"')
-
-            expr = " && ".join(filter_expr) if filter_expr else None
-
-            search_params = {"metric_type": "COSINE", "params": {"nprobe": 10}}
-
-            results = self.collection.search(
-                data=[query_embedding],
-                anns_field="embedding",
-                param=search_params,
-                limit=limit,
-                expr=expr,
-                output_fields=["policy_json", "priority"],
-            )
-
+            rows = await self._backend.search_policies(query_embedding, limit, policy_type, enabled_only)
             policies = []
-            if results and len(results) > 0:
-                for hit in results[0]:
-                    policy = self._dict_to_policy({"policy_json": hit.entity.get("policy_json")})
-                    similarity_score = hit.distance
-                    policies.append((policy, similarity_score))
-
-                # Sort by priority (descending) then by similarity (descending)
-                policies.sort(key=lambda x: (x[0].priority, x[1]), reverse=True)
-
+            for row in rows:
+                _, policy_json, distance = row[0], row[1], row[2]
+                policy = self._dict_to_policy({"policy_json": policy_json})
+                similarity_score = 1.0 - float(distance)
+                policies.append((policy, similarity_score))
+            policies.sort(key=lambda x: (x[0].priority, x[1]), reverse=True)
             return policies
         except Exception as e:
             logger.error(f"Failed to search policies: {e}")
@@ -713,69 +418,22 @@ class PolicyStorage:
         enabled_only: bool = True,
         limit: int = 100,
     ) -> List[Policy]:
-        """
-        List all policies with optional filtering.
-
-        Args:
-            policy_type: Filter by policy type (optional)
-            enabled_only: Only return enabled policies
-            limit: Maximum number of results
-
-        Returns:
-            List of Policy objects
-        """
         if not self._connected:
             await self.initialize_async()
-
         try:
-            self.collection.load()
-
-            # Build filter expression
-            filter_expr = []
-            if enabled_only:
-                filter_expr.append("enabled == true")
-            if policy_type:
-                filter_expr.append(f'policy_type == "{policy_type.value}"')
-
-            expr = " && ".join(filter_expr) if filter_expr else None
-
-            results = self.collection.query(
-                expr=expr if expr else "",
-                output_fields=["policy_json", "priority"],
-                limit=limit,
-            )
-
-            policies = [self._dict_to_policy(result) for result in results]
-            # Sort by priority
+            rows = await self._backend.list_policies(policy_type, enabled_only, limit)
+            policies = [self._dict_to_policy(r) for r in rows]
             policies.sort(key=lambda x: x.priority, reverse=True)
-
             return policies
         except Exception as e:
             logger.error(f"Failed to list policies: {e}")
             return []
 
     async def count_policies(self, policy_type: Optional[PolicyType] = None) -> int:
-        """
-        Count policies in storage.
-
-        Args:
-            policy_type: Filter by policy type (optional)
-
-        Returns:
-            Number of policies
-        """
         if not self._connected:
             await self.initialize_async()
-
         try:
-            self.collection.load()
-
-            if policy_type:
-                expr = f'policy_type == "{policy_type.value}"'
-                results = self.collection.query(expr=expr, output_fields=["id"])
-                return len(results)
-            else:
-                return self.collection.num_entities
+            return await self._backend.count_policies(policy_type)
         except Exception as e:
             logger.error(f"Failed to count policies: {e}")
             return 0

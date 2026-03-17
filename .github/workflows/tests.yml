@@ -11,7 +11,13 @@ jobs:
   unit-tests:
     name: Unit Tests
     runs-on: ubuntu-latest
-    
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
@@ -31,5 +37,5 @@ jobs:
         run: uv run playwright install --with-deps chromium
       
       - name: Run unit tests
-        run: bash src/scripts/run_tests.sh unit_tests
+        run: bash src/scripts/run_tests.sh --skip-stability
 

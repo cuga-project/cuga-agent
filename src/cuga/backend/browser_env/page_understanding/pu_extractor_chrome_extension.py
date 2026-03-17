@@ -1,6 +1,6 @@
 from typing import Dict, Literal, Optional, Protocol, runtime_checkable
 
-import html2text
+from markdownify import markdownify
 from loguru import logger
 from pydantic import BaseModel
 
@@ -120,15 +120,9 @@ class PageUnderstandingExtractorChromeExtension:
                 max_retries=3,
             )
 
-            # Process page content with html2text
             page_content_str = ""
             if extraction_result.get("page_content"):
-                h = html2text.HTML2Text()
-                h.ignore_links = False
-                h.ignore_images = False
-                h.ignore_emphasis = False
-                h.body_width = 0  # Don't wrap lines
-                page_content_str = h.handle(extraction_result["page_content"])
+                page_content_str = markdownify(extraction_result["page_content"])
 
             # Process DOM tree data
             dom_tree_data = extraction_result.get("dom_tree")

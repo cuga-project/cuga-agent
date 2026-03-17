@@ -47,7 +47,7 @@ jobs:
           AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
           TEST_RESULTS_FILE: test_results_python_${{ matrix.python-version }}.json
           PYTHONIOENCODING: utf-8
-        run: uv run run_stability_tests.py --parallel --method local
+        run: uv run run_stability_tests.py --method local
 
       - name: Check pass rate
         if: always()

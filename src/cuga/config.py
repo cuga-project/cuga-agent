@@ -117,6 +117,7 @@ validators = [
     Validator("advanced_features.registry", default=True),
     Validator("features.task_decomposition", default=False),
     Validator("advanced_features.langfuse_tracing", default=False),
+    Validator("observability.openlit", default=False),
     Validator("advanced_features.benchmark", default="default"),
     Validator("advanced_features.tracker_enabled", default=False),
     Validator("advanced_features.lite_mode", default=False),
@@ -146,6 +147,30 @@ validators = [
     Validator("kaizen.save_on_success", default=True),
     Validator("kaizen.save_on_failure", default=True),
     Validator("kaizen.async_save", default=True),
+    Validator("storage.mode", default="local"),
+    Validator("storage.local_db_path", default=""),
+    Validator("storage.postgres_url", default=""),
+    Validator("service.instance_id", default=""),
+    Validator("service.tenant_id", default=""),
+    Validator("secrets.mode", default="local"),
+    Validator("secrets.force_env", default=False),
+    Validator("secrets.db_encryption_key_env", default="CUGA_SECRET_KEY"),
+    Validator("secrets.vault_addr", default=""),
+    Validator("secrets.vault_token_env", default="VAULT_TOKEN"),
+    Validator("secrets.vault_mount", default="secret"),
+    Validator("secrets.vault_kv_version", default=""),
+    Validator("secrets.vault_write_enabled", default=False),
+    Validator("secrets.aws_region", default=""),
+    Validator("auth.enabled", default=False),
+    Validator("auth.authorization_enabled", default=False),
+    Validator("auth.manage_roles", default=["ServiceOwner", "ServiceAdmin"]),
+    Validator("auth.chat_roles", default=["ServiceOwner", "ServiceAdmin", "ServiceUser"]),
+    Validator("auth.session_cookie_name", default="cuga_session"),
+    Validator("auth.session_max_age", default=3600),
+    Validator("auth.jwks_cache_ttl", default=3600),
+    Validator("auth.require_https", default=False),
+    Validator("auth.ssl_keyfile", default=""),
+    Validator("auth.ssl_certfile", default=""),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")
@@ -168,6 +193,9 @@ else:
 default_llm = os.environ.get("AGENT_SETTING_CONFIG", "settings.openai.toml")
 # Remove inline comments (everything after #) and strip quotes/whitespace
 default_llm = default_llm.split('#')[0].strip().strip('"').strip("'").strip()
+# Fall back to default if the env var was set but empty (e.g. missing GitHub secret)
+if not default_llm:
+    default_llm = "settings.openai.toml"
 logger.info("loaded llm settings *{}*".format(default_llm))
 
 # Resolve absolute config file paths
@@ -275,6 +303,22 @@ def get_app_name_from_url(curr_url):
     parsed_url = urlparse(curr_url)
     host_with_port = f"{parsed_url.hostname}:{parsed_url.port}"
     return app_mapping.get(host_with_port, parsed_url.hostname)
+
+
+def get_service_instance_id() -> str:
+    """Service instance ID for multi-tenant/prod DB scoping. Set via DYNACONF_SERVICE__INSTANCE_ID."""
+    val = os.environ.get("DYNACONF_SERVICE__INSTANCE_ID")
+    if val is not None:
+        return str(val)
+    return str(getattr(getattr(settings, "service", None), "instance_id", "") or "")
+
+
+def get_tenant_id() -> str:
+    """Tenant ID for multi-tenant SaaS DB scoping. Set via DYNACONF_SERVICE__TENANT_ID."""
+    val = os.environ.get("DYNACONF_SERVICE__TENANT_ID")
+    if val is not None:
+        return str(val)
+    return str(getattr(getattr(settings, "service", None), "tenant_id", "") or "")
 
 
 if __name__ == "__main__":

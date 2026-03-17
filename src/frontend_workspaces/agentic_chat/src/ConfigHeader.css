@@ -29,6 +29,13 @@
   letter-spacing: 0.3px;
 }
 
+.config-header-agent-context {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.9;
+  margin-left: 6px;
+}
+
 .config-header-buttons {
   display: flex;
   gap: 8px;

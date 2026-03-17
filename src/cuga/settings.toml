@@ -52,19 +52,63 @@ force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
 execution_output_max_length = 3500  # Maximum characters to show in execution output (prevents token overflow)
 
+[supervisor]
+enabled = false  # Enable CugaSupervisor for multi-agent coordination
+config_path = "src/cuga/backend/tools_env/registry/config/supervisor_demo_crm.yaml"  # Path to supervisor YAML config (e.g., "config/supervisor_demo_crm.yaml"). If empty, uses default supervisor setup
+agent_approval = true  # Require user approval before executing any sub-agent (human-in-the-loop)
+pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and sends them in request metadata (A2A protocol extension)
+
+[storage]
+mode = "local"  # "local" | "prod"
+local_db_path = ""  # default DBS_DIR/cuga.db when empty
+postgres_url = ""  # required when mode=prod
+
+[storage.embedding]
+provider = "local"  # "openai", "local", or "auto" (tries OpenAI, falls back to local)
+model = "all-MiniLM-L6-v2"  # Model name (default for local provider)
+dim = 384  # Embedding dimension (1536 for OpenAI, 384 for all-MiniLM-L6-v2)
+base_url = ""  # Optional: custom endpoint for OpenAI-compatible embeddings (e.g. hosted service)
+api_key = ""  # Optional: API key for embedding endpoint; falls back to OPENAI_API_KEY
+
 [policy]
 enabled = true  # Enable policy system (intent guards, playbooks, tool guides, tool approvals)
-collection_name = "cuga_policies"  # Milvus collection name for storing policies
-milvus_host = "localhost"  # Milvus server host
-milvus_port = "19530"  # Milvus server port
-milvus_uri = "./milvus_policies.db"  # Milvus Lite URI for embedded mode (fallback)
-embedding_provider = "local"  # "openai", "local", or "auto" (tries OpenAI, falls back to local)
-embedding_model = "all-MiniLM-L6-v2"  # Model name (default for local provider)
-embedding_dim = 384  # Embedding dimension (1536 for OpenAI, 384 for all-MiniLM-L6-v2)
+collection_name = "cuga_policies"  # Collection name for storing policies
+policy_db_path = ""  # Optional: path for policy DB; when empty, uses storage.local_db_path (cuga.db)
 playbook_refine = false  # Enable playbook refinement based on user progress (requires LLM)
 filesystem_sync = true  # Enable filesystem sync (.cuga folder) for policies
 cuga_folder = ".cuga"  # Path to .cuga folder for policy files
 auto_load_policies = true  # Automatically load policies from .cuga folder on startup
+
+[service]
+instance_id = ""  # Override with DYNACONF_SERVICE__INSTANCE_ID env var (e.g. K8S pod name, deployment id)
+tenant_id = ""  # Override with DYNACONF_SERVICE__TENANT_ID env var (multi-tenant SaaS)
+
+[secrets]
+mode = "local"  # "local" | "vault"
+force_env = true  # if true, always resolve from os.environ (ignores UI overrides and Vault)
+db_encryption_key_env = "CUGA_SECRET_KEY"
+vault_addr = ""
+vault_token_env = "VAULT_TOKEN"
+vault_mount = "secret"
+vault_kv_version = ""  # "1" or "2"; leave empty to auto-detect
+vault_write_enabled = false
+aws_region = ""
+
+[auth]
+enabled = false
+authorization_enabled = false
+manage_roles = ["ServiceOwner", "ServiceAdmin"]
+chat_roles = ["ServiceOwner", "ServiceAdmin", "ServiceUser"]
+session_cookie_name = "cuga_session"
+session_max_age = 3600
+jwks_cache_ttl = 3600
+require_https = false
+ssl_keyfile = ""
+ssl_certfile = ""
+
+[ui]
+hide_cuga_logo = false  # Set to true to hide the CUGA logo in the header
+brand_name = "CUGA Agent"  # App name shown in the header
 
 [server_ports]
 registry = 8001
@@ -91,3 +135,7 @@ lite_mode_only = true        # Only activate Kaizen for CugaLite mode
 save_on_success = true       # Save trajectory on successful task completion
 save_on_failure = true       # Save trajectory on failed task completion
 async_save = true            # Fire-and-forget trajectory saving (non-blocking)
+[observability]
+openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
+                 # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
+                 # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)

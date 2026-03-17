@@ -19,8 +19,8 @@
     "puppeteer": "^24.22.3"
   },
   "dependencies": {
-    "lodash.debounce": "^4.0.8",
-    "lodash-es": "^4.17.23"
+    "lodash-es": "^4.17.23",
+    "lodash.debounce": "^4.0.8"
   },
   "pnpm": {
     "overrides": {
@@ -32,7 +32,13 @@
       "qs": "^6.14.1",
       "@isaacs/brace-expansion": ">=5.0.1",
       "lodash": ">=4.17.22",
-      "tar": ">=7.5.7"
+      "tar": ">=7.5.8",
+      "ajv": ">=8.18.0",
+      "swiper": ">=12.1.2",
+      "axios@<=1.13.4": ">=1.13.5",
+      "rollup": ">=4.59.0",
+      "basic-ftp": ">=5.2.0",
+      "minimatch": ">=10.2.3"
     }
   }
 }

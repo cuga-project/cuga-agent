@@ -1,0 +1,71 @@
+# Default values for HashiCorp Vault deployment alongside CUGA.
+# Override per environment using values.openshift.yaml or --set flags.
+
+vault:
+  global:
+    enabled: true
+    tlsDisable: true
+
+  server:
+    enabled: true
+    image:
+      repository: hashicorp/vault
+      tag: "1.15.0"
+      pullPolicy: IfNotPresent
+
+    # Single-node dev mode — suitable for development/demo only.
+    # Set ha.enabled=true for production.
+    dev:
+      enabled: false
+
+    standalone:
+      enabled: true
+      config: |
+        ui = true
+        listener "tcp" {
+          tls_disable = 1
+          address     = "[::]:8200"
+        }
+        storage "file" {
+          path = "/vault/data"
+        }
+
+    resources:
+      requests:
+        memory: 256Mi
+        cpu: 100m
+      limits:
+        memory: 512Mi
+        cpu: 500m
+
+    dataStorage:
+      enabled: true
+      size: 1Gi
+      storageClass: null
+      accessMode: ReadWriteOnce
+
+    service:
+      enabled: true
+      port: 8200
+      targetPort: 8200
+      type: ClusterIP
+
+    # Token to bootstrap Vault. Override via --set or existingSecret.
+    # The CUGA_VAULT_TOKEN env var in the CUGA pod must match.
+    extraEnvironmentVars:
+      VAULT_DEV_ROOT_TOKEN_ID: ""
+
+  ui:
+    enabled: true
+    serviceType: ClusterIP
+
+  injector:
+    enabled: false
+
+# Route for OpenShift (set hostname or leave empty for auto-assign).
+route:
+  enabled: false
+  hostname: ""
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect

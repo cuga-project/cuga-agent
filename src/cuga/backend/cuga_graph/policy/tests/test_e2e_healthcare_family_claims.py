@@ -471,4 +471,4 @@ When a user asks about family member healthcare information, follow these steps:
 
     finally:
         if storage:
-            storage.disconnect()
+            await storage.disconnect()

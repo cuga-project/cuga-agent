@@ -200,7 +200,7 @@ async def main_base():
     smtp_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_SINK", "1025"))
     print(f"[Email Sink] Using port: {smtp_port}")
 
-    controller = Controller(handler, hostname="127.0.0.1", port=smtp_port)
+    controller = Controller(handler, hostname="127.0.0.1", port=smtp_port, ready_timeout=15)
     controller.start()
     print(
         f"[Email Sink] ✓ SMTP sink successfully started and listening on smtp://127.0.0.1:{smtp_port} (Ctrl+C to stop)"

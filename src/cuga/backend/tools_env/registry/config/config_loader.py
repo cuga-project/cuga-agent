@@ -79,12 +79,21 @@ def load_service_configs(yaml_path: str) -> Dict[str, ServiceConfig]:
     Load service configurations from a YAML file into Pydantic models.
     Supports both legacy format (list of services) and standard MCP format (mcpServers).
 
+    Special handling:
+    - If yaml_path is "none" or "None", returns empty dict (database mode)
+    - Otherwise loads from YAML file
+
     Args:
-        yaml_path: Path to the YAML configuration file
+        yaml_path: Path to the YAML configuration file, or "none" for database mode
 
     Returns:
         Dictionary of service configuration objects
     """
+    # Handle database mode (no YAML file)
+    if yaml_path and yaml_path.lower() == "none":
+        logger.info("YAML config set to 'none' - using database mode")
+        return {}
+
     try:
         data = read_yaml_file(yaml_path)
         services = {}
@@ -120,6 +129,41 @@ def load_service_configs(yaml_path: str) -> Dict[str, ServiceConfig]:
             "Please ensure your YAML file is properly formatted with valid 'services' or 'mcpServers' structure"
         )
         raise ValueError(f"Invalid YAML configuration in '{yaml_path}': {e}")
+
+
+async def load_service_configs_from_db(agent_id: str = "cuga-default") -> Dict[str, ServiceConfig]:
+    """
+    Load service configurations from database for a specific agent.
+    Reads from agent_configs table which stores the full config including tools.
+
+    Args:
+        agent_id: The agent ID to load tools for (default: "cuga-default")
+
+    Returns:
+        Dictionary of service configuration objects
+    """
+    try:
+        from cuga.backend.server.managed_mcp import get_tools_from_agent_config
+
+        tools = await get_tools_from_agent_config(agent_id)
+        services = {}
+
+        for tool in tools:
+            name = tool.get("name")
+            if not name:
+                continue
+
+            # Create ServiceConfig from tool data
+            service_config = _create_service_config(
+                name, tool, is_mcp_server=tool.get("type", "mcp").lower() == "mcp"
+            )
+            services[name] = service_config
+
+        logger.info(f"Loaded {len(services)} services from database for agent '{agent_id}'")
+        return services
+    except Exception as e:
+        logger.error(f"Failed to load service configurations from database for agent '{agent_id}': {e}")
+        return {}
 
 
 def _create_service_config(service_name: str, config: dict, is_mcp_server: bool = False) -> ServiceConfig:
@@ -168,6 +212,28 @@ def _create_service_config(service_name: str, config: dict, is_mcp_server: bool 
         else:
             # Default to OpenAPI if it has a URL
             service_type = ServiceType.OPENAPI
+    else:
+        # Normalize the service type to match ServiceType enum values
+        service_type_lower = service_type.lower()
+        if service_type_lower in ['mcp', 'mcp_server', 'mcp-server']:
+            service_type = ServiceType.MCP_SERVER
+        elif service_type_lower in ['trm', 'tool-runtime-manager', 'tool_runtime_manager']:
+            service_type = ServiceType.TRM
+        elif service_type_lower in ['openapi', 'open-api', 'open_api']:
+            service_type = ServiceType.OPENAPI
+        # If it's already a ServiceType enum, keep it as is
+        elif not isinstance(service_type, ServiceType):
+            # Try to match it to a ServiceType value
+            try:
+                service_type = ServiceType(service_type)
+            except ValueError:
+                # If no match, default based on other config
+                if config.get('command'):
+                    service_type = ServiceType.MCP_SERVER
+                elif config.get('tools'):
+                    service_type = ServiceType.TRM
+                else:
+                    service_type = ServiceType.OPENAPI
 
     service_config = ServiceConfig(
         name=service_name,

@@ -1,0 +1,6 @@
+CUGA agent has been deployed.
+
+Access via port-forward:
+  kubectl port-forward -n {{ .Release.Namespace }} svc/{{ include "cuga.fullname" . }} 7860:7860
+
+Then open http://localhost:7860

@@ -9,6 +9,7 @@ from loguru import logger
 from cuga.backend.cuga_graph.policy.models import (
     CustomPolicy,
     IntentGuard,
+    OutputFormatter,
     Playbook,
     Policy,
     PolicyType,
@@ -19,33 +20,10 @@ from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 
 
 def get_embedding_dimension(provider: str = "auto", model_name: Optional[str] = None) -> int:
-    """
-    Get the embedding dimension for a given provider/model.
+    """Get embedding dimension for provider/model. Delegates to storage.embedding."""
+    from cuga.backend.storage.embedding import get_embedding_dimension as _get_dim
 
-    Args:
-        provider: "openai", "local", or "auto"
-        model_name: Optional model name (for local provider)
-
-    Returns:
-        Embedding dimension
-    """
-    if provider == "openai":
-        return 1536  # text-embedding-3-small
-
-    elif provider == "local":
-        # Common dimensions for PyMilvus sentence-transformers models
-        model_dims = {
-            "all-MiniLM-L6-v2": 384,
-            "all-mpnet-base-v2": 768,
-            "BAAI/bge-small-en-v1.5": 384,
-            "BAAI/bge-base-en-v1.5": 768,
-            "BAAI/bge-large-en-v1.5": 1024,
-        }
-        return model_dims.get(model_name or "all-MiniLM-L6-v2", 384)
-
-    else:  # auto
-        # Default to OpenAI dimensions
-        return 1536
+    return _get_dim(provider, model_name, None, None)
 
 
 def parse_markdown_to_steps(markdown_content: str) -> List[Dict[str, Any]]:
@@ -95,6 +73,171 @@ def parse_markdown_to_steps(markdown_content: str) -> List[Dict[str, Any]]:
     return steps
 
 
+async def apply_policies_data_to_storage(
+    storage: PolicyStorage,
+    policies_data: List[Dict[str, Any]],
+    clear_existing: bool = True,
+    filesystem_sync: Optional[Any] = None,
+) -> Dict[str, Any]:
+    """
+    Apply a list of policy dicts (frontend/manage-config format) to storage.
+    Used by load_policies_from_json, POST /api/config/policies, and manager config.
+    """
+    errors: List[str] = []
+    count = 0
+    if clear_existing:
+        existing_policies = await storage.list_policies(enabled_only=False)
+        for policy_obj in existing_policies:
+            try:
+                await storage.delete_policy(policy_obj.id)
+            except Exception as e:
+                logger.warning("Failed to delete existing policy %s: %s", policy_obj.id, e)
+        logger.info("Cleared %d existing policies", len(existing_policies))
+
+    for policy_data in policies_data or []:
+        try:
+            if "triggers" in policy_data and isinstance(policy_data["triggers"], list):
+                for trigger in policy_data["triggers"]:
+                    if trigger.get("type") == "natural_language" and "value" in trigger:
+                        value = trigger["value"]
+                        if not isinstance(value, list):
+                            trigger["value"] = [value] if isinstance(value, str) else []
+
+            policy_type = policy_data.get("policy_type") or policy_data.get("type")
+            if policy_type == "tool_approval" and "triggers" in policy_data:
+                policy_data.pop("triggers", None)
+            if "intent_examples" in policy_data:
+                policy_data.pop("intent_examples", None)
+
+            if policy_type == "intent_guard":
+                from cuga.backend.cuga_graph.policy.models import (
+                    IntentGuardResponse,
+                    KeywordTrigger,
+                    NaturalLanguageTrigger,
+                    AppTrigger,
+                    StateTrigger,
+                    ToolTrigger,
+                    AlwaysTrigger,
+                )
+
+                # Parse triggers into proper model objects
+                parsed_triggers = []
+                for trigger_data in policy_data.get("triggers", []):
+                    trigger_type = trigger_data.get("type")
+                    if trigger_type == "keyword":
+                        parsed_triggers.append(KeywordTrigger(**trigger_data))
+                    elif trigger_type == "natural_language":
+                        parsed_triggers.append(NaturalLanguageTrigger(**trigger_data))
+                    elif trigger_type == "app":
+                        parsed_triggers.append(AppTrigger(**trigger_data))
+                    elif trigger_type == "state":
+                        parsed_triggers.append(StateTrigger(**trigger_data))
+                    elif trigger_type == "tool":
+                        parsed_triggers.append(ToolTrigger(**trigger_data))
+                    elif trigger_type == "always":
+                        parsed_triggers.append(AlwaysTrigger(**trigger_data))
+                    else:
+                        logger.warning(f"Unknown trigger type: {trigger_type}")
+
+                response_data = policy_data.get("response", {})
+                policy = IntentGuard(
+                    id=policy_data["id"],
+                    name=policy_data["name"],
+                    description=policy_data["description"],
+                    triggers=parsed_triggers,
+                    response=IntentGuardResponse(
+                        response_type=response_data.get("response_type", "natural_language"),
+                        content=response_data.get("content", ""),
+                        status_code=response_data.get("status_code"),
+                    ),
+                    allow_override=policy_data.get("allow_override", False),
+                    priority=policy_data.get("priority", 50),
+                    enabled=policy_data.get("enabled", True),
+                )
+            elif policy_type == "playbook":
+                from cuga.backend.cuga_graph.policy.models import PlaybookStep
+
+                steps_data = policy_data.get("steps", [])
+                steps = [
+                    PlaybookStep(
+                        step_number=step["step_number"],
+                        instruction=step["instruction"],
+                        expected_outcome=step["expected_outcome"],
+                        tools_allowed=step.get("tools_allowed", []),
+                    )
+                    for step in steps_data
+                ]
+                policy = Playbook(
+                    id=policy_data["id"],
+                    name=policy_data["name"],
+                    description=policy_data["description"],
+                    triggers=policy_data["triggers"],
+                    markdown_content=policy_data.get("markdown_content", ""),
+                    steps=steps,
+                    priority=policy_data.get("priority", 50),
+                    enabled=policy_data.get("enabled", True),
+                )
+            elif policy_type == "tool_guide":
+                policy = ToolGuide(
+                    id=policy_data["id"],
+                    name=policy_data["name"],
+                    description=policy_data["description"],
+                    triggers=policy_data.get("triggers", []),
+                    target_tools=policy_data.get("target_tools", []),
+                    target_apps=policy_data.get("target_apps"),
+                    guide_content=policy_data.get("guide_content", ""),
+                    prepend=policy_data.get("prepend", False),
+                    priority=policy_data.get("priority", 50),
+                    enabled=policy_data.get("enabled", True),
+                )
+            elif policy_type == "tool_approval":
+                policy = ToolApproval(
+                    id=policy_data["id"],
+                    name=policy_data["name"],
+                    description=policy_data["description"],
+                    required_tools=policy_data.get("required_tools", []),
+                    required_apps=policy_data.get("required_apps"),
+                    approval_message=policy_data.get("approval_message"),
+                    show_code_preview=policy_data.get("show_code_preview", True),
+                    auto_approve_after=policy_data.get("auto_approve_after"),
+                    priority=policy_data.get("priority", 50),
+                    enabled=policy_data.get("enabled", True),
+                )
+            elif policy_type == "output_formatter":
+                policy = OutputFormatter(
+                    id=policy_data["id"],
+                    name=policy_data["name"],
+                    description=policy_data["description"],
+                    triggers=policy_data["triggers"],
+                    format_type=policy_data.get("format_type", "markdown"),
+                    format_config=policy_data.get("format_config", ""),
+                    priority=policy_data.get("priority", 50),
+                    enabled=policy_data.get("enabled", True),
+                    metadata=policy_data.get("metadata", {}),
+                )
+            elif policy_type == PolicyType.CUSTOM:
+                policy = CustomPolicy(**policy_data)
+            else:
+                logger.warning("Unknown policy type: %s", policy_type)
+                errors.append(
+                    f"Unknown policy type '{policy_type}' for policy '{policy_data.get('name', 'unknown')}'"
+                )
+                continue
+
+            await storage.add_policy(policy)
+            count += 1
+            if filesystem_sync:
+                try:
+                    filesystem_sync.save_policy_to_file(policy)
+                except Exception as e:
+                    logger.warning("Failed to save policy to filesystem: %s", e)
+        except Exception as e:
+            error_msg = f"Failed to load policy '{policy_data.get('name', 'unknown')}': {e}"
+            logger.error(error_msg)
+            errors.append(error_msg)
+    return {"count": count, "errors": errors}
+
+
 async def load_policies_from_json(
     file_path: str,
     storage: PolicyStorage,
@@ -119,10 +262,7 @@ async def load_policies_from_json(
             - enabled: Whether policies are enabled (from frontend format, if present)
             - errors: List of error messages (if any)
     """
-    errors = []
-    count = 0
     enabled = True
-
     try:
         with open(file_path, "r") as f:
             data = json.load(f)
@@ -143,148 +283,20 @@ async def load_policies_from_json(
             policies_data = [data]
             logger.info("Loading single policy from object format")
 
-        # Clear existing policies if requested
-        if clear_existing:
-            existing_policies = await storage.list_policies(enabled_only=False)
-            for policy_obj in existing_policies:
-                try:
-                    await storage.delete_policy(policy_obj.id)
-                except Exception as e:
-                    logger.warning(f"Failed to delete existing policy {policy_obj.id}: {e}")
-            logger.info(f"Cleared {len(existing_policies)} existing policies")
-
-        # Load each policy
-        for policy_data in policies_data:
-            try:
-                # Normalize natural_language trigger values to always be lists (backward compatibility)
-                if "triggers" in policy_data and isinstance(policy_data["triggers"], list):
-                    for trigger in policy_data["triggers"]:
-                        if trigger.get("type") == "natural_language" and "value" in trigger:
-                            value = trigger["value"]
-                            if not isinstance(value, list):
-                                trigger["value"] = [value] if isinstance(value, str) else []
-
-                # Remove intent_examples if present (deprecated, should use triggers)
-                if "intent_examples" in policy_data:
-                    intent_examples = policy_data.pop("intent_examples")
-                    if intent_examples and not any(
-                        t.get("type") == "natural_language" for t in policy_data.get("triggers", [])
-                    ):
-                        logger.warning(
-                            f"Policy '{policy_data.get('name')}' has deprecated intent_examples. "
-                            "Consider migrating to natural_language triggers."
-                        )
-
-                # Remove triggers from ToolApproval (not supported)
-                policy_type = policy_data.get("policy_type") or policy_data.get("type")
-                if policy_type == "tool_approval" and "triggers" in policy_data:
-                    policy_data.pop("triggers", None)
-
-                # Convert frontend format to model format
-                if policy_type == "intent_guard":
-                    from cuga.backend.cuga_graph.policy.models import IntentGuardResponse
-
-                    response_data = policy_data.get("response", {})
-                    policy = IntentGuard(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        triggers=policy_data["triggers"],
-                        response=IntentGuardResponse(
-                            response_type=response_data.get("response_type", "natural_language"),
-                            content=response_data.get("content", ""),
-                        ),
-                        allow_override=policy_data.get("allow_override", False),
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                    )
-                elif policy_type == "playbook":
-                    from cuga.backend.cuga_graph.policy.models import PlaybookStep
-
-                    steps_data = policy_data.get("steps", [])
-                    steps = [
-                        PlaybookStep(
-                            step_number=step["step_number"],
-                            instruction=step["instruction"],
-                            expected_outcome=step["expected_outcome"],
-                            tools_allowed=step.get("tools_allowed", []),
-                        )
-                        for step in steps_data
-                    ]
-                    policy = Playbook(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        triggers=policy_data["triggers"],
-                        markdown_content=policy_data.get("markdown_content", ""),
-                        steps=steps,
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                    )
-                elif policy_type == "tool_guide":
-                    policy = ToolGuide(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        triggers=policy_data.get("triggers", []),
-                        target_tools=policy_data.get("target_tools", []),
-                        target_apps=policy_data.get("target_apps"),
-                        guide_content=policy_data.get("guide_content", ""),
-                        prepend=policy_data.get("prepend", False),
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                    )
-                elif policy_type == "tool_approval":
-                    policy = ToolApproval(
-                        id=policy_data["id"],
-                        name=policy_data["name"],
-                        description=policy_data["description"],
-                        required_tools=policy_data.get("required_tools", []),
-                        required_apps=policy_data.get("required_apps"),
-                        approval_message=policy_data.get("approval_message"),
-                        show_code_preview=policy_data.get("show_code_preview", True),
-                        auto_approve_after=policy_data.get("auto_approve_after"),
-                        priority=policy_data.get("priority", 50),
-                        enabled=policy_data.get("enabled", True),
-                    )
-                elif policy_type == PolicyType.CUSTOM:
-                    policy = CustomPolicy(**policy_data)
-                else:
-                    logger.warning(f"Unknown policy type: {policy_type}")
-                    errors.append(
-                        f"Unknown policy type '{policy_type}' for policy '{policy_data.get('name', 'unknown')}'"
-                    )
-                    continue
-
-                # Embedding will be generated automatically by storage
-                await storage.add_policy(policy)
-                count += 1
-                logger.info(f"✅ Loaded policy: {policy.name} (id: {policy.id}, type: {policy_type})")
-
-            except Exception as e:
-                error_msg = f"Failed to load policy '{policy_data.get('name', 'unknown')}': {e}"
-                logger.error(error_msg)
-                errors.append(error_msg)
-                continue
-
+        result = await apply_policies_data_to_storage(
+            storage, policies_data, clear_existing=clear_existing, filesystem_sync=None
+        )
+        count = result["count"]
+        errors = result["errors"]
         logger.info(f"📦 Successfully loaded {count} policies from {file_path}")
         if errors:
             logger.warning(f"⚠️  Encountered {len(errors)} errors during loading")
-
-        return {
-            "count": count,
-            "enabled": enabled,
-            "errors": errors,
-        }
+        return {"count": count, "enabled": enabled, "errors": errors}
 
     except Exception as e:
         error_msg = f"Failed to load policies from {file_path}: {e}"
         logger.error(error_msg)
-        return {
-            "count": 0,
-            "enabled": enabled,
-            "errors": [error_msg],
-        }
+        return {"count": 0, "enabled": True, "errors": [error_msg]}
 
 
 async def export_policies_to_json(

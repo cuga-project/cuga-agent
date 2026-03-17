@@ -1,0 +1,25 @@
+{{- if .Values.route.enabled }}
+apiVersion: route.openshift.io/v1
+kind: Route
+metadata:
+  name: {{ include "cuga.fullname" . }}
+  labels:
+    {{- include "cuga.labels" . | nindent 4 }}
+  annotations:
+    # Serves /, /chat, and /manage — all client-side routes handled by the app
+    haproxy.router.openshift.io/timeout: 120s
+spec:
+  {{- if .Values.route.hostname }}
+  host: {{ .Values.route.hostname }}
+  {{- end }}
+  to:
+    kind: Service
+    name: {{ include "cuga.fullname" . }}
+    weight: 100
+  port:
+    targetPort: http
+  tls:
+    termination: edge
+    insecureEdgeTerminationPolicy: Redirect
+  wildcardPolicy: None
+{{- end }}

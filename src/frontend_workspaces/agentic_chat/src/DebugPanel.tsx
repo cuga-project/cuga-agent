@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useCallback } from "react";
 import { Bug, RefreshCw, ChevronDown, ChevronUp, Copy, Check } from "lucide-react";
-import { API_BASE_URL } from "./constants";
+import { apiFetch } from "../../frontend/src/api";
 import "./DebugPanel.css";
 
 interface AgentState {
@@ -42,7 +42,7 @@ export function DebugPanel({ threadId }: DebugPanelProps) {
     setError(null);
 
     try {
-      const response = await fetch(`${API_BASE_URL}/api/agent/state`, {
+      const response = await apiFetch('/api/agent/state', {
         method: "GET",
         headers: {
           "X-Thread-ID": threadId,

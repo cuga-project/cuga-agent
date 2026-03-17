@@ -35,7 +35,7 @@ async def agent():
     try:
         if hasattr(agent, '_policy_system') and agent._policy_system:
             if hasattr(agent._policy_system, 'storage') and agent._policy_system.storage:
-                agent._policy_system.storage.disconnect()
+                await agent._policy_system.storage.disconnect()
     except Exception as e:
         logger.warning(f"Cleanup warning: {e}")
 

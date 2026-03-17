@@ -1,0 +1,102 @@
+/* ─── Root layout ──────────────────────────────────────────────────────────── */
+
+.chat-landing {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  overflow: hidden;
+  /* No background set here — inherits from body/theme */
+}
+
+/* ─── Chat area: always full viewport width below the header ─────────────────
+   The two side panels float on top of this via position:fixed in the TSX.
+   We intentionally do NOT add left/right padding here — panels are overlaid.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.chat-content-area {
+  position: relative;
+  flex: 1;
+  margin-top: 4rem;
+  width: 100%;
+  height: calc(100vh - 48px); /* 48px = Carbon shell header */
+  overflow: hidden;
+  background: transparent;
+}
+
+/* ─── Conversation thread rows (hover handled inline for dynamic isActive) ── */
+
+.conversation-history-panel button:focus-visible {
+  outline: 2px solid var(--cds-focus);
+  outline-offset: -2px;
+}
+
+/* ─── Carbon Tab panel resets inside the panels ─────────────────────────────
+   TabPanel adds its own padding; we override it since we control padding above.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.agent-info-panel .cds--tab-content {
+  padding: 0;
+}
+
+/* ─── Scrollbar styling — subtle so it doesn't break the glass look ─────── */
+
+.conversation-history-panel ::-webkit-scrollbar,
+.agent-info-panel ::-webkit-scrollbar {
+  width: 4px;
+}
+
+.conversation-history-panel ::-webkit-scrollbar-track,
+.agent-info-panel ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.conversation-history-panel ::-webkit-scrollbar-thumb,
+.agent-info-panel ::-webkit-scrollbar-thumb {
+  background: var(--cds-border-subtle-01);
+  border-radius: 2px;
+}
+
+/* ─── Responsive: below 1100px the right panel auto-hides (handled in TSX),
+       below 768px the left panel auto-hides too.
+       These media queries just guard any CSS-only layout concerns.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+@media (max-width: 1099px) {
+  /* Right panel is hidden via JS translateX; nothing extra needed */
+}
+
+@media (max-width: 767px) {
+  /* Both panels hidden via JS; nothing extra needed */
+  .chat-content-area {
+    height: calc(100vh - 48px);
+  }
+}
+
+/* ─── Re-open toggle buttons ─────────────────────────────────────────────────
+   Defined inline in TSX but these add hover polish.
+   ─────────────────────────────────────────────────────────────────────────── */
+
+.chat-landing button[title="Open conversations"]:hover,
+.chat-landing button[title="Open agent panel"]:hover {
+  background: rgba(var(--cds-background-rgb, 255, 255, 255), 0.9) !important;
+  border-color: var(--cds-interactive) !important;
+}
+
+.cds--modal-content.chat-landing-file-modal-body,
+.cds--modal-scroll-content.chat-landing-file-modal-body {
+  padding: 1rem !important;
+}
+
+.chat-landing-file-modal-markdown {
+  font-size: 12px;
+  margin-bottom: 2rem;
+}
+
+.chat-landing-file-modal-markdown cds-aichat-markdown,
+.chat-landing-file-modal-markdown .cds-aichat-markdown {
+  font-size: inherit;
+}
+
+.chat-landing-file-modal-footer {
+  margin-top: 1rem;
+}
