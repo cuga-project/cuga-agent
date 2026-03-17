@@ -408,6 +408,7 @@ def _create_supervisor_conversational_graph(
                 variables_storage=state.supervisor_variables,
                 variable_counter_state=state.variable_counter_state,
                 variable_creation_order=state.variable_creation_order,
+                message_list_name="supervisor_chat_messages",  # Use supervisor message list
             )
             # ============================================================================
             # END CONTEXT SUMMARIZATION BLOCK

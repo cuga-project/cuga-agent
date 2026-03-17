@@ -24,6 +24,7 @@ async def apply_context_summarization(
     variables_storage: Optional[dict] = None,
     variable_counter_state: Optional[int] = None,
     variable_creation_order: Optional[List[str]] = None,
+    message_list_name: str = "chat_messages",
 ) -> List[BaseMessage]:
     """Summarize messages in-place via a temporary AgentState.
 
@@ -40,6 +41,8 @@ async def apply_context_summarization(
         variables_storage: Optional variables storage to pass to temp state
         variable_counter_state: Optional variable counter state (int)
         variable_creation_order: Optional variable creation order
+        message_list_name: Name of the message list to use in AgentState
+                          ("chat_messages", "chat_agent_messages", or "supervisor_chat_messages")
 
     Returns:
         List of messages (possibly summarized), or original messages on error
@@ -55,7 +58,7 @@ async def apply_context_summarization(
         state_kwargs = {
             "input": "",
             "url": "",
-            "chat_messages": list(messages),
+            message_list_name: list(messages),
         }
 
         if variables_storage is not None:
@@ -75,8 +78,8 @@ async def apply_context_summarization(
             system_prompt=system_prompt,
         )
 
-        # Get the (possibly summarized) messages
-        summarized = temp_state.chat_messages or messages
+        # Get the (possibly summarized) messages from the correct list
+        summarized = getattr(temp_state, message_list_name, None) or messages
 
         # Log and track metrics
         _log_and_track_metrics(messages, summarized, temp_state, tracker)

@@ -533,4 +533,191 @@ class TestSupervisorContextSummarization:
 
         finally:
             os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled)
+
+    @pytest.mark.slow
+    @pytest.mark.asyncio
+    async def test_supervisor_complex_task_summarization(self):
+        """
+        Test that supervisor context summarization works within a complex multi-agent task.
+
+        This test simulates a complex task that requires multiple agent delegations,
+        generating enough messages within a SINGLE invoke() to trigger summarization.
+
+        Flow:
+        1. Create 3 simple agents (agent1-agent3)
+        2. Execute ONE complex task that delegates to all 3 agents sequentially
+        3. Each delegation creates ~2 messages (AI code + execution result)
+        4. Total: 1 initial + (3 × 2) + 1 final = ~7 messages
+        5. With trigger_messages=3, summarization should trigger during execution
+        6. Verify that important data from early delegations is preserved in summary
+        """
+        from cuga import CugaAgent, CugaSupervisor
+        from langchain_core.tools import tool
+        import os
+        from cuga.config import settings
+        from cuga.backend.cuga_graph.policy.tests.helpers import setup_langfuse_tracing
+
+        # Create 6 simple agents with different tools
+        @tool
+        def agent1_task() -> str:
+            """Execute agent1 task - returns important value 42."""
+            return "Agent1 completed. IMPORTANT CONCLUSION: The secret code is 42."
+
+        @tool
+        def agent2_task() -> str:
+            """Execute agent2 task."""
+            return "Agent2 completed. Data processed."
+
+        @tool
+        def agent3_task() -> str:
+            """Execute agent3 task."""
+            return "Agent3 completed. Analysis done."
+
+        # Save original settings
+        original_enabled = settings.context_summarization.enabled
+        original_trigger_messages = getattr(settings.context_summarization, 'trigger_messages', None)
+        original_keep = settings.context_summarization.keep_last_n_messages
+
+        try:
+            # Configure message-based trigger (set to 3 to trigger with 4 messages)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = "true"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_MESSAGES"] = "3"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = "2"
+            settings.reload()
+
+            # Setup optional Langfuse tracing
+            langfuse_handler = setup_langfuse_tracing()
+            callbacks = [langfuse_handler] if langfuse_handler else []
+
+            # Create agents
+            agents = {
+                "agent1": CugaAgent(tools=[agent1_task], callbacks=callbacks),
+                "agent2": CugaAgent(tools=[agent2_task], callbacks=callbacks),
+                "agent3": CugaAgent(tools=[agent3_task], callbacks=callbacks),
+            }
+
+            supervisor = CugaSupervisor(agents=agents, callbacks=callbacks)
+            thread_id = "test-supervisor-complex-task"
+
+            # Execute ONE complex task that requires all 3 agents
+            print("\n📝 Executing complex multi-agent task...")
+            complex_task = """
+            IMPORTANT: You MUST execute ALL 3 steps in order. Do NOT skip any steps.
+            
+            Execute these 3 steps sequentially:
+            
+            Step 1: Use agent1 to call agent1_task() - it will return a secret code. WAIT for the result.
+            Step 2: Use agent2 to call agent2_task() - it will process data. WAIT for the result.
+            Step 3: Use agent3 to call agent3_task() - it will analyze. WAIT for the result.
+            
+            ONLY after completing ALL 3 steps above, tell me what the secret code was from step 1.
+            
+            Remember: You must delegate to each agent separately and wait for each result before proceeding.
+            """
+
+            result = await supervisor.invoke(complex_task, thread_id=thread_id)
+
+            print(f"✓ Task completed: {result.answer[:200]}...")
+
+            # Access state to verify summarization occurred
+            from langchain_core.runnables import RunnableConfig
+
+            config: RunnableConfig = {"configurable": {"thread_id": thread_id}}  # type: ignore
+            state_snapshot = supervisor.graph.get_state(config)
+            state = state_snapshot.values
+
+            assert state is not None, "Could not access supervisor state"
+
+            # Get supervisor messages
+            messages = state.get('supervisor_chat_messages', [])
+            print(f"✓ Found {len(messages)} supervisor messages after task completion")
+
+            # Check if summarization occurred (message count should be reduced)
+            # With trigger=3 and keep_last_n=2, we expect ~3-4 messages (1 summary + 2-3 recent)
+            assert len(messages) <= 4, (
+                f"Expected message count <= 4 after summarization (trigger=3, keep=2), but got {len(messages)}"
+            )
+            print(f"✓ Message count is {len(messages)} (summarization occurred)")
+
+            # CRITICAL: Print all messages to see the summary structure
+            print("\n" + "=" * 80)
+            print("📋 ALL SUPERVISOR MESSAGES AFTER SUMMARIZATION:")
+            print("=" * 80)
+            for i, msg in enumerate(messages):
+                content = msg.content if hasattr(msg, 'content') else str(msg)
+                if isinstance(content, list):
+                    content = ' '.join(str(item) for item in content)
+                content_str = str(content)
+
+                print(f"\n--- Message {i} ({type(msg).__name__}) ---")
+                print(f"FULL CONTENT (length={len(content_str)}):")
+                print(content_str)  # Print FULL content, not truncated
+                print("-" * 80)
+
+            # Check for summary message (should be an AIMessage with "SUMMARY" in it)
+            found_summary = False
+            summary_message_index = None
+
+            print("\n🔍 Looking for summary message:")
+            for i, msg in enumerate(messages):
+                content = msg.content if hasattr(msg, 'content') else str(msg)
+                if isinstance(content, list):
+                    content = ' '.join(str(item) for item in content)
+                content_str = str(content)
+
+                if 'SUMMARY' in content_str or 'SESSION INTENT' in content_str:
+                    found_summary = True
+                    summary_message_index = i
+                    print(f"  ✅ Found summary message at index {i} ({type(msg).__name__})")
+                    break
+
+            assert found_summary, (
+                f"Expected to find a summary message (with 'SUMMARY' or 'SESSION INTENT'), "
+                f"but not found in any of the {len(messages)} messages"
+            )
+
+            # Check if "42" is preserved specifically in the SUMMARY message
+            print("\n🔍 Checking for '42' preservation in SUMMARY message:")
+            summary_msg = messages[summary_message_index]
+            summary_content = summary_msg.content if hasattr(summary_msg, 'content') else str(summary_msg)
+            if isinstance(summary_content, list):
+                summary_content = ' '.join(str(item) for item in summary_content)
+            summary_content_str = str(summary_content)
+
+            found_42_in_summary = '42' in summary_content_str
+
+            if found_42_in_summary:
+                print(f"  ✅ Found '42' in SUMMARY message (index {summary_message_index})")
+            else:
+                print(f"  ❌ '42' NOT found in SUMMARY message (index {summary_message_index})")
+                print(f"  Summary content: {summary_content_str[:200]}...")
+
+            # Assert that "42" is preserved specifically in the summary message
+            assert found_42_in_summary, (
+                f"Expected '42' to be preserved in the SUMMARY message (index {summary_message_index}), "
+                f"but it was not found. Summary content: {summary_content_str[:500]}"
+            )
+
+            print("\n✅ SUCCESS: Supervisor context summarization verified!")
+            print(f"   - Messages reduced from ~7 to {len(messages)}")
+            print(f"   - '42' found in SUMMARY message (index {summary_message_index})")
+            print("   - Important data preserved after summarization")
+
+            # Print Langfuse trace URL if available
+            if langfuse_handler and hasattr(langfuse_handler, "get_trace_url"):
+                trace_url = langfuse_handler.get_trace_url()
+                if trace_url:
+                    print(f"\n📊 Langfuse trace: {trace_url}")
+
+            print("\n✅ Test passed: Complex multi-agent task with context summarization")
+
+        finally:
+            # Restore settings
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled)
+            if original_trigger_messages is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_MESSAGES"] = str(
+                    original_trigger_messages
+                )
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            settings.reload()
             settings.reload()
