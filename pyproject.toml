@@ -61,6 +61,7 @@ package = true
 constraint-dependencies = [
     "pillow>=12.1.1",  # CVE-2026-25990: Out-of-bounds write in PSD loading
     "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441
+    "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
     "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
 ]
 
