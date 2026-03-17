@@ -319,6 +319,8 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         4. Latest entity states are preserved correctly
         5. Entity update history is maintained
         6. Context size is significantly reduced after summarization
+
+        Uses Langfuse for tracing if available.
         """
         import os
         from cuga.config import settings
@@ -334,7 +336,11 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = "5"
             settings.reload()
 
-            agent = CugaAgent(tools=[])
+            # Setup optional Langfuse tracing
+            langfuse_handler = setup_langfuse_tracing()
+            callbacks = [langfuse_handler] if langfuse_handler else []
+
+            agent = CugaAgent(tools=[], callbacks=callbacks)
             thread_id = str(uuid.uuid4())
 
             # Generate large context history (~96k tokens)
@@ -506,6 +512,10 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             print("   - Mid markers preserved")
             print("   - Latest entity states correct")
             print("   - Update history maintained")
+
+            # Print Langfuse trace URL if available
+            if langfuse_handler and hasattr(langfuse_handler, "get_trace_url"):
+                print(f"\nLangfuse trace: {langfuse_handler.get_trace_url()}")
 
         finally:
             # Restore original settings
@@ -728,7 +738,7 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         Test that CugaAgent with conversation_messages.json (~106k tokens before last message)
         triggers context summarization when processing the last message.
 
-        Uses Langfuse for tracing. Minimal output - prints what it did.
+        Uses Langfuse for tracing. Verifies summarization occurred by checking message count reduction.
         """
 
         json_path = Path(__file__).parent / "conversation_messages.json"
@@ -739,26 +749,226 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         callbacks = [langfuse_handler] if langfuse_handler else []
         messages = _load_conversation_messages(json_path)
         history = messages
-        last_user_msg = HumanMessage(content="Write nice poem about the weather at least 600 words")
-        all_messages = history + [last_user_msg]
+
+        additional_msg1 = HumanMessage(
+            content="""Please provide a detailed summary of all the CRM data we've discussed, including account information, contact details, and any patterns you've observed in the data. Make sure to highlight key insights about customer distribution across regions and industries. Additionally, analyze the revenue patterns, employee count distributions, renewal dates, risk scores, and ownership assignments. Provide insights into regional performance, industry trends, plan distribution (Free vs Pro vs Enterprise), and any correlations between company size, industry, and plan selection. Also discuss contact engagement patterns, communication preferences, and any notable trends in customer behavior across different segments."""
+        )
+        additional_msg2 = AIMessage(
+            content="""Based on our extensive CRM discussion, here's a comprehensive summary: We've covered 1000+ accounts across multiple regions (North America, Europe, Asia Pacific, Latin America, Middle East & Africa) spanning various industries including Technology, Healthcare, Finance, Manufacturing, Retail, Education, Real Estate, Consulting, Media, Automotive, Energy, Telecommunications, Transportation, Food & Beverage, Pharmaceuticals, Insurance, Legal, Construction, Agriculture, Aerospace, Banking, Biotechnology, Chemicals, Defense, Entertainment, Fashion, Gaming, Hospitality, and Logistics. Key patterns include strong presence in Technology and Healthcare sectors, diverse geographic distribution with concentration in major markets, and a mix of Free, Pro, and Enterprise plans. Contact data shows professional roles across organizations with varied communication preferences. Revenue patterns indicate healthy growth across segments, with Enterprise customers showing highest lifetime value. Employee counts range from small startups (10-50) to large enterprises (5000+), with most accounts in the mid-market segment (100-1000 employees). Renewal dates are well-distributed throughout the year, minimizing churn risk concentration. Risk scores vary from 0.01 to 0.99, with most accounts in the low-to-medium risk range (0.20-0.60). Ownership is balanced across account managers Lena, Noah, Priya, Chen, and Maria, ensuring good workload distribution. Regional performance shows North America leading in account count and revenue, followed by Europe and Asia Pacific. Industry trends reveal Technology and Healthcare as fastest-growing sectors, with increasing demand for Enterprise plans. Plan distribution shows 33% Free, 33% Pro, and 34% Enterprise, indicating successful upsell strategies. Strong correlations exist between company size and plan selection, with larger companies preferring Enterprise plans. Contact engagement is highest in Technology and Finance sectors, with email being the preferred communication channel."""
+        )
+
+        additional_msg3 = HumanMessage(
+            content="""Thank you for that comprehensive summary. Now, could you also analyze the temporal trends in our CRM data? Specifically, I'd like to understand account creation patterns over time, seasonal variations in customer acquisition, renewal rate trends, and how risk scores have evolved. Also, please examine any correlations between account age and plan upgrades, regional growth rates over different quarters, and industry-specific retention patterns."""
+        )
+
+        additional_msg4 = AIMessage(
+            content="""Excellent question about temporal trends. Analyzing the CRM data chronologically reveals several interesting patterns: Account creation shows steady growth with Q4 2025 being the strongest quarter (285 new accounts), followed by Q1 2026 (267 accounts). Seasonal variations indicate higher acquisition rates during end-of-year budget cycles and beginning-of-year planning periods. Renewal rates have improved from 82% in early 2025 to 91% in recent months, suggesting better customer success initiatives. Risk score evolution shows a positive trend, with average scores decreasing from 0.58 to 0.42 over the past year, indicating improved account health management. Account age correlates strongly with plan upgrades: accounts older than 12 months show 3.2x higher upgrade rates compared to newer accounts. Regional growth rates vary significantly: Asia Pacific leads with 47% YoY growth, followed by Latin America (38%), North America (28%), Europe (24%), and Middle East & Africa (31%). Industry-specific retention patterns reveal Technology (94% retention) and Healthcare (92% retention) as most stable, while Retail (78%) and Hospitality (76%) show higher churn, likely due to economic pressures in those sectors. Additionally, customer lifetime value analysis shows Enterprise customers averaging $125K annually, Pro customers at $45K, and Free tier users converting at 18% rate within first 6 months. Furthermore, cross-sell and upsell opportunities are most prevalent in accounts aged 6-18 months, with Technology and Healthcare sectors showing highest receptivity to premium features. Customer satisfaction scores correlate inversely with risk scores (r=-0.73), and accounts with dedicated customer success managers show 2.4x better retention rates. Geographic expansion patterns indicate strong potential in emerging markets, particularly Southeast Asia and Eastern Europe, where we're seeing 60%+ YoY growth in trial signups. Product adoption metrics show that accounts utilizing 3+ features have 89% higher retention compared to single-feature users, and integration with third-party tools increases stickiness by 156%."""
+        )
+
+        last_user_msg = HumanMessage(
+            content="Write nice poem about the weather at least 600 words. Make it beautiful and evocative, capturing the essence of changing seasons."
+        )
+        all_messages = history + [
+            additional_msg1,
+            additional_msg2,
+            additional_msg3,
+            additional_msg4,
+            last_user_msg,
+        ]
+
+        print("\n=== Loading large conversation history ===")
+        print(f"Loaded {len(messages)} messages from conversation_messages.json")
+        print(f"Total messages to process: {len(all_messages)} (~108k tokens)")
 
         agent = CugaAgent(tools=[], callbacks=callbacks)
         thread_id = str(uuid.uuid4())
 
+        # First invoke with large context - should trigger summarization
         result = await agent.invoke(all_messages, thread_id=thread_id)
-        result_2 = await agent.invoke(
-            "Now give me a peom about weather at most 20 words", thread_id=thread_id
+        assert result is not None
+        print("✓ Large context loaded")
+
+        # Check message count after first invoke to verify summarization occurred
+        config = {"configurable": {"thread_id": thread_id}}
+        checkpoint = agent.graph.checkpointer.get(config)
+        assert checkpoint is not None, "Failed to get checkpoint after first invoke"
+        state_dict = checkpoint.get("channel_values", {})
+        assert state_dict is not None, "Failed to get channel_values from checkpoint"
+        message_count_before = len(state_dict.get("chat_messages", []))
+        print(f"Message count before second invoke: {message_count_before}")
+        assert message_count_before > 0, "No messages found in checkpoint before second invoke"
+
+        # Verify that summarization happened during first invoke
+        # The first invoke had 38 messages (~106k tokens), should have been reduced significantly
+        # After summarization, we expect around 5-10 messages (KEEP_LAST_N_MESSAGES=5 + summary + responses)
+        assert message_count_before < 20, (
+            f"Summarization did not trigger during first invoke. "
+            f"Expected message count to be < 20 after summarization, got {message_count_before}"
+        )
+        print(
+            f"✓ Summarization triggered during first invoke ({len(all_messages)} → {message_count_before} messages)"
         )
 
-        assert result is not None
-        assert result.error is None
-
+        # Second invoke - should not trigger summarization
+        result_2 = await agent.invoke(
+            "Now give me a poem about weather at most 20 words", thread_id=thread_id
+        )
         assert result_2 is not None
         assert result_2.error is None
 
-        print(
-            f"Loaded {len(messages)} msgs from conversation_messages.json, "
-            f"invoked CugaAgent with {len(all_messages)} msgs (~106k tokens); summarization should have triggered"
+        # Check message count after second invoke
+        checkpoint_after = agent.graph.checkpointer.get(config)
+        assert checkpoint_after is not None, "Failed to get checkpoint after second invoke"
+        state_dict_after = checkpoint_after.get("channel_values", {})
+        assert state_dict_after is not None, (
+            "Failed to get channel_values from checkpoint after second invoke"
         )
+        message_count_after = len(state_dict_after.get("chat_messages", []))
+        print(f"Message count after second invoke: {message_count_after}")
+
+        # The second invoke should not trigger summarization (messages well below 75% threshold)
+        # Message count can increase by 2-4 depending on whether agent executes code
+        # (user + AI) or (user + AI_code + execution_result + AI_final)
+        message_increase = message_count_after - message_count_before
+        assert 2 <= message_increase <= 4, (
+            f"Expected message count to increase by 2-4 (depending on code execution). "
+            f"Before: {message_count_before}, After: {message_count_after}, Increase: {message_increase}"
+        )
+        print(
+            f"✓ Second invoke completed. Messages: {message_count_before} → {message_count_after} (+{message_increase})"
+        )
+
+        print(
+            f"\n✓ Summarization successfully reduced context from {len(all_messages)} to {message_count_before} messages"
+        )
+
+        print("\n✅ Large context summarization test passed!")
+
         if langfuse_handler and hasattr(langfuse_handler, "get_trace_url"):
-            print(f"Langfuse trace: {langfuse_handler.get_trace_url()}")
+            print(f"\nLangfuse trace: {langfuse_handler.get_trace_url()}")
+
+    @pytest.mark.asyncio
+    async def test_context_preservation_through_summarization(self):
+        """
+        Test that important artifacts/conclusions are preserved through summarization.
+
+        This test verifies that when we explicitly mark information as important
+        (using phrases like "IMPORTANT CONCLUSION" or "key artifact"), the
+        summarization process preserves these values in the conversation history.
+        """
+        import os
+        from cuga.config import settings
+
+        # Save original settings
+        original_fraction = settings.context_summarization.trigger_fraction
+        original_keep = settings.context_summarization.keep_last_n_messages
+        original_enabled = settings.context_summarization.enabled
+
+        try:
+            # Configure moderate summarization settings
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = "true"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = "0.02"  # 2% trigger
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = "3"  # Keep last 3
+            settings.reload()
+
+            # Create agent with a simple calculation tool
+            @tool
+            def calculate_price(base_price: float, discount_percent: float) -> float:
+                """Calculate final price after discount."""
+                return base_price * (1 - discount_percent / 100)
+
+            agent = CugaAgent(tools=[calculate_price])
+            thread_id = f"test-preservation-{uuid.uuid4()}"
+
+            print("\n=== Testing Context Preservation Through Summarization ===")
+
+            # Task 1: Calculate a price
+            result1 = await agent.invoke(
+                "Calculate the price for an item that costs $100 with a 20% discount", thread_id=thread_id
+            )
+            assert result1 is not None
+            print(f"✓ Task 1 completed: {result1.answer[:100]}")
+
+            # Task 2: Add some context
+            result2 = await agent.invoke(
+                "This is for customer Alice who is a premium member", thread_id=thread_id
+            )
+            assert result2 is not None
+            print("✓ Task 2 completed")
+
+            # Task 3: Mark the calculated value as important artifact
+            # This phrasing aligns with the summarization prompt's ARTIFACTS section
+            result3 = await agent.invoke(
+                "IMPORTANT CONCLUSION: The final calculated price is exactly $80.00. "
+                "This is a key artifact that must be preserved for the customer record.",
+                thread_id=thread_id,
+            )
+            assert result3 is not None
+            print("✓ Task 3 completed: Marked $80 as important artifact")
+
+            # Task 4: Add more context (pushes Task 3 out of "keep last 3")
+            result4 = await agent.invoke(
+                "Please remember this calculation for future reference", thread_id=thread_id
+            )
+            assert result4 is not None
+            print("✓ Task 4 completed")
+
+            # Task 5: Add even more context (pushes Task 3 further out)
+            result5 = await agent.invoke("This will be used for the quarterly report", thread_id=thread_id)
+            assert result5 is not None
+            print("✓ Task 5 completed")
+
+            # Task 6: One more to ensure Task 3 is definitely summarized
+            result6 = await agent.invoke("Make sure to document this properly", thread_id=thread_id)
+            assert result6 is not None
+            print("✓ Task 6 completed (Task 3 should now be summarized)")
+
+            # Task 7: Verify the important value is preserved IN THE SUMMARY MESSAGE
+            # Check the actual conversation state to find the summary message
+            config = {"configurable": {"thread_id": thread_id}}
+            checkpoint = agent.graph.checkpointer.get(config)
+            assert checkpoint is not None, "Failed to get checkpoint"
+
+            state_dict = checkpoint.get("channel_values", {})
+            assert state_dict is not None, "Failed to get channel_values from checkpoint"
+
+            chat_messages = state_dict.get("chat_messages", [])
+
+            # Find the summary message
+            summary_message_found = False
+            summary_content = ""
+
+            for msg in chat_messages:
+                if isinstance(msg, dict):
+                    content = msg.get('content', '')
+                else:
+                    content = getattr(msg, 'content', '')
+
+                # Check if this is the summary message
+                if content and ('summary' in content.lower() or 'here is a summary' in content.lower()):
+                    summary_message_found = True
+                    summary_content = content
+                    break
+
+            # Verify summarization occurred
+            assert summary_message_found, (
+                f"Expected to find a summary message in conversation. Found {len(chat_messages)} messages."
+            )
+
+            # Verify the important value is preserved IN THE SUMMARY MESSAGE
+            assert "80" in summary_content, (
+                f"Expected '80' to be preserved IN THE SUMMARY MESSAGE. Summary content: {summary_content}"
+            )
+
+            print("✅ Context preservation test passed!")
+            print(f"   - Summary message found: {summary_message_found}")
+            print(f"   - Total messages: {len(chat_messages)}")
+            print("   - Value '$80' preserved in summary: True")
+            print(f"   - Summary preview: {summary_content[:200]}...")
+
+        finally:
+            # Restore original settings
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            settings.reload()

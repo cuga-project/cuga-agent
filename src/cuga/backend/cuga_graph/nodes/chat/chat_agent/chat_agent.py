@@ -14,6 +14,7 @@ from mcp import ClientSession
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_prompt_chat
@@ -87,6 +88,12 @@ class ChatAgent(BaseAgent):
         self._is_setup = False
         self.tool_provider = CombinedToolProvider()
 
+        # Context management metadata (extracted during setup)
+        self.model = None
+        self.model_name = None
+        self.tools_for_context = None
+        self.system_prompt_text = None
+
     async def setup(self):
         """Initialize the connection and agent"""
         # Clean up any existing connections first
@@ -106,7 +113,24 @@ class ChatAgent(BaseAgent):
         if self.use_regular_chat:
             # Initialize chain for regular mode
             model = llm_manager.get_model(settings.agent.planner.model)
-            self.chain = load_prompt_chat("./prompts/pmt_chat.jinja2") | model.bind_tools([execute_task])
+            prompt = load_prompt_chat("./prompts/pmt_chat.jinja2")
+            self.chain = prompt | model.bind_tools([execute_task])
+
+            # Store metadata for context management
+            self.model = model
+            self.model_name = getattr(model, 'model_name', None)
+            self.tools_for_context = [execute_task]
+            # Extract system prompt text from the prompt template
+            try:
+                if hasattr(prompt, 'messages'):
+                    for msg_template in prompt.messages:
+                        if hasattr(msg_template, 'prompt') and hasattr(msg_template.prompt, 'template'):
+                            self.system_prompt_text = msg_template.prompt.template
+                            break
+            except Exception as e:
+                logger.debug(f"Could not extract system prompt during setup: {e}")
+                self.system_prompt_text = None
+
             logger.info("Using regular chat mode (legacy execution)")
         else:
             # Connect via SSE for MCP client mode
@@ -278,59 +302,25 @@ class ChatAgent(BaseAgent):
         apps = await self.tool_provider.get_apps()
         apps_list = "\n".join([f"- {app.name}: {app.description or 'No description'}" for app in apps])
 
-        # Manage context before LLM invocation
-        # Extract model and tools from chain for context management
-        model = None
-        model_name = None
-        tools_for_context = None
-        system_prompt_text = None
-
-        try:
-            # Try to extract model from chain
-            if hasattr(self.chain, 'steps'):
-                for step in self.chain.steps:
-                    if hasattr(step, 'bound') and hasattr(step.bound, 'model_name'):
-                        model = step.bound
-                        model_name = step.bound.model_name
-                        break
-
-            # Try to extract tools from chain
-            if hasattr(self.chain, 'steps'):
-                for step in self.chain.steps:
-                    if hasattr(step, 'tools'):
-                        tools_for_context = step.tools
-                        break
-
-            # Try to extract system prompt from chain
-            if hasattr(self.chain, 'steps'):
-                for step in self.chain.steps:
-                    if hasattr(step, 'prompt'):
-                        prompt_template = step.prompt
-                        if hasattr(prompt_template, 'messages'):
-                            for msg_template in prompt_template.messages:
-                                if hasattr(msg_template, 'prompt') and hasattr(
-                                    msg_template.prompt, 'template'
-                                ):
-                                    system_prompt_text = msg_template.prompt.template
-                                    break
-        except Exception as e:
-            logger.warning(
-                f"ChatAgent: Failed to extract context info from chain: {e}. "
-                f"Context management will proceed with incomplete information."
-            )
-
-        # Call context management
+        # Apply context summarization using metadata extracted during setup
         logger.info(
-            f"ChatAgent: Calling manage_message_context with model_name={model_name}, "
-            f"tools={len(tools_for_context) if tools_for_context else 0}, "
-            f"system_prompt={len(system_prompt_text) if system_prompt_text else 0} chars"
+            f"ChatAgent: Applying context summarization with model_name={self.model_name}, "
+            f"tools={len(self.tools_for_context) if self.tools_for_context else 0}, "
+            f"system_prompt={len(self.system_prompt_text) if self.system_prompt_text else 0} chars"
         )
-        state.chat_messages = list(chat_messages)
-        await state.manage_message_context(
-            model=model, model_name=model_name, tools=tools_for_context, system_prompt=system_prompt_text
+
+        effective_chat_messages = await apply_context_summarization(
+            chat_messages,
+            self.model,
+            system_prompt=self.system_prompt_text,
+            tools=self.tools_for_context,
+            tracker=tracker,
+            variables_storage=state.variables_storage,
+            variable_counter_state=state.variable_counter_state,
+            variable_creation_order=state.variable_creation_order,
         )
-        effective_chat_messages = state.chat_messages or []
-        logger.info("ChatAgent: manage_message_context completed successfully")
+
+        logger.info("ChatAgent: Context summarization completed successfully")
 
         res = await self.chain.ainvoke(
             {

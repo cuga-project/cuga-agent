@@ -184,6 +184,15 @@ class ContextSummarizer:
         # Check trigger conditions
         should_trigger, trigger_reason = self._check_trigger_conditions(messages, metrics)
 
+        # Only log when summarization is actually triggered
+        if should_trigger:
+            logger.info(
+                f"📊 Context summarization triggered: {metrics['message_count']} messages, "
+                f"{metrics.get('total_token_count', 0)} total tokens "
+                f"({metrics['usage_percentage']:.1f}% usage), "
+                f"reason: {trigger_reason}"
+            )
+
         if trigger_reason:
             metrics["trigger_reason"] = trigger_reason
 
