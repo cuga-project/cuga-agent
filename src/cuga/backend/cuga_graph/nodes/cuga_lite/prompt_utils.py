@@ -252,15 +252,20 @@ class PromptUtils:
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
         chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
-        response = await chain.ainvoke(
-            {
-                "input": query,
-                "all_apps": apps_as_dict,
-                "all_tools": tools_as_dict,
-                "instructions": "",
-                "memory": None,
-            }
-        )
+        try:
+            response = await chain.ainvoke(
+                {
+                    "input": query,
+                    "all_apps": apps_as_dict,
+                    "all_tools": tools_as_dict,
+                    "instructions": "",
+                    "memory": None,
+                }
+            )
+        except Exception as e:
+            logger.warning(f"Tool shortlisting failed for query '{query}': {e}")
+            # Return all tools unfiltered so the agent can still proceed
+            return PromptUtils._format_all_tools_as_fallback(all_tools)
 
         enriched_tools = []
         for api_detail in response.result:
@@ -359,6 +364,38 @@ class PromptUtils:
             if tool.output_schema and tool.output_schema != {}:
                 markdown_lines.append("**Output Schema:**\n")
                 markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
+
+            markdown_lines.append("---\n")
+
+        return "\n".join(markdown_lines)
+
+    @staticmethod
+    def _format_all_tools_as_fallback(all_tools: List[StructuredTool]) -> str:
+        """Format all tools as a fallback when shortlisting fails.
+
+        Returns a markdown string listing all available tools so the agent can still proceed.
+        """
+        if not all_tools:
+            return "No matching tools found for your query."
+
+        markdown_lines = [
+            f"# Available Tools ({len(all_tools)} total)\n",
+            "**Note:** Tool shortlisting was unavailable. Showing all tools.\n",
+        ]
+
+        for idx, tool in enumerate(all_tools, 1):
+            markdown_lines.append(f"## {idx}. `{tool.name}`\n")
+            if hasattr(tool, 'description') and tool.description:
+                markdown_lines.append(f"**Description:** {tool.description}\n")
+
+            params_doc, response_doc = PromptUtils.get_tool_docs(tool)
+            if params_doc:
+                markdown_lines.append("**Parameters:**\n")
+                markdown_lines.append(f"{params_doc}\n")
+
+            if response_doc:
+                markdown_lines.append("**Response Schema:**\n")
+                markdown_lines.append(f"{response_doc}\n")
 
             markdown_lines.append("---\n")
 
