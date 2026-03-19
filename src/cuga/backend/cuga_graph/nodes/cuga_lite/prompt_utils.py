@@ -263,7 +263,10 @@ class PromptUtils:
                 }
             )
         except Exception as e:
-            logger.warning(f"Tool shortlisting failed for query '{query}': {e}")
+            logger.bind(
+                query_len=len(query),
+                error_type=type(e).__name__,
+            ).opt(exception=True).warning("Tool shortlisting failed; using fallback tool list")
             # Return all tools unfiltered so the agent can still proceed
             return PromptUtils._format_all_tools_as_fallback(all_tools)
 
@@ -374,26 +377,39 @@ class PromptUtils:
         """Format all tools as a fallback when shortlisting fails.
 
         Returns a markdown string listing all available tools so the agent can still proceed.
+        Output is bounded to prevent context-overflow failures.
         """
         if not all_tools:
             return "No matching tools found for your query."
+
+        max_tools = 20
+        max_doc_chars = 1200
+        shown_tools = all_tools[:max_tools]
 
         markdown_lines = [
             f"# Available Tools ({len(all_tools)} total)\n",
             "**Note:** Tool shortlisting was unavailable. Showing all tools.\n",
         ]
+        if len(all_tools) > max_tools:
+            markdown_lines.append(
+                f"**Output truncated:** showing first {max_tools} of {len(all_tools)} tools.\n"
+            )
 
-        for idx, tool in enumerate(all_tools, 1):
+        for idx, tool in enumerate(shown_tools, 1):
             markdown_lines.append(f"## {idx}. `{tool.name}`\n")
             if hasattr(tool, 'description') and tool.description:
                 markdown_lines.append(f"**Description:** {tool.description}\n")
 
             params_doc, response_doc = PromptUtils.get_tool_docs(tool)
             if params_doc:
+                if len(params_doc) > max_doc_chars:
+                    params_doc = params_doc[:max_doc_chars] + "\n... (truncated)"
                 markdown_lines.append("**Parameters:**\n")
                 markdown_lines.append(f"{params_doc}\n")
 
             if response_doc:
+                if len(response_doc) > max_doc_chars:
+                    response_doc = response_doc[:max_doc_chars] + "\n... (truncated)"
                 markdown_lines.append("**Response Schema:**\n")
                 markdown_lines.append(f"{response_doc}\n")
 
