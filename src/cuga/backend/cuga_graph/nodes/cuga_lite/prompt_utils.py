@@ -400,7 +400,13 @@ class PromptUtils:
             if hasattr(tool, 'description') and tool.description:
                 markdown_lines.append(f"**Description:** {tool.description}\n")
 
-            params_doc, response_doc = PromptUtils.get_tool_docs(tool)
+            try:
+                params_doc, response_doc = PromptUtils.get_tool_docs(tool)
+            except Exception:
+                logger.bind(
+                    tool_name=getattr(tool, "name", "<unknown>"),
+                ).opt(exception=True).warning("Tool doc extraction failed during fallback; skipping docs")
+                params_doc, response_doc = "", ""
             if params_doc:
                 if len(params_doc) > max_doc_chars:
                     params_doc = params_doc[:max_doc_chars] + "\n... (truncated)"
