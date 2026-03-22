@@ -10,6 +10,7 @@ resolution-markers = [
 
 [manifest]
 constraints = [
+    { name = "h11", specifier = ">=0.16.0" },
     { name = "pillow", specifier = ">=12.1.1" },
     { name = "setuptools", specifier = "<70" },
     { name = "urllib3", specifier = ">=2.6.3" },

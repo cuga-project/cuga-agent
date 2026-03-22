@@ -77,3 +77,6 @@ registry.env
 deployment/helm/openshift.env
 deployment/helm/*.env
 !deployment/helm/openshift.example.env
+
+# Registry credentials (copy from registry.example.env)
+scripts/registry.env
