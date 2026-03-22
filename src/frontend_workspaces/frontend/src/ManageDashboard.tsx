@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Heading,
-  Link,
   ClickableTile,
   Tag,
   InlineLoading,
@@ -12,7 +11,6 @@ import {
 import {
   Bot,
   Tools,
-  Launch,
   Settings,
   DocumentMultiple_01,
 } from "@carbon/icons-react";
@@ -23,6 +21,7 @@ import "./ManageDashboard.css";
 
 export interface AgentItem {
   id: string;
+  name?: string;
   description: string;
   tools_count: number;
   logs_url: string | null;
@@ -149,7 +148,7 @@ export function ManageDashboard() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontWeight: 600 }}>
                     <Bot size={20} />
-                    {agent.id}
+                    {agent.name?.trim() || "Agent"}
                   </div>
                   <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                     <Tag type="blue" size="sm">
@@ -184,17 +183,6 @@ export function ManageDashboard() {
                   >
                     Configure & try it out
                   </Button>
-                  <Link
-                    href={agent.logs_url ?? "#"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                    title={agent.logs_url ? "Open logs in Loki" : "Set CUGA_LOKI_LOGS_URL or LOKI_URL for your Loki dashboard"}
-                    style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
-                  >
-                    <Launch size={16} />
-                    Logs (Loki)
-                  </Link>
                 </div>
               </ClickableTile>
             ))}

@@ -107,7 +107,8 @@ ssl_keyfile = ""
 ssl_certfile = ""
 
 [ui]
-hide_cuga_logo = false  # Set to true to hide the logo in the header
+hide_cuga_logo = false  # Set to true to hide the CUGA logo in the header
+brand_name = "CUGA Agent"  # App name shown in the header
 
 [server_ports]
 registry = 8001
@@ -127,6 +128,7 @@ graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
 memory = 8888
+oak_health_api = 8090  # cuga-oak-health OpenAPI (demo_health)
 
 [observability]
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]

@@ -249,6 +249,8 @@ HELM_ARGS=(
   --set "env.DYNACONF_AUTH__ENABLED=${DYNACONF_AUTH__ENABLED:-true}"
   --set "env.DYNACONF_STORAGE__MODE=${STORAGE_MODE}"
   --set "env.DYNACONF_UI__HIDE_CUGA_LOGO=${DYNACONF_UI__HIDE_CUGA_LOGO:-false}"
+  --set "env.DYNACONF_UI__BRAND_NAME=${DYNACONF_UI__BRAND_NAME:-}"
+  --set "env.CUGA_DEMO_MODE=${CUGA_DEMO_MODE:-default}"
   --set "route.enabled=true"
 )
 

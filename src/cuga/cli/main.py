@@ -499,6 +499,7 @@ def callback(
     - demo: Both registry and demo agent (runs directly)
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
     - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
+    - demo_health: Healthcare insurance demo (cuga-oak-health OpenAPI + filesystem + manage UI)
     - registry: The MCP registry service only (runs directly)
     - appworld: AppWorld environment and API servers (runs directly)
     - memory: The memory service (runs directly)
@@ -574,8 +575,11 @@ def _start_demo_crm_services(
         start_filesystem = "filesystem" in tool_names if tools else True
         start_crm = "crm" in tool_names if tools else True
         start_docs = "docs" in tool_names if tools else False
+        start_oak_health = "oak_health" in tool_names if tools else False
 
-        ports_to_clean = app_mgr.ports_for_apps(start_email, start_filesystem, start_crm, start_docs)
+        ports_to_clean = app_mgr.ports_for_apps(
+            start_email, start_filesystem, start_crm, start_docs, start_oak_health
+        )
         ports_to_clean.extend([settings.server_ports.registry, settings.server_ports.demo])
         logger.info("🧹 Checking for existing processes on required ports...")
         kill_processes_by_port(ports_to_clean)
@@ -601,6 +605,9 @@ def _start_demo_crm_services(
 
         if start_docs:
             app_mgr.start_docs()
+
+        if start_oak_health:
+            app_mgr.start_oak_health()
 
         registry_process = app_mgr.start_registry(host)
         if registry_process is None or registry_process.poll() is not None:
@@ -629,6 +636,11 @@ def _start_demo_crm_services(
                 services_table.add_row("• CRM API Server", f"http://localhost:{app_mgr.crm_port}")
             if start_docs:
                 services_table.add_row("• Docs MCP Server", f"http://localhost:{app_mgr.docs_port}/sse")
+            if start_oak_health:
+                services_table.add_row(
+                    "• Oak Health API",
+                    f"http://localhost:{app_mgr.oak_health_port}/openapi.json",
+                )
             services_table.add_row("• Registry Server", f"http://localhost:{settings.server_ports.registry}")
             services_table.add_row("• Demo Server", f"http://localhost:{settings.server_ports.demo}")
 
@@ -675,6 +687,7 @@ def validate_service(service: str):
         "demo",
         "demo_crm",
         "demo_docs",
+        "demo_health",
         "demo_supervisor",
         "manager",
         "registry",
@@ -695,8 +708,9 @@ def _resolve_apps(
     docs: bool,
     filesystem: bool,
     no_email: bool,
-) -> tuple[bool, bool, bool, bool, bool]:
-    """Resolve app flags from preset + optional overrides. Returns (crm, email, digital_sales, docs, filesystem)."""
+    oak_health: bool,
+) -> tuple[bool, bool, bool, bool, bool, bool]:
+    """Resolve app flags from preset + overrides. Returns (crm, email, digital_sales, docs, filesystem, oak_health)."""
     defaults = get_default_apps_for_preset(service)
     email_default = defaults["email"] and not no_email
     return (
@@ -705,6 +719,7 @@ def _resolve_apps(
         defaults["digital_sales"] or digital_sales,
         defaults["docs"] or docs,
         defaults["filesystem"] or filesystem,
+        defaults.get("oak_health", False) or oak_health,
     )
 
 
@@ -712,7 +727,7 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_crm, demo_docs, demo_supervisor, manager, registry, appworld, or memory",
+        help="Service to start: demo, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, appworld, or memory",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -764,6 +779,11 @@ def start(
         "--docs",
         help="Enable IBM Docs MCP server (search, summarize, ask questions on pages)",
     ),
+    oak_health: bool = typer.Option(
+        False,
+        "--oak-health",
+        help="Enable healthcare insurance OpenAPI (cuga-oak-health; port from settings server_ports.oak_health_api)",
+    ),
     cuga_workspace: str | None = typer.Option(
         None,
         "--cuga-workspace",
@@ -778,6 +798,7 @@ def start(
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
+      - demo_health: Starts cuga-oak-health OpenAPI, filesystem MCP, registry, and demo (insurance member APIs + OAK playbooks)
       - manager: Manage-config mode: registry uses managed MCP YAML, policy filesync off, demo on 7860
       - registry: Starts only the registry service directly (uvicorn on port 8001)
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
@@ -787,6 +808,7 @@ def start(
       - demo: default = digital_sales + filesystem
       - demo_crm: default = crm + filesystem + email
       - manager: default = filesystem only
+      - demo_health: default = oak_health + filesystem
 
     Examples:
       cuga start demo                     # digital_sales + filesystem
@@ -797,6 +819,8 @@ def start(
       cuga start manager --digital-sales  # filesystem + digital_sales
       cuga start manager --docs  # add IBM Docs MCP server
       cuga start demo_docs  # registry + demo + IBM Docs MCP only
+      cuga start demo_health  # oak health OpenAPI + filesystem + registry + demo
+      cuga start manager --oak-health  # add insurance APIs to manager preset
       cuga start manager --cuga-workspace /path/to/workspace  # custom workspace + policy
       cuga start demo --sandbox           # with remote sandbox
       cuga start registry                 # registry only
@@ -805,8 +829,8 @@ def start(
     """
     validate_service(service)
 
-    app_crm, app_email, app_digital_sales, app_docs, app_filesystem = _resolve_apps(
-        service, crm, email, digital_sales, docs, filesystem, no_email
+    app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
+        service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
     )
     resolved_tools = build_tools_from_apps(
         crm=app_crm,
@@ -814,6 +838,7 @@ def start(
         digital_sales=app_digital_sales,
         docs=app_docs,
         filesystem=app_filesystem,
+        oak_health=app_oak_health,
     )
 
     if service == "manager":
@@ -832,7 +857,9 @@ def start(
                 workspace_abs, include_email=app_email
             )
             os.environ["CUGA_LOAD_POLICIES"] = "true"
-            ports_to_kill = app_mgr.ports_for_apps(app_email, app_filesystem, app_crm, app_docs)
+            ports_to_kill = app_mgr.ports_for_apps(
+                app_email, app_filesystem, app_crm, app_docs, app_oak_health
+            )
             ports_to_kill.extend([settings.server_ports.registry, settings.server_ports.demo])
             kill_processes_by_port(ports_to_kill)
             os.environ["CUGA_HOST"] = host
@@ -848,6 +875,8 @@ def start(
                 app_mgr.start_crm(crm_db_path)
             if app_docs:
                 app_mgr.start_docs()
+            if app_oak_health:
+                app_mgr.start_oak_health()
 
             registry_process = app_mgr.start_registry(host)
             if registry_process is None or registry_process.poll() is not None:
@@ -872,6 +901,10 @@ def start(
                     table.add_row("CRM API:", f"http://localhost:{app_mgr.crm_port}")
                 if app_docs:
                     table.add_row("Docs MCP:", f"http://localhost:{app_mgr.docs_port}/sse")
+                if app_oak_health:
+                    table.add_row(
+                        "Oak Health API:", f"http://localhost:{app_mgr.oak_health_port}/openapi.json"
+                    )
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
                 console.print()
@@ -905,7 +938,7 @@ def start(
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, app_docs))
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, app_docs, app_oak_health))
             kill_processes_by_port(ports_to_clean)
 
             os.environ["CUGA_HOST"] = host
@@ -917,6 +950,8 @@ def start(
             app_mgr.start_filesystem(workspace_path)
             if app_docs:
                 app_mgr.start_docs()
+            if app_oak_health:
+                app_mgr.start_oak_health()
 
             registry_process = app_mgr.start_registry(host)
             if registry_process is None or registry_process.poll() is not None:
@@ -938,6 +973,10 @@ def start(
                 table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
                 if app_docs:
                     table.add_row("Docs MCP:", f"http://localhost:{app_mgr.docs_port}/sse")
+                if app_oak_health:
+                    table.add_row(
+                        "Oak Health API:", f"http://localhost:{app_mgr.oak_health_port}/openapi.json"
+                    )
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
 
@@ -1010,6 +1049,74 @@ def start(
 
         except Exception as e:
             logger.error(f"Error starting demo_docs services: {e}")
+            stop_direct_processes()
+            raise typer.Exit(1)
+        return
+
+    if service == "demo_health":
+        os.environ["CUGA_DEMO_ADVANCED"] = "true"
+        os.environ["CUGA_MANAGER_MODE"] = "true"
+        os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+        os.environ["MCP_SERVERS_FILE"] = "none"
+        ensure_managed_mcp_file_exists(get_managed_mcp_path())
+
+        try:
+            logger.info(
+                "🧹 Resetting config db and setting up manage demo_health (oak_health + filesystem)..."
+            )
+            setup_demo_manage_config("demo_health", tools=resolved_tools)
+            logger.info("🧹 Checking for existing processes on required ports...")
+            app_mgr = _make_app_manager()
+            ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, False, True))
+            kill_processes_by_port(ports_to_clean)
+
+            os.environ["CUGA_HOST"] = host
+            if sandbox:
+                logger.info(
+                    "Starting demo_health with remote sandbox mode enabled (features.local_sandbox=false)"
+                )
+                os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
+
+            workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
+            app_mgr.prepare_workspace(workspace_path)
+            app_mgr.start_filesystem(workspace_path)
+            app_mgr.start_oak_health()
+
+            registry_process = app_mgr.start_registry(host)
+            if registry_process is None or registry_process.poll() is not None:
+                logger.error("Registry service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            demo_process = app_mgr.start_demo(host, sandbox=sandbox)
+            if demo_process is None or demo_process.poll() is not None:
+                logger.error("Demo service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            if direct_processes:
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Service", style="bold white")
+                table.add_column("URL", style="cyan")
+                table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                table.add_row("Oak Health API:", f"http://localhost:{app_mgr.oak_health_port}/openapi.json")
+                table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
+                table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
+
+                console.print()
+                console.print(
+                    Panel(
+                        table,
+                        title="[bold yellow]Demo Health (insurance APIs). Press Ctrl+C to stop[/bold yellow]",
+                        border_style="cyan",
+                        padding=(1, 2),
+                    )
+                )
+                wait_for_direct_processes()
+
+        except Exception as e:
+            logger.error(f"Error starting demo_health services: {e}")
             stop_direct_processes()
             raise typer.Exit(1)
         return
@@ -1113,7 +1220,7 @@ def manage_service(action: str, service: str):
     if action == "stop":
         if service in ("demo", "manager"):
             stopped_any = False
-            for service_name in ["filesystem-server", "registry", "demo"]:
+            for service_name in ["oak-health", "docs-mcp", "filesystem-server", "registry", "demo"]:
                 if service_name in direct_processes:
                     process = direct_processes[service_name]
                     if process and process.poll() is None:
@@ -1131,6 +1238,7 @@ def manage_service(action: str, service: str):
                 "email-mcp",
                 "filesystem-server",
                 "crm-server",
+                "oak-health",
                 "registry",
                 "demo",
             ]:
@@ -1143,6 +1251,30 @@ def manage_service(action: str, service: str):
                     del direct_processes[service_name]
             if not stopped_any:
                 logger.info(f"{service} services are not running")
+        elif service == "demo_docs":
+            stopped_any = False
+            for service_name in ["docs-mcp", "registry", "demo"]:
+                if service_name in direct_processes:
+                    process = direct_processes[service_name]
+                    if process and process.poll() is None:
+                        logger.info(f"Stopping {service_name}...")
+                        kill_process_tree(process.pid)
+                        stopped_any = True
+                    del direct_processes[service_name]
+            if not stopped_any:
+                logger.info("demo_docs services are not running")
+        elif service == "demo_health":
+            stopped_any = False
+            for service_name in ["oak-health", "filesystem-server", "registry", "demo"]:
+                if service_name in direct_processes:
+                    process = direct_processes[service_name]
+                    if process and process.poll() is None:
+                        logger.info(f"Stopping {service_name}...")
+                        kill_process_tree(process.pid)
+                        stopped_any = True
+                    del direct_processes[service_name]
+            if not stopped_any:
+                logger.info("demo_health services are not running")
         elif service == "registry":
             # Stop only registry for registry service
             if "registry" in direct_processes:
@@ -1188,7 +1320,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_supervisor, registry, appworld, or memory",
+        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, or memory",
     ),
 ):
     """
@@ -1197,6 +1329,8 @@ def stop(
     Available services:
       - demo: Stops both registry and demo agent (direct processes)
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
+      - demo_docs: Stops docs MCP, registry, and demo
+      - demo_health: Stops oak-health API, filesystem MCP, registry, and demo
       - demo_supervisor: Same as demo_crm
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)
@@ -1242,7 +1376,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo, demo_crm, demo_supervisor, registry, appworld, memory, or all",
+        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, memory, or all",
     ),
 ):
     """
@@ -1251,6 +1385,8 @@ def status(
     Available services:
       - demo: Shows status of both registry and demo agent (direct processes)
       - demo_crm: Shows status of all CRM demo services (email sink, email MCP, CRM API, registry, demo)
+      - demo_docs: Shows docs MCP, registry, and demo
+      - demo_health: Shows oak-health API, filesystem MCP, registry, and demo
       - demo_supervisor: Same as demo_crm
       - registry: Shows status of registry service only (direct process)
       - appworld: Shows status of both AppWorld environment and API servers (direct processes)
@@ -1277,9 +1413,33 @@ def status(
                 logger.info(f"{service_name.capitalize()} service: Not running")
         return
 
+    elif service == "demo_docs":
+        for service_name in ["docs-mcp", "registry", "demo"]:
+            if service_name in direct_processes:
+                process = direct_processes[service_name]
+                if process.poll() is None:
+                    logger.info(f"{service_name} service: Running (PID: {process.pid})")
+                else:
+                    logger.info(f"{service_name} service: Terminated")
+            else:
+                logger.info(f"{service_name} service: Not running")
+        return
+
+    elif service == "demo_health":
+        for service_name in ["oak-health", "filesystem-server", "registry", "demo"]:
+            if service_name in direct_processes:
+                process = direct_processes[service_name]
+                if process.poll() is None:
+                    logger.info(f"{service_name} service: Running (PID: {process.pid})")
+                else:
+                    logger.info(f"{service_name} service: Terminated")
+            else:
+                logger.info(f"{service_name} service: Not running")
+        return
+
     elif service in ("demo_crm", "demo_supervisor"):
         # Show status of all CRM/supervisor demo services
-        for service_name in ["email-sink", "email-mcp", "crm-api", "registry", "demo"]:
+        for service_name in ["email-sink", "email-mcp", "crm-server", "registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]
                 if process.poll() is None:
@@ -1335,7 +1495,10 @@ def status(
             "registry",
             "email-sink",
             "email-mcp",
-            "crm-api",
+            "crm-server",
+            "oak-health",
+            "docs-mcp",
+            "filesystem-server",
             "appworld-environment",
             "appworld-api",
             "memory",

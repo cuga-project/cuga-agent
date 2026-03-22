@@ -72,7 +72,7 @@ cuga.egg-info
 # Local TLS certs for HTTPS (e.g. IBM Verify)
 deployment/certs/*.key
 deployment/certs/*.crt
-
+registry.env
 # OpenShift env files with real secrets (keep only openshift.example.env)
 deployment/helm/openshift.env
 deployment/helm/*.env

@@ -1,10 +1,14 @@
 """Helper to setup agent config (draft + v1) for demo and demo_crm with manage experience."""
 
 import asyncio
+import json
 import os
+from pathlib import Path
 from typing import Any
 
 from cuga.config import settings
+
+_OAK_POLICIES_PATH = Path(__file__).resolve().parent / "demo_setup_utils" / "oak_policies.json"
 
 
 DIGITAL_SALES_OPENAPI_URL = (
@@ -57,6 +61,30 @@ def _get_digital_sales_tool() -> dict[str, Any]:
     }
 
 
+def _get_oak_health_tool() -> dict[str, Any]:
+    port = int(
+        os.environ.get(
+            "DYNACONF_SERVER_PORTS__OAK_HEALTH_API",
+            str(getattr(settings.server_ports, "oak_health_api", 8090)),
+        )
+    )
+    return {
+        "name": "oak_health",
+        "type": "openapi",
+        "url": f"http://localhost:{port}/openapi.json",
+        "description": (
+            "Healthcare insurance member APIs: claims, EOBs, benefits, coverage, "
+            "in-network providers, referrals, and accumulators"
+        ),
+    }
+
+
+def load_oak_policy_entries() -> list[dict[str, Any]]:
+    with _OAK_POLICIES_PATH.open(encoding="utf-8") as f:
+        data = json.load(f)
+    return list(data.get("policies") or [])
+
+
 def _get_docs_tool() -> dict[str, Any]:
     docs_port = int(
         os.environ.get(
@@ -78,8 +106,9 @@ def build_tools_from_apps(
     digital_sales: bool = False,
     docs: bool = False,
     filesystem: bool = True,
+    oak_health: bool = False,
 ) -> list[dict[str, Any]]:
-    """Build tools list from enabled app flags. Order: filesystem, email, crm, docs, digital_sales."""
+    """Build tools list from enabled app flags. Order: filesystem, email, crm, docs, digital_sales, oak_health."""
     tools: list[dict[str, Any]] = []
     if filesystem:
         tools.append(_get_filesystem_tool())
@@ -91,6 +120,8 @@ def build_tools_from_apps(
         tools.append(_get_docs_tool())
     if digital_sales:
         tools.append(_get_digital_sales_tool())
+    if oak_health:
+        tools.append(_get_oak_health_tool())
     return tools
 
 
@@ -197,14 +228,51 @@ When the user asks about IBM products, documentation, or technical topics, use t
 
 
 def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
-    """Return default app flags for a given preset (demo, demo_crm, demo_docs, manager)."""
+    """Return default app flags for a given preset (demo, demo_crm, demo_docs, demo_health, manager)."""
     if preset == "demo_crm":
-        return {"crm": True, "email": True, "digital_sales": False, "docs": False, "filesystem": True}
+        return {
+            "crm": True,
+            "email": True,
+            "digital_sales": False,
+            "docs": False,
+            "filesystem": True,
+            "oak_health": False,
+        }
     if preset == "demo_docs":
-        return {"crm": False, "email": False, "digital_sales": False, "docs": True, "filesystem": False}
+        return {
+            "crm": False,
+            "email": False,
+            "digital_sales": False,
+            "docs": True,
+            "filesystem": False,
+            "oak_health": False,
+        }
+    if preset == "demo_health":
+        return {
+            "crm": False,
+            "email": False,
+            "digital_sales": False,
+            "docs": False,
+            "filesystem": True,
+            "oak_health": True,
+        }
     if preset == "demo":
-        return {"crm": False, "email": False, "digital_sales": True, "docs": False, "filesystem": True}
-    return {"crm": False, "email": False, "digital_sales": False, "docs": False, "filesystem": True}
+        return {
+            "crm": False,
+            "email": False,
+            "digital_sales": True,
+            "docs": False,
+            "filesystem": True,
+            "oak_health": False,
+        }
+    return {
+        "crm": False,
+        "email": False,
+        "digital_sales": False,
+        "docs": False,
+        "filesystem": True,
+        "oak_health": False,
+    }
 
 
 def setup_demo_manage_config(
@@ -245,18 +313,22 @@ def setup_demo_manage_config(
         "Find the steps to deploy Kubernetes on IBM Cloud.",
         "Show me the OpenShift container platform installation guide.",
     ]
+    DEMO_HEALTH_STARTERS = [
+        "Show my last approved claims and share the URL of any EOB PDF",
+        "Find in-network primary care doctors near me that accept new patients",
+        "Find knee surgeons nearby and what are my benefits for surgery",
+        "What is my deductible and out-of-pocket progress this plan year?",
+        "Check the status of my referral and where it was sent",
+    ]
     reset_config_db()
     if tools is None:
         defaults = get_default_apps_for_preset(demo_type)
         if no_email:
             defaults["email"] = False
         tools = build_tools_from_apps(**defaults)
-    use_crm_starters = demo_type == "demo_crm" or (
-        demo_type == "manager" and tools and any(t.get("name") == "crm" for t in tools)
-    )
-    use_docs_starters = demo_type == "demo_docs" or (
-        demo_type == "manager" and tools and any(t.get("name") == "docs" for t in tools)
-    )
+    use_crm_starters = demo_type == "demo_crm"
+    use_docs_starters = demo_type == "demo_docs"
+    use_health_starters = demo_type == "demo_health"
     if use_crm_starters:
         homescreen = {
             "isOn": True,
@@ -268,6 +340,12 @@ def setup_demo_manage_config(
             "isOn": True,
             "greeting": "Search IBM documentation for answers.",
             "starters": DEMO_DOCS_STARTERS,
+        }
+    elif use_health_starters:
+        homescreen = {
+            "isOn": True,
+            "greeting": "Ask about claims, benefits, coverage, and finding in-network care.",
+            "starters": DEMO_HEALTH_STARTERS,
         }
     else:
         homescreen = DEFAULT_HOMESCREEN
@@ -281,12 +359,38 @@ def setup_demo_manage_config(
     llm_cfg: dict[str, Any] = {"model": os.environ.get("MODEL_NAME", "")}
     if llm_api_key_ref:
         llm_cfg["api_key"] = llm_api_key_ref
+    if use_crm_starters:
+        agent_meta = {
+            "name": "CRM Agent",
+            "description": "CRM-enabled agent with email and filesystem for managing contacts and accounts",
+        }
+    elif use_docs_starters:
+        agent_meta = {
+            "name": "IBM Documentation Agent",
+            "description": "Agent focused on IBM Documentation search and analysis",
+        }
+    elif use_health_starters:
+        agent_meta = {
+            "name": "Member & Benefits Assistant",
+            "description": (
+                "Healthcare insurance assistant for claims, EOBs, benefits, accumulators, "
+                "referrals, and finding in-network providers—grounded in member coverage APIs"
+            ),
+        }
+    else:
+        agent_meta = {
+            "name": "Digital Sales Agent",
+            "description": "Agent with Digital Sales API and filesystem for sales workflows",
+        }
     policies: list[dict[str, Any]] = []
+    if tools and any(t.get("name") == "oak_health" for t in tools):
+        policies.extend(load_oak_policy_entries())
     if tools and any(t.get("name") == "docs" for t in tools):
         policies.append(DOCS_PLAYBOOK)
         policies.append(DOCS_OUTPUT_FORMATTER)
     policies_struct: dict[str, Any] = {"enablePolicies": True, "policies": policies}
     config: dict[str, Any] = {
+        "agent": agent_meta,
         "tools": tools,
         "policies": policies_struct,
         "homescreen": homescreen,
