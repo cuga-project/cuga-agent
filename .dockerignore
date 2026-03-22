@@ -7,6 +7,7 @@ logging/
 
 # Node.js dependencies
 node_modules/
+**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
@@ -18,10 +19,12 @@ yarn-error.log*
 .env.production.local
 
 .venv/
+**/.venv/
 
 # IDE and editor files
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 *~
@@ -44,8 +47,28 @@ Dockerfile*
 docker-compose*
 .dockerignore
 
-# Build artifacts
+# Secrets and certs
+deployment/certs/*.key
+deployment/certs/*.crt
+.deployment/helm/*.env
+!deployment/helm/openshift.example.env
+
+# Build artifacts (KEEP frontend dist + extension releases - required for demo UI)
 target/
+**/__pycache__/
+**/*.pyc
+**/dist/
+!src/frontend_workspaces/frontend/dist
+**/build/
+**/.vite/
+**/.output/
+.pnpm-store/
+*.egg-info/
+**/.pytest_cache/
+**/.mypy_cache/
+**/playwright-report/
+**/test-results/
+**/blob-report/
 
 # Cache directories
 .cache/
@@ -64,9 +87,50 @@ output
 logging/trajectory_data
 appworld/experiments/outputs
 logging/code
+src/cuga/logging/
 
 src/system_tests/e2e/logs/
+src/system_tests/
+
+# Runtime/temp dirs (from .gitignore)
+crm_tmp/
+debug_extractions/
+debug_extractions_websocket/
+test_workspace/
+appworld/
+server_logs/
+trajectory/
+evaluation/results
+evaluation/logs
+evaluation/logger
+evaluation/experiments/outputs
+experiments/outputs
+test_results.json
+experiment_results_*
+*.db
+cuga.egg-info/
+cuga-dashboard/
+
+# Secrets and certs
+deployment/certs/*.key
+deployment/certs/*.crt
+.secrets.*
+!.secrets.baseline
+
 # Documentation (but include demo_apps for demo_crm and huggingface examples)
 docs/**
 !docs/examples/demo_apps/
 !docs/examples/huggingface/
+# Exclude demo_app .venv, build, db - local dev artifacts, not needed at runtime
+docs/examples/demo_apps/**/.venv/
+docs/examples/demo_apps/**/build/
+docs/examples/demo_apps/**/*.db
+
+
+# Secrets and local dev
+.cursor/
+deployment/certs/*.key
+deployment/certs/*.crt
+.env
+.secrets.*
+!*.secrets.baseline
