@@ -67,15 +67,16 @@ class DocSearch:
         logger.info("Product filter: %d/%d results matched %s", len(filtered), len(links), self.products)
         return filtered
 
-    async def search(self, query: str) -> str:
+    async def search(self, query: str, *, max_results: int | None = None) -> str:
         """Search IBM docs and return aggregated markdown context."""
+        cap = self.max_results if max_results is None else max_results
         t_start = time.perf_counter()
 
-        links = await self._search_links(query)
+        links = await self._search_links(query, cap)
         links = self._deduplicate(links)
         total_before_filter = len(links)
         links = self._filter_by_product(links)
-        links = links[: self.max_results]
+        links = links[:cap]
 
         if not links:
             if self.products and total_before_filter > 0:
@@ -110,7 +111,7 @@ class DocSearch:
 
         return header + context
 
-    async def _search_links(self, query: str) -> list[dict]:
+    async def _search_links(self, query: str, max_results: int) -> list[dict]:
         """Call IBM docs search API and return list of {title, url, snippet}."""
         headers = {
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36",
@@ -122,7 +123,7 @@ class DocSearch:
                 params={
                     "query": query,
                     "lang": self.lang,
-                    "limit": self.max_results * (5 if self.products else 3),
+                    "limit": max_results * (5 if self.products else 3),
                 },
             )
             resp.raise_for_status()
@@ -201,7 +202,6 @@ searcher = DocSearch()
 # FastMCP Tools
 # ---------------------------------------------------------------------------
 
-IBM_DOCS_ALLOWED = ("ibm.com/docs", "ibm.com/support")
 LARGE_PAGE_CHARS = int(os.getenv("DOCSEARCH_LARGE_PAGE_CHARS", "100000"))
 
 
@@ -223,10 +223,15 @@ class FetchDocPageResult(BaseModel):
 
 def _is_allowed_docs_url(url: str) -> bool:
     parsed = urlparse(url)
+    scheme = (parsed.scheme or "").lower()
+    if scheme not in ("http", "https"):
+        return False
     netloc = (parsed.netloc or "").lower()
-    path = (parsed.path or "").lower()
-    full = f"{netloc}{path}"
-    return any(domain in full for domain in IBM_DOCS_ALLOWED)
+    host = netloc.split(":")[0]
+    path = (parsed.path or "/").lower()
+    if not (host == "ibm.com" or host.endswith(".ibm.com")):
+        return False
+    return path.startswith("/docs") or path.startswith("/support")
 
 
 async def _fetch_single_page(url: str) -> str:
@@ -296,8 +301,8 @@ async def ibm_search_doc(query: str, max_results: int = 3) -> str:
         query: Search query for IBM docs (e.g. "kubernetes deployment", "MQ configuration").
         max_results: Maximum number of doc pages to return (1-5). Defaults to 3.
     """
-    searcher.max_results = min(max(max_results, 1), 5)
-    return await searcher.search(query)
+    cap = min(max(max_results, 1), 5)
+    return await searcher.search(query, max_results=cap)
 
 
 @mcp.tool()

@@ -1002,7 +1002,7 @@ async def event_stream(
                     yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
                     return
                 if status == "done":
-                    break
+                    return
 
                 if isinstance(event, AgentLoopAnswer):
                     if event.flow_generalized:
