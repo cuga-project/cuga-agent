@@ -499,7 +499,7 @@ def callback(
     - demo: Both registry and demo agent (runs directly)
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
     - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
-    - demo_health: Healthcare insurance demo (cuga-oak-health OpenAPI + filesystem + manage UI)
+    - demo_health: Healthcare insurance demo (cuga-oak-health OpenAPI + manage UI)
     - registry: The MCP registry service only (runs directly)
     - appworld: AppWorld environment and API servers (runs directly)
     - memory: The memory service (runs directly)
@@ -772,7 +772,7 @@ def start(
     filesystem: bool = typer.Option(
         False,
         "--filesystem",
-        help="Enable filesystem app (included by default for demo/demo_crm/manager)",
+        help="Enable filesystem MCP (default on for demo/demo_crm/manager; use with demo_health/demo_docs to add it)",
     ),
     docs: bool = typer.Option(
         False,
@@ -798,7 +798,7 @@ def start(
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
-      - demo_health: Starts cuga-oak-health OpenAPI, filesystem MCP, registry, and demo (insurance member APIs + OAK playbooks)
+      - demo_health: Starts cuga-oak-health OpenAPI, registry, and demo (insurance member APIs + OAK playbooks; add --filesystem for workspace MCP)
       - manager: Manage-config mode: registry uses managed MCP YAML, policy filesync off, demo on 7860
       - registry: Starts only the registry service directly (uvicorn on port 8001)
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
@@ -808,7 +808,7 @@ def start(
       - demo: default = digital_sales + filesystem
       - demo_crm: default = crm + filesystem + email
       - manager: default = filesystem only
-      - demo_health: default = oak_health + filesystem
+      - demo_health: default = oak_health only
 
     Examples:
       cuga start demo                     # digital_sales + filesystem
@@ -819,7 +819,8 @@ def start(
       cuga start manager --digital-sales  # filesystem + digital_sales
       cuga start manager --docs  # add IBM Docs MCP server
       cuga start demo_docs  # registry + demo + IBM Docs MCP only
-      cuga start demo_health  # oak health OpenAPI + filesystem + registry + demo
+      cuga start demo_health  # oak health OpenAPI + registry + demo
+      cuga start demo_health --filesystem  # also workspace filesystem MCP
       cuga start manager --oak-health  # add insurance APIs to manager preset
       cuga start manager --cuga-workspace /path/to/workspace  # custom workspace + policy
       cuga start demo --sandbox           # with remote sandbox
@@ -1061,14 +1062,12 @@ def start(
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:
-            logger.info(
-                "🧹 Resetting config db and setting up manage demo_health (oak_health + filesystem)..."
-            )
+            logger.info("🧹 Resetting config db and setting up manage demo_health (oak_health)...")
             setup_demo_manage_config("demo_health", tools=resolved_tools)
             logger.info("🧹 Checking for existing processes on required ports...")
             app_mgr = _make_app_manager()
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, False, True))
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, app_filesystem, False, False, True))
             kill_processes_by_port(ports_to_clean)
 
             os.environ["CUGA_HOST"] = host
@@ -1078,9 +1077,10 @@ def start(
                 )
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
-            workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
-            app_mgr.prepare_workspace(workspace_path)
-            app_mgr.start_filesystem(workspace_path)
+            if app_filesystem:
+                workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
+                app_mgr.prepare_workspace(workspace_path)
+                app_mgr.start_filesystem(workspace_path)
             app_mgr.start_oak_health()
 
             registry_process = app_mgr.start_registry(host)
@@ -1099,7 +1099,8 @@ def start(
                 table = Table(show_header=False, box=None, padding=(0, 1))
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
-                table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                if app_filesystem:
+                    table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
                 table.add_row("Oak Health API:", f"http://localhost:{app_mgr.oak_health_port}/openapi.json")
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
@@ -1330,7 +1331,7 @@ def stop(
       - demo: Stops both registry and demo agent (direct processes)
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Stops docs MCP, registry, and demo
-      - demo_health: Stops oak-health API, filesystem MCP, registry, and demo
+      - demo_health: Stops oak-health API, registry, and demo (and filesystem MCP if started with --filesystem)
       - demo_supervisor: Same as demo_crm
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)
@@ -1386,7 +1387,7 @@ def status(
       - demo: Shows status of both registry and demo agent (direct processes)
       - demo_crm: Shows status of all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Shows docs MCP, registry, and demo
-      - demo_health: Shows oak-health API, filesystem MCP, registry, and demo
+      - demo_health: Shows oak-health API, registry, and demo (and filesystem MCP if used)
       - demo_supervisor: Same as demo_crm
       - registry: Shows status of registry service only (direct process)
       - appworld: Shows status of both AppWorld environment and API servers (direct processes)

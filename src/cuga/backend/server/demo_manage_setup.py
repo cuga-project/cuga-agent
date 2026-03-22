@@ -253,7 +253,7 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "email": False,
             "digital_sales": False,
             "docs": False,
-            "filesystem": True,
+            "filesystem": False,
             "oak_health": True,
         }
     if preset == "demo":
@@ -314,7 +314,7 @@ def setup_demo_manage_config(
         "Show me the OpenShift container platform installation guide.",
     ]
     DEMO_HEALTH_STARTERS = [
-        "Show my last approved claims and share the URL of any EOB PDF",
+        "Show my last approved claims and share the URL of any EOB PDF (member 121231234)",
         "Find in-network primary care doctors near me that accept new patients",
         "Find knee surgeons nearby and what are my benefits for surgery",
         "What is my deductible and out-of-pocket progress this plan year?",

@@ -1,6 +1,6 @@
 # Healthcare insurance demo (OAK / `demo_health`)
 
-This demo wires the CUGA manage experience to **member-focused insurance APIs** served by **`cuga-oak-health`** (OpenAPI on port **8090** by default) plus the workspace filesystem MCP and built-in **OAK playbooks** shipped in this repo (`oak_policies.json`).
+This demo wires the CUGA manage experience to **member-focused insurance APIs** served by **`cuga-oak-health`** (OpenAPI on port **8090** by default) and built-in **OAK playbooks** shipped in this repo (`oak_policies.json`). The workspace **filesystem MCP** is optional (`cuga start demo_health --filesystem`).
 
 ## Prerequisites
 
@@ -22,8 +22,8 @@ cuga start demo_health
 Services started:
 
 - **Oak Health OpenAPI** — `http://localhost:8090/openapi.json` (config: `[server_ports] oak_health_api` in `settings.toml`)
-- **Filesystem MCP** — workspace under `./cuga_workspace`
 - **Registry** + **Demo / Manage UI** — same ports as other demos
+- **Filesystem MCP** — only if you run `cuga start demo_health --filesystem` (workspace under `./cuga_workspace`)
 
 Stop:
 
@@ -49,7 +49,7 @@ cuga start manager --oak-health
 
 ## Docker / OpenShift
 
-Use `CUGA_DEMO_MODE=health` with the UBI entrypoint to run `demo_health` with workspace `/app/cuga_workspace`.
+Use `CUGA_DEMO_MODE=health` with the UBI entrypoint to run `demo_health` (no filesystem MCP by default).
 
 ## Related
 

@@ -14,7 +14,7 @@ case "$MODE" in
     exec uv run cuga start demo --host 0.0.0.0
     ;;
   health)
-    exec uv run cuga start demo_health --host 0.0.0.0 --cuga-workspace /app/cuga_workspace
+    exec uv run cuga start demo_health --host 0.0.0.0
     ;;
   *)
     echo "Unknown CUGA_DEMO_MODE=$MODE. Use: default, crm, digital_sales, or health"
