@@ -13,7 +13,7 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-RUN uv sync --no-editable --no-dev
+RUN uv sync --no-editable --no-dev && uv pip install "pip>=25.3"
 
 # Runtime stage - slimmer base, copy only built artifacts
 FROM ${BASE_IMAGE}
