@@ -386,15 +386,18 @@ async def create_find_tools_tool(
                 "Tool shortlisting failed due to parser error; returning error to agent"
             )
             return (
-                "Tool shortlisting failed due to malformed response. "
-                "Please retry or try rephrasing your query."
+                f"Tool shortlisting failed due to malformed response: {e}. "
+                "Please retry with a different query."
             )
         except Exception as e:
             logger.bind(
                 query_len=len(query),
                 error_type=type(e).__name__,
             ).opt(exception=True).warning("Tool shortlisting failed unexpectedly; returning error to agent")
-            return "Tool shortlisting failed due to an internal error. Please try again later."
+            return (
+                f"Tool shortlisting failed due to an internal error: {e}. "
+                "Please retry with a different query."
+            )
 
     return StructuredTool.from_function(
         func=find_tools_func,
