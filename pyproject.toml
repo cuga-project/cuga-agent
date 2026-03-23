@@ -13,7 +13,7 @@ dependencies = [
     "aiohttp",
     "httpx",
     "docker",
-    "langgraph",
+    "langgraph>=1.0.10",
     "markdownify",
     "uvicorn",
     "fastapi[standard]",
@@ -37,11 +37,11 @@ dependencies = [
     "torch>=2.2.2",
     "sentence-transformers>=5.1.2",
     "a2a-sdk[http-server]>=0.3.22",
-    "sqlite-vec>=0.1.6",
+    "sqlite-vec>=0.1.7",
     "pgvector>=0.4.2",
     "asyncpg>=0.30",
     "PyJWT[crypto]>=2.10.0",
-    "cryptography>=44.0.0",
+    "cryptography>=46.0.5",
     "hvac>=2.0.0",
     "boto3>=1.34.0",
     "openlit>=1.4.0", # 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard
@@ -63,7 +63,10 @@ constraint-dependencies = [
     "pillow>=12.1.1",  # CVE-2026-25990: Out-of-bounds write in PSD loading
     "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
-    "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
+    "setuptools>=78.1.1",  # PYSEC-2025-49, GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf
+    "protobuf>=5.29.6",  # GHSA-7gcm-g887-7qv7
+    "authlib>=1.6.7",    # GHSA-7wc2-qxgw-g8gg
+    "langsmith>=0.6.3",  # GHSA-v34v-rq6j-cj6p (Python fixed >=0.6.3)
 ]
 
 [tool.setuptools]
