@@ -51,13 +51,13 @@ async def test_find_tools_func_returns_error_on_output_parser_exception(mock_too
         func = await _get_find_tools_func(mock_tools, mock_apps)
         result = await func(query="find contacts", app_name="test_app")
 
-    assert "Tool shortlisting failed" in result
+    assert "malformed response" in result
     assert "retry" in result.lower()
 
 
 @pytest.mark.asyncio
 async def test_find_tools_func_returns_error_on_generic_exception(mock_tools, mock_apps):
-    """Any exception type should be caught and return an error string."""
+    """Any exception type should be caught and return a generic internal error string."""
     with patch(
         "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.find_tools",
         new_callable=AsyncMock,
@@ -66,7 +66,8 @@ async def test_find_tools_func_returns_error_on_generic_exception(mock_tools, mo
         func = await _get_find_tools_func(mock_tools, mock_apps)
         result = await func(query="find contacts", app_name="test_app")
 
-    assert "Tool shortlisting failed" in result
+    assert "internal error" in result
+    assert "try again later" in result.lower()
 
 
 @pytest.mark.asyncio
