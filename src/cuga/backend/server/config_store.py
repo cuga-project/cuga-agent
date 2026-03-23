@@ -75,7 +75,26 @@ async def _ensure_schema(store) -> None:
     await store.commit()
 
 
+def normalize_policies_for_save(config: dict[str, Any]) -> None:
+    """Ensure config['policies'] is always { enablePolicies: bool, policies: list }. Mutates config in place."""
+    if "policies" not in config:
+        return
+    p = config["policies"]
+    if isinstance(p, list):
+        config["policies"] = {"enablePolicies": True, "policies": p}
+    elif isinstance(p, dict):
+        policies_list = p.get("policies")
+        if not isinstance(policies_list, list):
+            config["policies"] = {"enablePolicies": p.get("enablePolicies", True), "policies": []}
+        else:
+            config["policies"] = {
+                "enablePolicies": p.get("enablePolicies", True),
+                "policies": policies_list,
+            }
+
+
 async def save_config(config: dict[str, Any], agent_id: str = "cuga-default") -> str:
+    normalize_policies_for_save(config)
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
     tenant_id = _tenant_id()
@@ -190,6 +209,7 @@ async def get_latest_version(agent_id: str = "cuga-default") -> tuple[str | None
 
 
 async def save_draft(config: dict[str, Any], agent_id: str = "cuga-default") -> None:
+    normalize_policies_for_save(config)
     base_agent_id = _parse_agent_id(agent_id)
     store = _get_store()
     tenant_id = _tenant_id()

@@ -51,6 +51,7 @@ dependencies = [
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
+health = ["cuga-oak-health; python_version>='3.12'"]
 
 [project.urls]
 Homepage = "https://cuga.dev"
@@ -81,6 +82,7 @@ cuga = [
     "settings.toml",
     "backend/**/*.jinja2",
     "backend/**/*.js",
+    "backend/server/demo_setup_utils/*.json",
 ]
 frontend_workspaces = [
     "frontend/dist/**",

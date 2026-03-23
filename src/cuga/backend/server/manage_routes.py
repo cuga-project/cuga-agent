@@ -57,6 +57,24 @@ def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool |
     return out
 
 
+def _merge_feature_flags_defaults(config: dict[str, Any]) -> None:
+    """Merge settings.advanced_features into config.feature_flags when keys are absent."""
+    from cuga.config import settings
+
+    ff = config.setdefault("feature_flags", {})
+    af = getattr(settings, "advanced_features", None)
+    if not af:
+        return
+    if "enable_todos" not in ff:
+        ff["enable_todos"] = getattr(af, "enable_todos", False)
+    if "reflection" not in ff:
+        ff["reflection"] = getattr(af, "reflection_enabled", False)
+    if "shortlisting_tool_threshold" not in ff:
+        ff["shortlisting_tool_threshold"] = getattr(af, "shortlisting_tool_threshold", 35)
+    if "max_steps" not in ff:
+        ff["max_steps"] = getattr(af, "cuga_lite_max_steps", 70)
+
+
 def _merge_mcp_yaml_into_config(config: dict[str, Any]) -> None:
     from cuga.backend.server.managed_mcp import get_managed_mcp_path, read_managed_mcp_servers
 
@@ -150,8 +168,6 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
     policies_list = (
         raw_policies.get("policies", [])
         if isinstance(raw_policies, dict) and "policies" in raw_policies
-        else raw_policies
-        if isinstance(raw_policies, list)
         else []
     )
     if raw_policies is not None and app_state.policy_system and app_state.policy_system.storage:
@@ -284,11 +300,13 @@ async def get_manage_config(
             if config is None:
                 return JSONResponse({"config": {}, "version": "draft", "agent_id": agent_id})
             _merge_mcp_yaml_into_config(config)
+            _merge_feature_flags_defaults(config)
             return JSONResponse({"config": config, "version": "draft", "agent_id": agent_id})
         config, ver = await load_config(version, agent_id)
         if config is None:
             return JSONResponse({"config": {}, "agent_id": agent_id})
         _merge_mcp_yaml_into_config(config)
+        _merge_feature_flags_defaults(config)
         return JSONResponse({"config": config, "version": ver, "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to load manage config: {e}")
@@ -544,8 +562,6 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             policies_list = (
                 raw_policies.get("policies", [])
                 if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else raw_policies
-                if isinstance(raw_policies, list)
                 else []
             )
             if (
@@ -824,8 +840,6 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
             policies_list = (
                 raw_policies.get("policies", [])
                 if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else raw_policies
-                if isinstance(raw_policies, list)
                 else []
             )
             try:

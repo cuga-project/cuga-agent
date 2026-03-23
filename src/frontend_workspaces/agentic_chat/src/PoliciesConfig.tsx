@@ -241,7 +241,6 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         const data = await response.json();
         const configData = data.config || {};
         const policiesData = configData.policies || {};
-        
         const normalizedPolicies = (policiesData.policies ?? []).map((policy: Policy) => ({
           ...policy,
           triggers: policy.triggers.map((trigger: PolicyTrigger) => {

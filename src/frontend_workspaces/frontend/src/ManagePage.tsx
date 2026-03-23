@@ -311,9 +311,7 @@ export function ManagePage() {
             if (Array.isArray(out.tools)) {
               out.tools = normalizeTools(out.tools);
             }
-            // Policies are now included in the config from manage API
-            if (out.policies) {
-              // Ensure policies structure is correct
+            if (out.policies !== undefined && out.policies && typeof out.policies === "object") {
               if (!out.policies.enablePolicies && out.policies.enablePolicies !== false) {
                 out.policies.enablePolicies = true;
               }
@@ -352,9 +350,7 @@ export function ManagePage() {
             if (Array.isArray(out.tools)) {
               out.tools = normalizeTools(out.tools);
             }
-            // Policies are now included in the config from manage API
-            if (out.policies) {
-              // Ensure policies structure is correct
+            if (out.policies !== undefined && out.policies && typeof out.policies === "object") {
               if (!out.policies.enablePolicies && out.policies.enablePolicies !== false) {
                 out.policies.enablePolicies = true;
               }

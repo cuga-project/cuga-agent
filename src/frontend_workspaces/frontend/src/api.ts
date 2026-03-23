@@ -99,6 +99,7 @@ export async function postStop(threadId: string): Promise<Response> {
   return apiFetch(`${base}/stop`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Thread-ID": threadId },
+    body: JSON.stringify({ thread_id: threadId }),
   });
 }
 

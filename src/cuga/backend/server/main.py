@@ -362,8 +362,6 @@ async def lifespan(app: FastAPI):
             policies_list = (
                 raw_policies.get("policies", [])
                 if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else raw_policies
-                if isinstance(raw_policies, list)
                 else []
             )
             if policies_list and app_state.policy_system and app_state.policy_system.storage:
@@ -813,6 +811,32 @@ async def save_conversation_to_db(
         logger.error(f"Error saving conversation to database: {e}")
 
 
+async def _next_event_or_stop(stream, stop_event):
+    """Get next event from stream, or (None, True) if stop_event is set first."""
+    if stop_event and stop_event.is_set():
+        return None, True
+    next_task = asyncio.create_task(stream.__anext__())
+    tasks = [next_task]
+    if stop_event:
+        stop_task = asyncio.create_task(stop_event.wait())
+        tasks.append(stop_task)
+    else:
+        stop_task = None
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for p in pending:
+        p.cancel()
+        try:
+            await p
+        except asyncio.CancelledError:
+            pass
+    if stop_task and stop_task in done and stop_event.is_set():
+        return None, True
+    try:
+        return next_task.result(), False
+    except StopAsyncIteration:
+        return None, "done"
+
+
 async def event_stream(
     query: str,
     api_mode=False,
@@ -970,17 +994,14 @@ async def event_stream(
                 yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
                 return
 
-            async for event in agent_stream_gen:
-                # Check cancellation event during event processing
-                if (
-                    thread_id
-                    and thread_id in app_state.stop_events
-                    and app_state.stop_events[thread_id].is_set()
-                ):
-                    logger.info(
-                        f"Agent execution stopped by user during event processing for thread_id: {thread_id}"
-                    )
+            stop_ev = app_state.stop_events.get(thread_id) if thread_id else None
+            while True:
+                event, status = await _next_event_or_stop(agent_stream_gen, stop_ev)
+                if status is True:
+                    logger.info(f"Agent execution stopped by user for thread_id: {thread_id}")
                     yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
+                    return
+                if status == "done":
                     return
 
                 if isinstance(event, AgentLoopAnswer):
