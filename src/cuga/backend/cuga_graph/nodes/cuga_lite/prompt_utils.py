@@ -252,23 +252,15 @@ class PromptUtils:
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
         chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
-        try:
-            response = await chain.ainvoke(
-                {
-                    "input": query,
-                    "all_apps": apps_as_dict,
-                    "all_tools": tools_as_dict,
-                    "instructions": "",
-                    "memory": None,
-                }
-            )
-        except Exception as e:
-            logger.bind(
-                query_len=len(query),
-                error_type=type(e).__name__,
-            ).opt(exception=True).warning("Tool shortlisting failed; using fallback tool list")
-            # Return all tools unfiltered so the agent can still proceed
-            return PromptUtils._format_all_tools_as_fallback(all_tools)
+        response = await chain.ainvoke(
+            {
+                "input": query,
+                "all_apps": apps_as_dict,
+                "all_tools": tools_as_dict,
+                "instructions": "",
+                "memory": None,
+            }
+        )
 
         enriched_tools = []
         for api_detail in response.result:
@@ -367,57 +359,6 @@ class PromptUtils:
             if tool.output_schema and tool.output_schema != {}:
                 markdown_lines.append("**Output Schema:**\n")
                 markdown_lines.append(f"```json\n{json.dumps(tool.output_schema, indent=2)}\n```\n")
-
-            markdown_lines.append("---\n")
-
-        return "\n".join(markdown_lines)
-
-    @staticmethod
-    def _format_all_tools_as_fallback(all_tools: List[StructuredTool]) -> str:
-        """Format all tools as a fallback when shortlisting fails.
-
-        Returns a markdown string listing all available tools so the agent can still proceed.
-        Output is bounded to prevent context-overflow failures.
-        """
-        if not all_tools:
-            return "No matching tools found for your query."
-
-        max_tools = 20
-        max_doc_chars = 1200
-        shown_tools = all_tools[:max_tools]
-
-        markdown_lines = [
-            f"# Available Tools ({len(all_tools)} total)\n",
-            "**Note:** Tool shortlisting was unavailable. Showing all tools.\n",
-        ]
-        if len(all_tools) > max_tools:
-            markdown_lines.append(
-                f"**Output truncated:** showing first {max_tools} of {len(all_tools)} tools.\n"
-            )
-
-        for idx, tool in enumerate(shown_tools, 1):
-            markdown_lines.append(f"## {idx}. `{tool.name}`\n")
-            if hasattr(tool, 'description') and tool.description:
-                markdown_lines.append(f"**Description:** {tool.description}\n")
-
-            try:
-                params_doc, response_doc = PromptUtils.get_tool_docs(tool)
-            except Exception:
-                logger.bind(
-                    tool_name=getattr(tool, "name", "<unknown>"),
-                ).opt(exception=True).warning("Tool doc extraction failed during fallback; skipping docs")
-                params_doc, response_doc = "", ""
-            if params_doc:
-                if len(params_doc) > max_doc_chars:
-                    params_doc = params_doc[:max_doc_chars] + "\n... (truncated)"
-                markdown_lines.append("**Parameters:**\n")
-                markdown_lines.append(f"{params_doc}\n")
-
-            if response_doc:
-                if len(response_doc) > max_doc_chars:
-                    response_doc = response_doc[:max_doc_chars] + "\n... (truncated)"
-                markdown_lines.append("**Response Schema:**\n")
-                markdown_lines.append(f"{response_doc}\n")
 
             markdown_lines.append("---\n")
 
