@@ -10,9 +10,9 @@ Tests the self-contained Kaizen MCP client wrapper:
 
 import json
 import pytest
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-from langchain_core.messages import HumanMessage, AIMessage, SystemMessage, ToolMessage
+from langchain_core.messages import HumanMessage, AIMessage, SystemMessage
 
 from cuga.backend.kaizen.kaizen_integration import KaizenIntegration
 
@@ -168,9 +168,7 @@ class TestSaveTrajectory:
     async def test_skips_when_disabled(self, mock_settings):
         mock_settings.kaizen.enabled = False
         # Should not raise or make any calls
-        await KaizenIntegration.save_trajectory(
-            [HumanMessage(content="test")], "task_1", True
-        )
+        await KaizenIntegration.save_trajectory([HumanMessage(content="test")], "task_1", True)
 
     @pytest.mark.asyncio
     @patch.object(KaizenIntegration, "_call_tool", new_callable=AsyncMock)
@@ -180,9 +178,7 @@ class TestSaveTrajectory:
         mock_settings.kaizen.lite_mode_only = False
         mock_settings.kaizen.save_on_success = False
         mock_settings.kaizen.save_on_failure = True
-        await KaizenIntegration.save_trajectory(
-            [HumanMessage(content="test")], "task_1", success=True
-        )
+        await KaizenIntegration.save_trajectory([HumanMessage(content="test")], "task_1", success=True)
         mock_call_tool.assert_not_called()
 
     @pytest.mark.asyncio
@@ -193,9 +189,7 @@ class TestSaveTrajectory:
         mock_settings.kaizen.lite_mode_only = False
         mock_settings.kaizen.save_on_success = True
         mock_settings.kaizen.save_on_failure = False
-        await KaizenIntegration.save_trajectory(
-            [HumanMessage(content="test")], "task_1", success=False
-        )
+        await KaizenIntegration.save_trajectory([HumanMessage(content="test")], "task_1", success=False)
         mock_call_tool.assert_not_called()
 
     @pytest.mark.asyncio
@@ -228,9 +222,7 @@ class TestSaveTrajectory:
         mock_settings.kaizen.save_on_success = True
         mock_settings.kaizen.save_on_failure = True
         # Only SystemMessage -> results in empty converted list
-        await KaizenIntegration.save_trajectory(
-            [SystemMessage(content="system")], "task_1", success=True
-        )
+        await KaizenIntegration.save_trajectory([SystemMessage(content="system")], "task_1", success=True)
         mock_call_tool.assert_not_called()
 
     @pytest.mark.asyncio
@@ -243,6 +235,4 @@ class TestSaveTrajectory:
         mock_settings.kaizen.save_on_failure = True
         mock_call_tool.side_effect = ConnectionError("Unable to connect")
         # Should not raise
-        await KaizenIntegration.save_trajectory(
-            [HumanMessage(content="test")], "task_1", success=True
-        )
+        await KaizenIntegration.save_trajectory([HumanMessage(content="test")], "task_1", success=True)

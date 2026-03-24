@@ -733,6 +733,7 @@ def create_cuga_lite_graph(
 
             # Fetch Kaizen guidelines if enabled
             from cuga.backend.kaizen.kaizen_integration import KaizenIntegration
+
             special_instructions_final = base_special_instructions
             if KaizenIntegration.is_enabled():
                 task_description = ""
@@ -749,7 +750,9 @@ def create_cuga_lite_graph(
                         kaizen_section = f"\n\n## Kaizen Guidelines\n{kaizen_guidelines}"
                         special_instructions_final = (special_instructions_final or "") + kaizen_section
                         logger.info("Kaizen: Injected guidelines into system prompt")
-                        logger.debug(f"Kaizen: Full special_instructions with guidelines:\n{special_instructions_final}")
+                        logger.debug(
+                            f"Kaizen: Full special_instructions with guidelines:\n{special_instructions_final}"
+                        )
 
             # Create prompt dynamically
             dynamic_prompt = prompt

@@ -7,7 +7,6 @@ All operations are non-fatal — errors are logged as warnings and never crash t
 """
 
 import json
-import asyncio
 from typing import Optional, List
 
 from loguru import logger
