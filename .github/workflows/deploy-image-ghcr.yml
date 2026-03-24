@@ -8,6 +8,10 @@ on:
         description: 'Image tag (e.g. 1.0.0, latest)'
         required: false
         default: 'latest'
+      branch:
+        description: 'Git ref to build (branch, tag, or SHA). Defaults to main.'
+        required: false
+        default: 'main'
 
 jobs:
   deploy:
@@ -19,6 +23,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v5
+        with:
+          ref: ${{ inputs.branch != '' && inputs.branch || 'main' }}
 
       - name: Validate vars
         run: |

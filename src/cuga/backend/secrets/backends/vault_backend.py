@@ -3,6 +3,15 @@ from typing import Any
 
 from loguru import logger
 
+_DEFAULT_SA_JWT = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
+
+def _vault_addr_and_auth(sec: Any) -> tuple[str, str]:
+    addr = (getattr(sec, "vault_addr", "") or os.environ.get("VAULT_ADDR") or "").strip()
+    raw = getattr(sec, "vault_auth_method", "") or os.environ.get("VAULT_AUTH_METHOD") or "token"
+    method = str(raw).strip().lower() or "token"
+    return addr, method
+
 
 def _get_client():
     try:
@@ -15,10 +24,43 @@ def _get_client():
         sec = getattr(settings, "secrets", None)
         if not sec:
             return None
-        addr = getattr(sec, "vault_addr", "") or os.environ.get("VAULT_ADDR")
+        addr, auth_method = _vault_addr_and_auth(sec)
+        if not addr:
+            return None
+
+        if auth_method == "kubernetes":
+            role = (getattr(sec, "vault_k8s_role", "") or os.environ.get("VAULT_K8S_ROLE") or "").strip()
+            mount = (
+                getattr(sec, "vault_k8s_mount_path", "")
+                or os.environ.get("VAULT_K8S_MOUNT_PATH")
+                or "kubernetes"
+            ).strip() or "kubernetes"
+            jwt_path = (
+                getattr(sec, "vault_k8s_jwt_path", "")
+                or os.environ.get("VAULT_K8S_JWT_PATH")
+                or _DEFAULT_SA_JWT
+            ).strip() or _DEFAULT_SA_JWT
+            if not role:
+                logger.debug("Vault kubernetes auth: missing role (secrets.vault_k8s_role / VAULT_K8S_ROLE)")
+                return None
+            try:
+                with open(jwt_path, encoding="utf-8") as f:
+                    jwt = f.read().strip()
+            except OSError as e:
+                logger.debug("Vault kubernetes auth: cannot read JWT at {}: {}", jwt_path, e)
+                return None
+            if not jwt:
+                return None
+            client = hvac.Client(url=addr)
+            client.auth.kubernetes.login(role=role, jwt=jwt, mount_point=mount)
+            if not client.is_authenticated():
+                logger.debug("Vault kubernetes login did not yield an authenticated client")
+                return None
+            return client
+
         token_env = getattr(sec, "vault_token_env", "VAULT_TOKEN")
         token = os.environ.get(token_env)
-        if not addr or not token:
+        if not token:
             return None
         client = hvac.Client(url=addr, token=token)
         if not client.is_authenticated():
