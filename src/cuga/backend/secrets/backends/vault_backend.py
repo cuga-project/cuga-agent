@@ -102,7 +102,12 @@ def _parse_vault_path(path: str) -> tuple[str, str | None]:
 def _split_mount_and_path(full_path: str, default_mount: str = "secret") -> tuple[str, str]:
     parts = full_path.strip().split("/")
     if len(parts) >= 2:
-        return parts[0], "/".join(parts[1:])
+        mount = parts[0]
+        rest = "/".join(parts[1:])
+        # hvac KV v2 internally prepends "data/" — strip it if already present to avoid double
+        if rest.startswith("data/"):
+            rest = rest[len("data/"):]
+        return mount, rest
     if len(parts) == 1 and parts[0]:
         return default_mount, parts[0]
     return default_mount, ""
