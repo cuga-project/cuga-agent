@@ -292,6 +292,18 @@ fi
 if [[ -n "${DYNACONF_SECRETS__VAULT_K8S_JWT_PATH:-}" ]]; then
   HELM_ARGS+=("--set" "env.DYNACONF_SECRETS__VAULT_K8S_JWT_PATH=${DYNACONF_SECRETS__VAULT_K8S_JWT_PATH}")
 fi
+if [[ -n "${DYNACONF_SECRETS__VAULT_CACERT:-}" ]]; then
+  HELM_ARGS+=("--set" "env.DYNACONF_SECRETS__VAULT_CACERT=${DYNACONF_SECRETS__VAULT_CACERT}")
+fi
+if [[ -n "${DYNACONF_SECRETS__VAULT_SKIP_VERIFY:-}" ]]; then
+  HELM_ARGS+=("--set" "env.DYNACONF_SECRETS__VAULT_SKIP_VERIFY=${DYNACONF_SECRETS__VAULT_SKIP_VERIFY}")
+fi
+if [[ -n "${VAULT_CACERT:-}" ]]; then
+  HELM_ARGS+=("--set" "env.VAULT_CACERT=${VAULT_CACERT}")
+fi
+if [[ -n "${VAULT_SKIP_VERIFY:-}" ]]; then
+  HELM_ARGS+=("--set" "env.VAULT_SKIP_VERIFY=${VAULT_SKIP_VERIFY}")
+fi
 
 if [[ -n "${VAULT_TOKEN:-}" ]]; then
   HELM_ARGS+=("--set" "env.VAULT_TOKEN=_")

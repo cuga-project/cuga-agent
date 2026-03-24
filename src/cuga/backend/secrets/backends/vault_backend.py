@@ -6,6 +6,25 @@ from loguru import logger
 _DEFAULT_SA_JWT = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 
 
+def _env_truthy(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _vault_verify(sec: Any) -> bool | str:
+    skip = getattr(sec, "vault_skip_verify", False)
+    if isinstance(skip, str):
+        skip = skip.strip().lower() in ("1", "true", "yes", "on")
+    if skip or _env_truthy("VAULT_SKIP_VERIFY"):
+        logger.warning("Vault TLS verification is disabled (vault_skip_verify / VAULT_SKIP_VERIFY)")
+        return False
+    path = (getattr(sec, "vault_cacert", "") or os.environ.get("VAULT_CACERT") or "").strip()
+    if path and os.path.isfile(path):
+        return path
+    if path:
+        logger.debug("Vault TLS: CA file missing or not a file: {}", path)
+    return True
+
+
 def _vault_addr_and_auth(sec: Any) -> tuple[str, str]:
     addr = (getattr(sec, "vault_addr", "") or os.environ.get("VAULT_ADDR") or "").strip()
     raw = getattr(sec, "vault_auth_method", "") or os.environ.get("VAULT_AUTH_METHOD") or "token"
@@ -27,6 +46,7 @@ def _get_client():
         addr, auth_method = _vault_addr_and_auth(sec)
         if not addr:
             return None
+        verify = _vault_verify(sec)
 
         if auth_method == "kubernetes":
             role = (getattr(sec, "vault_k8s_role", "") or os.environ.get("VAULT_K8S_ROLE") or "").strip()
@@ -51,7 +71,7 @@ def _get_client():
                 return None
             if not jwt:
                 return None
-            client = hvac.Client(url=addr)
+            client = hvac.Client(url=addr, verify=verify)
             client.auth.kubernetes.login(role=role, jwt=jwt, mount_point=mount)
             if not client.is_authenticated():
                 logger.debug("Vault kubernetes login did not yield an authenticated client")
@@ -62,7 +82,7 @@ def _get_client():
         token = os.environ.get(token_env)
         if not token:
             return None
-        client = hvac.Client(url=addr, token=token)
+        client = hvac.Client(url=addr, token=token, verify=verify)
         if not client.is_authenticated():
             logger.debug("Vault client not authenticated")
             return None
