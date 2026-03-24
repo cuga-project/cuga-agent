@@ -140,6 +140,7 @@ class KaizenIntegration:
         Returns:
             The tool result (parsed from TextContent if applicable).
         """
+        import asyncio
         from fastmcp import Client
         from fastmcp.client.transports import SSETransport
         from mcp.types import TextContent
@@ -148,7 +149,16 @@ class KaizenIntegration:
         transport = SSETransport(url)
 
         async with Client(transport) as client:
-            result = await client.call_tool(tool_name, args)
+            try:
+                result = await asyncio.wait_for(
+                    client.call_tool(tool_name, args), timeout=settings.kaizen.timeout
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    f"Kaizen MCP call timed out after {settings.kaizen.timeout}s: "
+                    f"tool={tool_name}, args={args}"
+                )
+                return None
 
             # Parse result from MCP CallToolResult
             # fastmcp 2.x returns CallToolResult with .content (list) and .data attributes

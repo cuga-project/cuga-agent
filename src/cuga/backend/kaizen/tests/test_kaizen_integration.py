@@ -154,6 +154,19 @@ class TestGetGuidelines:
         result = await KaizenIntegration.get_guidelines("test task")
         assert result is None  # Should not raise
 
+    @pytest.mark.asyncio
+    @patch.object(KaizenIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.kaizen.kaizen_integration.settings")
+    async def test_returns_none_on_timeout(self, mock_settings, mock_call_tool):
+        """Test that timeout errors are handled gracefully and return None."""
+        import asyncio
+
+        mock_settings.kaizen.enabled = True
+        mock_settings.kaizen.lite_mode_only = False
+        mock_call_tool.side_effect = asyncio.TimeoutError("Operation timed out")
+        result = await KaizenIntegration.get_guidelines("test task")
+        assert result is None  # Should not raise
+
 
 # ─────────────────────────────────────────────────────────────
 # save_trajectory() when disabled / conditional
@@ -234,5 +247,20 @@ class TestSaveTrajectory:
         mock_settings.kaizen.save_on_success = True
         mock_settings.kaizen.save_on_failure = True
         mock_call_tool.side_effect = ConnectionError("Unable to connect")
+        # Should not raise
+        await KaizenIntegration.save_trajectory([HumanMessage(content="test")], "task_1", success=True)
+
+    @pytest.mark.asyncio
+    @patch.object(KaizenIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.kaizen.kaizen_integration.settings")
+    async def test_handles_timeout_gracefully(self, mock_settings, mock_call_tool):
+        """Test that timeout errors during save_trajectory are handled gracefully."""
+        import asyncio
+
+        mock_settings.kaizen.enabled = True
+        mock_settings.kaizen.lite_mode_only = False
+        mock_settings.kaizen.save_on_success = True
+        mock_settings.kaizen.save_on_failure = True
+        mock_call_tool.side_effect = asyncio.TimeoutError("Operation timed out")
         # Should not raise
         await KaizenIntegration.save_trajectory([HumanMessage(content="test")], "task_1", success=True)

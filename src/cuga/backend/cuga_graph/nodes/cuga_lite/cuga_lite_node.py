@@ -121,6 +121,7 @@ class CugaLiteNode(BaseNode):
         self.prompt_template = load_one_prompt(prompt_filename)
         self.langfuse_handler = langfuse_handler
         self.hitl_handler = CugaLiteHumanInTheLoopHandler()
+        self._background_tasks: set = set()
 
     @staticmethod
     async def read_text_file(file_path: str) -> Optional[str]:
@@ -395,9 +396,13 @@ class CugaLiteNode(BaseNode):
             import asyncio as _asyncio
 
             task_id = state.sub_task or tracker.task_id or "unknown"
-            success = not self._has_error(state.final_answer or "")
+            success = not (self._has_error(state.final_answer or "") or bool(state.error))
             if settings.kaizen.async_save:
-                _asyncio.create_task(KaizenIntegration.save_trajectory(state.chat_messages, task_id, success))
+                task = _asyncio.create_task(
+                    KaizenIntegration.save_trajectory(state.chat_messages, task_id, success)
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
             else:
                 await KaizenIntegration.save_trajectory(state.chat_messages, task_id, success)
 
