@@ -133,15 +133,30 @@ class VaultBackend:
             sec = getattr(settings, "secrets", None)
             mount_point = mount or (getattr(sec, "vault_mount", "secret") if sec else "secret")
             kv_version = getattr(sec, "vault_kv_version", "") if sec else ""
+            secret_path = getattr(sec, "vault_secret_path", "") if sec else ""
         except Exception:
             mount_point = mount or "secret"
             kv_version = ""
+            secret_path = ""
+
+        # Derive the list path from vault_secret_path (strip mount prefix and "data/" segment for KV v2)
+        list_path = ""
+        if secret_path:
+            raw = secret_path.strip().lstrip("/")
+            # strip leading "<mount>/" e.g. "secret/"
+            if raw.startswith(mount_point.strip("/") + "/"):
+                raw = raw[len(mount_point.strip("/")) + 1:]
+            # strip KV v2 "data/" prefix so we list under metadata
+            if raw.startswith("data/"):
+                raw = raw[len("data/"):]
+            list_path = raw
+
         try:
             if str(kv_version) == "1":
-                resp = client.secrets.kv.v1.list_secrets(path="", mount_point=mount_point)
+                resp = client.secrets.kv.v1.list_secrets(path=list_path, mount_point=mount_point)
                 keys = (resp or {}).get("data", {}).get("keys", [])
             else:
-                resp = client.secrets.kv.v2.list_secrets(path="", mount_point=mount_point)
+                resp = client.secrets.kv.v2.list_secrets(path=list_path, mount_point=mount_point)
                 keys = (resp or {}).get("data", {}).get("keys", [])
             return [k.rstrip("/") for k in keys if isinstance(k, str)]
         except Exception as e:
@@ -167,11 +182,14 @@ class VaultBackend:
             sec = getattr(settings, "secrets", None)
             mount = getattr(sec, "vault_mount", "secret") if sec else "secret"
             kv_version = getattr(sec, "vault_kv_version", "") if sec else ""
+            base_path = getattr(sec, "vault_secret_path", "") if sec else ""
         except Exception:
             mount = "secret"
             kv_version = ""
-        # When the path already contains the mount (e.g. "secret/my-key"), split it.
-        # When the path is just a name (e.g. "my-key"), use the configured mount.
+            base_path = ""
+        # If the caller passed a bare key (no "/"), prefix it with the configured base path.
+        if base_path and "/" not in full_path:
+            full_path = base_path.rstrip("/") + "/" + full_path
         mount_point, secret_path = _split_mount_and_path(full_path, default_mount=mount)
         if not secret_path:
             return False
