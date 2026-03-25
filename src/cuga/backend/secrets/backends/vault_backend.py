@@ -25,11 +25,15 @@ def _vault_verify(sec: Any) -> bool | str:
     return True
 
 
-def _vault_addr_and_auth(sec: Any) -> tuple[str, str]:
+def _vault_addr_and_auth(sec: Any) -> tuple[str, str | None]:
     addr = (getattr(sec, "vault_addr", "") or os.environ.get("VAULT_ADDR") or "").strip()
     raw = getattr(sec, "vault_auth_method", "") or os.environ.get("VAULT_AUTH_METHOD") or "token"
     method = str(raw).strip().lower() or "token"
-    return addr, method
+    if method == "kubernetes":
+        return addr, "kubernetes"
+    if method == "token":
+        return addr, "token"
+    return addr, None
 
 
 def _get_client():
@@ -45,6 +49,13 @@ def _get_client():
             return None
         addr, auth_method = _vault_addr_and_auth(sec)
         if not addr:
+            return None
+        if auth_method is None:
+            configured = getattr(sec, "vault_auth_method", "") or os.environ.get("VAULT_AUTH_METHOD") or ""
+            logger.debug(
+                "Vault: unsupported auth method {!r} (supported: kubernetes, token)",
+                str(configured).strip() or "(empty)",
+            )
             return None
         verify = _vault_verify(sec)
 
@@ -78,15 +89,20 @@ def _get_client():
                 return None
             return client
 
-        token_env = getattr(sec, "vault_token_env", "VAULT_TOKEN")
-        token = os.environ.get(token_env)
-        if not token:
+        elif auth_method == "token":
+            token_env = getattr(sec, "vault_token_env", "VAULT_TOKEN")
+            token = os.environ.get(token_env)
+            if not token:
+                return None
+            client = hvac.Client(url=addr, token=token, verify=verify)
+            if not client.is_authenticated():
+                logger.debug("Vault client not authenticated")
+                return None
+            return client
+
+        else:
+            logger.debug("Vault: unexpected auth method {!r}", auth_method)
             return None
-        client = hvac.Client(url=addr, token=token, verify=verify)
-        if not client.is_authenticated():
-            logger.debug("Vault client not authenticated")
-            return None
-        return client
     except Exception as e:
         logger.debug("Vault client init failed: {}", e)
         return None
@@ -99,18 +115,72 @@ def _parse_vault_path(path: str) -> tuple[str, str | None]:
     return path.strip(), None
 
 
-def _split_mount_and_path(full_path: str, default_mount: str = "secret") -> tuple[str, str]:
+def _normalize_kv_v2_data_prefix(rest: str) -> str:
+    if rest.startswith("data/"):
+        return rest[len("data/") :]
+    return rest
+
+
+def _split_mount_and_path(
+    full_path: str, default_mount: str = "secret", *, kv_version: str = ""
+) -> tuple[str, str]:
     parts = full_path.strip().split("/")
     if len(parts) >= 2:
         mount = parts[0]
         rest = "/".join(parts[1:])
-        # hvac KV v2 internally prepends "data/" — strip it if already present to avoid double
-        if rest.startswith("data/"):
-            rest = rest[len("data/") :]
+        # hvac KV v2 prepends "data/" — strip only for v2 (v1 may use "data/" as a real path)
+        if str(kv_version) != "1":
+            rest = _normalize_kv_v2_data_prefix(rest)
         return mount, rest
     if len(parts) == 1 and parts[0]:
         return default_mount, parts[0]
     return default_mount, ""
+
+
+def _merge_vault_secret_base(path_arg: str, vault_secret_path: str) -> str:
+    path_arg = (path_arg or "").strip()
+    base = (vault_secret_path or "").strip()
+    if base and path_arg and "/" not in path_arg:
+        return base.rstrip("/") + "/" + path_arg.lstrip("/")
+    return path_arg
+
+
+def _vault_list_prefix(vault_secret_path: str, mount_point: str, kv_version: str) -> str:
+    if not (vault_secret_path or "").strip():
+        return ""
+    raw = vault_secret_path.strip().lstrip("/")
+    mp = mount_point.strip("/")
+    if mp and raw.startswith(mp + "/"):
+        raw = raw[len(mp) + 1 :]
+    if str(kv_version) != "1":
+        raw = _normalize_kv_v2_data_prefix(raw)
+    return raw
+
+
+def _resolve_vault_path(
+    secret_id: str,
+    vault_secret_path: str,
+    mount_point: str,
+    kv_version: str,
+) -> tuple[str, str, str]:
+    """Return (mount_point, crud_secret_path, list_prefix).
+
+    ``crud_secret_path`` is the path for KV read/write/delete (hvac; mount
+    omitted). ``list_prefix`` is the directory path for list_secrets under the
+    configured base (``vault_secret_path``). For a bare id with no slash,
+    ``secret_id`` is joined with ``vault_secret_path`` like set() historically did.
+    """
+    mp = (mount_point or "").strip() or "secret"
+    kv = str(kv_version)
+    list_prefix = _vault_list_prefix(vault_secret_path, mp, kv)
+
+    sid = (secret_id or "").strip()
+    if not sid:
+        return mp, "", list_prefix
+
+    merged = _merge_vault_secret_base(sid, vault_secret_path)
+    crud_mount, crud_path = _split_mount_and_path(merged, default_mount=mp, kv_version=kv)
+    return crud_mount, crud_path, list_prefix
 
 
 class VaultBackend:
@@ -144,24 +214,14 @@ class VaultBackend:
             kv_version = ""
             secret_path = ""
 
-        # Derive the list path from vault_secret_path (strip mount prefix and "data/" segment for KV v2)
-        list_path = ""
-        if secret_path:
-            raw = secret_path.strip().lstrip("/")
-            # strip leading "<mount>/" e.g. "secret/"
-            if raw.startswith(mount_point.strip("/") + "/"):
-                raw = raw[len(mount_point.strip("/")) + 1 :]
-            # strip KV v2 "data/" prefix so we list under metadata
-            if raw.startswith("data/"):
-                raw = raw[len("data/") :]
-            list_path = raw
+        list_mount, _, list_path = _resolve_vault_path("", secret_path, mount_point, kv_version)
 
         try:
             if str(kv_version) == "1":
-                resp = client.secrets.kv.v1.list_secrets(path=list_path, mount_point=mount_point)
+                resp = client.secrets.kv.v1.list_secrets(path=list_path, mount_point=list_mount)
                 keys = (resp or {}).get("data", {}).get("keys", [])
             else:
-                resp = client.secrets.kv.v2.list_secrets(path=list_path, mount_point=mount_point)
+                resp = client.secrets.kv.v2.list_secrets(path=list_path, mount_point=list_mount)
                 keys = (resp or {}).get("data", {}).get("keys", [])
             return [k.rstrip("/") for k in keys if isinstance(k, str)]
         except Exception as e:
@@ -192,10 +252,7 @@ class VaultBackend:
             mount = "secret"
             kv_version = ""
             base_path = ""
-        # If the caller passed a bare key (no "/"), prefix it with the configured base path.
-        if base_path and "/" not in full_path:
-            full_path = base_path.rstrip("/") + "/" + full_path
-        mount_point, secret_path = _split_mount_and_path(full_path, default_mount=mount)
+        mount_point, secret_path, _ = _resolve_vault_path(full_path, base_path, mount, kv_version)
         if not secret_path:
             return False
         payload: dict[str, Any] = {field: value}
@@ -239,10 +296,12 @@ class VaultBackend:
             sec = getattr(settings, "secrets", None)
             mount = getattr(sec, "vault_mount", "secret") if sec else "secret"
             kv_version = getattr(sec, "vault_kv_version", "") if sec else ""
+            base_path = getattr(sec, "vault_secret_path", "") if sec else ""
         except Exception:
             mount = "secret"
             kv_version = ""
-        mount_point, secret_path = _split_mount_and_path(full_path, default_mount=mount)
+            base_path = ""
+        mount_point, secret_path, _ = _resolve_vault_path(full_path, base_path, mount, kv_version)
         if not secret_path:
             return None
         try:
@@ -296,10 +355,12 @@ class VaultBackend:
             sec = getattr(settings, "secrets", None)
             mount = getattr(sec, "vault_mount", "secret") if sec else "secret"
             kv_version = getattr(sec, "vault_kv_version", "") if sec else ""
+            base_path = getattr(sec, "vault_secret_path", "") if sec else ""
         except Exception:
             mount = "secret"
             kv_version = ""
-        mount_point, secret_path = _split_mount_and_path(full_path, default_mount=mount)
+            base_path = ""
+        mount_point, secret_path, _ = _resolve_vault_path(full_path, base_path, mount, kv_version)
         if not secret_path:
             return False
         try:
