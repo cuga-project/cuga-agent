@@ -106,7 +106,7 @@ def _split_mount_and_path(full_path: str, default_mount: str = "secret") -> tupl
         rest = "/".join(parts[1:])
         # hvac KV v2 internally prepends "data/" — strip it if already present to avoid double
         if rest.startswith("data/"):
-            rest = rest[len("data/"):]
+            rest = rest[len("data/") :]
         return mount, rest
     if len(parts) == 1 and parts[0]:
         return default_mount, parts[0]
@@ -150,10 +150,10 @@ class VaultBackend:
             raw = secret_path.strip().lstrip("/")
             # strip leading "<mount>/" e.g. "secret/"
             if raw.startswith(mount_point.strip("/") + "/"):
-                raw = raw[len(mount_point.strip("/")) + 1:]
+                raw = raw[len(mount_point.strip("/")) + 1 :]
             # strip KV v2 "data/" prefix so we list under metadata
             if raw.startswith("data/"):
-                raw = raw[len("data/"):]
+                raw = raw[len("data/") :]
             list_path = raw
 
         try:
