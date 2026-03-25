@@ -1072,9 +1072,9 @@ def load_user_preferences(
 
     try:
         # Retrieve preferences using semantic search, organized by category.
-        # Prefer the Kaizen client convenience API; keep compatibility fallback.
-        if hasattr(memory, "retrieve_user_memory"):
-            preferences = memory.retrieve_user_memory(
+        # Prefer the Kaizen client convenience API.
+        if hasattr(memory, "retrieve_user_facts"):
+            preferences = memory.retrieve_user_facts(
                 namespace_id=namespace_id,
                 user_id=state.user_id,
                 query=query,

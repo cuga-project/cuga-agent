@@ -1,9 +1,11 @@
+from importlib import import_module
+from importlib import util
+from importlib.metadata import PackageNotFoundError, version
+from typing import TYPE_CHECKING, Annotated
+
 import typer
 from rich.console import Console
 from rich.table import Table
-from typing import Annotated, TYPE_CHECKING
-
-from kaizen.schema.exceptions import KaizenException, NamespaceNotFoundException
 
 if TYPE_CHECKING:
     from kaizen.frontend.client.kaizen_client import KaizenClient
@@ -13,10 +15,50 @@ memory_namespace = typer.Typer(help="Manage namespaces")
 memory_app.add_typer(memory_namespace, name="namespace")
 
 
+def _fail_missing_kaizen(exc: Exception | None = None) -> None:
+    if util.find_spec("kaizen") is None:
+        message = (
+            "Kaizen is required for memory features. "
+            "Install with `uv sync --extra memory` (or `pip install \"cuga[memory]\"`)."
+        )
+    else:
+        try:
+            kaizen_version = version("kaizen")
+        except PackageNotFoundError:
+            kaizen_version = "unknown"
+        message = (
+            "Kaizen is installed but incompatible with CUGA memory integration "
+            f"(installed version: {kaizen_version}). "
+            "Expected modules such as `kaizen.config`, `kaizen.frontend`, and `kaizen.schema` "
+            "were not found."
+        )
+
+    err_console = Console(stderr=True)
+    err_console.print(f"[bold red]{message}[/bold red]")
+    raise typer.Exit(1)
+
+
+def _load_kaizen_exception_types() -> tuple[type[Exception], type[Exception]]:
+    try:
+        exception_module = import_module("kaizen.schema.exceptions")
+    except ModuleNotFoundError as exc:
+        _fail_missing_kaizen(exc)
+    return (
+        getattr(exception_module, "KaizenException"),
+        getattr(exception_module, "NamespaceNotFoundException"),
+    )
+
+
 def create_memory_client() -> "KaizenClient":
     from cuga.backend.memory.memory import get_kaizen_client
 
-    memory = get_kaizen_client()
+    try:
+        memory = get_kaizen_client()
+    except RuntimeError as exc:
+        err_console = Console(stderr=True)
+        err_console.print(f"[bold red]{exc}[/bold red]")
+        raise typer.Exit(1)
+
     if not memory.ready():
         err_console = Console(stderr=True)
         err_console.print("[bold red]Memory backend is not healthy.[/bold red]")
@@ -35,11 +77,12 @@ def create(
     app_id: Annotated[str | None, typer.Option(help="The application associated with the namespace.")] = None,
     quiet: Annotated[bool, typer.Option("--quiet", "-q", help="Suppress output.")] = False,
 ):
+    kaizen_exception, _ = _load_kaizen_exception_types()
     _ = (user_id, agent_id, app_id)
     memory = create_memory_client()
     try:
         namespace = memory.create_namespace(namespace_id)
-    except KaizenException as e:
+    except kaizen_exception as e:
         err_console = Console(stderr=True)
         err_console.print(f"[bold red]{e}[/bold red]")
         raise typer.Exit(1)
@@ -51,10 +94,11 @@ def create(
 
 @memory_namespace.command(help="Get namespace details")
 def details(namespace_id: Annotated[str, typer.Argument(help="ID of the namespace to retrieve.")]):
+    _, namespace_not_found_exception = _load_kaizen_exception_types()
     memory = create_memory_client()
     try:
         namespace = memory.get_namespace_details(namespace_id)
-    except NamespaceNotFoundException:
+    except namespace_not_found_exception:
         err_console = Console(stderr=True)
         err_console.print(f"[bold red]Namespace `{namespace_id}` not found.[/bold red]")
         raise typer.Exit(1)

@@ -1,27 +1,77 @@
 import os
 from datetime import datetime
+from importlib import util
+from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path
-from typing import Any, Literal
+from typing import TYPE_CHECKING, Any, Literal
 
-from kaizen.config.filesystem import FilesystemSettings
-from kaizen.config.kaizen import KaizenConfig
-from kaizen.config.llm import llm_settings
-from kaizen.config.milvus import MilvusDBSettings
-from kaizen.frontend.client.kaizen_client import KaizenClient
-from kaizen.schema.core import RecordedEntity
 from pydantic import BaseModel, Field
 
 from cuga.config import DBS_DIR, PACKAGE_ROOT, kaizen_settings, settings
+
+if TYPE_CHECKING:
+    from kaizen.config.filesystem import FilesystemSettings
+    from kaizen.config.kaizen import KaizenConfig
+    from kaizen.config.llm import llm_settings
+    from kaizen.config.milvus import MilvusDBSettings
+    from kaizen.frontend.client.kaizen_client import KaizenClient
+
+
+FilesystemSettings = None
+KaizenConfig = None
+llm_settings = None
+MilvusDBSettings = None
+KaizenClient = None
+_KAIZEN_IMPORTED = False
+
+
+def _ensure_kaizen_imports() -> None:
+    global FilesystemSettings, KaizenConfig, llm_settings, MilvusDBSettings, KaizenClient, _KAIZEN_IMPORTED
+    if _KAIZEN_IMPORTED:
+        return
+
+    try:
+        from kaizen.config.filesystem import FilesystemSettings as _FilesystemSettings
+        from kaizen.config.kaizen import KaizenConfig as _KaizenConfig
+        from kaizen.config.llm import llm_settings as _llm_settings
+        from kaizen.config.milvus import MilvusDBSettings as _MilvusDBSettings
+        from kaizen.frontend.client.kaizen_client import KaizenClient as _KaizenClient
+    except ModuleNotFoundError as exc:
+        if util.find_spec("kaizen") is None:
+            raise RuntimeError(
+                "Kaizen is required for memory features but is not installed. "
+                "Install with `uv sync --extra memory` (or `pip install \"cuga[memory]\"`) and rerun."
+            ) from exc
+
+        try:
+            kaizen_version = version("kaizen")
+        except PackageNotFoundError:
+            kaizen_version = "unknown"
+
+        raise RuntimeError(
+            "Kaizen is installed but incompatible with CUGA memory integration "
+            f"(installed version: {kaizen_version}). "
+            "Expected modules such as `kaizen.config`, `kaizen.frontend`, and `kaizen.schema` "
+            "were not found. Install a compatible Kaizen build, "
+            "or use a local checkout with `uv pip install -e ./kaizen`."
+        ) from exc
+
+    FilesystemSettings = _FilesystemSettings
+    KaizenConfig = _KaizenConfig
+    llm_settings = _llm_settings
+    MilvusDBSettings = _MilvusDBSettings
+    KaizenClient = _KaizenClient
+    _KAIZEN_IMPORTED = True
 
 
 class RunRecord(BaseModel):
     id: str = Field(description="Run identifier")
     created_at: datetime = Field(description="Run creation timestamp")
     ended: bool = Field(default=False)
-    steps: list[RecordedEntity] = Field(default_factory=list)
+    steps: list[Any] = Field(default_factory=list)
 
 
-_KAIZEN_CLIENT: KaizenClient | None = None
+_KAIZEN_CLIENT: Any | None = None
 
 
 def _as_dict(raw: Any) -> dict[str, Any]:
@@ -68,6 +118,7 @@ def get_kaizen_namespace_id() -> str:
     if file_namespace:
         return file_namespace
 
+    _ensure_kaizen_imports()
     return KaizenConfig().namespace_id
 
 
@@ -78,6 +129,8 @@ def normalize_user_id(user_id: str | None) -> str:
 
 def _ensure_kaizen_llm_env() -> None:
     """Configure Kaizen LLM settings directly (no env indirection)."""
+    _ensure_kaizen_imports()
+
     try:
         fact_cfg = settings.memory.kaizen.fact_extraction.model
     except Exception:
@@ -91,7 +144,14 @@ def _ensure_kaizen_llm_env() -> None:
     except Exception:
         conflict_cfg = None
 
-    default_model = os.getenv("MODEL_NAME", "gpt-4o")
+    kaizen_model_name = str(os.getenv("KAIZEN_MODEL_NAME") or "").strip()
+    if not kaizen_model_name:
+        model_name = str(os.getenv("MODEL_NAME") or "").strip()
+        if model_name:
+            os.environ["KAIZEN_MODEL_NAME"] = model_name
+            kaizen_model_name = model_name
+
+    default_model = kaizen_model_name or "gpt-4o"
     fact_model = str(getattr(fact_cfg, "model_name", None) or default_model)
     tips_model = str(getattr(tips_cfg, "model_name", None) or default_model)
     conflict_model = str(getattr(conflict_cfg, "model_name", None) or default_model)
@@ -118,9 +178,8 @@ def _parse_timeout(value: Any) -> float | None:
         return None
 
 
-def _build_backend_settings() -> tuple[
-    Literal["milvus", "filesystem"], MilvusDBSettings | FilesystemSettings
-]:
+def _build_backend_settings() -> tuple[Literal["milvus", "filesystem"], Any]:
+    _ensure_kaizen_imports()
     os.makedirs(DBS_DIR, exist_ok=True)
 
     kaizen_cfg = _get_kaizen_cfg()
@@ -151,7 +210,7 @@ def _build_backend_settings() -> tuple[
     )
 
 
-def get_kaizen_client() -> KaizenClient:
+def get_kaizen_client() -> "KaizenClient":
     global _KAIZEN_CLIENT
     if _KAIZEN_CLIENT is None:
         if not settings.advanced_features.enable_memory and not settings.advanced_features.enable_fact:
@@ -159,6 +218,7 @@ def get_kaizen_client() -> KaizenClient:
                 "Memory is disabled in settings. Set enable_memory = true or enable_fact = true."
             )
 
+        _ensure_kaizen_imports()
         _ensure_kaizen_llm_env()
         backend, backend_settings = _build_backend_settings()
         kaizen_config = KaizenConfig(
@@ -183,13 +243,13 @@ async def sync_user_memory(
     resolved_namespace = namespace_id or get_kaizen_namespace_id()
 
     if query:
-        await kaizen_client.store_user_memory(
+        kaizen_client.store_user_facts(
             namespace_id=resolved_namespace,
             message=query,
             user_id=normalized_user_id,
         )
 
-    preferences = kaizen_client.retrieve_user_memory(
+    preferences = kaizen_client.retrieve_user_facts(
         namespace_id=resolved_namespace,
         user_id=normalized_user_id,
         query=query,

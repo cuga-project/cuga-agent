@@ -238,59 +238,6 @@ class CugaLiteNode(BaseNode):
         error_indicators = ['Error during execution:', 'Error:', 'Exception:', 'Traceback', 'Failed to']
         return any(indicator in answer for indicator in error_indicators)
 
-    @staticmethod
-    async def _load_user_facts_for_top_level(state: AgentState, query: str) -> None:
-        """Generate and load memory facts for top-level CugaLite requests."""
-        try:
-            from cuga.backend.memory.memory import sync_user_memory
-
-            memory_user_id, state.user_preferences = await sync_user_memory(
-                user_id=state.user_id,
-                query=query,
-            )
-            if not state.user_id:
-                state.user_id = memory_user_id
-            if query:
-                logger.debug(f"Stored CugaLite categorized fact(s) for user {state.user_id}")
-
-            if state.user_preferences:
-                categories = list(state.user_preferences.keys())
-                total_facts = sum(
-                    len(facts) for facts in state.user_preferences.values() if isinstance(facts, list)
-                )
-                fact_preview = []
-                for category, facts in state.user_preferences.items():
-                    if not isinstance(facts, list):
-                        continue
-                    for fact in facts:
-                        if not isinstance(fact, dict):
-                            continue
-                        key = str(fact.get("key") or "").strip()
-                        value = str(fact.get("value") or "").strip()
-                        content = str(fact.get("content") or "").strip()
-                        pointer = f"{category}.{key}" if key else category
-                        payload = value if value else content
-                        if payload:
-                            payload = payload[:80]
-                        fact_preview.append(f"{pointer}={payload}")
-                        if len(fact_preview) >= 10:
-                            break
-                    if len(fact_preview) >= 10:
-                        break
-                logger.info(
-                    f"[FACT DEBUG][CugaLiteNode] Loaded user preferences: categories={categories}, total_facts={total_facts}"
-                )
-                if fact_preview:
-                    logger.debug(
-                        "[FACT DEBUG][CugaLiteNode] Loaded facts preview: " + "; ".join(fact_preview)
-                    )
-            else:
-                logger.warning(
-                    "[FACT DEBUG][CugaLiteNode] No user preferences loaded from memory for this query"
-                )
-        except Exception as e:
-            logger.error(f"Error handling facts in CugaLiteNode: {e}")
-
     async def node(
         self, state: AgentState
     ) -> Command[
@@ -333,12 +280,9 @@ class CugaLiteNode(BaseNode):
         logger.info(f"Using task_input: {task_input}")
         logger.info(f"is_autonomous_subtask: {is_autonomous_subtask}")
 
-        is_top_level_request = not (state.sub_task and state.sub_task.strip())
         logger.info(
-            f"[FACT DEBUG][CugaLiteNode] enable_fact={settings.advanced_features.enable_fact}, is_top_level_request={is_top_level_request}, user_id={state.user_id}"
+            "[FACT DEBUG][CugaLiteNode] Fact storage is handled upstream in ChatNode; CugaLite reuses state.user_preferences."
         )
-        if settings.advanced_features.enable_fact and is_top_level_request:
-            await self._load_user_facts_for_top_level(state, query=state.input)
 
         # Check if task_input is just a markdown file path and replace with file content
         task_input_stripped = task_input.strip()

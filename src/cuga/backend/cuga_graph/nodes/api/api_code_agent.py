@@ -8,7 +8,6 @@ from cuga.backend.cuga_graph.nodes.shared.base_agent import create_partial
 from cuga.backend.cuga_graph.nodes.shared.base_node import BaseNode
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.memory.memory import get_kaizen_client, get_kaizen_namespace_id, normalize_user_id
-from kaizen.schema.core import Entity
 from langchain_core.messages import AIMessage
 
 from cuga.backend.cuga_graph.state.api_planner_history import CoderAgentHistoricalOutput
@@ -52,11 +51,15 @@ class ApiCoder(BaseNode):
         msg = AIMessage(content=res_obj.model_dump_json())
         state.messages.append(msg)
         state.sender = name
-        if (
+        # TEMP: Fact extraction/write to memory is disabled.
+        # Keep this block in place for easy re-enable.
+        if False and (
             res_obj.variables
             and settings.advanced_features.enable_fact
             and settings.advanced_features.enable_memory
         ):
+            from kaizen.schema.core import Entity
+
             kaizen_client = get_kaizen_client()
             namespace_id = get_kaizen_namespace_id()
             kaizen_client.ensure_namespace(namespace_id=namespace_id)

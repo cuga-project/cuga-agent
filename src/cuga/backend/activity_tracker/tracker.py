@@ -605,19 +605,38 @@ class ActivityTracker(object):
         return {"role": "assistant", "content": content}
 
     @staticmethod
-    def _extract_agent_id_from_trajectory_messages(trajectory_messages: list[dict[str, str]]) -> str | None:
-        """Extract agent id from the latest assistant trajectory message."""
-        for message in reversed(trajectory_messages):
-            if message.get("role") != "assistant":
+    def _extract_agent_id_from_trajectory_message(message: dict[str, str]) -> str | None:
+        """Extract agent id from a single assistant trajectory message."""
+        if message.get("role") != "assistant":
+            return None
+        content = str(message.get("content") or "")
+        first_line = content.splitlines()[0].strip() if content else ""
+        if not first_line.startswith("Agent:"):
+            return None
+        agent_id = first_line.partition("Agent:")[2].strip()
+        return agent_id or None
+
+    @staticmethod
+    def _build_agent_scoped_trajectory_messages(
+        trajectory_messages: list[dict[str, str]],
+    ) -> dict[str, list[dict[str, str]]]:
+        """
+        Build per-agent trajectory slices while preserving shared non-assistant context.
+        """
+        shared_context = [message for message in trajectory_messages if message.get("role") != "assistant"]
+        grouped_messages: dict[str, list[dict[str, str]]] = {}
+
+        for message in trajectory_messages:
+            agent_id = ActivityTracker._extract_agent_id_from_trajectory_message(message)
+            if not agent_id:
                 continue
-            content = str(message.get("content") or "")
-            first_line = content.splitlines()[0].strip() if content else ""
-            if not first_line.startswith("Agent:"):
-                continue
-            agent_id = first_line.partition("Agent:")[2].strip()
-            if agent_id:
-                return agent_id
-        return None
+            grouped_messages.setdefault(agent_id, []).append(message)
+
+        return {
+            agent_id: [*shared_context, *agent_messages]
+            for agent_id, agent_messages in grouped_messages.items()
+            if len(shared_context) + len(agent_messages) >= 2
+        }
 
     async def _persist_guidelines_from_trajectory(
         self,
@@ -634,33 +653,45 @@ class ActivityTracker(object):
             if len(trajectory_messages) < 2:
                 return
 
-            tips = await asyncio.to_thread(generate_tips, trajectory_messages)
-            if not tips:
+            agent_scoped_trajectories = self._build_agent_scoped_trajectory_messages(trajectory_messages)
+            if not agent_scoped_trajectories:
                 return
 
-            agent_id = self._extract_agent_id_from_trajectory_messages(trajectory_messages) or "UnknownAgent"
+            for agent_id, agent_trajectory_messages in agent_scoped_trajectories.items():
+                result = await asyncio.to_thread(generate_tips, agent_trajectory_messages)
+                if not result.tips:
+                    continue
 
-            entities = [
-                Entity(
-                    type="guideline",
-                    content=tip.content,
-                    metadata={
-                        "category": tip.category,
-                        "rationale": tip.rationale,
-                        "trigger": tip.trigger,
-                        "agent_id": agent_id,
-                        "user_id": user_id,
-                        "task_id": self.task_id,
-                        "session_id": self.session_id,
-                    },
+                # Keep only one copy of the same tip content per agent in a single run.
+                unique_tips = {tip.content: tip for tip in result.tips}.values()
+                entities = [
+                    Entity(
+                        type="guideline",
+                        content=tip.content,
+                        metadata={
+                            "category": tip.category,
+                            "rationale": tip.rationale,
+                            "trigger": tip.trigger,
+                            "agent_id": agent_id,
+                            "user_id": user_id,
+                            "task_id": self.task_id,
+                            "session_id": self.session_id,
+                            "task_description": result.task_description,
+                        },
+                    )
+                    for tip in unique_tips
+                ]
+                if not entities:
+                    continue
+
+                # Conflict resolution currently ignores metadata. Insert directly
+                # so guidelines remain associated with the originating agent.
+                self.memory.update_entities(
+                    namespace_id=namespace_id,
+                    entities=entities,
+                    enable_conflict_resolution=False,
                 )
-                for tip in tips
-            ]
-            self.memory.update_entities(
-                namespace_id=namespace_id,
-                entities=entities,
-                enable_conflict_resolution=True,
-            )
+
         except Exception as e:
             logger.exception(f"Failed to generate/persist guidelines from trajectory: {e}")
 

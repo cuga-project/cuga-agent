@@ -194,7 +194,9 @@ class ApiPlanner(BaseNode):
                     logger.debug(f"Human consultation response received: {human_response}")
                     state.sender = name
 
-        if settings.advanced_features.enable_fact and settings.advanced_features.enable_memory:
+        # TEMP: Fact retrieval from memory is disabled.
+        # Keep this block in place for easy re-enable.
+        if False and settings.advanced_features.enable_fact and settings.advanced_features.enable_memory:
             logger.info("Retrieving facts stored in memory")
             kaizen_client = get_kaizen_client()
             namespace_id = get_kaizen_namespace_id()
@@ -213,8 +215,20 @@ class ApiPlanner(BaseNode):
 
             if retrieved_facts:
                 for fact in retrieved_facts:
-                    if "variable_name" in fact.content:
-                        mem_dict = json.loads(fact.content)
+                    content = fact.content
+                    if isinstance(content, dict):
+                        mem_dict = content
+                    elif isinstance(content, str):
+                        try:
+                            mem_dict = json.loads(content)
+                        except json.JSONDecodeError:
+                            logger.warning("Skipping non-JSON fact content: {}", content[:120])
+                            continue
+                    else:
+                        logger.warning("Skipping unsupported fact content type: {}", type(content).__name__)
+                        continue
+
+                    if "variable_name" in mem_dict:
                         state.variables_manager.add_variable(
                             name=mem_dict.get("variable_name"),
                             description=mem_dict.get("description", ""),

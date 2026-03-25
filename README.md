@@ -181,14 +181,14 @@ Experience CUGA's Human-in-the-Loop capabilities where the agent pauses for huma
 git clone https://github.com/cuga-project/cuga-agent.git
 cd cuga-agent
 
-# 0. Clone Kaizen into the expected local path (required by pyproject.toml)
-git clone https://github.com/AgentToolkit/kaizen.git ./kaizen
-
 # 1. Create and activate virtual environment
 uv venv --python=3.12 && source .venv/bin/activate
 
 # 2. Install dependencies
 uv sync
+
+# Optional: install memory support (includes Kaizen)
+uv sync --extra memory
 
 # 3. Set up environment variables
 # Create .env file with your API keys
@@ -208,11 +208,11 @@ cuga viz
 
 ```
 
-**Local setup contract (Kaizen dependency):**
+**Memory setup contract (Kaizen dependency):**
 
-- CUGA uses an editable local dependency source: `kaizen = { path = "./kaizen", editable = true }`.
-- `./kaizen` must exist before running `uv sync`.
-- If `./kaizen` is missing, dependency resolution/install will fail.
+- Base install (`uv sync`) does not require Kaizen.
+- Memory features require installing the `memory` extra: `uv sync --extra memory`.
+- Memory remains off by default; set `enable_memory = true` in `src/cuga/settings.toml` to enable it.
 
 
 <details>
@@ -806,7 +806,7 @@ instruction_set = "default"  # or any instruction set above
 <details>
 <summary><em style="color: #666;"> 📹 Optional: Run with memory</em></summary>
 
-1. Install dependencies `uv sync`
+1. Install memory dependencies `uv sync --extra memory`
 2. Change `enable_memory = true` in `settings.toml`
 3. Run `cuga start demo`
 

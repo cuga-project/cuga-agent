@@ -114,7 +114,7 @@ class FakeKaizenClient:
         rows.sort(key=lambda row: row.created_at)
         return rows[:limit]
 
-    async def store_user_memory(
+    def store_user_facts(
         self,
         namespace_id: str,
         message: str,
@@ -129,7 +129,7 @@ class FakeKaizenClient:
                 "user_id": user_id,
                 "category": "personal_details",
                 "key": "name",
-                "value": "Sami",
+                "value": "John",
             }
         )
         return self.update_entities(
@@ -138,7 +138,7 @@ class FakeKaizenClient:
             enable_conflict_resolution=enable_conflict_resolution,
         )
 
-    def retrieve_user_memory(
+    def retrieve_user_facts(
         self, namespace_id: str, user_id: str, query: str | None = None, limit: int = 5
     ) -> dict[str, list[dict[str, str]]]:
         rows = self.search_entities(
@@ -214,7 +214,7 @@ class TestMemoryIntegration(unittest.IsolatedAsyncioTestCase):
 
         normalized_user_id, preferences = await self.memory_module.sync_user_memory(
             user_id="test_user",
-            query="My name is Sami",
+            query="My name is John",
             namespace_id=namespace.id,
         )
         self.assertEqual(normalized_user_id, "test_user")

@@ -38,8 +38,8 @@ Some key features include:
 
 ## 🚀  Quick Start
 
-0. Ensure local Kaizen checkout exists at `./kaizen`:
-   `git clone https://github.com/AgentToolkit/kaizen.git ./kaizen`
+0. Install memory dependencies:
+   `uv sync --extra memory`
 1. Set `enable_memory=true` in `settings.toml`
 2. Start CUGA normally:
 	`cuga start demo`
