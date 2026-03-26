@@ -155,7 +155,15 @@ JSON schema:
                 schema = APIPlannerOutputWX
             parser = PydanticOutputParser(pydantic_object=schema)
             if wx_json_mode == "response_format":
-                return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
+                # Avoid any response_format parameter for watsonx. vLLM's guided decoding
+                # (json_schema and json_mode) returns empty content on complex schemas
+                # (vllm#15236, vllm#21148). function_calling also fails (no tool_calls).
+                # Fall back to prompt-based format instructions + PydanticOutputParser.
+                logger.debug(
+                    "Using prompt-based JSON parsing for watsonx (response_format triggers empty content)"
+                )
+                chain = prompt_template | llm | parser
+                return chain.with_retry(stop_after_attempt=3)
             elif wx_json_mode == "function_calling" or wx_json_mode == "json_mode":
                 chain = prompt_template | llm.with_structured_output(schema, method=wx_json_mode)
             else:
