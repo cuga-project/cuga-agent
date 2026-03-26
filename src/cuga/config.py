@@ -170,6 +170,8 @@ validators = [
     Validator("auth.require_https", default=False),
     Validator("auth.ssl_keyfile", default=""),
     Validator("auth.ssl_certfile", default=""),
+    Validator("auth.oidc_skip_verify", default=False),
+    Validator("auth.oidc_ca_bundle", default=""),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

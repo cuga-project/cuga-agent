@@ -29,12 +29,15 @@ class OIDCClient:
         discovery_url: str,
         redirect_uri: str,
         jwks_cache_ttl: int = 3600,
+        skip_verify: bool = False,
+        ca_bundle: Optional[str] = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
         self.discovery_url = discovery_url.rstrip("/")
         self.redirect_uri = redirect_uri
         self.jwks_cache_ttl = jwks_cache_ttl
+        self._ssl: bool | str = False if skip_verify else (ca_bundle or True)
         self._discovery: Optional[dict[str, Any]] = None
         self._validator: Optional[JWTValidator] = None
         self._pkce_ttl = 300
@@ -43,7 +46,7 @@ class OIDCClient:
     async def get_discovery(self) -> dict[str, Any]:
         if self._discovery is not None:
             return self._discovery
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(verify=self._ssl) as client:
             resp = await client.get(self.discovery_url)
             resp.raise_for_status()
             self._discovery = resp.json()
@@ -118,7 +121,7 @@ class OIDCClient:
             "code_verifier": code_verifier,
         }
 
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(verify=self._ssl) as client:
             resp = await client.post(
                 token_endpoint,
                 data=token_data,
@@ -174,19 +177,29 @@ def get_oidc_client() -> Optional[OIDCClient]:
         logger.debug("OIDC client not configured: missing env vars")
         return None
     jwks_cache_ttl = 3600
+    skip_verify = False
+    ca_bundle: Optional[str] = None
     try:
         from cuga.config import settings
 
         auth = getattr(settings, "auth", None)
         if auth is not None:
             jwks_cache_ttl = getattr(auth, "jwks_cache_ttl", 3600) or 3600
+            skip_verify = bool(getattr(auth, "oidc_skip_verify", False))
+            ca_bundle = getattr(auth, "oidc_ca_bundle", None) or None
     except Exception:
         pass
+    if skip_verify:
+        logger.warning(
+            "OIDC SSL verification is disabled (DYNACONF_AUTH__OIDC_SKIP_VERIFY=true) — do not use in production"
+        )
     _oidc_client_instance = OIDCClient(
         client_id=client_id,
         client_secret=client_secret,
         discovery_url=discovery_url,
         redirect_uri=redirect_uri,
         jwks_cache_ttl=jwks_cache_ttl,
+        skip_verify=skip_verify,
+        ca_bundle=ca_bundle,
     )
     return _oidc_client_instance
