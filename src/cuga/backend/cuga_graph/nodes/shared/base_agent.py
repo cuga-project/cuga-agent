@@ -155,9 +155,10 @@ JSON schema:
                 schema = APIPlannerOutputWX
             parser = PydanticOutputParser(pydantic_object=schema)
             if wx_json_mode == "response_format":
-                # Avoid any response_format parameter for watsonx. vLLM's guided decoding
-                # (json_schema and json_mode) returns empty content on complex schemas
-                # (vllm#15236, vllm#21148). function_calling also fails (no tool_calls).
+                # Avoid any response_format parameter for watsonx. vLLM's xgrammar
+                # guided decoding fails to compile an FSM for schemas with $defs/$ref
+                # (vllm#21148), returning empty content (completion_tokens~=2,
+                # finish_reason=stop). function_calling also fails (no tool_calls).
                 # Fall back to prompt-based format instructions + PydanticOutputParser.
                 logger.debug(
                     "Using prompt-based JSON parsing for watsonx (response_format triggers empty content)"
