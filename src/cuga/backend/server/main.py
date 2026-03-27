@@ -62,7 +62,7 @@ from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
 from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
-from cuga.backend.server.auth.models import UserInfo
+from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
@@ -1301,6 +1301,40 @@ async def auth_login(request: Request):
     return response
 
 
+def _jwt_payload_unverified(token: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not token:
+        return None
+    try:
+        import jwt as pyjwt
+
+        return pyjwt.decode(token, options={"verify_signature": False})
+    except Exception:
+        return None
+
+
+def _payload_has_role_claims(payload: Dict[str, Any]) -> bool:
+    from cuga.backend.server.auth.jwt_validator import JWTValidator
+
+    if JWTValidator._extract_roles(payload):
+        return True
+    role = payload.get("role")
+    if isinstance(role, str) and role.strip():
+        return True
+    if isinstance(role, list) and role:
+        return True
+    return False
+
+
+def _session_token_for_auto_role_source(token_response: TokenResponse) -> str:
+    id_payload = _jwt_payload_unverified(token_response.id_token)
+    acc_payload = _jwt_payload_unverified(token_response.access_token)
+    if id_payload and _payload_has_role_claims(id_payload) and token_response.id_token:
+        return token_response.id_token
+    if acc_payload and _payload_has_role_claims(acc_payload):
+        return token_response.access_token
+    return token_response.id_token or token_response.access_token
+
+
 @app.post("/auth/callback")
 async def auth_callback(request: Request):
     if not _auth_enabled():
@@ -1341,7 +1375,10 @@ async def auth_callback(request: Request):
             detail=("Invalid auth.role_token_source; expected one of auto,id_token,access_token,iam_proxy"),
         )
 
-    token = token_response.id_token or token_response.access_token
+    if role_token_source == "auto":
+        token = _session_token_for_auto_role_source(token_response)
+    else:
+        token = token_response.id_token or token_response.access_token
     iam_proxy_url = getattr(auth, "iam_proxy_url", "") if auth else ""
     should_use_iam_proxy = role_token_source == "iam_proxy" or (
         role_token_source == "auto" and bool(iam_proxy_url)
@@ -1369,6 +1406,25 @@ async def auth_callback(request: Request):
                 status_code=502,
                 detail=f"IAM proxy token exchange failed: {e.response.status_code} {e.response.reason_phrase}",
             )
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=str(e) or "IAM proxy token exchange failed (connection error)",
+            )
+        try:
+            from cuga.backend.server.auth.jwt_validator import validate_iam_token
+
+            skip_verify = bool(getattr(auth, "iam_proxy_skip_verify", False)) if auth else False
+            ca_bundle = getattr(auth, "iam_proxy_ca_bundle", None) if auth else None
+            await validate_iam_token(
+                token,
+                instance_id,
+                skip_verify=skip_verify,
+                ca_bundle=ca_bundle or None,
+            )
+        except ValueError as e:
+            logger.warning("auth_callback: IAM token validation failed: {}", e)
+            raise HTTPException(status_code=401, detail=f"IAM token validation failed: {e}")
     elif role_token_source == "id_token":
         if not token_response.id_token:
             raise HTTPException(status_code=503, detail="OIDC provider did not return id_token")

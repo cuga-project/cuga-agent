@@ -113,6 +113,7 @@ ssl_keyfile = ""
 ssl_certfile = ""
 iam_proxy_url = ""
 iam_proxy_skip_verify = false
+iam_proxy_ca_bundle = ""  # PEM bundle path for IAM proxy TLS (independent of oidc_ca_bundle)
 role_token_source = "auto"  # auto | id_token | access_token | iam_proxy
 
 [ui]

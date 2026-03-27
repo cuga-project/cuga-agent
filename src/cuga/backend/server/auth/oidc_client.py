@@ -33,6 +33,7 @@ class OIDCClient:
         ca_bundle: Optional[str] = None,
         iam_proxy_url: str = "",
         iam_proxy_skip_verify: bool = False,
+        iam_proxy_ca_bundle: Optional[str] = None,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
@@ -43,7 +44,7 @@ class OIDCClient:
         self._ca_bundle = ca_bundle
         self._ssl: bool | str = False if skip_verify else (ca_bundle or True)
         self.iam_proxy_url = iam_proxy_url.rstrip("/")
-        self._iam_proxy_ssl: bool | str = False if iam_proxy_skip_verify else self._ssl
+        self._iam_proxy_ssl: bool | str = False if iam_proxy_skip_verify else (iam_proxy_ca_bundle or True)
         self._discovery: Optional[dict[str, Any]] = None
         self._validator: Optional[JWTValidator] = None
         self._pkce_ttl = 300
@@ -52,6 +53,10 @@ class OIDCClient:
     async def get_discovery(self) -> dict[str, Any]:
         if self._discovery is not None:
             return self._discovery
+        from cuga.backend.server.auth.issuer_allowlist import normalize_discovery_url
+
+        if normalize_discovery_url(self.discovery_url) is None:
+            raise ValueError("OIDC discovery URL must be a valid https URL; fix OIDC_DISCOVERY_URL")
         async with httpx.AsyncClient(verify=self._ssl) as client:
             resp = await client.get(self.discovery_url)
             resp.raise_for_status()
@@ -233,6 +238,7 @@ def get_oidc_client() -> Optional[OIDCClient]:
     ca_bundle: Optional[str] = None
     iam_proxy_url = ""
     iam_proxy_skip_verify = False
+    iam_proxy_ca_bundle: Optional[str] = None
     try:
         from cuga.config import settings
 
@@ -243,6 +249,7 @@ def get_oidc_client() -> Optional[OIDCClient]:
             ca_bundle = getattr(auth, "oidc_ca_bundle", None) or None
             iam_proxy_url = getattr(auth, "iam_proxy_url", "") or ""
             iam_proxy_skip_verify = bool(getattr(auth, "iam_proxy_skip_verify", False))
+            iam_proxy_ca_bundle = getattr(auth, "iam_proxy_ca_bundle", None) or None
     except Exception:
         pass
     if skip_verify:
@@ -259,5 +266,6 @@ def get_oidc_client() -> Optional[OIDCClient]:
         ca_bundle=ca_bundle,
         iam_proxy_url=iam_proxy_url,
         iam_proxy_skip_verify=iam_proxy_skip_verify,
+        iam_proxy_ca_bundle=iam_proxy_ca_bundle,
     )
     return _oidc_client_instance

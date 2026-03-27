@@ -174,6 +174,7 @@ validators = [
     Validator("auth.oidc_ca_bundle", default=""),
     Validator("auth.iam_proxy_url", default=""),
     Validator("auth.iam_proxy_skip_verify", default=False),
+    Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
 ]
 

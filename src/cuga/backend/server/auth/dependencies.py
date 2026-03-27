@@ -5,6 +5,7 @@ from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
 
+from cuga.backend.server.auth.issuer_allowlist import normalize_issuer_for_discovery
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.auth.jwt_validator import JWTValidator
 
@@ -99,22 +100,26 @@ def _get_tls_settings() -> tuple[bool, Optional[str]]:
 
 async def _discover_jwks_for_issuer(issuer: str) -> Optional[str]:
     """Fetch JWKS URI from the issuer's standard OIDC discovery endpoint."""
-    if issuer in _discovery_cache:
-        return _discovery_cache[issuer].get("jwks_uri")
+    normalized = normalize_issuer_for_discovery(issuer)
+    if not normalized:
+        return None
+
+    if normalized in _discovery_cache:
+        return _discovery_cache[normalized].get("jwks_uri")
 
     skip_verify, ca_bundle = _get_tls_settings()
     ssl_arg: bool | str = False if skip_verify else (ca_bundle or True)
 
-    discovery_url = issuer.rstrip("/") + "/.well-known/openid-configuration"
+    discovery_url = normalized.rstrip("/") + "/.well-known/openid-configuration"
     try:
         async with httpx.AsyncClient(verify=ssl_arg) as client:
             resp = await client.get(discovery_url, follow_redirects=True)
             resp.raise_for_status()
             data = resp.json()
-        _discovery_cache[issuer] = data
+        _discovery_cache[normalized] = data
         return data.get("jwks_uri")
     except Exception as e:
-        logger.debug("Auto-discovery failed for issuer {}: {}", issuer, e)
+        logger.debug("Auto-discovery failed for issuer {}: {}", normalized, e)
         return None
 
 
@@ -152,7 +157,7 @@ async def _get_validator_for_token(token: str) -> Optional[JWTValidator]:
     except Exception:
         pass
 
-    cache_key = f"{jwks_uri}|{skip_verify}|{ca_bundle or ''}"
+    cache_key = f"{jwks_uri}|{issuer}|{skip_verify}|{ca_bundle or ''}"
     if cache_key not in _validator_cache:
         _validator_cache[cache_key] = JWTValidator(
             jwks_uri=jwks_uri,
@@ -188,7 +193,7 @@ async def _get_validator() -> Optional[JWTValidator]:
             ca_bundle = getattr(auth, "oidc_ca_bundle", None) or None
     except Exception:
         pass
-    cache_key = f"{jwks_uri}|{skip_verify}|{ca_bundle or ''}"
+    cache_key = f"{jwks_uri}|{issuer or ''}|{skip_verify}|{ca_bundle or ''}"
     if cache_key not in _validator_cache:
         if skip_verify:
             logger.warning(
