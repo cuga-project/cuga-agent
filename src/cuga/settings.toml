@@ -71,7 +71,7 @@ base_url = ""  # Optional: custom endpoint for OpenAI-compatible embeddings (e.g
 api_key = ""  # Optional: API key for embedding endpoint; falls back to OPENAI_API_KEY
 
 [policy]
-enabled = false  # Enable policy system (intent guards, playbooks, tool guides, tool approvals)
+enabled = true  # Enable policy system (intent guards, playbooks, tool guides, tool approvals)
 collection_name = "cuga_policies"  # Collection name for storing policies
 policy_db_path = ""  # Optional: path for policy DB; when empty, uses storage.local_db_path (cuga.db)
 playbook_refine = false  # Enable playbook refinement based on user progress (requires LLM)
