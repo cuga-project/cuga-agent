@@ -71,7 +71,7 @@ base_url = ""  # Optional: custom endpoint for OpenAI-compatible embeddings (e.g
 api_key = ""  # Optional: API key for embedding endpoint; falls back to OPENAI_API_KEY
 
 [policy]
-enabled = true  # Enable policy system (intent guards, playbooks, tool guides, tool approvals)
+enabled = false  # Enable policy system (intent guards, playbooks, tool guides, tool approvals)
 collection_name = "cuga_policies"  # Collection name for storing policies
 policy_db_path = ""  # Optional: path for policy DB; when empty, uses storage.local_db_path (cuga.db)
 playbook_refine = false  # Enable playbook refinement based on user progress (requires LLM)
@@ -111,6 +111,9 @@ jwks_cache_ttl = 3600
 require_https = false
 ssl_keyfile = ""
 ssl_certfile = ""
+iam_proxy_url = ""
+iam_proxy_skip_verify = false
+role_token_source = "auto"  # auto | id_token | access_token | iam_proxy
 
 [ui]
 hide_cuga_logo = false  # Set to true to hide the CUGA logo in the header

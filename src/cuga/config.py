@@ -172,6 +172,9 @@ validators = [
     Validator("auth.ssl_certfile", default=""),
     Validator("auth.oidc_skip_verify", default=False),
     Validator("auth.oidc_ca_bundle", default=""),
+    Validator("auth.iam_proxy_url", default=""),
+    Validator("auth.iam_proxy_skip_verify", default=False),
+    Validator("auth.role_token_source", default="auto"),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

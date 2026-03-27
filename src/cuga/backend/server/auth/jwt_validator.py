@@ -54,6 +54,25 @@ class JWTValidator:
             logger.debug(f"JWT validation failed: {e}")
             raise
 
+    @staticmethod
+    def _extract_roles(payload: dict[str, Any]) -> Optional[list[str]]:
+        roles_claim = payload.get("roles")
+        if isinstance(roles_claim, list):
+            return roles_claim
+        if isinstance(roles_claim, dict):
+            # IAM tokens carry roles as {"SERVICE": ["ServiceUser"], ...} — flatten all values.
+            flat: list[str] = []
+            for v in roles_claim.values():
+                if isinstance(v, list):
+                    flat.extend(str(r) for r in v)
+            return flat or None
+        realm_access = payload.get("realm_access")
+        if isinstance(realm_access, dict):
+            roles = realm_access.get("roles")
+            if isinstance(roles, list):
+                return roles
+        return None
+
     def to_user_info(self, payload: dict[str, Any]) -> UserInfo:
         sub = payload.get("sub") or ""
         if not sub:
@@ -62,9 +81,7 @@ class JWTValidator:
             sub=sub,
             email=payload.get("email") or payload.get("preferred_username"),
             name=payload.get("name") or payload.get("preferred_username"),
-            roles=payload.get("roles") or payload.get("realm_access", {}).get("roles")
-            if isinstance(payload.get("realm_access"), dict)
-            else None,
+            roles=self._extract_roles(payload),
             raw_claims={
                 k: v for k, v in payload.items() if k not in ("sub", "email", "name", "roles", "exp", "iat")
             },

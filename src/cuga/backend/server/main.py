@@ -1287,12 +1287,15 @@ async def auth_login(request: Request):
     response = RedirectResponse(url=auth_url, status_code=302)
     auth = getattr(settings, "auth", None)
     secure = getattr(auth, "require_https", False) if auth else False
+    # SameSite=None is required so the browser sends this cookie back on the
+    # cross-site POST to /auth/callback after the IdP redirect. Requires Secure=True.
+    state_samesite = "none" if secure else "lax"
     response.set_cookie(
         key="cuga_auth_state",
         value=state,
         max_age=600,
         httponly=True,
-        samesite="lax",
+        samesite=state_samesite,
         secure=secure,
     )
     return response
@@ -1308,8 +1311,16 @@ async def auth_callback(request: Request):
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing code or state")
     state_cookie = request.cookies.get("cuga_auth_state")
-    if not state_cookie or state_cookie != state:
-        raise HTTPException(status_code=400, detail="Invalid state")
+    if not state_cookie:
+        logger.warning("auth_callback: cuga_auth_state cookie is missing (state={})", state[:8])
+        raise HTTPException(status_code=400, detail="Invalid state: state cookie missing")
+    if state_cookie != state:
+        logger.warning(
+            "auth_callback: state mismatch — cookie={} request={}",
+            state_cookie[:8],
+            state[:8],
+        )
+        raise HTTPException(status_code=400, detail="Invalid state: state mismatch")
     from cuga.backend.server.auth.oidc_client import get_oidc_client
 
     client = get_oidc_client()
@@ -1319,6 +1330,7 @@ async def auth_callback(request: Request):
     try:
         token_response, _user_info = await client.exchange_code(code, state)
     except ValueError as e:
+        logger.warning("auth_callback: exchange_code failed: {}", e)
         raise HTTPException(status_code=400, detail=str(e))
 
     role_token_source = (getattr(auth, "role_token_source", "auto") if auth else "auto").lower()
@@ -1377,7 +1389,8 @@ async def auth_callback(request: Request):
         samesite="lax",
         secure=secure,
     )
-    response.delete_cookie("cuga_auth_state", secure=secure)
+    state_samesite = "none" if secure else "lax"
+    response.delete_cookie("cuga_auth_state", secure=secure, samesite=state_samesite)
     return response
 
 
