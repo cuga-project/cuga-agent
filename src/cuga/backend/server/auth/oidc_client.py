@@ -4,7 +4,7 @@ import os
 import secrets
 import time
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 
 import httpx
 from loguru import logger
@@ -31,13 +31,19 @@ class OIDCClient:
         jwks_cache_ttl: int = 3600,
         skip_verify: bool = False,
         ca_bundle: Optional[str] = None,
+        iam_proxy_url: str = "",
+        iam_proxy_skip_verify: bool = False,
     ):
         self.client_id = client_id
         self.client_secret = client_secret
         self.discovery_url = discovery_url.rstrip("/")
         self.redirect_uri = redirect_uri
         self.jwks_cache_ttl = jwks_cache_ttl
+        self._skip_verify = skip_verify
+        self._ca_bundle = ca_bundle
         self._ssl: bool | str = False if skip_verify else (ca_bundle or True)
+        self.iam_proxy_url = iam_proxy_url.rstrip("/")
+        self._iam_proxy_ssl: bool | str = False if iam_proxy_skip_verify else self._ssl
         self._discovery: Optional[dict[str, Any]] = None
         self._validator: Optional[JWTValidator] = None
         self._pkce_ttl = 300
@@ -58,6 +64,8 @@ class OIDCClient:
                 jwks_uri=jwks_uri,
                 cache_ttl=self.jwks_cache_ttl,
                 issuer=issuer,
+                skip_verify=self._skip_verify,
+                ca_bundle=self._ca_bundle,
             )
         return self._validator
 
@@ -160,6 +168,50 @@ class OIDCClient:
 
         return token_response, user_info
 
+    async def exchange_service_token(self, access_token: str, instance_id: str) -> str:
+        if not self.iam_proxy_url:
+            return access_token
+        if not access_token:
+            raise ValueError("Missing access token for IAM proxy exchange")
+        if not instance_id:
+            raise ValueError("Missing service instance ID for IAM proxy exchange")
+
+        encoded_instance = quote(instance_id, safe="")
+        exchange_url = f"{self.iam_proxy_url}/api/2.0/services/{encoded_instance}/token"
+        payload = {"jwt": access_token}
+        async with httpx.AsyncClient(verify=self._iam_proxy_ssl) as client:
+            resp = await client.post(
+                exchange_url,
+                headers={"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
+                json=payload,
+            )
+            if resp.status_code == 415:
+                # Some IAM proxy deployments require form-encoded posts for token endpoints.
+                resp = await client.post(
+                    exchange_url,
+                    headers={
+                        "Authorization": f"Bearer {access_token}",
+                        "Accept": "application/json",
+                        "Content-Type": "application/x-www-form-urlencoded",
+                    },
+                    data=payload,
+                )
+            if not resp.is_success:
+                logger.error(
+                    "IAM proxy token exchange failed: {} {} — body: {}",
+                    resp.status_code,
+                    resp.reason_phrase,
+                    resp.text,
+                )
+            resp.raise_for_status()
+            data = resp.json()
+
+        if isinstance(data, dict):
+            token = data.get("access_token") or data.get("token")
+            if isinstance(token, str) and token:
+                return token
+        raise ValueError("IAM proxy did not return access_token/token in response")
+
 
 _oidc_client_instance: Optional[OIDCClient] = None
 
@@ -179,6 +231,8 @@ def get_oidc_client() -> Optional[OIDCClient]:
     jwks_cache_ttl = 3600
     skip_verify = False
     ca_bundle: Optional[str] = None
+    iam_proxy_url = ""
+    iam_proxy_skip_verify = False
     try:
         from cuga.config import settings
 
@@ -187,6 +241,8 @@ def get_oidc_client() -> Optional[OIDCClient]:
             jwks_cache_ttl = getattr(auth, "jwks_cache_ttl", 3600) or 3600
             skip_verify = bool(getattr(auth, "oidc_skip_verify", False))
             ca_bundle = getattr(auth, "oidc_ca_bundle", None) or None
+            iam_proxy_url = getattr(auth, "iam_proxy_url", "") or ""
+            iam_proxy_skip_verify = bool(getattr(auth, "iam_proxy_skip_verify", False))
     except Exception:
         pass
     if skip_verify:
@@ -201,5 +257,7 @@ def get_oidc_client() -> Optional[OIDCClient]:
         jwks_cache_ttl=jwks_cache_ttl,
         skip_verify=skip_verify,
         ca_bundle=ca_bundle,
+        iam_proxy_url=iam_proxy_url,
+        iam_proxy_skip_verify=iam_proxy_skip_verify,
     )
     return _oidc_client_instance

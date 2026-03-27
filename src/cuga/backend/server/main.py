@@ -1315,12 +1315,56 @@ async def auth_callback(request: Request):
     client = get_oidc_client()
     if not client:
         raise HTTPException(status_code=503, detail="OIDC not configured")
+    auth = getattr(settings, "auth", None)
     try:
-        token_response, user_info = await client.exchange_code(code, state)
+        token_response, _user_info = await client.exchange_code(code, state)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    role_token_source = (getattr(auth, "role_token_source", "auto") if auth else "auto").lower()
+    allowed_role_token_sources = {"auto", "id_token", "access_token", "iam_proxy"}
+    if role_token_source not in allowed_role_token_sources:
+        raise HTTPException(
+            status_code=503,
+            detail=("Invalid auth.role_token_source; expected one of auto,id_token,access_token,iam_proxy"),
+        )
+
     token = token_response.id_token or token_response.access_token
-    auth = getattr(settings, "auth", None)
+    iam_proxy_url = getattr(auth, "iam_proxy_url", "") if auth else ""
+    should_use_iam_proxy = role_token_source == "iam_proxy" or (
+        role_token_source == "auto" and bool(iam_proxy_url)
+    )
+    if should_use_iam_proxy:
+        from cuga.config import get_service_instance_id
+
+        if not iam_proxy_url:
+            raise HTTPException(
+                status_code=503,
+                detail="DYNACONF_AUTH__IAM_PROXY_URL is required when auth.role_token_source=iam_proxy",
+            )
+        instance_id = get_service_instance_id()
+        if not instance_id:
+            raise HTTPException(
+                status_code=503,
+                detail="DYNACONF_SERVICE__INSTANCE_ID is required for IAM proxy token exchange",
+            )
+        try:
+            token = await client.exchange_service_token(token_response.access_token, instance_id)
+        except ValueError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"IAM proxy token exchange failed: {e.response.status_code} {e.response.reason_phrase}",
+            )
+    elif role_token_source == "id_token":
+        if not token_response.id_token:
+            raise HTTPException(status_code=503, detail="OIDC provider did not return id_token")
+        token = token_response.id_token
+    elif role_token_source == "access_token":
+        if not token_response.access_token:
+            raise HTTPException(status_code=503, detail="OIDC provider did not return access_token")
+        token = token_response.access_token
     cookie_name = getattr(auth, "session_cookie_name", "cuga_session") if auth else "cuga_session"
     session_max_age = getattr(auth, "session_max_age", 3600) if auth else 3600
     response = JSONResponse({"ok": True, "redirect": "/manage"})

@@ -91,21 +91,31 @@ async def _get_validator() -> Optional[JWTValidator]:
     issuer = discovery.get("issuer")
     if not jwks_uri:
         return None
-    cache_key = jwks_uri
-    if cache_key not in _validator_cache:
-        jwks_cache_ttl = 3600
-        try:
-            from cuga.config import settings
+    jwks_cache_ttl = 3600
+    skip_verify = False
+    ca_bundle: Optional[str] = None
+    try:
+        from cuga.config import settings
 
-            auth = getattr(settings, "auth", None)
-            if auth is not None:
-                jwks_cache_ttl = getattr(auth, "jwks_cache_ttl", 3600) or 3600
-        except Exception:
-            pass
+        auth = getattr(settings, "auth", None)
+        if auth is not None:
+            jwks_cache_ttl = getattr(auth, "jwks_cache_ttl", 3600) or 3600
+            skip_verify = bool(getattr(auth, "oidc_skip_verify", False))
+            ca_bundle = getattr(auth, "oidc_ca_bundle", None) or None
+    except Exception:
+        pass
+    cache_key = f"{jwks_uri}|{skip_verify}|{ca_bundle or ''}"
+    if cache_key not in _validator_cache:
+        if skip_verify:
+            logger.warning(
+                "JWKS SSL verification is disabled (DYNACONF_AUTH__OIDC_SKIP_VERIFY=true) — do not use in production"
+            )
         _validator_cache[cache_key] = JWTValidator(
             jwks_uri=jwks_uri,
             cache_ttl=jwks_cache_ttl,
             issuer=issuer,
+            skip_verify=skip_verify,
+            ca_bundle=ca_bundle,
         )
     return _validator_cache[cache_key]
 

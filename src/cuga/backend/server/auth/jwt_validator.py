@@ -1,3 +1,4 @@
+import ssl
 from typing import Any, Optional
 
 import jwt
@@ -8,10 +9,23 @@ from cuga.backend.server.auth.models import UserInfo
 
 
 class JWTValidator:
-    def __init__(self, jwks_uri: str, cache_ttl: int = 3600, issuer: Optional[str] = None):
+    def __init__(
+        self,
+        jwks_uri: str,
+        cache_ttl: int = 3600,
+        issuer: Optional[str] = None,
+        *,
+        skip_verify: bool = False,
+        ca_bundle: Optional[str] = None,
+    ):
         self.jwks_uri = jwks_uri
         self.issuer = issuer
-        self._client = PyJWKClient(jwks_uri, cache_keys=True, lifespan=cache_ttl)
+        ssl_context = None
+        if skip_verify:
+            ssl_context = ssl._create_unverified_context()
+        elif ca_bundle:
+            ssl_context = ssl.create_default_context(cafile=ca_bundle)
+        self._client = PyJWKClient(jwks_uri, cache_keys=True, lifespan=cache_ttl, ssl_context=ssl_context)
 
     def validate_and_decode(
         self,
