@@ -1,14 +1,33 @@
-name: ✨ Feature Request
-description: Suggest a new feature or enhancement
+name: ✨ Feature / Design / Proposal
+description: Suggest a new feature, design, refactor, or other improvement
 title: "[Feature]: "
 labels: ["enhancement", "needs-triage"]
 assignees: []
 
 body:
+  - type: dropdown
+    id: issue_type
+    attributes:
+      label: Issue type
+      description: Choose the prefix that best fits. Update the title above to match (e.g. `[Design]: ...`).
+      options:
+        - "[Feature] – new functionality or capability"
+        - "[Design] – architecture, API design, or UX proposal"
+        - "[Refactor] – internal restructuring, no behavior change"
+        - "[Performance] – speed, memory, or efficiency improvement"
+        - "[Security] – vulnerability, safety concern, or hardening"
+        - "[Docs] – documentation additions or corrections"
+        - "[Test] – missing tests, flaky tests, or test infrastructure"
+        - "[Chore] – dependency updates, cleanup, or tooling"
+        - "[Epic] – large body of work grouping multiple issues"
+        - "[Question] – clarification needed"
+    validations:
+      required: true
+
   - type: markdown
     attributes:
       value: |
-        Describe the feature and why it matters so we can evaluate it.
+        Describe the proposal and why it matters so we can evaluate it.
 
   - type: textarea
     id: summary
