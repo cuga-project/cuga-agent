@@ -190,6 +190,28 @@ This will run:
 - **E2E tests**: System tests across Fast and Balanced modes for real-world scenarios
 
 
+## AI Agent Commands
+
+If you are working in an AI-assisted IDE or using an AI agent (Cursor, Claude, Bob), a set of pre-built workflow commands is available to streamline common contributor tasks. The same commands are mirrored across all three tooling directories:
+
+| Location | For |
+|---|---|
+| `.cursor/commands/cuga-*.md` | Cursor agent |
+| `.claude/commands/cuga-*.md` | Claude / claude-code |
+| `.bob/commands/cuga-*.md` | Bob agent |
+
+### Available Commands
+
+| Command | What it does |
+|---|---|
+| `cuga-commit` | Stages and commits changes using Conventional Commits with scoped messages and bullet-point descriptions |
+| `cuga-create-pr` | Validates local state, picks the right PR template, fills it out from current changes, and opens the PR via `gh` |
+| `cuga-report-bug` | Creates a GitHub issue using the `bug_report.yml` template with context from the current code |
+| `cuga-new-feature` | Creates a GitHub issue using the `feature_request.yml` template |
+| `cuga-ruff-check` | Runs `uv run ruff check --fix` and `uv run ruff format` on the project |
+
+These commands follow all repo conventions (Conventional Commits, `gh` CLI, no promotional footers). To invoke them, use the slash-command syntax of your tool (e.g. `/cuga-commit` in Cursor).
+
 ## IDE Setup Quick Links
 
 First make sure that your IDE environment is properly configured

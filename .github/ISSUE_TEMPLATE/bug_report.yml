@@ -8,45 +8,21 @@ body:
   - type: markdown
     attributes:
       value: |
-        Thanks for taking the time to fill out this bug report! Please provide as much detail as possible to help us reproduce and fix the issue.
+        Include enough detail that we can reproduce the issue.
 
   - type: textarea
-    id: description
+    id: summary
     attributes:
-      label: Bug Description
-      description: A clear and concise description of what the bug is.
-      placeholder: Describe what happened and what you expected to happen instead.
+      label: What happened
+      description: What you did, what you expected, and what went wrong (errors or screenshots welcome in the field below).
     validations:
       required: true
 
   - type: textarea
     id: reproduction
     attributes:
-      label: Steps to Reproduce
-      description: Tell us how to reproduce this bug.
-      placeholder: |
-        1. Go to '...'
-        2. Click on '...'
-        3. Run command '...'
-        4. See error
-    validations:
-      required: true
-
-  - type: textarea
-    id: expected
-    attributes:
-      label: Expected Behavior
-      description: What did you expect to happen?
-      placeholder: Describe the expected behavior
-    validations:
-      required: true
-
-  - type: textarea
-    id: actual
-    attributes:
-      label: Actual Behavior
-      description: What actually happened?
-      placeholder: Describe what actually happened, including any error messages
+      label: How to reproduce
+      description: Steps or commands that trigger the bug.
     validations:
       required: true
 
@@ -54,43 +30,15 @@ body:
     id: environment
     attributes:
       label: Environment
-      description: Please provide information about your environment
-      placeholder: |
-        - OS: [e.g. macOS 14.0, Ubuntu 22.04, Windows 11]
-        - Python version: [e.g. 3.12.0]
-        - CUGA version: [e.g. 1.0.0]
-        - Browser: [e.g. Chrome 120.0, if applicable]
-        - Node.js version: [e.g. 20.0.0, if applicable]
+      description: OS, CUGA version, and runtime versions that matter (Python, Node, browser, etc.).
     validations:
       required: true
 
   - type: textarea
-    id: logs
+    id: extras
     attributes:
-      label: Error Logs / Screenshots
-      description: If applicable, add error logs or screenshots to help explain your problem.
-      placeholder: Paste error logs or drag and drop screenshots here
-    validations:
-      required: false
-
-  - type: textarea
-    id: config
-    attributes:
-      label: Configuration
-      description: If relevant, please share your configuration files (remove any sensitive information)
-      placeholder: |
-        ```yaml
-        # settings.toml or mcp_servers.yaml content
-        ```
-    validations:
-      required: false
-
-  - type: textarea
-    id: additional
-    attributes:
-      label: Additional Context
-      description: Add any other context about the problem here.
-      placeholder: Any additional information that might be helpful
+      label: Logs, screenshots, or config
+      description: Optional. Paste logs or redacted config if it helps.
     validations:
       required: false
 
@@ -98,11 +46,6 @@ body:
     id: checklist
     attributes:
       label: Checklist
-      description: Please confirm the following
       options:
-        - label: I have searched existing issues to ensure this is not a duplicate
+        - label: I searched existing issues and this doesn’t look like a duplicate
           required: true
-        - label: I have provided all the required information above
-          required: true
-        - label: I am using the latest version of CUGA
-          required: false

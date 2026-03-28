@@ -22,6 +22,8 @@ vendor
 logs/
 .milvus*
 .bob
+!.bob/commands/
+!.bob/commands/cuga-*.md
 test_workspace/
 *.logs
 
@@ -68,6 +70,8 @@ cuga.egg-info
 
 # IDE and editor files
 .cursor/
+!.cursor/commands/
+!.cursor/commands/cuga-*.md
 
 # Local TLS certs for HTTPS (e.g. IBM Verify)
 deployment/certs/*.key
