@@ -1,5 +1,5 @@
 
-### Step 1: Validate Your Local Repository do it all against upstream `opensource`
+### Step 1: Validate Your Local Repository do it all against upstream `origin`
 
 Before creating a PR, you must ensure all your changes are committed and pushed to your branch.
 
@@ -30,7 +30,7 @@ git rev-list --count @{u}..HEAD
 **⚠️ CRITICAL: If the count is greater than zero, STOP HERE!**
 
 You have commits that have not been pushed to the remote repository. You must:
-- **Push your changes**: `git push opensource <branch-name>`
+- **Push your changes**: `git push origin <branch-name>`
 
 **Do not proceed with PR creation until this is resolved.**
 
