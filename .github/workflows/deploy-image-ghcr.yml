@@ -1,17 +1,16 @@
-# Required vars: IMAGE_NAME, IMAGE_TAG (optional, defaults to 'latest')
+# Required vars: IMAGE_NAME
 name: Deploy Image to GHCR
 
 on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'
   workflow_dispatch:
     inputs:
       image_tag:
-        description: 'Image tag (e.g. 1.0.0, latest)'
+        description: 'Image tag (e.g. 1.0.0). Omit to use git tag or latest.'
         required: false
-        default: 'latest'
-      branch:
-        description: 'Git ref to build (branch, tag, or SHA). Defaults to main.'
-        required: false
-        default: 'main'
+        default: ''
 
 jobs:
   deploy:
@@ -24,7 +23,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v5
         with:
-          ref: ${{ inputs.branch != '' && inputs.branch || 'main' }}
+          ref: ${{ github.ref }}
 
       - name: Validate vars
         run: |
@@ -46,13 +45,20 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Resolve image tag
-        id: tag
-        run: |
-          TAG="${{ inputs.image_tag }}"
-          [ -z "$TAG" ] && TAG="${{ vars.IMAGE_TAG }}"
-          [ -z "$TAG" ] && TAG="latest"
-          echo "value=$TAG" >> $GITHUB_OUTPUT
+      - name: Extract Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ vars.IMAGE_NAME }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=${{ inputs.image_tag }},enable=${{ inputs.image_tag != '' }}
+            type=raw,value=latest,enable=${{ inputs.image_tag == '' && github.event_name != 'push' }}
+          labels: |
+            org.opencontainers.image.title=${{ vars.IMAGE_NAME }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
       - name: Build and push image to GHCR
         uses: docker/build-push-action@v6
@@ -61,7 +67,5 @@ jobs:
           file: ./Dockerfile.ubi
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: ghcr.io/${{ github.repository_owner }}/${{ vars.IMAGE_NAME }}:${{ steps.tag.outputs.value }}
-          labels: |
-            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
