@@ -740,112 +740,133 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
 
         Uses Langfuse for tracing. Verifies summarization occurred by checking message count reduction.
         """
+        import os
+        from cuga.config import settings
 
         json_path = Path(__file__).parent / "conversation_messages.json"
         if not json_path.exists():
             pytest.skip(f"conversation_messages.json not found at {json_path}")
 
-        langfuse_handler = setup_langfuse_tracing()
-        callbacks = [langfuse_handler] if langfuse_handler else []
-        messages = _load_conversation_messages(json_path)
-        history = messages
+        # Save original settings
+        original_enabled = settings.context_summarization.enabled
+        original_fraction = settings.context_summarization.trigger_fraction
+        original_keep = settings.context_summarization.keep_last_n_messages
 
-        additional_msg1 = HumanMessage(
-            content="""Please provide a detailed summary of all the CRM data we've discussed, including account information, contact details, and any patterns you've observed in the data. Make sure to highlight key insights about customer distribution across regions and industries. Additionally, analyze the revenue patterns, employee count distributions, renewal dates, risk scores, and ownership assignments. Provide insights into regional performance, industry trends, plan distribution (Free vs Pro vs Enterprise), and any correlations between company size, industry, and plan selection. Also discuss contact engagement patterns, communication preferences, and any notable trends in customer behavior across different segments."""
-        )
-        additional_msg2 = AIMessage(
-            content="""Based on our extensive CRM discussion, here's a comprehensive summary: We've covered 1000+ accounts across multiple regions (North America, Europe, Asia Pacific, Latin America, Middle East & Africa) spanning various industries including Technology, Healthcare, Finance, Manufacturing, Retail, Education, Real Estate, Consulting, Media, Automotive, Energy, Telecommunications, Transportation, Food & Beverage, Pharmaceuticals, Insurance, Legal, Construction, Agriculture, Aerospace, Banking, Biotechnology, Chemicals, Defense, Entertainment, Fashion, Gaming, Hospitality, and Logistics. Key patterns include strong presence in Technology and Healthcare sectors, diverse geographic distribution with concentration in major markets, and a mix of Free, Pro, and Enterprise plans. Contact data shows professional roles across organizations with varied communication preferences. Revenue patterns indicate healthy growth across segments, with Enterprise customers showing highest lifetime value. Employee counts range from small startups (10-50) to large enterprises (5000+), with most accounts in the mid-market segment (100-1000 employees). Renewal dates are well-distributed throughout the year, minimizing churn risk concentration. Risk scores vary from 0.01 to 0.99, with most accounts in the low-to-medium risk range (0.20-0.60). Ownership is balanced across account managers Lena, Noah, Priya, Chen, and Maria, ensuring good workload distribution. Regional performance shows North America leading in account count and revenue, followed by Europe and Asia Pacific. Industry trends reveal Technology and Healthcare as fastest-growing sectors, with increasing demand for Enterprise plans. Plan distribution shows 33% Free, 33% Pro, and 34% Enterprise, indicating successful upsell strategies. Strong correlations exist between company size and plan selection, with larger companies preferring Enterprise plans. Contact engagement is highest in Technology and Finance sectors, with email being the preferred communication channel."""
-        )
+        try:
+            # Configure for 75% threshold summarization (same as test_invoke_with_large_context_triggers_summarization)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = "true"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = "0.75"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = "5"
+            settings.reload()
 
-        additional_msg3 = HumanMessage(
-            content="""Thank you for that comprehensive summary. Now, could you also analyze the temporal trends in our CRM data? Specifically, I'd like to understand account creation patterns over time, seasonal variations in customer acquisition, renewal rate trends, and how risk scores have evolved. Also, please examine any correlations between account age and plan upgrades, regional growth rates over different quarters, and industry-specific retention patterns."""
-        )
+            langfuse_handler = setup_langfuse_tracing()
+            callbacks = [langfuse_handler] if langfuse_handler else []
+            messages = _load_conversation_messages(json_path)
+            history = messages
 
-        additional_msg4 = AIMessage(
-            content="""Excellent question about temporal trends. Analyzing the CRM data chronologically reveals several interesting patterns: Account creation shows steady growth with Q4 2025 being the strongest quarter (285 new accounts), followed by Q1 2026 (267 accounts). Seasonal variations indicate higher acquisition rates during end-of-year budget cycles and beginning-of-year planning periods. Renewal rates have improved from 82% in early 2025 to 91% in recent months, suggesting better customer success initiatives. Risk score evolution shows a positive trend, with average scores decreasing from 0.58 to 0.42 over the past year, indicating improved account health management. Account age correlates strongly with plan upgrades: accounts older than 12 months show 3.2x higher upgrade rates compared to newer accounts. Regional growth rates vary significantly: Asia Pacific leads with 47% YoY growth, followed by Latin America (38%), North America (28%), Europe (24%), and Middle East & Africa (31%). Industry-specific retention patterns reveal Technology (94% retention) and Healthcare (92% retention) as most stable, while Retail (78%) and Hospitality (76%) show higher churn, likely due to economic pressures in those sectors. Additionally, customer lifetime value analysis shows Enterprise customers averaging $125K annually, Pro customers at $45K, and Free tier users converting at 18% rate within first 6 months. Furthermore, cross-sell and upsell opportunities are most prevalent in accounts aged 6-18 months, with Technology and Healthcare sectors showing highest receptivity to premium features. Customer satisfaction scores correlate inversely with risk scores (r=-0.73), and accounts with dedicated customer success managers show 2.4x better retention rates. Geographic expansion patterns indicate strong potential in emerging markets, particularly Southeast Asia and Eastern Europe, where we're seeing 60%+ YoY growth in trial signups. Product adoption metrics show that accounts utilizing 3+ features have 89% higher retention compared to single-feature users, and integration with third-party tools increases stickiness by 156%."""
-        )
+            additional_msg1 = HumanMessage(
+                content="""Please provide a detailed summary of all the CRM data we've discussed, including account information, contact details, and any patterns you've observed in the data. Make sure to highlight key insights about customer distribution across regions and industries. Additionally, analyze the revenue patterns, employee count distributions, renewal dates, risk scores, and ownership assignments. Provide insights into regional performance, industry trends, plan distribution (Free vs Pro vs Enterprise), and any correlations between company size, industry, and plan selection. Also discuss contact engagement patterns, communication preferences, and any notable trends in customer behavior across different segments."""
+            )
+            additional_msg2 = AIMessage(
+                content="""Based on our extensive CRM discussion, here's a comprehensive summary: We've covered 1000+ accounts across multiple regions (North America, Europe, Asia Pacific, Latin America, Middle East & Africa) spanning various industries including Technology, Healthcare, Finance, Manufacturing, Retail, Education, Real Estate, Consulting, Media, Automotive, Energy, Telecommunications, Transportation, Food & Beverage, Pharmaceuticals, Insurance, Legal, Construction, Agriculture, Aerospace, Banking, Biotechnology, Chemicals, Defense, Entertainment, Fashion, Gaming, Hospitality, and Logistics. Key patterns include strong presence in Technology and Healthcare sectors, diverse geographic distribution with concentration in major markets, and a mix of Free, Pro, and Enterprise plans. Contact data shows professional roles across organizations with varied communication preferences. Revenue patterns indicate healthy growth across segments, with Enterprise customers showing highest lifetime value. Employee counts range from small startups (10-50) to large enterprises (5000+), with most accounts in the mid-market segment (100-1000 employees). Renewal dates are well-distributed throughout the year, minimizing churn risk concentration. Risk scores vary from 0.01 to 0.99, with most accounts in the low-to-medium risk range (0.20-0.60). Ownership is balanced across account managers Lena, Noah, Priya, Chen, and Maria, ensuring good workload distribution. Regional performance shows North America leading in account count and revenue, followed by Europe and Asia Pacific. Industry trends reveal Technology and Healthcare as fastest-growing sectors, with increasing demand for Enterprise plans. Plan distribution shows 33% Free, 33% Pro, and 34% Enterprise, indicating successful upsell strategies. Strong correlations exist between company size and plan selection, with larger companies preferring Enterprise plans. Contact engagement is highest in Technology and Finance sectors, with email being the preferred communication channel."""
+            )
 
-        last_user_msg = HumanMessage(
-            content="Write nice poem about the weather at least 600 words. Make it beautiful and evocative, capturing the essence of changing seasons."
-        )
-        all_messages = history + [
-            additional_msg1,
-            additional_msg2,
-            additional_msg3,
-            additional_msg4,
-            last_user_msg,
-        ]
+            additional_msg3 = HumanMessage(
+                content="""Thank you for that comprehensive summary. Now, could you also analyze the temporal trends in our CRM data? Specifically, I'd like to understand account creation patterns over time, seasonal variations in customer acquisition, renewal rate trends, and how risk scores have evolved. Also, please examine any correlations between account age and plan upgrades, regional growth rates over different quarters, and industry-specific retention patterns."""
+            )
 
-        print("\n=== Loading large conversation history ===")
-        print(f"Loaded {len(messages)} messages from conversation_messages.json")
-        print(f"Total messages to process: {len(all_messages)} (~108k tokens)")
+            additional_msg4 = AIMessage(
+                content="""Excellent question about temporal trends. Analyzing the CRM data chronologically reveals several interesting patterns: Account creation shows steady growth with Q4 2025 being the strongest quarter (285 new accounts), followed by Q1 2026 (267 accounts). Seasonal variations indicate higher acquisition rates during end-of-year budget cycles and beginning-of-year planning periods. Renewal rates have improved from 82% in early 2025 to 91% in recent months, suggesting better customer success initiatives. Risk score evolution shows a positive trend, with average scores decreasing from 0.58 to 0.42 over the past year, indicating improved account health management. Account age correlates strongly with plan upgrades: accounts older than 12 months show 3.2x higher upgrade rates compared to newer accounts. Regional growth rates vary significantly: Asia Pacific leads with 47% YoY growth, followed by Latin America (38%), North America (28%), Europe (24%), and Middle East & Africa (31%). Industry-specific retention patterns reveal Technology (94% retention) and Healthcare (92% retention) as most stable, while Retail (78%) and Hospitality (76%) show higher churn, likely due to economic pressures in those sectors. Additionally, customer lifetime value analysis shows Enterprise customers averaging $125K annually, Pro customers at $45K, and Free tier users converting at 18% rate within first 6 months. Furthermore, cross-sell and upsell opportunities are most prevalent in accounts aged 6-18 months, with Technology and Healthcare sectors showing highest receptivity to premium features. Customer satisfaction scores correlate inversely with risk scores (r=-0.73), and accounts with dedicated customer success managers show 2.4x better retention rates. Geographic expansion patterns indicate strong potential in emerging markets, particularly Southeast Asia and Eastern Europe, where we're seeing 60%+ YoY growth in trial signups. Product adoption metrics show that accounts utilizing 3+ features have 89% higher retention compared to single-feature users, and integration with third-party tools increases stickiness by 156%."""
+            )
 
-        agent = CugaAgent(tools=[], callbacks=callbacks)
-        thread_id = str(uuid.uuid4())
+            last_user_msg = HumanMessage(
+                content="Write nice poem about the weather at least 600 words. Make it beautiful and evocative, capturing the essence of changing seasons."
+            )
+            all_messages = history + [
+                additional_msg1,
+                additional_msg2,
+                additional_msg3,
+                additional_msg4,
+                last_user_msg,
+            ]
 
-        # First invoke with large context - should trigger summarization
-        result = await agent.invoke(all_messages, thread_id=thread_id)
-        assert result is not None
-        print("✓ Large context loaded")
+            print("\n=== Loading large conversation history ===")
+            print(f"Loaded {len(messages)} messages from conversation_messages.json")
+            print(f"Total messages to process: {len(all_messages)} (~108k tokens)")
 
-        # Check message count after first invoke to verify summarization occurred
-        config = {"configurable": {"thread_id": thread_id}}
-        checkpoint = agent.graph.checkpointer.get(config)
-        assert checkpoint is not None, "Failed to get checkpoint after first invoke"
-        state_dict = checkpoint.get("channel_values", {})
-        assert state_dict is not None, "Failed to get channel_values from checkpoint"
-        message_count_before = len(state_dict.get("chat_messages", []))
-        print(f"Message count before second invoke: {message_count_before}")
-        assert message_count_before > 0, "No messages found in checkpoint before second invoke"
+            agent = CugaAgent(tools=[], callbacks=callbacks)
+            thread_id = str(uuid.uuid4())
 
-        # Verify that summarization happened during first invoke
-        # The first invoke had 38 messages (~106k tokens), should have been reduced significantly
-        # After summarization, we expect around 5-10 messages (KEEP_LAST_N_MESSAGES=5 + summary + responses)
-        assert message_count_before < 20, (
-            f"Summarization did not trigger during first invoke. "
-            f"Expected message count to be < 20 after summarization, got {message_count_before}"
-        )
-        print(
-            f"✓ Summarization triggered during first invoke ({len(all_messages)} → {message_count_before} messages)"
-        )
+            # First invoke with large context - should trigger summarization
+            result = await agent.invoke(all_messages, thread_id=thread_id)
+            assert result is not None
+            print("✓ Large context loaded")
 
-        # Second invoke - should not trigger summarization
-        result_2 = await agent.invoke(
-            "Now give me a poem about weather at most 20 words", thread_id=thread_id
-        )
-        assert result_2 is not None
-        assert result_2.error is None
+            # Check message count after first invoke to verify summarization occurred
+            config = {"configurable": {"thread_id": thread_id}}
+            checkpoint = agent.graph.checkpointer.get(config)
+            assert checkpoint is not None, "Failed to get checkpoint after first invoke"
+            state_dict = checkpoint.get("channel_values", {})
+            assert state_dict is not None, "Failed to get channel_values from checkpoint"
+            message_count_before = len(state_dict.get("chat_messages", []))
+            print(f"Message count before second invoke: {message_count_before}")
+            assert message_count_before > 0, "No messages found in checkpoint before second invoke"
 
-        # Check message count after second invoke
-        checkpoint_after = agent.graph.checkpointer.get(config)
-        assert checkpoint_after is not None, "Failed to get checkpoint after second invoke"
-        state_dict_after = checkpoint_after.get("channel_values", {})
-        assert state_dict_after is not None, (
-            "Failed to get channel_values from checkpoint after second invoke"
-        )
-        message_count_after = len(state_dict_after.get("chat_messages", []))
-        print(f"Message count after second invoke: {message_count_after}")
+            # Verify that summarization happened during first invoke
+            # The first invoke had 38 messages (~106k tokens), should have been reduced significantly
+            # After summarization, we expect around 5-10 messages (KEEP_LAST_N_MESSAGES=5 + summary + responses)
+            assert message_count_before < 20, (
+                f"Summarization did not trigger during first invoke. "
+                f"Expected message count to be < 20 after summarization, got {message_count_before}"
+            )
+            print(
+                f"✓ Summarization triggered during first invoke ({len(all_messages)} → {message_count_before} messages)"
+            )
 
-        # The second invoke should not trigger summarization (messages well below 75% threshold)
-        # Message count can increase by 2-4 depending on whether agent executes code
-        # (user + AI) or (user + AI_code + execution_result + AI_final)
-        message_increase = message_count_after - message_count_before
-        assert 2 <= message_increase <= 4, (
-            f"Expected message count to increase by 2-4 (depending on code execution). "
-            f"Before: {message_count_before}, After: {message_count_after}, Increase: {message_increase}"
-        )
-        print(
-            f"✓ Second invoke completed. Messages: {message_count_before} → {message_count_after} (+{message_increase})"
-        )
+            # Second invoke - should not trigger summarization
+            result_2 = await agent.invoke(
+                "Now give me a poem about weather at most 20 words", thread_id=thread_id
+            )
+            assert result_2 is not None
+            assert result_2.error is None
 
-        print(
-            f"\n✓ Summarization successfully reduced context from {len(all_messages)} to {message_count_before} messages"
-        )
+            # Check message count after second invoke
+            checkpoint_after = agent.graph.checkpointer.get(config)
+            assert checkpoint_after is not None, "Failed to get checkpoint after second invoke"
+            state_dict_after = checkpoint_after.get("channel_values", {})
+            assert state_dict_after is not None, (
+                "Failed to get channel_values from checkpoint after second invoke"
+            )
+            message_count_after = len(state_dict_after.get("chat_messages", []))
+            print(f"Message count after second invoke: {message_count_after}")
 
-        print("\n✅ Large context summarization test passed!")
+            # The second invoke should not trigger summarization (messages well below 75% threshold)
+            # Message count can increase by 2-4 depending on whether agent executes code
+            # (user + AI) or (user + AI_code + execution_result + AI_final)
+            message_increase = message_count_after - message_count_before
+            assert 2 <= message_increase <= 4, (
+                f"Expected message count to increase by 2-4 (depending on code execution). "
+                f"Before: {message_count_before}, After: {message_count_after}, Increase: {message_increase}"
+            )
+            print(
+                f"✓ Second invoke completed. Messages: {message_count_before} → {message_count_after} (+{message_increase})"
+            )
 
-        if langfuse_handler and hasattr(langfuse_handler, "get_trace_url"):
-            print(f"\nLangfuse trace: {langfuse_handler.get_trace_url()}")
+            print(
+                f"\n✓ Summarization successfully reduced context from {len(all_messages)} to {message_count_before} messages"
+            )
+
+            print("\n✅ Large context summarization test passed!")
+
+            if langfuse_handler and hasattr(langfuse_handler, "get_trace_url"):
+                print(f"\nLangfuse trace: {langfuse_handler.get_trace_url()}")
+
+        finally:
+            # Restore original settings
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            settings.reload()
 
     @pytest.mark.asyncio
     async def test_context_preservation_through_summarization(self):
