@@ -233,35 +233,6 @@ class ContextSummarizer:
             "message_count": len(messages),
         }
 
-        # Add deviation tracking if actual tokens are available from tracker
-        actual_tokens = None
-        source = None
-
-        # Try to get actual tokens from tracker (if enabled)
-        if self.token_counter.tracker and hasattr(self.token_counter.tracker, 'token_usage'):
-            actual_tokens = self.token_counter.tracker.token_usage
-            source = "tracker"
-
-        # Calculate and log deviation if we have actual tokens
-        if actual_tokens and actual_tokens > 0:
-            # Use prompt_tokens from actual usage for comparison (not total_tokens)
-            # because total_tokens includes completion tokens which we don't estimate
-            deviation = ((total_token_count - actual_tokens) / actual_tokens) * 100
-            metrics.update(
-                {
-                    "actual_token_count": actual_tokens,
-                    "deviation_percentage": deviation,
-                    "deviation_source": source,
-                }
-            )
-
-            # Always log deviations at INFO level for debugging
-            log_symbol = "⚠️ " if abs(deviation) > 10 else "📊"
-            logger.info(
-                f"{log_symbol} Token estimation deviation: {deviation:+.1f}% "
-                f"(estimated: {total_token_count}, actual: {actual_tokens}, source: {source})"
-            )
-
         return metrics
 
     def _check_trigger_conditions(
