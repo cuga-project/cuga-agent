@@ -150,6 +150,12 @@ validators = [
     Validator("secrets.db_encryption_key_env", default="CUGA_SECRET_KEY"),
     Validator("secrets.vault_addr", default=""),
     Validator("secrets.vault_token_env", default="VAULT_TOKEN"),
+    Validator("secrets.vault_auth_method", default=""),
+    Validator("secrets.vault_k8s_role", default=""),
+    Validator("secrets.vault_k8s_mount_path", default="kubernetes"),
+    Validator("secrets.vault_k8s_jwt_path", default="/var/run/secrets/kubernetes.io/serviceaccount/token"),
+    Validator("secrets.vault_cacert", default=""),
+    Validator("secrets.vault_skip_verify", default=False),
     Validator("secrets.vault_mount", default="secret"),
     Validator("secrets.vault_kv_version", default=""),
     Validator("secrets.vault_write_enabled", default=False),
@@ -164,6 +170,12 @@ validators = [
     Validator("auth.require_https", default=False),
     Validator("auth.ssl_keyfile", default=""),
     Validator("auth.ssl_certfile", default=""),
+    Validator("auth.oidc_skip_verify", default=False),
+    Validator("auth.oidc_ca_bundle", default=""),
+    Validator("auth.iam_proxy_url", default=""),
+    Validator("auth.iam_proxy_skip_verify", default=False),
+    Validator("auth.iam_proxy_ca_bundle", default=""),
+    Validator("auth.role_token_source", default="auto"),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

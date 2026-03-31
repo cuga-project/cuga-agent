@@ -39,8 +39,11 @@ function AuthGate({ children }: { children: React.ReactNode }) {
         if (!cancelled) setReady(true);
       } catch {
         if (!cancelled) {
-          const base = api.getApiBaseUrl();
-          window.location.href = `${base}/auth/login`;
+          if (!auth.isLoginInProgress()) {
+            auth.markLoginInProgress();
+            const base = api.getApiBaseUrl();
+            window.location.href = `${base}/auth/login`;
+          }
         }
       }
     })();

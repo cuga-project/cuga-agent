@@ -1,6 +1,6 @@
 [project]
 name = "cuga"
-version = "0.2.10"
+version = "0.2.11"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
@@ -51,6 +51,7 @@ dependencies = [
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
+health = ["cuga-oak-health; python_version>='3.12'"]
 
 [project.urls]
 Homepage = "https://cuga.dev"
@@ -61,6 +62,7 @@ package = true
 constraint-dependencies = [
     "pillow>=12.1.1",  # CVE-2026-25990: Out-of-bounds write in PSD loading
     "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441
+    "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
     "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
 ]
 
@@ -80,6 +82,7 @@ cuga = [
     "settings.toml",
     "backend/**/*.jinja2",
     "backend/**/*.js",
+    "backend/server/demo_setup_utils/*.json",
 ]
 frontend_workspaces = [
     "frontend/dist/**",

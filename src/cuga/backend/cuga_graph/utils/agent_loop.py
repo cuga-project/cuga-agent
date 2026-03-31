@@ -564,7 +564,12 @@ class AgentLoop:
             )
             # Check if this is a policy event by looking at cuga_lite_metadata (unified handling)
             answer = state.final_answer
-            if hasattr(state, 'cuga_lite_metadata') and state.cuga_lite_metadata:
+            # Do not insert policies into appworld answer
+            if (
+                hasattr(state, 'cuga_lite_metadata')
+                and state.cuga_lite_metadata
+                and settings.advanced_features.benchmark != "appworld"
+            ):
                 metadata = state.cuga_lite_metadata
                 if metadata.get('policy_blocked') or metadata.get('policy_matched'):
                     policy_type = metadata.get('policy_type', 'unknown')

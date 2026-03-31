@@ -62,7 +62,7 @@ from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
 from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
-from cuga.backend.server.auth.models import UserInfo
+from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
@@ -362,8 +362,6 @@ async def lifespan(app: FastAPI):
             policies_list = (
                 raw_policies.get("policies", [])
                 if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else raw_policies
-                if isinstance(raw_policies, list)
                 else []
             )
             if policies_list and app_state.policy_system and app_state.policy_system.storage:
@@ -813,6 +811,32 @@ async def save_conversation_to_db(
         logger.error(f"Error saving conversation to database: {e}")
 
 
+async def _next_event_or_stop(stream, stop_event):
+    """Get next event from stream, or (None, True) if stop_event is set first."""
+    if stop_event and stop_event.is_set():
+        return None, True
+    next_task = asyncio.create_task(stream.__anext__())
+    tasks = [next_task]
+    if stop_event:
+        stop_task = asyncio.create_task(stop_event.wait())
+        tasks.append(stop_task)
+    else:
+        stop_task = None
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for p in pending:
+        p.cancel()
+        try:
+            await p
+        except asyncio.CancelledError:
+            pass
+    if stop_task and stop_task in done and stop_event.is_set():
+        return None, True
+    try:
+        return next_task.result(), False
+    except StopAsyncIteration:
+        return None, "done"
+
+
 async def event_stream(
     query: str,
     api_mode=False,
@@ -970,17 +994,14 @@ async def event_stream(
                 yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
                 return
 
-            async for event in agent_stream_gen:
-                # Check cancellation event during event processing
-                if (
-                    thread_id
-                    and thread_id in app_state.stop_events
-                    and app_state.stop_events[thread_id].is_set()
-                ):
-                    logger.info(
-                        f"Agent execution stopped by user during event processing for thread_id: {thread_id}"
-                    )
+            stop_ev = app_state.stop_events.get(thread_id) if thread_id else None
+            while True:
+                event, status = await _next_event_or_stop(agent_stream_gen, stop_ev)
+                if status is True:
+                    logger.info(f"Agent execution stopped by user for thread_id: {thread_id}")
                     yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
+                    return
+                if status == "done":
                     return
 
                 if isinstance(event, AgentLoopAnswer):
@@ -1266,15 +1287,52 @@ async def auth_login(request: Request):
     response = RedirectResponse(url=auth_url, status_code=302)
     auth = getattr(settings, "auth", None)
     secure = getattr(auth, "require_https", False) if auth else False
+    # SameSite=None is required so the browser sends this cookie back on the
+    # cross-site POST to /auth/callback after the IdP redirect. Requires Secure=True.
+    state_samesite = "none" if secure else "lax"
     response.set_cookie(
         key="cuga_auth_state",
         value=state,
         max_age=600,
         httponly=True,
-        samesite="lax",
+        samesite=state_samesite,
         secure=secure,
     )
     return response
+
+
+def _jwt_payload_unverified(token: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not token:
+        return None
+    try:
+        import jwt as pyjwt
+
+        return pyjwt.decode(token, options={"verify_signature": False})
+    except Exception:
+        return None
+
+
+def _payload_has_role_claims(payload: Dict[str, Any]) -> bool:
+    from cuga.backend.server.auth.jwt_validator import JWTValidator
+
+    if JWTValidator._extract_roles(payload):
+        return True
+    role = payload.get("role")
+    if isinstance(role, str) and role.strip():
+        return True
+    if isinstance(role, list) and role:
+        return True
+    return False
+
+
+def _session_token_for_auto_role_source(token_response: TokenResponse) -> str:
+    id_payload = _jwt_payload_unverified(token_response.id_token)
+    acc_payload = _jwt_payload_unverified(token_response.access_token)
+    if id_payload and _payload_has_role_claims(id_payload) and token_response.id_token:
+        return token_response.id_token
+    if acc_payload and _payload_has_role_claims(acc_payload):
+        return token_response.access_token
+    return token_response.id_token or token_response.access_token
 
 
 @app.post("/auth/callback")
@@ -1287,19 +1345,94 @@ async def auth_callback(request: Request):
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing code or state")
     state_cookie = request.cookies.get("cuga_auth_state")
-    if not state_cookie or state_cookie != state:
-        raise HTTPException(status_code=400, detail="Invalid state")
+    if not state_cookie:
+        logger.warning("auth_callback: cuga_auth_state cookie is missing (state={})", state[:8])
+        raise HTTPException(status_code=400, detail="Invalid state: state cookie missing")
+    if state_cookie != state:
+        logger.warning(
+            "auth_callback: state mismatch — cookie={} request={}",
+            state_cookie[:8],
+            state[:8],
+        )
+        raise HTTPException(status_code=400, detail="Invalid state: state mismatch")
     from cuga.backend.server.auth.oidc_client import get_oidc_client
 
     client = get_oidc_client()
     if not client:
         raise HTTPException(status_code=503, detail="OIDC not configured")
-    try:
-        token_response, user_info = await client.exchange_code(code, state)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    token = token_response.id_token or token_response.access_token
     auth = getattr(settings, "auth", None)
+    try:
+        token_response, _user_info = await client.exchange_code(code, state)
+    except ValueError as e:
+        logger.warning("auth_callback: exchange_code failed: {}", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+    role_token_source = (getattr(auth, "role_token_source", "auto") if auth else "auto").lower()
+    allowed_role_token_sources = {"auto", "id_token", "access_token", "iam_proxy"}
+    if role_token_source not in allowed_role_token_sources:
+        raise HTTPException(
+            status_code=503,
+            detail=("Invalid auth.role_token_source; expected one of auto,id_token,access_token,iam_proxy"),
+        )
+
+    if role_token_source == "auto":
+        token = _session_token_for_auto_role_source(token_response)
+    else:
+        token = token_response.id_token or token_response.access_token
+    iam_proxy_url = getattr(auth, "iam_proxy_url", "") if auth else ""
+    should_use_iam_proxy = role_token_source == "iam_proxy" or (
+        role_token_source == "auto" and bool(iam_proxy_url)
+    )
+    if should_use_iam_proxy:
+        from cuga.config import get_service_instance_id
+
+        if not iam_proxy_url:
+            raise HTTPException(
+                status_code=503,
+                detail="DYNACONF_AUTH__IAM_PROXY_URL is required when auth.role_token_source=iam_proxy",
+            )
+        instance_id = get_service_instance_id()
+        if not instance_id:
+            raise HTTPException(
+                status_code=503,
+                detail="DYNACONF_SERVICE__INSTANCE_ID is required for IAM proxy token exchange",
+            )
+        try:
+            token = await client.exchange_service_token(token_response.access_token, instance_id)
+        except ValueError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"IAM proxy token exchange failed: {e.response.status_code} {e.response.reason_phrase}",
+            )
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=str(e) or "IAM proxy token exchange failed (connection error)",
+            )
+        try:
+            from cuga.backend.server.auth.jwt_validator import validate_iam_token
+
+            skip_verify = bool(getattr(auth, "iam_proxy_skip_verify", False)) if auth else False
+            ca_bundle = getattr(auth, "iam_proxy_ca_bundle", None) if auth else None
+            await validate_iam_token(
+                token,
+                instance_id,
+                skip_verify=skip_verify,
+                ca_bundle=ca_bundle or None,
+            )
+        except ValueError as e:
+            logger.warning("auth_callback: IAM token validation failed: {}", e)
+            raise HTTPException(status_code=401, detail=f"IAM token validation failed: {e}")
+    elif role_token_source == "id_token":
+        if not token_response.id_token:
+            raise HTTPException(status_code=503, detail="OIDC provider did not return id_token")
+        token = token_response.id_token
+    elif role_token_source == "access_token":
+        if not token_response.access_token:
+            raise HTTPException(status_code=503, detail="OIDC provider did not return access_token")
+        token = token_response.access_token
     cookie_name = getattr(auth, "session_cookie_name", "cuga_session") if auth else "cuga_session"
     session_max_age = getattr(auth, "session_max_age", 3600) if auth else 3600
     response = JSONResponse({"ok": True, "redirect": "/manage"})
@@ -1312,7 +1445,8 @@ async def auth_callback(request: Request):
         samesite="lax",
         secure=secure,
     )
-    response.delete_cookie("cuga_auth_state", secure=secure)
+    state_samesite = "none" if secure else "lax"
+    response.delete_cookie("cuga_auth_state", secure=secure, samesite=state_samesite)
     return response
 
 

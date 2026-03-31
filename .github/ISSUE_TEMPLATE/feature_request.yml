@@ -1,103 +1,55 @@
-name: ✨ Feature Request
-description: Suggest a new feature or enhancement
+name: ✨ Feature / Design / Proposal
+description: Suggest a new feature, design, refactor, or other improvement
 title: "[Feature]: "
 labels: ["enhancement", "needs-triage"]
 assignees: []
 
 body:
+  - type: dropdown
+    id: issue_type
+    attributes:
+      label: Issue type
+      description: Choose the prefix that best fits. Update the title above to match (e.g. `[Design]: ...`).
+      options:
+        - "[Feature] – new functionality or capability"
+        - "[Design] – architecture, API design, or UX proposal"
+        - "[Refactor] – internal restructuring, no behavior change"
+        - "[Performance] – speed, memory, or efficiency improvement"
+        - "[Security] – vulnerability, safety concern, or hardening"
+        - "[Docs] – documentation additions or corrections"
+        - "[Test] – missing tests, flaky tests, or test infrastructure"
+        - "[Chore] – dependency updates, cleanup, or tooling"
+        - "[Epic] – large body of work grouping multiple issues"
+        - "[Question] – clarification needed"
+    validations:
+      required: true
+
   - type: markdown
     attributes:
       value: |
-        Thanks for suggesting a new feature! Please provide detailed information to help us understand and evaluate your request.
+        Describe the proposal and why it matters so we can evaluate it.
 
   - type: textarea
-    id: feature-description
+    id: summary
     attributes:
-      label: Feature Request
-      description: A clear and concise description of the feature you'd like to see added.
-      placeholder: |
-        Example: Add support for exporting data in JSONL format.
+      label: What you want and why
+      description: The feature, the problem it solves, and how you’d use it.
     validations:
       required: true
 
   - type: textarea
-    id: motivation
+    id: proposal
     attributes:
-      label: Motivation / Problem
-      description: What problem does this feature solve? What's the motivation behind this request?
-      placeholder: |
-        Example: Currently, the repo only supports CSV export. This makes it hard to train ML models directly, since most frameworks consume JSONL.
+      label: How it could work
+      description: Your ideal behavior or API; optional notes on workarounds or alternatives you’ve tried.
     validations:
       required: true
 
   - type: textarea
-    id: use-case
+    id: extras
     attributes:
-      label: Use Case
-      description: Describe your specific use case and how this feature would help you.
-      placeholder: |
-        Example: As a data scientist, I need to export millions of rows quickly into JSONL so I can stream them into PyTorch without heavy preprocessing. Right now, I have to export CSV, then convert it, which costs both time and compute.
-    validations:
-      required: true
-
-  - type: textarea
-    id: proposed-solution
-    attributes:
-      label: Proposed Solution
-      description: How would you like this feature to work? Describe your ideal implementation.
-      placeholder: |
-        Example: Add an optional `--format jsonl` flag to the export command.
-    validations:
-      required: true
-
-  - type: textarea
-    id: alternatives
-    attributes:
-      label: Alternatives Considered
-      description: What alternatives have you considered? What workarounds are you currently using?
-      placeholder: |
-        Example: 
-        - Export CSV and run a custom conversion script (current workaround)
-        - Use SQLite export, but that requires external tooling
-    validations:
-      required: false
-
-  - type: dropdown
-    id: priority
-    attributes:
-      label: Priority
-      description: How important is this feature to you?
-      options:
-        - Low - Nice to have
-        - Medium - Would be helpful
-        - High - Important for my workflow
-        - Critical - Blocking my use case
-    validations:
-      required: true
-
-  - type: dropdown
-    id: complexity
-    attributes:
-      label: Implementation Complexity (if known)
-      description: If you have technical knowledge, how complex do you think this feature would be?
-      options:
-        - Unknown
-        - Simple - Small change or addition
-        - Medium - Moderate development effort
-        - Complex - Significant development effort
-        - Very Complex - Major architectural changes
-    validations:
-      required: false
-
-  - type: textarea
-    id: additional-context
-    attributes:
-      label: Additional Context
-      description: Add any other context, screenshots, or examples about the feature request.
-      placeholder: |
-        Example: JSONL is widely used in ML datasets (see OpenAI, HuggingFace).
-        
-        Links to relevant documentation, similar implementations, or examples would be helpful here.
+      label: Links or extra context
+      description: Optional. Docs, prior art, mockups, or constraints.
     validations:
       required: false
 
@@ -105,13 +57,6 @@ body:
     id: checklist
     attributes:
       label: Checklist
-      description: Please confirm the following
       options:
-        - label: I have searched existing issues and feature requests to ensure this is not a duplicate
+        - label: I searched existing issues and this doesn’t look like a duplicate
           required: true
-        - label: I have provided a clear use case and motivation for this feature
-          required: true
-        - label: I am willing to help test this feature once implemented
-          required: false
-        - label: I am interested in contributing to the implementation of this feature
-          required: false

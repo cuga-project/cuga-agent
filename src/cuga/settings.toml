@@ -89,6 +89,12 @@ force_env = true  # if true, always resolve from os.environ (ignores UI override
 db_encryption_key_env = "CUGA_SECRET_KEY"
 vault_addr = ""
 vault_token_env = "VAULT_TOKEN"
+vault_auth_method = ""  # "" | token | kubernetes (env: DYNACONF_SECRETS__VAULT_AUTH_METHOD)
+vault_k8s_role = ""
+vault_k8s_mount_path = "kubernetes"
+vault_k8s_jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+vault_cacert = ""  # PEM bundle path; env VAULT_CACERT (internal / route CA)
+vault_skip_verify = false  # dev only; env VAULT_SKIP_VERIFY=true
 vault_mount = "secret"
 vault_kv_version = ""  # "1" or "2"; leave empty to auto-detect
 vault_write_enabled = false
@@ -105,6 +111,10 @@ jwks_cache_ttl = 3600
 require_https = false
 ssl_keyfile = ""
 ssl_certfile = ""
+iam_proxy_url = ""
+iam_proxy_skip_verify = false
+iam_proxy_ca_bundle = ""  # PEM bundle path for IAM proxy TLS (independent of oidc_ca_bundle)
+role_token_source = "auto"  # auto | id_token | access_token | iam_proxy
 
 [ui]
 hide_cuga_logo = false  # Set to true to hide the CUGA logo in the header
@@ -120,6 +130,7 @@ crm_api = 8007
 saved_flows = 8003
 environment_url = 8000
 filesystem_mcp = 8112
+docs_mcp = 8113
 digital_sales_api = 8000
 mcp_server = 8000
 petstore_api = 8081
@@ -127,6 +138,7 @@ graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
 memory = 8888
+oak_health_api = 8090  # cuga-oak-health OpenAPI (demo_health)
 
 [context_summarization]
 enabled = true  # Enable intelligent context summarization

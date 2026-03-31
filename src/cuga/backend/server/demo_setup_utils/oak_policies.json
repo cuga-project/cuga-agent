@@ -1,0 +1,519 @@
+{
+  "enablePolicies": true,
+  "policies": [
+    {
+      "id": "oak-claims-eob-pdf",
+      "name": "Get Approved Claims with EOB PDFs",
+      "description": "Guide for retrieving approved claims and their EOB PDF documents",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "show my last approved claims and share the URL of any EOB PDF",
+            "get approved claims with EOB",
+            "download EOB PDF for approved claims",
+            "show my last 3 approved claims and share the URL of any EOB PDF",
+            "approved claims with EOB PDF",
+            "get EOB PDF for approved claims"
+          ],
+          "target": "intent",
+          "threshold": 0.9
+        }
+      ],
+      "markdown_content": "# Get Approved Claims with EOB PDFs\n\n## Overview\nRetrieve the member's approved claims and obtain the EOB (Explanation of Benefits) PDF documents for each approved claim.\n\n## Steps\n\n### Step 1: Retrieve and Filter Claims\n1. Retrieve all claims for the member\n2. Filter the results to only include claims with status \"Approved\"\n3. Sort by start date (descending) to get the most recent first\n4. Limit to the requested number (typically 3)\n\n**Expected Outcome**: List of approved claims with claim IDs and unique identifiers\n\n### Step 2: Obtain EOB PDFs\n1. For each approved claim from Step 1, use the claim's unique identifier\n2. Retrieve the EOB PDF document for each approved claim\n3. Extract the EOB PDF URLs from the response\n\n**Expected Outcome**: EOB PDF URLs for each approved claim\n\n### Step 3: Format Response\n1. Combine claim information with EOB PDF URLs\n2. Present in a clear format showing:\n   - Claim ID\n   - EOB PDF URL (if available)\n\n**Expected Outcome**: Formatted response with claim IDs and EOB PDF URLs\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 10,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-find-care-providers",
+      "name": "Find Care Providers",
+      "description": "Guide for finding in-network care providers near the member",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "find care providers near me",
+            "find doctors nearby",
+            "find in-network providers",
+            "find primary care doctors",
+            "find MRI providers",
+            "find knee surgeons",
+            "find me all primary care doctors near me",
+            "find in-network care providers near me for an MRI scan",
+            "find all primary care doctors near me that accept new patients",
+            "find all Spanish speaking primary care doctors near me"
+          ],
+          "target": "intent",
+          "threshold": 0.7
+        }
+      ],
+      "markdown_content": "# Find Care Providers\n\n## Overview\nFind in-network care providers based on specialty, location, and other criteria. The member must have location information (latitude and longitude) and active coverage.\n\n## Steps\n\n### Step 1: Retrieve Active Coverage Information\n1. Retrieve the member's active coverage information\n2. Extract the contract identifier and brand code from the coverage response\n3. Verify the coverage is active\n\n**Expected Outcome**: Contract identifier and brand code needed for provider search\n\n### Step 2: Get Care Suggestions (MANDATORY - Do NOT Skip)\n1. **ALWAYS** call `find_care_suggestions` first before calling `find_care_specialty`\n2. Search for care suggestions using:\n   - The search query text (e.g., \"primary care doctor\", \"mri\", \"knee surgery\")\n   - The brand code from Step 1\n   - The member's location (must include latitude and longitude)\n3. Extract specialty category codes from `suggestionList[].criteria.specialtyCategoryList[].code`\n   - **For MRI queries**: Extract code `\"75\"` (Imaging Centers) from the first suggestion\n   - **For knee surgery queries**: Extract code `\"220\"` (Surgery/Orthopedics)\n   - **For primary care queries**: Extract code `\"25\"` (Family/General Practice)\n4. Extract taxonomy codes from `suggestionList[].criteria.taxonomyList[].code` (optional)\n   - **For MRI queries**: May include `\"261QR0200X\"` (Radiology Clinic/Center)\n   - **IMPORTANT**: If no taxonomy codes extracted, use `None` (not empty list `[]`) when calling `find_care_specialty`\n5. **If no specialty codes were extracted** (should be rare), use fallback codes:\n   - **For MRI queries**: Use `[\"75\"]` (Imaging Centers)\n   - **For knee surgery queries**: Use `[\"220\"]` (Surgery/Orthopedics)\n   - **For primary care queries**: Use `[\"25\"]` (Family/General Practice)\n   - **DO NOT** use invalid codes like `\"23\"` - valid codes are: \"25\", \"231\", \"75\", \"220\"\n\n**Expected Outcome**: Specialty category codes (e.g., \"75\" for MRI) and taxonomy codes ready to use in Step 3\n\n### Step 3: Find Providers by Specialty\n1. Search for providers by specialty using:\n   - The contract identifier from Step 1\n   - The brand code from Step 1\n   - The specialty category codes from Step 2\n   - The requested distance in miles (default 20)\n   - The member's location (must include latitude and longitude)\n2. **CRITICAL - Pagination**: The API returns providers in pages (max 5 per page). To get ALL matching providers:\n   - Start with `page_index=0` and `size=5`\n   - Continue checking additional pages (`page_index=1`, `page_index=2`, etc.) until:\n     - No more providers are returned, OR\n     - Fewer than `size` providers are returned (indicating last page)\n   - Collect providers from all pages before filtering\n   - **Example**: If you need 5+ providers, check at least 2-3 pages to ensure you get all matches\n3. Filter results to only include in-network providers:\n   - Check `providers[].networkStatus.status == \"TP_INNETWORK\"` (NOT \"INN\")\n   - Filter based on any additional criteria (e.g., accepting new patients, language)\n\n**Expected Outcome**: Complete list of all matching in-network providers with contact information (from all pages)\n\n### Step 4: Format Response\n1. Present providers with:\n   - Provider name\n   - Practice name and address\n   - Phone number (if available)\n   - Distance from member location\n\n**Expected Outcome**: Formatted list of providers\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 10,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-benefits-with-providers",
+      "name": "Find Providers and Benefits",
+      "description": "Guide for finding care providers and their associated benefit information",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "find providers and what are my benefits",
+            "find surgeons and show benefits",
+            "find doctors nearby and benefits",
+            "find knee surgeons nearby and what are my benefits",
+            "find providers and show my benefits"
+          ],
+          "target": "intent",
+          "threshold": 0.7
+        }
+      ],
+      "markdown_content": "# Find Providers and Benefits\n\n## Overview\nFind care providers and retrieve their associated benefit information for the requested procedure or service.\n\n## Steps\n\n### Step 1: Retrieve Active Coverage Information\n1. Retrieve the member's active coverage information\n2. Extract the contract identifier, coverage start date, coverage end date, and brand code\n\n**Expected Outcome**: Coverage information with dates needed for benefit search\n\n### Step 2: Get Care Suggestions (MANDATORY - Do NOT Skip)\n1. **ALWAYS** call `find_care_suggestions` first before calling `find_care_specialty`\n2. Search for care suggestions using:\n   - The search query text (e.g., \"knee surgery\", \"primary care\", \"mri\")\n   - The brand code from Step 1\n   - The member's location (must include latitude and longitude)\n3. Extract specialty category codes from `suggestionList[].criteria.specialtyCategoryList[].code`\n   - **For MRI queries**: Extract code `\"75\"` (Imaging Centers) from the first suggestion\n   - **For knee surgery queries**: Extract code `\"220\"` (Surgery/Orthopedics)\n   - **For primary care queries**: Extract code `\"25\"` (Family/General Practice)\n4. Extract taxonomy codes from `suggestionList[].criteria.taxonomyList[].code` (optional)\n   - **For MRI queries**: May include `\"261QR0200X\"` (Radiology Clinic/Center)\n   - **IMPORTANT**: If no taxonomy codes extracted, use `None` (not empty list `[]`) when calling `find_care_specialty`\n5. **If no specialty codes were extracted** (should be rare), use fallback codes:\n   - **For MRI queries**: Use `[\"75\"]` (Imaging Centers)\n   - **For knee surgery queries**: Use `[\"220\"]` (Surgery/Orthopedics)\n   - **For primary care queries**: Use `[\"25\"]` (Family/General Practice)\n   - **DO NOT** use invalid codes like `\"23\"` - valid codes are: \"25\", \"231\", \"75\", \"220\"\n\n**Expected Outcome**: Specialty category codes (e.g., \"75\" for MRI) and taxonomy codes ready to use in Step 3\n\n### Step 3: Find Providers by Specialty\n1. Search for providers by specialty using:\n   - The contract identifier from Step 1\n   - The brand code from Step 1\n   - The specialty category codes from Step 2 (e.g., \"220\" for knee surgeons)\n   - The taxonomy codes from Step 2 (optional, e.g., \"207X00000X\" for orthopedic surgery)\n   - The requested distance in miles (default 20)\n   - The member's location (must include latitude and longitude)\n2. **CRITICAL - Pagination**: The API returns providers in pages (max 5 per page). To get ALL matching providers:\n   - Start with `page_index=0` and `size=5`\n   - Continue checking additional pages (`page_index=1`, `page_index=2`, etc.) until:\n     - No more providers are returned, OR\n     - Fewer than `size` providers are returned (indicating last page)\n   - Collect providers from all pages before filtering\n3. Filter results to only include in-network providers:\n   - Check `providers[].networkStatus.status == \"TP_INNETWORK\"` (NOT \"INN\")\n4. Extract provider information including names, addresses, and contact details\n\n**Expected Outcome**: Complete list of all matching in-network providers with contact information (from all pages)\n\n### Step 4: Search Benefits\n1. Search for benefits using:\n   - The procedure or service keyword (e.g., \"knee surgery\", \"mri\", \"knee injury\", \"office visit\")\n   - The contract identifier from Step 1\n   - The coverage start date from Step 1 (extract from `eligibility[].coverage[].effectiveDt`, format: YYYY-MM-DD)\n   - The coverage end date from Step 1 (extract from `eligibility[].coverage[].terminationDt`, format: YYYY-MM-DD)\n2. Extract benefit information from response:\n   - `benefitResults[].benefitSysId` \u2192 Benefit system identifier (save for get_benefit_details if needed)\n   - `benefitResults[].docId` \u2192 Document identifier (save for get_benefit_details if needed)\n   - `benefitResults[].networks[].code` \u2192 \"INN\" (In-Network) or \"OON\" (Out-of-Network)\n   - Deductibles, coinsurance percentages, copays, precertification requirements\n\n**Expected Outcome**: Benefit details for the procedure/service with identifiers for detailed lookup if needed\n\n### Step 4: Format Combined Response\n1. Present providers with their information\n2. Present benefits separately with clear In-Network vs Out-of-Network details\n\n**Expected Outcome**: Combined response with providers and benefits\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 15,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-benefit-details",
+      "name": "Get Detailed Benefit Information",
+      "description": "Guide for retrieving detailed benefit information including diagnosis codes",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "show my benefit details",
+            "what are my benefits for",
+            "benefit details for",
+            "show benefit details",
+            "what are my benefits for knee injury and show the details",
+            "show my benefit details for emergency room in case of a knee injury"
+          ],
+          "target": "intent",
+          "threshold": 0.7
+        }
+      ],
+      "markdown_content": "# Get Detailed Benefit Information\n\n## Overview\nRetrieve detailed benefit information including diagnosis codes and specific coverage details for a condition or procedure.\n\n## Steps\n\n### Step 1: Retrieve Active Coverage Information\n1. Retrieve the member's active coverage information\n2. Extract the contract identifier, coverage start date, and coverage end date\n\n**Expected Outcome**: Coverage information with contract identifier and dates\n\n### Step 2: Search Benefits\n1. Search for benefits using:\n   - The condition or procedure keyword (e.g., \"knee injury\", \"mri\")\n   - The contract identifier from Step 1\n   - The coverage start date from Step 1 (YYYY-MM-DD)\n   - The coverage end date from Step 1 (YYYY-MM-DD)\n2. Extract the benefit system identifier and document identifier from the response\n\n**Expected Outcome**: Benefit search results with identifiers needed for detailed lookup\n\n### Step 3: Get Detailed Benefit Information\n1. Retrieve detailed benefit information using:\n   - The contract identifier from Step 1\n   - The document identifier from Step 2 (must match coverage start date)\n   - The benefit system identifier from Step 2\n   - The coverage start date from Step 1 (YYYY-MM-DD)\n   - The coverage end date from Step 1 (YYYY-MM-DD)\n2. Extract detailed information including:\n   - Diagnosis codes\n   - In-Network vs Out-of-Network details\n   - Specific copays and coinsurance\n\n**Expected Outcome**: Detailed benefit information with diagnosis codes\n\n### Step 4: Format Response\n1. Present benefit details clearly showing:\n   - Benefit name and type\n   - In-Network details (deductible, copay, coinsurance, precertification)\n   - Out-of-Network details\n   - Diagnosis codes covered\n\n**Expected Outcome**: Formatted benefit details response\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 10,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-coverage-and-providers",
+      "name": "Coverage and Providers",
+      "description": "Guide for retrieving coverage details and finding providers who can perform a procedure near a specific location",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "coverage and who can perform near New York",
+            "coverage and who can perform nearby"
+          ],
+          "target": "intent",
+          "threshold": 0.7
+        }
+      ],
+      "markdown_content": "# Coverage and Providers\n\n## Overview\nRetrieve coverage details (benefit information) for a procedure and find providers who can perform it nearby or in a specific location. The primary focus is on coverage details, with provider search as secondary information. Handles queries asking about coverage and providers together, including \"nearby\" or location-specific requests (e.g., \"in Boston, MA\", \"near New York, NY\"). When a specific location is mentioned in the query (like \"Boston, MA\"), extract and use that location for provider search. If no location is specified, use the member's default location from their profile.\n\n## Steps\n\n### Step 1: Retrieve Active Coverage Information\n1. Retrieve the member's active coverage information\n2. Extract the contract identifier, coverage start date, coverage end date, and brand code\n\n**Expected Outcome**: Coverage information with contract identifier, dates, and brand code\n\n### Step 2: Search Benefits for Coverage Details\n1. Search for benefits using:\n   - The procedure keyword (e.g., \"mri\", \"knee surgery\")\n   - The contract identifier from Step 1\n   - The coverage start date from Step 1 (YYYY-MM-DD)\n   - The coverage end date from Step 1 (YYYY-MM-DD)\n2. Extract benefit information including:\n   - In-Network vs Out-of-Network details\n   - Coinsurance percentages\n   - Copays\n   - Deductible requirements\n   - Precertification requirements\n3. If detailed benefit information is needed, use `get_benefit_details` with:\n   - Contract identifier from Step 1\n   - Document identifier from benefit search\n   - Benefit system identifier from benefit search\n   - Coverage dates from Step 1\n\n**Expected Outcome**: Coverage details with coinsurance, copays, and other benefit information\n\n### Step 3: Get Care Suggestions (MANDATORY - Do NOT Skip)\n1. **ALWAYS** call `find_care_suggestions` first before calling `find_care_specialty`\n2. **Location Handling**:\n   - If the query specifies a location (e.g., \"in Boston, MA\", \"near Boston\", \"in [city], [state]\"), extract and use that location\n   - Convert city/state names to latitude and longitude coordinates if needed (e.g., \"Boston, MA\" \u2192 coordinates)\n   - If no specific location is mentioned, use the member's default location from their profile\n   - Location examples: \"Boston, MA\", \"New York, NY\", \"near Boston\", \"in San Francisco, CA\"\n3. Search for care suggestions using:\n   - The search query text (e.g., \"mri\", \"knee surgery\")\n   - The brand code from Step 1\n   - The location (latitude and longitude) - either from query or member's default location\n4. Extract specialty category codes from `suggestionList[].criteria.specialtyCategoryList[].code`\n   - **For MRI queries**: Extract code `\"75\"` (Imaging Centers)\n   - **For surgery queries**: Extract code `\"220\"` (Surgery/Orthopedics)\n   - **For primary care queries**: Extract code `\"25\"` (Family/General Practice)\n5. Extract taxonomy codes from `suggestionList[].criteria.taxonomyList[].code` (optional)\n   - **IMPORTANT**: If no taxonomy codes extracted, use `None` (not empty list `[]`) when calling `find_care_specialty`\n\n**Expected Outcome**: Specialty category codes ready for provider search\n\n### Step 4: Find Providers by Specialty\n1. **Use the same location from Step 3** (either specified in query like \"Boston, MA\" or member's default location)\n2. Search for providers by specialty using:\n   - The contract identifier from Step 1\n   - The brand code from Step 1\n   - The specialty category codes from Step 3\n   - The taxonomy codes from Step 3 (optional)\n   - The requested distance in miles (default 20, adjust if query specifies distance)\n   - The location (latitude and longitude) - same as used in Step 3\n3. **CRITICAL - Pagination**: The API returns providers in pages (max 5 per page). To get ALL matching providers:\n   - Start with `page_index=0` and `size=5`\n   - Continue checking additional pages (`page_index=1`, `page_index=2`, etc.) until:\n     - No more providers are returned, OR\n     - Fewer than `size` providers are returned (indicating last page)\n4. Filter results to only include in-network providers:\n   - Check `providers[].networkStatus.status == \"TP_INNETWORK\"` (NOT \"INN\")\n\n**Expected Outcome**: List of matching in-network providers (may be empty if none found)\n\n### Step 5: Format Response\n1. **Primary focus**: Present coverage details clearly showing:\n   - In-Network details (deductible, copay, coinsurance, precertification)\n   - Out-of-Network details (deductible, copay, coinsurance, precertification)\n   - Format coinsurance as percentages (e.g., \"20% coinsurance\")\n2. **Secondary information**: Present provider information:\n   - If providers found: List provider names, addresses, and contact details\n   - If no providers found: Clearly state the location in the message:\n     - If location was specified in query (e.g., \"Boston, MA\"): \"No clinics found near Boston.\"\n     - If using member's default location: \"No clinics found near you.\" or \"No clinics found near [member's location]\"\n3. **Location in response**: When mentioning location in the response:\n   - Use the city/state name if specified in query (e.g., \"near Boston\" if query said \"in Boston, MA\")\n   - Be consistent with how the location was mentioned in the original query\n4. Structure the response with coverage details first, then provider information\n\n**Expected Outcome**: Response with coverage details prominently displayed, followed by provider information (or \"no providers found\" message with appropriate location reference)\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 12,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-search-benefits",
+      "name": "Search Benefits",
+      "description": "Guide for searching specific benefit information like coinsurance for procedures",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "what is my OON Coinsurance for an MRI",
+            "what is my out of network coinsurance for an MRI",
+            "what is my coinsurance for",
+            "what are my benefits for",
+            "search benefits for"
+          ],
+          "target": "intent",
+          "threshold": 0.7
+        }
+      ],
+      "markdown_content": "# Search Benefits\n\n## Overview\nSearch for specific benefit information such as coinsurance, copays, or deductibles for a particular procedure or service. This is useful when you need to know the cost-sharing details for a specific service.\n\n## Steps\n\n### Step 1: Retrieve Active Coverage Information\n1. Retrieve the member's active coverage information\n2. Extract the contract identifier from the eligibility entry\n3. Extract the coverage start date from the active coverage entry (format: YYYY-MM-DD)\n4. Extract the coverage end date from the active coverage entry (format: YYYY-MM-DD)\n\n**Expected Outcome**: Contract identifier and coverage dates needed for benefit search\n\n### Step 2: Search Benefits\n1. Search for benefits using:\n   - The procedure or service keyword (e.g., \"mri\", \"knee surgery\", \"knee injury\")\n   - The contract identifier from Step 1\n   - The coverage start date from Step 1 (format: YYYY-MM-DD)\n   - The coverage end date from Step 1 (format: YYYY-MM-DD)\n2. Extract benefit information from the response:\n   - For each benefit result, check the networks array\n   - Find the network with code \"OON\" (Out-of-Network) if asking about out-of-network benefits\n   - Find the network with code \"INN\" (In-Network) if asking about in-network benefits\n   - Extract the coinsurance percentage, copay, or deductible as requested\n\n**Expected Outcome**: Benefit information with coinsurance, copays, and deductibles for the requested network type\n\n### Step 3: Format Response\n1. Present the specific benefit information requested\n2. Clearly indicate whether it's In-Network or Out-of-Network\n3. Include the coinsurance percentage, copay, or deductible as applicable\n\n**Expected Outcome**: Formatted response with the requested benefit information\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 10,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-payment-process",
+      "name": "Process Bill Payment",
+      "description": "Guide for processing bill payments for claims",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "pay the due payment",
+            "pay my bill",
+            "pay for claim",
+            "make a payment",
+            "pay the due payment for claim"
+          ],
+          "target": "intent",
+          "threshold": 0.9
+        }
+      ],
+      "markdown_content": "# Process Bill Payment\n\n## Overview\nComplete the payment process for claim bills. This involves retrieving billing information, creating a payment intent, and confirming the payment.\n\n## Steps\n\n### Step 1: Retrieve Billing Information\n1. Retrieve all billing items for the member\n   - **CRITICAL - Pagination**: The API paginates results (max 50 items per page). To ensure you retrieve ALL items:\n     - Start with the first page and continue fetching subsequent pages\n     - Continue until you receive an empty response or fewer items than the page size\n     - **IMPORTANT**: If a page returns exactly 50 items, you MUST check the next page - only stop when you receive 0 items or fewer than 50 items\n     - Collect items from all pages before filtering or processing\n2. If a specific claim ID is mentioned, find the corresponding billing item\n3. Extract the claim unique identifier and amount due for the claim to be paid\n\n**Expected Outcome**: Complete list of all billing items with claim identifiers and amounts due\n\n### Step 2: Create Payment Intent\n1. Create a payment intent with:\n   - The amount to pay (from Step 1 or specified by user)\n   - The claim unique identifier (optional, but recommended to link payment to claim)\n2. Extract the payment intent identifier from the response\n\n**Expected Outcome**: Payment intent identifier needed for confirmation\n\n### Step 3: Confirm Payment\n1. Confirm the payment intent using the payment intent identifier from Step 2\n2. Extract the receipt URL from the response\n\n**Expected Outcome**: Payment confirmation with receipt URL\n\n### Step 4: Format Response\n1. Confirm successful payment\n2. Provide receipt URL\n3. Include claim ID and amount paid\n\n**Expected Outcome**: Payment confirmation message with receipt\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 10,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-family-member-claims",
+      "name": "Query Family Member Claims",
+      "description": "Guide for retrieving claims information for family members",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "my daughter's claim",
+            "my son's claim",
+            "family member claim",
+            "dependent's claim",
+            "was my daughter Sara's latest claim approved",
+            "show my dependents and how many claims are under their names"
+          ],
+          "target": "intent",
+          "threshold": 0.7
+        }
+      ],
+      "markdown_content": "# Query Family Member Claims\n\n## Overview\nRetrieve claims information for family members or dependents. You MUST first get coverage information to identify the family member's member ID, then use that ID to get their specific claims.\n\n## Steps\n\n### Step 1: Retrieve Coverage Information\n1. Retrieve the subscriber's coverage information\n2. Filter for active coverage by checking the status code is \"A\" (Active)\n3. Extract the list of covered members from the active coverage entry\n4. Identify the target family member by:\n   - Matching the name mentioned in the request with the member's first and last name\n   - Matching the relationship mentioned (e.g., \"daughter\", \"son\") with the member's relationship code (\"CHILD\" for children)\n5. **CRITICAL**: Extract the family member's member ID from the matched member object\n\n**Expected Outcome**: Family member's member ID\n\n### Step 2: Retrieve Claims for Family Member\n1. Retrieve claims using the family member's member ID (from Step 1)\n   - Use the member ID extracted from coverage, NOT the subscriber's member ID\n2. The response will contain claims specific to that family member\n3. Sort by start date (descending) to get the most recent claims first\n\n**Expected Outcome**: Claims list for the specific family member\n\n### Step 3: Format Response\n1. Present claims specific to the requested family member\n2. Include claim status, dates, and amounts\n3. For questions about claim approval status, check the claim status code:\n   - \"APRVD\" = Approved\n   - \"PEND\" = Pending\n   - \"DND\" = Denied\n   - \"PROC\" = Processing\n\n**Expected Outcome**: Formatted response with family member's claims and status\n\n## Important Notes\n- **ALWAYS** get coverage information first to obtain the family member's member ID\n- Do NOT use the subscriber's member ID to get family member claims\n- The coverage information contains all covered family members with their unique member IDs\n- Each family member has their own member ID that must be used for their claims\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 10,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-plan-information",
+      "name": "Get Plan Information",
+      "description": "Guide for retrieving plan details including deductibles, OOP, and copays",
+      "triggers": [
+        {
+          "type": "natural_language",
+          "value": [
+            "what's my plan deductibles",
+            "what are my copays",
+            "plan information",
+            "deductibles and out of pocket",
+            "what's my plan deductibles OOP and Coinsurance",
+            "what's my plan deductibles OOP and Copays",
+            "summarize my plan co-payment for In-Network Specialist"
+          ],
+          "target": "intent",
+          "threshold": 0.7
+        }
+      ],
+      "markdown_content": "# Get Plan Information\n\n## Overview\nRetrieve plan information including deductibles, out-of-pocket limits, and copays. This provides comprehensive cost-sharing details for the member's plan.\n\n## Steps\n\n### Step 1: Retrieve Active Coverage Information\n1. Retrieve the member's active coverage information\n2. Extract the coverage key from the active coverage entry\n3. Verify the coverage is active\n\n**Expected Outcome**: Coverage key needed for plan information lookup\n\n### Step 2: Retrieve Plan Information\n1. Retrieve plan information using:\n   - The coverage key from Step 1\n   - The plan type (usually \"MED\" for Medical, which is the default)\n2. Extract cost-sharing information:\n   - Deductibles (Individual and Family, In-Network and Out-of-Network)\n   - Out-of-Pocket limits\n   - Copays for different service types\n   - Coinsurance percentages\n\n**Expected Outcome**: Complete plan information with cost-sharing details\n\n### Step 3: Format Response\n1. Present plan information clearly organized by:\n   - Coverage level (Individual vs Family)\n   - Network type (In-Network vs Out-of-Network)\n   - Service type (Specialist, Urgent Care, etc.)\n\n**Expected Outcome**: Formatted plan information response\n",
+      "steps": [],
+      "metadata": {},
+      "priority": 10,
+      "enabled": true,
+      "policy_type": "playbook"
+    },
+    {
+      "id": "oak-enrich-coverage-period",
+      "name": "Coverage Period Tool Enrichment",
+      "description": "Provides additional context for using get_coverage_period",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_coverage_period"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Data Values & Patterns\n\n**Coverage Status Codes:**\n- `\"A\"` = Active coverage (use for current queries)\n- `\"I\"` = Inactive/terminated coverage (historical only)\n\n**Relationship Codes (in `member[].relationshipCd.code`):**\n- `\"SUBSCR\"` = Subscriber (primary member)\n- `\"CHILD\"` = Dependent child\n- `\"SPOU\"` = Spouse\n\n**Gender Codes (in `member[].genderCd.code`):**\n- `\"M\"` = Male\n- `\"F\"` = Female\n\n**Brand Codes (in `eligibility[].brandCd.code`):**\n- `\"ACME\"` = ACME HEALTH\n- `\"VSTA\"` = VISTA HEALTH\n\n**Contract Codes (derived from contractUid):**\n- `\"1J1U\"` = John's contract (Acme)\n- `\"9Z9X\"` = Jane's contract (Vista)\n\n**Coverage Key Format:**\n- Pattern: `{contractCd}-{startDate}-{endDate}-{type}-{planId}`\n- Example: `\"1J1U-20250101-20251231-MED-57AMFC\"`\n- Use `coverageKey` for `get_plan_information` and `get_benefit_accumulators`\n\n**Key Fields (CRITICAL - Extract these for other tools):**\n- `eligibility[].coverage[].statusCd.code == \"A\"` \u2192 Active coverage to use (filter for this)\n- `eligibility[].coverage[].coverageKey` \u2192 **Extract this** for `get_plan_information` and `get_benefit_accumulators`\n  - Example: `\"1J1U-20250101-20251231-MED-57AMFC\"`\n- `eligibility[].coverage[].effectiveDt` \u2192 **Extract this** for `search_benefits` (format: YYYY-MM-DD)\n- `eligibility[].coverage[].terminationDt` \u2192 **Extract this** for `search_benefits` (format: YYYY-MM-DD)\n- `eligibility[].contractUid` \u2192 **Extract this** for `search_benefits` and `find_care_specialty`\n- `eligibility[].brandCd.code` \u2192 **Extract this** for `find_care_suggestions` (e.g., \"ACME\", \"VSTA\")\n- `eligibility[].coverage[].member[]` \u2192 List includes subscriber and dependents\n\n**Workflow:**\n1. Call `get_coverage_period` first\n2. Filter for active coverage by iterating through `eligibility[]` and then `coverage[]` arrays:\n   ```python\n   for elig in response.get(\"eligibility\", []):\n       for cov in elig.get(\"coverage\", []):\n           if cov.get(\"statusCd\", {}).get(\"code\") == \"A\":\n               # This is active coverage - extract values from cov and elig\n               active_coverage = cov\n               active_elig = elig\n               break\n   ```\n   **CRITICAL**: Check `coverage[].statusCd.code == \"A\"`, NOT `eligibility[].statusCd.code`\n   - Status code is `\"A\"` (single letter), NOT `\"ACTIVE\"` (full word)\n   - An eligibility can have multiple coverage entries (active and inactive), so you must check each coverage entry\n3. Extract `coverageKey`, `effectiveDt`, `terminationDt` from the active `coverage` entry\n4. Extract `contractUid` and `brandCd.code` from the parent `eligibility` entry\n5. Use these extracted values in subsequent tool calls\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-search-benefits",
+      "name": "Search Benefits Tool Enrichment",
+      "description": "Provides additional context for using search_benefits",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_search_benefits"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Supported Inquiry Keywords\n\n**Valid `inquiry_keyword` values (case-insensitive matching):**\n- `\"knee injury\"` \u2192 Maps to emergency room benefits for knee injuries\n- `\"knee surgery\"` \u2192 Maps to knee surgery/arthroscopy benefits\n- `\"mri\"` \u2192 Maps to MRI imaging benefits\n- `\"office visit\"` \u2192 Maps to office visit benefits (PCP and specialist)\n\n**Network Codes (in response `networks[].code`):**\n- `\"INN\"` = In-Network\n- `\"OON\"` = Out-of-Network\n\n**Benefit System IDs (from response, use with `get_benefit_details`):**\n- `\"82da10ab-c05d-46e1-bf48-ad61ea70eb3d\"` = Emergency Room\n- `\"pcp-ov-11\"` = Primary Care Office Visit\n- `\"spec-ov-11\"` = Specialist Office Visit\n- `\"mri-IMG-OP\"` = MRI Outpatient\n- `\"knee-surg-op\"` = Knee Surgery Outpatient\n\n**Associated Treatment Codes:**\n- `\"CPT:29881\"` = Knee arthroscopy\n- `\"CPT:70551\"` = MRI brain without contrast\n\n**Response Fields (CRITICAL - Extract these for get_benefit_details):**\n- `benefitResults[].benefitSysId` \u2192 Benefit system identifier (e.g., \"knee-surg-op\", \"mri-IMG-OP\")\n  - **Extract this value** and use as `benefit_sys_id` parameter in `get_benefit_details`\n- `benefitResults[].docId` \u2192 Document identifier (e.g., \"281019533353-01012025\")\n  - **Extract this value** and use as `doc_id` parameter in `get_benefit_details`\n  - Deterministically generated from contractCd + coverage_start_dt\n  - **DO NOT generate manually** - always extract from this response\n- `benefitResults[].networks[].code` \u2192 \"INN\" or \"OON\"\n- `benefitResults[].associatedtreatments[]` \u2192 Related CPT codes and names\n\n**Workflow for get_benefit_details:**\n1. Call `search_benefits` first\n2. Extract `benefitResults[].docId` and `benefitResults[].benefitSysId` from response\n3. Use those exact values in `get_benefit_details` call\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-find-care-specialty",
+      "name": "Find Care Specialty Tool Enrichment",
+      "description": "Provides additional context for using find_care_specialty",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_find_care_specialty"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## CRITICAL: Use find_care_suggestions First - DO NOT Skip This Step!\n\n**MANDATORY Workflow for ALL specialty searches:**\n1. **ALWAYS** call `find_care_suggestions` first with search text (e.g., \"mri\", \"knee surgery\", \"primary care\")\n2. Extract `specialty_category_codes` from `suggestionList[].criteria.specialtyCategoryList[].code`\n   - Example for MRI: Extract code `\"75\"` from `suggestionList[0].criteria.specialtyCategoryList[0].code`\n3. Extract `taxonomy_codes` from `suggestionList[].criteria.taxonomyList[].code` (optional)\n4. **CRITICAL**: If extraction returns empty list or no codes found, use fallback codes (see Fallback Codes section below)\n5. **IMPORTANT**: For `taxonomy_codes` parameter:\n   - If taxonomy codes were extracted, use them: `taxonomy_codes=taxonomy_codes`\n   - If no taxonomy codes were extracted, pass `None` or omit the parameter: `taxonomy_codes=None` (do NOT pass empty list `[]`)\n6. Use those extracted codes (or fallback codes) in `find_care_specialty`\n\n**DO NOT** search with text like \"orthopedic surgery\" - you MUST use numeric category codes!\n**DO NOT** use hardcoded codes without first calling `find_care_suggestions`!\n**DO NOT** call `find_care_specialty` with empty `specialty_category_codes` list - always use fallback if extraction fails!\n\n## Specialty Category Codes\n\n**Common codes:**\n- `\"25\"` = Family/General Practice (Primary Care)\n- `\"231\"` = Clinics / Radiology\n- `\"75\"` = Imaging Centers\n- `\"220\"` = Surgery / Orthopedics (for knee surgeons)\n\n**Taxonomy Codes (optional filter):**\n- `\"261QP2300X\"` = Primary Care Clinic\n- `\"207Q00000X\"` = Family Medicine\n- `\"261QR0200X\"` = Radiology Clinic/Center\n- `\"2085R0202X\"` = Radiology, Diagnostic\n- `\"207X00000X\"` = Orthopedic Surgery (for knee surgeons)\n\n**For \"knee surgery\" queries:**\n- Use `specialty_category_codes: [\"220\"]`\n- Use `taxonomy_codes: [\"207X00000X\"]` (optional but recommended)\n\n**For \"MRI\" queries:**\n- Use `specialty_category_codes: [\"75\"]` (Imaging Centers)\n- Alternative: `[\"231\", \"75\"]` (Clinics/Radiology and Imaging Centers) if both codes are returned\n- Use `taxonomy_codes: [\"261QR0200X\"]` (optional, Radiology Clinic/Center)\n- **IMPORTANT**: If no taxonomy codes are extracted, pass `None` or omit the parameter entirely - do NOT pass an empty list `[]`\n\n**Fallback Codes (REQUIRED if suggestions don't return codes or extraction returns empty list):**\n- **CRITICAL**: Always check if `specialty_category_codes` list is empty after extraction\n- **If empty, you MUST use these fallback codes before calling `find_care_specialty`:**\n  - **MRI**: Use `[\"75\"]` (Imaging Centers) - **NOT \"23\" which is INVALID**\n  - **Primary Care**: Use `[\"25\"]` (Family/General Practice)\n  - **Knee Surgery**: Use `[\"220\"]` (Surgery/Orthopedics)\n  - **Radiology**: Use `[\"231\", \"75\"]` (Clinics/Radiology and Imaging Centers)\n- **Example check**: `if not specialty_codes: specialty_codes = [\"75\"]  # for MRI`\n\n**IMPORTANT**: Code `\"23\"` is NOT a valid specialty category code. Valid codes are: \"25\", \"231\", \"75\", \"220\"\n\n**Network Status Values:**\n- `\"TP_INNETWORK\"` = In-network provider\n- `accept_new_patients`: Boolean indicating if accepting new patients\n\n**Constraints:**\n- `size` parameter: max 5, default 5 (API returns max 5 providers per page)\n- `page_index`: Zero-based page index (0 = first page, 1 = second page, etc.)\n- `distance`: String value in miles (default \"20\")\n- `payload.location` must include `latitude` and `longitude` (required, as numeric strings)\n\n**CRITICAL - Pagination for Complete Results:**\n- The API paginates results: max 5 providers per page\n- **To get ALL matching providers, you MUST check multiple pages:**\n  - Start with `page_index=0`, `size=5`\n  - Continue with `page_index=1`, `page_index=2`, etc. until:\n    - Response returns empty `providers[]` array, OR\n    - Response returns fewer than `size` providers (indicating last page)\n  - **Example workflow:**\n    ```python\n    all_providers = []\n    page_index = 0\n    while page_index < 3:  # Check up to 3 pages\n        resp = await find_care_specialty(..., page_index=page_index, size=5, ...)\n        providers = resp.get(\"providers\", [])\n        if not providers:\n            break\n        all_providers.extend(providers)\n        if len(providers) < 5:\n            break  # Last page\n        page_index += 1\n    ```\n  - **Why this matters**: If you only check page 0, you may miss providers that appear on later pages, especially when filtering by additional criteria (e.g., \"accept new patients\")\n\n**Response:**\n- `providers[].location.address.distance` \u2192 Distance in miles from member location (calculated)\n- `providers[].location.address.phone` \u2192 Phone number (e.g., \"+1-212-555-0303\")\n- `providers[].networkStatus.status` \u2192 Network status (check for `\"TP_INNETWORK\"` to filter in-network providers)\n- `providers[].networkStatus.accept_new_patients` \u2192 Availability (boolean)\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-find-care-suggestions",
+      "name": "Find Care Suggestions Tool Enrichment",
+      "description": "Provides additional context for using find_care_suggestions",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_find_care_suggestions"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Search Intent Types\n\n**`primarySearchIntent` values:**\n- `\"SPECIALTY\"` \u2192 Specialty-based search (e.g., primary care, radiology)\n- `\"PROCEDURE\"` \u2192 Procedure-based search (e.g., MRI, knee surgery)\n\n**Search Text Mapping (case-insensitive):**\n- \"primary care\", \"pcp\", \"family doctor\", \"general practitioner\" \u2192 Maps to \"primary care\" specialty\n- \"radiology\", \"imaging\" \u2192 Maps to \"radiology\" specialty\n- \"knee surgery\", \"knee surg\" \u2192 Maps to \"knee surgery\" procedure\n- \"mri\" \u2192 Maps to \"mri\" procedure\n- Default fallback \u2192 \"primary care\" specialty\n\n**Suggestion Keys in Database:**\n- `\"primary care\"` \u2192 Primary care providers (category: \"25\")\n- `\"radiology\"` \u2192 Radiology/imaging centers (categories: \"231\", \"75\")\n- `\"mri\"` \u2192 MRI-specific providers (category: \"75\")\n- `\"knee surgery\"` \u2192 Orthopedic surgeons (category: \"220\", taxonomy: \"207X00000X\")\n\n**Response Fields (CRITICAL - Use these in find_care_specialty):**\n- `suggestionList[].criteria.specialtyCategoryList[].code` \u2192 Category codes (e.g., \"25\", \"220\", \"231\", \"75\")\n  - **For \"mri\": returns \"75\"** (Imaging Centers)\n  - **For \"knee surgery\": returns \"220\"**\n  - **For \"primary care\": returns \"25\"**\n- `suggestionList[].criteria.taxonomyList[].code` \u2192 Taxonomy codes (e.g., \"207X00000X\", \"261QR0200X\")\n  - **For \"mri\": returns \"261QR0200X\"** (Radiology Clinic/Center)\n  - **For \"knee surgery\": returns \"207X00000X\"**\n- `suggestionList[].dplQueryParams` \u2192 Pre-filled query params for `find_care_specialty`\n  - Contains `specialty_category_codes` and `taxonomy_codes` ready to use\n- `locationDetails` \u2192 Confirmed location (requires `latitude` and `longitude` in payload)\n\n**Workflow (MANDATORY for all provider searches):**\n1. **ALWAYS** call this tool first with search text (e.g., \"mri\", \"knee surgery\", \"primary care\")\n2. Extract `specialtyCategoryList[].code` values \u2192 Use as `specialty_category_codes` in `find_care_specialty`\n   - Example for MRI: `suggestionList[0].criteria.specialtyCategoryList[0].code` \u2192 `\"75\"`\n3. Extract `taxonomyList[].code` values \u2192 Use as `taxonomy_codes` in `find_care_specialty` (optional)\n4. **DO NOT** proceed to `find_care_specialty` without first calling this tool and extracting codes\n5. **IMPORTANT**: When calling `find_care_specialty`, remember to check multiple pages (see `find_care_specialty` enrichment for pagination details) to get ALL matching providers\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-benefit-details",
+      "name": "Get Benefit Details Tool Enrichment",
+      "description": "Provides additional context for using get_benefit_details",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_benefit_details"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Important Data Patterns\n\n**`doc_id` Generation:**\n- Deterministically generated from `contract_cd` + `coverage_start_dt`\n- Format: `{12-digit-hash}-{MMDDYYYY}` (e.g., \"281019533353-01012025\")\n- Must match exactly or API call fails with 400 error\n- Always get from `search_benefits` response, don't generate manually\n\n**Diagnosis Codes (in response `situations[].diagnosisCd[]`):**\n- Emergency/Knee Injury: `\"S86.911A\"`, `\"T14.90XA\"`\n- Office Visits: `\"Z00.00\"`, `\"J01.90\"`, `\"M25.50\"`\n- MRI: `\"R51\"`, `\"G44.209\"`\n- Knee Surgery: `\"M23.91\"`, `\"S83.241A\"`\n\n**Service Definition IDs:**\n- `\"ER-INST-001\"` = Emergency Room Institutional\n- `\"PCP-11-OV\"` = Primary Care Office Visit\n- `\"SPEC-11-OV\"` = Specialist Office Visit\n- `\"IMG-MRI-OP\"` = MRI Outpatient\n- `\"SURG-KNEE-OP\"` = Knee Surgery Outpatient\n\n**Response Contains:**\n- Detailed benefit structure not in `search_benefits`\n- Service category details with diagnosis codes\n- Plan level benefits summary\n- Both `serviceCategory` and `planLevel` sections\n\n**Use When:**\n- User asks for \"benefit details\" or \"show details\"\n- Diagnosis codes are needed\n- More specific coverage info required beyond `search_benefits`\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-plan-information",
+      "name": "Get Plan Information Tool Enrichment",
+      "description": "Provides additional context for using get_plan_information",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_plan_information"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## IMPORTANT: Get coverage_key from get_coverage_period First\n\n**Workflow:**\n1. Call `get_coverage_period` first\n2. Filter for active coverage (`eligibility[].coverage[].statusCd.code == \"A\"`)\n3. Extract `coverageKey` from `eligibility[].coverage[].coverageKey`\n4. Use that exact `coverageKey` value as the `coverage_key` parameter\n\n**DO NOT** generate or guess the coverage_key - it must be extracted from get_coverage_period response!\n\n## Plan Type & Cost Sharing\n\n**`opted_plan_type` values:**\n- `\"MED\"` = Medical (default, only option in data)\n\n**`benefitPeriod` values:**\n- `\"Calendar Year\"` = Benefits reset annually on Jan 1 (cd: \"CalendarYear\")\n\n**Network Codes (in `network[].cd`):**\n- `\"ALL\"` = All networks\n- `\"HMO\"` = In Network (HMO plans)\n- `\"PAR\"` = Participating\n- `\"INN\"` = In-Network\n\n**Coverage Level Codes:**\n- `\"IND\"` = Individual\n- `\"FAM\"` = Family\n\n**Cost Share Option Names (examples from data):**\n- `\"CFAMDEDDOL\"` = Family Deductible\n- `\"CINDDEDDOL\"` = Individual Deductible\n- `\"CFAMCOPCYMX\"` = Family Copay Max\n- `\"CSNGLCOPCYMX\"` = Single Party Copay Max\n- `\"SPEC_COPAY\"` = Specialist Copay\n- `\"URG_COPAY\"` = Urgent Care Copay\n- `\"PCP_COPAY\"` = Primary Care Copay\n- `\"RX_GEN_COPAY\"` = Generic Prescription Copay\n- `\"IMG_COINS\"` = Advanced Imaging Coinsurance\n- `\"OPS_COINS\"` = Outpatient Surgery Coinsurance\n\n**Cost Share Organization:**\n- `network[].costShare[]` organized by:\n  - Coverage level: Individual vs Family (`coverageCd`: \"IND\" vs \"FAM\")\n  - Network: In-Network vs Out-of-Network\n  - Service type: Specialist, Urgent Care, PCP, etc.\n  - Time period: \"Per Calendar Year\", \"Per Visit\", \"Per Fill\"\n\n**Key Fields:**\n- `costShare[].benefit.cd` \u2192 Type: \"Deductible\", \"OutOfPocketMax\", \"Copay\", \"Coinsurance\"\n- `costShare[].benefit.value` \u2192 Amount or percentage\n- `costShare[].benefit.unit` \u2192 \"Dollar(S)\", \"PCT\", \"Month(s)\"\n- `costShare[].timePeriod` \u2192 When it applies (e.g., \"Per Calendar Year\", \"Per Visit\")\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-payment-tools",
+      "name": "Payment Tools Enrichment",
+      "description": "Provides additional context for payment processing tools",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_member_billing",
+        "oak_health_insurance_create_payment_intent",
+        "oak_health_insurance_confirm_payment_intent"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Billing Status Values\n\n**`status` values (in `get_member_billing` response):**\n- `\"DUE\"` = Payment due\n- `\"PAID\"` = Payment completed\n- `\"PARTIAL\"` = Partial payment made\n- `\"IN_COLLECTIONS\"` = Sent to collections\n\n**Payment Intent Status:**\n- `\"REQUIRES_CONFIRMATION\"` \u2192 After `create_payment_intent` (initial state)\n- `\"SUCCEEDED\"` \u2192 After `confirm_payment_intent` (final state)\n\n**Payment Intent ID Format:**\n- Pattern: `\"pi_{24-char-hex}\"` (e.g., \"pi_abc123def456...\")\n- Client secret format: `\"{payment_intent_id}_secret_{12-char-hex}\"`\n\n**CRITICAL - Pagination for get_member_billing:**\n- The API returns billing items in pages (max 50 items per page)\n- **To retrieve ALL billing items, you MUST paginate through all pages:**\n  - Start with the first page (`page_index=0`) and continue to subsequent pages\n  - Continue fetching pages until you receive an empty response or fewer items than the page size\n  - **IMPORTANT**: If a page returns exactly 50 items, you MUST check the next page - only stop when you receive 0 items or fewer than 50 items\n  - Collect items from all pages before filtering or processing\n- **Why this matters**: Stopping after the first page when it contains exactly 50 items will cause you to miss billing items on subsequent pages, leading to incomplete results\n\n**Workflow:**\n1. `get_member_billing` \u2192 Get `clmUid` and `dueAmt` (filtered to DUE/PARTIAL/IN_COLLECTIONS)\n   - **Remember to paginate** to get all items (see pagination section above)\n2. `create_payment_intent` \u2192 Get `payment_intent_id` and `clientSecret`\n   - Optional: link to `clm_uid` for automatic billing update\n3. `confirm_payment_intent` \u2192 Get `receipt_url` and update status to \"SUCCEEDED\"\n\n**Automatic Updates:**\n- If `clm_uid` provided in `create_payment_intent`, billing ledger automatically updates to \"PAID\" when `confirm_payment_intent` succeeds\n- `totals.dueCount` = count of items with status != \"PAID\" and dueAmt > 0\n- `totals.totalDueAmt` = sum of all due amounts\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-member-claims",
+      "name": "Get Member Claims Tool Enrichment",
+      "description": "Provides additional context for using get_member_claims",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_member_claims"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Claim Status Codes\n\n**`clmStatusCd.code` values:**\n- `\"APRVD\"` = Approved (claim approved and processed)\n- `\"DND\"` = Denied (claim denied, not covered)\n- `\"PEND\"` = Pending (claim in review)\n- `\"PROC\"` = Processing (claim being processed)\n\n**Status Descriptions:**\n- Approved: \"We finished reviewing this claim and approved the claim under your plan.\"\n- Denied: \"Common reasons are that we received the same claim twice, or the service performed is not covered under your plan.\"\n- Pending: \"This claim is in review. We'll update once processing is complete.\"\n- Processing: \"We are currently processing this claim.\"\n\n**Claim Class & Type:**\n- `clmClassCd.code`: `\"M\"` = Medical Claim\n- `clmTypeCd.code`: `\"PR\"` = Professional Claim\n- `clmSourceCd.code`: `\"808\"` = WGS20\n\n**Sort Options (`sort_by` parameter):**\n- `\"start_date\"` = Sort by claim start date (default)\n- `\"end_date\"` = Sort by claim end date\n- `\"process_date\"` = Sort by processing date\n- `\"receive_date\"` = Sort by receive date\n\n**Constraints:**\n- `size`: max 5, default 5\n- Default sort: `start_date` descending (most recent first)\n\n**Key Fields:**\n- `clmUid` \u2192 Use for `get_claim_details` and `get_claim_eob_pdf` (NOT `clmId`)\n- `clmId` \u2192 Human-readable claim ID (e.g., \"2025034AA1251\")\n- `patient.mbrUid` / `patient.hcId` \u2192 Member identifiers\n- `patient.name` / `patient.dob` \u2192 Filter by family member\n- Returns claims for ALL covered family members (subscriber + dependents)\n- `amount.paidAmt` \u2192 Amount paid by insurance\n- `amount.mbrResponsibilityAmt` \u2192 Member's responsibility\n- `amount.notCoveredAmt` \u2192 Amount not covered\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-claim-details",
+      "name": "Get Claim Details Tool Enrichment",
+      "description": "Provides additional context for using get_claim_details",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_claim_details"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Claim Details Data\n\n**Service Line Procedure Codes:**\n- `\"99213\"` = Office visit, established patient\n- `\"99214\"` = Office visit, established patient (more complex)\n- `\"97110\"` = Therapeutic exercise\n- `\"93000\"` = EKG\n- `\"80050\"` = General health panel\n- `\"97140\"` = Manual therapy\n\n**Diagnosis Codes (in `serviceLines[].diagnoses[].diagnosisCd[]`):**\n- `\"Z00.00\"` = General health check\n- `\"M25.50\"` = Joint pain\n- `\"R51\"` = Headache\n- `\"J06.9\"` = Upper respiratory infection\n- `\"I10\"` = Hypertension\n- `\"M54.5\"` = Low back pain\n\n**EOB Availability:**\n- EOBs only exist for claims with status \"APRVD\" or \"PROC\"\n- EOB UID format: `\"EOB-{first-8-chars-of-clmUid}\"`\n- Check number: `\"100200300\"` (only if paidAmt > 0)\n\n**Key Fields:**\n- `serviceLines[]` \u2192 Detailed service line items with procedure codes\n- `eobs[]` \u2192 EOB documents (only for approved/processing claims)\n- `clmUid` \u2192 Required parameter (NOT clmId)\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-claim-eob-pdf",
+      "name": "Get Claim EOB PDF Tool Enrichment",
+      "description": "Provides additional context for using get_claim_eob_pdf",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_claim_eob_pdf"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## EOB PDF Data\n\n**EOB PDF URL Format:**\n- Pattern: `\"https://example.health/eob/{eobUid}.pdf\"`\n- Example: `\"https://example.health/eob/EOB-451F6F37.pdf\"`\n\n**EOB Properties:**\n- `mimeType`: Always `\"application/pdf\"`\n- `sizeBytes`: Typically `224000` (224 KB)\n- `eobUid`: Format `\"EOB-{first-8-chars-of-clmUid}\"`\n\n**Availability:**\n- Only available for claims with status \"APRVD\" or \"PROC\"\n- If claim is \"DND\" or \"PEND\", EOB array will be empty\n- Each approved claim can have multiple EOBs (sequence numbers)\n\n**Key Fields:**\n- `clmUid` \u2192 Required parameter (NOT clmId)\n- `eobs[].fileUrl` \u2192 Direct PDF download URL\n- `eobs[].eobUid` \u2192 EOB unique identifier\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-benefit-accumulators",
+      "name": "Get Benefit Accumulators Tool Enrichment",
+      "description": "Provides additional context for using get_benefit_accumulators",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_benefit_accumulators"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Accumulator Types & Levels\n\n**Accumulator Types (`type`):**\n- `\"DED\"` = Deductible\n- `\"OOP\"` = Out-of-Pocket Maximum\n\n**Coverage Levels (`level`):**\n- `\"INDV\"` = Individual\n- `\"FAM\"` = Family\n\n**Network Codes (`network`):**\n- `\"INN\"` = In-Network\n- `\"OON\"` = Out-of-Network\n\n**Accumulator Fields:**\n- `met` \u2192 Amount already met/toward limit\n- `limit` \u2192 Maximum limit for the period\n- `bnftYear` \u2192 Benefit year (extracted from coverage effective date)\n\n**Example Values (from data):**\n- Individual INN Deductible: met=\"250.00\", limit=\"1000.00\"\n- Individual INN OOP: met=\"400.00\", limit=\"3000.00\"\n- Family INN Deductible: met=\"700.00\", limit=\"3000.00\"\n- Family INN OOP: met=\"1200.00\", limit=\"6000.00\"\n- HMO plans may have: met=\"0.00\", limit=\"0.00\" (no deductible)\n\n**Key Fields:**\n- `coverageKey` \u2192 Required parameter (from get_coverage_period)\n- `accumulators[]` \u2192 Array of all accumulator entries\n- `bnftYear` \u2192 Calendar year (e.g., \"2025\")\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-member-profile",
+      "name": "Get Member Profile Tool Enrichment",
+      "description": "Provides additional context for using get_member_profile",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_member_profile"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Member Profile Data\n\n**Relationship Codes (`relationshipCd`):**\n- `\"SUBSCR\"` = Subscriber (primary member)\n- `\"CHILD\"` = Dependent child\n- `\"SPOU\"` = Spouse\n\n**Member Preferences:**\n- `language`: `\"en-us\"` (default)\n- `emailOptIn`: Boolean\n- `smsOptIn`: Boolean\n- `accessibility`: `\"True\"`, `\"large_text\"`, or `None`\n\n**PCP Provider ID:**\n- Default: `\"PRV-0106\"` (Park Slope Primary Care)\n- Can be overridden with `pcp_provider_id` parameter\n\n**Active Coverage Filter:**\n- `active_only=True` (default): Returns only active coverage household members\n- `active_only=False`: Returns all members including inactive coverage\n\n**Key Fields:**\n- `member.mbrUid` \u2192 Member unique identifier\n- `member.hcId` \u2192 Healthcare ID (subscriber ID)\n- `member.firstNm` / `member.lastNm` \u2192 Member name\n- `member.dob` \u2192 Date of birth\n- `preferences` \u2192 Member preferences object\n- `pcpProviderId` \u2192 Primary Care Provider ID\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-set-preferences",
+      "name": "Set Member Preferences Tool Enrichment",
+      "description": "Provides additional context for using set_member_preferences",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_set_member_preferences"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Member Preferences\n\n**Language Values:**\n- `\"en-us\"` = English (US) - default\n- Other locale codes supported\n\n**Preference Fields:**\n- `language`: Optional string (e.g., \"en-us\")\n- `emailOptIn`: Optional boolean\n- `smsOptIn`: Optional boolean\n- `accessibility`: Not settable via API (preserved from existing)\n\n**Behavior:**\n- Only provided parameters are updated\n- Unspecified parameters retain current values\n- If member doesn't exist in preferences DB, creates new entry with defaults\n- Maps hcId to mbrUid automatically if needed\n\n**Default Values (if no existing preferences):**\n- `language`: \"en-us\"\n- `emailOptIn`: False\n- `smsOptIn`: False\n- `accessibility`: None\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    },
+    {
+      "id": "oak-enrich-medical-information",
+      "name": "Get Medical Information Tool Enrichment",
+      "description": "Provides additional context for using get_medical_information",
+      "triggers": [
+        {
+          "type": "always"
+        }
+      ],
+      "target_tools": [
+        "oak_health_insurance_get_medical_information"
+      ],
+      "target_apps": null,
+      "guide_content": "\n## Medical Information Topics\n\n**Supported Query Topics (case-insensitive):**\n- `\"high blood pressure\"` \u2192 8 articles on hypertension\n- `\"diabetes\"` \u2192 6 articles on diabetes\n- `\"knee surgery\"` \u2192 4 articles on knee surgery\n\n**Fuzzy Matching:**\n- If exact match not found, searches for topics where query is contained in topic name\n- Example: \"blood pressure\" matches \"high blood pressure\"\n\n**Article Structure:**\n- `id`: Article identifier (e.g., \"htn-001\", \"dm-002\")\n- `url`: Full article URL\n- `title`: Multi-language title (en-us, en-ca, es-us)\n- `abstract`: Multi-language abstract\n\n**Pagination:**\n- `page_index`: Zero-based (default 0)\n- `size`: Page size (default 5)\n- `status`: \"OK\", \"NO_RESULTS\", or \"PAGE_OUT_OF_RANGE\"\n\n**Fallback Behavior:**\n- If no seeded articles found, generates 6 generic articles\n- Generic articles cover: Overview, Symptoms, Causes, Diagnosis, Treatment, Self-care\n\n**Key Fields:**\n- `items[]` \u2192 Array of MedicalArticle objects\n- `status` \u2192 Response status indicating result state\n",
+      "prepend": false,
+      "metadata": {},
+      "priority": 5,
+      "enabled": true,
+      "policy_type": "tool_guide"
+    }
+  ]
+}

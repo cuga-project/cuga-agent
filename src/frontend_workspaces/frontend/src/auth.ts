@@ -4,8 +4,23 @@
 
 import * as api from "./api";
 
+const LOGIN_IN_PROGRESS_KEY = "cuga_login_in_progress";
+
+export function markLoginInProgress(): void {
+  sessionStorage.setItem(LOGIN_IN_PROGRESS_KEY, "1");
+}
+
+export function clearLoginInProgress(): void {
+  sessionStorage.removeItem(LOGIN_IN_PROGRESS_KEY);
+}
+
+export function isLoginInProgress(): boolean {
+  return sessionStorage.getItem(LOGIN_IN_PROGRESS_KEY) === "1";
+}
+
 export async function handleOidcCallback(code: string, state: string): Promise<void> {
   const res = await api.postAuthCallback(code, state);
+  clearLoginInProgress();
   if (!res.ok) {
     const text = await res.text();
     throw new Error(`Auth callback failed: ${res.status} ${text}`);
@@ -17,7 +32,8 @@ export async function handleOidcCallback(code: string, state: string): Promise<v
 }
 
 export async function checkAuthStatus(): Promise<void> {
-  const res = await api.getAgentContext();
+  const base = api.getApiBaseUrl();
+  const res = await fetch(`${base}/auth/userinfo`, { credentials: "include" });
   if (res.status === 401) throw new Error("Not authenticated");
 }
 

@@ -1,15 +1,18 @@
 from typing import Optional
 
+import httpx
 from fastapi import HTTPException, Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from loguru import logger
 
+from cuga.backend.server.auth.issuer_allowlist import normalize_issuer_for_discovery
 from cuga.backend.server.auth.models import UserInfo
 from cuga.backend.server.auth.jwt_validator import JWTValidator
 
 security = HTTPBearer(auto_error=False)
 
 _validator_cache: dict[str, JWTValidator] = {}
+_discovery_cache: dict[str, dict] = {}
 
 
 def _auth_enabled() -> bool:
@@ -80,6 +83,92 @@ def _session_cookie_name() -> str:
         return "cuga_session"
 
 
+def _get_tls_settings() -> tuple[bool, Optional[str]]:
+    try:
+        from cuga.config import settings
+
+        auth = getattr(settings, "auth", None)
+        if auth is not None:
+            return (
+                bool(getattr(auth, "oidc_skip_verify", False)),
+                getattr(auth, "oidc_ca_bundle", None) or None,
+            )
+    except Exception:
+        pass
+    return False, None
+
+
+async def _discover_jwks_for_issuer(issuer: str) -> Optional[str]:
+    """Fetch JWKS URI from the issuer's standard OIDC discovery endpoint."""
+    normalized = normalize_issuer_for_discovery(issuer)
+    if not normalized:
+        return None
+
+    if normalized in _discovery_cache:
+        return _discovery_cache[normalized].get("jwks_uri")
+
+    skip_verify, ca_bundle = _get_tls_settings()
+    ssl_arg: bool | str = False if skip_verify else (ca_bundle or True)
+
+    discovery_url = normalized.rstrip("/") + "/.well-known/openid-configuration"
+    try:
+        async with httpx.AsyncClient(verify=ssl_arg) as client:
+            resp = await client.get(discovery_url, follow_redirects=True)
+            resp.raise_for_status()
+            data = resp.json()
+        _discovery_cache[normalized] = data
+        return data.get("jwks_uri")
+    except Exception as e:
+        logger.debug("Auto-discovery failed for issuer {}: {}", normalized, e)
+        return None
+
+
+async def _get_validator_for_token(token: str) -> Optional[JWTValidator]:
+    """Resolve JWKS from the token's own `iss` claim via OIDC discovery."""
+    import jwt as pyjwt
+
+    try:
+        unverified = pyjwt.decode(token, options={"verify_signature": False})
+        issuer = unverified.get("iss")
+    except Exception as e:
+        logger.debug("_get_validator_for_token: failed to decode token header: {}", e)
+        return None
+
+    if not issuer:
+        logger.debug("_get_validator_for_token: token has no 'iss' claim")
+        return None
+
+    logger.debug("_get_validator_for_token: resolving JWKS for issuer={}", issuer)
+    jwks_uri = await _discover_jwks_for_issuer(issuer)
+    if not jwks_uri:
+        logger.warning(
+            "_get_validator_for_token: OIDC discovery failed for issuer={} — cannot validate token", issuer
+        )
+        return None
+
+    jwks_cache_ttl = 3600
+    skip_verify, ca_bundle = _get_tls_settings()
+    try:
+        from cuga.config import settings
+
+        auth = getattr(settings, "auth", None)
+        if auth is not None:
+            jwks_cache_ttl = getattr(auth, "jwks_cache_ttl", 3600) or 3600
+    except Exception:
+        pass
+
+    cache_key = f"{jwks_uri}|{issuer}|{skip_verify}|{ca_bundle or ''}"
+    if cache_key not in _validator_cache:
+        _validator_cache[cache_key] = JWTValidator(
+            jwks_uri=jwks_uri,
+            cache_ttl=jwks_cache_ttl,
+            issuer=issuer,
+            skip_verify=skip_verify,
+            ca_bundle=ca_bundle,
+        )
+    return _validator_cache[cache_key]
+
+
 async def _get_validator() -> Optional[JWTValidator]:
     from cuga.backend.server.auth.oidc_client import get_oidc_client
 
@@ -91,21 +180,31 @@ async def _get_validator() -> Optional[JWTValidator]:
     issuer = discovery.get("issuer")
     if not jwks_uri:
         return None
-    cache_key = jwks_uri
-    if cache_key not in _validator_cache:
-        jwks_cache_ttl = 3600
-        try:
-            from cuga.config import settings
+    jwks_cache_ttl = 3600
+    skip_verify = False
+    ca_bundle: Optional[str] = None
+    try:
+        from cuga.config import settings
 
-            auth = getattr(settings, "auth", None)
-            if auth is not None:
-                jwks_cache_ttl = getattr(auth, "jwks_cache_ttl", 3600) or 3600
-        except Exception:
-            pass
+        auth = getattr(settings, "auth", None)
+        if auth is not None:
+            jwks_cache_ttl = getattr(auth, "jwks_cache_ttl", 3600) or 3600
+            skip_verify = bool(getattr(auth, "oidc_skip_verify", False))
+            ca_bundle = getattr(auth, "oidc_ca_bundle", None) or None
+    except Exception:
+        pass
+    cache_key = f"{jwks_uri}|{issuer or ''}|{skip_verify}|{ca_bundle or ''}"
+    if cache_key not in _validator_cache:
+        if skip_verify:
+            logger.warning(
+                "JWKS SSL verification is disabled (DYNACONF_AUTH__OIDC_SKIP_VERIFY=true) — do not use in production"
+            )
         _validator_cache[cache_key] = JWTValidator(
             jwks_uri=jwks_uri,
             cache_ttl=jwks_cache_ttl,
             issuer=issuer,
+            skip_verify=skip_verify,
+            ca_bundle=ca_bundle,
         )
     return _validator_cache[cache_key]
 
@@ -124,14 +223,32 @@ async def get_current_user(request: Request) -> Optional[UserInfo]:
     if not token:
         return None
 
-    validator = await _get_validator()
+    # Try to resolve validator from the token's own issuer first (supports IAM/non-OIDC tokens).
+    # Fall back to the configured OIDC validator.
+    validator = await _get_validator_for_token(token)
+    if validator is None:
+        logger.debug("get_current_user: no issuer-based validator found, falling back to OIDC validator")
+        validator = await _get_validator()
+    else:
+        logger.debug("get_current_user: using issuer-resolved validator (jwks_uri={})", validator.jwks_uri)
     if not validator:
         raise HTTPException(status_code=503, detail="Auth not configured")
 
     try:
         payload = validator.validate_and_decode(token)
-        return validator.to_user_info(payload)
-    except Exception:
+        user = validator.to_user_info(payload)
+        logger.debug(
+            "Authenticated user sub={} roles={} issuer={} all_claims={}",
+            user.sub,
+            user.roles,
+            payload.get("iss"),
+            list(payload.keys()),
+        )
+        return user
+    except Exception as e:
+        logger.warning(
+            "get_current_user: token validation failed (validator jwks_uri={}): {}", validator.jwks_uri, e
+        )
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
 

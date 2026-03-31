@@ -52,20 +52,15 @@ export async function apiFetch(
   if (res.status === 401) {
     const config = await getAuthConfig();
     if (config.enabled) {
-      const loginUrl = `${base}/auth/login`;
-      window.location.href = loginUrl;
+      const { isLoginInProgress, markLoginInProgress } = await import("./auth");
+      if (!isLoginInProgress()) {
+        markLoginInProgress();
+        window.location.href = `${base}/auth/login`;
+      }
     }
   }
   if (res.status === 403) {
-    // User lacks required role - redirect to unauthorized page
-    const currentPath = window.location.pathname;
-    if (currentPath !== "/unauthorized") {
-      console.warn("Access denied (403). Redirecting to unauthorized page.");
-      window.location.href = "/unauthorized";
-    } else {
-      // Already on unauthorized page, just log the error - don't redirect
-      console.warn(`Access denied (403) for ${url}. User may lack required role.`);
-    }
+    console.warn(`Access denied (403) for ${String(url)}. User may lack required role.`);
   }
   return res;
 }
@@ -99,6 +94,7 @@ export async function postStop(threadId: string): Promise<Response> {
   return apiFetch(`${base}/stop`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Thread-ID": threadId },
+    body: JSON.stringify({ thread_id: threadId }),
   });
 }
 

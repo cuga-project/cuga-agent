@@ -32,7 +32,7 @@ spec:
               value: "/data/dbs"
             {{- end }}
             {{- $secret := .Values.existingSecret }}
-            {{- $sensitiveKeys := list "GROQ_API_KEY" "OIDC_CLIENT_SECRET" "OIDC_CLIENT_ID" "OIDC_DISCOVERY_URL" "OIDC_REDIRECT_URI" "DYNACONF_STORAGE__POSTGRES_URL" }}
+            {{- $sensitiveKeys := list "GROQ_API_KEY" "OIDC_CLIENT_SECRET" "OIDC_CLIENT_ID" "OIDC_DISCOVERY_URL" "OIDC_REDIRECT_URI" "DYNACONF_STORAGE__POSTGRES_URL" "VAULT_TOKEN" }}
             {{- range $key, $value := .Values.env }}
             - name: {{ $key }}
               {{- if and $secret (has $key $sensitiveKeys) }}
