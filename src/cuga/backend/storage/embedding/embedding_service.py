@@ -11,11 +11,11 @@ from cuga.config import settings
 _embedding_model_cache: Dict[str, Any] = {}
 
 LOCAL_MODEL_DIMS = {
-    "all-MiniLM-L6-v2": 384,
-    "all-mpnet-base-v2": 768,
     "BAAI/bge-small-en-v1.5": 384,
     "BAAI/bge-base-en-v1.5": 768,
     "BAAI/bge-large-en-v1.5": 1024,
+    "sentence-transformers/all-MiniLM-L6-v2": 384,
+    "all-MiniLM-L6-v2": 384,
 }
 
 
@@ -25,14 +25,14 @@ def get_embedding_config() -> Dict[str, Any]:
     if not emb:
         return {
             "provider": "local",
-            "model": "all-MiniLM-L6-v2",
+            "model": "BAAI/bge-small-en-v1.5",
             "dim": 384,
             "base_url": None,
             "api_key": None,
         }
     return {
         "provider": getattr(emb, "provider", "local"),
-        "model": getattr(emb, "model", "all-MiniLM-L6-v2"),
+        "model": getattr(emb, "model", "BAAI/bge-small-en-v1.5"),
         "dim": getattr(emb, "dim", 384),
         "base_url": (getattr(emb, "base_url", None) or "").strip() or None,
         "api_key": (getattr(emb, "api_key", None) or "").strip() or None,
@@ -51,7 +51,7 @@ def get_embedding_dimension(
     if provider == "openai":
         return 1536
     if provider == "local":
-        return LOCAL_MODEL_DIMS.get(model_name or "all-MiniLM-L6-v2", 384)
+        return LOCAL_MODEL_DIMS.get(model_name or "BAAI/bge-small-en-v1.5", 384)
     return 1536
 
 
@@ -132,7 +132,7 @@ async def _create_openai(
 
 async def _create_local(model_name: str) -> Optional[Callable]:
     try:
-        from sentence_transformers import SentenceTransformer
+        from fastembed import TextEmbedding
 
         cache_key = model_name
         if cache_key in _embedding_model_cache:
@@ -140,20 +140,22 @@ async def _create_local(model_name: str) -> Optional[Callable]:
             model = _embedding_model_cache[cache_key]
         else:
             logger.info(f"Loading local embedding model: {model_name}")
-            model = SentenceTransformer(model_name)
+            model = TextEmbedding(model_name)
             _embedding_model_cache[cache_key] = model
 
-        logger.info(f"✅ Local embedding model loaded (dim={model.get_sentence_embedding_dimension()})")
+        sample = next(model.embed(["probe"]))
+        dim = len(sample)
+        logger.info(f"✅ Local embedding model loaded (dim={dim})")
 
         async def embed_text(text: str) -> List[float]:
             loop = asyncio.get_event_loop()
-            emb = await loop.run_in_executor(None, lambda: model.encode(text, convert_to_numpy=True))
+            emb = await loop.run_in_executor(None, lambda: next(model.embed([text])))
             return emb.tolist()
 
         return embed_text
 
     except ImportError as e:
-        logger.warning(f"sentence-transformers not installed: {e}")
+        logger.warning(f"fastembed not installed: {e}")
         return None
     except Exception as e:
         logger.error(f"Failed to create local embedding function: {e}")

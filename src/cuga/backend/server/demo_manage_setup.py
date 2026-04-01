@@ -95,7 +95,7 @@ def _get_docs_tool() -> dict[str, Any]:
         "name": "docs",
         "url": f"http://localhost:{docs_port}/sse",
         "transport": "sse",
-        "description": "IBM Documentation search and page analysis (search, summarize, ask questions)",
+        "description": "Documentation page fetching and analysis (fetch, summarize, navigate links)",
     }
 
 
@@ -128,26 +128,26 @@ def build_tools_from_apps(
 DOCS_OUTPUT_FORMATTER = {
     "id": "output_formatter_docs_citations",
     "name": "Docs citations and actions",
-    "description": "Forces citation of all visited pages and actions performed when using IBM Docs tools",
+    "description": "Forces citation of all visited pages and actions performed when using docs tools",
     "type": "output_formatter",
     "policy_type": "output_formatter",
     "triggers": [
         {"type": "keyword", "value": [" "], "target": "agent_response", "operator": "or"},
     ],
     "format_type": "markdown",
-    "format_config": """Reformat the response to ALWAYS include these sections when documentation search tools were used:
+    "format_config": """Reformat the response to ALWAYS include these sections when documentation tools were used:
 
 ## Answer
 (Preserve the main answer content here)
 
 ## Sources
-List every web page or documentation URL that was visited. For each:
+List every documentation URL that was visited. For each:
 - Full URL
-- Brief note on what was retrieved (e.g. "Search results", "Page summary", "Q&A answer")
+- Brief note on what was retrieved (e.g. "Page content", "Page summary", "Followed link")
 If no pages were visited, write: "No external pages were consulted."
 
 ## Actions Performed
-List each documentation tool action: ibm_search_doc, filter_grep, fetch_doc_page — and what it was used for (query, URL, pattern, etc.). If no docs tools were used, write: "No documentation tools were used."
+List each documentation tool action: search_doc, fetch_doc_page, filter_grep — and what it was used for (URL, pattern, etc.). If no docs tools were used, write: "No documentation tools were used."
 
 Preserve all factual information. Do not add information not in the original. Only add structure and citations based on what the response implies or states.""",
     "priority": 80,
@@ -155,70 +155,92 @@ Preserve all factual information. Do not add information not in the original. On
 }
 
 DOCS_PLAYBOOK = {
-    "id": "playbook_ibm_docs_tools",
-    "name": "IBM Docs tool usage guide",
-    "description": "Guides the agent on how to use IBM Documentation MCP tools (ibm_search_doc, filter_grep, fetch_doc_page) for docs-related questions",
+    "id": "playbook_docs_tools",
+    "name": "Docs tool usage guide",
+    "description": "Guides the agent on how to use Documentation MCP tools (search_doc, fetch_doc_page, filter_grep) for docs-related questions",
     "type": "playbook",
     "policy_type": "playbook",
     "triggers": [
         {
             "type": "keyword",
-            "value": ["IBM docs", "IBM documentation", "docs search", "documentation"],
+            "value": ["docs", "documentation", "fetch page", " "],
             "target": "intent",
             "operator": "or",
         },
     ],
-    "markdown_content": """# IBM Documentation Tool Usage
+    "markdown_content": """# Documentation Tool Usage
 
-When the user asks about IBM products, documentation, or technical topics, use these tools as follows:
+Two tools are available: **search_doc** for discovery, **fetch_doc_page** for fetching a single known URL.
 
-## Step 1: Search with ibm_search_doc (for discovery)
+## Search URL pattern
 
-- **Call once** with a broad, descriptive query. One call returns full page content — do NOT call multiple times for the same topic.
-- Use queries like: "MQ persistent messaging configuration", "Kubernetes deployment", "Db2 backup restore" (not just "MQ" or "Db2").
-- The tool returns aggregated markdown from up to 3–5 pages. This is already comprehensive.
+Always construct the `search_url` using this pattern:
+```
+https://www.ibm.com/docs/en/search/<search term>
+```
+Replace `<search term>` with a descriptive phrase, using `+` to separate words. Examples:
+- `https://www.ibm.com/docs/en/search/watsonx+orchestrate+release+notes`
+- `https://www.ibm.com/docs/en/search/MQ+persistent+messaging+configuration`
+- `https://www.ibm.com/docs/en/search/kubernetes+deployment`
 
-## Step 2: Narrow down with filter_grep (only when needed)
+## Step 1: Search with search_doc
 
-- Use **filter_grep** only when you specifically need to extract targeted lines (e.g. config keys, error codes, API endpoints). Do NOT use it by default — the full content from ibm_search_doc or fetch_doc_page is usually sufficient.
-- When you do use it: pass the markdown content plus a regex pattern. Examples:
-  - `filter_grep(content, r"timeout|retry")` — timeout or retry mentions
-  - `filter_grep(content, r"Error \\d+")` — error codes
-  - `filter_grep(content, r"api_key|API_KEY")` — auth-related
+- Call **search_doc** with the full search URL. It returns the search results page as plain markdown.
+- **Inspect the output before proceeding:**
+  ```
+  result = await search_doc(search_url=...)
+  print(result)
+  ```
+  Read the markdown — it contains result titles and URLs linking to the actual documentation pages.
+- One call is enough. Do NOT retry with different queries for the same topic.
 
-## Step 3: Follow-up with fetch_doc_page (for navigation)
+## Step 2: Fetch a result page with fetch_doc_page
 
-- Use **fetch_doc_page** when the user provides an IBM docs URL or asks to visit a specific page:
-  - User pastes a URL (e.g. "What does this say? https://www.ibm.com/docs/...")
-  - User asks to open "the second result" or a specific link from your earlier search
-  - User wants to follow a linked page mentioned in the documentation
-- Only ibm.com/docs and ibm.com/support URLs are allowed.
-- Do NOT use fetch_doc_page to re-fetch a page you already have from ibm_search_doc.
+- After inspecting Step 1 output, pick the most relevant URL from the search results.
+- Call **fetch_doc_page** with that URL to get the full page content and its same-domain links.
+- **Inspect the output before proceeding:**
+  ```
+  result = await fetch_doc_page(url=...)
+  print(result)
+  ```
+  Review `result.content` and `result.links` before deciding whether to go deeper.
+- Do NOT re-fetch a page you already have.
+
+## Step 3: Narrow down with filter_grep (only when needed)
+
+- Only use this after inspecting prior output and confirming targeted extraction is needed.
+- Pass the page `content` plus a regex pattern. Examples:
+  ```
+  result = await filter_grep(content=..., pattern="timeout|retry")
+  print(result)
+  ```
+- Other examples: `r"Error \\d+"`, `r"api_key|API_KEY"`
 
 ## Key rules
 
-- One ibm_search_doc call per topic — do not retry with different queries to "get more".
-- Use filter_grep only when needed (targeted extraction), not as a default step.
-- Use fetch_doc_page for follow-up navigation when the user provides a URL or asks about a specific page. Large pages (>100k chars) return a summary plus full content.
-- Cite all URLs and sources in your response.
+- Always inspect tool output before deciding the next step.
+- search_doc returns the search page markdown — pick URLs from it to pass to fetch_doc_page.
+- Use the `links` field from fetch_doc_page results to navigate deeper — do not guess URLs.
+- Use filter_grep only when targeted extraction is needed.
+- Cite all visited URLs in your response.
 """,
     "steps": [
         {
             "step_number": 1,
-            "instruction": "Call ibm_search_doc with a broad, descriptive query.",
-            "expected_outcome": "Receive full page content as markdown.",
+            "instruction": "Call search_doc with the full search URL (query embedded). Inspect the returned markdown — it contains result titles and links to documentation pages.",
+            "expected_outcome": "Markdown content of the search results page.",
             "tools_allowed": None,
         },
         {
             "step_number": 2,
-            "instruction": "Use filter_grep only when needed (e.g. specific config keys, error codes); do not use by default.",
-            "expected_outcome": "Structured matches with line numbers.",
+            "instruction": "Pick the most relevant URL from the search results and call fetch_doc_page. Inspect the output — review content and links — before deciding to go deeper.",
+            "expected_outcome": "Full page markdown, same-domain links, and optional summary.",
             "tools_allowed": None,
         },
         {
             "step_number": 3,
-            "instruction": "Use fetch_doc_page when the user provides a URL or asks to visit a specific page from search results.",
-            "expected_outcome": "Full page content for the requested URL.",
+            "instruction": "Only if targeted extraction is needed after inspecting prior output, call filter_grep with the content and a regex pattern.",
+            "expected_outcome": "Structured matches with line numbers and section context.",
             "tools_allowed": None,
         },
     ],

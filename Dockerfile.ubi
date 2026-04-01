@@ -2,25 +2,61 @@
 ARG BASE_IMAGE=registry.access.redhat.com/ubi9/python-312-minimal:latest
 FROM ${BASE_IMAGE} AS builder
 
-USER root
-RUN microdnf install -y tar gzip --setopt=install_weak_deps=0 && microdnf clean all && \
-    UV_INSTALL_DIR=/usr/local/bin curl -sSL https://astral.sh/uv/install.sh | sh
+# Use official uv image to avoid curl+tar dance
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
+
 ENV PATH="/usr/local/bin:$PATH"
 
+USER root
 WORKDIR /app
 
 COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-RUN uv sync --no-editable --no-dev
+RUN rm -rf src/*.egg-info && uv sync --no-editable --no-dev
+
+# Download only the headless_shell binary (no full Chromium, no ffmpeg) — ~3x smaller than default.
+RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run playwright install --only-shell chromium
 
 # Runtime stage - slimmer base, copy only built artifacts
 FROM ${BASE_IMAGE}
 
 USER root
-RUN microdnf install -y tar gzip --setopt=install_weak_deps=0 && microdnf clean all && \
-    UV_INSTALL_DIR=/usr/local/bin curl -sSL https://astral.sh/uv/install.sh | sh
+# Libs required by Chromium headless_shell on UBI9/RHEL9
+# gtk3 and cups-libs intentionally omitted — not needed by headless_shell (--only-shell skips full browser stack)
+RUN microdnf install -y \
+        alsa-lib \
+        at-spi2-atk \
+        at-spi2-core \
+        atk \
+        cairo \
+        dbus-libs \
+        expat \
+        glib2 \
+        libdrm \
+        libgbm \
+        libX11 \
+        libXcomposite \
+        libXdamage \
+        libXext \
+        libXfixes \
+        libXrandr \
+        libxcb \
+        libxkbcommon \
+        mesa-libgbm \
+        nspr \
+        nss \
+        nss-util \
+        pango \
+        --setopt=install_weak_deps=0 && \
+    microdnf clean all
+
+# Use official uv image — no tar/gzip/curl needed
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /usr/local/bin/uv
+COPY --from=ghcr.io/astral-sh/uv:latest /uvx /usr/local/bin/uvx
+
 ENV PATH="/usr/local/bin:$PATH"
 
 WORKDIR /app
@@ -28,9 +64,9 @@ WORKDIR /app
 RUN mkdir -p /app/cuga_workspace /app/crm_tmp /data/dbs && chown -R 1001:0 /data
 
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/.venv /app/.venv
+COPY --from=builder --chown=1001:0 --chmod=0775 /app/.playwright /app/.playwright
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/src /app/src
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/docs /app/docs
-COPY --from=builder --chown=1001:0 --chmod=0775 /app/pyproject.toml /app/uv.lock /app/README.md ./
 COPY --chown=1001:0 --chmod=0775 docs/examples/huggingface/contacts.txt docs/examples/huggingface/cuga_knowledge.md docs/examples/huggingface/cuga_playbook.md docs/examples/huggingface/email_template.md /app/cuga_workspace/
 COPY --chown=1001:0 --chmod=0775 scripts/docker-entrypoint.sh /app/scripts/docker-entrypoint.sh
 
@@ -38,6 +74,8 @@ USER 1001
 
 EXPOSE 7860
 
+ENV USER=cuga
+ENV LOGNAME=cuga
 ENV CUGA_HOST=0.0.0.0
 ENV DYNACONF_SERVER_PORTS__DEMO=7860
 ENV CUGA_DEMO_MODE=default
@@ -47,6 +85,7 @@ ENV UV_TOOL_DIR=/tmp/uv-tools
 ENV CUGA_LOGGING_DIR=/tmp/cuga-logging
 ENV CUGA_DBS_DIR=/data/dbs
 ENV DYNACONF_CRM_DB_PATH=/tmp/crm_tmp/crm_db_default
+ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 
 ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
 CMD []

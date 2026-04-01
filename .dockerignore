@@ -64,6 +64,7 @@ target/
 **/.output/
 .pnpm-store/
 *.egg-info/
+**/*.egg-info/
 **/.pytest_cache/
 **/.mypy_cache/
 **/playwright-report/
@@ -121,6 +122,7 @@ deployment/certs/*.crt
 docs/**
 !docs/examples/demo_apps/
 !docs/examples/huggingface/
+!docs/examples/docs_mcp/
 # Exclude demo_app .venv, build, db - local dev artifacts, not needed at runtime
 docs/examples/demo_apps/**/.venv/
 docs/examples/demo_apps/**/build/

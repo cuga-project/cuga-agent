@@ -93,9 +93,9 @@ class PolicyStorage:
             else:
                 error_msg = (
                     "Failed to initialize embedding function. Please ensure:\n"
-                    "  1. For 'local' provider: Install 'sentence-transformers' package\n"
+                    "  1. For 'local' provider: Install 'fastembed' package\n"
                     "  2. For 'openai' provider: Set OPENAI_API_KEY or storage.embedding.api_key\n"
-                    "  3. For 'auto' provider: Either install 'sentence-transformers' or set OPENAI_API_KEY"
+                    "  3. For 'auto' provider: Either install 'fastembed' or set OPENAI_API_KEY"
                 )
                 logger.error(error_msg)
                 raise ValueError(error_msg)
@@ -144,7 +144,7 @@ class PolicyStorage:
         if not self._embedding_function:
             raise ValueError(
                 f"No embedding function available for policy '{policy.name}'. "
-                f"Either set OPENAI_API_KEY or install 'sentence-transformers' for local embeddings."
+                f"Either set OPENAI_API_KEY or install 'fastembed' for local embeddings."
             )
 
         try:

@@ -65,8 +65,8 @@ postgres_url = ""  # required when mode=prod
 
 [storage.embedding]
 provider = "local"  # "openai", "local", or "auto" (tries OpenAI, falls back to local)
-model = "all-MiniLM-L6-v2"  # Model name (default for local provider)
-dim = 384  # Embedding dimension (1536 for OpenAI, 384 for all-MiniLM-L6-v2)
+model = "BAAI/bge-small-en-v1.5"  # Model name (default for local provider)
+dim = 384  # Embedding dimension (1536 for OpenAI, 384 for BAAI/bge-small-en-v1.5)
 base_url = ""  # Optional: custom endpoint for OpenAI-compatible embeddings (e.g. hosted service)
 api_key = ""  # Optional: API key for embedding endpoint; falls back to OPENAI_API_KEY
 
