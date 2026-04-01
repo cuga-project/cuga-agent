@@ -452,12 +452,19 @@ async def lifespan(app: FastAPI):
         )
 
     tool_provider = CombinedToolProvider(get_include_by_app=_get_include_by_app, agent_id="cuga-default")
+    from cuga.backend.server.manage_routes import _extract_agent_feature_overrides as _extract_prod_overrides
+
+    _prod_overrides = _extract_prod_overrides(_startup_config or {})
     app_state.agent = DynamicAgentGraph(
         None,
         langfuse_handler=langfuse_handler,
         policy_system=app_state.policy_system,
         tool_provider=tool_provider,
         llm_config=_startup_llm_cfg or None,
+        enable_todos=_prod_overrides.get("enable_todos"),
+        reflection_enabled=_prod_overrides.get("reflection_enabled"),
+        shortlisting_tool_threshold=_prod_overrides.get("shortlisting_tool_threshold"),
+        cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
     )
     await app_state.agent.build_graph()
 
