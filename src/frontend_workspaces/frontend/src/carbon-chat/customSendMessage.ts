@@ -13,7 +13,6 @@ import {
   CustomSendMessageOptions,
   MessageRequest,
   MessageResponseTypes,
-  ReasoningStepOpenState,
   type ReasoningStep,
   type StreamChunk,
 } from "@carbon/ai-chat";
@@ -226,7 +225,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: [...collectedSteps, { title: currentStepTitle, content: currentStepContent }] }, response_user_profile: RESPONSE_USER_PROFILE },
+                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: RESPONSE_USER_PROFILE },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -250,7 +249,6 @@ export async function customSendMessage(
           
           console.log(`Reasoning step: ${currentStepTitle}, content: ${currentStepContent}`);
           
-          // Only add if we have content
           if (currentStepContent) {
             instance.messaging.addMessageChunk({
               partial_item: {
@@ -259,7 +257,7 @@ export async function customSendMessage(
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
-                message_options: { reasoning: { steps: [...collectedSteps, { title: currentStepTitle, content: currentStepContent }] }, response_user_profile: RESPONSE_USER_PROFILE },
+                message_options: { reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] }, response_user_profile: RESPONSE_USER_PROFILE },
               },
               streaming_metadata: { response_id: responseID },
             } as StreamChunk);
@@ -270,7 +268,7 @@ export async function customSendMessage(
         case "Action":
           const toolData = typeof event.data === "string" ? event.data : JSON.stringify(event.data, null, 2);
           collectedSteps.push(
-            createReasoningStep(event.name, `\`\`\`json\n${toolData}\n\`\`\``, ReasoningStepOpenState.CLOSE)
+            createReasoningStep(event.name, `\`\`\`json\n${toolData}\n\`\`\``)
           );
           
           instance.messaging.addMessageChunk({
@@ -531,7 +529,7 @@ export async function customSendMessage(
           if (event.data) {
             const stepContent = typeof event.data === "string" ? event.data : JSON.stringify(event.data);
             collectedSteps.push(
-              createReasoningStep(event.name, stepContent, ReasoningStepOpenState.CLOSE)
+              createReasoningStep(event.name, stepContent)
             );
             
             instance.messaging.addMessageChunk({
