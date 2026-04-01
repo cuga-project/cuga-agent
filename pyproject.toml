@@ -26,7 +26,7 @@ dependencies = [
     "mcp[cli]>=1.23.0",
     "psutil>=7.0.0",
     "typer>=0.15.3",
-    "fastmcp",
+    "fastmcp>=3.2.0",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
     "pymilvus[milvus-lite]>=2.6.4",

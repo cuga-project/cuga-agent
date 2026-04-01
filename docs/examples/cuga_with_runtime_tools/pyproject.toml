@@ -7,7 +7,7 @@ license = "Apache-2.0"
 requires-python = ">=3.12"
 dependencies = [
     "cuga",
-    "fastmcp",
+    "fastmcp>=3.2.0",
     "httpx",
 ]
 
