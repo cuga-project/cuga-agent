@@ -798,7 +798,7 @@ instruction_set = "default"  # or any instruction set above
 <summary><em style="color: #666;"> 📹 Optional: Run with memory</em></summary>
 
 1. Install memory dependencies `uv sync --extra memory`
-1. Change `enable_memory = true` in `setting.toml`
+1. Change `enable_memory = true` in `settings.toml`
 2. Run `cuga start memory`
 
 Watch CUGA with Memory enabled
@@ -814,6 +814,61 @@ Watch CUGA with Memory enabled
 3. Run `cuga start demo_crm --sample-memory-data` 
 4. go to the cuga webpage and type `Identify the common cities between my cuga_workspace/cities.txt and cuga_workspace/company.txt` . Here you should see the errors related to CodeAgent. Wait for a minute for `tips` to be generated. `Tips` generation can be confirmed from the  terminal where` cuga start memory` was run
 5. Re-run the same utterance again and it should finish in lesser number of steps
+
+</details>
+
+<details>
+<summary><em style="color: #666;"> 🧠 Optional: Use Kaizen with CugaLite</em></summary>
+
+Kaizen can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
+
+This flow is:
+
+- **Opt-in** - disabled by default
+- **Non-blocking** - Kaizen failures do not fail the task
+- **CugaLite-focused** - enabled for lite mode by default
+
+### Setup Steps:
+
+1. Start a Kaizen MCP server that exposes `get_guidelines` and `save_trajectory`
+2. Edit `./src/cuga/settings.toml` and enable lite mode plus Kaizen:
+
+```toml
+[advanced_features]
+lite_mode = true
+
+[kaizen]
+enabled = true
+url = "http://127.0.0.1:8201/sse"
+lite_mode_only = true
+save_on_success = true
+save_on_failure = true
+async_save = true
+timeout = 30.0
+```
+
+3. Start CUGA normally:
+
+```bash
+cuga start demo
+```
+
+4. Run a task that routes through CugaLite
+
+### What happens during a run?
+
+1. CUGA derives the task description from the current sub-task or first user message
+2. CugaLite asks Kaizen for relevant guidelines
+3. Returned guidelines are appended to the system prompt under a `Kaizen Guidelines` section
+4. The task executes normally
+5. The user / assistant trajectory is saved back to Kaizen after completion
+
+### Notes
+
+- `async_save = true` saves trajectories in the background and avoids blocking the response
+- `save_on_success` and `save_on_failure` let you control which runs are recorded
+- If Kaizen is unavailable, times out, or returns no guidance, CUGA continues normally
+- This integration is separate from the older `cuga start memory` namespace / tip workflow
 
 </details>
 
