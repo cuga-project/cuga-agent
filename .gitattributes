@@ -1,8 +1,8 @@
 # Exclude build directories from diffs and linguist statistics
 src/frontend_workspaces/extension/releases/** -diff
 src/frontend_workspaces/extension/releases/** linguist-vendored
-src/frontend_workspaces/frontend/dist/** -diff
-src/frontend_workspaces/frontend/dist/** linguist-vendored
+src/cuga/frontend/dist/** -diff
+src/cuga/frontend/dist/** linguist-vendored
 src/frontend_workspaces/shared/dist/** -diff
 src/frontend_workspaces/shared/dist/** linguist-vendored
 

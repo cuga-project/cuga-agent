@@ -40,7 +40,7 @@ def create_zip_from_directory(directory_path, exclude_patterns=None):
 def embed_assets():
     """Generate embedded assets Python file."""
     base_dir = Path(__file__).parent.parent
-    frontend_dist = base_dir / "frontend_workspaces" / "frontend" / "dist"
+    frontend_dist = base_dir / "cuga" / "frontend" / "dist"
     extension_dir = base_dir / "frontend_workspaces" / "extension" / "releases" / "chrome-mv3"
 
     print(f"Embedding frontend from: {frontend_dist}")

@@ -115,10 +115,7 @@ cuga = [
     "backend/**/*.jinja2",
     "backend/**/*.js",
     "backend/server/demo_setup_utils/*.json",
-]
-frontend_workspaces = [
     "frontend/dist/**",
-    "extension/releases/**"
 ]
 scripts = ["*.py"]
 system_tests = ["**/*.py", "**/*.yaml", "**/*.sh"]
