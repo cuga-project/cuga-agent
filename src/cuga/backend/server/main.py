@@ -102,7 +102,7 @@ except ImportError as e:
 
 # Path constants
 TRACE_LOG_PATH = os.path.join(TRACES_DIR, "trace.log")
-FRONTEND_DIST_DIR = os.path.join(PACKAGE_ROOT, "..", "frontend_workspaces", "frontend", "dist")
+FRONTEND_DIST_DIR = os.path.join(PACKAGE_ROOT, "frontend", "dist")
 EXTENSION_DIR = os.path.join(PACKAGE_ROOT, "..", "frontend_workspaces", "extension", "releases", "chrome-mv3")
 STATIC_DIR_FLOWS_PATH = os.path.join(PACKAGE_ROOT, "backend", "server", "flows")
 SAVE_REUSE_PY_PATH = os.path.join(

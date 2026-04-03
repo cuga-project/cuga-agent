@@ -8,7 +8,7 @@ node_modules
 .pnpm-store/
 *.log
 /frontend/dist/
-!frontend-workspaces/frontend/dist
+src/frontend_workspaces/frontend/dist/
 /frontend/node_modules/
 experiment_results_*
 output_graphs

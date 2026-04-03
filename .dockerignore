@@ -58,7 +58,7 @@ target/
 **/__pycache__/
 **/*.pyc
 **/dist/
-!src/frontend_workspaces/frontend/dist
+!src/cuga/frontend/dist
 **/build/
 **/.vite/
 **/.output/
