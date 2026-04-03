@@ -32,7 +32,7 @@ dependencies = [
     "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
-    "litellm>=1.0.0",
+    "litellm>=1.83.0",
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
@@ -43,7 +43,7 @@ dependencies = [
     "cryptography>=44.0.0",
     "hvac>=2.0.0",
     "boto3>=1.34.0",
-    "openlit>=1.4.0", # 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard
+    "openlit>=1.40.1",
 ]
 
 [project.optional-dependencies]
@@ -70,6 +70,39 @@ constraint-dependencies = [
     "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
 ]
 
+# openlit 1.40.1 declares openai<2; litellm>=1.83 needs openai 2.x (CVE-2026-35030 / GHSA-jjhc-v7c2-5hh6).
+[[tool.uv.dependency-metadata]]
+name = "openlit"
+version = "1.40.1"
+requires-dist = [
+    "anthropic>=0.42.0,<1.0.0",
+    "boto3>=1.34.0,<2.0.0",
+    "botocore>=1.34.0,<2.0.0",
+    "openai>=1.1.1,<3.0.0",
+    "opentelemetry-api>=1.38.0,<2.0.0",
+    "opentelemetry-exporter-otlp>=1.38.0,<2.0.0",
+    "opentelemetry-instrumentation>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-aiohttp-client>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-asgi>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-django>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-falcon>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-fastapi>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-flask>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-httpx>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-pyramid>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-requests>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-starlette>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-tornado>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-urllib>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-urllib3>=0.52b0,<1.0.0",
+    "opentelemetry-sdk>=1.38.0,<2.0.0",
+    "opentelemetry-semantic-conventions>=0.59b0,<1.0.0",
+    "pydantic>=2.0.0,<3.0.0",
+    "requests>=2.26.0,<3.0.0",
+    "schedule>=1.2.2,<2.0.0",
+    "xmltodict>=0.13.0,<1.0.0",
+]
+
 [tool.setuptools]
 package-dir = {"" = "src"}
 
@@ -87,10 +120,7 @@ cuga = [
     "backend/**/*.jinja2",
     "backend/**/*.js",
     "backend/server/demo_setup_utils/*.json",
-]
-frontend_workspaces = [
     "frontend/dist/**",
-    "extension/releases/**"
 ]
 scripts = ["*.py"]
 system_tests = ["**/*.py", "**/*.yaml", "**/*.sh"]

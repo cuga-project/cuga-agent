@@ -102,7 +102,7 @@ except ImportError as e:
 
 # Path constants
 TRACE_LOG_PATH = os.path.join(TRACES_DIR, "trace.log")
-FRONTEND_DIST_DIR = os.path.join(PACKAGE_ROOT, "..", "frontend_workspaces", "frontend", "dist")
+FRONTEND_DIST_DIR = os.path.join(PACKAGE_ROOT, "frontend", "dist")
 EXTENSION_DIR = os.path.join(PACKAGE_ROOT, "..", "frontend_workspaces", "extension", "releases", "chrome-mv3")
 STATIC_DIR_FLOWS_PATH = os.path.join(PACKAGE_ROOT, "backend", "server", "flows")
 SAVE_REUSE_PY_PATH = os.path.join(
@@ -340,7 +340,6 @@ async def lifespan(app: FastAPI):
         logger.info("Policy system disabled in settings")
         app_state.policy_system = None
         app_state.policy_filesystem_sync = None
-
 
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
