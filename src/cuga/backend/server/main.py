@@ -341,6 +341,7 @@ async def lifespan(app: FastAPI):
         app_state.policy_system = None
         app_state.policy_filesystem_sync = None
 
+
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
             from cuga.backend.server.config_store import load_config

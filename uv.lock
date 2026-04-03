@@ -742,6 +742,10 @@ health = [
 memory = [
     { name = "mem0ai", extra = ["extras"] },
 ]
+skills = [
+    { name = "opensandbox" },
+    { name = "opensandbox-code-interpreter" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -799,6 +803,8 @@ requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.23.0" },
     { name = "mem0ai", extras = ["extras"], marker = "extra == 'memory'" },
     { name = "openlit", specifier = ">=1.4.0" },
+    { name = "opensandbox", marker = "extra == 'skills'" },
+    { name = "opensandbox-code-interpreter", marker = "extra == 'skills'" },
     { name = "pgvector", specifier = ">=0.4.2" },
     { name = "playwright", specifier = "==1.49.0" },
     { name = "psutil", specifier = ">=7.0.0" },
@@ -812,7 +818,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15.3" },
     { name = "uvicorn" },
 ]
-provides-extras = ["evaluation", "e2b", "memory", "health"]
+provides-extras = ["evaluation", "e2b", "memory", "health", "skills"]
 
 [package.metadata.requires-dev]
 dev = [
@@ -3478,6 +3484,34 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/9f/b0/28708cba5580a9cc762456c9bc400a74274cebb5a7e86c21a51027d625c4/openlit-1.34.30.tar.gz", hash = "sha256:d276efae5799e7333a53f3ab42550c319bd1dd2244ab2b4b9ee94cf79681a2da", size = 154976, upload-time = "2025-07-17T03:58:59.038Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/bf/48/6aaa268a7c370e8e4bccd917fd595b9a7045b8f8e80e4ed8299e9cda26bb/openlit-1.34.30-py3-none-any.whl", hash = "sha256:55499c068052d31537ceda918b267cb4a7e6d4443b99e4dfaee502f26ecf70b3", size = 283297, upload-time = "2025-07-17T03:58:57.645Z" },
+]
+
+[[package]]
+name = "opensandbox"
+version = "0.1.6"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "attrs" },
+    { name = "httpx" },
+    { name = "pydantic" },
+    { name = "python-dateutil" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/81/68/493e98dfc5be745cc2d199259d79af49b89f7973619a9b7e36d0d43d74b8/opensandbox-0.1.6.tar.gz", hash = "sha256:6a69c690342f3d28820154b4f7f27ce33fd4cf42e3982016535f6fc9de344324", size = 112275, upload-time = "2026-03-27T03:51:09.155Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0c/12/5454ec8eb63de9a4d73ad26cf1adad9cd760aba62dadd4dbb18eee5765d9/opensandbox-0.1.6-py3-none-any.whl", hash = "sha256:a8f7eeb124eddcf97c691230f55ef77413b9b727ede346e6e9219d8d56c61c43", size = 281317, upload-time = "2026-03-27T03:51:07.695Z" },
+]
+
+[[package]]
+name = "opensandbox-code-interpreter"
+version = "0.1.2"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "opensandbox" },
+    { name = "pydantic" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/9b/8d/dc1b3a5eaa89a5780678b91bec2beee3d11d00ed24a5edb0f8dbb4b26a99/opensandbox_code_interpreter-0.1.2.tar.gz", hash = "sha256:046bd3a3a045f9d30ee6691fdd63f4e81db06fd64a8f045d2981ebbc1ebbb244", size = 24156, upload-time = "2026-03-27T04:37:24.409Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6f/0a/e20c6eec6f3ac22b3edb59c1cf5ba9327a99933e9071806f54b48a274805/opensandbox_code_interpreter-0.1.2-py3-none-any.whl", hash = "sha256:bea53fb0032f13fae517ac1fed36d972f7f660304029dc3d5eef18a0dac2b916", size = 39981, upload-time = "2026-03-27T04:37:23.142Z" },
 ]
 
 [[package]]

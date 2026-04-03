@@ -51,6 +51,11 @@ evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
 health = ["cuga-oak-health; python_version>='3.12'"]
+# Skill execution via OpenSandbox Docker container runtime (https://github.com/alibaba/OpenSandbox)
+# Requires Docker running locally — no separate server needed.
+# Enable with: settings.skills.opensandbox_enabled = true
+# Install with: uv pip install opensandbox opensandbox-code-interpreter
+skills = ["opensandbox", "opensandbox-code-interpreter"]
 
 [project.urls]
 Homepage = "https://cuga.dev"

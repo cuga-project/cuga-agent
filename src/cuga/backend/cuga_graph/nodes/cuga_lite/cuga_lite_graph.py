@@ -51,6 +51,7 @@ This class needs architectural changes to support multi-user, multi-model, and m
    - Handle concurrent model/tool requests from different users
 """
 
+import os
 import re
 import json
 import asyncio
@@ -84,6 +85,14 @@ from cuga.configurations.instructions_manager import get_all_instructions_format
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
 from pathlib import Path
+
+from cuga.backend.skills import (
+    SkillRegistry,
+    create_skill_tools,
+    discover_skills,
+    format_available_skills_block,
+)
+
 
 try:
     from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
@@ -711,6 +720,23 @@ def create_cuga_lite_graph(
                 else:
                     logger.debug("No tool guides found in metadata")
 
+            skill_tools = []
+            effective_special = base_special_instructions or ""
+            cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+            skill_entries = discover_skills(cuga_folder_for_skills)
+            if skill_entries:
+                skill_registry = SkillRegistry(skill_entries)
+                skill_tools = create_skill_tools(skill_registry)
+                tools_for_prompt.extend(skill_tools)
+                block = format_available_skills_block(skill_registry)
+                effective_special = (
+                    f"{effective_special.rstrip()}\n\n{block}" if effective_special.strip() else block
+                )
+                logger.info(
+                    f"Loaded {len(skill_entries)} agent skill(s) under {cuga_folder_for_skills}/skills "
+                    "and ~/.config/cuga/skills"
+                )
+
             # Update tools context with all execution tools
             # Wrap to make awaitable (agent always uses await)
             for tool in tools_for_execution:
@@ -731,6 +757,19 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
 
+            for tool in skill_tools:
+                tool_func = None
+                if hasattr(tool, "coroutine") and tool.coroutine:
+                    tool_func = tool.coroutine
+                elif hasattr(tool, "func") and tool.func:
+                    tool_func = tool.func
+                else:
+                    tool_func = getattr(tool, "_run", None)
+                if tool_func:
+                    tools_context_dict[tool.name] = make_tool_awaitable(tool_func)
+                else:
+                    logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
+
             # Create prompt dynamically
             dynamic_prompt = prompt
 
@@ -746,7 +785,7 @@ def create_cuga_lite_graph(
                     or is_autonomous_subtask,
                     prompt_template=selected_prompt_template,
                     enable_find_tools=enable_find_tools,
-                    special_instructions=base_special_instructions,
+                    special_instructions=effective_special,
                 )
 
             return Command(

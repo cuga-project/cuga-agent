@@ -35,7 +35,8 @@ enable_fact = false
 reflection_enabled = false
 save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
 decomposition_strategy = "flexible"  # "exact" = one subtask per app, "flexible" = allows multiple subtasks per app
-e2b_sandbox = false # use e2b for sandbox:
+e2b_sandbox = false           # use E2B cloud sandbox for code execution
+opensandbox_sandbox = false   # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
 e2b_sandbox_mode = "per-session"  # E2B sandbox lifecycle: "per-session" = cache per thread_id (default), "single" = shared sandbox for all threads, "per-call" = new sandbox each call
 e2b_sandbox_idle_ttl = 600  # Idle timeout in seconds (default: 10 min) - sandbox expires after this much idle time
 e2b_sandbox_max_age = 86400  # Max age for "single" mode in seconds (24h, 0 = disabled) - prevents week-old sandboxes
@@ -51,6 +52,21 @@ path_segment_index = 1  # Which path segment to use for operation naming (1 = fi
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
 execution_output_max_length = 50000  # Maximum characters to show in execution output (prevents token overflow)
+
+[skills]
+# Container image used by OpenSandboxExecutor (advanced_features.opensandbox_sandbox = true).
+# The code-interpreter image bundles Python, Node.js, and common system tools.
+# Requires: uv add opensandbox opensandbox-code-interpreter
+opensandbox_image = "opensandbox/code-interpreter:v1.0.2"
+
+# Entrypoint script inside the container.
+opensandbox_entrypoint = "/opt/opensandbox/code-interpreter.sh"
+
+# Python version to inject via env (used by code-interpreter image).
+opensandbox_python_version = "3.11"
+
+# Sandbox lifetime per execution call (seconds).
+opensandbox_timeout_seconds = 120
 
 [supervisor]
 enabled = false  # Enable CugaSupervisor for multi-agent coordination

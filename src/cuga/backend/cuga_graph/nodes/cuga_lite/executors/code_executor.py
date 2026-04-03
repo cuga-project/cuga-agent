@@ -10,6 +10,7 @@ from .common.benchmark_mode import is_benchmark_mode
 from .local import LocalExecutor
 from .e2b import E2BExecutor
 from .docker import DockerExecutor
+from .opensandbox import OpenSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 
 
@@ -41,27 +42,31 @@ class CodeExecutor:
     _local_executor: BaseExecutor = None
     _e2b_executor: RemoteExecutor = None
     _docker_executor: RemoteExecutor = None
+    _opensandbox_executor: RemoteExecutor = None
 
     @classmethod
     def _get_local_executor(cls) -> BaseExecutor:
-        """Get or create local executor instance."""
         if cls._local_executor is None:
             cls._local_executor = LocalExecutor()
         return cls._local_executor
 
     @classmethod
     def _get_e2b_executor(cls) -> RemoteExecutor:
-        """Get or create E2B executor instance."""
         if cls._e2b_executor is None:
             cls._e2b_executor = E2BExecutor()
         return cls._e2b_executor
 
     @classmethod
     def _get_docker_executor(cls) -> RemoteExecutor:
-        """Get or create Docker executor instance."""
         if cls._docker_executor is None:
             cls._docker_executor = DockerExecutor()
         return cls._docker_executor
+
+    @classmethod
+    def _get_opensandbox_executor(cls) -> RemoteExecutor:
+        if cls._opensandbox_executor is None:
+            cls._opensandbox_executor = OpenSandboxExecutor()
+        return cls._opensandbox_executor
 
     @classmethod
     async def eval_with_tools_async(
@@ -71,7 +76,7 @@ class CodeExecutor:
         state: AgentState,
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
-        mode: Optional[Literal['local', 'e2b']] = None,
+        mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -79,9 +84,9 @@ class CodeExecutor:
             code: Python code to execute
             _locals: Local variables/context for execution
             state: AgentState instance with variables_manager
-            thread_id: Thread ID for E2B sandbox caching (optional)
+            thread_id: Thread ID for sandbox caching (optional)
             apps_list: List of app names for parsing tool names correctly (optional)
-            mode: Execution mode ('local' or 'e2b'). If None, uses settings.
+            mode: Execution mode ('local', 'e2b', or 'opensandbox'). If None, uses settings.
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -90,7 +95,12 @@ class CodeExecutor:
         result = ""
 
         if mode is None:
-            mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
+            if settings.advanced_features.e2b_sandbox:
+                mode = 'e2b'
+            elif getattr(settings.advanced_features, 'opensandbox_sandbox', False):
+                mode = 'opensandbox'
+            else:
+                mode = 'local'
 
         # Force local execution for short find_tools calls
         code_lines = [line.strip() for line in code.split('\n') if line.strip()]
@@ -108,6 +118,16 @@ class CodeExecutor:
         try:
             if mode == 'e2b':
                 executor = cls._get_e2b_executor()
+                result, parsed_locals = await executor.execute_for_cuga_lite(
+                    wrapped_code=wrapped_code,
+                    context_locals=_locals,
+                    state=state,
+                    thread_id=thread_id,
+                    apps_list=apps_list,
+                )
+                _locals.update(parsed_locals)
+            elif mode == 'opensandbox':
+                executor = cls._get_opensandbox_executor()
                 result, parsed_locals = await executor.execute_for_cuga_lite(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
@@ -191,12 +211,14 @@ async def _async_main():
 
     @classmethod
     async def _execute_remotely_for_code_agent(
-        cls, wrapped_code: str, state: AgentState, mode: Literal['e2b', 'docker']
+        cls, wrapped_code: str, state: AgentState, mode: Literal['e2b', 'docker', 'opensandbox']
     ) -> tuple[str, dict[str, Any]]:
         """Execute wrapped code in remote executor for CodeAgent."""
         try:
             if mode == 'e2b':
                 executor = cls._get_e2b_executor()
+            elif mode == 'opensandbox':
+                executor = cls._get_opensandbox_executor()
             else:  # docker
                 executor = cls._get_docker_executor()
 
@@ -233,7 +255,7 @@ async def _async_main():
         cls,
         code: str,
         state: AgentState,
-        mode: Optional[Literal['local', 'e2b', 'docker']] = None,
+        mode: Optional[Literal['local', 'e2b', 'docker', 'opensandbox']] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code for CodeAgent - expects JSON output on last line only.
 
@@ -246,19 +268,24 @@ async def _async_main():
         Args:
             code: Python code to execute
             state: AgentState instance with variables_manager
-            mode: Execution mode ('local', 'e2b', or 'docker'). If None, uses settings.
+            mode: Execution mode ('local', 'e2b', 'docker', or 'opensandbox'). If None, uses settings.
 
         Returns:
             Tuple of (execution result string, empty dict)
         """
         if mode is None:
-            mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
+            if settings.advanced_features.e2b_sandbox:
+                mode = 'e2b'
+            elif getattr(settings.advanced_features, 'opensandbox_sandbox', False):
+                mode = 'opensandbox'
+            else:
+                mode = 'local'
 
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
         wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
 
-        if mode in ('e2b', 'docker'):
+        if mode in ('e2b', 'docker', 'opensandbox'):
             return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
         else:
             context_locals = cls._prepare_locals_for_code_agent(state)
