@@ -169,43 +169,35 @@ class CallApiHelper:
         return f"""
 import asyncio
 import json
-import aiohttp
+import urllib.request
 
 async def call_api(app_name, api_name, args=None):
     \"\"\"Call registry API tool via HTTP (remote execution only).\"\"\"
     if args is None:
         args = {{}}
-    
+
     url = "{url_with_trajectory}"
-    headers = {{
-        "accept": "application/json",
-        "Content-Type": "application/json"
-    }}
-    payload = {{
+    payload = json.dumps({{
         "function_name": api_name,
         "app_name": app_name,
         "args": args
-    }}
-    
+    }}).encode()
+    req = urllib.request.Request(
+        url,
+        data=payload,
+        headers={{"Content-Type": "application/json", "accept": "application/json"}},
+        method="POST",
+    )
     try:
-        async with aiohttp.ClientSession() as session:
-            async with session.post(
-                url,
-                json=payload,
-                headers=headers,
-                timeout=aiohttp.ClientTimeout(total={timeout_seconds}),
-            ) as response:
-                if response.status != 200:
-                    error_text = await response.text()
-                    raise Exception(f"HTTP Error: {{response.status}} - {{error_text}}")
-                
-                response_data = await response.text()
-                try:
-                    return json.loads(response_data)
-                except json.JSONDecodeError:
-                    return response_data
-    except asyncio.TimeoutError:
-        raise TimeoutError(f"Tool call '{{api_name}}' timed out after {timeout_seconds} seconds")
+        loop = asyncio.get_event_loop()
+        def _do_request():
+            with urllib.request.urlopen(req, timeout={timeout_seconds}) as resp:
+                return resp.read().decode()
+        response_data = await loop.run_in_executor(None, _do_request)
+        try:
+            return json.loads(response_data)
+        except json.JSONDecodeError:
+            return response_data
     except Exception as e:
         raise Exception(f"Error calling API {{api_name}}: {{str(e)}}")
 """

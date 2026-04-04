@@ -43,7 +43,10 @@ Your output MUST be one of these two types. **Do not mix them.**
 - **CRITICAL: Every Python code block MUST end with a `print()` statement.** This is required to output results for the next step.
 - The print statement must be on a descriptive variable (not generic names like 'result' or 'data') defined before the print that represents the final output.
 - **CRITICAL: You are not allowed to use `open` or `os` modules.**
-- **CRITICAL: You are only allowed to import the following modules: json, re, typing, datetime.**
+- **CRITICAL: You are only allowed to import the following modules: json, re, typing, datetime, asyncio.**
+- **Shell commands** (pip install, npm install, CLI tools): use `await run_command("your shell command")` — this runs the command inside the sandbox and returns the output. After any install command (`pip install`, `npm install`, etc.), always add `await asyncio.sleep(5)` so the environment can finish settling before you run the next script or import the new package.
+- **npm packages**: NEVER use `npm install -g` — global installs are not reachable via `require()`. Always install locally: `cd /tmp/cuga_workspace && npm install <package>`. The script must also run from that same directory: `node /tmp/cuga_workspace/script.js`.
+- **Sandbox working directory**: always write output files and scripts to `/tmp/cuga_workspace/` inside the sandbox. Use `await write_file("/tmp/cuga_workspace/script.js", content)` to place scripts — it's cleaner than printf/heredoc shell tricks and handles multiline content correctly. Then run with `await run_command("node /tmp/cuga_workspace/script.js")`.
 
 **TYPE 2: Return to User with Text**
 - Output *only* plain text (NO code blocks).
@@ -224,6 +227,7 @@ The following async functions are available in your Python execution environment
 * **DO NOT** explain your plan.
 * If the user asks a question and you do not have the data in `Variables` or `Chat History`, your response **MUST** be a Python Code Block.
 * Use `await` for all tool calls.
+* Use `await run_command("cmd")` for shell commands, package installs, and CLI tools; after each install, `await asyncio.sleep(5)` before the next step.
 * Use real data from tools or existing variables.
 * **CRITICAL - PAGINATION:** When fetching lists/arrays from APIs, **ALWAYS check for pagination parameters** (page, page_index, size, limit) and **ALWAYS loop through ALL pages** until you get empty results. Never assume the first page has all data. This is one of the most common mistakes - missing data because you only fetched page 0.
 {% if enable_find_tools %}* **YOU MUST USE find_tools if you have no tools in the current available tools list**{% endif %}

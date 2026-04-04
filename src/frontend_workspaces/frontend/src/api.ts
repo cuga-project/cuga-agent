@@ -243,6 +243,10 @@ export async function deleteConversation(threadId: string): Promise<Response> {
   });
 }
 
+export async function getSkills(): Promise<Response> {
+  return apiFetch("/api/skills");
+}
+
 export async function getWorkspaceTree(): Promise<Response> {
   return apiFetch("/api/workspace/tree");
 }

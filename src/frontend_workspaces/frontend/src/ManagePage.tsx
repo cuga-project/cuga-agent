@@ -43,6 +43,8 @@ import {
   Download,
   Upload,
   Tools,
+  SkillLevel as SkillIcon,
+  Package as PackageIcon,
 } from "@carbon/icons-react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import CarbonChat from "./carbon-chat/CarbonChat";
@@ -189,6 +191,9 @@ export function ManagePage() {
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
   const [secretsModalOpen, setSecretsModalOpen] = useState(false);
+  const [skills, setSkills] = useState<Array<{ name: string; description: string; requirements: string[]; source: string }>>([]);
+  const [skillsLoading, setSkillsLoading] = useState(false);
+  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
   const [llmUseSavedSecret, setLlmUseSavedSecret] = useState(false);
   const [llmSecretsList, setLlmSecretsList] = useState<{ id: string; description?: string; ref: string }[]>([]);
   const [llmForceEnv, setLlmForceEnv] = useState(false);
@@ -472,6 +477,15 @@ export function ManagePage() {
     loadLatest();
     loadHistory();
   }, [loadLatest, loadHistory]);
+
+  useEffect(() => {
+    setSkillsLoading(true);
+    api.getSkills()
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => data && setSkills(data.skills ?? []))
+      .catch(() => {})
+      .finally(() => setSkillsLoading(false));
+  }, []);
 
   const assembleConfig = useCallback(
     (overrides?: Partial<AgentConfig>): AgentConfig => {
@@ -1156,6 +1170,64 @@ export function ManagePage() {
                     onError={(title, message) => addToast("error", title, message)}
                     onOpenSecrets={() => setSecretsModalOpen(true)}
                   />
+              </AccordionItem>
+
+              <AccordionItem title="Skills">
+                {skillsLoading ? (
+                  <InlineLoading description="Loading skills…" />
+                ) : skills.length === 0 ? (
+                  <p className="cds--type-body-compact-01" style={{ color: "var(--cds-text-secondary)" }}>
+                    No skills found. Add SKILL.md files under <code>.cuga/.skills/</code> or <code>.cuga/skills/</code>.
+                  </p>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                    {skills.map((skill) => {
+                      const pipDeps = skill.requirements.filter((r) => !r.startsWith("npm:"));
+                      const npmDeps = skill.requirements.filter((r) => r.startsWith("npm:")).map((r) => r.slice(4));
+                      const LIMIT = 120;
+                      const isLong = skill.description.length > LIMIT;
+                      const isExpanded = expandedSkills.has(skill.name);
+                      const displayDesc = isLong && !isExpanded
+                        ? skill.description.slice(0, LIMIT).trimEnd() + "…"
+                        : skill.description;
+                      return (
+                        <Tile key={skill.name} style={{ padding: "0.75rem 1rem" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", marginBottom: "0.35rem" }}>
+                            <SkillIcon size={16} />
+                            <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>{skill.name}</span>
+                            <Tag type="green" size="sm" style={{ marginLeft: "auto" }}>active</Tag>
+                          </div>
+                          <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", marginBottom: pipDeps.length || npmDeps.length ? "0.5rem" : 0, lineHeight: 1.4 }}>
+                            {displayDesc}
+                            {isLong && (
+                              <button
+                                onClick={() => setExpandedSkills((prev) => {
+                                  const next = new Set(prev);
+                                  isExpanded ? next.delete(skill.name) : next.add(skill.name);
+                                  return next;
+                                })}
+                                style={{ background: "none", border: "none", padding: 0, marginLeft: "0.25rem", cursor: "pointer", fontSize: "0.75rem", color: "var(--cds-link-primary)" }}
+                              >
+                                {isExpanded ? "less" : "more"}
+                              </button>
+                            )}
+                          </p>
+                          {(pipDeps.length > 0 || npmDeps.length > 0) && (
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.25rem", alignItems: "center" }}>
+                              <PackageIcon size={12} style={{ color: "var(--cds-text-secondary)", flexShrink: 0 }} />
+                              {pipDeps.map((d) => (
+                                <Tag key={d} type="gray" size="sm">{d}</Tag>
+                              ))}
+                              {npmDeps.map((d) => (
+                                <Tag key={d} type="teal" size="sm">npm:{d}</Tag>
+                              ))}
+                            </div>
+                          )}
+                        </Tile>
+                      );
+                    })}
+                  </div>
+                )}
               </AccordionItem>
 
               <AccordionItem title="Welcome Screen">

@@ -779,6 +779,8 @@ dependencies = [
     { name = "markdownify" },
     { name = "mcp", extra = ["cli"] },
     { name = "openlit" },
+    { name = "opensandbox" },
+    { name = "opensandbox-code-interpreter" },
     { name = "pgvector" },
     { name = "playwright" },
     { name = "psutil" },
@@ -804,10 +806,6 @@ health = [
 ]
 memory = [
     { name = "mem0ai", extra = ["extras"] },
-]
-skills = [
-    { name = "opensandbox" },
-    { name = "opensandbox-code-interpreter" },
 ]
 
 [package.dev-dependencies]
@@ -866,8 +864,8 @@ requires-dist = [
     { name = "mcp", extras = ["cli"], specifier = ">=1.23.0" },
     { name = "mem0ai", extras = ["extras"], marker = "extra == 'memory'" },
     { name = "openlit", specifier = ">=1.40.1" },
-    { name = "opensandbox", marker = "extra == 'skills'" },
-    { name = "opensandbox-code-interpreter", marker = "extra == 'skills'" },
+    { name = "opensandbox" },
+    { name = "opensandbox-code-interpreter" },
     { name = "pgvector", specifier = ">=0.4.2" },
     { name = "playwright", specifier = "==1.49.0" },
     { name = "psutil", specifier = ">=7.0.0" },
@@ -881,7 +879,7 @@ requires-dist = [
     { name = "typer", specifier = ">=0.15.3" },
     { name = "uvicorn" },
 ]
-provides-extras = ["evaluation", "e2b", "memory", "health", "skills"]
+provides-extras = ["evaluation", "e2b", "memory", "health"]
 
 [package.metadata.requires-dev]
 dev = [

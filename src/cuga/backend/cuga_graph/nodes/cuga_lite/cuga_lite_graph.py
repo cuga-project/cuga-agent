@@ -227,18 +227,11 @@ class CugaLiteState(BaseModel):
 
 
 def extract_and_combine_codeblocks(text: str) -> str:
-    """Extract all codeblocks from a text string and combine them."""
+    """Extract all python codeblocks from text and combine them."""
     code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
 
     if code_blocks:
-        processed_blocks = []
-        for block in code_blocks:
-            block = block.strip()
-            processed_blocks.append(block)
-
-        combined_code = "\n\n".join(processed_blocks)
-
-        return combined_code
+        return "\n\n".join(block.strip() for block in code_blocks)
 
     stripped_text = text.strip()
 
@@ -769,6 +762,22 @@ def create_cuga_lite_graph(
                     tools_context_dict[tool.name] = make_tool_awaitable(tool_func)
                 else:
                     logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
+
+            # Inject sandbox tools when opensandbox is enabled
+            if getattr(settings.advanced_features, 'opensandbox_sandbox', False):
+                from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+
+                opensandbox_executor = CodeExecutor._get_opensandbox_executor()
+                sandbox_tools = opensandbox_executor.create_sandbox_tools(thread_id=thread_id)
+                for st in sandbox_tools:
+                    # Prefer coroutine for async execution context
+                    fn = st.coroutine or st.func
+                    if fn:
+                        tools_context_dict[st.name] = fn
+                tools_for_prompt.extend(sandbox_tools)
+                logger.info(
+                    f"[OpenSandbox] Injected sandbox tools into execution context and prompt: {[t.name for t in sandbox_tools]}"
+                )
 
             # Create prompt dynamically
             dynamic_prompt = prompt

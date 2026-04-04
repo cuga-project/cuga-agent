@@ -97,37 +97,31 @@ class CodeExecutor:
         if mode is None:
             if settings.advanced_features.e2b_sandbox:
                 mode = 'e2b'
-            elif getattr(settings.advanced_features, 'opensandbox_sandbox', False):
-                mode = 'opensandbox'
             else:
                 mode = 'local'
 
-        # Force local execution for short find_tools calls
+        # Force local execution for short find_tools or load_skill calls
         code_lines = [line.strip() for line in code.split('\n') if line.strip()]
         if len(code_lines) <= 3 and 'await find_tools' in code:
             mode = 'local'
+        if 'load_skill' in code:
+            mode = 'local'
 
-        SecurityValidator.validate_imports(code)
+        # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
+        # Security checks apply for local mode only
+        if mode == 'local':
+            SecurityValidator.validate_imports(code)
 
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
         wrapped_code = CodeWrapper.wrap_code(code, fake_datetime=fake_datetime)
 
-        SecurityValidator.validate_wrapped_code(wrapped_code)
+        if mode == 'local':
+            SecurityValidator.validate_wrapped_code(wrapped_code)
 
         try:
             if mode == 'e2b':
                 executor = cls._get_e2b_executor()
-                result, parsed_locals = await executor.execute_for_cuga_lite(
-                    wrapped_code=wrapped_code,
-                    context_locals=_locals,
-                    state=state,
-                    thread_id=thread_id,
-                    apps_list=apps_list,
-                )
-                _locals.update(parsed_locals)
-            elif mode == 'opensandbox':
-                executor = cls._get_opensandbox_executor()
                 result, parsed_locals = await executor.execute_for_cuga_lite(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,

@@ -2660,6 +2660,30 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
     )
 
 
+@app.get("/api/skills")
+async def get_skills(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    """Return discovered agent skills with metadata from their SKILL.md frontmatter."""
+    try:
+        from cuga.backend.skills import discover_skills
+
+        cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        entries = discover_skills(cuga_folder)
+        return {
+            "skills": [
+                {
+                    "name": e.name,
+                    "description": e.description,
+                    "requirements": list(e.requirements),
+                    "source": e.source,
+                }
+                for e in entries
+            ]
+        }
+    except Exception as e:
+        logger.error(f"Failed to load skills: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/api/workspace/tree")
 async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve the workspace folder tree."""

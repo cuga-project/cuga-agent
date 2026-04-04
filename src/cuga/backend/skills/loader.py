@@ -64,10 +64,11 @@ def discover_skills(
         local_root = Path(cuga_folder).expanduser()
         if not local_root.is_absolute():
             local_root = Path(os.getcwd()) / local_root
-        skills_dir = local_root / "skills"
-        for path in _iter_skill_files(skills_dir):
-            entry = _parse_skill_file(path)
-            if entry:
-                by_name[entry.name] = entry
+        # Load legacy skills/ first, then .skills/ overrides (takes priority)
+        for skills_dir in [local_root / "skills", local_root / ".skills"]:
+            for path in _iter_skill_files(skills_dir):
+                entry = _parse_skill_file(path)
+                if entry:
+                    by_name[entry.name] = entry
 
     return list(by_name.values())
