@@ -3,8 +3,22 @@ from typing import Any, Set
 from loguru import logger
 
 
+_TODO_CONFIRMATION_VALUES = frozenset({"Todos updated", "Todos have been updated"})
+
+
 class VariableUtils:
     """Utilities for managing variables during code execution."""
+
+    @staticmethod
+    def strip_todo_confirmation_only_vars(new_vars: dict[str, Any]) -> dict[str, Any]:
+        """Drop variables that only hold the short create_update_todos confirmation string."""
+        if not new_vars:
+            return new_vars
+        return {
+            k: v
+            for k, v in new_vars.items()
+            if not (isinstance(v, str) and v.strip() in _TODO_CONFIRMATION_VALUES)
+        }
 
     @staticmethod
     def is_serializable(value: Any) -> bool:

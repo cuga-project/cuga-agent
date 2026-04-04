@@ -143,15 +143,14 @@ class CodeExecutor:
             result = executor.format_error(e)
 
         # Variables that should always be included even if they existed before
-        # This ensures stateful variables get updated when reassigned across execution steps
-        # Includes:
-        # - 'todos': Stateful task list that gets updated incrementally
-        # - Generic output variables: Common names for final results that may be reassigned
-        always_include_keys = {'todos', 'result', 'results', 'output', 'outputs'}
+        # (Task todos are not stored here — they are shown in the todos system prompt section.)
+        always_include_keys = {'result', 'results', 'output', 'outputs'}
 
         new_vars = VariableUtils.filter_new_variables(
             _locals, original_keys, always_include_keys=always_include_keys
         )
+
+        new_vars = VariableUtils.strip_todo_confirmation_only_vars(new_vars)
 
         new_vars = VariableUtils.reorder_variables_by_print(new_vars, code)
 

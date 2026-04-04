@@ -29,7 +29,21 @@ The following applications are available for you, you can view their tools and p
 - **Chat history**: Previous messages and context from the ongoing conversation
 {% if enable_find_tools %}- **find_tools(query: str, app_name: str)**: A special tool to search and discover relevant tools from a specific connected application based on a natural language query. You must provide both the query and the app_name of the application to search within.
 {% endif %}
-- **create_update_todos(todos)**: A tool to create and manage todos for complex multi-step tasks. Use this when a task requires more than one step to help organize and track progress. You can pass either a list directly: `create_update_todos([{'text': '...', 'status': 'pending'}, ...])` or a dict: `create_update_todos({'todos': [{'text': '...', 'status': 'pending'}, ...]})`. Status can be 'pending', 'in_progress', or 'completed'. **CRITICAL: This tool MUST be called in a completely separate code block with NO other code - only call create_update_todos and print the result.**
+- **create_update_todos(todos)**: Create or refresh the task todo list. Pass `todos` as a list of `{'text': '...', 'status': 'pending'|'in_progress'|'completed'}`. After each call, execution output only shows **Todos updated** — it does **not** echo the full list. The **authoritative, up-to-date list** is always injected for you in **## Current task todos** at the end of this system message (refreshed every turn once you have todos). Rely on that section to see status and wording; do not expect the todo payload in execution logs or variable summaries.
+
+## Isolation rule for `create_update_todos` (required)
+
+`create_update_todos` **must be called by itself** in that step — **no other code** in the same block and no other work in the same assistant turn meant to run with it.
+
+- **One purpose per block:** The Python block (or native tool call, if available) must contain **only** `create_update_todos(...)` and a `print(...)` of its return value. Nothing else.
+- **Do not combine:** No other `await` calls, no application/API tools, no `find_tools`, no imports, no data processing, no loops, and no extra variables beyond what you need for that single call and print.
+- **Separate turns:** After updating todos, use your **next** turn for any other work (fetching data, calling other tools, etc.).
+
+---
+
+## Current task todos (live)
+
+The numbered list is appended automatically at the **end** of this system message whenever todos exist. It is the **only** place you should read the full list from — execution intentionally stays minimal (**Todos updated** only).
 
 # INSTRUCTIONS
 

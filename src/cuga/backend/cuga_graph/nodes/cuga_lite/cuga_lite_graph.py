@@ -226,6 +226,27 @@ class CugaLiteState(BaseModel):
         return StateVariablesManager(self)
 
 
+def format_task_todos_system_block(todos: List[Dict[str, str]]) -> str:
+    """Append to system prompt so the model always sees the live todo list (not execution variables)."""
+    if not todos:
+        return ""
+    lines = [
+        "",
+        "---",
+        "",
+        "## Current task todos",
+        "",
+        "Execution only prints **Todos updated** after each change; use this list as the source of truth.",
+        "",
+    ]
+    for i, item in enumerate(todos, start=1):
+        status = item.get("status", "pending")
+        text = item.get("text", "")
+        lines.append(f"{i}. **[{status}]** {text}")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def extract_and_combine_codeblocks(text: str) -> str:
     """Extract all python codeblocks from text and combine them."""
     code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
@@ -408,31 +429,48 @@ async def create_find_tools_tool(
     )
 
 
-async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -> StructuredTool:
+def _serialize_todos_for_store(todos_list: List[Any]) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    for t in todos_list:
+        if isinstance(t, Todo):
+            out.append({"text": t.text, "status": t.status})
+        elif hasattr(t, "model_dump"):
+            d = t.model_dump()
+            out.append({"text": str(d.get("text", "")), "status": str(d.get("status", "pending"))})
+        elif isinstance(t, dict):
+            out.append({"text": str(t.get("text", "")), "status": str(t.get("status", "pending"))})
+        else:
+            out.append({"text": str(t), "status": "pending"})
+    return out
+
+
+async def create_update_todos_tool(
+    agent_state: Optional['AgentState'] = None,
+    todos_store_ref: Optional[List[Dict[str, str]]] = None,
+) -> StructuredTool:
     """Create a create_update_todos StructuredTool for managing task todos.
 
     Args:
-        agent_state: Optional AgentState to store todos for prompt updates
+        agent_state: Optional AgentState (reserved for future use)
+        todos_store_ref: Mutable list shared with the graph; latest todos are written here for the system prompt.
 
     Returns:
         StructuredTool configured for creating and updating todos
     """
 
-    async def create_update_todos_func(input_data) -> str:
+    async def create_update_todos_func(todos: Any) -> str:
         """Create or update a list of todos for complex multi-step tasks.
 
         Use this tool when you have a complex task that requires multiple steps.
         This helps you track progress and organize your work.
 
         Args:
-            input_data: Can be:
-                       - A TodosInput Pydantic model
-                       - A dict with 'todos' key: {"todos": [...]}
-                       - A list directly: [...] (will be wrapped in {"todos": [...]})
+            todos: Must match TodosInput — list of todo dicts/models (see tool description).
 
         Returns:
-            Simple confirmation message
+            Short confirmation only (full list is shown in the system prompt via todos_store_ref).
         """
+        input_data = todos
         # Handle different input types
         if isinstance(input_data, TodosInput):
             todos_list = input_data.todos
@@ -460,18 +498,17 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
                 # Last resort: wrap in a list
                 todos_list = [Todo(**input_data) if isinstance(input_data, dict) else input_data]
 
-        # Store todos in agent_state if available
-        logger.info(
-            f"🔍 DEBUG create_update_todos: agent_state type = {type(agent_state).__name__ if agent_state else 'None'}"
-        )
-        logger.info(f"🔍 DEBUG create_update_todos: agent_state exists = {agent_state is not None}")
+        if todos_store_ref is not None:
+            serialized = _serialize_todos_for_store(todos_list)
+            todos_store_ref.clear()
+            todos_store_ref.extend(serialized)
 
-        return "Todos have been updated"
+        return "Todos updated"
 
     return StructuredTool.from_function(
         func=create_update_todos_func,
         name="create_update_todos",
-        description="Create or update a list of todos for complex multi-step tasks. Use this when you have a task that requires more than one step. You can pass either: (1) A list directly: create_update_todos([{'text': '...', 'status': 'pending'}, ...]) or (2) A dict with 'todos' key: create_update_todos({'todos': [{'text': '...', 'status': 'pending'}, ...]}). Each todo dict should have 'text' (task description) and 'status' ('pending', 'in_progress', or 'completed'). Returns a simple confirmation message.",
+        description="Create or update a list of todos for complex multi-step tasks. Pass `todos` as a list of objects with 'text' and 'status' ('pending', 'in_progress', or 'completed'). Returns only the short string 'Todos updated'; the full list is shown in the system prompt under 'Current task todos'.",
         args_schema=TodosInput,
         return_direct=False,
     )
@@ -521,6 +558,7 @@ def create_cuga_lite_graph(
         base_instructions,
         tools_context_dict,
         base_special_instructions,
+        task_todos_ref: List[Dict[str, str]],
     ):
         """Factory to create prepare node with closure over tool provider and config."""
 
@@ -677,8 +715,7 @@ def create_cuga_lite_graph(
 
             # Add create_update_todos tool for complex task management if enabled
             if enable_todos:
-                # Pass the CugaLiteState so todos updates are reflected in the graph state
-                todos_tool = await create_update_todos_tool(agent_state=state)
+                todos_tool = await create_update_todos_tool(agent_state=state, todos_store_ref=task_todos_ref)
                 tools_for_prompt.append(todos_tool)
                 # Add to tools context for sandbox execution
                 # Prefer coroutine over func to avoid run_in_executor issues
@@ -810,7 +847,12 @@ def create_cuga_lite_graph(
         return prepare_tools_and_apps
 
     # Factory function to create call_model node with access to model
-    def create_call_model_node(base_model, base_callbacks, model_settings=None):
+    def create_call_model_node(
+        base_model,
+        base_callbacks,
+        task_todos_ref: List[Dict[str, str]],
+        model_settings=None,
+    ):
         """Factory to create call_model node. Model is taken from config['configurable']['llm']
         when set (injected at invocation), otherwise uses base_model from graph build.
         """
@@ -832,10 +874,18 @@ def create_cuga_lite_graph(
                 return ToolApprovalHandler.handle_approval_resumption(state)
 
             # Get prompt from state (tools are available via sandbox context, not needed here)
-            dynamic_prompt = state.prepared_prompt
+            dynamic_prompt = state.prepared_prompt or ""
+            enable_todos = (
+                configurable.get("enable_todos")
+                if "enable_todos" in configurable
+                else settings.advanced_features.enable_todos
+            )
+            system_content = dynamic_prompt
+            if enable_todos and task_todos_ref:
+                system_content = dynamic_prompt + format_task_todos_system_block(task_todos_ref)
 
             # Convert BaseMessage objects to dict format for model invocation
-            messages_for_model = [{"role": "system", "content": dynamic_prompt}]
+            messages_for_model = [{"role": "system", "content": system_content}]
 
             # Check if we have variables and this is a new question (not a follow-up with existing AI responses)
             # If this is a new question (1 user msg, 0 AI msgs) or follow-up, add variables to the last user message
@@ -1240,6 +1290,9 @@ def create_cuga_lite_graph(
 
         return sandbox
 
+    # Mutable list shared by prepare (create_update_todos) and call_model (system prompt section).
+    task_todos_ref: List[Dict[str, str]] = []
+
     # Create mutable tools context that will be populated by prepare_node
     tools_context = {}
 
@@ -1251,8 +1304,9 @@ def create_cuga_lite_graph(
         instructions,
         tools_context,
         special_instructions,
+        task_todos_ref,
     )
-    call_model_node = create_call_model_node(model, callbacks, model_settings=model_settings)
+    call_model_node = create_call_model_node(model, callbacks, task_todos_ref, model_settings=model_settings)
     sandbox_node = create_sandbox_node(tools_context, thread_id, apps_list)
 
     # Build the graph
