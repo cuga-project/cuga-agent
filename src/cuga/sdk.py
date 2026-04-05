@@ -2084,6 +2084,7 @@ class CugaSupervisor:
         model: Optional[BaseChatModel] = None,
         description: Optional[str] = None,
         callbacks: Optional[List[BaseCallbackHandler]] = None,
+        cuga_lite_max_steps: Optional[int] = None,
     ):
         """
         Initialize supervisor.
@@ -2096,11 +2097,13 @@ class CugaSupervisor:
             model: Optional supervisor model override (BaseChatModel instance)
             description: Optional supervisor description
             callbacks: Optional callback handlers
+            cuga_lite_max_steps: Optional cap on supervisor steps; defaults to settings
         """
         self._agents = agents or {}
         self._model = model
         self._description = description
         self._callbacks = callbacks
+        self._cuga_lite_max_steps = cuga_lite_max_steps
         self._graph = None
         self._compiled_graph = None
         self._supervisor_state = None
@@ -2221,6 +2224,7 @@ class CugaSupervisor:
                 input=message,
                 thread_id=thread_id,
                 url="",  # Required by AgentState
+                cuga_lite_max_steps=self._cuga_lite_max_steps,
             )
 
             result = await self.graph.ainvoke(initial_state, config=config)
