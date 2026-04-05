@@ -14,6 +14,10 @@ from .opensandbox import OpenSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 
 
+def _skills_enabled() -> bool:
+    return getattr(settings.skills, "enabled", False)
+
+
 def format_execution_output(output: str, max_length: Optional[int] = None) -> str:
     """
     Format and trim execution output to prevent token overflow.
@@ -95,28 +99,31 @@ class CodeExecutor:
         result = ""
 
         if mode is None:
-            if settings.advanced_features.e2b_sandbox:
-                mode = 'e2b'
-            else:
-                mode = 'local'
+            mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
 
         # Force local execution for short find_tools or load_skill calls
         code_lines = [line.strip() for line in code.split('\n') if line.strip()]
         if len(code_lines) <= 3 and 'await find_tools' in code:
             mode = 'local'
-        if 'load_skill' in code:
+        if _skills_enabled() and 'load_skill' in code:
             mode = 'local'
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
-        # Security checks apply for local mode only
-        if mode == 'local':
+        # Security checks apply for local mode only when skills are enabled (E2B unchanged)
+        if _skills_enabled():
+            if mode == 'local':
+                SecurityValidator.validate_imports(code)
+        else:
             SecurityValidator.validate_imports(code)
 
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
         wrapped_code = CodeWrapper.wrap_code(code, fake_datetime=fake_datetime)
 
-        if mode == 'local':
+        if _skills_enabled():
+            if mode == 'local':
+                SecurityValidator.validate_wrapped_code(wrapped_code)
+        else:
             SecurityValidator.validate_wrapped_code(wrapped_code)
 
         try:
@@ -142,15 +149,16 @@ class CodeExecutor:
             executor = cls._get_local_executor()
             result = executor.format_error(e)
 
-        # Variables that should always be included even if they existed before
-        # (Task todos are not stored here — they are shown in the todos system prompt section.)
+        # Variables that should always be included even if they existed before.
+        # Task todos are not stored here — they are shown in the todos system prompt section.
         always_include_keys = {'result', 'results', 'output', 'outputs'}
 
         new_vars = VariableUtils.filter_new_variables(
             _locals, original_keys, always_include_keys=always_include_keys
         )
 
-        new_vars = VariableUtils.strip_todo_confirmation_only_vars(new_vars)
+        if _skills_enabled():
+            new_vars = VariableUtils.strip_todo_confirmation_only_vars(new_vars)
 
         new_vars = VariableUtils.reorder_variables_by_print(new_vars, code)
 
@@ -267,19 +275,27 @@ async def _async_main():
             Tuple of (execution result string, empty dict)
         """
         if mode is None:
-            if settings.advanced_features.e2b_sandbox:
-                mode = 'e2b'
-            elif getattr(settings.advanced_features, 'opensandbox_sandbox', False):
-                mode = 'opensandbox'
+            if _skills_enabled():
+                if settings.advanced_features.e2b_sandbox:
+                    mode = 'e2b'
+                elif getattr(settings.advanced_features, 'opensandbox_sandbox', False):
+                    mode = 'opensandbox'
+                else:
+                    mode = 'local'
             else:
-                mode = 'local'
+                mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
+        elif not _skills_enabled() and mode == 'opensandbox':
+            mode = 'local'
 
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
         wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
 
-        if mode in ('e2b', 'docker', 'opensandbox'):
-            return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
+        if _skills_enabled():
+            if mode in ('e2b', 'docker', 'opensandbox'):
+                return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
         else:
-            context_locals = cls._prepare_locals_for_code_agent(state)
-            return await cls._execute_locally_for_code_agent(wrapped_code, context_locals)
+            if mode in ('e2b', 'docker'):
+                return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
+        context_locals = cls._prepare_locals_for_code_agent(state)
+        return await cls._execute_locally_for_code_agent(wrapped_code, context_locals)

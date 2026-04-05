@@ -19,6 +19,7 @@ Enable via settings:
     opensandbox_sandbox = true
 
     [skills]
+    enabled = true   # required for uploading skill files into the sandbox workspace
     opensandbox_image = "opensandbox/code-interpreter:v1.0.2"
     opensandbox_entrypoint = "/opt/opensandbox/code-interpreter.sh"
     opensandbox_python_version = "3.11"
@@ -136,8 +137,8 @@ class OpenSandboxExecutor(RemoteExecutor):
         # Pre-create the standard working directory
         await interpreter.sandbox.commands.run("mkdir -p /tmp/cuga_workspace")
 
-        # Upload skill files so the agent can reference them inside the sandbox
-        await self._upload_skills_to_sandbox(interpreter)
+        if getattr(_cfg(), "enabled", False):
+            await self._upload_skills_to_sandbox(interpreter)
 
         self._sandboxes[key] = interpreter
         logger.info(f"[OpenSandboxExecutor] Created interpreter for thread={key}")

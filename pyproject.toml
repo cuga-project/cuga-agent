@@ -36,8 +36,6 @@ dependencies = [
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
-    "opensandbox",
-    "opensandbox-code-interpreter",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.2",
     "asyncpg>=0.30",
@@ -53,6 +51,7 @@ evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
 health = ["cuga-oak-health; python_version>='3.12'"]
+opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
 
 [project.urls]
 Homepage = "https://cuga.dev"

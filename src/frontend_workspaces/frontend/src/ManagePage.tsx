@@ -187,7 +187,11 @@ export function ManagePage() {
   const [manageVariablesPanelOpen, setManageVariablesPanelOpen] = useState(false);
   const [currentVersion, setCurrentVersion] = useState<number | "draft" | null>(null);
   const [draftSaving, setDraftSaving] = useState(false);
-  const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
+  const [agentContext, setAgentContext] = useState<{
+    agent_id: string;
+    config_version: number | null;
+    skills_enabled?: boolean;
+  } | null>(null);
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
   const [secretsModalOpen, setSecretsModalOpen] = useState(false);
@@ -220,6 +224,7 @@ export function ManagePage() {
           setAgentContext({
             agent_id: data.agent_id ?? "cuga-default",
             config_version: data.config_version ?? null,
+            skills_enabled: Boolean(data.skills_enabled),
           })
       )
       .catch(() => {});
@@ -479,13 +484,19 @@ export function ManagePage() {
   }, [loadLatest, loadHistory]);
 
   useEffect(() => {
+    if (agentContext === null) return;
+    if (!agentContext.skills_enabled) {
+      setSkills([]);
+      setSkillsLoading(false);
+      return;
+    }
     setSkillsLoading(true);
     api.getSkills()
       .then((res) => (res.ok ? res.json() : null))
       .then((data) => data && setSkills(data.skills ?? []))
       .catch(() => {})
       .finally(() => setSkillsLoading(false));
-  }, []);
+  }, [agentContext]);
 
   const assembleConfig = useCallback(
     (overrides?: Partial<AgentConfig>): AgentConfig => {
@@ -1172,6 +1183,7 @@ export function ManagePage() {
                   />
               </AccordionItem>
 
+              {agentContext?.skills_enabled ? (
               <AccordionItem title="Skills">
                 {skillsLoading ? (
                   <InlineLoading description="Loading skills…" />
@@ -1229,6 +1241,7 @@ export function ManagePage() {
                   </div>
                 )}
               </AccordionItem>
+              ) : null}
 
               <AccordionItem title="Welcome Screen">
                   <VStack gap={5}>

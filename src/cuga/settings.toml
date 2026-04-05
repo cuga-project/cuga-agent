@@ -52,8 +52,13 @@ path_segment_index = 1  # Which path segment to use for operation naming (1 = fi
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
 execution_output_max_length = 50000  # Maximum characters to show in execution output (prevents token overflow)
+# OpenSandbox shell tools (run_command, write_file, …) and matching prompt guidance. Set false for API-only agents.
+enable_shell_tool = true
 
 [skills]
+# When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.
+enabled = false
+
 # Docker image for sandboxed execution (advanced_features.opensandbox_sandbox = true).
 opensandbox_image = "opensandbox/code-interpreter:v1.0.2"
 

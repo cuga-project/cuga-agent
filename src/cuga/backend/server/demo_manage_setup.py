@@ -293,6 +293,16 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "filesystem": False,
             "oak_health": False,
         }
+    if preset == "demo_skills":
+        # OpenSandbox shell tools (run_command, write_file) instead of classic filesystem MCP
+        return {
+            "crm": False,
+            "email": False,
+            "digital_sales": True,
+            "docs": False,
+            "filesystem": False,
+            "oak_health": False,
+        }
     return {
         "crm": False,
         "email": False,
@@ -348,6 +358,11 @@ def setup_demo_manage_config(
         "What is my deductible and out-of-pocket progress this plan year?",
         "Check the status of my referral and where it was sent",
     ]
+    DEMO_SKILLS_STARTERS = [
+        "List what agent skills are available and summarize what each is for",
+        "Use the pptx skill to outline a short deck about our product",
+        "What is in my workspace .cuga skills folder?",
+    ]
     reset_config_db()
     if tools is None:
         defaults = get_default_apps_for_preset(demo_type)
@@ -357,6 +372,7 @@ def setup_demo_manage_config(
     use_crm_starters = demo_type == "demo_crm"
     use_docs_starters = demo_type == "demo_docs"
     use_health_starters = demo_type == "demo_health"
+    use_skills_starters = demo_type == "demo_skills"
     if use_crm_starters:
         homescreen = {
             "isOn": True,
@@ -374,6 +390,12 @@ def setup_demo_manage_config(
             "isOn": True,
             "greeting": "Ask about claims, benefits, coverage, and finding in-network care.",
             "starters": DEMO_HEALTH_STARTERS,
+        }
+    elif use_skills_starters:
+        homescreen = {
+            "isOn": True,
+            "greeting": "Try agent skills (SKILL.md under .cuga) and OpenSandbox shell tools.",
+            "starters": DEMO_SKILLS_STARTERS,
         }
     else:
         homescreen = DEFAULT_HOMESCREEN

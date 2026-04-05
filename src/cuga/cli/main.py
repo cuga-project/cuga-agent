@@ -2,11 +2,13 @@
 import os
 import platform
 import signal
+import socket
 import subprocess
 import sys
 import threading
 import time
-from typing import List, Optional
+from pathlib import Path
+from typing import List, Optional, Tuple
 
 import httpx
 import psutil
@@ -60,6 +62,91 @@ def _make_app_manager() -> AppManager:
         wait_tcp=lambda p, lbl, r, i: wait_for_tcp_port(p, lbl, max_retries=r, retry_interval=i),
         wait_http=lambda p, name: wait_for_server(p, name, https=_demo_uses_ssl() and p == _demo_port()),
     )
+
+
+def _apply_demo_skills_env() -> None:
+    """Turn on skills + OpenSandbox shell tools for spawned demo/registry (Dynaconf-style env)."""
+    os.environ["DYNACONF_SKILLS__ENABLED"] = "true"
+    os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] = "true"
+    os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "true"
+
+
+def _find_pyproject_root() -> Optional[Path]:
+    """Walk upward from the package to find a directory containing pyproject.toml."""
+    p = Path(PACKAGE_ROOT).resolve()
+    for _ in range(10):
+        if (p / "pyproject.toml").is_file():
+            return p
+        if p.parent == p:
+            return None
+        p = p.parent
+    return None
+
+
+def _uv_sync_opensandbox_extra() -> None:
+    """Install optional OpenSandbox client deps when running from a git checkout (uv sync --extra opensandbox)."""
+    root = _find_pyproject_root()
+    if root is None:
+        logger.debug("No pyproject.toml found above package root; skip uv sync --extra opensandbox")
+        return
+    logger.info("Syncing optional OpenSandbox dependencies (uv sync --extra opensandbox)...")
+    try:
+        subprocess.run(
+            ["uv", "sync", "--extra", "opensandbox"],
+            cwd=str(root),
+            check=True,
+        )
+    except FileNotFoundError:
+        console.print(
+            "[yellow]uv not found on PATH. Install OpenSandbox extras manually:[/yellow] "
+            "[cyan]uv sync --extra opensandbox[/cyan]"
+        )
+        raise typer.Exit(1)
+    except subprocess.CalledProcessError as e:
+        logger.error("uv sync --extra opensandbox failed (exit %s)", e.returncode)
+        raise typer.Exit(1) from e
+
+
+def _opensandbox_host_port() -> Tuple[str, int]:
+    raw = (
+        (os.environ.get("OPEN_SANDBOX_DOMAIN") or "").strip()
+        or (os.environ.get("DYNACONF_SKILLS__OPENSANDBOX_DOMAIN") or "").strip()
+        or "localhost:8080"
+    )
+    if ":" in raw:
+        host, port_s = raw.rsplit(":", 1)
+        try:
+            return host, int(port_s)
+        except ValueError:
+            return raw, 8080
+    return raw, 8080
+
+
+def _check_opensandbox_reachable() -> bool:
+    """TCP check to localhost:8080 (or OPEN_SANDBOX_DOMAIN). Returns False if connection refused."""
+    host, port = _opensandbox_host_port()
+    try:
+        with socket.create_connection((host, port), timeout=2.0):
+            pass
+        logger.info(f"OpenSandbox reachable at {host}:{port}")
+        return True
+    except OSError as exc:
+        logger.warning(f"OpenSandbox not reachable at {host}:{port}: {exc}")
+        console.print(
+            Panel(
+                f"Could not open a TCP connection to OpenSandbox at [cyan]{host}:{port}[/cyan]. "
+                "Shell tools (run_command, write_file, …) need a running OpenSandbox server.\n\n"
+                "Typical local setup (see README at https://github.com/alibaba/OpenSandbox):\n"
+                "  • [dim]uv pip install opensandbox-server[/dim]\n"
+                "  • [dim]opensandbox-server init-config ~/.sandbox.toml --example docker[/dim]\n"
+                "  • [dim]opensandbox-server[/dim]\n\n"
+                "Override the address with [cyan]OPEN_SANDBOX_DOMAIN[/cyan] or "
+                "[cyan]DYNACONF_SKILLS__OPENSANDBOX_DOMAIN[/cyan] if needed.",
+                title="[yellow]OpenSandbox not reachable[/yellow]",
+                border_style="yellow",
+            )
+        )
+        return False
 
 
 console = Console()
@@ -497,6 +584,7 @@ def callback(
     This tool helps you control various components of the Cuga ecosystem:
 
     - demo: Both registry and demo agent (runs directly)
+    - demo_skills: Like demo; enables skills + shell tools; exits if OpenSandbox is unreachable
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
     - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
     - demo_health: Healthcare insurance demo (cuga-oak-health OpenAPI + manage UI)
@@ -506,6 +594,7 @@ def callback(
 
     Examples:
       cuga start demo           # Start both registry and demo agent directly
+      cuga start demo_skills    # Skills + OpenSandbox shell tools; stops if sandbox server is unreachable
       cuga start demo_crm       # Start CRM demo with all required services
       cuga start demo_supervisor # Start CRM demo with supervisor multi-agent mode
       cuga start registry       # Start registry only
@@ -685,6 +774,7 @@ def validate_service(service: str):
     """Validate service name."""
     valid_services = [
         "demo",
+        "demo_skills",
         "demo_crm",
         "demo_docs",
         "demo_health",
@@ -727,7 +817,7 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, appworld, or memory",
+        help="Service to start: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, appworld, or memory",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -795,6 +885,7 @@ def start(
 
     Available services:
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
+      - demo_skills: Like demo but sets skills + OpenSandbox shell tools via env; requires OpenSandbox TCP
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
@@ -806,12 +897,14 @@ def start(
 
     App flags (--crm, --email, --digital-sales, --docs, --filesystem) add apps to the preset:
       - demo: default = digital_sales + filesystem
+      - demo_skills: default = digital_sales only (OpenSandbox shell tools; no classic filesystem MCP)
       - demo_crm: default = crm + filesystem + email
       - manager: default = filesystem only
       - demo_health: default = oak_health only
 
     Examples:
       cuga start demo                     # digital_sales + filesystem
+      cuga start demo_skills              # skills + shell tools; aborts if OpenSandbox is down
       cuga start demo --crm               # add CRM to demo
       cuga start demo_crm                 # crm + filesystem + email
       cuga start demo_crm --no-email      # crm + filesystem only
@@ -925,7 +1018,13 @@ def start(
         return
 
     # Handle direct execution services (demo and registry)
-    if service == "demo":
+    if service in ("demo", "demo_skills"):
+        if service == "demo_skills":
+            _apply_demo_skills_env()
+            _uv_sync_opensandbox_extra()
+            if not _check_opensandbox_reachable():
+                raise typer.Exit(1)
+        demo_preset = "demo_skills" if service == "demo_skills" else "demo"
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
@@ -933,13 +1032,15 @@ def start(
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:
-            logger.info("🧹 Resetting config db and setting up manage demo...")
-            setup_demo_manage_config("demo", tools=resolved_tools)
+            logger.info("🧹 Resetting config db and setting up manage %s...", demo_preset)
+            setup_demo_manage_config(demo_preset, tools=resolved_tools)
             logger.info("🧹 Checking for existing processes on required ports...")
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, app_docs, app_oak_health))
+            # demo: always clear + start classic filesystem MCP; demo_skills: OpenSandbox tools only (no filesystem MCP)
+            fs_for_demo = service != "demo_skills"
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, fs_for_demo, False, app_docs, app_oak_health))
             kill_processes_by_port(ports_to_clean)
 
             os.environ["CUGA_HOST"] = host
@@ -948,7 +1049,12 @@ def start(
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
             app_mgr.prepare_workspace(workspace_path)
-            app_mgr.start_filesystem(workspace_path)
+            if fs_for_demo:
+                app_mgr.start_filesystem(workspace_path)
+            else:
+                logger.info(
+                    "demo_skills: skipping filesystem MCP — agent uses OpenSandbox shell tools (run_command, write_file, …)"
+                )
             if app_docs:
                 app_mgr.start_docs()
             if app_oak_health:
@@ -971,7 +1077,8 @@ def start(
                 table = Table(show_header=False, box=None, padding=(0, 1))
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
-                table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                if fs_for_demo:
+                    table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
                 if app_docs:
                     table.add_row("Docs MCP:", f"http://localhost:{app_mgr.docs_port}/sse")
                 if app_oak_health:
@@ -982,10 +1089,15 @@ def start(
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
 
                 console.print()
+                demo_panel_title = (
+                    "[bold yellow]Demo (skills + OpenSandbox env) running. Press Ctrl+C to stop[/bold yellow]"
+                    if service == "demo_skills"
+                    else "[bold yellow]Demo (manage mode) services are running. Press Ctrl+C to stop[/bold yellow]"
+                )
                 console.print(
                     Panel(
                         table,
-                        title="[bold yellow]Demo (manage mode) services are running. Press Ctrl+C to stop[/bold yellow]",
+                        title=demo_panel_title,
                         border_style="cyan",
                         padding=(1, 2),
                     )
@@ -1220,7 +1332,7 @@ def manage_service(action: str, service: str):
     validate_service(service)
 
     if action == "stop":
-        if service in ("demo", "manager"):
+        if service in ("demo", "demo_skills", "manager"):
             stopped_any = False
             for service_name in ["oak-health", "docs-mcp", "filesystem-server", "registry", "demo"]:
                 if service_name in direct_processes:
@@ -1322,7 +1434,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, or memory",
+        help="Service to stop: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, or memory",
     ),
 ):
     """
@@ -1330,6 +1442,7 @@ def stop(
 
     Available services:
       - demo: Stops both registry and demo agent (direct processes)
+      - demo_skills: Same processes as demo
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Stops docs MCP, registry, and demo
       - demo_health: Stops oak-health API, registry, and demo (and filesystem MCP if started with --filesystem)
@@ -1378,7 +1491,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, memory, or all",
+        help="Service to check status: demo, demo_skills, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, memory, or all",
     ),
 ):
     """
@@ -1386,6 +1499,7 @@ def status(
 
     Available services:
       - demo: Shows status of both registry and demo agent (direct processes)
+      - demo_skills: Same as demo
       - demo_crm: Shows status of all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Shows docs MCP, registry, and demo
       - demo_health: Shows oak-health API, registry, and demo (and filesystem MCP if used)
@@ -1403,7 +1517,7 @@ def status(
       cuga status appworld     # Show status of AppWorld servers
       cuga status memory       # Show status of memory service
     """
-    if service in ("demo", "manager"):
+    if service in ("demo", "demo_skills", "manager"):
         for service_name in ["registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]

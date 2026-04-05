@@ -751,21 +751,23 @@ def create_cuga_lite_graph(
                     logger.debug("No tool guides found in metadata")
 
             skill_tools = []
+            skills_prompt_section = ""
+            skills_enabled = False
             effective_special = base_special_instructions or ""
+            skills_cfg_on = getattr(settings.skills, "enabled", False)
             cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
-            skill_entries = discover_skills(cuga_folder_for_skills)
-            if skill_entries:
-                skill_registry = SkillRegistry(skill_entries)
-                skill_tools = create_skill_tools(skill_registry)
-                tools_for_prompt.extend(skill_tools)
-                block = format_available_skills_block(skill_registry)
-                effective_special = (
-                    f"{effective_special.rstrip()}\n\n{block}" if effective_special.strip() else block
-                )
-                logger.info(
-                    f"Loaded {len(skill_entries)} agent skill(s) under {cuga_folder_for_skills}/skills "
-                    "and ~/.config/cuga/skills"
-                )
+            if skills_cfg_on:
+                skill_entries = discover_skills(cuga_folder_for_skills)
+                if skill_entries:
+                    skill_registry = SkillRegistry(skill_entries)
+                    skill_tools = create_skill_tools(skill_registry)
+                    tools_for_prompt.extend(skill_tools)
+                    skills_prompt_section = format_available_skills_block(skill_registry)
+                    skills_enabled = True
+                    logger.info(
+                        f"Loaded {len(skill_entries)} agent skill(s) under {cuga_folder_for_skills}/skills "
+                        "and ~/.config/cuga/skills"
+                    )
 
             # Update tools context with all execution tools
             # Wrap to make awaitable (agent always uses await)
@@ -800,8 +802,10 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
 
-            # Inject sandbox tools when opensandbox is enabled
-            if getattr(settings.advanced_features, 'opensandbox_sandbox', False):
+            # Inject sandbox tools when OpenSandbox is enabled and shell tools are allowed
+            if getattr(settings.advanced_features, 'opensandbox_sandbox', False) and getattr(
+                settings.advanced_features, "enable_shell_tool", True
+            ):
                 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 
                 opensandbox_executor = CodeExecutor._get_opensandbox_executor()
@@ -832,6 +836,9 @@ def create_cuga_lite_graph(
                     prompt_template=selected_prompt_template,
                     enable_find_tools=enable_find_tools,
                     special_instructions=effective_special,
+                    skills_enabled=skills_enabled,
+                    skills_prompt_section=skills_prompt_section,
+                    enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", True),
                 )
 
             return Command(

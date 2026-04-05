@@ -136,6 +136,7 @@ validators = [
     Validator("advanced_features.e2b_cleanup_frequency", default=0),
     Validator("advanced_features.enable_web_search", default=False),
     Validator("advanced_features.execution_output_max_length", default=3500),
+    Validator("advanced_features.enable_shell_tool", default=True),
     Validator("features.chat", default=True),
     Validator("features.memory_provider", default="mem0"),
     Validator("playwright_args", default=[]),
@@ -176,6 +177,7 @@ validators = [
     Validator("auth.iam_proxy_skip_verify", default=False),
     Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
+    Validator("skills.enabled", default=False),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

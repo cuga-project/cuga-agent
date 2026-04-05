@@ -2651,11 +2651,12 @@ async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_man
 
 @app.get("/api/agent/context")
 async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_auth)):
-    """Return current agent id and config version for UI."""
+    """Return current agent id, config version, and UI flags for manage/chat."""
     return JSONResponse(
         {
             "agent_id": getattr(app_state, "agent_id", "cuga-default"),
             "config_version": getattr(app_state, "config_version", None),
+            "skills_enabled": getattr(settings.skills, "enabled", False),
         }
     )
 
@@ -2663,6 +2664,8 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
 @app.get("/api/skills")
 async def get_skills(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Return discovered agent skills with metadata from their SKILL.md frontmatter."""
+    if not getattr(settings.skills, "enabled", False):
+        return {"skills": []}
     try:
         from cuga.backend.skills import discover_skills
 
