@@ -10,7 +10,7 @@ It provides sandbox tools injected into the agent's local execution context:
   - download_file(path)     — copy a sandbox file into cuga_workspace/
   - upload_file(local, dest) — write a local file into the sandbox
   - list_files(path)        — list files/dirs at a sandbox path
-  - read_file(path)         — read a text file from the sandbox
+  - read_file(path, …)      — read a text file (optional line range + regex filter)
 
 Sandboxes are cached per thread_id so package installs and files persist across steps.
 
@@ -30,6 +30,7 @@ Enable via settings:
 from __future__ import annotations
 
 import os
+import re
 from datetime import timedelta
 from pathlib import Path
 from typing import Any, Callable, List, Optional
@@ -79,6 +80,25 @@ class FileEntry(BaseModel):
 class ListFilesResult(BaseModel):
     sandbox_path: str
     entries: List[FileEntry]
+
+
+class ReadFileInput(BaseModel):
+    sandbox_path: str = Field(description="Absolute path of the file inside the sandbox.")
+    start_line: Optional[int] = Field(
+        default=None,
+        description="1-based first line to include (inclusive). Omit to start from line 1.",
+    )
+    end_line: Optional[int] = Field(
+        default=None,
+        description="1-based last line to include (inclusive). Omit to read through end of file.",
+    )
+    grep_pattern: Optional[str] = Field(
+        default=None,
+        description=(
+            "Optional Python regex (re.search per line). Only lines that match are returned, "
+            "e.g. 'error|warning' or 'TODO|FIXME'."
+        ),
+    )
 
 
 # ------------------------------------------------------------------ #
@@ -147,13 +167,18 @@ class OpenSandboxExecutor(RemoteExecutor):
     async def _upload_skills_to_sandbox(self, interpreter: Any) -> None:
         """Upload local skill folders into /tmp/cuga_workspace/skills/ in the sandbox.
 
-        Scans .cuga/.skills/ and .cuga/skills/ (same dirs the loader uses) and uploads
-        all files so the agent can read companion docs (pptxgenjs.md, scripts/, etc.)
-        directly from /tmp/cuga_workspace/skills/<skill-name>/.
+        Uses the same CUGA root as discover_skills/load_skill: ``CUGA_FOLDER`` or
+        ``settings.policy.cuga_folder``, then ``skills/`` and ``.skills/`` under that path
+        (see ``cuga.backend.skills.loader.discover_skills``).
         """
         from opensandbox.models import WriteEntry  # type: ignore[import]
 
-        cuga_folder = Path(os.getcwd()) / ".cuga"
+        raw = (os.getenv("CUGA_FOLDER") or "").strip() or (settings.policy.cuga_folder or "").strip()
+        if not raw:
+            return
+        cuga_folder = Path(raw).expanduser()
+        if not cuga_folder.is_absolute():
+            cuga_folder = Path(os.getcwd()) / cuga_folder
         skill_roots = [cuga_folder / "skills", cuga_folder / ".skills"]
 
         entries: list[WriteEntry] = []
@@ -338,20 +363,61 @@ class OpenSandboxExecutor(RemoteExecutor):
     def create_read_file_tool(self, thread_id: Optional[str] = None) -> Callable:
         executor = self
 
-        async def read_file(sandbox_path: str) -> str:
+        async def read_file(
+            sandbox_path: str,
+            start_line: Optional[int] = None,
+            end_line: Optional[int] = None,
+            grep_pattern: Optional[str] = None,
+        ) -> str:
             """Read a text file from the sandbox and return its contents.
 
             Args:
                 sandbox_path: Absolute path of the file inside the sandbox.
+                start_line: 1-based first line (inclusive); omit for line 1.
+                end_line: 1-based last line (inclusive); omit for end of file.
+                grep_pattern: Optional regex; only lines matching re.search(pattern, line) are kept.
 
             Returns:
                 File contents as a string, or an error message if not found.
             """
             try:
                 interpreter = await executor._get_or_create_interpreter(thread_id)
-                return await interpreter.sandbox.files.read_file(sandbox_path)
+                content = await interpreter.sandbox.files.read_file(sandbox_path)
             except Exception as exc:
                 return f"[read_file error] {exc}"
+
+            use_slice_or_grep = start_line is not None or end_line is not None or grep_pattern is not None
+            if not use_slice_or_grep:
+                return content
+
+            lines = content.splitlines()
+            n = len(lines)
+            if n == 0:
+                return "(empty file)"
+
+            s = 1 if start_line is None else max(1, start_line)
+            e = n if end_line is None else end_line
+            if s > n:
+                return f"[read_file] start_line {s} is past end of file ({n} lines)"
+            e = max(s, min(e, n))
+
+            try:
+                rx = re.compile(grep_pattern) if grep_pattern else None
+            except re.error as exc:
+                return f"[read_file error] invalid grep_pattern regex: {exc}"
+
+            out: list[str] = []
+            for i in range(s - 1, e):
+                lineno = i + 1
+                line = lines[i]
+                if rx is not None and not rx.search(line):
+                    continue
+                out.append(f"{lineno}|{line}" if rx is not None else line)
+
+            if rx is not None and not out:
+                return f"(no lines matched grep_pattern in lines {s}-{e})"
+
+            return "\n".join(out) if out else ""
 
         return read_file
 
@@ -438,7 +504,13 @@ class OpenSandboxExecutor(RemoteExecutor):
             StructuredTool.from_function(
                 coroutine=read_file,
                 name="read_file",
-                description="Read a text file from the sandbox and return its contents as a string.",
+                description=(
+                    "Read a text file from the sandbox. Optionally pass start_line and end_line (1-based, inclusive) "
+                    "to read a slice, and/or grep_pattern (Python regex per line, e.g. 'word1|word2') to filter lines. "
+                    "When grep_pattern is set, matching lines are prefixed with 'LINE|'. "
+                    "Omit all options to read the full file."
+                ),
+                args_schema=ReadFileInput,
             ),
         ]
 

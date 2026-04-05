@@ -2664,6 +2664,13 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
 @app.get("/api/skills")
 async def get_skills(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Return discovered agent skills with metadata from their SKILL.md frontmatter."""
+
+    def _public_skill_source(source: str) -> str:
+        p = Path(source)
+        if p.name.lower() == "skill.md":
+            return p.parent.name
+        return p.name
+
     if not getattr(settings.skills, "enabled", False):
         return {"skills": []}
     try:
@@ -2677,14 +2684,14 @@ async def get_skills(current_user: Optional[UserInfo] = Depends(require_chat_acc
                     "name": e.name,
                     "description": e.description,
                     "requirements": list(e.requirements),
-                    "source": e.source,
+                    "source": _public_skill_source(e.source),
                 }
                 for e in entries
             ]
         }
-    except Exception as e:
-        logger.error(f"Failed to load skills: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    except Exception:
+        logger.exception("Failed to load skills")
+        raise HTTPException(status_code=500, detail="Failed to load skills")
 
 
 @app.get("/api/workspace/tree")

@@ -71,6 +71,13 @@ def _apply_demo_skills_env() -> None:
     os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "true"
 
 
+def _apply_local_demo_workspace_env() -> None:
+    """Demos that use ./cuga_workspace + filesystem MCP — not OpenSandbox /tmp paths from settings.toml."""
+    os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] = "false"
+    os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "false"
+    os.environ["DYNACONF_SKILLS__ENABLED"] = "false"
+
+
 def _find_pyproject_root() -> Optional[Path]:
     """Walk upward from the package to find a directory containing pyproject.toml."""
     p = Path(PACKAGE_ROOT).resolve()
@@ -108,8 +115,11 @@ def _uv_sync_opensandbox_extra() -> None:
 
 
 def _opensandbox_host_port() -> Tuple[str, int]:
+    # Align with OpenSandboxExecutor._get_connection_config: domain from settings.skills.opensandbox_domain
+    # (see opensandbox_executor.py), then env overrides used by Dynaconf/CLI.
     raw = (
-        (os.environ.get("OPEN_SANDBOX_DOMAIN") or "").strip()
+        (getattr(settings.skills, "opensandbox_domain", None) or "").strip()
+        or (os.environ.get("OPEN_SANDBOX_DOMAIN") or "").strip()
         or (os.environ.get("DYNACONF_SKILLS__OPENSANDBOX_DOMAIN") or "").strip()
         or "localhost:8080"
     )
@@ -123,7 +133,7 @@ def _opensandbox_host_port() -> Tuple[str, int]:
 
 
 def _check_opensandbox_reachable() -> bool:
-    """TCP check to localhost:8080 (or OPEN_SANDBOX_DOMAIN). Returns False if connection refused."""
+    """TCP check to OpenSandbox (settings.skills.opensandbox_domain, then env, same host:port as the executor)."""
     host, port = _opensandbox_host_port()
     try:
         with socket.create_connection((host, port), timeout=2.0):
@@ -630,6 +640,7 @@ def _start_demo_crm_services(
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
         os.environ["MCP_SERVERS_FILE"] = "none"
+        _apply_local_demo_workspace_env()
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
         logger.info("🧹 Resetting config db and setting up manage demo_crm...")
         setup_demo_manage_config("demo_crm", no_email=no_email, tools=tools)
@@ -941,6 +952,7 @@ def start(
             os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
             managed_path = ensure_managed_mcp_file_exists(get_managed_mcp_path())
             os.environ["MCP_SERVERS_FILE"] = "none"
+            _apply_local_demo_workspace_env()
             logger.info("Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE=%s", managed_path)
             setup_demo_manage_config("manager", tools=resolved_tools)
 
@@ -1024,6 +1036,8 @@ def start(
             _uv_sync_opensandbox_extra()
             if not _check_opensandbox_reachable():
                 raise typer.Exit(1)
+        else:
+            _apply_local_demo_workspace_env()
         demo_preset = "demo_skills" if service == "demo_skills" else "demo"
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
@@ -1115,6 +1129,7 @@ def start(
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
         os.environ["MCP_SERVERS_FILE"] = "none"
+        _apply_local_demo_workspace_env()
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:
@@ -1172,6 +1187,7 @@ def start(
         os.environ["CUGA_DEMO_MODE"] = "health"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
         os.environ["MCP_SERVERS_FILE"] = "none"
+        _apply_local_demo_workspace_env()
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:

@@ -151,6 +151,7 @@ class CodeExecutor:
 
         # Variables that should always be included even if they existed before.
         # Task todos are not stored here — they are shown in the todos system prompt section.
+        # find_tools `tools_output` is stripped below — discovery text is not kept as a variable.
         always_include_keys = {'result', 'results', 'output', 'outputs'}
 
         new_vars = VariableUtils.filter_new_variables(
@@ -159,6 +160,8 @@ class CodeExecutor:
 
         if _skills_enabled():
             new_vars = VariableUtils.strip_todo_confirmation_only_vars(new_vars)
+
+        new_vars = VariableUtils.strip_tools_output_var(new_vars, code)
 
         new_vars = VariableUtils.reorder_variables_by_print(new_vars, code)
 
@@ -270,6 +273,7 @@ async def _async_main():
             code: Python code to execute
             state: AgentState instance with variables_manager
             mode: Execution mode ('local', 'e2b', 'docker', or 'opensandbox'). If None, uses settings.
+            'opensandbox' is remapped to 'local' here because OpenSandboxExecutor.execute_for_code_agent is not implemented.
 
         Returns:
             Tuple of (execution result string, empty dict)
@@ -284,7 +288,10 @@ async def _async_main():
                     mode = 'local'
             else:
                 mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
-        elif not _skills_enabled() and mode == 'opensandbox':
+        # When skills + opensandbox_sandbox we temporarily select opensandbox above; CodeAgent still
+        # must not use OpenSandboxExecutor.execute_for_code_agent (it is not implemented — raises).
+        # OpenSandbox remains for shell tools in CugaLite; CodeAgent Python runs locally like eval_with_tools_async.
+        if mode == 'opensandbox':
             mode = 'local'
 
         tracker = ActivityTracker()
@@ -292,7 +299,7 @@ async def _async_main():
         wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
 
         if _skills_enabled():
-            if mode in ('e2b', 'docker', 'opensandbox'):
+            if mode in ('e2b', 'docker'):
                 return await cls._execute_remotely_for_code_agent(wrapped_code, state, mode)
         else:
             if mode in ('e2b', 'docker'):

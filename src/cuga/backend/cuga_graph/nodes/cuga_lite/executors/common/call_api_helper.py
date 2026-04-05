@@ -169,6 +169,8 @@ class CallApiHelper:
         return f"""
 import asyncio
 import json
+import socket
+import urllib.error
 import urllib.request
 
 async def call_api(app_name, api_name, args=None):
@@ -198,8 +200,28 @@ async def call_api(app_name, api_name, args=None):
             return json.loads(response_data)
         except json.JSONDecodeError:
             return response_data
+    except urllib.error.HTTPError as e:
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            err_body = ""
+        raise Exception(
+            f"HTTP {{e.code}} calling {{api_name}} (app={{app_name!r}}): {{err_body or e.reason}}"
+        ) from e
+    except socket.timeout:
+        raise Exception(
+            f"Tool call {{api_name!r}} (app={{app_name!r}}) timed out after {timeout_seconds} seconds"
+        ) from None
+    except urllib.error.URLError as e:
+        if isinstance(e.reason, socket.timeout):
+            raise Exception(
+                f"Tool call {{api_name!r}} (app={{app_name!r}}) timed out after {timeout_seconds} seconds"
+            ) from e
+        raise Exception(
+            f"URL error calling {{api_name}} (app={{app_name!r}}): {{e.reason!s}}"
+        ) from e
     except Exception as e:
-        raise Exception(f"Error calling API {{api_name}}: {{str(e)}}")
+        raise Exception(f"Error calling API {{api_name}}: {{str(e)}}") from e
 """
 
     # Backwards compatibility aliases

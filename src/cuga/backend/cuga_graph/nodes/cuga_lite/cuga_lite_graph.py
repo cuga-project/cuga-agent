@@ -804,12 +804,18 @@ def create_cuga_lite_graph(
 
             # Inject sandbox tools when OpenSandbox is enabled and shell tools are allowed
             if getattr(settings.advanced_features, 'opensandbox_sandbox', False) and getattr(
-                settings.advanced_features, "enable_shell_tool", True
+                settings.advanced_features, "enable_shell_tool", False
             ):
                 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 
+                cfg = config.get("configurable", {}) if config else {}
+                if "thread_id" in cfg:
+                    runtime_thread_id = cfg["thread_id"]
+                else:
+                    runtime_thread_id = state.thread_id or thread_id
+
                 opensandbox_executor = CodeExecutor._get_opensandbox_executor()
-                sandbox_tools = opensandbox_executor.create_sandbox_tools(thread_id=thread_id)
+                sandbox_tools = opensandbox_executor.create_sandbox_tools(thread_id=runtime_thread_id)
                 for st in sandbox_tools:
                     # Prefer coroutine for async execution context
                     fn = st.coroutine or st.func
@@ -817,7 +823,7 @@ def create_cuga_lite_graph(
                         tools_context_dict[st.name] = fn
                 tools_for_prompt.extend(sandbox_tools)
                 logger.info(
-                    f"[OpenSandbox] Injected sandbox tools into execution context and prompt: {[t.name for t in sandbox_tools]}"
+                    f"[OpenSandbox] Injected sandbox tools (thread_id={runtime_thread_id!r}) into execution context and prompt: {[t.name for t in sandbox_tools]}"
                 )
 
             # Create prompt dynamically
@@ -838,7 +844,7 @@ def create_cuga_lite_graph(
                     special_instructions=effective_special,
                     skills_enabled=skills_enabled,
                     skills_prompt_section=skills_prompt_section,
-                    enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", True),
+                    enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
                 )
 
             return Command(
@@ -1138,7 +1144,10 @@ def create_cuga_lite_graph(
             max_steps = (
                 configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
             )
-            current_thread_id = configurable.get("thread_id", base_thread_id)
+            if "thread_id" in configurable:
+                current_thread_id = configurable["thread_id"]
+            else:
+                current_thread_id = state.thread_id or base_thread_id
             current_apps_list = configurable.get("apps_list", base_apps_list)
             track_tool_calls = configurable.get("track_tool_calls", False)
             reflection_enabled = (

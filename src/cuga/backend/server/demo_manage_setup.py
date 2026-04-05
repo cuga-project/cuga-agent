@@ -263,7 +263,7 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "email": True,
             "digital_sales": False,
             "docs": False,
-            "filesystem": False,
+            "filesystem": True,
             "oak_health": False,
         }
     if preset == "demo_docs":
@@ -290,11 +290,10 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "email": False,
             "digital_sales": True,
             "docs": False,
-            "filesystem": False,
+            "filesystem": True,
             "oak_health": False,
         }
     if preset == "demo_skills":
-        # OpenSandbox shell tools (run_command, write_file) instead of classic filesystem MCP
         return {
             "crm": False,
             "email": False,
@@ -308,7 +307,7 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
         "email": False,
         "digital_sales": False,
         "docs": False,
-        "filesystem": False,
+        "filesystem": True,
         "oak_health": False,
     }
 
@@ -446,7 +445,7 @@ def setup_demo_manage_config(
         "homescreen": homescreen,
         "llm": llm_cfg,
     }
-    if tools and (any(t.get("name") == "docs" for t in tools) or demo_type == "demo"):
+    if tools and (any(t.get("name") == "docs" for t in tools) or demo_type in ("demo", "demo_skills")):
         config["feature_flags"] = config.get("feature_flags") or {}
         config["feature_flags"]["enable_todos"] = True
 

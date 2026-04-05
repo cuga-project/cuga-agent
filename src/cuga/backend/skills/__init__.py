@@ -10,6 +10,7 @@ Enable OpenSandbox via settings.toml:
 
     [advanced_features]
     opensandbox_sandbox = true   # requires Docker + opensandbox SDK
+    enable_shell_tool = true   # opt-in: shell prompt + run_command / sandbox tools (defaults false)
 
     # uv add opensandbox opensandbox-code-interpreter
 """

@@ -21,6 +21,15 @@ class VariableUtils:
         }
 
     @staticmethod
+    def strip_tools_output_var(new_vars: dict[str, Any], code: str) -> dict[str, Any]:
+        """Drop `tools_output` after find_tools — same idea as not persisting noisy todo confirmation; discovery markdown is for the turn only."""
+        if not new_vars or "tools_output" not in new_vars:
+            return new_vars
+        if "find_tools" not in code:
+            return new_vars
+        return {k: v for k, v in new_vars.items() if k != "tools_output"}
+
+    @staticmethod
     def is_serializable(value: Any) -> bool:
         """Check if a value is serializable.
 

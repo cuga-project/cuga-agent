@@ -48,7 +48,9 @@ class SkillRegistry:
         skill_dir = f"/tmp/cuga_workspace/skills/{entry.name}"
         parts.append(
             f"SKILL FILES are available inside the sandbox at `{skill_dir}/` "
-            f"(scripts, companion docs, etc. — use `await run_command('ls {skill_dir}')` to explore)."
+            f"(scripts, companion docs, etc.). Use `await read_file('<path>')` to read files; "
+            f"`await write_file('<path>', content)` for scripts or small generated text; "
+            f"`await run_command('ls {skill_dir}')` or `await list_files('{skill_dir}')` to explore."
         )
         parts.append("")
         parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{entry.body}")

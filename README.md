@@ -47,7 +47,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
 > | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
 >
-> [SDK](https://docs.cuga.dev/docs/sdk/cuga_agent/) · [Policies](https://docs.cuga.dev/docs/sdk/policies/) · [Quick Start →](#-quick-start)
+> [SDK](https://docs.cuga.dev/docs/sdk/cuga_agent/) · [Policies](https://docs.cuga.dev/docs/sdk/policies/) · [Quick Start →](#quick-start)
 
 ## Why CUGA?
 
@@ -110,7 +110,7 @@ Experience CUGA's hybrid capabilities by combining API calls with web interactio
 2. **Install browser API support:**
 
    - Installs playwright browser API and Chromium browser
-   - The `playwright` installer should already be included after installing with [Quick Start](#-quick-start)
+   - The `playwright` installer should already be included after installing with [Quick Start](#quick-start)
 
    ```bash
    playwright install chromium
@@ -387,7 +387,7 @@ Agent skills are reusable instruction packs: each skill is a `SKILL.md` file wit
 | `~/.config/cuga/skills/**/SKILL.md` | Global skills, available in every project |
 | `<CUGA folder>/skills/**/SKILL.md` and `<CUGA folder>/.skills/**/SKILL.md` | Project-local skills (same folder as your workspace policy; often `.cuga` via `CUGA_FOLDER`) |
 
-If the same skill `name` appears in both places, the **project-local** file wins.
+Use **`skills/`** for project skills (e.g. `.cuga/skills/pptx/SKILL.md`). **`.skills/`** is optional: if the same skill `name` exists under both `skills/` and `.skills/`, the **`.skills/`** copy wins. If the same `name` appears in **global** vs **project-local**, the **project-local** file wins.
 
 **`SKILL.md` shape**
 
@@ -395,7 +395,9 @@ Frontmatter must include **`name`** and **`description`** (shown in the availabl
 
 **Turn skills on**
 
-In [`src/cuga/settings.toml`](src/cuga/settings.toml):
+The easiest way to try skills end-to-end is **`cuga start demo_skills`** (from the repo root; use `uv sync --extra opensandbox` first if you have not already). That command sets skills and OpenSandbox shell tools in the environment for that run—you do **not** need to edit [`settings.toml`](src/cuga/settings.toml) first.
+
+To enable skills persistently or outside that preset, set them in [`src/cuga/settings.toml`](src/cuga/settings.toml):
 
 ```toml
 [skills]
@@ -404,17 +406,35 @@ enabled = true
 
 When `enabled` is `false`, skills are fully off: no `load_skill` tool, no skill upload to sandboxes, and `GET /api/skills` returns an empty list. You can also set `DYNACONF_SKILLS__ENABLED=true` in the environment.
 
+For **OpenSandbox shell tools** (`run_command`, `write_file`, …) and the matching prompt guidance, set `[advanced_features] enable_shell_tool = true` in [`settings.toml`](src/cuga/settings.toml) (defaults to `false`; `cuga start demo_skills` turns it on via environment).
+
 **API and sandboxes**
 
 With skills enabled, **`GET /api/skills`** returns discovered skills with metadata (`name`, `description`, `requirements`, `source`). When you use **OpenSandbox** execution with skills on, skill files are synced into the sandbox under `/tmp/cuga_workspace/skills/<skill-name>/` so the agent can run scripts or read companion files there.
 
 **Try it**
 
+From the repository root, install dependencies including the OpenSandbox extra so shell-tool imports resolve, then start the preset:
+
 ```bash
+uv sync --extra opensandbox
 cuga start demo_skills
 ```
 
 That preset enables skills together with OpenSandbox shell tools so you can experiment with listing skills, loading one with `load_skill`, and using files inside the sandbox workspace.
+
+**Install a sample skill (Anthropic `pptx`)**
+
+The [Anthropic skills repo](https://github.com/anthropics/skills) publishes ready-made folders such as [`skills/pptx`](https://github.com/anthropics/skills/tree/main/skills/pptx) (`SKILL.md`, scripts, and helper markdown). Copy that folder into your **project-local** skills tree under `.cuga/skills/` so CUGA discovers it (see **Where skills live** above). From the repository root:
+
+```bash
+mkdir -p .cuga/skills
+git clone --depth 1 https://github.com/anthropics/skills.git .cuga/_skills_upstream
+cp -R .cuga/_skills_upstream/skills/pptx .cuga/skills/
+rm -rf .cuga/_skills_upstream
+```
+
+Restart `cuga start demo_skills` (or your app) so skills are rescanned. You can instead download the `pptx` directory as a ZIP from GitHub and extract it to `.cuga/skills/pptx`.
 
 ---
 

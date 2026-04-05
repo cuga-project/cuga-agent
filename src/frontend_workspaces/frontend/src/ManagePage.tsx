@@ -1302,7 +1302,6 @@ export function ManagePage() {
                         checked={flags.enable_todos ?? false}
                         onChange={(_e, { checked }) => {
                           updateFeatureFlag("enable_todos", !!checked);
-                          setTimeout(() => performDraftSave(), 0);
                         }}
                       />
                     </FormGroup>
@@ -1313,7 +1312,6 @@ export function ManagePage() {
                         checked={flags.reflection ?? false}
                         onChange={(_e, { checked }) => {
                           updateFeatureFlag("reflection", !!checked);
-                          setTimeout(() => performDraftSave(), 0);
                         }}
                       />
                     </FormGroup>
@@ -1327,7 +1325,6 @@ export function ManagePage() {
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
                           updateMaxSteps(Number(value) || 70)
                         }
-                        onBlur={() => performDraftSave()}
                       />
                     </FormGroup>
                     <FormGroup legendText="">
@@ -1340,7 +1337,6 @@ export function ManagePage() {
                         onChange={(_e: unknown, { value }: { value: number | string }) =>
                           updateShortlistingThreshold(Number(value) || 35)
                         }
-                        onBlur={() => performDraftSave()}
                         helperText="Enable find_tools when total tools exceed this count"
                       />
                     </FormGroup>

@@ -143,8 +143,8 @@ print(my_accounts)
 {% if enable_find_tools %}✅ **CORRECT (Using find_tools to discover relevant tools - must be used separately):**
 
 ```python
-output = await find_tools("<comprehensive search query>", "<app_name>")
-print(output)
+tools_output = await find_tools("<comprehensive search query>", "<app_name>")
+print(tools_output)
 ```
 
 ❌ **INCORRECT (Do NOT combine find_tools with other code):**
@@ -152,8 +152,8 @@ print(output)
 ```python
 # Don't do this - find_tools should be used separately
 accounts = await example_tool()
-tools = await find_tools("<comprehensive search query>", "<app_name>")
-print(accounts, tools)
+tools_output = await find_tools("<comprehensive search query>", "<app_name>")
+print(accounts, tools_output)
 ```
 
 
