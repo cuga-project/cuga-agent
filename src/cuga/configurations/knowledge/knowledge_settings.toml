@@ -1,0 +1,36 @@
+[knowledge]
+enabled = true
+agent_level_enabled = true
+session_level_enabled = true
+persist_dir = ""  # empty = default ~/.cuga/knowledge/
+vector_store = "sqlite"  # sqlite (local default) | milvus | pgvector
+
+[knowledge.embeddings]
+provider = "huggingface"  # huggingface | openai | ollama
+model = ""         # empty = auto-detect per provider
+use_gpu = true     # Use GPU/MPS for local embeddings if available
+
+[knowledge.chunking]
+chunk_size = 1000
+chunk_overlap = 200
+
+[knowledge.search]
+rag_profile = "standard"  # speed | standard | balanced | max_quality
+default_limit = 10
+default_score_threshold = 0.0
+metric_type = "COSINE"
+max_search_attempts = 3  # max knowledge searches per user question (multi-hop)
+
+[knowledge.mcp]
+transport = "http"  # http | stdio
+port = 8113         # port for HTTP mode
+
+[knowledge.engine]
+max_ingest_workers = 2
+max_pending_tasks = 10
+
+[knowledge.limits]
+max_upload_size_mb = 100
+max_url_download_size_mb = 50
+max_files_per_request = 10
+max_chunks_per_document = 10000

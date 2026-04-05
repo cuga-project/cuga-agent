@@ -59,6 +59,10 @@ class ServiceConfig(BaseModel):
     auth: Optional[Any] = None  # Auth type not defined in the snippet
     include: Optional[List[str]] = None  # List of operationIds to include
     api_overrides: Optional[List[ApiOverride]] = None  # List of API overrides
+    readiness_url: Optional[str] = None  # Optional readiness probe endpoint
+    readiness_path: Optional[str] = None  # Dot-path to readiness value in JSON payload
+    ready_values: Optional[List[Any]] = None  # Values considered ready at readiness_path
+    readiness_timeout_seconds: Optional[float] = None  # Timeout for readiness probe
     tools: Optional[List[str]] = (
         None  # list of tools for a specific service - needed in case we get each tool separately
     )
@@ -246,6 +250,10 @@ def _create_service_config(service_name: str, config: dict, is_mcp_server: bool 
         auth=auth,
         include=config.get('include'),
         type=service_type,
+        readiness_url=config.get('readiness_url'),
+        readiness_path=config.get('readiness_path'),
+        ready_values=config.get('ready_values'),
+        readiness_timeout_seconds=config.get('readiness_timeout_seconds'),
         tools=config.get('tools'),
     )
 

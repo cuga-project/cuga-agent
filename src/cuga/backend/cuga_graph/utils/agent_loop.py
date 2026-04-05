@@ -279,6 +279,7 @@ class AgentLoop:
         shortlisting_tool_threshold: Optional[int] = None,
         cuga_lite_max_steps: Optional[int] = None,
         current_llm: Optional[Any] = None,
+        knowledge_context: Optional[dict[str, Any]] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
@@ -292,6 +293,7 @@ class AgentLoop:
         self.shortlisting_tool_threshold = shortlisting_tool_threshold
         self.cuga_lite_max_steps = cuga_lite_max_steps
         self.current_llm = current_llm
+        self.knowledge_context = knowledge_context
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -500,6 +502,11 @@ class AgentLoop:
             config["configurable"]["cuga_lite_max_steps"] = self.cuga_lite_max_steps
         if self.current_llm is not None:
             config["configurable"]["llm"] = self.current_llm
+        if self.knowledge_context:
+            if "agent_knowledge" in self.knowledge_context:
+                config["configurable"]["agent_knowledge"] = self.knowledge_context["agent_knowledge"]
+            if "session_knowledge" in self.knowledge_context:
+                config["configurable"]["session_knowledge"] = self.knowledge_context["session_knowledge"]
 
         return self.graph.astream(
             state if state else Command(resume=resume.model_dump()) if not both_none else None,

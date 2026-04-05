@@ -26,6 +26,7 @@ dependencies = [
     "mcp[cli]>=1.23.0",
     "psutil>=7.0.0",
     "typer>=0.15.3",
+    "typer-slim>=0.15.3",  # explicit: docling pulls typer meta-package which needs typer-slim
     "fastmcp",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
@@ -45,12 +46,19 @@ dependencies = [
     "hvac>=2.0.0",
     "boto3>=1.34.0",
     "openlit>=1.4.0", # 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard
+    # Knowledge engine (replaces OpenRAG)
+    "langchain-milvus>=0.3,<0.4",
+    "langchain-docling>=2.0,<3.0",
+    "langchain-community>=0.3,<0.4",
+    "langchain-text-splitters>=0.3,<0.4",
+    "beautifulsoup4>=4.12",
 ]
 
 [project.optional-dependencies]
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
+knowledge = []  # knowledge is now built-in, no extra dependencies needed
 
 [project.urls]
 Homepage = "https://cuga.dev"
@@ -135,3 +143,6 @@ sandbox = [
 
 [tool.pytest.ini_options]
 anyio_mode = "auto"
+markers = [
+    "e2e: end-to-end tests requiring live external services (registry, etc.)",
+]

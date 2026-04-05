@@ -5,6 +5,8 @@ import aiohttp
 from cuga.config import PACKAGE_ROOT
 import os
 import asyncio
+import random
+from datetime import datetime, timezone
 
 from mcp.types import TextContent
 
@@ -45,6 +47,79 @@ class MCPManager:
         self.mcp_clients = {}  # Store MCP client connections
         self.fastmcp_client = None  # FastMCP client for standard MCP servers
         self.initialization_errors = {}  # Track errors during tool initialization
+        self.service_statuses = {}
+        self.pending_mcp_services = {}
+        self._retry_task = None
+        self._retry_shutdown = asyncio.Event()
+
+        for name, service in config.items():
+            declared_state = "declared" if service.type == ServiceType.MCP_SERVER else "starting"
+            self.service_statuses[name] = self._build_status(
+                state=declared_state,
+                message="Service configured",
+                service_type=str(service.type),
+                transport=service.transport,
+            )
+
+    @staticmethod
+    def _timestamp() -> str:
+        return datetime.now(timezone.utc).isoformat()
+
+    def _build_status(
+        self,
+        *,
+        state: str,
+        message: str,
+        service_type: str | None = None,
+        transport: str | None = None,
+        error: str | None = None,
+        details: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        payload = {
+            "state": state,
+            "message": message,
+            "updated_at": self._timestamp(),
+        }
+        if service_type is not None:
+            payload["service_type"] = service_type
+        if transport is not None:
+            payload["transport"] = transport
+        if error:
+            payload["error"] = error
+        if details:
+            payload["details"] = details
+        return payload
+
+    def _set_service_status(
+        self,
+        name: str,
+        state: str,
+        message: str,
+        *,
+        error: str | None = None,
+        details: Dict[str, Any] | None = None,
+    ) -> None:
+        config = self.schema_urls.get(name)
+        service_type = str(config.type) if config else None
+        transport = config.transport if config else None
+        self.service_statuses[name] = self._build_status(
+            state=state,
+            message=message,
+            service_type=service_type,
+            transport=transport,
+            error=error,
+            details=details,
+        )
+
+    def get_service_statuses(self) -> Dict[str, Dict[str, Any]]:
+        return {name: status.copy() for name, status in self.service_statuses.items()}
+
+    async def shutdown(self) -> None:
+        self._retry_shutdown.set()
+        if self._retry_task:
+            self._retry_task.cancel()
+            await asyncio.gather(self._retry_task, return_exceptions=True)
+            self._retry_task = None
 
     @staticmethod
     def _get_response_schema_from_tool(
@@ -468,12 +543,19 @@ class MCPManager:
     def get_server_names(self):
         return list(self.tools_by_server.keys())
 
-    def get_apps(self) -> List[ServiceConfig]:
-        return list(self.schema_urls.values())
+    def _app_is_ready(self, name: str) -> bool:
+        status = self.service_statuses.get(name, {})
+        return status.get("state") == "ready"
 
-    def get_app_names(self) -> List[str]:
-        """Get list of application names (keys from schema_urls)"""
-        return list(self.schema_urls.keys())
+    def get_apps(self, only_ready: bool = True) -> List[ServiceConfig]:
+        names = self.get_app_names(only_ready=only_ready)
+        return [self.schema_urls[name] for name in names]
+
+    def get_app_names(self, only_ready: bool = True) -> List[str]:
+        """Get list of application names (keys from schema_urls)."""
+        if not only_ready:
+            return list(self.schema_urls.keys())
+        return [name for name in self.schema_urls.keys() if self._app_is_ready(name)]
 
     def get_all_apis(self, include_response_schema=False):
         app_names = list(self.tools_by_server.keys())
@@ -519,8 +601,12 @@ class MCPManager:
 
             # If no tools loaded yet, return empty dict (server may still be initializing)
             if not mcp_tools:
-                logger.warning(
-                    f"MCP server '{app_name}' has no tools loaded yet. It may still be initializing."
+                service_status = self.service_statuses.get(app_name, {})
+                logger.info(
+                    "MCP server '{}' has no tools loaded yet (state={}, message={})",
+                    app_name,
+                    service_status.get("state"),
+                    service_status.get("message"),
                 )
                 return {}
 
@@ -570,8 +656,215 @@ class MCPManager:
         res = trans.transform()
         return res
 
+    def _clear_mcp_server_registration(self, name: str) -> None:
+        self.schemas.pop(name, None)
+        self.tools_by_server.pop(name, None)
+        self.mcp_clients.pop(name, None)
+        if hasattr(self, 'mcp_transports'):
+            self.mcp_transports.pop(name, None)
+
+        stale_tools = [tool_name for tool_name, server in self.server_by_tool.items() if server == name]
+        for tool_name in stale_tools:
+            self.server_by_tool.pop(tool_name, None)
+
+    @staticmethod
+    def _extract_json_path(payload: Any, path: str | None) -> Any:
+        if not path:
+            return payload
+
+        current = payload
+        for part in path.split('.'):
+            if not isinstance(current, dict):
+                return None
+            current = current.get(part)
+        return current
+
+    async def _check_service_readiness(self, name: str, config: ServiceConfig) -> tuple[bool, str]:
+        if not config.readiness_url:
+            return True, "No readiness probe configured"
+
+        timeout = config.readiness_timeout_seconds or 2.0
+        try:
+            async with httpx.AsyncClient(timeout=timeout) as client:
+                response = await client.get(config.readiness_url)
+            response.raise_for_status()
+
+            if not config.readiness_path:
+                return True, "Readiness probe succeeded"
+
+            payload = response.json()
+            actual_value = self._extract_json_path(payload, config.readiness_path)
+            ready_values = config.ready_values or ["ready", "healthy", "ok", True]
+            if actual_value in ready_values:
+                return True, f"Readiness probe reports {actual_value!r}"
+
+            return False, f"Waiting for readiness: {config.readiness_path}={actual_value!r}"
+        except Exception as e:
+            return False, f"Waiting for readiness probe: {e}"
+
+    async def _initialize_single_fastmcp_server(self, name: str, config: ServiceConfig) -> bool:
+        stderr_output = None
+        transport = None
+
+        is_ready, readiness_message = await self._check_service_readiness(name, config)
+        if not is_ready:
+            self.pending_mcp_services[name] = config
+            self._set_service_status(name, "starting", readiness_message)
+            return False
+
+        self._clear_mcp_server_registration(name)
+
+        try:
+            transport = self._create_transport(name, config)
+            if not transport:
+                self._set_service_status(name, "failed", "Transport creation returned no transport")
+                return False
+
+            client = FastMCPClient(transport)
+            logger.info(f"Fetching tools from {name}...")
+
+            async def fetch_tools():
+                async with client:
+                    return await client.list_tools()
+
+            try:
+                tools = await asyncio.wait_for(fetch_tools(), timeout=15.0)
+                logger.info(f"Retrieved {len(tools)} tools from {name}: {[tool.name for tool in tools]}")
+            except asyncio.TimeoutError:
+                print(f"Timeout fetching tools from {name} after 15 seconds")
+                raise
+
+            include_set = set(config.include) if config.include else None
+
+            self.schemas[name] = {
+                "tools": [
+                    {
+                        "name": tool.name,
+                        "description": tool.description,
+                        "inputSchema": tool.inputSchema if hasattr(tool, 'inputSchema') else {},
+                        "outputSchema": tool.outputSchema if hasattr(tool, 'outputSchema') else {},
+                    }
+                    for tool in tools
+                    if not include_set or tool.name in include_set
+                ]
+            }
+
+            for tool in tools:
+                if include_set and tool.name not in include_set:
+                    continue
+
+                prefixed_name = f"{name}_{tool.name}"
+                input_schema = tool.inputSchema if hasattr(tool, 'inputSchema') else {}
+                flattened_params = self._flatten_tool_parameters(input_schema)
+                output_schema = tool.outputSchema if hasattr(tool, 'outputSchema') else {}
+
+                tool_dict = {
+                    "type": "function",
+                    "function": {
+                        "name": prefixed_name,
+                        "description": tool.description,
+                        "parameters": flattened_params,
+                        "outputSchema": output_schema,
+                    },
+                }
+                self.tools_by_server[name].append(tool_dict)
+                self.server_by_tool[prefixed_name] = name
+
+            registered_count = len(self.tools_by_server[name])
+            if include_set:
+                actual_names = {tool.name for tool in tools}
+                unmatched = include_set - actual_names
+                if unmatched:
+                    logger.warning(
+                        f"MCP server '{name}': include list contains entries that don't match any tool: {unmatched}"
+                    )
+                print(
+                    f"✓ Connected to MCP server '{name}' with {registered_count}/{len(tools)} tools "
+                    "(filtered by include list)"
+                )
+            else:
+                print(f"✓ Connected to MCP server '{name}' with {registered_count} tools")
+
+            self.mcp_clients[name] = config.url or config.command
+            self.auth_config[name] = config.auth
+
+            if not hasattr(self, 'mcp_transports'):
+                self.mcp_transports = {}
+            self.mcp_transports[name] = transport
+
+            self.initialization_errors.pop(name, None)
+            self.pending_mcp_services.pop(name, None)
+            self._set_service_status(
+                name,
+                "ready",
+                f"Connected with {registered_count} tool(s)",
+                details={"tool_count": registered_count},
+            )
+            return True
+        except Exception as e:
+            error_msg = str(e)
+            print(f"Error connecting to MCP server {name}: {error_msg}")
+            logger.warning(f"Failed to initialize MCP server '{name}': {error_msg}")
+
+            import traceback
+
+            full_traceback = traceback.format_exc()
+            logger.debug(f"Traceback for {name}: {full_traceback}")
+
+            error_details = {
+                "error": error_msg,
+                "type": type(e).__name__,
+                "traceback": full_traceback,
+            }
+
+            if hasattr(transport, '_process') and hasattr(transport._process, 'stderr'):
+                try:
+                    stderr_output = transport._process.stderr.read() if transport._process.stderr else None
+                    if stderr_output:
+                        error_details["stderr"] = stderr_output
+                except Exception:
+                    pass
+
+            self.initialization_errors[name] = error_details
+            self.pending_mcp_services[name] = config
+            self._set_service_status(
+                name,
+                "degraded",
+                f"Connection failed, retrying in background: {error_msg}",
+                error=error_msg,
+            )
+            return False
+
+    async def _retry_pending_mcp_servers(self) -> None:
+        delay_seconds = 2.0
+        while not self._retry_shutdown.is_set():
+            pending = list(self.pending_mcp_services.items())
+            if not pending:
+                return
+
+            try:
+                await asyncio.wait_for(self._retry_shutdown.wait(), timeout=delay_seconds)
+                return
+            except asyncio.TimeoutError:
+                pass
+
+            for name, config in pending:
+                if self._retry_shutdown.is_set():
+                    return
+                await self._initialize_single_fastmcp_server(name, config)
+
+            delay_seconds = min(30.0, delay_seconds * 1.5 + random.uniform(0.0, 1.0))
+
+    def _ensure_retry_task(self) -> None:
+        if not self.pending_mcp_services:
+            return
+        if self._retry_task and not self._retry_task.done():
+            return
+        self._retry_shutdown = asyncio.Event()
+        self._retry_task = asyncio.create_task(self._retry_pending_mcp_servers())
+
     async def _initialize_fastmcp_client(self, mcp_servers: List[tuple]):
-        """Initialize FastMCP client with all MCP servers using appropriate transport"""
+        """Initialize FastMCP client with all MCP servers using appropriate transport."""
         if not FastMCPClient:
             raise Exception("FastMCP not available. Please install fastmcp package.")
         if not mcp_servers:
@@ -579,108 +872,8 @@ class MCPManager:
 
         try:
             for name, config in mcp_servers:
-                stderr_output = []
-
-                try:
-                    transport = self._create_transport(name, config)
-                    if not transport:
-                        continue
-
-                    # Capture stderr if it's a stdio transport
-                    client = FastMCPClient(transport)
-
-                    logger.info(f"Fetching tools from {name}...")
-
-                    # Add timeout for tool fetching
-                    async def fetch_tools():
-                        async with client:
-                            return await client.list_tools()
-
-                    try:
-                        tools = await asyncio.wait_for(fetch_tools(), timeout=15.0)
-                        logger.info(
-                            f"Retrieved {len(tools)} tools from {name}: {[tool.name for tool in tools]}"
-                        )
-                    except asyncio.TimeoutError:
-                        print(f"Timeout fetching tools from {name} after 15 seconds")
-                        raise
-
-                    self.schemas[name] = {
-                        "tools": [
-                            {
-                                "name": tool.name,
-                                "description": tool.description,
-                                "inputSchema": tool.inputSchema if hasattr(tool, 'inputSchema') else {},
-                                "outputSchema": tool.outputSchema if hasattr(tool, 'outputSchema') else {},
-                            }
-                            for tool in tools
-                        ]
-                    }
-
-                    for tool in tools:
-                        prefixed_name = f"{name}_{tool.name}"
-
-                        input_schema = tool.inputSchema if hasattr(tool, 'inputSchema') else {}
-                        flattened_params = self._flatten_tool_parameters(input_schema)
-
-                        output_schema = tool.outputSchema if hasattr(tool, 'outputSchema') else {}
-
-                        tool_dict = {
-                            "type": "function",
-                            "function": {
-                                "name": prefixed_name,
-                                "description": tool.description,
-                                "parameters": flattened_params,
-                                "outputSchema": output_schema,
-                            },
-                        }
-                        self.tools_by_server[name].append(tool_dict)
-                        self.server_by_tool[prefixed_name] = name
-
-                    print(f"✓ Connected to MCP server '{name}' with {len(tools)} tools")
-                    self.mcp_clients[name] = config.url or config.command
-                    self.auth_config[name] = config.auth
-
-                    if not hasattr(self, 'mcp_transports'):
-                        self.mcp_transports = {}
-                    self.mcp_transports[name] = transport
-
-                except Exception as e:
-                    error_msg = str(e)
-                    print(f"Error connecting to MCP server {name}: {error_msg}")
-                    logger.warning(f"Failed to initialize MCP server '{name}': {error_msg}")
-
-                    # Capture full traceback for detailed error reporting
-                    import traceback
-
-                    full_traceback = traceback.format_exc()
-                    logger.debug(f"Traceback for {name}: {full_traceback}")
-
-                    # Extract more context from the exception
-                    error_details = {
-                        "error": error_msg,
-                        "type": type(e).__name__,
-                        "traceback": full_traceback,
-                    }
-
-                    # Try to get stderr output if it's a subprocess-related error
-                    if hasattr(transport, '_process') and hasattr(transport._process, 'stderr'):
-                        try:
-                            stderr_output = (
-                                transport._process.stderr.read() if transport._process.stderr else None
-                            )
-                            if stderr_output:
-                                error_details["stderr"] = stderr_output
-                        except Exception:
-                            pass
-
-                    # Track the error for reporting
-                    self.initialization_errors[name] = error_details
-
-                    # Don't raise - continue with other servers
-                    # This allows the system to work even if some MCP servers fail
-                    continue
-
+                await self._initialize_single_fastmcp_server(name, config)
+            self._ensure_retry_task()
         except Exception as e:
             logger.error(f"Error initializing MCP servers: {e}")
             raise
@@ -864,7 +1057,7 @@ class MCPManager:
                 apply_authentication(auth, headers, query_params)
 
             if hasattr(self, 'mcp_transports') and server_name in self.mcp_transports:
-                original_tool_name = tool_name.replace(f"{server_name}_", "")
+                original_tool_name = tool_name.removeprefix(f"{server_name}_")
 
                 transport = self.mcp_transports[server_name]
                 client = FastMCPClient(transport)
@@ -886,7 +1079,7 @@ class MCPManager:
             else:
                 url = self.mcp_clients[server_name]
                 base_url = url.replace('/sse', '')
-                original_tool_name = tool_name.replace(f"{server_name}_", "")
+                original_tool_name = tool_name.removeprefix(f"{server_name}_")
 
                 # Add query params to URL if present
                 url_with_params = base_url
@@ -983,7 +1176,12 @@ class MCPManager:
 
         if len(trm_urls) > 0:
             for name, data in trm_urls.items():
-                await self._get_trm_tools(name, data["url"], data["tools"], data["auth"])
+                try:
+                    await self._get_trm_tools(name, data["url"], data["tools"], data["auth"])
+                    self._set_service_status(name, "ready", "TRM tools loaded")
+                except Exception as e:
+                    self._set_service_status(name, "failed", f"Failed to load TRM tools: {e}", error=str(e))
+                    raise
         self.add_trm_tools(trm)
 
     def add_trm_tools(self, services: List[Service]):
@@ -1029,7 +1227,9 @@ class MCPManager:
                 mcp_server = self._create_mcp_server(base_url, parser, name)
                 self.servers[name] = mcp_server
                 await self._register_tools(mcp_server)
+                self._set_service_status(name, "ready", "OpenAPI service loaded")
             except Exception as e:
+                self._set_service_status(name, "failed", f"Failed to initialize service: {e}", error=str(e))
                 print(f"Failed to initialize server for {config.url}: {e}")
 
     async def _register_tools(self, mcp_server):

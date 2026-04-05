@@ -62,6 +62,8 @@ export default {
       "@ibm/plex": path.resolve(__dirname, "node_modules/@ibm/plex"),
       "agentic_chat/CustomChat": path.resolve(__dirname, "../agentic_chat/src/CustomChat.tsx"),
       "agentic_chat/PoliciesConfig": path.resolve(__dirname, "../agentic_chat/src/PoliciesConfig.tsx"),
+      "agentic_chat/KnowledgePanel": path.resolve(__dirname, "../agentic_chat/src/KnowledgeConfig.tsx"),
+      "agentic_chat/KnowledgeSidePanel": path.resolve(__dirname, "../agentic_chat/src/KnowledgeSidePanel.tsx"),
     },
   },
   optimization: {

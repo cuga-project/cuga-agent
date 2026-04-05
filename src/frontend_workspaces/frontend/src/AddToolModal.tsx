@@ -117,6 +117,9 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
   const [command, setCommand] = useState(init.command);
   const [argsText, setArgsText] = useState(init.argsText);
   const [description, setDescription] = useState(init.description);
+  const [envText, setEnvText] = useState(
+    Object.entries(initial?.env ?? {}).map(([k, v]) => `${k}=${v}`).join("\n")
+  );
   const [authType, setAuthType] = useState<AuthType>(init.authType);
   const [authKey, setAuthKey] = useState(init.authKey);
   const [authValue, setAuthValue] = useState(init.authValue);
@@ -167,6 +170,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     setAuthType(auth.type === "none" || !auth.type ? "none" : auth.type);
     setAuthKey(auth.key ?? "");
     setAuthValue(auth.value ?? "");
+    setEnvText(Object.entries(config.env ?? {}).map(([k, v]) => `${k}=${v}`).join("\n"));
     setShowTemplates(false);
   };
 
@@ -187,6 +191,18 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
       tool.command = command.trim();
       tool.args = args.length ? args : undefined;
       tool.transport = "stdio";
+      const envEntries = envText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          const idx = l.indexOf("=");
+          return idx > 0 ? [l.slice(0, idx).trim(), l.slice(idx + 1).trim()] : null;
+        })
+        .filter((e): e is [string, string] => e !== null && e[0].length > 0);
+      if (envEntries.length > 0) {
+        tool.env = Object.fromEntries(envEntries);
+      }
     } else if (type === "mcp" && url.trim()) {
       tool.transport = mcpMode === "url-http" ? "http" : "sse";
     }
@@ -233,7 +249,18 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
       : "";
 
   const isCommandMcp = type === "mcp" && mcpMode === "command";
-  const valid = !nameError && description.trim().length > 0 && (
+
+  // Validate env lines only in command/stdio mode (env UI is hidden otherwise)
+  const envLines = isCommandMcp ? envText.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  const badEnvLines = envLines.filter((l) => {
+    const idx = l.indexOf("=");
+    return idx <= 0 || l.slice(0, idx).trim().length === 0;
+  });
+  const envError = badEnvLines.length > 0
+    ? `Invalid env line${badEnvLines.length > 1 ? "s" : ""}: ${badEnvLines.map((l) => `"${l}"`).join(", ")}. Use KEY=VALUE format.`
+    : "";
+
+  const valid = !nameError && !envError && description.trim().length > 0 && (
     type === "openapi"
       ? url.trim().length > 0
       : isCommandMcp
@@ -356,6 +383,19 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                   placeholder={"-y\n@modelcontextprotocol/server-filesystem\n./cuga_workspace"}
                   rows={4}
                   helperText="One argument per line (e.g. -y, package name, working directory)"
+                />
+              </FormGroup>
+              <FormGroup legendText="">
+                <TextArea
+                  id="tool-env"
+                  labelText="Environment variables (one per line)"
+                  value={envText}
+                  onChange={(e) => setEnvText(e.target.value)}
+                  placeholder={"API_KEY=your_api_key\nBASE_URL=http://localhost:8000"}
+                  rows={3}
+                  invalid={!!envError}
+                  invalidText={envError}
+                  helperText={!envError ? "KEY=VALUE per line. Use ENV_VAR_NAME as value to reference process env (e.g. MY_KEY=MY_KEY)" : undefined}
                 />
               </FormGroup>
             </>

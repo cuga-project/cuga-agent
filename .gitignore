@@ -77,3 +77,5 @@ deployment/certs/*.crt
 deployment/helm/openshift.env
 deployment/helm/*.env
 !deployment/helm/openshift.example.env
+KNOWLEDGE_PIPELINE.md
+docs/examples/demo_apps/file_system/build/

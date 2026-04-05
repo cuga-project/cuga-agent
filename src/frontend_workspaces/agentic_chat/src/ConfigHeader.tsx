@@ -12,8 +12,12 @@ import * as api from "../../frontend/src/api";
 interface ConfigHeaderProps {
   onToggleLeftSidebar: () => void;
   onToggleWorkspace: () => void;
+  onToggleKnowledge: () => void;
   leftSidebarCollapsed: boolean;
   workspaceOpen: boolean;
+  knowledgeOpen: boolean;
+  knowledgeDocCount: number;
+  knowledgeEnabled?: boolean | null;
 }
 
 interface AgentContext {
@@ -24,6 +28,10 @@ interface AgentContext {
 export function ConfigHeader({
   onToggleLeftSidebar,
   onToggleWorkspace,
+  onToggleKnowledge,
+  knowledgeOpen,
+  knowledgeDocCount,
+  knowledgeEnabled,
 }: ConfigHeaderProps) {
   const [activeModal, setActiveModal] = useState<string | null>(null);
   const [agentContext, setAgentContext] = useState<AgentContext | null>(null);
@@ -31,14 +39,17 @@ export function ConfigHeader({
   useEffect(() => {
     api.getAgentContext()
       .then((res) => (res.ok ? res.json() : null))
-      .then(
-        (data) =>
-          data &&
+      .then((data) => {
+        if (data) {
+          const agentId = data.agent_id ?? "cuga-default";
           setAgentContext({
-            agent_id: data.agent_id ?? "cuga-default",
+            agent_id: agentId,
             config_version: data.config_version ?? null,
-          })
-      )
+          });
+          // Set agent ID for knowledge API calls
+          api.setKnowledgeAgentId(agentId);
+        }
+      })
       .catch(() => {});
   }, []);
 
@@ -50,6 +61,7 @@ export function ConfigHeader({
         navItems={[
           { label: "Sidebar", onClick: onToggleLeftSidebar },
           { label: "Workspace", onClick: onToggleWorkspace },
+          { label: knowledgeEnabled !== false && knowledgeDocCount > 0 ? `Knowledge (${knowledgeDocCount})` : "Knowledge", onClick: onToggleKnowledge },
           { label: "Sub Agents", onClick: () => setActiveModal("subagents") },
           { label: "Tools", onClick: () => setActiveModal("tools") },
           { label: "Policies", onClick: () => setActiveModal("policies") },

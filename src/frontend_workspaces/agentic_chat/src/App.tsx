@@ -6,11 +6,13 @@ import { ConfigHeader } from "./ConfigHeader";
 import { LeftSidebar } from "./LeftSidebar";
 import { StatusBar } from "./StatusBar";
 import { WorkspacePanel } from "./WorkspacePanel";
+import { KnowledgeSidePanel } from "./KnowledgeSidePanel";
 import { FileAutocomplete } from "./FileAutocomplete";
 import { GuidedTour, TourStep } from "./GuidedTour";
 import { useTour } from "./useTour";
 import { AdvancedTourButton } from "./AdvancedTourButton";
 import { HelpCircle } from "lucide-react";
+import * as api from "../../frontend/src/api";
 import "./AppLayout.css";
 import "./mockApi";
 import "./workspaceThrottle"; // Enforce 3-second minimum interval between workspace API calls
@@ -65,12 +67,20 @@ export function App() {
   }>>([]);
   const [selectedAnswerId, setSelectedAnswerId] = useState<string | null>(null);
   const [workspacePanelOpen, setWorkspacePanelOpen] = useState(true);
+  const [knowledgePanelOpen, setKnowledgePanelOpen] = useState(false);
+  const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | null>(null);
+  const [agentKnowledgeEnabled, setAgentKnowledgeEnabled] = useState<boolean | null>(null);
+  const [sessionKnowledgeEnabled, setSessionKnowledgeEnabled] = useState<boolean | null>(null);
+  const [agentLabel, setAgentLabel] = useState("this agent");
+  const [sessionDocsVersion, setSessionDocsVersion] = useState(0);
+  const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
   const [leftSidebarCollapsed, setLeftSidebarCollapsed] = useState(false);
   const [highlightedFile, setHighlightedFile] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<"conversations" | "variables" | "savedflows">("conversations");
   const [previousVariablesCount, setPreviousVariablesCount] = useState(0);
   const [previousHistoryLength, setPreviousHistoryLength] = useState(0);
   const [threadId, setThreadId] = useState<string>("");
+  const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>(undefined);
   const leftSidebarRef = useRef<{ addConversation: (title: string) => void } | null>(null);
   // Initialize hasStartedChat from URL query parameter immediately
   const [hasStartedChat, setHasStartedChat] = useState(() => {
@@ -87,6 +97,31 @@ export function App() {
     }
   }, [hasStartedChat]);
   
+  // Fetch live agent context once on mount so chat respects the published config.
+  useEffect(() => {
+    api.getAgentContext()
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data) {
+          const agentId = data.agent_id ?? "cuga-default";
+          setAgentLabel(agentId);
+          setKnowledgeEnabled(data.knowledge_enabled ?? false);
+          setAgentKnowledgeEnabled(data.agent_level_knowledge_enabled ?? false);
+          setSessionKnowledgeEnabled(data.session_level_knowledge_enabled ?? false);
+          api.setKnowledgeAgentId(agentId);
+        } else {
+          setKnowledgeEnabled(false);
+          setAgentKnowledgeEnabled(false);
+          setSessionKnowledgeEnabled(false);
+        }
+      })
+      .catch(() => {
+        setKnowledgeEnabled(false);
+        setAgentKnowledgeEnabled(false);
+        setSessionKnowledgeEnabled(false);
+      });
+  }, []);
+
   const { isTourActive, hasSeenTour, startTour, completeTour, skipTour, resetTour } = useTour();
 
   // Handle variables updates from CustomChat
@@ -199,8 +234,12 @@ export function App() {
           <ConfigHeader
             onToggleLeftSidebar={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}
             onToggleWorkspace={() => setWorkspacePanelOpen(!workspacePanelOpen)}
+            onToggleKnowledge={() => setKnowledgePanelOpen(!knowledgePanelOpen)}
             leftSidebarCollapsed={leftSidebarCollapsed}
             workspaceOpen={workspacePanelOpen}
+            knowledgeOpen={knowledgePanelOpen}
+            knowledgeDocCount={knowledgeDocCount}
+            knowledgeEnabled={knowledgeEnabled}
           />
         )}
         <div className="main-layout">
@@ -214,6 +253,7 @@ export function App() {
               activeTab={activeTab}
               onTabChange={setActiveTab}
               leftSidebarRef={leftSidebarRef}
+              onSelectConversation={setSelectedThreadId}
             />
           )}
           <div className="chat-container">
@@ -225,14 +265,32 @@ export function App() {
               onChatStarted={handleChatStarted}
               initialChatStarted={hasStartedChat}
               onThreadIdChange={setThreadId}
+              externalThreadId={selectedThreadId}
+              sessionDocsVersion={sessionDocsVersion}
+              onSessionDocsChanged={() => setSessionDocsVersion((v) => v + 1)}
+              knowledgeEnabled={sessionKnowledgeEnabled}
             />
           </div>
           {hasStartedChat && (
-            <WorkspacePanel
-              isOpen={workspacePanelOpen}
-              onToggle={() => setWorkspacePanelOpen(!workspacePanelOpen)}
-              highlightedFile={highlightedFile}
-            />
+            <>
+              <WorkspacePanel
+                isOpen={workspacePanelOpen}
+                onToggle={() => setWorkspacePanelOpen(!workspacePanelOpen)}
+                highlightedFile={highlightedFile}
+              />
+              <KnowledgeSidePanel
+                isOpen={knowledgePanelOpen}
+                onToggle={() => setKnowledgePanelOpen(!knowledgePanelOpen)}
+                threadId={threadId}
+                sessionDocsVersion={sessionDocsVersion}
+                onSessionDocsChanged={() => setSessionDocsVersion((v) => v + 1)}
+                onDocCountChanged={setKnowledgeDocCount}
+                knowledgeEnabled={knowledgeEnabled}
+                agentKnowledgeEnabled={agentKnowledgeEnabled}
+                sessionKnowledgeEnabled={sessionKnowledgeEnabled}
+                agentLabel={agentLabel}
+              />
+            </>
           )}
         </div>
         {hasStartedChat && <StatusBar threadId={threadId} />}

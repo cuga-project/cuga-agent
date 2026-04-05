@@ -276,9 +276,40 @@ class CombinedToolProvider(ToolProviderInterface):
         self._last_include_version = -1
 
     async def get_apps(self) -> List[AppDefinition]:
-        """Get list of available applications."""
+        """Get list of available applications.
+
+        Always fetches the current list from tracker + registry so that
+        services that became ready after startup are picked up automatically.
+        The apps list is lightweight (a few items); tools are the heavy part
+        and remain cached separately.
+        """
         if not self.initialized:
             await self.initialize()
+            return self.apps
+
+        # Fetch fresh apps list (cheap — a few items)
+        try:
+            fresh: List[AppDefinition] = []
+            if hasattr(tracker, 'apps') and tracker.apps:
+                fresh.extend(tracker.apps)
+            if settings.advanced_features.registry:
+                fresh.extend(await get_apps(agent_id=self.agent_id))
+
+            if self.app_names:
+                fresh = [a for a in fresh if a.name in self.app_names]
+
+            if fresh:
+                self.apps = [
+                    AppDefinition(
+                        name=a.name,
+                        url=a.url,
+                        description=getattr(a, 'description', None),
+                    )
+                    for a in fresh
+                ]
+        except Exception as e:
+            logger.debug(f"Apps refresh failed, using cached list: {e}")
+
         return self.apps
 
     def _filter_tools_by_include(
@@ -407,13 +438,13 @@ class CombinedToolProvider(ToolProviderInterface):
 
     async def get_all_tools(self) -> List[StructuredTool]:
         """Get all available tools from all applications."""
-        if not self.initialized:
-            await self.initialize()
+        # Use get_apps() to trigger refresh of newly-ready MCP servers
+        apps = await self.get_apps()
 
         all_tools = []
-        for app in self.apps:
+        for app in apps:
             tools = await self.get_tools(app.name)
             all_tools.extend(tools)
 
-        logger.info(f"Loaded {len(all_tools)} total tools from {len(self.apps)} apps")
+        logger.info(f"Loaded {len(all_tools)} total tools from {len(apps)} apps")
         return all_tools

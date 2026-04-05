@@ -100,6 +100,61 @@ llm_manager = LLMManager()
 BACKTICK_PATTERN = r'```python(.*?)```'
 
 
+def _get_knowledge_tool_scope_context(
+    engine: Any | None,
+    thread_id: str | None,
+) -> tuple[tuple[str, ...], str | None]:
+    config = getattr(engine, "_config", None) if engine else None
+    if not config or not getattr(config, "enabled", False):
+        return (), None
+
+    scopes: list[str] = []
+    if getattr(config, "agent_level_enabled", True):
+        scopes.append("agent")
+    if getattr(config, "session_level_enabled", True) and thread_id:
+        scopes.append("session")
+
+    default_scope = "agent" if "agent" in scopes else scopes[0] if scopes else None
+    return tuple(scopes), default_scope
+
+
+def _knowledge_scope_instruction(allowed_scopes: tuple[str, ...], thread_id: str | None) -> str:
+    if allowed_scopes == ("agent",):
+        return (
+            "Knowledge scope rules for this run: only agent-level knowledge is available. "
+            "Never call `knowledge_*` tools with `scope=\"session\"`."
+        )
+    if allowed_scopes == ("session",):
+        return (
+            "Knowledge scope rules for this run: only session-level knowledge is available. "
+            "Never call `knowledge_*` tools with `scope=\"agent\"`. The conversation thread context is injected automatically."
+        )
+    if allowed_scopes == ("agent", "session"):
+        return (
+            "Knowledge scope rules for this run: both knowledge scopes are available. "
+            "Use `scope=\"agent\"` for permanent agent documents and `scope=\"session\"` for this conversation's documents."
+        )
+    if thread_id:
+        return "Knowledge tools are unavailable in this run. Do not call any `knowledge_*` tool."
+    return (
+        "Knowledge tools are unavailable in this run. "
+        "Session scope cannot be used here because there is no conversation thread context."
+    )
+
+
+def _decorate_knowledge_tool(tool: Any, allowed_scopes: tuple[str, ...], thread_id: str | None) -> None:
+    """Add a brief scope hint to the tool description.
+
+    The full scope rules are already in the system instructions, so we only
+    add a short reminder here to avoid bloating the prompt with repeated text.
+    """
+    base_description = getattr(tool, "description", "") or "Knowledge tool"
+    scopes_str = ", ".join(f'"{s}"' for s in allowed_scopes)
+    hint = f"Allowed scopes: {scopes_str}. See knowledge scope rules in instructions above."
+    tool.description = f"{base_description}\n\n{hint}".strip()
+
+
+
 def make_tool_awaitable(func):
     """Wrap a sync function to make it awaitable (since agent always uses await).
 
@@ -708,6 +763,187 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
 
+            cfg = config.get("configurable", {}) if config else {}
+            _thread_id = cfg.get("thread_id") or ""
+            _knowledge_engine = cfg.get("knowledge_engine")
+            if _knowledge_engine is None:
+                try:
+                    from cuga.backend.server.main import app as _app
+
+                    _app_state = getattr(_app.state, "app_state", None)
+                    _knowledge_engine = getattr(_app_state, "knowledge_engine", None) if _app_state else None
+                except Exception:
+                    _knowledge_engine = None
+
+            allowed_knowledge_scopes, default_knowledge_scope = _get_knowledge_tool_scope_context(
+                _knowledge_engine,
+                _thread_id or None,
+            )
+
+            knowledge_tool_names = {
+                tool.name for tool in tools_for_execution if getattr(tool, "name", "").startswith("knowledge_")
+            }
+
+            if knowledge_tool_names and not allowed_knowledge_scopes:
+                tools_for_execution = [
+                    tool for tool in tools_for_execution if getattr(tool, "name", "") not in knowledge_tool_names
+                ]
+                tools_for_prompt = [
+                    tool for tool in tools_for_prompt if getattr(tool, "name", "") not in knowledge_tool_names
+                ]
+                apps_for_prompt = [
+                    app for app in (apps_for_prompt or []) if getattr(app, "name", "") != "knowledge"
+                ]
+                for tool_name in knowledge_tool_names:
+                    tools_context_dict.pop(tool_name, None)
+            elif knowledge_tool_names:
+                if _thread_id:
+                    logger.debug("Knowledge tools: thread context available for session scope injection")
+
+                def _wrap_knowledge_tool(fn, tid, allowed_scopes, default_scope):
+                    async def _wrapped(*args, **kwargs):
+                        scope = kwargs.get("scope")
+                        if scope is None and default_scope:
+                            kwargs["scope"] = default_scope
+                            scope = default_scope
+                        if scope is not None and scope not in allowed_scopes:
+                            allowed_text = ", ".join(allowed_scopes)
+                            return {
+                                "error": (
+                                    f"Knowledge scope '{scope}' is unavailable in this context. "
+                                    f"Allowed scopes: {allowed_text}"
+                                )
+                            }
+                        if tid and "session" in allowed_scopes:
+                            kwargs.setdefault("thread_id", tid)
+                        return await fn(*args, **kwargs)
+
+                    _wrapped.__doc__ = getattr(fn, "__doc__", None)
+                    _wrapped._knowledge_allowed_scopes = allowed_scopes
+                    _wrapped._knowledge_default_scope = default_scope
+                    _wrapped._knowledge_thread_id = tid
+                    return _wrapped
+
+                for tool_name in knowledge_tool_names:
+                    original_fn = tools_context_dict.get(tool_name)
+                    if original_fn:
+                        tools_context_dict[tool_name] = _wrap_knowledge_tool(
+                            original_fn,
+                            _thread_id,
+                            allowed_knowledge_scopes,
+                            default_knowledge_scope,
+                        )
+
+                # Note: scope rules are injected once via effective_instructions.
+                # No per-tool decoration needed — avoids repeated text in prompt.
+
+            # Inject knowledge base awareness if knowledge tools are available
+            effective_instructions = base_instructions
+            # Detect knowledge tools — works for both registry (app named
+            # "knowledge") and SDK mode (tools under "runtime_tools")
+            has_knowledge_tools = any(
+                getattr(app, "name", "") == "knowledge"
+                for app in (apps_for_prompt or [])
+            )
+            if not has_knowledge_tools and tools_for_execution:
+                has_knowledge_tools = any(
+                    getattr(t, "name", "").startswith("knowledge_")
+                    for t in tools_for_execution
+                )
+            knowledge_scope_instruction = _knowledge_scope_instruction(
+                allowed_knowledge_scopes,
+                _thread_id or None,
+            )
+            if knowledge_tool_names:
+                effective_instructions = (
+                    f"{knowledge_scope_instruction}\n\n{effective_instructions}"
+                    if effective_instructions
+                    else knowledge_scope_instruction
+                )
+            if has_knowledge_tools:
+                try:
+                    from cuga.backend.knowledge.awareness import (
+                        get_knowledge_summary,
+                        format_knowledge_context,
+                        get_engine_from_app_state,
+                    )
+
+                    cfg = config.get("configurable", {})
+                    engine = cfg.get("knowledge_engine") or get_engine_from_app_state()
+                    # Get agent_id: configurable > app_state > fallback
+                    agent_id = cfg.get("agent_id")
+                    knowledge_config_hash = cfg.get("knowledge_config_hash")
+                    if not agent_id:
+                        try:
+                            from cuga.backend.server.main import app as _app
+                            _as = getattr(_app.state, "app_state", None)
+                            agent_id = getattr(_as, "agent_id", None) if _as else None
+                            if knowledge_config_hash is None:
+                                knowledge_config_hash = (
+                                    getattr(_as, "knowledge_config_hash", None) if _as else None
+                                )
+                        except Exception:
+                            pass
+                    if not agent_id:
+                        agent_id = "cuga-default"
+                    thread_id = cfg.get("thread_id")
+                    kb_ctx = format_knowledge_context(
+                        agent_id,
+                        thread_id,
+                        engine=engine,
+                        agent_config_hash=knowledge_config_hash,
+                    )
+                    logger.info(
+                        f"Knowledge awareness: agent_id={agent_id}, thread_id={thread_id}, "
+                        f"agent_collection={kb_ctx.get('agent_collection')}, "
+                        f"session_collection={kb_ctx.get('session_collection')}"
+                    )
+
+                    if not engine:
+                        logger.warning("Knowledge awareness skipped: engine not available")
+                    else:
+                        # Use draft knowledge config for search-time params when running
+                        # in draft mode (Try-It-Out). Published agent always uses engine config.
+                        _search_cfg = engine._config
+                        _is_draft = agent_id and agent_id.endswith("--draft")
+                        if _is_draft:
+                            try:
+                                from cuga.backend.server.main import app as _app
+                                _das = getattr(_app.state, "draft_app_state", None)
+                                _draft_kc = getattr(_das, "draft_knowledge_config", None) if _das else None
+                                if _draft_kc:
+                                    _search_cfg = _draft_kc
+                            except Exception:
+                                pass
+                        knowledge_block = await get_knowledge_summary(
+                            engine,
+                            agent_collection=kb_ctx.get("agent_collection"),
+                            session_collection=kb_ctx.get("session_collection"),
+                            max_search_attempts=getattr(_search_cfg, "max_search_attempts", None) or getattr(engine._config, "max_search_attempts", None),
+                            default_limit=getattr(_search_cfg, "default_limit", None) or getattr(engine._config, "default_limit", None),
+                            rag_profile=getattr(_search_cfg, "rag_profile", None) or getattr(engine._config, "rag_profile", "standard"),
+                        )
+                        if knowledge_block:
+                            # Load knowledge search instructions from dedicated file
+                            knowledge_instructions_text = ""
+                            try:
+                                kb_instructions_path = Path(__file__).parents[4] / "configurations" / "knowledge" / "knowledge_instructions.md"
+                                if kb_instructions_path.exists():
+                                    knowledge_instructions_text = kb_instructions_path.read_text(encoding="utf-8").strip()
+                            except Exception as ki_err:
+                                logger.debug(f"Failed to load knowledge instructions: {ki_err}")
+
+                            # Prepend knowledge block BEFORE other instructions
+                            # so the LLM sees it early and acts on it
+                            effective_instructions = (
+                                f"{knowledge_block}\n\n{knowledge_instructions_text}\n\n{effective_instructions}"
+                                if effective_instructions
+                                else f"{knowledge_block}\n\n{knowledge_instructions_text}"
+                            )
+                            logger.info(f"Knowledge awareness injected: {len(knowledge_block)} chars")
+                except Exception as e:
+                    logger.debug(f"Knowledge awareness injection skipped: {e}")
+
             # Create prompt dynamically
             dynamic_prompt = prompt
 
@@ -716,7 +952,7 @@ def create_cuga_lite_graph(
                     tools_for_prompt,
                     allow_user_clarification=True,
                     return_to_user_cases=None,
-                    instructions=base_instructions,
+                    instructions=effective_instructions,
                     apps=apps_for_prompt,
                     task_loaded_from_file=task_loaded_from_file,
                     is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
@@ -724,6 +960,7 @@ def create_cuga_lite_graph(
                     prompt_template=selected_prompt_template,
                     enable_find_tools=enable_find_tools,
                     special_instructions=base_special_instructions,
+                    has_knowledge=has_knowledge_tools,
                 )
 
             return Command(
@@ -905,7 +1142,7 @@ def create_cuga_lite_graph(
                     messages_for_model, config={"callbacks": current_callbacks}
                 )
             except Exception as e:
-                code = extract_code_from_tool_use_failed(str(e))
+                code = extract_code_from_tool_use_failed(e)
                 if code:
                     logger.warning(
                         "Model attempted tool call without tools bound (tool_use_failed). "

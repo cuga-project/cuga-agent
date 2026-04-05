@@ -58,7 +58,7 @@ def _make_app_manager() -> AppManager:
         kill_ports=kill_processes_by_port,
         kill_process=kill_process_tree,
         wait_tcp=lambda p, lbl, r, i: wait_for_tcp_port(p, lbl, max_retries=r, retry_interval=i),
-        wait_http=lambda p, name: wait_for_server(p, name, https=_demo_uses_ssl() and p == _demo_port()),
+        wait_http=lambda p, name: wait_for_server(p, name, max_retries=240, https=_demo_uses_ssl() and p == _demo_port()),
     )
 
 
