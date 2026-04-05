@@ -25,6 +25,7 @@ import {
 } from "../knowledge/useSessionKnowledgeAttachments";
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
+import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
 import './CarbonChat.css';
 
 // Reset thread ID when conversation restarts
@@ -272,6 +273,12 @@ const CarbonChat = ({
     visibleDocumentMode: attachmentScope === "agent" ? "tracked" : "all",
   });
   const attachmentsEnabled = knowledgeEnabled !== false && attachmentScope !== "none" && scopeEnabled && attachmentsAvailable;
+  const [assistantName, setAssistantName] = useState("CUGA Agent");
+
+  useEffect(() => {
+    initAgentProfile(useDraft);
+    getResponseUserProfile(useDraft).then((p) => setAssistantName(p.nickname || "CUGA Agent"));
+  }, [useDraft]);
 
   // Keep the transport thread ID aligned with the parent-owned draft thread
   // even before the chat instance finishes booting.
@@ -707,7 +714,7 @@ const CarbonChat = ({
         className={`${contained ? 'carbon-chat-contained' : 'carbon-chat-fullscreen'} ${className}`}
         injectCarbonTheme={theme === 'dark' ? CarbonTheme.G100 : CarbonTheme.WHITE}
         openChatByDefault={true}
-        assistantName="CUGA Agent"
+        assistantName={assistantName}
         isReadonly={isReadonly}
         header={{
           isOn: true,

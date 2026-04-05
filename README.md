@@ -6,7 +6,7 @@
 
 <div align="center">
 
-# CUGA: The Configurable Generalist Agent
+# CUGA: Configurable Generalist Agent — Agent Harness for the Enterprise
 
 ### Start with a generalist. Customize for your domain. Deploy faster!
 

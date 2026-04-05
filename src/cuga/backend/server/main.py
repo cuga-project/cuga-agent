@@ -62,8 +62,9 @@ from cuga.config import (
 )
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
-from cuga.backend.server.auth import require_auth
-from cuga.backend.server.auth.models import UserInfo
+from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
+from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
+from cuga.backend.server.auth.models import TokenResponse, UserInfo
 from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
@@ -136,7 +137,7 @@ except ImportError as e:
 
 # Path constants
 TRACE_LOG_PATH = os.path.join(TRACES_DIR, "trace.log")
-FRONTEND_DIST_DIR = os.path.join(PACKAGE_ROOT, "..", "frontend_workspaces", "frontend", "dist")
+FRONTEND_DIST_DIR = os.path.join(PACKAGE_ROOT, "frontend", "dist")
 EXTENSION_DIR = os.path.join(PACKAGE_ROOT, "..", "frontend_workspaces", "extension", "releases", "chrome-mv3")
 STATIC_DIR_FLOWS_PATH = os.path.join(PACKAGE_ROOT, "backend", "server", "flows")
 SAVE_REUSE_PY_PATH = os.path.join(
@@ -540,8 +541,6 @@ async def lifespan(app: FastAPI):
             policies_list = (
                 raw_policies.get("policies", [])
                 if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else raw_policies
-                if isinstance(raw_policies, list)
                 else []
             )
             if policies_list and app_state.policy_system and app_state.policy_system.storage:
@@ -653,12 +652,19 @@ async def lifespan(app: FastAPI):
         )
 
     tool_provider = CombinedToolProvider(get_include_by_app=_get_include_by_app, agent_id="cuga-default")
+    from cuga.backend.server.manage_routes import _extract_agent_feature_overrides as _extract_prod_overrides
+
+    _prod_overrides = _extract_prod_overrides(_startup_config or {})
     app_state.agent = DynamicAgentGraph(
         None,
         langfuse_handler=langfuse_handler,
         policy_system=app_state.policy_system,
         tool_provider=tool_provider,
         llm_config=_startup_llm_cfg or None,
+        enable_todos=_prod_overrides.get("enable_todos"),
+        reflection_enabled=_prod_overrides.get("reflection_enabled"),
+        shortlisting_tool_threshold=_prod_overrides.get("shortlisting_tool_threshold"),
+        cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
     )
     await app_state.agent.build_graph()
 
@@ -1045,6 +1051,32 @@ async def save_conversation_to_db(
         logger.error(f"Error saving conversation to database: {e}")
 
 
+async def _next_event_or_stop(stream, stop_event):
+    """Get next event from stream, or (None, True) if stop_event is set first."""
+    if stop_event and stop_event.is_set():
+        return None, True
+    next_task = asyncio.create_task(stream.__anext__())
+    tasks = [next_task]
+    if stop_event:
+        stop_task = asyncio.create_task(stop_event.wait())
+        tasks.append(stop_task)
+    else:
+        stop_task = None
+    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    for p in pending:
+        p.cancel()
+        try:
+            await p
+        except asyncio.CancelledError:
+            pass
+    if stop_task and stop_task in done and stop_event.is_set():
+        return None, True
+    try:
+        return next_task.result(), False
+    except StopAsyncIteration:
+        return None, "done"
+
+
 async def event_stream(
     query: str,
     api_mode=False,
@@ -1126,6 +1158,10 @@ async def event_stream(
         from cuga.config import get_service_instance_id, get_tenant_id
 
         local_state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+        if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
+            from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
+
+            local_state.pi = HEALTH_USER_CONTEXT
 
     if not api_mode:
         local_obs, _, _, _, local_info = await app_state.env.step("")
@@ -1233,17 +1269,14 @@ async def event_stream(
                 yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
                 return
 
-            async for event in agent_stream_gen:
-                # Check cancellation event during event processing
-                if (
-                    thread_id
-                    and thread_id in app_state.stop_events
-                    and app_state.stop_events[thread_id].is_set()
-                ):
-                    logger.info(
-                        f"Agent execution stopped by user during event processing for thread_id: {thread_id}"
-                    )
+            stop_ev = app_state.stop_events.get(thread_id) if thread_id else None
+            while True:
+                event, status = await _next_event_or_stop(agent_stream_gen, stop_ev)
+                if status is True:
+                    logger.info(f"Agent execution stopped by user for thread_id: {thread_id}")
                     yield StreamEvent(name="Stopped", data="Agent execution was stopped by user.").format()
+                    return
+                if status == "done":
                     return
 
                 if isinstance(event, AgentLoopAnswer):
@@ -1504,11 +1537,6 @@ app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 
 
-def _auth_enabled() -> bool:
-    auth = getattr(settings, "auth", None)
-    return bool(auth and getattr(auth, "enabled", False))
-
-
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok", "subsystems": app_state.get_subsystem_statuses()})
@@ -1549,14 +1577,15 @@ async def readiness(subsystem: Optional[str] = Query(None)):
 
 @app.get("/api/auth/config")
 async def auth_config():
-    return JSONResponse({"enabled": _auth_enabled()})
+    return JSONResponse({"enabled": _auth_enabled(), "authorization_enabled": _authorization_enabled()})
 
 
 @app.get("/api/ui/config")
 async def ui_config():
     """Return UI configuration flags from settings."""
     hide_logo = settings.ui.hide_cuga_logo
-    return JSONResponse({"hide_cuga_logo": hide_logo})
+    brand_name = getattr(settings.ui, "brand_name", "CUGA Agent") or "CUGA Agent"
+    return JSONResponse({"hide_cuga_logo": hide_logo, "brand_name": brand_name})
 
 
 @app.get("/auth/login")
@@ -1572,15 +1601,52 @@ async def auth_login(request: Request):
     response = RedirectResponse(url=auth_url, status_code=302)
     auth = getattr(settings, "auth", None)
     secure = getattr(auth, "require_https", False) if auth else False
+    # SameSite=None is required so the browser sends this cookie back on the
+    # cross-site POST to /auth/callback after the IdP redirect. Requires Secure=True.
+    state_samesite = "none" if secure else "lax"
     response.set_cookie(
         key="cuga_auth_state",
         value=state,
         max_age=600,
         httponly=True,
-        samesite="lax",
+        samesite=state_samesite,
         secure=secure,
     )
     return response
+
+
+def _jwt_payload_unverified(token: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not token:
+        return None
+    try:
+        import jwt as pyjwt
+
+        return pyjwt.decode(token, options={"verify_signature": False})
+    except Exception:
+        return None
+
+
+def _payload_has_role_claims(payload: Dict[str, Any]) -> bool:
+    from cuga.backend.server.auth.jwt_validator import JWTValidator
+
+    if JWTValidator._extract_roles(payload):
+        return True
+    role = payload.get("role")
+    if isinstance(role, str) and role.strip():
+        return True
+    if isinstance(role, list) and role:
+        return True
+    return False
+
+
+def _session_token_for_auto_role_source(token_response: TokenResponse) -> str:
+    id_payload = _jwt_payload_unverified(token_response.id_token)
+    acc_payload = _jwt_payload_unverified(token_response.access_token)
+    if id_payload and _payload_has_role_claims(id_payload) and token_response.id_token:
+        return token_response.id_token
+    if acc_payload and _payload_has_role_claims(acc_payload):
+        return token_response.access_token
+    return token_response.id_token or token_response.access_token
 
 
 @app.post("/auth/callback")
@@ -1593,19 +1659,94 @@ async def auth_callback(request: Request):
     if not code or not state:
         raise HTTPException(status_code=400, detail="Missing code or state")
     state_cookie = request.cookies.get("cuga_auth_state")
-    if not state_cookie or state_cookie != state:
-        raise HTTPException(status_code=400, detail="Invalid state")
+    if not state_cookie:
+        logger.warning("auth_callback: cuga_auth_state cookie is missing (state={})", state[:8])
+        raise HTTPException(status_code=400, detail="Invalid state: state cookie missing")
+    if state_cookie != state:
+        logger.warning(
+            "auth_callback: state mismatch — cookie={} request={}",
+            state_cookie[:8],
+            state[:8],
+        )
+        raise HTTPException(status_code=400, detail="Invalid state: state mismatch")
     from cuga.backend.server.auth.oidc_client import get_oidc_client
 
     client = get_oidc_client()
     if not client:
         raise HTTPException(status_code=503, detail="OIDC not configured")
-    try:
-        token_response, user_info = await client.exchange_code(code, state)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    token = token_response.id_token or token_response.access_token
     auth = getattr(settings, "auth", None)
+    try:
+        token_response, _user_info = await client.exchange_code(code, state)
+    except ValueError as e:
+        logger.warning("auth_callback: exchange_code failed: {}", e)
+        raise HTTPException(status_code=400, detail=str(e))
+
+    role_token_source = (getattr(auth, "role_token_source", "auto") if auth else "auto").lower()
+    allowed_role_token_sources = {"auto", "id_token", "access_token", "iam_proxy"}
+    if role_token_source not in allowed_role_token_sources:
+        raise HTTPException(
+            status_code=503,
+            detail=("Invalid auth.role_token_source; expected one of auto,id_token,access_token,iam_proxy"),
+        )
+
+    if role_token_source == "auto":
+        token = _session_token_for_auto_role_source(token_response)
+    else:
+        token = token_response.id_token or token_response.access_token
+    iam_proxy_url = getattr(auth, "iam_proxy_url", "") if auth else ""
+    should_use_iam_proxy = role_token_source == "iam_proxy" or (
+        role_token_source == "auto" and bool(iam_proxy_url)
+    )
+    if should_use_iam_proxy:
+        from cuga.config import get_service_instance_id
+
+        if not iam_proxy_url:
+            raise HTTPException(
+                status_code=503,
+                detail="DYNACONF_AUTH__IAM_PROXY_URL is required when auth.role_token_source=iam_proxy",
+            )
+        instance_id = get_service_instance_id()
+        if not instance_id:
+            raise HTTPException(
+                status_code=503,
+                detail="DYNACONF_SERVICE__INSTANCE_ID is required for IAM proxy token exchange",
+            )
+        try:
+            token = await client.exchange_service_token(token_response.access_token, instance_id)
+        except ValueError as e:
+            raise HTTPException(status_code=503, detail=str(e))
+        except httpx.HTTPStatusError as e:
+            raise HTTPException(
+                status_code=502,
+                detail=f"IAM proxy token exchange failed: {e.response.status_code} {e.response.reason_phrase}",
+            )
+        except httpx.RequestError as e:
+            raise HTTPException(
+                status_code=503,
+                detail=str(e) or "IAM proxy token exchange failed (connection error)",
+            )
+        try:
+            from cuga.backend.server.auth.jwt_validator import validate_iam_token
+
+            skip_verify = bool(getattr(auth, "iam_proxy_skip_verify", False)) if auth else False
+            ca_bundle = getattr(auth, "iam_proxy_ca_bundle", None) if auth else None
+            await validate_iam_token(
+                token,
+                instance_id,
+                skip_verify=skip_verify,
+                ca_bundle=ca_bundle or None,
+            )
+        except ValueError as e:
+            logger.warning("auth_callback: IAM token validation failed: {}", e)
+            raise HTTPException(status_code=401, detail=f"IAM token validation failed: {e}")
+    elif role_token_source == "id_token":
+        if not token_response.id_token:
+            raise HTTPException(status_code=503, detail="OIDC provider did not return id_token")
+        token = token_response.id_token
+    elif role_token_source == "access_token":
+        if not token_response.access_token:
+            raise HTTPException(status_code=503, detail="OIDC provider did not return access_token")
+        token = token_response.access_token
     cookie_name = getattr(auth, "session_cookie_name", "cuga_session") if auth else "cuga_session"
     session_max_age = getattr(auth, "session_max_age", 3600) if auth else 3600
     response = JSONResponse({"ok": True, "redirect": "/manage"})
@@ -1618,7 +1759,8 @@ async def auth_callback(request: Request):
         samesite="lax",
         secure=secure,
     )
-    response.delete_cookie("cuga_auth_state", secure=secure)
+    state_samesite = "none" if secure else "lax"
+    response.delete_cookie("cuga_auth_state", secure=secure, samesite=state_samesite)
     return response
 
 
@@ -1749,7 +1891,7 @@ if getattr(settings.advanced_features, "use_extension", False):
 @app.post("/stream")
 async def stream(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -1798,7 +1940,7 @@ async def stream(
 
 
 @app.post("/stop")
-async def stop(request: Request, current_user: Optional[UserInfo] = Depends(require_auth)):
+async def stop(request: Request, current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to stop the agent execution for a specific thread."""
     # Get thread_id from header or body
     thread_id = request.headers.get("X-Thread-ID")
@@ -1827,7 +1969,7 @@ async def stop(request: Request, current_user: Optional[UserInfo] = Depends(requ
 @app.post("/reset")
 async def reset_agent_state(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to reset the agent state to default values."""
     logger.info("Received reset request")
@@ -1876,7 +2018,7 @@ async def reset_agent_state(
 @app.get("/api/conversation-threads")
 async def get_conversation_threads(
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Retrieve all conversation threads for an agent."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -1893,7 +2035,7 @@ async def get_conversation_threads(
 async def get_conversation_messages(
     thread_id: str,
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Retrieve all messages for a specific conversation thread."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -1922,7 +2064,7 @@ async def get_conversation_messages(
 async def get_conversation_stream_events(
     thread_id: str,
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Retrieve all streaming events for a specific conversation thread."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -2057,7 +2199,7 @@ async def get_conversations(
 @app.post("/api/conversations")
 async def create_conversation(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to create a new conversation."""
     try:
@@ -2081,7 +2223,7 @@ async def delete_conversation(
     request: Request,
     conversation_id: str,
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Delete a conversation thread and its stream events."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
@@ -2352,7 +2494,7 @@ async def get_tools_list(
     request: Request,
     agent_id: Optional[str] = None,
     draft: Optional[str] = None,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to retrieve detailed list of all available tools.
 
@@ -2420,7 +2562,7 @@ async def get_tools_list(
 
 
 @app.get("/api/tools/status")
-async def get_tools_status(current_user: Optional[UserInfo] = Depends(require_auth)):
+async def get_tools_status(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve tools connection status."""
     try:
         # Get available apps and their tools
@@ -2489,7 +2631,7 @@ async def save_mode_config(
 @app.get("/api/agent/state")
 async def get_agent_state(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to retrieve agent state for a specific thread."""
     try:
@@ -2752,7 +2894,7 @@ async def save_agent_mode_config(
 
 
 @app.get("/api/agents")
-async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_auth)):
+async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_manage_access)):
     """List configured agents (dashboard)."""
     try:
         tools_count = 0
@@ -2776,10 +2918,27 @@ async def get_agents_list(current_user: Optional[UserInfo] = Depends(require_aut
             latest_version, latest_version_created_at = await get_latest_version()
         except Exception:
             pass
+
+        name = "CUGA Default Agent"
+        description = "Default CUGA agent with policy engine, tools, and chat."
+        try:
+            from cuga.backend.server.config_store import load_config
+
+            config, _ = await load_config(None, "cuga-default")
+            if config and isinstance(config.get("agent"), dict):
+                ag = config["agent"]
+                if isinstance(ag.get("name"), str) and ag["name"].strip():
+                    name = ag["name"].strip()
+                if isinstance(ag.get("description"), str) and ag["description"].strip():
+                    description = ag["description"].strip()
+        except Exception:
+            pass
+
         agents = [
             {
                 "id": "cuga-default",
-                "description": "Default CUGA agent with policy engine, tools, and chat.",
+                "name": name,
+                "description": description,
                 "tools_count": tools_count,
                 "logs_url": logs_url,
                 "latest_version": latest_version,
@@ -2807,7 +2966,7 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
 
 
 @app.get("/api/workspace/tree")
-async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_auth)):
+async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_chat_access)):
     """Endpoint to retrieve the workspace folder tree."""
     try:
         workspace_path = Path(os.getcwd()) / "cuga_workspace"
@@ -2847,7 +3006,7 @@ async def get_workspace_tree(current_user: Optional[UserInfo] = Depends(require_
 @app.get("/api/workspace/file")
 async def get_workspace_file(
     path: str,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to retrieve a file's content from the workspace."""
     try:
@@ -2894,7 +3053,7 @@ async def get_workspace_file(
 @app.get("/api/workspace/download")
 async def download_workspace_file(
     path: str,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Download a file from the workspace."""
     try:

@@ -506,10 +506,11 @@ export function ChatLanding() {
         let agentName = "CUGA Default Agent";
         let agentDescription = "A general-purpose assistant with configured tools and workspace access.";
         let configVersion: number | string | null = null;
+        let agentIdFallback = "cuga-default";
 
         if (contextRes.ok) {
           const contextData = await contextRes.json();
-          agentName = contextData.agent_id || agentName;
+          agentIdFallback = contextData.agent_id ?? agentIdFallback;
           configVersion = contextData.config_version ?? null;
           const kEnabled = contextData.knowledge_enabled ?? false;
           const agentKEnabled = contextData.agent_level_knowledge_enabled ?? false;
@@ -528,6 +529,28 @@ export function ChatLanding() {
                 setKnowledgeDocCount((docsData.documents ?? []).length);
               }
             } catch { /* will be retried by refreshKnowledgeDocCount effect */ }
+          }
+        }
+
+        let manageData: { config?: { agent?: { name?: string; description?: string }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
+        if (manageRes.ok) {
+          manageData = await manageRes.json();
+          const ag = manageData?.config?.agent;
+          if (ag && typeof ag === "object") {
+            if (ag.name && String(ag.name).trim()) {
+              agentName = String(ag.name).trim();
+            }
+            if (ag.description != null && String(ag.description).trim()) {
+              agentDescription = String(ag.description).trim();
+            }
+          }
+          const hs = manageData?.config?.homescreen;
+          if (hs && typeof hs === "object") {
+            setHomescreenConfig({
+              isOn: hs.isOn ?? true,
+              greeting: hs.greeting,
+              starters: Array.isArray(hs.starters) ? hs.starters.slice(0, 4) : undefined,
+            });
           }
         }
 

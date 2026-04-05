@@ -10,25 +10,31 @@ export function getApiBaseUrl(): string {
   return `${protocol}//${hostname}:7860`;
 }
 
-let authConfigCache: { enabled: boolean } | null = null;
+let authConfigCache: { enabled: boolean; authorization_enabled: boolean } | null = null;
 
-export async function getAuthConfig(): Promise<{ enabled: boolean }> {
+export async function getAuthConfig(): Promise<{ enabled: boolean; authorization_enabled: boolean }> {
   if (authConfigCache !== null) return authConfigCache;
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/auth/config`, { credentials: "include" });
-  const data = await res.json().catch(() => ({ enabled: false }));
-  authConfigCache = { enabled: !!data.enabled };
+  const data = await res.json().catch(() => ({ enabled: false, authorization_enabled: false }));
+  authConfigCache = {
+    enabled: !!data.enabled,
+    authorization_enabled: !!data.authorization_enabled
+  };
   return authConfigCache;
 }
 
-let uiConfigCache: { hide_cuga_logo: boolean } | null = null;
+let uiConfigCache: { hide_cuga_logo: boolean; brand_name: string } | null = null;
 
-export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean }> {
+export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_name: string }> {
   if (uiConfigCache !== null) return uiConfigCache;
   const base = getApiBaseUrl();
   const res = await fetch(`${base}/api/ui/config`, { credentials: "include" });
-  const data = await res.json().catch(() => ({ hide_cuga_logo: false }));
-  uiConfigCache = { hide_cuga_logo: !!data.hide_cuga_logo };
+  const data = await res.json().catch(() => ({ hide_cuga_logo: false, brand_name: "CUGA Agent" }));
+  uiConfigCache = {
+    hide_cuga_logo: !!data.hide_cuga_logo,
+    brand_name: data.brand_name && String(data.brand_name).trim() ? String(data.brand_name).trim() : "CUGA Agent",
+  };
   return uiConfigCache;
 }
 
@@ -46,9 +52,15 @@ export async function apiFetch(
   if (res.status === 401) {
     const config = await getAuthConfig();
     if (config.enabled) {
-      const loginUrl = `${base}/auth/login`;
-      window.location.href = loginUrl;
+      const { isLoginInProgress, markLoginInProgress } = await import("./auth");
+      if (!isLoginInProgress()) {
+        markLoginInProgress();
+        window.location.href = `${base}/auth/login`;
+      }
     }
+  }
+  if (res.status === 403) {
+    console.warn(`Access denied (403) for ${String(url)}. User may lack required role.`);
   }
   return res;
 }
@@ -82,6 +94,7 @@ export async function postStop(threadId: string): Promise<Response> {
   return apiFetch(`${base}/stop`, {
     method: "POST",
     headers: { "Content-Type": "application/json", "X-Thread-ID": threadId },
+    body: JSON.stringify({ thread_id: threadId }),
   });
 }
 
@@ -160,6 +173,18 @@ export async function postManageConfigDraft(config: unknown, agentId?: string): 
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ config }),
+  });
+}
+
+export async function patchManageConfigDraftAgent(
+  agent: { name?: string; description?: string },
+  agentId?: string
+): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft/agent${q}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ agent }),
   });
 }
 

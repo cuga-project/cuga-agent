@@ -157,7 +157,7 @@ async def create_secret(
             if not ok:
                 raise HTTPException(
                     status_code=503,
-                    detail="Vault unavailable or write failed. Check VAULT_ADDR and VAULT_TOKEN.",
+                    detail="Vault unavailable or write failed. Check VAULT_ADDR and auth (VAULT_TOKEN or kubernetes role/mount).",
                 )
             ref = f"vault://secret/{body.id}#value"
             return {"ref": ref, "id": body.id}

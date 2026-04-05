@@ -30,6 +30,7 @@ import {
   SelectItem,
   RadioButtonGroup,
   RadioButton,
+  TextArea,
 } from "@carbon/react";
 import { CugaHeader } from "agentic_chat/CugaHeader";
 import {
@@ -63,6 +64,7 @@ export interface HomescreenConfig {
 }
 
 export interface AgentConfig {
+  agent?: { name?: string; description?: string };
   llm?: {
     provider?: "groq" | "openai" | "litellm";
     api_key?: string;
@@ -144,7 +146,7 @@ const DEFAULT_CONFIG: AgentConfig = {
     disable_ssl: false,
   },
   tools: [],
-  feature_flags: { enable_todos: true, reflection: false, max_steps: 70, shortlisting_tool_threshold: 35 },
+  feature_flags: { enable_todos: false, reflection: false, max_steps: 70, shortlisting_tool_threshold: 35 },
   homescreen: { ...DEFAULT_HOMESCREEN },
 };
 
@@ -220,6 +222,8 @@ export function ManagePage() {
   const [currentVersion, setCurrentVersion] = useState<number | "draft" | null>(null);
   const [draftSaving, setDraftSaving] = useState(false);
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
+  const [agentName, setAgentName] = useState("");
+  const [agentDescription, setAgentDescription] = useState("");
   const [secretsModalOpen, setSecretsModalOpen] = useState(false);
   const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
   const [knowledgeHealthy, setKnowledgeHealthy] = useState<boolean | null>(null);
@@ -405,6 +409,8 @@ export function ManagePage() {
     }
   }, [addToast]);
 
+  const effectiveAgentId = agentId ?? "cuga-default";
+
   const loadLatest = useCallback(async () => {
     try {
       skipDraftSaveRef.current = true;
@@ -433,9 +439,7 @@ export function ManagePage() {
             if (Array.isArray(out.tools)) {
               out.tools = normalizeTools(out.tools);
             }
-            // Policies are now included in the config from manage API
-            if (out.policies) {
-              // Ensure policies structure is correct
+            if (out.policies !== undefined && out.policies && typeof out.policies === "object") {
               if (!out.policies.enablePolicies && out.policies.enablePolicies !== false) {
                 out.policies.enablePolicies = true;
               }
@@ -452,6 +456,14 @@ export function ManagePage() {
                   ? hs.starters.slice(0, 4).filter((s): s is string => typeof s === "string")
                   : DEFAULT_HOMESCREEN.starters ?? [],
               };
+            }
+            if (data.config.agent && typeof data.config.agent === "object") {
+              const ag = data.config.agent as { name?: string; description?: string };
+              setAgentName(ag.name ?? "");
+              setAgentDescription(ag.description ?? "");
+            }
+            if (data.config.feature_flags && typeof data.config.feature_flags === "object") {
+              out.feature_flags = { ...DEFAULT_CONFIG.feature_flags!, ...data.config.feature_flags };
             }
           }
           version = data.version === "draft" ? "draft" : (data.version ?? null);
@@ -466,9 +478,7 @@ export function ManagePage() {
             if (Array.isArray(out.tools)) {
               out.tools = normalizeTools(out.tools);
             }
-            // Policies are now included in the config from manage API
-            if (out.policies) {
-              // Ensure policies structure is correct
+            if (out.policies !== undefined && out.policies && typeof out.policies === "object") {
               if (!out.policies.enablePolicies && out.policies.enablePolicies !== false) {
                 out.policies.enablePolicies = true;
               }
@@ -485,6 +495,14 @@ export function ManagePage() {
                   ? hs.starters.slice(0, 4).filter((s): s is string => typeof s === "string")
                   : DEFAULT_HOMESCREEN.starters ?? [],
               };
+            }
+            if (data.config.agent && typeof data.config.agent === "object") {
+              const ag = data.config.agent as { name?: string; description?: string };
+              setAgentName(ag.name ?? "");
+              setAgentDescription(ag.description ?? "");
+            }
+            if (data.config.feature_flags && typeof data.config.feature_flags === "object") {
+              out.feature_flags = { ...DEFAULT_CONFIG.feature_flags!, ...data.config.feature_flags };
             }
           }
           version = typeof data.version === "number" ? data.version : null;
@@ -677,6 +695,7 @@ export function ManagePage() {
   const assembleConfig = useCallback(
     (overrides?: Partial<AgentConfig>): AgentConfig => {
       const c: AgentConfig = {
+        agent: { name: agentName, description: agentDescription || undefined },
         llm: llmConfig,
         tools: tools,
         feature_flags: featureFlags,
@@ -686,7 +705,7 @@ export function ManagePage() {
       };
       return overrides ? { ...c, ...overrides } : c;
     },
-    [llmConfig, tools, featureFlags, homescreen, policies, knowledgeConfig]
+    [agentName, agentDescription, llmConfig, tools, featureFlags, homescreen, policies, knowledgeConfig]
   );
 
   const performDraftSave = useCallback(
@@ -755,6 +774,26 @@ export function ManagePage() {
       saveLlmDraft();
     }, 100);
   }, [saveLlmDraft]);
+
+  const saveAgentDraft = useCallback(async () => {
+    setDraftSaving(true);
+    try {
+      const res = await api.patchManageConfigDraftAgent(
+        { name: agentName.trim(), description: agentDescription.trim() || undefined },
+        effectiveAgentId
+      );
+      setDraftSaving(false);
+      if (res.ok) {
+        setCurrentVersion("draft");
+        addToast("success", "Draft saved", "Agent settings saved to draft");
+      } else {
+        addToast("error", "Draft Save Failed", `Failed to save agent (${res.status} ${res.statusText})`);
+      }
+    } catch (error) {
+      setDraftSaving(false);
+      addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
+    }
+  }, [agentName, agentDescription, addToast, effectiveAgentId]);
 
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
@@ -837,6 +876,9 @@ export function ManagePage() {
         if (Array.isArray(next.tools)) {
           next.tools = normalizeTools(next.tools);
         }
+        const ag = next.agent;
+        setAgentName(ag?.name ?? "");
+        setAgentDescription(ag?.description ?? "");
         setLlmConfig(next.llm ?? DEFAULT_CONFIG.llm!);
         setToolsState(Array.isArray(next.tools) ? next.tools : []);
         setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
@@ -872,6 +914,10 @@ export function ManagePage() {
 
   const saveConfig = async () => {
     setShowReindexConfirm(false);
+    if (!agentName.trim()) {
+      addToast("error", "Agent name required", "Please enter an agent name before publishing.");
+      return;
+    }
     setSaveStatus("saving");
     try {
       let toSave = assembleConfig();
@@ -979,7 +1025,7 @@ export function ManagePage() {
         let errorMsg = `Failed to save configuration (${res.status} ${res.statusText})`;
         try {
           const errorData = await res.json();
-          errorMsg = errorData.error || errorData.message || errorMsg;
+          errorMsg = errorData.detail || errorData.error || errorData.message || errorMsg;
         } catch {
           // If response is not JSON, use default error message
         }
@@ -1134,6 +1180,34 @@ export function ManagePage() {
           <div className="manage-config-scroll">
             <Layer withBackground>
             <Accordion align="start" size="md">
+              <AccordionItem title="Agent" open>
+                <VStack gap={5}>
+                  <FormGroup legendText="Name (required)" className="manage-agent-name-group">
+                    <TextInput
+                      id="agent-name"
+                      labelText=""
+                      value={agentName}
+                      onChange={(e) => setAgentName(e.target.value)}
+                      onBlur={() => saveAgentDraft()}
+                      placeholder="Enter agent name"
+                      invalid={!agentName.trim()}
+                      invalidText="Name is required"
+                      required
+                    />
+                  </FormGroup>
+                  <FormGroup legendText="Description">
+                    <TextArea
+                      id="agent-description"
+                      labelText=""
+                      value={agentDescription}
+                      onChange={(e) => setAgentDescription(e.target.value)}
+                      onBlur={() => saveAgentDraft()}
+                      placeholder="Optional description"
+                      rows={3}
+                    />
+                  </FormGroup>
+                </VStack>
+              </AccordionItem>
               <AccordionItem title="LLM Configuration" open>
                   {llmSecretsMode === "local" && llmForceEnv ? (
                     <InlineNotification
@@ -1463,7 +1537,7 @@ export function ManagePage() {
                       <Checkbox
                         id="enable_todos"
                         labelText="Enable todos"
-                        checked={flags.enable_todos ?? true}
+                        checked={flags.enable_todos ?? false}
                         onChange={(_e, { checked }) => {
                           updateFeatureFlag("enable_todos", !!checked);
                           setTimeout(() => performDraftSave(), 0);

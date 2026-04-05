@@ -1,6 +1,6 @@
 [project]
 name = "cuga"
-version = "0.2.10"
+version = "0.2.13"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
@@ -27,16 +27,15 @@ dependencies = [
     "psutil>=7.0.0",
     "typer>=0.15.3",
     "typer-slim>=0.15.3",  # explicit: docling pulls typer meta-package which needs typer-slim
-    "fastmcp",
+    "fastmcp>=3.2.0",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
-    "pymilvus[milvus-lite,model]>=2.6.4",
+    "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
-    "litellm>=1.0.0",
+    "litellm>=1.83.0",
     "tavily-python",
-    "torch>=2.2.2",
-    "sentence-transformers>=5.1.2",
+    "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
     "sqlite-vec>=0.1.6",
     "pgvector>=0.4.2",
@@ -45,7 +44,7 @@ dependencies = [
     "cryptography>=44.0.0",
     "hvac>=2.0.0",
     "boto3>=1.34.0",
-    "openlit>=1.4.0", # 1.4.0+ includes LangChain + LangGraph instrumentors and the TRACER_SET idempotency guard
+    "openlit>=1.40.1",
     # Knowledge engine (replaces OpenRAG)
     "langchain-milvus>=0.3,<0.4",
     "langchain-docling>=2.0,<3.0",
@@ -59,6 +58,7 @@ evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
+health = ["cuga-oak-health; python_version>='3.12'"]
 
 [project.urls]
 Homepage = "https://cuga.dev"
@@ -69,7 +69,41 @@ package = true
 constraint-dependencies = [
     "pillow>=12.1.1",  # CVE-2026-25990: Out-of-bounds write in PSD loading
     "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441
+    "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
     "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
+]
+
+# openlit 1.40.1 declares openai<2; litellm>=1.83 needs openai 2.x (CVE-2026-35030 / GHSA-jjhc-v7c2-5hh6).
+[[tool.uv.dependency-metadata]]
+name = "openlit"
+version = "1.40.1"
+requires-dist = [
+    "anthropic>=0.42.0,<1.0.0",
+    "boto3>=1.34.0,<2.0.0",
+    "botocore>=1.34.0,<2.0.0",
+    "openai>=1.1.1,<3.0.0",
+    "opentelemetry-api>=1.38.0,<2.0.0",
+    "opentelemetry-exporter-otlp>=1.38.0,<2.0.0",
+    "opentelemetry-instrumentation>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-aiohttp-client>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-asgi>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-django>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-falcon>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-fastapi>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-flask>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-httpx>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-pyramid>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-requests>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-starlette>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-tornado>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-urllib>=0.52b0,<1.0.0",
+    "opentelemetry-instrumentation-urllib3>=0.52b0,<1.0.0",
+    "opentelemetry-sdk>=1.38.0,<2.0.0",
+    "opentelemetry-semantic-conventions>=0.59b0,<1.0.0",
+    "pydantic>=2.0.0,<3.0.0",
+    "requests>=2.26.0,<3.0.0",
+    "schedule>=1.2.2,<2.0.0",
+    "xmltodict>=0.13.0,<1.0.0",
 ]
 
 [tool.setuptools]
@@ -88,10 +122,8 @@ cuga = [
     "settings.toml",
     "backend/**/*.jinja2",
     "backend/**/*.js",
-]
-frontend_workspaces = [
+    "backend/server/demo_setup_utils/*.json",
     "frontend/dist/**",
-    "extension/releases/**"
 ]
 scripts = ["*.py"]
 system_tests = ["**/*.py", "**/*.yaml", "**/*.sh"]

@@ -139,7 +139,7 @@ print(my_accounts)
 {% if enable_find_tools %}✅ **CORRECT (Using find_tools to discover relevant tools - must be used separately):**
 
 ```python
-output = await find_tools("<search query>", "<app_name>")
+output = await find_tools("<comprehensive search query>", "<app_name>")
 print(output)
 ```
 
@@ -148,7 +148,7 @@ print(output)
 ```python
 # Don't do this - find_tools should be used separately
 accounts = await example_tool()
-tools = await find_tools("<search query>", "<app_name>")
+tools = await find_tools("<comprehensive search query>", "<app_name>")
 print(accounts, tools)
 ```
 

@@ -379,10 +379,15 @@ To use an external PostgreSQL instead, leave `POSTGRES_PASSWORD` empty, do not u
 | `MODEL_NAME` | yes | LLM model name |
 | `AGENT_SETTING_CONFIG` | yes | Settings TOML file (e.g. `settings.groq.toml`) |
 | `DYNACONF_AUTH__ENABLED` | no | Enable OIDC auth (default: `true`) |
+| `DYNACONF_AUTH__REQUIRE_HTTPS` | no | Enforce HTTPS on cookies and routes (default: `false`) |
+| `DYNACONF_AUTH__AUTHORIZATION_ENABLED` | no | Enable role-based authorization (default: `false`) |
+| `DYNACONF_AUTH__ROLE_TOKEN_SOURCE` | no | Token used for role checks: `auto` (default), `id_token`, `access_token`, `iam_proxy` |
 | `OIDC_CLIENT_ID` | no | OIDC client ID |
 | `OIDC_CLIENT_SECRET` | no | OIDC client secret |
 | `OIDC_DISCOVERY_URL` | no | OIDC discovery URL |
 | `OIDC_REDIRECT_URI` | no | OIDC redirect URI (e.g. `https://<route-host>/manage`) |
+| `DYNACONF_AUTH__IAM_PROXY_URL` | no | XPM IAM proxy base URL for service-scoped token exchange (e.g. `https://xpm.apps.example.com/api/v1/iam-proxy`) |
+| `DYNACONF_AUTH__IAM_PROXY_SKIP_VERIFY` | no | Skip TLS verification for IAM proxy (dev/fyre only, default: `false`) |
 | `DYNACONF_STORAGE__MODE` | no | Storage mode: `local` (default) or `prod`. Set to `prod` automatically when using `--with-postgres` |
 | `POSTGRES_PASSWORD` | when `--with-postgres` | Password for the PostgreSQL DB user. Required when using `--with-postgres` |
 | `POSTGRES_USER` | no | PostgreSQL username (default: `cuga`) |

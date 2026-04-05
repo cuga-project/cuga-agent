@@ -29,8 +29,8 @@ Tools that run in the **MCP Registry**, a separate process triggered by CUGA:
 
 **How it Works:**
 ```bash
-# Start registry as separate process
-uv run registry
+# From docs/examples/cuga_with_runtime_tools after `uv sync` at repo root:
+uv run --project ../../../ registry
 # CUGA connects to registry at runtime
 ```
 
@@ -158,44 +158,33 @@ task = "Get top account by revenue from my accounts in digital sales, then send 
 
 ### 1. **Install Dependencies**
 
+This repository uses one lockfile at the root. From the repo root:
 
-
-Navigate to this example
 ```bash
+cd /path/to/cuga-agent
+uv sync
 cd docs/examples/cuga_with_runtime_tools
 ```
 
-Create and activate a new virtual environment
-```bash
-uv venv --python=3.12 && source .venv/bin/activate
-```
+See **Dependency lockfile** in [CONTRIBUTING.md](../../../CONTRIBUTING.md) for why there is no separate `uv.lock` in this folder.
 
-Install dependencies
-```bash
-uv sync
-```
+Create a local `.env` or copy the main `.env` file:
 
-Create a local .env or copy the main .env file
 ```bash
 cp ../../../.env .env
-``` 
+```
 
 ### 2. **Start MCP Registry** (for OpenAPI and MCP tools)
 ```bash
 export MCP_SERVERS_FILE=./mcp_servers.yaml
-uv run registry
+uv run --project ../../../ registry
 ```
 
 ### 3. **Run the Complete Example**
-In a second terminal, activate the same virtual environment
-```bash
-source .venv/bin/activate
-```
-
-Run the example
+In a second terminal, from this same directory:
 
 ```bash
-uv run main.py
+uv run --project ../../../ main.py
 ```
 
 ### 4. **Kill Registry Process** (if needed)

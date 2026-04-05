@@ -73,6 +73,43 @@ def parse_markdown_to_steps(markdown_content: str) -> List[Dict[str, Any]]:
     return steps
 
 
+VALID_FORMAT_TYPES = {"markdown", "json_schema", "direct"}
+
+
+def validate_output_formatter(data: Dict[str, Any]) -> List[str]:
+    """Validate output formatter policy dict. Returns list of error messages (empty if valid)."""
+    errs: List[str] = []
+    name = data.get("name", "unknown")
+
+    for key in ("id", "name", "description", "triggers"):
+        if key not in data:
+            errs.append(f"Output formatter '{name}': missing required field '{key}'")
+            continue
+        if key == "triggers" and (not isinstance(data[key], list) or len(data[key]) == 0):
+            errs.append(f"Output formatter '{name}': triggers must be a non-empty list")
+            continue
+
+    format_type = data.get("format_type", "markdown")
+    if format_type not in VALID_FORMAT_TYPES:
+        errs.append(
+            f"Output formatter '{name}': format_type must be one of {sorted(VALID_FORMAT_TYPES)}, got '{format_type}'"
+        )
+
+    format_config = data.get("format_config", "")
+    if format_type == "json_schema":
+        if not isinstance(format_config, str):
+            errs.append(
+                f"Output formatter '{name}': format_config must be a string when format_type is json_schema"
+            )
+        else:
+            try:
+                json.loads(format_config)
+            except json.JSONDecodeError as e:
+                errs.append(f"Output formatter '{name}': format_config is invalid JSON: {e}")
+
+    return errs
+
+
 async def apply_policies_data_to_storage(
     storage: PolicyStorage,
     policies_data: List[Dict[str, Any]],
@@ -204,6 +241,11 @@ async def apply_policies_data_to_storage(
                     enabled=policy_data.get("enabled", True),
                 )
             elif policy_type == "output_formatter":
+                val_errs = validate_output_formatter(policy_data)
+                if val_errs:
+                    for e in val_errs:
+                        errors.append(e)
+                    continue
                 policy = OutputFormatter(
                     id=policy_data["id"],
                     name=policy_data["name"],

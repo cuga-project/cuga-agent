@@ -1,0 +1,22 @@
+{
+  "manifest_version": 3,
+  "name": "CUGA",
+  "version": "1.1",
+  "description": "IBM computer use agent",
+  "permissions": ["tabs", "webNavigation", "sidePanel"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "side_panel": {
+    "default_path": "index.html"
+  },
+  "action": {
+    "default_title": "Click to open panel"
+  },
+  "web_accessible_resources": [
+    {
+      "resources": ["dist/tailwind.css"],
+      "matches": ["<all_urls>"]
+    }
+  ]
+}

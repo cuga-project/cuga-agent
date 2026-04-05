@@ -34,6 +34,29 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 BACKTICK_PATTERN = r'```python(.*?)```'
 
 
+def _resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]:
+    """Resolve names from the delegated code's caller frame.
+
+    LocalExecutor injects supervisor context into ``_async_main``'s globals; only
+    using ``f_locals`` missed those bindings, so sub-agents received no variables
+    and tasks showed e.g. ``amount=None``.
+    """
+    resolved: Dict[str, Any] = {}
+    frame = inspect.currentframe()
+    try:
+        caller = frame.f_back if frame is not None else None
+        if caller is None:
+            return resolved
+        for name in variable_names:
+            if name in caller.f_locals:
+                resolved[name] = caller.f_locals[name]
+            elif name in caller.f_globals:
+                resolved[name] = caller.f_globals[name]
+    finally:
+        del frame
+    return resolved
+
+
 def extract_and_combine_codeblocks(text: str) -> str:
     """Extract all codeblocks from a text string and combine them."""
     code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
@@ -79,7 +102,11 @@ def append_chat_messages_with_step_limit(
     state: CugaSupervisorState, new_messages: List[BaseMessage]
 ) -> Tuple[List[BaseMessage], Optional[AIMessage]]:
     """Append new messages to supervisor_chat_messages with step counting and limit checking."""
-    max_steps = getattr(settings.advanced_features, 'cuga_lite_max_steps', 50)
+    max_steps = (
+        state.cuga_lite_max_steps
+        if state.cuga_lite_max_steps is not None
+        else getattr(settings.advanced_features, 'cuga_lite_max_steps', 50)
+    )
     new_step_count = state.step_count + 1
 
     if new_step_count > max_steps:
@@ -188,14 +215,7 @@ def _create_supervisor_conversational_graph(
             if isinstance(agent_or_config, CugaAgent):
                 vars_to_pass = {}
                 if variables is not None:
-                    frame = inspect.currentframe()
-                    try:
-                        caller_locals = frame.f_back.f_locals
-                        for var_name in variables:
-                            if var_name in caller_locals:
-                                vars_to_pass[var_name] = caller_locals[var_name]
-                    finally:
-                        del frame
+                    vars_to_pass = _resolve_names_from_caller_frame(variables)
                 result = await agent_or_config.invoke(
                     task,
                     thread_id=f"supervisor_conversational_{agent_name}",
@@ -211,14 +231,7 @@ def _create_supervisor_conversational_graph(
                 if agent_card is not None and HAS_A2A_SDK and transport == "http":
                     vars_to_pass = {}
                     if pass_variables_a2a and variables is not None:
-                        frame = inspect.currentframe()
-                        try:
-                            caller_locals = frame.f_back.f_locals
-                            for var_name in variables:
-                                if var_name in caller_locals:
-                                    vars_to_pass[var_name] = caller_locals[var_name]
-                        finally:
-                            del frame
+                        vars_to_pass = _resolve_names_from_caller_frame(variables)
                     result = await delegate_task_via_a2a_sdk(
                         agent_card,
                         task,
@@ -233,14 +246,7 @@ def _create_supervisor_conversational_graph(
                     try:
                         vars_to_pass = {}
                         if variables is not None:
-                            frame = inspect.currentframe()
-                            try:
-                                caller_locals = frame.f_back.f_locals
-                                for var_name in variables:
-                                    if var_name in caller_locals:
-                                        vars_to_pass[var_name] = caller_locals[var_name]
-                            finally:
-                                del frame
+                            vars_to_pass = _resolve_names_from_caller_frame(variables)
                         result = await a2a_protocol.delegate_task(
                             target_agent=agent_name,
                             task=task,

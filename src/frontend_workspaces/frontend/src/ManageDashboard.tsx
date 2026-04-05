@@ -2,7 +2,6 @@ import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Heading,
-  Link,
   ClickableTile,
   Tag,
   InlineLoading,
@@ -12,17 +11,16 @@ import {
 import {
   Bot,
   Tools,
-  Launch,
   Settings,
   DocumentMultiple_01,
 } from "@carbon/icons-react";
 import * as api from "./api";
-import { handleOidcCallback } from "./auth";
 import { CugaHeader } from "./CugaHeader";
 import "./ManageDashboard.css";
 
 export interface AgentItem {
   id: string;
+  name?: string;
   description: string;
   tools_count: number;
   logs_url: string | null;
@@ -35,22 +33,9 @@ export function ManageDashboard() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [agentContext, setAgentContext] = useState<{ agent_id: string; config_version: number | null } | null>(null);
-  const [callbackPending, setCallbackPending] = useState(false);
   const navigate = useNavigate();
 
   useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const code = params.get("code");
-    const state = params.get("state");
-
-    if (code && state) {
-      setCallbackPending(true);
-      handleOidcCallback(code, state)
-        .catch((e) => setError(e instanceof Error ? e.message : "Auth callback failed"))
-        .finally(() => setCallbackPending(false));
-      return;
-    }
-
     api.getAuthConfig().then((c) => {
       if (!c.enabled) return;
       const base = api.getApiBaseUrl();
@@ -63,7 +48,6 @@ export function ManageDashboard() {
   }, []);
 
   useEffect(() => {
-    if (callbackPending) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
@@ -84,10 +68,9 @@ export function ManageDashboard() {
     return () => {
       cancelled = true;
     };
-  }, [callbackPending]);
+  }, []);
 
   useEffect(() => {
-    if (callbackPending) return;
     api.getAgentContext()
       .then((res) => (res.ok ? res.json() : null))
       .then(
@@ -99,7 +82,7 @@ export function ManageDashboard() {
           })
       )
       .catch(() => {});
-  }, [callbackPending]);
+  }, []);
 
   return (
     <div className="manage-dashboard-page" style={{ width: "100%", display: "flex", flexDirection: "column", height: "100vh" }}>
@@ -117,9 +100,7 @@ export function ManageDashboard() {
           Select an agent to configure it and try it out.
         </p>
 
-        {(loading || callbackPending) && (
-          <InlineLoading description={callbackPending ? "Completing sign-in…" : "Loading agents…"} />
-        )}
+        {loading && <InlineLoading description="Loading agents…" />}
 
         {error && (
           <InlineNotification
@@ -149,7 +130,7 @@ export function ManageDashboard() {
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "1.5rem" }}>
                   <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", fontWeight: 600 }}>
                     <Bot size={20} />
-                    {agent.id}
+                    {agent.name?.trim() || "Agent"}
                   </div>
                   <div style={{ display: "flex", gap: "0.5rem", flexWrap: "wrap" }}>
                     <Tag type="blue" size="sm">
@@ -184,17 +165,6 @@ export function ManageDashboard() {
                   >
                     Configure & try it out
                   </Button>
-                  <Link
-                    href={agent.logs_url ?? "#"}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    onClick={(e: React.MouseEvent) => e.stopPropagation()}
-                    title={agent.logs_url ? "Open logs in Loki" : "Set CUGA_LOKI_LOGS_URL or LOKI_URL for your Loki dashboard"}
-                    style={{ display: "flex", alignItems: "center", gap: "0.25rem" }}
-                  >
-                    <Launch size={16} />
-                    Logs (Loki)
-                  </Link>
                 </div>
               </ClickableTile>
             ))}

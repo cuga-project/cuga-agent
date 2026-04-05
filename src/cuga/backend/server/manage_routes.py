@@ -8,12 +8,12 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
-from cuga.backend.server.auth import require_auth
+from cuga.backend.server.auth import require_manage_access
 
 router = APIRouter(
     prefix="/api/manage",
     tags=["manage"],
-    dependencies=[Depends(require_auth)],
+    dependencies=[Depends(require_manage_access)],
 )
 
 
@@ -55,6 +55,24 @@ def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool |
     )
     out["cuga_lite_max_steps"] = int(max_steps_val) if max_steps_val is not None else None
     return out
+
+
+def _merge_feature_flags_defaults(config: dict[str, Any]) -> None:
+    """Merge settings.advanced_features into config.feature_flags when keys are absent."""
+    from cuga.config import settings
+
+    ff = config.setdefault("feature_flags", {})
+    af = getattr(settings, "advanced_features", None)
+    if not af:
+        return
+    if "enable_todos" not in ff:
+        ff["enable_todos"] = getattr(af, "enable_todos", False)
+    if "reflection" not in ff:
+        ff["reflection"] = getattr(af, "reflection_enabled", False)
+    if "shortlisting_tool_threshold" not in ff:
+        ff["shortlisting_tool_threshold"] = getattr(af, "shortlisting_tool_threshold", 35)
+    if "max_steps" not in ff:
+        ff["max_steps"] = getattr(af, "cuga_lite_max_steps", 70)
 
 
 def _merge_mcp_yaml_into_config(config: dict[str, Any]) -> None:
@@ -150,8 +168,6 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
     policies_list = (
         raw_policies.get("policies", [])
         if isinstance(raw_policies, dict) and "policies" in raw_policies
-        else raw_policies
-        if isinstance(raw_policies, list)
         else []
     )
     if raw_policies is not None and app_state.policy_system and app_state.policy_system.storage:
@@ -284,11 +300,13 @@ async def get_manage_config(
             if config is None:
                 return JSONResponse({"config": {}, "version": "draft", "agent_id": agent_id})
             _merge_mcp_yaml_into_config(config)
+            _merge_feature_flags_defaults(config)
             return JSONResponse({"config": config, "version": "draft", "agent_id": agent_id})
         config, ver = await load_config(version, agent_id)
         if config is None:
             return JSONResponse({"config": {}, "agent_id": agent_id})
         _merge_mcp_yaml_into_config(config)
+        _merge_feature_flags_defaults(config)
         return JSONResponse({"config": config, "version": ver, "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to load manage config: {e}")
@@ -544,8 +562,6 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             policies_list = (
                 raw_policies.get("policies", [])
                 if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else raw_policies
-                if isinstance(raw_policies, list)
                 else []
             )
             if (
@@ -790,6 +806,25 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.patch("/config/draft/agent")
+async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
+    """Update only the agent (name, description) section of the draft."""
+    if agent_id is None:
+        agent_id = "cuga-default"
+    try:
+        data = await request.json()
+        agent_meta = data.get("agent", data)
+        if isinstance(agent_meta, dict):
+            name = agent_meta.get("name")
+            if not name or not str(name).strip():
+                raise HTTPException(status_code=400, detail="Agent name is required")
+            await _load_and_patch_draft(agent_id, "agent", agent_meta)
+        return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except Exception as e:
+        logger.error(f"Failed to patch draft agent: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.patch("/config/draft/policies")
 async def patch_draft_policies(request: Request, agent_id: Optional[str] = None):
     """Update only the policies section of the draft. No registry reload or agent rebuild."""
@@ -805,8 +840,6 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
             policies_list = (
                 raw_policies.get("policies", [])
                 if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else raw_policies
-                if isinstance(raw_policies, list)
                 else []
             )
             try:
@@ -912,6 +945,16 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     app_state = _app_state(request)
     if app_state is None:
         raise HTTPException(status_code=500, detail="App state not available")
+
+    data = await request.json()
+    config = data.get("config", data) or {}
+    agent_meta = config.get("agent")
+    if not isinstance(agent_meta, dict) or not (agent_meta.get("name") or "").strip():
+        return JSONResponse(
+            status_code=400,
+            content={"detail": "Agent name is required"},
+        )
+
     try:
         from cuga.backend.server.config_store import save_config, save_draft
 
@@ -1038,11 +1081,6 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         _old_collection = f"kb_agent_{_san_id}_{_prev_hash}" if _prev_hash else f"kb_agent_{_san_id}"
 
         if engine and _vec_hash and _prev_hash != _vec_hash:
-            # Vector config changed — migrate docs from old collection to new one,
-            # but only if the target collection is empty (i.e. first time with this
-            # config). If the target already has docs (e.g. switching back to a
-            # previously-used config), skip migration — those docs were already
-            # indexed with the correct settings.
             try:
                 target_docs = await engine.list_documents(_new_collection)
                 if target_docs:
@@ -1061,24 +1099,16 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                         try:
                             await engine.copy_source_files(_old_collection, _new_collection)
                             reindex_info = await engine.reindex(_new_collection)
-                            # Old collection is intentionally kept — if user switches
-                            # back to a previous config, the old collection already has
-                            # correctly-indexed docs and migration is skipped.
                         except Exception as mig_err:
                             logger.warning("Document migration failed: %s", mig_err)
                             reindex_info = {"status": "failed", "error": str(mig_err)}
             except Exception as e:
                 logger.warning("Failed to check docs for migration: %s", e)
 
-        # Update the hash so the agent uses the new collection.
-        # Note: reindex may still be in progress (async). During that brief window,
-        # the agent may get partial results from the new collection. This is acceptable
-        # because settings changes are rare and reindex is fast for typical document sets.
         if _vec_hash:
             app_state.knowledge_config_hash = _vec_hash
 
         if not reindex_info and knowledge_result and knowledge_result.get("reindex_recommended") and engine:
-            # Same hash but non-vector settings changed — reindex current collection.
             try:
                 docs = await engine.list_documents(_new_collection)
                 if docs:

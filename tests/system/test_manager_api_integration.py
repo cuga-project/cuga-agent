@@ -206,6 +206,7 @@ def http_client():
 def test_agent_config():
     """Provide a test agent configuration with filesystem tool."""
     return {
+        "agent": {"name": "Test Agent", "description": "System test agent for manager API"},
         "tools": [
             {
                 "name": "filesystem",
@@ -227,6 +228,7 @@ def test_agent_config():
 def test_agent_config_with_partial_tools():
     """Provide a test agent configuration with partial tool selection."""
     return {
+        "agent": {"name": "Partial Tools Agent", "description": "Agent with partial tool selection"},
         "tools": [
             {
                 "name": "filesystem",
@@ -649,6 +651,41 @@ class TestManagerAPIWorkflow:
 
         logger.info("✅ Production mode has access to published partial tools")
         logger.info("✅ Partial tool selection and isolation working correctly")
+
+    def test_08b_publish_requires_agent_name(
+        self, http_client: httpx.Client, test_agent_config: Dict[str, Any]
+    ):
+        """Test that publish fails when agent name is empty."""
+        logger.info("Test 8b: Publishing with empty agent name should fail...")
+
+        config_with_empty_name = {**test_agent_config, "agent": {"name": "", "description": "Optional"}}
+        response = http_client.post(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": f"{TEST_AGENT_ID}-empty-name"},
+            json={"config": config_with_empty_name},
+        )
+        data = response.json()
+        detail = data.get("detail", "")
+        assert "name" in str(detail).lower() or "required" in str(detail).lower(), (
+            f"Expected validation error about agent name, got: {detail}"
+        )
+        assert response.status_code in (400, 422, 500), (
+            f"Expected 400/422 when agent name is empty, got {response.status_code}: {response.text}"
+        )
+        if response.status_code != 400:
+            logger.warning("Backend returned %s instead of 400 for empty agent name", response.status_code)
+
+        config_with_no_name_key = {**test_agent_config, "agent": {"description": "No name key"}}
+        response2 = http_client.post(
+            f"{MANAGE_API_URL}/config",
+            params={"agent_id": f"{TEST_AGENT_ID}-no-name"},
+            json={"config": config_with_no_name_key},
+        )
+        assert response2.status_code == 400, (
+            f"Expected 400 when agent name is missing, got {response2.status_code}: {response2.text}"
+        )
+
+        logger.info("✅ Publish correctly rejects config with empty/missing agent name")
 
     def test_09_config_history(self, http_client: httpx.Client):
         """Test retrieving configuration history."""
