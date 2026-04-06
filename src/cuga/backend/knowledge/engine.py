@@ -160,10 +160,10 @@ def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
     model = config.embedding_model
 
     if provider == "fastembed":
-        return _FastEmbedEmbeddings(model or "sentence-transformers/all-MiniLM-L6-v2")
+        return _FastEmbedEmbeddings(model or "BAAI/bge-small-en-v1.5")
 
     if provider == "huggingface":
-        model = model or "sentence-transformers/all-MiniLM-L6-v2"
+        model = model or "BAAI/bge-small-en-v1.5"
         try:
             from langchain_huggingface import HuggingFaceEmbeddings
         except ImportError:
