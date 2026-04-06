@@ -51,7 +51,7 @@ def list_profiles() -> dict[str, dict[str, Any]]:
 class KnowledgeConfig:
     """Configuration for the knowledge engine."""
 
-    enabled: bool = True
+    enabled: bool = False
     agent_level_enabled: bool = True
     session_level_enabled: bool = True
     persist_dir: Path = field(default_factory=lambda: Path.cwd() / ".cuga" / "knowledge")
@@ -206,7 +206,7 @@ class KnowledgeConfig:
             profile_chunking = {}
 
         return cls(
-            enabled=kb.get("enabled", True),
+            enabled=kb.get("enabled", False),
             agent_level_enabled=kb.get("agent_level_enabled", True),
             session_level_enabled=kb.get("session_level_enabled", True),
             persist_dir=persist_dir,

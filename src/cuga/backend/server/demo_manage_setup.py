@@ -81,18 +81,18 @@ def _get_knowledge_tool() -> dict[str, Any]:
 
 
 def _knowledge_configured() -> bool:
-    """Knowledge is available when enabled in settings (default: true)."""
+    """Knowledge is available when enabled in settings (default: false)."""
     try:
         from cuga.config import settings
 
         kb = settings.get("knowledge", {})
         if not kb:
-            return True
-        return kb.get("enabled", True) and (
+            return False
+        return kb.get("enabled", False) and (
             kb.get("agent_level_enabled", True) or kb.get("session_level_enabled", True)
         )
     except Exception:
-        return True
+        return False
 
 
 HEALTH_USER_CONTEXT = """Member ID (string): 121231234
@@ -293,8 +293,8 @@ Replace `<search term>` with a descriptive phrase, using `+` to separate words. 
 
 
 def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
-    """Return default app flags for a given preset (demo, demo_crm, demo_docs, demo_health, manager).
-    Knowledge is always enabled — engine auto-initializes."""
+    """Return default app flags for a given preset (demo, demo_crm, demo_docs, demo_health, demo_knowledge, manager).
+    Knowledge is disabled by default; only demo_knowledge hardcodes it to True."""
     knowledge = _knowledge_configured()
     if preset == "demo_crm":
         return {
@@ -326,6 +326,16 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "oak_health": True,
             "knowledge": knowledge,
         }
+    if preset == "demo_knowledge":
+        return {
+            "crm": False,
+            "email": False,
+            "digital_sales": True,
+            "docs": False,
+            "filesystem": True,
+            "oak_health": False,
+            "knowledge": True,  # Always enabled for demo_knowledge
+        }
     if preset == "demo":
         return {
             "crm": False,
@@ -352,11 +362,13 @@ def setup_demo_manage_config(
     agent_id: str = "cuga-default",
     no_email: bool = False,
     tools: list[dict[str, Any]] | None = None,
+    reset_knowledge: bool = False,
 ) -> None:
     """
     Reset config db, then setup agent config (draft + v1) for demo or demo_crm.
     Uses same SSE links as cli for filesystem, email, crm.
     If tools is provided, uses it; otherwise builds from demo_type and no_email.
+    When reset_knowledge is True, wipes all knowledge data (vector DB, metadata, files).
     """
     from cuga.backend.server.config_store import (
         reset_config_db,
@@ -394,36 +406,67 @@ def setup_demo_manage_config(
     ]
     reset_config_db()
 
-    # Clear ALL knowledge data for a truly clean demo slate.
-    # This removes files, vectors, and metadata for this agent's collections.
-    # The engine will recreate empty collections on startup.
-    try:
-        from cuga.backend.knowledge.config import KnowledgeConfig as _KC
-        from cuga.config import settings as _settings
-        import re as _re
-        import shutil
+    # Only wipe knowledge data when explicitly requested (--reset flag).
+    # This preserves uploaded documents across normal restarts.
+    if reset_knowledge:
+        try:
+            from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+            from cuga.config import settings as _settings
+            import fcntl
+            import re as _re
+            import shutil
 
-        _kc = _KC.from_settings(_settings)
-        _san = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
-        prefix = f"kb_agent_{_san}"
+            _kc = _KC.from_settings(_settings)
+            _kc.persist_dir.mkdir(parents=True, exist_ok=True)
 
-        # Remove source files for agent collections
-        files_dir = _kc.persist_dir / "files"
-        if files_dir.exists():
-            for d in files_dir.iterdir():
-                if d.is_dir() and d.name.startswith(prefix):
-                    shutil.rmtree(d, ignore_errors=True)
-                    logger.info("Demo reset: cleared %s", d.name)
+            # Check flock to avoid deleting files from under a running server.
+            lock_path = _kc.persist_dir / ".lock"
+            _lock_fd = open(lock_path, "w")
+            try:
+                fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except OSError:
+                _lock_fd.close()
+                logger.error("Knowledge reset: another server is still running (holds .lock). Stop it first.")
+                raise SystemExit(1)
 
-        # Remove the entire vector DB and metadata so stale vectors don't persist.
-        # The engine recreates these on startup.
-        for db_file in ("knowledge.db", "metadata.db"):
-            db_path = _kc.persist_dir / db_file
-            if db_path.exists():
-                db_path.unlink()
-                logger.info("Demo reset: removed %s", db_file)
-    except Exception as e:
-        logger.debug("Demo reset: knowledge cleanup skipped: %s", e)
+            try:
+                _san = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+                prefix = f"kb_agent_{_san}"
+
+                def _on_rmtree_error(func, path, exc_info):
+                    logger.warning("Knowledge reset: failed to remove %s: %s", path, exc_info[1])
+
+                # Remove source files for agent collections
+                files_dir = _kc.persist_dir / "files"
+                if files_dir.exists():
+                    for d in files_dir.iterdir():
+                        if d.is_dir() and d.name.startswith(prefix):
+                            shutil.rmtree(d, onerror=_on_rmtree_error)
+                            logger.info("Knowledge reset: cleared %s", d.name)
+
+                # Remove vector DB, metadata, and WAL sidecar files
+                for db_file in ("knowledge.db", "metadata.db", "knowledge_vectors.db"):
+                    for suffix in ("", "-wal", "-shm"):
+                        p = _kc.persist_dir / (db_file + suffix)
+                        if p.exists():
+                            p.unlink()
+                            logger.info("Knowledge reset: removed %s", p.name)
+
+                # Remove session knowledge state
+                session_state = _kc.persist_dir.parent / "session_knowledge.json"
+                if session_state.exists():
+                    session_state.unlink()
+                    logger.info("Knowledge reset: removed session_knowledge.json")
+            finally:
+                fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+                _lock_fd.close()
+
+        except ImportError:
+            logger.info("Knowledge reset: knowledge module not available, skipping")
+        except SystemExit:
+            raise
+        except Exception as e:
+            logger.warning("Knowledge reset: cleanup failed: %s", e)
 
     if tools is None:
         defaults = get_default_apps_for_preset(demo_type)
@@ -437,6 +480,7 @@ def setup_demo_manage_config(
     use_crm_starters = demo_type == "demo_crm"
     use_docs_starters = demo_type == "demo_docs"
     use_health_starters = demo_type == "demo_health"
+    use_knowledge = demo_type == "demo_knowledge"
     if use_crm_starters:
         homescreen = {
             "isOn": True,
@@ -467,17 +511,24 @@ def setup_demo_manage_config(
     llm_cfg: dict[str, Any] = {"model": os.environ.get("MODEL_NAME", "")}
     if llm_api_key_ref:
         llm_cfg["api_key"] = llm_api_key_ref
-    # Include knowledge vector config hash so the collection name is consistent
-    # between configure and published states from the first startup.
+    # Include knowledge config so the server knows the intended state on restart.
+    # The vector config hash ensures collection names are consistent across restarts.
     knowledge_cfg: dict[str, Any] = {}
     try:
         from cuga.backend.knowledge.config import KnowledgeConfig as _KC
         from cuga.config import settings as _settings
 
         _kc = _KC.from_settings(_settings)
+        knowledge_cfg = _kc.to_dict()
         knowledge_cfg["_vector_config_hash"] = _kc.vector_config_hash()
     except Exception:
         pass
+    # For demo_knowledge, force knowledge enabled regardless of settings file.
+    # The DYNACONF env var is set after settings init so Dynaconf doesn't see it.
+    if use_knowledge:
+        knowledge_cfg["enabled"] = True
+        knowledge_cfg["agent_level_enabled"] = True
+        knowledge_cfg["session_level_enabled"] = True
     if use_crm_starters:
         agent_meta = {
             "name": "CRM Agent",
@@ -495,6 +546,11 @@ def setup_demo_manage_config(
                 "Healthcare insurance assistant for claims, EOBs, benefits, accumulators, "
                 "referrals, and finding in-network providers—grounded in member coverage APIs"
             ),
+        }
+    elif use_knowledge:
+        agent_meta = {
+            "name": "Knowledge Agent",
+            "description": "Agent with knowledge base, digital sales API, and filesystem for document-grounded workflows",
         }
     else:
         agent_meta = {

@@ -174,6 +174,36 @@ function KnowledgePanel({
     }
   }, []);
 
+  // Start the knowledge engine on-demand (called when user toggles ON while disconnected)
+  const ensureEngineStarted = (0,react__WEBPACK_IMPORTED_MODULE_0__.useCallback)(async () => {
+    try {
+      setHealthy(null); // show "Checking" state
+      const res = await _frontend_src_api__WEBPACK_IMPORTED_MODULE_3__.enableKnowledge();
+      if (res.ok) {
+        // Poll health until ready (engine needs time for warmup)
+        const poll = setInterval(async () => {
+          try {
+            const hRes = await _frontend_src_api__WEBPACK_IMPORTED_MODULE_3__.getKnowledgeHealth();
+            if (hRes.ok) {
+              const hData = await hRes.json();
+              if (hData.healthy) {
+                clearInterval(poll);
+                setHealthy(true);
+                onHealthChangedRef.current?.(true);
+                loadDocuments();
+              }
+            }
+          } catch {/* keep polling */}
+        }, 2000);
+        // Stop polling after 60s
+        setTimeout(() => clearInterval(poll), 60000);
+      }
+    } catch {
+      setHealthy(false);
+      onHealthChangedRef.current?.(false);
+    }
+  }, [loadDocuments]);
+
   // Initial load
   (0,react__WEBPACK_IMPORTED_MODULE_0__.useEffect)(() => {
     loadDocuments();
@@ -862,10 +892,15 @@ function KnowledgePanel({
     labelA: "Off",
     labelB: "On",
     toggled: knowledgeConfig.enabled ?? true,
-    onToggle: checked => onKnowledgeConfigChange({
-      ...knowledgeConfig,
-      enabled: checked
-    }),
+    onToggle: checked => {
+      onKnowledgeConfigChange({
+        ...knowledgeConfig,
+        enabled: checked
+      });
+      if (checked && !healthy) {
+        ensureEngineStarted();
+      }
+    },
     size: "sm"
   }), !knowledgeEnabled && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     style: {
@@ -6259,7 +6294,7 @@ function ManageDashboard() {
 
 
 const DEFAULT_KNOWLEDGE_CONFIG = {
-  enabled: true,
+  enabled: false,
   agent_level_enabled: true,
   session_level_enabled: true,
   embedding_provider: "huggingface",
@@ -8910,6 +8945,7 @@ function UnauthorizedPage() {
 /* harmony export */   deleteSecret: function() { return /* binding */ deleteSecret; },
 /* harmony export */   deleteSessionKnowledgeCollection: function() { return /* binding */ deleteSessionKnowledgeCollection; },
 /* harmony export */   deleteSessionKnowledgeDocument: function() { return /* binding */ deleteSessionKnowledgeDocument; },
+/* harmony export */   enableKnowledge: function() { return /* binding */ enableKnowledge; },
 /* harmony export */   getAgentContext: function() { return /* binding */ getAgentContext; },
 /* harmony export */   getAgentState: function() { return /* binding */ getAgentState; },
 /* harmony export */   getAgents: function() { return /* binding */ getAgents; },
@@ -9321,6 +9357,11 @@ function knowledgeApiFetch(url, init, threadId) {
 
 function getKnowledgeHealth() {
   return knowledgeApiFetch("/api/knowledge/health");
+}
+function enableKnowledge() {
+  return knowledgeApiFetch("/api/knowledge/enable", {
+    method: "POST"
+  });
 }
 function getKnowledgeSettings() {
   return knowledgeApiFetch("/api/knowledge/settings");
@@ -12725,4 +12766,4 @@ var update = _node_modules_pnpm_style_loader_4_0_0_webpack_5_105_0_node_modules_
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.4693ea9edb9397012a30.js.map
+//# sourceMappingURL=main.085b25d610f4d48e50ef.js.map

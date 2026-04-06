@@ -103,7 +103,7 @@ export interface AgentConfig {
 }
 
 const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
-  enabled: true,
+  enabled: false,
   agent_level_enabled: true,
   session_level_enabled: true,
   embedding_provider: "huggingface",

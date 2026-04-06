@@ -987,17 +987,19 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 
         if knowledge_cfg and isinstance(knowledge_cfg, dict):
             # Lazy engine creation: if knowledge was disabled at startup but user
-            # enables it via Publish, create the engine now.
+            # enables it via Publish, create the engine now (full init with MCP + warmup).
             if not engine and knowledge_cfg.get("enabled", False):
                 try:
                     from cuga.backend.knowledge.config import KnowledgeConfig
-                    from cuga.backend.knowledge.engine import KnowledgeEngine
 
                     kb_config = KnowledgeConfig.coerce_and_validate(knowledge_cfg)
-                    engine = KnowledgeEngine(kb_config)
-                    app_state.knowledge_engine = engine
-                    engine.start_background_tasks()
-                    logger.info("Knowledge engine created via publish (was disabled at startup)")
+                    _initializer = getattr(app_state, "initialize_knowledge_engine", None)
+                    if _initializer:
+                        await _initializer(app_state, kb_config)
+                        engine = app_state.knowledge_engine
+                        logger.info("Knowledge engine created via publish (was disabled at startup)")
+                    else:
+                        logger.warning("Knowledge engine initializer not available")
                 except Exception as e:
                     logger.warning(f"Failed to create knowledge engine on publish: {e}")
             if engine:

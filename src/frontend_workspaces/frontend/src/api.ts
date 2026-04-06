@@ -356,6 +356,10 @@ export function getKnowledgeHealth(): Promise<Response> {
   return knowledgeApiFetch("/api/knowledge/health");
 }
 
+export function enableKnowledge(): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/enable", { method: "POST" });
+}
+
 export function getKnowledgeSettings(): Promise<Response> {
   return knowledgeApiFetch("/api/knowledge/settings");
 }
