@@ -81,6 +81,7 @@ export interface AgentConfig {
     reflection?: boolean;
     max_steps?: number;
     shortlisting_tool_threshold?: number;
+    builtin_tools?: string[];
   };
   policies?: { enablePolicies: boolean; policies: unknown[] };
   homescreen?: HomescreenConfig;
@@ -1120,11 +1121,20 @@ export function ManagePage() {
                 : DEFAULT_HOMESCREEN.starters ?? [],
             };
           }
+          if (raw.knowledge && typeof raw.knowledge === "object") {
+            out.knowledge = { ...DEFAULT_KNOWLEDGE_CONFIG, ...(raw.knowledge as Record<string, unknown>) };
+          }
+          if (raw.agent && typeof raw.agent === "object") {
+            const a = raw.agent as { name?: string; description?: string };
+            if (a.name) setAgentName(a.name);
+            if (a.description !== undefined) setAgentDescription(a.description);
+          }
           setLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
           setToolsState(Array.isArray(out.tools) ? out.tools : []);
           setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
           setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
           setPolicies(out.policies ?? { enablePolicies: true, policies: [] });
+          setKnowledgeConfig(out.knowledge ?? { ...DEFAULT_KNOWLEDGE_CONFIG });
           setImportStatus("ok");
           setImportError(null);
           setTimeout(() => setImportStatus("idle"), 2500);
@@ -1474,6 +1484,7 @@ export function ManagePage() {
                     connectedApps={connectedApps}
                     connectedTools={connectedTools}
                     agentId={effectiveAgentId}
+                    builtinTools={featureFlags.builtin_tools}
                     onError={(title, message) => addToast("error", title, message)}
                     onOpenSecrets={() => setSecretsModalOpen(true)}
                   />
@@ -1977,7 +1988,7 @@ export function ManagePage() {
           {viewVersion && (
             <div className="manage-json-viewer-markdown">
               <Markdown>
-                {"```json\n" + JSON.stringify(maskSecrets(viewVersion.config), null, 2) + "\n```"}
+                {"```json\n" + JSON.stringify(maskSecrets((() => { const { knowledge_state: _ks, ...rest } = viewVersion.config as Record<string, unknown>; return rest; })()), null, 2) + "\n```"}
               </Markdown>
             </div>
           )}

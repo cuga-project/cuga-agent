@@ -35,11 +35,12 @@
 .agent-section-switcher {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.875rem 1.25rem 1rem;
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
+  border-top: 1px solid var(--cds-border-subtle-01);
   border-bottom: 1px solid var(--cds-border-subtle-01);
-  background: rgba(var(--cds-layer-01-rgb, 255, 255, 255), 0.7);
+  background: var(--cds-layer-01, #f4f4f4);
 }
 
 .agent-section-button {
@@ -47,52 +48,53 @@
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  justify-self: center;
-  width: min(100%, 4rem);
-  height: 3rem;
+  height: 2.5rem;
   padding: 0;
-  border: 1px solid var(--cds-border-subtle-01);
-  border-radius: 999px;
-  background: var(--cds-layer-01);
+  border: none;
+  border-radius: 0;
+  border-right: 1px solid var(--cds-border-subtle-01);
+  background: transparent;
   color: var(--cds-text-secondary);
   cursor: pointer;
-  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease, box-shadow 120ms ease;
+  transition: background-color 70ms cubic-bezier(0, 0, 0.38, 0.9),
+              color 70ms cubic-bezier(0, 0, 0.38, 0.9);
+}
+
+.agent-section-button:last-child {
+  border-right: none;
 }
 
 .agent-section-button:hover {
-  border-color: var(--cds-border-interactive);
-  background: var(--cds-layer-hover);
+  background: var(--cds-layer-hover-01, #e8e8e8);
   color: var(--cds-text-primary);
 }
 
 .agent-section-button.active {
-  border-color: var(--cds-border-interactive);
-  background: rgba(15, 98, 254, 0.08);
+  background: var(--cds-layer-01, #f4f4f4);
   color: var(--cds-text-primary);
-  box-shadow: inset 0 0 0 1px var(--cds-border-interactive), 0 0 0 3px rgba(15, 98, 254, 0.12);
+  box-shadow: inset 0 -2px 0 0 var(--cds-border-interactive, #0f62fe);
 }
 
 .agent-section-button:focus-visible {
   outline: 2px solid var(--cds-focus);
-  outline-offset: 2px;
+  outline-offset: -2px;
 }
 
 .agent-section-badge {
   position: absolute;
-  top: -0.15rem;
-  right: 0.1rem;
-  min-width: 1.25rem;
-  height: 1.25rem;
+  top: 0.125rem;
+  right: 0.25rem;
+  min-width: 1.125rem;
+  height: 1.125rem;
   padding: 0 0.25rem;
   border-radius: 999px;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  font-size: 0.6875rem;
+  font-size: 0.625rem;
   font-weight: 600;
   line-height: 1;
   color: var(--cds-text-primary);
-  box-shadow: 0 0 0 2px var(--cds-layer-01);
 }
 
 .agent-section-badge--configuration {

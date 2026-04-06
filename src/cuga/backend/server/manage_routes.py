@@ -73,6 +73,8 @@ def _merge_feature_flags_defaults(config: dict[str, Any]) -> None:
         ff["shortlisting_tool_threshold"] = getattr(af, "shortlisting_tool_threshold", 35)
     if "max_steps" not in ff:
         ff["max_steps"] = getattr(af, "cuga_lite_max_steps", 70)
+    if "builtin_tools" not in ff:
+        ff["builtin_tools"] = list(getattr(af, "builtin_tools", ["knowledge"]))
 
 
 def _merge_mcp_yaml_into_config(config: dict[str, Any]) -> None:
@@ -1023,6 +1025,44 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         except Exception:
             pass
 
+        # Snapshot knowledge state for import/export portability.
+        # Stores collection name, persist_dir, pinned collection config, and
+        # document metadata (filenames + file paths) so an imported config can
+        # reconnect to existing on-disk knowledge data without re-ingestion.
+        if engine:
+            import re as _re_snap
+            _current_hash = _vec_hash or getattr(app_state, "knowledge_config_hash", "") or _prev_hash
+            _snap_id = _re_snap.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+            _snap_col = f"kb_agent_{_snap_id}_{_current_hash}" if _current_hash else f"kb_agent_{_snap_id}"
+            try:
+                _state: dict[str, Any] = {
+                    "collection": _snap_col,
+                    "persist_dir": str(engine._config.persist_dir),
+                }
+                _col_cfg = engine._metadata.get_collection_config(_snap_col)
+                if _col_cfg:
+                    _state["collection_config"] = {
+                        "embedding_provider": _col_cfg.get("embedding_provider", ""),
+                        "embedding_model": _col_cfg.get("embedding_model", ""),
+                        "embedding_dim": _col_cfg.get("embedding_dim"),
+                    }
+                _docs = await engine.list_documents(_snap_col)
+                if _docs:
+                    _files_dir = engine._files_dir / _snap_col
+                    _state["documents"] = [
+                        {
+                            "filename": d.filename,
+                            "file_path": str(_files_dir / d.filename),
+                            "chunk_count": d.chunk_count,
+                            "status": d.status,
+                            "ingested_at": d.ingested_at,
+                        }
+                        for d in _docs
+                    ]
+                config["knowledge_state"] = _state
+            except Exception as _snap_err:
+                logger.warning("Failed to snapshot knowledge state: %s", _snap_err)
+
         # Phase B: Save version + commit knowledge immediately after
         # Keep draft aligned with the just-published configuration because
         # Manage loads draft first on re-entry.
@@ -1039,6 +1079,8 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             knowledge_result = engine.commit_knowledge_update(prepared_knowledge)
 
         # Phase C: Apply LLM/tools/policies + rebuild (existing, best-effort)
+        # Strip knowledge_state before runtime apply — it's for export/import only.
+        config.pop("knowledge_state", None)
         await _apply_published_config(app_state, config or {})
 
         # Rebuild the production agent graph to pick up new tools + LLM config

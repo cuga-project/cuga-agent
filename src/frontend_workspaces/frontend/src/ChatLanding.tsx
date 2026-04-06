@@ -21,7 +21,7 @@ import {
   TrashCan,
   Folder,
   FolderOpen,
-  Debug,
+  Settings,
   Application,
   ChevronRight,
   DocumentBlank,
@@ -111,7 +111,7 @@ const RIGHT_PANEL_META: Record<
   configuration: {
     title: "Configuration",
     subtitle: "Apps and tools available to this agent",
-    icon: Debug,
+    icon: Settings,
     badgeClass: "agent-section-badge--configuration",
     ariaLabel: "Configuration section",
   },
@@ -470,7 +470,6 @@ export function ChatLanding() {
 
   const handleSelectThread = useCallback((threadId: string) => {
     setSelectedThreadId(threadId);
-    setActiveThreadId(threadId);
   }, []);
 
   const handleRemoveAll = async () => {
@@ -518,7 +517,7 @@ export function ChatLanding() {
           setKnowledgeEnabled(kEnabled);
           setAgentKnowledgeEnabled(agentKEnabled);
           setSessionKnowledgeEnabled(sessionKEnabled);
-          api.setKnowledgeAgentId(agentName);
+          api.setKnowledgeAgentId(agentIdFallback);
 
           // Eagerly fetch doc count so it's available on first render.
           if (kEnabled && agentKEnabled) {
@@ -589,10 +588,9 @@ export function ChatLanding() {
           addToast("warning", "Tools Load Warning", errorMsg);
         }
 
-        if (manageRes.ok) {
-          const manageData = await manageRes.json();
+        if (manageRes.ok && manageData) {
           const hs = manageData.config?.homescreen;
-          const knowledgeConfig = manageData.config?.knowledge;
+          const knowledgeConfig = (manageData as any).config?.knowledge;
           if (hs && typeof hs === "object") {
             setHomescreenConfig({
               isOn: hs.isOn ?? true,
@@ -814,7 +812,7 @@ export function ChatLanding() {
       <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
         <CarbonChat
           contained={true}
-          threadId={currentChatThreadId}
+          threadId={selectedThreadId ?? currentChatThreadId}
           attachmentScope="session"
           knowledgeEnabled={knowledgeEnabled}
           sessionKnowledgeEnabled={sessionKnowledgeEnabled}
