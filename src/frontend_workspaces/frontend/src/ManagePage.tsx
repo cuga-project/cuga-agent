@@ -409,8 +409,6 @@ export function ManagePage() {
     }
   }, [addToast]);
 
-  const effectiveAgentId = agentId ?? "cuga-default";
-
   const loadLatest = useCallback(async () => {
     try {
       skipDraftSaveRef.current = true;
