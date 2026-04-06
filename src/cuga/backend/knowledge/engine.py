@@ -131,39 +131,15 @@ class PreparedKnowledgeUpdate:
 
 # --- Embedding factory ---
 
-def _detect_device(use_gpu: bool = True) -> str:
-    """Detect best available compute device for local embeddings.
-
-    When use_gpu=True: CUDA (NVIDIA) > MPS (Apple Silicon) > CPU.
-    When use_gpu=False: always CPU.
-    """
-    if not use_gpu:
-        logger.info("GPU disabled by config — using CPU for embeddings")
-        return "cpu"
-    try:
-        import torch
-        if torch.cuda.is_available():
-            logger.info("Using CUDA GPU for embeddings")
-            return "cuda"
-        if torch.backends.mps.is_available():
-            logger.info("Using Apple MPS (GPU) for embeddings")
-            return "mps"
-    except ImportError:
-        pass
-    logger.info("Using CPU for embeddings")
-    return "cpu"
-
-
 def create_embeddings(provider: str, model: str, use_gpu: bool = True) -> Embeddings:
-    """Create embeddings instance based on provider and model."""
-    if provider == "huggingface":
-        from langchain_community.embeddings import HuggingFaceEmbeddings
+    """Create embeddings instance based on provider and model.
+
+    For local embeddings, uses fastembed (lightweight, no torch/sentence-transformers needed).
+    """
+    if provider in ("huggingface", "fastembed", "local"):
+        from langchain_community.embeddings import FastEmbedEmbeddings
         model = model or "sentence-transformers/all-MiniLM-L6-v2"
-        device = _detect_device(use_gpu)
-        return HuggingFaceEmbeddings(
-            model_name=model,
-            model_kwargs={"device": device},
-        )
+        return FastEmbedEmbeddings(model_name=model)
     elif provider == "openai":
         from langchain_openai import OpenAIEmbeddings
         model = model or "text-embedding-3-small"
@@ -306,10 +282,9 @@ class KnowledgeEngine:
             model = self._config.embedding_model
             self._default_embeddings = create_embeddings(provider, model, use_gpu=self._config.use_gpu)
             self._default_embedding_dim = _get_embedding_dim(self._default_embeddings)
-            device = _detect_device(self._config.use_gpu) if provider == "huggingface" else "n/a"
             logger.info(
                 f"Embeddings initialized: provider={provider}, "
-                f"model={model}, dim={self._default_embedding_dim}, device={device}"
+                f"model={model}, dim={self._default_embedding_dim}"
             )
 
     async def warmup(self) -> dict[str, Any]:
