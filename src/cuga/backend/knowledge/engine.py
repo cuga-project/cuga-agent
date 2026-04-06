@@ -131,15 +131,38 @@ class PreparedKnowledgeUpdate:
 
 # --- Embedding factory ---
 
+class _FastEmbedLangChainAdapter(Embeddings):
+    """LangChain Embeddings adapter around fastembed.TextEmbedding.
+
+    Reuses the model cache from cuga's embedding_service to avoid loading
+    duplicate models when both policies and knowledge use the same model.
+    """
+
+    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+        from cuga.backend.storage.embedding.embedding_service import _embedding_model_cache
+        from fastembed import TextEmbedding
+
+        if model_name in _embedding_model_cache:
+            self._model = _embedding_model_cache[model_name]
+        else:
+            self._model = TextEmbedding(model_name)
+            _embedding_model_cache[model_name] = self._model
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return [v.tolist() for v in self._model.embed(texts)]
+
+    def embed_query(self, text: str) -> list[float]:
+        return next(self._model.embed([text])).tolist()
+
+
 def create_embeddings(provider: str, model: str, use_gpu: bool = True) -> Embeddings:
     """Create embeddings instance based on provider and model.
 
-    For local embeddings, uses fastembed (lightweight, no torch/sentence-transformers needed).
+    For local embeddings, uses fastembed directly (shared with embedding_service).
     """
     if provider in ("huggingface", "fastembed", "local"):
-        from langchain_community.embeddings import FastEmbedEmbeddings
         model = model or "sentence-transformers/all-MiniLM-L6-v2"
-        return FastEmbedEmbeddings(model_name=model)
+        return _FastEmbedLangChainAdapter(model_name=model)
     elif provider == "openai":
         from langchain_openai import OpenAIEmbeddings
         model = model or "text-embedding-3-small"
