@@ -6,8 +6,8 @@ persist_dir = ""  # empty = default ~/.cuga/knowledge/
 vector_store = "sqlite"  # sqlite (local default) | milvus | pgvector
 
 [knowledge.embeddings]
-provider = "fastembed"  # fastembed | openai | ollama
-model = ""         # empty = auto-detect per provider (fastembed: all-MiniLM-L6-v2, openai: text-embedding-3-small, ollama: nomic-embed-text)
+provider = "fastembed"  # fastembed | huggingface (requires: pip install sentence-transformers langchain-huggingface) | openai | ollama
+model = ""         # empty = auto-detect per provider (fastembed/huggingface: all-MiniLM-L6-v2, openai: text-embedding-3-small, ollama: nomic-embed-text)
 api_key = ""       # required for openai provider (or set OPENAI_API_KEY env var)
 base_url = ""      # custom endpoint for openai-compatible or ollama (default: localhost:11434)
 

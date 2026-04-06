@@ -131,10 +131,10 @@ class PreparedKnowledgeUpdate:
 
 # --- Embedding factory ---
 
-class _FastEmbedLangChainAdapter(Embeddings):
+class _FastEmbedEmbeddings(Embeddings):
     """LangChain Embeddings adapter around fastembed.TextEmbedding."""
 
-    def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
+    def __init__(self, model_name: str):
         from fastembed import TextEmbedding
         self._model = TextEmbedding(model_name)
 
@@ -146,40 +146,58 @@ class _FastEmbedLangChainAdapter(Embeddings):
 
 
 def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
-    """Create embeddings instance from knowledge config."""
+    """Create an Embeddings instance for the configured provider.
+
+    Providers:
+        fastembed   — lightweight local embeddings (default, installed with cuga)
+        huggingface — HuggingFace sentence-transformers (optional: pip install sentence-transformers)
+        openai      — OpenAI API (requires api_key)
+        ollama      — local Ollama server
+    """
+    import os
+
     provider = config.embedding_provider
     model = config.embedding_model
 
     if provider == "fastembed":
+        return _FastEmbedEmbeddings(model or "sentence-transformers/all-MiniLM-L6-v2")
+
+    if provider == "huggingface":
         model = model or "sentence-transformers/all-MiniLM-L6-v2"
-        return _FastEmbedLangChainAdapter(model_name=model)
-    elif provider == "openai":
-        import os
+        try:
+            from langchain_huggingface import HuggingFaceEmbeddings
+        except ImportError:
+            raise ImportError(
+                "HuggingFace embedding provider requires sentence-transformers. "
+                "Install with: pip install sentence-transformers langchain-huggingface"
+            )
+        return HuggingFaceEmbeddings(model_name=model)
+
+    if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
-        model = model or "text-embedding-3-small"
         api_key = config.embedding_api_key or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise ValueError(
                 "OpenAI embedding provider requires an API key. "
                 "Set knowledge.embeddings.api_key in settings or OPENAI_API_KEY env var."
             )
-        kwargs: dict[str, Any] = {"model": model, "api_key": api_key}
+        kwargs: dict[str, Any] = {"model": model or "text-embedding-3-small", "api_key": api_key}
         if config.embedding_base_url:
             kwargs["base_url"] = config.embedding_base_url
         return OpenAIEmbeddings(**kwargs)
-    elif provider == "ollama":
-        model = model or "nomic-embed-text"
+
+    if provider == "ollama":
         base_url = config.embedding_base_url or "http://localhost:11434"
         try:
             from langchain_ollama import OllamaEmbeddings
         except ImportError:
             from langchain_community.embeddings import OllamaEmbeddings
-        return OllamaEmbeddings(model=model, base_url=base_url)
-    else:
-        raise ValueError(
-            f"Unknown embedding provider: {provider}. "
-            f"Supported: fastembed, openai, ollama"
-        )
+        return OllamaEmbeddings(model=model or "nomic-embed-text", base_url=base_url)
+
+    raise ValueError(
+        f"Unknown embedding provider: {provider}. "
+        f"Supported: fastembed, huggingface, openai, ollama"
+    )
 
 
 
