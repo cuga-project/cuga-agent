@@ -54,7 +54,7 @@ class KnowledgeConfig:
     enabled: bool = True
     agent_level_enabled: bool = True
     session_level_enabled: bool = True
-    persist_dir: Path = field(default_factory=lambda: Path.home() / ".cuga" / "knowledge")
+    persist_dir: Path = field(default_factory=lambda: Path.cwd() / ".cuga" / "knowledge")
 
     # Embeddings
     embedding_provider: str = "fastembed"  # fastembed | huggingface | openai | ollama
@@ -191,7 +191,7 @@ class KnowledgeConfig:
         mcp = kb.get("mcp", {})
 
         persist_dir_str = kb.get("persist_dir", "")
-        persist_dir = Path(persist_dir_str) if persist_dir_str else Path.home() / ".cuga" / "knowledge"
+        persist_dir = Path(persist_dir_str) if persist_dir_str else Path.cwd() / ".cuga" / "knowledge"
 
         # Expand profile defaults — profile values are the base,
         # explicit settings.toml values override them.

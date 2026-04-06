@@ -449,7 +449,7 @@ async def lifespan(app: FastAPI):
         # Initialize session provider for ownership enforcement
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
 
-        _kb_state_path = Path.home() / ".cuga" / "session_knowledge.json"
+        _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
         app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
 
         # Start background maintenance tasks (cleanup, purge, reconcile)
@@ -461,7 +461,7 @@ async def lifespan(app: FastAPI):
 
         token = secrets.token_urlsafe(32)
         app_state.internal_token = token
-        token_path = Path.home() / ".cuga" / ".internal_token"
+        token_path = Path.cwd() / ".cuga" / ".internal_token"
         token_path.parent.mkdir(parents=True, exist_ok=True)
         with tempfile.NamedTemporaryFile(mode="w", dir=token_path.parent, delete=False, suffix=".tmp") as tmp:
             tmp.write(token)

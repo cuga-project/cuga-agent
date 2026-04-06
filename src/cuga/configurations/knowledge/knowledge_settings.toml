@@ -2,7 +2,7 @@
 enabled = true
 agent_level_enabled = true
 session_level_enabled = true
-persist_dir = ""  # empty = default ~/.cuga/knowledge/
+persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
 vector_store = "sqlite"  # sqlite (local default) | milvus | pgvector
 
 [knowledge.embeddings]

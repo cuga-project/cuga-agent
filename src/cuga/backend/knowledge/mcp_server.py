@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -41,7 +42,7 @@ def _resolve_env(key: str, default: str) -> str:
 
 CUGA_BACKEND_URL = _resolve_env("CUGA_BACKEND_URL", "http://localhost:7860").rstrip("/")
 CUGA_INTERNAL_TOKEN_FILE = _resolve_env(
-    "CUGA_INTERNAL_TOKEN_FILE", os.path.expanduser("~/.cuga/.internal_token")
+    "CUGA_INTERNAL_TOKEN_FILE", str(Path.cwd() / ".cuga" / ".internal_token")
 )
 
 _cached_token: str | None = None
