@@ -145,24 +145,41 @@ class _FastEmbedLangChainAdapter(Embeddings):
         return next(self._model.embed([text])).tolist()
 
 
-def create_embeddings(provider: str, model: str, use_gpu: bool = True) -> Embeddings:
-    """Create embeddings instance based on provider and model.
+def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
+    """Create embeddings instance from knowledge config."""
+    provider = config.embedding_provider
+    model = config.embedding_model
 
-    For local embeddings, uses fastembed directly (shared with embedding_service).
-    """
-    if provider in ("huggingface", "fastembed", "local"):
+    if provider == "fastembed":
         model = model or "sentence-transformers/all-MiniLM-L6-v2"
         return _FastEmbedLangChainAdapter(model_name=model)
     elif provider == "openai":
+        import os
         from langchain_openai import OpenAIEmbeddings
         model = model or "text-embedding-3-small"
-        return OpenAIEmbeddings(model=model)
+        api_key = config.embedding_api_key or os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            raise ValueError(
+                "OpenAI embedding provider requires an API key. "
+                "Set knowledge.embeddings.api_key in settings or OPENAI_API_KEY env var."
+            )
+        kwargs: dict[str, Any] = {"model": model, "api_key": api_key}
+        if config.embedding_base_url:
+            kwargs["base_url"] = config.embedding_base_url
+        return OpenAIEmbeddings(**kwargs)
     elif provider == "ollama":
-        from langchain_community.embeddings import OllamaEmbeddings
         model = model or "nomic-embed-text"
-        return OllamaEmbeddings(model=model)
+        base_url = config.embedding_base_url or "http://localhost:11434"
+        try:
+            from langchain_ollama import OllamaEmbeddings
+        except ImportError:
+            from langchain_community.embeddings import OllamaEmbeddings
+        return OllamaEmbeddings(model=model, base_url=base_url)
     else:
-        raise ValueError(f"Unknown embedding provider: {provider}")
+        raise ValueError(
+            f"Unknown embedding provider: {provider}. "
+            f"Supported: fastembed, openai, ollama"
+        )
 
 
 
@@ -291,13 +308,12 @@ class KnowledgeEngine:
     def _ensure_embeddings(self) -> None:
         """Initialize embeddings on first use (not at engine startup)."""
         if self._default_embeddings is None:
-            provider = self._config.embedding_provider
-            model = self._config.embedding_model
-            self._default_embeddings = create_embeddings(provider, model, use_gpu=self._config.use_gpu)
+            self._default_embeddings = create_embeddings(self._config)
             self._default_embedding_dim = _get_embedding_dim(self._default_embeddings)
             logger.info(
-                f"Embeddings initialized: provider={provider}, "
-                f"model={model}, dim={self._default_embedding_dim}"
+                f"Embeddings initialized: provider={self._config.embedding_provider}, "
+                f"model={self._config.embedding_model or '(default)'}, "
+                f"dim={self._default_embedding_dim}"
             )
 
     async def warmup(self) -> dict[str, Any]:
@@ -355,7 +371,9 @@ class KnowledgeEngine:
             if (pinned_provider == self._config.embedding_provider
                     and pinned_model == self._config.embedding_model):
                 return self._default_embeddings
-            return create_embeddings(pinned_provider, pinned_model)
+            from dataclasses import replace
+            pinned_cfg = replace(self._config, embedding_provider=pinned_provider, embedding_model=pinned_model)
+            return create_embeddings(pinned_cfg)
         return self._default_embeddings
 
     def _ensure_collection_config(self, collection: str) -> None:
@@ -872,10 +890,7 @@ class KnowledgeEngine:
         new_embeddings = None
         new_dim = None
         if embedding_changed:
-            new_embeddings = create_embeddings(
-                validated.embedding_provider, validated.embedding_model,
-                use_gpu=validated.use_gpu,
-            )
+            new_embeddings = create_embeddings(validated)
             new_dim = _get_embedding_dim(new_embeddings)
 
         return PreparedKnowledgeUpdate(
@@ -902,14 +917,11 @@ class KnowledgeEngine:
             with self._milvus_lock:
                 self._vector_stores.clear()
                 self._record_managers.clear()
-        elif old_use_gpu != self._config.use_gpu and self._config.embedding_provider == "huggingface":
-            # GPU preference changed for local embeddings — recreate on new device
-            # No reindex needed (same vectors, different compute device)
-            self._default_embeddings = create_embeddings(
-                self._config.embedding_provider, self._config.embedding_model,
-                use_gpu=self._config.use_gpu,
-            )
-            logger.info(f"Embeddings device changed: use_gpu={self._config.use_gpu}")
+        elif old_use_gpu != self._config.use_gpu and self._config.embedding_provider == "fastembed":
+            # GPU preference changed — fastembed manages acceleration internally,
+            # but recreate to pick up any config change
+            self._default_embeddings = create_embeddings(self._config)
+            logger.info("Embeddings recreated after config change")
 
         return {
             "embedding_changed": prepared.embedding_changed,

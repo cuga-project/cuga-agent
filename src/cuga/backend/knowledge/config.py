@@ -58,7 +58,9 @@ class KnowledgeConfig:
     # Embeddings
     embedding_provider: str = "fastembed"  # fastembed | openai | ollama
     embedding_model: str = ""  # empty = auto-detect per provider
-    use_gpu: bool = True  # Use GPU/MPS for local embeddings if available
+    embedding_api_key: str = ""  # API key for openai provider (or set OPENAI_API_KEY env var)
+    embedding_base_url: str = ""  # custom base URL for openai-compatible providers
+    use_gpu: bool = True  # kept for backwards compat; fastembed manages acceleration internally
 
     # Chunking
     chunk_size: int = 1000
@@ -117,7 +119,7 @@ class KnowledgeConfig:
             raise ValueError(f"max_ingest_workers must be >= 1, got {self.max_ingest_workers}")
         if self.max_pending_tasks < 1:
             raise ValueError(f"max_pending_tasks must be >= 1, got {self.max_pending_tasks}")
-        if self.embedding_provider not in ("fastembed", "huggingface", "openai", "ollama"):
+        if self.embedding_provider not in ("fastembed", "openai", "ollama"):
             raise ValueError(f"Unknown embedding_provider: {self.embedding_provider}")
         if self.max_search_attempts < 1:
             raise ValueError(f"max_search_attempts must be >= 1, got {self.max_search_attempts}")
@@ -162,6 +164,10 @@ class KnowledgeConfig:
             else:
                 merged[k] = target_type(v)
 
+        # Migrate legacy provider names
+        if merged.get("embedding_provider") == "huggingface":
+            merged["embedding_provider"] = "fastembed"
+
         cfg = KnowledgeConfig(**merged)
         cfg.validate()
         return cfg
@@ -200,8 +206,13 @@ class KnowledgeConfig:
             agent_level_enabled=kb.get("agent_level_enabled", True),
             session_level_enabled=kb.get("session_level_enabled", True),
             persist_dir=persist_dir,
-            embedding_provider=embeddings.get("provider", "fastembed"),
+            embedding_provider={"huggingface": "fastembed"}.get(
+                embeddings.get("provider", "fastembed"),
+                embeddings.get("provider", "fastembed"),
+            ),
             embedding_model=embeddings.get("model", ""),
+            embedding_api_key=embeddings.get("api_key", ""),
+            embedding_base_url=embeddings.get("base_url", ""),
             use_gpu=embeddings.get("use_gpu", True),
             vector_store=kb.get("vector_store", "sqlite"),
             pgvector_connection_string=kb.get("pgvector_connection_string", ""),
