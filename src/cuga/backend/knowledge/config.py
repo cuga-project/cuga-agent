@@ -56,7 +56,7 @@ class KnowledgeConfig:
     persist_dir: Path = field(default_factory=lambda: Path.home() / ".cuga" / "knowledge")
 
     # Embeddings
-    embedding_provider: str = "huggingface"  # huggingface | openai | ollama
+    embedding_provider: str = "fastembed"  # fastembed | openai | ollama
     embedding_model: str = ""  # empty = auto-detect per provider
     use_gpu: bool = True  # Use GPU/MPS for local embeddings if available
 
@@ -117,7 +117,7 @@ class KnowledgeConfig:
             raise ValueError(f"max_ingest_workers must be >= 1, got {self.max_ingest_workers}")
         if self.max_pending_tasks < 1:
             raise ValueError(f"max_pending_tasks must be >= 1, got {self.max_pending_tasks}")
-        if self.embedding_provider not in ("huggingface", "openai", "ollama"):
+        if self.embedding_provider not in ("fastembed", "huggingface", "openai", "ollama"):
             raise ValueError(f"Unknown embedding_provider: {self.embedding_provider}")
         if self.max_search_attempts < 1:
             raise ValueError(f"max_search_attempts must be >= 1, got {self.max_search_attempts}")
@@ -200,7 +200,7 @@ class KnowledgeConfig:
             agent_level_enabled=kb.get("agent_level_enabled", True),
             session_level_enabled=kb.get("session_level_enabled", True),
             persist_dir=persist_dir,
-            embedding_provider=embeddings.get("provider", "huggingface"),
+            embedding_provider=embeddings.get("provider", "fastembed"),
             embedding_model=embeddings.get("model", ""),
             use_gpu=embeddings.get("use_gpu", True),
             vector_store=kb.get("vector_store", "sqlite"),

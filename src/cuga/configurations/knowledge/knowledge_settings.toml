@@ -6,7 +6,7 @@ persist_dir = ""  # empty = default ~/.cuga/knowledge/
 vector_store = "sqlite"  # sqlite (local default) | milvus | pgvector
 
 [knowledge.embeddings]
-provider = "huggingface"  # huggingface | openai | ollama
+provider = "fastembed"  # fastembed | openai | ollama
 model = ""         # empty = auto-detect per provider
 use_gpu = true     # Use GPU/MPS for local embeddings if available
 
