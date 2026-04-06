@@ -132,21 +132,11 @@ class PreparedKnowledgeUpdate:
 # --- Embedding factory ---
 
 class _FastEmbedLangChainAdapter(Embeddings):
-    """LangChain Embeddings adapter around fastembed.TextEmbedding.
-
-    Reuses the model cache from cuga's embedding_service to avoid loading
-    duplicate models when both policies and knowledge use the same model.
-    """
+    """LangChain Embeddings adapter around fastembed.TextEmbedding."""
 
     def __init__(self, model_name: str = "sentence-transformers/all-MiniLM-L6-v2"):
-        from cuga.backend.storage.embedding.embedding_service import _embedding_model_cache
         from fastembed import TextEmbedding
-
-        if model_name in _embedding_model_cache:
-            self._model = _embedding_model_cache[model_name]
-        else:
-            self._model = TextEmbedding(model_name)
-            _embedding_model_cache[model_name] = self._model
+        self._model = TextEmbedding(model_name)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [v.tolist() for v in self._model.embed(texts)]
