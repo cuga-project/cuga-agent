@@ -245,6 +245,36 @@ export default function KnowledgePanel({
     }
   }, []);
 
+  // Start the knowledge engine on-demand (called when user toggles ON while disconnected)
+  const ensureEngineStarted = useCallback(async () => {
+    try {
+      setHealthy(null); // show "Checking" state
+      const res = await api.enableKnowledge();
+      if (res.ok) {
+        // Poll health until ready (engine needs time for warmup)
+        const poll = setInterval(async () => {
+          try {
+            const hRes = await api.getKnowledgeHealth();
+            if (hRes.ok) {
+              const hData = await hRes.json();
+              if (hData.healthy) {
+                clearInterval(poll);
+                setHealthy(true);
+                onHealthChangedRef.current?.(true);
+                loadDocuments();
+              }
+            }
+          } catch { /* keep polling */ }
+        }, 2000);
+        // Stop polling after 60s
+        setTimeout(() => clearInterval(poll), 60000);
+      }
+    } catch {
+      setHealthy(false);
+      onHealthChangedRef.current?.(false);
+    }
+  }, [loadDocuments]);
+
   // Initial load
   useEffect(() => {
     loadDocuments();
@@ -901,7 +931,12 @@ export default function KnowledgePanel({
                           labelA="Off"
                           labelB="On"
                           toggled={knowledgeConfig.enabled ?? true}
-                          onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, enabled: checked })}
+                          onToggle={(checked: boolean) => {
+                            onKnowledgeConfigChange({ ...knowledgeConfig, enabled: checked });
+                            if (checked && !healthy) {
+                              ensureEngineStarted();
+                            }
+                          }}
                           size="sm"
                         />
                         {!knowledgeEnabled && (

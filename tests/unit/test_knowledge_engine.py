@@ -155,14 +155,14 @@ class TestMetadataDB:
 class TestKnowledgeConfig:
     def test_defaults(self):
         cfg = KnowledgeConfig()
-        assert cfg.enabled is True
+        assert cfg.enabled is False
         assert cfg.chunk_size == 1000
         assert cfg.embedding_provider == "fastembed"
         assert cfg.metric_type == "COSINE"
 
     def test_from_settings_empty(self):
         cfg = KnowledgeConfig.from_settings({})
-        assert cfg.enabled is True
+        assert cfg.enabled is False
         assert cfg.chunk_size == 1000
 
 

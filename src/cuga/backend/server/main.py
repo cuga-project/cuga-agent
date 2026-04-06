@@ -436,41 +436,47 @@ async def lifespan(app: FastAPI):
     from cuga.backend.knowledge.config import KnowledgeConfig
     from cuga.backend.knowledge.engine import KnowledgeEngine
 
-    # Load config from settings if available, otherwise use defaults
-    try:
-        kb_config = KnowledgeConfig.from_settings(settings)
-    except Exception:
-        kb_config = KnowledgeConfig()
+    async def initialize_knowledge_engine(app_state, kb_config: "KnowledgeConfig") -> None:
+        """Start the knowledge engine, session provider, MCP server, and warmup.
 
-    if kb_config.enabled:
+        Can be called at startup or on-demand (e.g. when user enables knowledge via UI publish).
+        Safe to call when engine is already running (no-op).
+        """
+        if getattr(app_state, "knowledge_engine", None) is not None:
+            return  # Already running
+
         app_state.set_subsystem_status("knowledge", "starting", "Initializing knowledge engine")
         app_state.knowledge_engine = KnowledgeEngine(kb_config)
 
         # Initialize session provider for ownership enforcement
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
 
-        _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
-        app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
+        if not getattr(app_state, "knowledge_provider", None):
+            _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
+            app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
 
         # Start background maintenance tasks (cleanup, purge, reconcile)
         app_state.knowledge_engine.start_background_tasks()
 
         # Generate internal token for MCP subprocess auth (atomic write)
-        import secrets
-        import tempfile
+        if not getattr(app_state, "internal_token", None):
+            import secrets
+            import tempfile
 
-        token = secrets.token_urlsafe(32)
-        app_state.internal_token = token
-        token_path = Path.cwd() / ".cuga" / ".internal_token"
-        token_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(mode="w", dir=token_path.parent, delete=False, suffix=".tmp") as tmp:
-            tmp.write(token)
-            tmp_name = tmp.name
-        Path(tmp_name).rename(token_path)
-        token_path.chmod(0o600)
-        os.environ["CUGA_INTERNAL_TOKEN_FILE"] = str(token_path)
-        if not os.environ.get("CUGA_BACKEND_URL"):
-            os.environ["CUGA_BACKEND_URL"] = f"http://localhost:{os.environ.get('PORT', '7860')}"
+            token = secrets.token_urlsafe(32)
+            app_state.internal_token = token
+            token_path = Path.cwd() / ".cuga" / ".internal_token"
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=token_path.parent, delete=False, suffix=".tmp"
+            ) as tmp:
+                tmp.write(token)
+                tmp_name = tmp.name
+            Path(tmp_name).rename(token_path)
+            token_path.chmod(0o600)
+            os.environ["CUGA_INTERNAL_TOKEN_FILE"] = str(token_path)
+            if not os.environ.get("CUGA_BACKEND_URL"):
+                os.environ["CUGA_BACKEND_URL"] = f"http://localhost:{os.environ.get('PORT', '7860')}"
 
         logger.info("Knowledge engine started at %s", kb_config.persist_dir)
         app_state.set_subsystem_status(
@@ -481,7 +487,7 @@ async def lifespan(app: FastAPI):
         )
 
         # Start knowledge MCP server in HTTP mode (background thread)
-        if kb_config.mcp_transport == "http":
+        if kb_config.mcp_transport == "http" and not getattr(app_state, "_knowledge_mcp_started", False):
             import threading
 
             def _start_knowledge_mcp():
@@ -494,29 +500,36 @@ async def lifespan(app: FastAPI):
 
             _mcp_thread = threading.Thread(target=_start_knowledge_mcp, daemon=True, name="knowledge-mcp")
             _mcp_thread.start()
+            app_state._knowledge_mcp_started = True
             logger.info("Knowledge MCP server starting on http://127.0.0.1:%s", kb_config.mcp_port)
 
-        async def _warm_knowledge_subsystem():
+        async def _warm():
             try:
                 app_state.set_subsystem_status("knowledge", "starting", "Loading knowledge embedding model")
                 warmup_result = await app_state.knowledge_engine.warmup()
                 app_state.set_subsystem_status(
-                    "knowledge",
-                    "ready",
-                    "Knowledge subsystem ready",
-                    warmup_result,
+                    "knowledge", "ready", "Knowledge subsystem ready", warmup_result
                 )
                 logger.info("Knowledge subsystem warmup complete")
             except Exception as e:
                 logger.exception("Knowledge subsystem warmup failed: %s", e)
                 app_state.set_subsystem_status(
-                    "knowledge",
-                    "failed",
-                    "Knowledge subsystem failed during warmup",
-                    {"error": str(e)},
+                    "knowledge", "failed", "Knowledge subsystem failed during warmup", {"error": str(e)}
                 )
 
-        app_state.background_tasks.append(asyncio.create_task(_warm_knowledge_subsystem()))
+        app_state.background_tasks.append(asyncio.create_task(_warm()))
+
+    # Store the initializer on app_state so manage_routes can call it on-demand
+    app_state.initialize_knowledge_engine = initialize_knowledge_engine
+
+    # Load config from settings if available, otherwise use defaults
+    try:
+        kb_config = KnowledgeConfig.from_settings(settings)
+    except Exception:
+        kb_config = KnowledgeConfig()
+
+    if kb_config.enabled:
+        await initialize_knowledge_engine(app_state, kb_config)
     else:
         app_state.knowledge_engine = None
         logger.info("Knowledge features disabled (knowledge.enabled=false)")

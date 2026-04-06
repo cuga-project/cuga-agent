@@ -59,6 +59,36 @@ def _extract_task_error(task: dict[str, Any], fallback: str = "Ingestion failed"
     return fallback
 
 
+# --- Enable (on-demand engine start) ---
+
+
+@knowledge_router.post("/enable")
+async def enable_knowledge(request: Request):
+    """Start the knowledge engine on-demand if it is not already running.
+
+    Called by the UI when the user toggles knowledge ON from a disabled state.
+    Returns the health status after initialization.
+    """
+    app_state = getattr(request.app.state, "app_state", None)
+    engine = getattr(app_state, "knowledge_engine", None) if app_state else None
+    if engine is not None:
+        return {"status": "already_running"}
+
+    initializer = getattr(app_state, "initialize_knowledge_engine", None)
+    if not initializer:
+        raise HTTPException(status_code=503, detail="Knowledge engine initializer not available")
+
+    try:
+        from cuga.backend.knowledge.config import KnowledgeConfig
+
+        kb_config = KnowledgeConfig.from_settings(__import__("cuga.config", fromlist=["settings"]).settings)
+        kb_config.enabled = True  # Force enable regardless of settings file
+        await initializer(app_state, kb_config)
+        return {"status": "started"}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start knowledge engine: {e}")
+
+
 # --- Health ---
 
 

@@ -1,5 +1,5 @@
 [knowledge]
-enabled = true
+enabled = false
 agent_level_enabled = true
 session_level_enabled = true
 persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
