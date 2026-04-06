@@ -68,7 +68,7 @@ class KnowledgeClient:
         """Search documents in the knowledge base."""
         collection = self._resolve_collection(scope, thread_id)
         results = await self._engine.search(collection, query, limit, score_threshold)
-        return [{"text": r.text, "filename": r.filename, "page": r.page} for r in results]
+        return [{"text": r.text, "filename": r.filename, "page": r.page, "score": r.score} for r in results]
 
     async def ingest(
         self,

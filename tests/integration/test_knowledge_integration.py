@@ -33,8 +33,8 @@ async def engine(monkeypatch):
     )
     config = KnowledgeConfig(
         persist_dir=Path(tmpdir),
-        embedding_provider="huggingface",
-        embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+        embedding_provider="fastembed",
+        embedding_model="",
         chunk_size=200,
         chunk_overlap=50,
         max_ingest_workers=1,
@@ -176,8 +176,8 @@ class TestCrossRestartDedup:
         )
         config = KnowledgeConfig(
             persist_dir=tmp_path / "kb",
-            embedding_provider="huggingface",
-            embedding_model="sentence-transformers/all-MiniLM-L6-v2",
+            embedding_provider="fastembed",
+            embedding_model="",
             chunk_size=200,
             chunk_overlap=50,
             max_ingest_workers=1,
@@ -444,7 +444,7 @@ class TestTaskLifecycle:
     def test_engine_settings(self, engine):
         settings = engine.get_settings()
         assert settings["knowledge"]["chunk_size"] == 200  # from test config
-        assert settings["knowledge"]["embedding_provider"] == "huggingface"
+        assert settings["knowledge"]["embedding_provider"] == "fastembed"
 
     def test_update_settings(self, engine):
         engine.update_settings(chunk_size="500")
