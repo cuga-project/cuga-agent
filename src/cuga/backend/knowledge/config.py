@@ -164,6 +164,13 @@ class KnowledgeConfig:
             else:
                 merged[k] = target_type(v)
 
+        # Migrate legacy: huggingface without sentence-transformers → fastembed
+        if merged.get("embedding_provider") == "huggingface":
+            try:
+                import sentence_transformers  # noqa: F401
+            except ImportError:
+                merged["embedding_provider"] = "fastembed"
+
         cfg = KnowledgeConfig(**merged)
         cfg.validate()
         return cfg
