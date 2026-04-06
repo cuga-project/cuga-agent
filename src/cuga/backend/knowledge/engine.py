@@ -250,6 +250,9 @@ class KnowledgeEngine:
         # Record managers for dedup (InMemoryRecordManager per collection)
         self._record_managers: dict[str, InMemoryRecordManager] = {}
 
+        # Docling converter (lazy, reused across all document loads)
+        self._docling_converter = None
+
         # Milvus serialization lock (all Milvus ops go through this)
         self._milvus_lock = threading.Lock()
 
@@ -1185,6 +1188,14 @@ class KnowledgeEngine:
             logger.warning(f"HybridChunker init failed, falling back to default: {e}")
             return None
 
+    def _get_docling_converter(self):
+        """Get or create a reusable Docling DocumentConverter (loads weights once)."""
+        if self._docling_converter is None:
+            from docling.document_converter import DocumentConverter
+            self._docling_converter = DocumentConverter()
+            logger.info("Docling DocumentConverter initialized (weights loaded)")
+        return self._docling_converter
+
     def _load_document(self, file_path: Path) -> list[Document]:
         """Load a document using Docling for supported formats, fallback for plain text."""
         suffix = file_path.suffix.lower()
@@ -1200,6 +1211,7 @@ class KnowledgeEngine:
                 loader_kwargs: dict = {
                     "file_path": str(file_path),
                     "export_type": ExportType.DOC_CHUNKS,
+                    "converter": self._get_docling_converter(),
                 }
                 if chunker is not None:
                     loader_kwargs["chunker"] = chunker
@@ -1232,6 +1244,7 @@ class KnowledgeEngine:
                 loader_kwargs = {
                     "file_path": str(file_path),
                     "export_type": ExportType.DOC_CHUNKS,
+                    "converter": self._get_docling_converter(),
                 }
                 if chunker is not None:
                     loader_kwargs["chunker"] = chunker
