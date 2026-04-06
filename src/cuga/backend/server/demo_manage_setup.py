@@ -415,8 +415,14 @@ def setup_demo_manage_config(
                     shutil.rmtree(d, ignore_errors=True)
                     logger.info("Demo reset: cleared %s", d.name)
 
-        # Remove the entire vector DB and metadata so stale vectors don't persist.
-        # The engine recreates these on startup.
+        _pg = getattr(getattr(_settings, "storage", None), "postgres_url", "") or ""
+        _storage_mode = (getattr(getattr(_settings, "storage", None), "mode", None) or "local").lower()
+        if _storage_mode == "prod" and _pg.strip():
+            from cuga.backend.knowledge.metadata import truncate_knowledge_metadata_tables
+
+            truncate_knowledge_metadata_tables(_pg.strip())
+            logger.info("Demo reset: truncated knowledge metadata tables in Postgres")
+
         for db_file in ("knowledge.db", "metadata.db"):
             db_path = _kc.persist_dir / db_file
             if db_path.exists():

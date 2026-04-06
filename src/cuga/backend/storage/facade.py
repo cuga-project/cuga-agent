@@ -34,6 +34,11 @@ def _postgres_url() -> str:
     return getattr(settings, "storage", None) and getattr(settings.storage, "postgres_url", "") or ""
 
 
+def get_storage_connection_params() -> tuple[str, str, str]:
+    """Return ``(mode, local_db_path, postgres_url)`` for embedding backends."""
+    return _storage_mode(), _local_db_path(), _postgres_url()
+
+
 class StorageFacade:
     def get_relational_store(self, db_name: str) -> "RelationalStore":
         from cuga.backend.storage.relational import get_relational_store

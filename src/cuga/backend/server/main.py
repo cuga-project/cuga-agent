@@ -75,13 +75,13 @@ def _session_knowledge_collection(thread_id: str) -> str:
     return f"kb_sess_{re.sub(r'[^a-zA-Z0-9_]', '_', thread_id)}"
 
 
-def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
+async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
     if not app_state:
         return
 
     engine = getattr(app_state, "knowledge_engine", None)
     if engine:
-        engine.drop_collection(_session_knowledge_collection(thread_id))
+        await engine.drop_collection(_session_knowledge_collection(thread_id))
 
     provider = getattr(app_state, "knowledge_provider", None)
     if provider:
@@ -431,7 +431,7 @@ async def lifespan(app: FastAPI):
         app_state.set_subsystem_status("policy", "disabled", "Policy subsystem disabled")
 
     # -------------------------------------------------------------------
-    # Knowledge engine — in-process LangChain + Milvus Lite
+    # Knowledge engine — in-process LangChain + vector store (storage_local / pgvector / …)
     # -------------------------------------------------------------------
     from cuga.backend.knowledge.config import KnowledgeConfig
     from cuga.backend.knowledge.engine import KnowledgeEngine
@@ -791,6 +791,10 @@ async def lifespan(app: FastAPI):
 
     # Shutdown knowledge engine
     if hasattr(app_state, "knowledge_engine") and app_state.knowledge_engine:
+        try:
+            await app_state.knowledge_engine.aclose()
+        except Exception as e:
+            logger.debug(f"Knowledge engine aclose: {e}")
         app_state.knowledge_engine.shutdown()
 
     # Clean up embedded assets
@@ -2237,7 +2241,7 @@ async def delete_conversation(
     """Delete a conversation thread and its stream events."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     try:
-        _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
+        await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
         conversation_db = get_conversation_db()
         success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
 

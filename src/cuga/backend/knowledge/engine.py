@@ -31,9 +31,10 @@ from langchain_core.indexing import InMemoryRecordManager
 from langchain_docling import DoclingLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from cuga.backend.knowledge.config import KnowledgeConfig
-from cuga.backend.knowledge.metadata import MetadataDB
-from cuga.backend.knowledge.vector_store import VectorStoreAdapter
+from cuga.backend.knowledge.config import KnowledgeConfig, knowledge_vector_backend_for_settings
+from cuga.backend.knowledge.metadata import create_knowledge_metadata
+from cuga.backend.storage.facade import get_storage_connection_params
+from cuga.backend.knowledge.vector_store_base import VectorStoreAdapter
 
 logger = loguru_logger
 
@@ -263,11 +264,9 @@ def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
         return OpenAIEmbeddings(**kwargs)
 
     if provider == "ollama":
+        from langchain_ollama import OllamaEmbeddings
+
         base_url = config.embedding_base_url or "http://localhost:11434"
-        try:
-            from langchain_ollama import OllamaEmbeddings
-        except ImportError:
-            from langchain_community.embeddings import OllamaEmbeddings
         return OllamaEmbeddings(model=model or "nomic-embed-text", base_url=base_url)
 
     raise ValueError(
@@ -285,19 +284,14 @@ def _get_embedding_dim(embeddings: Embeddings) -> int:
 
 
 class KnowledgeEngine:
-    """In-process knowledge engine. No external services needed.
-
-    All Milvus operations are serialized through a dedicated thread via _milvus_lock
-    to ensure thread safety with Milvus Lite.
-    """
+    """In-process knowledge engine (chunking, embeddings, pluggable vector backends)."""
 
     def __init__(self, config: KnowledgeConfig):
         config.validate()
         self._config = config
-        # Legacy — kept for backward compatibility with tests
-        self._milvus_uri = str(config.persist_dir / "knowledge.db")
         self._files_dir = config.persist_dir / "files"
-        self._metadata = MetadataDB(config.persist_dir / "metadata.db")
+        _smode, _, _pghost = get_storage_connection_params()
+        self._metadata = create_knowledge_metadata(config.persist_dir, mode=_smode, postgres_url=_pghost)
 
         # Ensure directories exist
         config.persist_dir.mkdir(parents=True, exist_ok=True)
@@ -324,8 +318,7 @@ class KnowledgeEngine:
         # Docling converter (lazy, reused across all document loads)
         self._docling_converter = None
 
-        # Milvus serialization lock (all Milvus ops go through this)
-        self._milvus_lock = threading.Lock()
+        self._vector_store_lock = threading.Lock()
 
         # Per-collection async ingest locks
         self._collection_locks: dict[str, asyncio.Lock] = {}
@@ -341,22 +334,16 @@ class KnowledgeEngine:
         self._shutdown_event = asyncio.Event()
         self._background_tasks: list[asyncio.Task] = []
 
-        # Crash recovery
-        recovered = self._metadata.recover_stale_tasks()
-        if recovered:
-            logger.info(f"Recovered {recovered} stale task(s) from previous crash")
+        self._metadata_ready = False
+        self._metadata_init_lock = asyncio.Lock()
 
-        # Reconcile stale deletes
-        self._reconcile_deletes()
+        from cuga.config import settings as _settings
 
-        # Purge old tasks
-        purged = self._metadata.purge_old_tasks(max_age_days=7)
-        if purged:
-            logger.debug(f"Purged {purged} old task(s)")
-
+        _vb = knowledge_vector_backend_for_settings(_settings)
+        _sm = getattr(getattr(_settings, "storage", None), "mode", "local")
         logger.info(
             f"Knowledge engine started: "
-            f"vector_store={config.vector_store}, "
+            f"storage.mode={_sm} vector_backend={_vb}, "
             f"embedding={config.embedding_provider}/{config.embedding_model or 'auto'}, "
             f"use_gpu={config.use_gpu}, "
             f"metric={config.metric_type}, "
@@ -372,9 +359,10 @@ class KnowledgeEngine:
                     await asyncio.sleep(3600)  # every hour
                     if self._shutdown_event.is_set():
                         break
-                    self._reconcile_deletes()
-                    self._metadata.purge_old_tasks(max_age_days=7)
-                    self._cleanup_expired_sessions()
+                    if self._metadata_ready:
+                        await self._reconcile_deletes()
+                        await self._metadata.purge_old_tasks(max_age_days=7)
+                        await self._cleanup_expired_sessions()
                     logger.debug("Background maintenance completed")
                 except asyncio.CancelledError:
                     break
@@ -383,6 +371,28 @@ class KnowledgeEngine:
 
         task = asyncio.ensure_future(_maintenance_loop())
         self._background_tasks.append(task)
+
+    async def _ensure_metadata_ready(self) -> None:
+        if self._metadata_ready:
+            return
+        async with self._metadata_init_lock:
+            if self._metadata_ready:
+                return
+            await self._metadata.ensure_ready()
+            recovered = await self._metadata.recover_stale_tasks()
+            if recovered:
+                logger.info(f"Recovered {recovered} stale task(s) from previous crash")
+            await self._reconcile_deletes()
+            purged = await self._metadata.purge_old_tasks(max_age_days=7)
+            if purged:
+                logger.debug(f"Purged {purged} old task(s)")
+            self._metadata_ready = True
+
+    async def aclose(self) -> None:
+        try:
+            await self._metadata.close()
+        except Exception as e:
+            logger.debug(f"Knowledge metadata close: {e}")
 
     def shutdown(self) -> None:
         """Release resources."""
@@ -411,6 +421,7 @@ class KnowledgeEngine:
 
     async def warmup(self) -> dict[str, Any]:
         """Preload heavyweight resources so callers can gate on readiness."""
+        await self._ensure_metadata_ready()
         await asyncio.to_thread(self._ensure_embeddings)
         return {
             "embedding_provider": self._config.embedding_provider,
@@ -418,32 +429,12 @@ class KnowledgeEngine:
             "embeddings_initialized": self._default_embeddings is not None,
         }
 
+    def _knowledge_vector_backend(self) -> str:
+        from cuga.config import settings
+
+        return knowledge_vector_backend_for_settings(settings)
+
     # --- Vector store (LRU cache, bounded) ---
-
-    def _get_vector_store(self, collection: str):
-        """Get or create a vector store adapter for the collection."""
-        if collection in self._vector_stores:
-            self._vector_stores.move_to_end(collection)
-            return self._vector_stores[collection]
-
-        # Evict oldest if at capacity
-        while len(self._vector_stores) >= _VS_CACHE_MAX:
-            evicted_name, _ = self._vector_stores.popitem(last=False)
-            logger.debug(f"Evicted vector store cache: {evicted_name}")
-
-        from cuga.backend.knowledge.vector_store import create_vector_store
-
-        embeddings = self._get_embeddings_for_collection(collection)
-        adapter = create_vector_store(
-            backend=self._config.vector_store,
-            collection=collection,
-            embeddings=embeddings,
-            persist_dir=self._config.persist_dir,
-            metric_type=self._config.metric_type,
-            pgvector_connection_string=self._config.pgvector_connection_string,
-        )
-        self._vector_stores[collection] = adapter
-        return adapter
 
     def _get_record_manager(self, collection: str) -> InMemoryRecordManager:
         if collection not in self._record_managers:
@@ -452,13 +443,10 @@ class KnowledgeEngine:
             self._record_managers[collection] = rm
         return self._record_managers[collection]
 
-    def _get_embeddings_for_collection(self, collection: str) -> Embeddings:
-        """Get embeddings for a collection, always using the pinned provider/model."""
+    async def _resolve_embeddings_for_collection(self, collection: str) -> Embeddings:
         self._ensure_embeddings()
-        cfg = self._metadata.get_collection_config(collection)
+        cfg = await self._metadata.get_collection_config(collection)
         if cfg:
-            # Always use the pinned config — even if dims happen to match the default,
-            # provider/model may differ (e.g. OpenAI vs HuggingFace both at 384 dims)
             pinned_provider = cfg["embedding_provider"]
             pinned_model = cfg["embedding_model"]
             if (
@@ -474,13 +462,48 @@ class KnowledgeEngine:
             return create_embeddings(pinned_cfg)
         return self._default_embeddings
 
-    def _ensure_collection_config(self, collection: str) -> None:
-        """Pin embedding config for a new collection."""
+    def _create_vector_adapter(self, collection: str, embeddings: Embeddings):
+        from cuga.backend.knowledge.vector_store import create_vector_store
+
+        return create_vector_store(
+            backend=self._knowledge_vector_backend(),
+            collection=collection,
+            embeddings=embeddings,
+            persist_dir=self._config.persist_dir,
+            metric_type=self._config.metric_type,
+            pgvector_connection_string=self._config.pgvector_connection_string,
+        )
+
+    def _vector_cache_put(self, collection: str, adapter: VectorStoreAdapter) -> None:
+        while len(self._vector_stores) >= _VS_CACHE_MAX:
+            evicted_name, _ = self._vector_stores.popitem(last=False)
+            logger.debug(f"Evicted vector store cache: {evicted_name}")
+        self._vector_stores[collection] = adapter
+
+    async def _ensure_vector_store_cached(self, collection: str) -> None:
+        if collection in self._vector_stores:
+            self._vector_stores.move_to_end(collection)
+            return
+        embeddings = await self._resolve_embeddings_for_collection(collection)
+
+        def _sync_put() -> None:
+            with self._vector_store_lock:
+                if collection in self._vector_stores:
+                    self._vector_stores.move_to_end(collection)
+                    return
+                adapter = self._create_vector_adapter(collection, embeddings)
+                self._vector_cache_put(collection, adapter)
+
+        await asyncio.to_thread(_sync_put)
+
+    async def _ensure_collection_config(self, collection: str) -> None:
         self._ensure_embeddings()
-        if not self._metadata.get_collection_config(collection):
+        if not await self._metadata.get_collection_config(collection):
             provider = self._config.embedding_provider
             model = self._config.embedding_model
-            self._metadata.set_collection_config(collection, provider, model, self._default_embedding_dim)
+            await self._metadata.set_collection_config(
+                collection, provider, model, self._default_embedding_dim
+            )
             logger.info(f"Created collection {collection} (dim={self._default_embedding_dim})")
 
     def _get_collection_lock(self, collection: str) -> asyncio.Lock:
@@ -490,7 +513,7 @@ class KnowledgeEngine:
 
     # --- Ingest ---
 
-    def _sanitize_and_validate(
+    async def _sanitize_and_validate(
         self, collection: str, file_path: Path, replace_duplicates: bool, original_filename: str | None = None
     ) -> str:
         """Validate file and return sanitized filename. Raises on error."""
@@ -500,11 +523,13 @@ class KnowledgeEngine:
         if collection in self._reindex_in_progress:
             raise ReindexInProgressError()
 
-        pending = [t for t in self._metadata.list_tasks(collection) if t["status"] in ("pending", "running")]
+        pending = [
+            t for t in await self._metadata.list_tasks(collection) if t["status"] in ("pending", "running")
+        ]
         if len(pending) >= self._config.max_pending_tasks:
             raise IngestionQueueFullError(self._config.max_pending_tasks)
 
-        if not replace_duplicates and self._metadata.document_exists(collection, filename):
+        if not replace_duplicates and await self._metadata.document_exists(collection, filename):
             raise DocumentExistsError(filename)
 
         if not file_path.exists():
@@ -516,22 +541,19 @@ class KnowledgeEngine:
 
         return filename
 
-    def _create_task_entry(self, collection: str, filename: str) -> dict[str, Any]:
-        """Create a task entry. Refuses if reindex is in progress."""
+    async def _create_task_entry(self, collection: str, filename: str) -> dict[str, Any]:
         coll = _sanitize_collection(collection)
         if coll in self._reindex_in_progress:
             raise ReindexInProgressError()
-        return self._create_task_entry_internal(coll, filename)
+        return await self._create_task_entry_internal(coll, filename)
 
-    def _create_reindex_task_entry(self, collection: str, filename: str) -> dict[str, Any]:
-        """Create a task entry for reindex (bypasses reindex guard)."""
-        return self._create_task_entry_internal(_sanitize_collection(collection), filename)
+    async def _create_reindex_task_entry(self, collection: str, filename: str) -> dict[str, Any]:
+        return await self._create_task_entry_internal(_sanitize_collection(collection), filename)
 
-    def _create_task_entry_internal(self, collection: str, filename: str) -> dict[str, Any]:
-        """Internal: create task entry without guard checks."""
+    async def _create_task_entry_internal(self, collection: str, filename: str) -> dict[str, Any]:
         task_id = f"task_{uuid.uuid4().hex[:12]}"
         file_tasks = {filename: {"filename": filename, "status": "pending"}}
-        return self._metadata.create_task(task_id, collection, 1, file_tasks)
+        return await self._metadata.create_task(task_id, collection, 1, file_tasks)
 
     async def _run_ingest(
         self,
@@ -544,26 +566,19 @@ class KnowledgeEngine:
     ) -> None:
         """Run ingestion for a single file in a background thread.
 
-        Serialized per-collection via asyncio.Lock so Milvus Lite never sees
-        concurrent access (its embedded gRPC server crashes under parallel writes).
-        Docling parsing still runs in a thread to avoid blocking the event loop.
+        Serialized per-collection via asyncio.Lock. Docling parsing still runs in a
+        thread to avoid blocking the event loop.
         """
         cancel_event = asyncio.Event()
         self._active_tasks[task_id] = cancel_event
 
         coll = _sanitize_collection(collection)
+        await self._ensure_metadata_ready()
 
-        # Serialize per-collection: Milvus Lite cannot handle concurrent connections.
         async with self._get_collection_lock(coll):
-            # Pre-initialize vector store on the async thread (has event loop).
-            # Milvus() constructor creates AsyncMilvusClient which requires a running
-            # event loop — doing this here avoids a 75-retry timeout from asyncio.to_thread.
-            self._ensure_collection_config(coll)
-            if coll not in self._vector_stores:
-                self._get_vector_store(coll)
-
-            await asyncio.to_thread(
-                self._ingest_sync,
+            await self._ensure_collection_config(coll)
+            await self._ensure_vector_store_cached(coll)
+            await self._ingest_inner(
                 coll,
                 file_path,
                 filename,
@@ -581,13 +596,16 @@ class KnowledgeEngine:
         original_filename: str | None = None,
     ) -> dict[str, Any]:
         """Ingest a document file into a collection. Validates, creates task, runs ingestion."""
+        await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
-        filename = self._sanitize_and_validate(collection, file_path, replace_duplicates, original_filename)
-        task_info = self._create_task_entry(collection, filename)
+        filename = await self._sanitize_and_validate(
+            collection, file_path, replace_duplicates, original_filename
+        )
+        task_info = await self._create_task_entry(collection, filename)
         await self._run_ingest(collection, file_path, filename, task_info["task_id"], replace_duplicates)
-        return self._metadata.get_task(task_info["task_id"])
+        return await self._metadata.get_task(task_info["task_id"])
 
-    def _ingest_sync(
+    async def _ingest_inner(
         self,
         collection: str,
         file_path: Path,
@@ -597,35 +615,30 @@ class KnowledgeEngine:
         cancel_event: asyncio.Event,
         skip_file_copy: bool = False,
     ) -> None:
-        """Synchronous ingestion worker. Runs in thread via asyncio.to_thread."""
         start = time.monotonic()
         try:
-            self._metadata.update_task(task_id, status="running")
-            self._metadata.update_task(
+            await self._metadata.update_task(task_id, status="running")
+            await self._metadata.update_task(
                 task_id,
                 file_tasks={filename: {"filename": filename, "status": "processing"}},
             )
             logger.info(f"Task {task_id}: pending -> running for {filename} in {collection}")
 
             if cancel_event.is_set():
-                self._metadata.update_task(
+                await self._metadata.update_task(
                     task_id,
                     status="cancelled",
                     file_tasks={filename: {"filename": filename, "status": "skipped"}},
                 )
                 return
 
-            # Collection config and vector store already initialized in _run_ingest
-            # (on the async thread where event loop is available for Milvus init)
-
-            # Copy original file to storage (skip during reindex — file already in place)
             if not skip_file_copy:
                 dest_dir = self._files_dir / collection
                 dest_dir.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(file_path, dest_dir / filename)
+                dest = dest_dir / filename
+                await asyncio.to_thread(shutil.copy2, str(file_path), str(dest))
 
-            # Load + chunk
-            docs = self._load_document(file_path)
+            docs = await asyncio.to_thread(self._load_document, file_path)
             if not docs:
                 raise ValueError(f"No content extracted from {filename}")
 
@@ -653,12 +666,11 @@ class KnowledgeEngine:
                     "source": source_id,
                     "filename": filename,
                 }
-                # Only include page when it has a value — Milvus can't infer
-                # schema type from None on first insert (collection creation).
+                # Only include page when set — keeps chunk metadata JSON-friendly
                 if page is not None:
                     meta["page"] = page
                 doc.metadata = meta
-                # Validate metadata types for Milvus compatibility
+                # Coerce exotic types for vector backends
                 for key, val in doc.metadata.items():
                     if val is not None and not isinstance(val, (str, int, float, bool)):
                         logger.warning(f"Coercing metadata {key}={type(val).__name__} to str for {filename}")
@@ -668,13 +680,14 @@ class KnowledgeEngine:
                 logger.debug(f"Sample metadata for {filename}: {docs[0].metadata}")
 
             logger.info(
-                f"Inserting {len(docs)} chunks into {self._config.vector_store} "
+                f"Inserting {len(docs)} chunks into {self._knowledge_vector_backend()} "
                 f"collection {collection} for {filename}"
             )
-            with self._milvus_lock:
-                result = self._insert_documents(collection, docs, source_id, filename, replace_duplicates)
+            result = await self._insert_documents_async(
+                collection, docs, source_id, filename, replace_duplicates
+            )
             logger.info(
-                f"{self._config.vector_store} insert complete for {filename}: "
+                f"{self._knowledge_vector_backend()} insert complete for {filename}: "
                 f"added={result.get('num_added', 0)}, skipped={result.get('num_skipped', 0)}"
             )
 
@@ -696,8 +709,8 @@ class KnowledgeEngine:
             preview = " ".join(preview_parts).replace("\n", " ").strip()
             if len(preview) > _PREVIEW_MAX_CHARS:
                 preview = preview[:_PREVIEW_MAX_CHARS].rsplit(" ", 1)[0] + "..."
-            self._metadata.add_document(collection, filename, chunk_count or len(docs), preview=preview)
-            self._metadata.update_task(
+            await self._metadata.add_document(collection, filename, chunk_count or len(docs), preview=preview)
+            await self._metadata.update_task(
                 task_id,
                 status="completed",
                 processed_files=1,
@@ -718,7 +731,7 @@ class KnowledgeEngine:
         except Exception as e:
             duration = time.monotonic() - start
             logger.error(f"Failed to ingest {filename}: {e}")
-            self._metadata.update_task(
+            await self._metadata.update_task(
                 task_id,
                 status="failed",
                 processed_files=1,
@@ -735,7 +748,7 @@ class KnowledgeEngine:
         finally:
             self._active_tasks.pop(task_id, None)
 
-    def _insert_documents(
+    async def _insert_documents_async(
         self,
         collection: str,
         docs: list,
@@ -744,47 +757,55 @@ class KnowledgeEngine:
         replace_duplicates: bool,
         retry: bool = True,
     ) -> dict:
-        """Insert documents into the vector store via adapter."""
         try:
-            adapter = self._get_vector_store(collection)
-            doc_exists = self._metadata.document_exists(collection, filename)
+            doc_exists = await self._metadata.document_exists(collection, filename)
 
-            if replace_duplicates and doc_exists:
-                try:
-                    adapter.delete_by_source(source_id)
-                except Exception as e:
-                    logger.debug(f"Pre-delete for {source_id}: {e}")
-                rm = self._record_managers.get(collection)
-                if rm:
-                    try:
-                        rm.delete_keys([source_id])
-                    except Exception:
-                        pass
-                # Batch insert
-                _BATCH = 50
-                total_added = 0
-                for i in range(0, len(docs), _BATCH):
-                    result = adapter.add_documents(docs[i : i + _BATCH])
-                    total_added += result.get("num_added", 0)
-                return {"num_added": total_added, "num_skipped": 0}
-            elif not doc_exists:
-                return adapter.add_documents(docs)
-            else:
-                return {"num_added": 0, "num_skipped": len(docs)}
+            def _vector_mutation() -> dict:
+                with self._vector_store_lock:
+                    adapter = self._vector_stores[collection]
+                    if replace_duplicates and doc_exists:
+                        try:
+                            adapter.delete_by_source(source_id)
+                        except Exception as e:
+                            logger.debug(f"Pre-delete for {source_id}: {e}")
+                        rm = self._record_managers.get(collection)
+                        if rm:
+                            try:
+                                rm.delete_keys([source_id])
+                            except Exception:
+                                pass
+                        _BATCH = 50
+                        total_added = 0
+                        for i in range(0, len(docs), _BATCH):
+                            result = adapter.add_documents(docs[i : i + _BATCH])
+                            total_added += result.get("num_added", 0)
+                        return {"num_added": total_added, "num_skipped": 0}
+                    if not doc_exists:
+                        return adapter.add_documents(docs)
+                    return {"num_added": 0, "num_skipped": len(docs)}
+
+            return await asyncio.to_thread(_vector_mutation)
         except Exception as e:
             if retry and ("DataNotMatch" in str(e) or "schema" in str(e).lower()):
-                # Schema mismatch — drop and recreate collection
                 logger.warning(f"Schema mismatch in {collection}, dropping and recreating: {e}")
-                self._vector_stores.pop(collection, None)
+                with self._vector_store_lock:
+                    self._vector_stores.pop(collection, None)
                 self._record_managers.pop(collection, None)
                 try:
-                    adapter = self._get_vector_store(collection)
-                    adapter.drop()
+                    await self._ensure_vector_store_cached(collection)
+
+                    def _drop_vec() -> None:
+                        with self._vector_store_lock:
+                            ad = self._vector_stores.get(collection)
+                            if ad:
+                                ad.drop()
+
+                    await asyncio.to_thread(_drop_vec)
                 except Exception:
                     pass
-                self._metadata.delete_collection_metadata(collection)
-                # Retry once with fresh collection
-                return self._insert_documents(
+                await self._metadata.delete_collection_metadata(collection)
+                await self._ensure_vector_store_cached(collection)
+                return await self._insert_documents_async(
                     collection, docs, source_id, filename, replace_duplicates, retry=False
                 )
             raise
@@ -826,64 +847,66 @@ class KnowledgeEngine:
 
     async def delete_document(self, collection: str, filename: str) -> None:
         """Delete a document. Idempotent compensating flow across stores."""
+        await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
         filename = _sanitize_filename(filename)
 
-        # Step 1: Mark as deleting (single-store transaction)
-        if not self._metadata.mark_deleting(collection, filename):
+        if not await self._metadata.mark_deleting(collection, filename):
             raise DocumentNotFoundError(filename)
 
         async with self._get_collection_lock(collection):
-            await asyncio.to_thread(self._delete_document_sync, collection, filename)
+            await self._ensure_vector_store_cached(collection)
+            try:
+                await asyncio.to_thread(self._delete_vector_and_file, collection, filename)
+                await self._metadata.remove_document(collection, filename)
+                logger.info(f"Deleted {filename} from {collection}")
+            except Exception as e:
+                logger.error(f"Delete incomplete for {filename} in {collection}: {e}")
 
-    def _delete_document_sync(self, collection: str, filename: str) -> None:
-        """Synchronous 5-step delete. All steps idempotent."""
+    def _delete_vector_and_file(self, collection: str, filename: str) -> None:
         source_id = f"{collection}/{filename}"
-        try:
-            # Step 2: Delete from vector store
-            with self._milvus_lock:
-                try:
-                    adapter = self._get_vector_store(collection)
+        with self._vector_store_lock:
+            try:
+                adapter = self._vector_stores.get(collection)
+                if adapter:
                     adapter.delete_by_source(source_id)
-                except Exception as e:
-                    logger.debug(f"{self._config.vector_store} delete for {source_id}: {e}")
+            except Exception as e:
+                logger.debug(f"{self._knowledge_vector_backend()} delete for {source_id}: {e}")
 
-            # Step 3: Clear record manager state (prevents stale dedup skip)
-            rm = self._record_managers.get(collection)
-            if rm:
-                try:
-                    rm.delete_keys([source_id])
-                except Exception as e:
-                    logger.debug(f"RecordManager delete for {source_id}: {e}")
+        rm = self._record_managers.get(collection)
+        if rm:
+            try:
+                rm.delete_keys([source_id])
+            except Exception as e:
+                logger.debug(f"RecordManager delete for {source_id}: {e}")
 
-            # Step 4: Delete from file storage
-            file_path = self._files_dir / collection / filename
-            file_path.unlink(missing_ok=True)
+        file_path = self._files_dir / collection / filename
+        file_path.unlink(missing_ok=True)
 
-            # Step 5: Delete from metadata
-            self._metadata.remove_document(collection, filename)
-            logger.info(f"Deleted {filename} from {collection}")
-        except Exception as e:
-            logger.error(f"Delete incomplete for {filename} in {collection}: {e}")
-            # Stays in "deleting" state — reconciliation will retry
+    async def _finalize_stale_delete(self, collection: str, filename: str) -> None:
+        collection = _sanitize_collection(collection)
+        filename = _sanitize_filename(filename)
+        async with self._get_collection_lock(collection):
+            await self._ensure_vector_store_cached(collection)
+            try:
+                await asyncio.to_thread(self._delete_vector_and_file, collection, filename)
+                await self._metadata.remove_document(collection, filename)
+                logger.info(f"Reconciled delete: {filename} from {collection}")
+            except Exception as e:
+                logger.error(f"Reconcile delete incomplete for {filename} in {collection}: {e}")
 
-    def _reconcile_deletes(self) -> None:
-        """Retry stale deletes (runs on startup and hourly)."""
-        stale = self._metadata.get_deleting_documents()
+    async def _reconcile_deletes(self) -> None:
+        stale = await self._metadata.get_deleting_documents()
         for doc in stale:
             logger.info(f"Reconciling stale delete: {doc['filename']} in {doc['collection']}")
-            self._delete_document_sync(doc["collection"], doc["filename"])
+            await self._finalize_stale_delete(doc["collection"], doc["filename"])
 
-    # --- Session cleanup ---
-
-    def _cleanup_expired_sessions(self, max_age_days: int = 7) -> None:
-        """Drop session collections older than max_age_days."""
-        # Use metadata DB to list session collections (backend-agnostic)
-        all_configs = self._metadata.list_all_collection_configs()
+    async def _cleanup_expired_sessions(self, max_age_days: int = 7) -> None:
+        all_configs = await self._metadata.list_all_collection_configs()
         for col_name in all_configs:
             if not col_name.startswith("kb_sess_"):
                 continue
-            cfg = self._metadata.get_collection_config(col_name)
+            cfg = await self._metadata.get_collection_config(col_name)
             if not cfg:
                 continue
             from datetime import datetime, timezone, timedelta
@@ -891,7 +914,7 @@ class KnowledgeEngine:
             try:
                 created = datetime.fromisoformat(cfg["created_at"])
                 if datetime.now(timezone.utc) - created > timedelta(days=max_age_days):
-                    self.drop_collection(col_name)
+                    await self.drop_collection(col_name)
                     logger.info(f"Cleaned up expired session collection: {col_name}")
             except Exception as e:
                 logger.debug(f"Could not check age for {col_name}: {e}")
@@ -902,21 +925,22 @@ class KnowledgeEngine:
         self, collection: str, query: str, limit: int = 10, score_threshold: float = 0.0
     ) -> list[SearchResult]:
         """Search documents in a collection."""
+        await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
         limit = max(1, min(limit, 100))
         score_threshold = max(0.0, min(score_threshold, 1.0))
 
+        await self._ensure_vector_store_cached(collection)
+
         def _search_sync():
-            with self._milvus_lock:
-                adapter = self._get_vector_store(collection)
-                # Scores are already normalized to [0, 1] by the adapter
-                # (uses LangChain's built-in relevance score normalization)
+            with self._vector_store_lock:
+                adapter = self._vector_stores[collection]
                 scored = adapter.search(query, k=limit)
                 if scored:
                     logger.debug(
                         f"Search '{query[:30]}' on {collection}: "
                         f"top_score={scored[0][1]:.4f}, count={len(scored)}, "
-                        f"backend={self._config.vector_store}"
+                        f"backend={self._knowledge_vector_backend()}"
                     )
                 return scored
 
@@ -949,8 +973,9 @@ class KnowledgeEngine:
 
     async def list_documents(self, collection: str) -> list[DocInfo]:
         """List documents in a collection (hides 'deleting' status)."""
+        await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
-        rows = self._metadata.list_documents(collection)
+        rows = await self._metadata.list_documents(collection)
         return [DocInfo(**r) for r in rows]
 
     def get_document_file_path(self, collection: str, filename: str) -> Path:
@@ -965,13 +990,16 @@ class KnowledgeEngine:
     # --- Tasks ---
 
     async def get_tasks(self, collection: str | None = None) -> list[dict[str, Any]]:
-        return self._metadata.list_tasks(collection)
+        await self._ensure_metadata_ready()
+        return await self._metadata.list_tasks(collection)
 
     async def get_task(self, task_id: str) -> dict[str, Any] | None:
-        return self._metadata.get_task(task_id)
+        await self._ensure_metadata_ready()
+        return await self._metadata.get_task(task_id)
 
     async def cancel_task(self, task_id: str) -> dict[str, Any] | None:
-        task = self._metadata.get_task(task_id)
+        await self._ensure_metadata_ready()
+        task = await self._metadata.get_task(task_id)
         if not task:
             return None
         if task["status"] in ("completed", "failed", "cancelled"):
@@ -986,10 +1014,10 @@ class KnowledgeEngine:
             for ft in file_tasks.values():
                 if ft["status"] == "pending":
                     ft["status"] = "skipped"
-            self._metadata.update_task(task_id, status="cancelled", file_tasks=file_tasks)
+            await self._metadata.update_task(task_id, status="cancelled", file_tasks=file_tasks)
             logger.debug(f"Task {task_id}: cancelled (was pending)")
 
-        return self._metadata.get_task(task_id)
+        return await self._metadata.get_task(task_id)
 
     # --- Knowledge config update (prepare / commit) ---
 
@@ -1064,7 +1092,7 @@ class KnowledgeEngine:
         if prepared.new_embeddings:
             self._default_embeddings = prepared.new_embeddings
             self._default_embedding_dim = prepared.new_embedding_dim
-            with self._milvus_lock:
+            with self._vector_store_lock:
                 self._vector_stores.clear()
                 self._record_managers.clear()
         elif old_use_gpu != self._config.use_gpu and self._config.embedding_provider == "fastembed":
@@ -1124,10 +1152,10 @@ class KnowledgeEngine:
         self.apply_knowledge_config(kwargs)
         return self.get_settings()
 
-    def health(self, collection: str | None = None) -> dict[str, Any]:
+    async def health(self, collection: str | None = None) -> dict[str, Any]:
         h: dict[str, Any] = {
             "status": "healthy",
-            "engine": f"langchain-{self._config.vector_store}",
+            "engine": f"knowledge-{self._knowledge_vector_backend()}",
             "settings": self.get_settings()["knowledge"],
             "embeddings_initialized": self._default_embeddings is not None,
             "reindex_in_progress": list(self._reindex_in_progress),
@@ -1135,14 +1163,12 @@ class KnowledgeEngine:
             "reindex_deferred": False,
         }
         if collection:
-            # Hash-suffixed collections (kb_agent_X_{12-char-hash}) are created with
-            # the exact settings that produce that hash — they cannot be stale.
-            # Only check staleness for legacy hash-less collections.
+            await self._ensure_metadata_ready()
             import re as _re
 
             _has_hash = bool(_re.search(r"_[0-9a-f]{12}$", collection))
             if not _has_hash:
-                pinned = self._metadata.get_collection_config(collection)
+                pinned = await self._metadata.get_collection_config(collection)
                 if pinned and (
                     pinned.get("embedding_provider") != self._config.embedding_provider
                     or pinned.get("embedding_model") != self._config.embedding_model
@@ -1154,11 +1180,12 @@ class KnowledgeEngine:
 
     # --- Collection lifecycle ---
 
-    def drop_collection(self, collection: str) -> None:
+    async def drop_collection(self, collection: str) -> None:
         """Drop a collection and all its data."""
+        await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
 
-        with self._milvus_lock:
+        with self._vector_store_lock:
             adapter = self._vector_stores.pop(collection, None)
             self._record_managers.pop(collection, None)
             if adapter:
@@ -1167,19 +1194,19 @@ class KnowledgeEngine:
                 except Exception as e:
                     logger.debug(f"Drop collection {collection}: {e}")
 
-        # Delete file storage
         files_dir = self._files_dir / collection
         if files_dir.exists():
             shutil.rmtree(files_dir)
 
-        # Delete metadata
-        self._metadata.delete_collection_metadata(collection)
+        await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection {collection}")
 
-    def drop_collection_vectors(self, collection: str) -> None:
+    async def drop_collection_vectors(self, collection: str) -> None:
         """Drop vectors and metadata but preserve source files for re-indexing."""
+        await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
-        with self._milvus_lock:
+        embeddings = await self._resolve_embeddings_for_collection(collection)
+        with self._vector_store_lock:
             adapter = self._vector_stores.pop(collection, None)
             self._record_managers.pop(collection, None)
             if adapter:
@@ -1188,23 +1215,12 @@ class KnowledgeEngine:
                 except Exception as e:
                     logger.debug(f"Drop collection vectors {collection}: {e}")
             else:
-                # No cached adapter — create one just to drop
                 try:
-                    from cuga.backend.knowledge.vector_store import create_vector_store
-
-                    embeddings = self._get_embeddings_for_collection(collection)
-                    temp = create_vector_store(
-                        self._config.vector_store,
-                        collection,
-                        embeddings,
-                        self._config.persist_dir,
-                        self._config.metric_type,
-                        self._config.pgvector_connection_string,
-                    )
+                    temp = self._create_vector_adapter(collection, embeddings)
                     temp.drop()
                 except Exception as e:
                     logger.debug(f"Drop uncached collection {collection}: {e}")
-        self._metadata.delete_collection_metadata(collection)
+        await self._metadata.delete_collection_metadata(collection)
         logger.info(f"Dropped collection vectors {collection} (files preserved)")
 
     async def copy_source_files(self, source_collection: str, target_collection: str) -> int:
@@ -1239,6 +1255,7 @@ class KnowledgeEngine:
         Raises ReindexBusyError if uploads are in progress.
         Sets _reindex_in_progress flag to block new uploads during reindex.
         """
+        await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
         files_dir = self._files_dir / collection
         if not files_dir.exists():
@@ -1248,23 +1265,22 @@ class KnowledgeEngine:
         if not file_list:
             return {"status": "no_documents", "count": 0}
 
-        # All phases wrapped: flag is ALWAYS cleared on any failure path.
         task_ids: list[str] = []
         try:
-            # Phase 1: Atomic check + flag + drop (under collection lock).
             lock = self._get_collection_lock(collection)
             async with lock:
                 pending = [
-                    t for t in self._metadata.list_tasks(collection) if t["status"] in ("pending", "running")
+                    t
+                    for t in await self._metadata.list_tasks(collection)
+                    if t["status"] in ("pending", "running")
                 ]
                 if pending:
                     raise ReindexBusyError(len(pending))
                 self._reindex_in_progress.add(collection)
-                self.drop_collection_vectors(collection)
+                await self.drop_collection_vectors(collection)
 
-            # Phase 2: Create per-file tasks AFTER drop (so they aren't deleted).
             for file_path in file_list:
-                task_info = self._create_reindex_task_entry(collection, file_path.name)
+                task_info = await self._create_reindex_task_entry(collection, file_path.name)
                 task_ids.append(task_info["task_id"])
 
             # Phase 3: Sequential background worker. Clears flags on completion.
@@ -1290,7 +1306,7 @@ class KnowledgeEngine:
             self._reindex_in_progress.discard(collection)
             for tid in task_ids:
                 try:
-                    self._metadata.update_task(tid, status="failed", file_tasks={})
+                    await self._metadata.update_task(tid, status="failed", file_tasks={})
                 except Exception:
                     pass
             raise

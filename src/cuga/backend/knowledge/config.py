@@ -15,6 +15,14 @@ _PROFILES_DIR = (
 VALID_PROFILES = ("speed", "standard", "balanced", "max_quality")
 
 
+def knowledge_vector_backend_for_settings(settings: Any) -> str:
+    """Which knowledge vector path to use: mirrors ``storage.mode`` (local | prod)."""
+    mode = (getattr(getattr(settings, "storage", None), "mode", None) or "local").lower()
+    if mode == "prod":
+        return "storage_prod"
+    return "storage_local"
+
+
 def load_profile(profile_name: str) -> dict[str, Any]:
     """Load a single RAG profile from its TOML file.
 
@@ -67,9 +75,9 @@ class KnowledgeConfig:
     chunk_size: int = 1000
     chunk_overlap: int = 200
 
-    # Vector store
-    vector_store: str = "sqlite"  # sqlite | milvus | pgvector
-    pgvector_connection_string: str = ""  # only for pgvector backend
+    # Postgres URL for knowledge when storage.mode=prod: defaults to storage.postgres_url;
+    # set only to use a different DB than global storage.
+    pgvector_connection_string: str = ""
 
     # Search
     rag_profile: str = "standard"  # speed | standard | balanced | max_quality
@@ -105,7 +113,13 @@ class KnowledgeConfig:
         """
         import hashlib
 
-        key = f"{self.embedding_provider}|{self.embedding_model}|{self.chunk_size}|{self.chunk_overlap}|{self.metric_type}"
+        from cuga.config import settings
+
+        sm = getattr(getattr(settings, "storage", None), "mode", "local") or "local"
+        key = (
+            f"{sm}|{self.embedding_provider}|{self.embedding_model}|"
+            f"{self.chunk_size}|{self.chunk_overlap}|{self.metric_type}"
+        )
         return hashlib.sha256(key.encode()).hexdigest()[:12]
 
     def validate(self) -> None:
@@ -172,6 +186,12 @@ class KnowledgeConfig:
             except ImportError:
                 merged["embedding_provider"] = "fastembed"
 
+        if "vector_store" in incoming:
+            logger.warning(
+                "knowledge.vector_store is ignored; set storage.mode in settings.toml "
+                "(local = sqlite-vec, prod = Postgres pgvector)"
+            )
+
         cfg = KnowledgeConfig(**merged)
         cfg.validate()
         return cfg
@@ -215,7 +235,6 @@ class KnowledgeConfig:
             embedding_api_key=embeddings.get("api_key", ""),
             embedding_base_url=embeddings.get("base_url", ""),
             use_gpu=embeddings.get("use_gpu", True),
-            vector_store=kb.get("vector_store", "sqlite"),
             pgvector_connection_string=kb.get("pgvector_connection_string", ""),
             chunk_size=profile_chunking.get("chunk_size", chunking.get("chunk_size", 1000)),
             chunk_overlap=profile_chunking.get("chunk_overlap", chunking.get("chunk_overlap", 200)),

@@ -202,7 +202,7 @@ class KnowledgeClient:
 
             Returns health status and configuration details.
             """
-            health = client._engine.health(collection=None)
+            health = await client._engine.health(collection=None)
             settings = client.get_settings()
             return {"healthy": health.get("status") == "healthy", "settings": settings}
 
@@ -267,5 +267,6 @@ class KnowledgeClient:
     async def close(self) -> None:
         """Shutdown the knowledge engine."""
         if self._engine:
+            await self._engine.aclose()
             self._engine.shutdown()
             self._engine = None

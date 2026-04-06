@@ -1,6 +1,6 @@
 """Integration tests for the knowledge engine.
 
-Tests the full ingest → search → delete cycle with real Milvus Lite.
+Tests the full ingest → search → delete cycle against the configured vector backend.
 """
 
 from __future__ import annotations
@@ -10,6 +10,7 @@ import tempfile
 from pathlib import Path
 
 import pytest
+import pytest_asyncio
 
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import (
@@ -21,10 +22,15 @@ from cuga.backend.knowledge.client import KnowledgeClient
 from cuga.backend.knowledge.awareness import get_knowledge_summary, format_knowledge_context
 
 
-@pytest.fixture
-def engine():
+@pytest_asyncio.fixture
+async def engine(monkeypatch):
     """Create a temporary knowledge engine for testing."""
     tmpdir = tempfile.mkdtemp()
+    isolated_db = str(Path(tmpdir) / "cuga_storage.db")
+    monkeypatch.setattr(
+        "cuga.backend.knowledge.engine.get_storage_connection_params",
+        lambda: ("local", isolated_db, ""),
+    )
     config = KnowledgeConfig(
         persist_dir=Path(tmpdir),
         embedding_provider="huggingface",
@@ -35,7 +41,9 @@ def engine():
         max_pending_tasks=5,
     )
     eng = KnowledgeEngine(config)
+    await eng.warmup()
     yield eng
+    await eng.aclose()
     eng.shutdown()
 
 
@@ -44,7 +52,7 @@ def sample_txt(tmp_path):
     """Create a sample text file for ingestion."""
     p = tmp_path / "sample.txt"
     p.write_text(
-        "The knowledge engine uses LangChain and Milvus Lite for document search. "
+        "The knowledge engine uses LangChain vector search for documents. "
         "It supports PDF, DOCX, XLSX, PPTX, HTML, and many other formats. "
         "Documents are chunked, embedded, and stored in a local vector database. "
         "Users can search using natural language queries."
@@ -86,14 +94,13 @@ class TestIngestSearchDelete:
         t = await engine.get_task(task_id)
         assert t["status"] == "completed", f"Task failed: {t}"
 
-        # Give Milvus Lite a moment to flush
-        await asyncio.sleep(1)
+        await asyncio.sleep(0.2)
 
         # Search
-        results = await engine.search(collection, "LangChain Milvus", limit=5)
+        results = await engine.search(collection, "LangChain vector", limit=5)
         assert len(results) > 0
         assert results[0].score > 0.0
-        assert "LangChain" in results[0].text or "Milvus" in results[0].text
+        assert "LangChain" in results[0].text or "vector" in results[0].text
 
         # List documents
         docs = await engine.list_documents(collection)
@@ -160,8 +167,13 @@ class TestCrossRestartDedup:
     """Verify dedup works across engine restart (InMemoryRecordManager state loss)."""
 
     @pytest.mark.asyncio
-    async def test_reingest_after_restart_replaces_chunks(self, tmp_path):
+    async def test_reingest_after_restart_replaces_chunks(self, tmp_path, monkeypatch):
         """Ingest file, restart engine (new instance), ingest updated file -> no duplicates."""
+        isolated_db = str(tmp_path / "cuga_storage.db")
+        monkeypatch.setattr(
+            "cuga.backend.knowledge.engine.get_storage_connection_params",
+            lambda: ("local", isolated_db, ""),
+        )
         config = KnowledgeConfig(
             persist_dir=tmp_path / "kb",
             embedding_provider="huggingface",
@@ -176,16 +188,19 @@ class TestCrossRestartDedup:
         txt_v1 = tmp_path / "doc.txt"
         txt_v1.write_text("Version one content about cats and dogs.")
         engine1 = KnowledgeEngine(config)
+        await engine1.warmup()
         task1 = await engine1.ingest("kb_agent_test", txt_v1)
         assert task1["status"] == "completed"
         results1 = await engine1.search("kb_agent_test", "cats dogs", limit=10)
         assert len(results1) >= 1
+        await engine1.aclose()
         engine1.shutdown()
 
         # Second engine instance (simulates restart): ingest v2 with different content
         txt_v2 = tmp_path / "doc.txt"
         txt_v2.write_text("Version two content about fish and birds.")
         engine2 = KnowledgeEngine(config)
+        await engine2.warmup()
         task2 = await engine2.ingest("kb_agent_test", txt_v2, replace_duplicates=True)
         assert task2["status"] == "completed"
 
@@ -204,6 +219,7 @@ class TestCrossRestartDedup:
         # Document list should show only 1 document
         docs = await engine2.list_documents("kb_agent_test")
         assert len(docs) == 1
+        await engine2.aclose()
         engine2.shutdown()
 
 
@@ -237,13 +253,13 @@ class TestScoping:
             assert r.filename == "sample.txt"
 
         # Session search should not return agent docs
-        session_results = await engine.search(session_col, "LangChain Milvus", limit=5)
+        session_results = await engine.search(session_col, "Knowledge Engine components", limit=5)
         for r in session_results:
             assert r.filename == "architecture.md"
 
 
 class TestScoreNormalization:
-    """Score normalization with real Milvus vectors."""
+    """Score normalization in [0, 1]."""
 
     @pytest.mark.asyncio
     async def test_cosine_scores_range(self, engine, sample_txt):
@@ -418,10 +434,11 @@ class TestTaskLifecycle:
         assert len(tasks2) == 1
         assert tasks1[0]["collection"] == col1
 
-    def test_engine_health(self, engine):
-        health = engine.health()
+    @pytest.mark.asyncio
+    async def test_engine_health(self, engine):
+        health = await engine.health()
         assert health["status"] == "healthy"
-        assert health["engine"] == "langchain-milvus"
+        assert health["engine"] == "knowledge-storage_local"
         assert "chunk_size" in health["settings"]
 
     def test_engine_settings(self, engine):
@@ -452,8 +469,7 @@ class TestCollectionLifecycle:
         docs = await engine.list_documents(collection)
         assert len(docs) == 1
 
-        # Drop
-        engine.drop_collection(collection)
+        await engine.drop_collection(collection)
 
         # Verify clean
         docs = await engine.list_documents(collection)

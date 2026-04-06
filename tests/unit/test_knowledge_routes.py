@@ -14,12 +14,12 @@ class _FakeEngine:
         self._config = SimpleNamespace(enabled=enabled, max_files_per_request=5)
         self._task = task
 
-    def _sanitize_and_validate(
+    async def _sanitize_and_validate(
         self, collection: str, tmp_path, replace_duplicates: bool, original_name: str
     ) -> str:
         return original_name
 
-    def _create_task_entry(self, collection: str, filename: str) -> dict[str, str]:
+    async def _create_task_entry(self, collection: str, filename: str) -> dict[str, str]:
         return {"task_id": "task-1"}
 
     async def _run_ingest(
@@ -29,13 +29,14 @@ class _FakeEngine:
         filename: str,
         task_id: str,
         replace_duplicates: bool,
+        skip_file_copy: bool = False,
     ) -> None:
         return None
 
     async def get_task(self, task_id: str) -> dict:
         return self._task
 
-    def health(self, collection: str | None = None) -> dict:
+    async def health(self, collection: str | None = None) -> dict:
         return {
             "status": "healthy",
             "settings": {"knowledge": {"enabled": self._config.enabled}},

@@ -5,7 +5,6 @@ Unified under /api/knowledge with scope param (agent|session).
 
 from __future__ import annotations
 
-import asyncio
 import logging
 import mimetypes
 from typing import Any
@@ -86,7 +85,7 @@ async def health(request: Request):
         collection = resolve_collection(identity, "agent", request)
     except HTTPException:
         pass  # Auth not available — return basic health without stale info
-    h = engine.health(collection=collection)
+    h = await engine.health(collection=collection)
     status_state = subsystem.get("state", "unknown")
     result: dict[str, Any] = {
         "healthy": enabled and status_state == "ready" and h["status"] == "healthy",
@@ -196,7 +195,7 @@ async def upload_documents(
         original_name = upload_file.filename or "unnamed"
 
         try:
-            filename_clean = engine._sanitize_and_validate(
+            filename_clean = await engine._sanitize_and_validate(
                 collection, tmp_path, replace_duplicates, original_name
             )
         except ReindexInProgressError:
@@ -214,7 +213,7 @@ async def upload_documents(
                 raise HTTPException(status_code=429, detail=f"ingestion queue full (max {e.max_pending})")
 
         try:
-            task_info = engine._create_task_entry(collection, filename_clean)
+            task_info = await engine._create_task_entry(collection, filename_clean)
         except ReindexInProgressError:
             tmp_path.unlink(missing_ok=True)
             raise HTTPException(status_code=409, detail="Reindex in progress, try again later")
@@ -340,7 +339,7 @@ async def delete_session_collection(
     _ensure_enabled(engine)
     collection = resolve_collection(identity, "session", request)
 
-    await asyncio.to_thread(engine.drop_collection, collection)
+    await engine.drop_collection(collection)
 
     app_state = getattr(request.app.state, "app_state", None)
     provider = getattr(app_state, "knowledge_provider", None) if app_state else None

@@ -3,7 +3,8 @@ enabled = true
 agent_level_enabled = true
 session_level_enabled = true
 persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
-vector_store = "sqlite"  # sqlite (local default) | milvus | pgvector
+# Vectors + metadata tables follow [storage].mode in settings.toml (local: sqlite / prod: Postgres).
+# Uploaded source files always remain under persist_dir/files/ (filesystem).
 
 [knowledge.embeddings]
 provider = "fastembed"  # fastembed | huggingface (requires: pip install sentence-transformers langchain-huggingface) | openai | ollama
