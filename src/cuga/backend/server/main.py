@@ -2167,7 +2167,7 @@ async def save_model_config(
 @app.get("/api/conversations")
 async def get_conversations(
     agent_id: str = "cuga-default",
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Endpoint to retrieve conversation history."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
