@@ -154,7 +154,6 @@ def _decorate_knowledge_tool(tool: Any, allowed_scopes: tuple[str, ...], thread_
     tool.description = f"{base_description}\n\n{hint}".strip()
 
 
-
 def make_tool_awaitable(func):
     """Wrap a sync function to make it awaitable (since agent always uses await).
 
@@ -804,12 +803,16 @@ def create_cuga_lite_graph(
             )
 
             knowledge_tool_names = {
-                tool.name for tool in tools_for_execution if getattr(tool, "name", "").startswith("knowledge_")
+                tool.name
+                for tool in tools_for_execution
+                if getattr(tool, "name", "").startswith("knowledge_")
             }
 
             if knowledge_tool_names and not allowed_knowledge_scopes:
                 tools_for_execution = [
-                    tool for tool in tools_for_execution if getattr(tool, "name", "") not in knowledge_tool_names
+                    tool
+                    for tool in tools_for_execution
+                    if getattr(tool, "name", "") not in knowledge_tool_names
                 ]
                 tools_for_prompt = [
                     tool for tool in tools_for_prompt if getattr(tool, "name", "") not in knowledge_tool_names
@@ -865,13 +868,11 @@ def create_cuga_lite_graph(
             # Detect knowledge tools — works for both registry (app named
             # "knowledge") and SDK mode (tools under "runtime_tools")
             has_knowledge_tools = any(
-                getattr(app, "name", "") == "knowledge"
-                for app in (apps_for_prompt or [])
+                getattr(app, "name", "") == "knowledge" for app in (apps_for_prompt or [])
             )
             if not has_knowledge_tools and tools_for_execution:
                 has_knowledge_tools = any(
-                    getattr(t, "name", "").startswith("knowledge_")
-                    for t in tools_for_execution
+                    getattr(t, "name", "").startswith("knowledge_") for t in tools_for_execution
                 )
             knowledge_scope_instruction = _knowledge_scope_instruction(
                 allowed_knowledge_scopes,
@@ -899,6 +900,7 @@ def create_cuga_lite_graph(
                     if not agent_id:
                         try:
                             from cuga.backend.server.main import app as _app
+
                             _as = getattr(_app.state, "app_state", None)
                             agent_id = getattr(_as, "agent_id", None) if _as else None
                             if knowledge_config_hash is None:
@@ -932,6 +934,7 @@ def create_cuga_lite_graph(
                         if _is_draft:
                             try:
                                 from cuga.backend.server.main import app as _app
+
                                 _das = getattr(_app.state, "draft_app_state", None)
                                 _draft_kc = getattr(_das, "draft_knowledge_config", None) if _das else None
                                 if _draft_kc:
@@ -942,17 +945,27 @@ def create_cuga_lite_graph(
                             engine,
                             agent_collection=kb_ctx.get("agent_collection"),
                             session_collection=kb_ctx.get("session_collection"),
-                            max_search_attempts=getattr(_search_cfg, "max_search_attempts", None) or getattr(engine._config, "max_search_attempts", None),
-                            default_limit=getattr(_search_cfg, "default_limit", None) or getattr(engine._config, "default_limit", None),
-                            rag_profile=getattr(_search_cfg, "rag_profile", None) or getattr(engine._config, "rag_profile", "standard"),
+                            max_search_attempts=getattr(_search_cfg, "max_search_attempts", None)
+                            or getattr(engine._config, "max_search_attempts", None),
+                            default_limit=getattr(_search_cfg, "default_limit", None)
+                            or getattr(engine._config, "default_limit", None),
+                            rag_profile=getattr(_search_cfg, "rag_profile", None)
+                            or getattr(engine._config, "rag_profile", "standard"),
                         )
                         if knowledge_block:
                             # Load knowledge search instructions from dedicated file
                             knowledge_instructions_text = ""
                             try:
-                                kb_instructions_path = Path(__file__).parents[4] / "configurations" / "knowledge" / "knowledge_instructions.md"
+                                kb_instructions_path = (
+                                    Path(__file__).parents[4]
+                                    / "configurations"
+                                    / "knowledge"
+                                    / "knowledge_instructions.md"
+                                )
                                 if kb_instructions_path.exists():
-                                    knowledge_instructions_text = kb_instructions_path.read_text(encoding="utf-8").strip()
+                                    knowledge_instructions_text = kb_instructions_path.read_text(
+                                        encoding="utf-8"
+                                    ).strip()
                             except Exception as ki_err:
                                 logger.debug(f"Failed to load knowledge instructions: {ki_err}")
 

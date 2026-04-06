@@ -40,7 +40,9 @@ def _resolve_env(key: str, default: str) -> str:
 
 
 CUGA_BACKEND_URL = _resolve_env("CUGA_BACKEND_URL", "http://localhost:7860").rstrip("/")
-CUGA_INTERNAL_TOKEN_FILE = _resolve_env("CUGA_INTERNAL_TOKEN_FILE", os.path.expanduser("~/.cuga/.internal_token"))
+CUGA_INTERNAL_TOKEN_FILE = _resolve_env(
+    "CUGA_INTERNAL_TOKEN_FILE", os.path.expanduser("~/.cuga/.internal_token")
+)
 
 _cached_token: str | None = None
 
@@ -63,6 +65,7 @@ def _reload_token() -> str:
 
 def _read_token_file() -> str:
     import time
+
     for attempt in range(3):
         try:
             with open(CUGA_INTERNAL_TOKEN_FILE) as f:
@@ -159,7 +162,8 @@ async def search_knowledge(
     Returns results with text, filename, and page number.
     """
     resp = await _request(
-        "POST", "/api/knowledge/search",
+        "POST",
+        "/api/knowledge/search",
         headers=_identity_headers(agent_id, thread_id),
         json={"scope": scope, "query": query},
     )
@@ -181,12 +185,14 @@ async def ingest_knowledge(
     When using scope="session", thread_id is required.
     """
     import os
+
     if not os.path.exists(file_path):
         return {"error": f"File not found: {file_path}"}
 
     with open(file_path, "rb") as f:
         resp = await _request(
-            "POST", "/api/knowledge/documents",
+            "POST",
+            "/api/knowledge/documents",
             headers=_identity_headers(agent_id, thread_id),
             files={"files": (os.path.basename(file_path), f)},
             data={"scope": scope, "replace_duplicates": str(replace_duplicates).lower()},
@@ -207,7 +213,8 @@ async def ingest_knowledge_url(
     Use only scopes enabled for the current agent. When using scope="session", thread_id is required.
     """
     resp = await _request(
-        "POST", "/api/knowledge/documents/url",
+        "POST",
+        "/api/knowledge/documents/url",
         headers=_identity_headers(agent_id, thread_id),
         json={"scope": scope, "url": url},
     )
@@ -226,7 +233,8 @@ async def list_knowledge_documents(
     When using scope="session", thread_id is required to identify the conversation.
     """
     resp = await _request(
-        "GET", "/api/knowledge/documents",
+        "GET",
+        "/api/knowledge/documents",
         headers=_identity_headers(agent_id, thread_id),
         params={"scope": scope},
     )
@@ -245,7 +253,8 @@ async def delete_knowledge_document(
     Use only scopes enabled for the current agent. When using scope="session", thread_id is required.
     """
     resp = await _request(
-        "DELETE", "/api/knowledge/documents",
+        "DELETE",
+        "/api/knowledge/documents",
         headers=_identity_headers(agent_id, thread_id),
         json={"scope": scope, "filename": filename},
     )
@@ -262,7 +271,8 @@ async def get_ingestion_status(
     Returns progress information including per-file status.
     """
     resp = await _request(
-        "GET", f"/api/knowledge/tasks/{task_id}",
+        "GET",
+        f"/api/knowledge/tasks/{task_id}",
         headers=_identity_headers(agent_id),
     )
     return resp.json()
@@ -274,7 +284,8 @@ async def get_knowledge_status(
 ) -> dict[str, Any]:
     """Check if the knowledge service is healthy and get current settings."""
     resp = await _request(
-        "GET", "/api/knowledge/health",
+        "GET",
+        "/api/knowledge/health",
         headers=_identity_headers(agent_id),
     )
     return resp.json()

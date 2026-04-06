@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import tempfile
 from pathlib import Path
 
@@ -167,43 +166,70 @@ class TestKnowledgeConfig:
 class TestEngineHelpers:
     def test_sanitize_collection(self):
         from cuga.backend.knowledge.engine import _sanitize_collection
+
         assert _sanitize_collection("kb_agent_default") == "kb_agent_default"
         assert _sanitize_collection("kb-sess-abc/123") == "kb_sess_abc_123"
 
     def test_sanitize_filename(self):
         from cuga.backend.knowledge.engine import _sanitize_filename
+
         assert _sanitize_filename("report.pdf") == "report.pdf"
         # Spaces and parens are preserved (Unicode-friendly sanitizer)
         assert _sanitize_filename("my file (1).pdf") == "my file (1).pdf"
 
     def test_sanitize_filename_rejects_traversal(self):
         from cuga.backend.knowledge.engine import _sanitize_filename
+
         with pytest.raises(ValueError, match="traversal"):
             _sanitize_filename("../etc/passwd")
+
+    def test_page_from_docling_dl_meta(self):
+        from cuga.backend.knowledge.engine import _page_from_docling_dl_meta
+
+        assert _page_from_docling_dl_meta(None) is None
+        assert _page_from_docling_dl_meta({}) is None
+        assert _page_from_docling_dl_meta({"doc_items": []}) is None
+        meta = {
+            "doc_items": [
+                {
+                    "label": "text",
+                    "prov": [{"page_no": 5, "charspan": [0, 1]}],
+                },
+                {
+                    "label": "text",
+                    "prov": [{"page_no": 2, "charspan": [0, 1]}],
+                },
+            ],
+        }
+        assert _page_from_docling_dl_meta(meta) == 2
 
     # _normalize_score tests removed — scoring now handled by
     # langchain-milvus similarity_search_with_relevance_scores()
 
     def test_validate_url_rejects_private(self):
         from cuga.backend.knowledge.engine import KnowledgeEngine
+
         engine = object.__new__(KnowledgeEngine)
         with pytest.raises(ValueError, match="Private"):
             engine._validate_url("http://192.168.1.1/doc.pdf")
 
     def test_validate_url_rejects_credentials(self):
         from cuga.backend.knowledge.engine import KnowledgeEngine
+
         engine = object.__new__(KnowledgeEngine)
         with pytest.raises(ValueError, match="credentials"):
             engine._validate_url("http://user:pass@example.com/doc.pdf")
 
     def test_validate_url_rejects_blocked_hostname(self):
         from cuga.backend.knowledge.engine import KnowledgeEngine
+
         engine = object.__new__(KnowledgeEngine)
         with pytest.raises(ValueError, match="Blocked"):
             engine._validate_url("http://localhost/doc.pdf")
 
     def test_validate_url_rejects_bad_port(self):
         from cuga.backend.knowledge.engine import KnowledgeEngine
+
         engine = object.__new__(KnowledgeEngine)
         with pytest.raises(ValueError, match="Port"):
             engine._validate_url("http://example.com:9999/doc.pdf")
@@ -229,17 +255,20 @@ class TestEngineHelpers:
 class TestExceptions:
     def test_ingestion_queue_full_error(self):
         from cuga.backend.knowledge.engine import IngestionQueueFullError
+
         err = IngestionQueueFullError(10)
         assert err.max_pending == 10
         assert "10" in str(err)
 
     def test_document_exists_error(self):
         from cuga.backend.knowledge.engine import DocumentExistsError
+
         err = DocumentExistsError("file.pdf")
         assert err.filename == "file.pdf"
 
     def test_file_too_large_error(self):
         from cuga.backend.knowledge.engine import FileTooLargeError
+
         err = FileTooLargeError(200, 100)
         assert err.size == 200
         assert err.max_size == 100

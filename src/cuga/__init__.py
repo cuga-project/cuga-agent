@@ -29,4 +29,13 @@ from cuga.backend.knowledge import KnowledgeClient, KnowledgeEngine
 from cuga.backend.knowledge.config import KnowledgeConfig
 
 __version__ = "0.2.6"
-__all__ = ["CugaAgent", "CugaSupervisor", "run_agent", "InvokeResult", "tracked_tool", "KnowledgeClient", "KnowledgeEngine", "KnowledgeConfig"]
+__all__ = [
+    "CugaAgent",
+    "CugaSupervisor",
+    "run_agent",
+    "InvokeResult",
+    "tracked_tool",
+    "KnowledgeClient",
+    "KnowledgeEngine",
+    "KnowledgeConfig",
+]

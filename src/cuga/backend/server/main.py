@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import platform
 import re
 import shutil
@@ -16,7 +16,7 @@ from typing import List, Dict, Any, Union, Optional
 from pathlib import Path
 import traceback
 from pydantic import BaseModel, ValidationError
-from fastapi import Depends, FastAPI, File, Request, HTTPException, Query, UploadFile
+from fastapi import Depends, FastAPI, Request, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -102,6 +102,7 @@ def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: 
     if scope == "session":
         return bool(getattr(config, "session_level_enabled", True))
     return bool(getattr(config, "agent_level_enabled", True))
+
 
 try:
     from langfuse.langchain import CallbackHandler
@@ -447,6 +448,7 @@ async def lifespan(app: FastAPI):
 
         # Initialize session provider for ownership enforcement
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
+
         _kb_state_path = Path.home() / ".cuga" / "session_knowledge.json"
         app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
 
@@ -456,13 +458,12 @@ async def lifespan(app: FastAPI):
         # Generate internal token for MCP subprocess auth (atomic write)
         import secrets
         import tempfile
+
         token = secrets.token_urlsafe(32)
         app_state.internal_token = token
         token_path = Path.home() / ".cuga" / ".internal_token"
         token_path.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
-            mode="w", dir=token_path.parent, delete=False, suffix=".tmp"
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(mode="w", dir=token_path.parent, delete=False, suffix=".tmp") as tmp:
             tmp.write(token)
             tmp_name = tmp.name
         Path(tmp_name).rename(token_path)
@@ -486,6 +487,7 @@ async def lifespan(app: FastAPI):
             def _start_knowledge_mcp():
                 try:
                     from cuga.backend.knowledge.mcp_server import run_http
+
                     run_http(host="127.0.0.1", port=kb_config.mcp_port)
                 except Exception as e:
                     logger.error("Knowledge MCP HTTP server failed: %s", e)
@@ -633,6 +635,7 @@ async def lifespan(app: FastAPI):
         # as fallback (e.g. first run / demo where no knowledge config was saved yet).
         try:
             from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
             if _startup_knowledge:
                 _kc = _KC.coerce_and_validate(_startup_knowledge)
             else:
@@ -1185,9 +1188,7 @@ async def event_stream(
     # Add user message to buffer as first event
     if query and thread_id:
         user_message_event_data = (
-            json.dumps({"text": query, "attachments": user_attachments or []})
-            if user_attachments
-            else query
+            json.dumps({"text": query, "attachments": user_attachments or []}) if user_attachments else query
         )
         stream_events_buffer.append(
             {
@@ -1227,8 +1228,13 @@ async def event_stream(
             }
         # Session-level knowledge
         _session_kb = app_state.knowledge_provider.get_session(thread_id)
-        if _knowledge_scope_enabled_for_app_state(app_state, "session") and _session_kb and _session_kb.filenames:
+        if (
+            _knowledge_scope_enabled_for_app_state(app_state, "session")
+            and _session_kb
+            and _session_kb.filenames
+        ):
             from cuga.backend.knowledge.session_provider import session_prefix as _sess_prefix
+
             _knowledge_ctx["session_knowledge"] = {
                 "filter_id": _session_kb.filter_id,
                 "prefix": _sess_prefix(thread_id),
@@ -1519,6 +1525,7 @@ app.state.draft_app_state = draft_app_state
 # Register knowledge routes at module level (engine initialized in lifespan).
 # _get_engine() in routes.py returns 503 if engine isn't initialized yet.
 from cuga.backend.knowledge.routes import knowledge_router  # noqa: E402
+
 app.include_router(knowledge_router)
 _cors_origins = (
     ["https://localhost:7860", "https://localhost:3002"]
@@ -2184,12 +2191,14 @@ async def get_conversations(
                 ts = int(datetime.datetime.fromisoformat(t.get("updated_at", "")).timestamp() * 1000)
             except Exception:
                 pass
-            conversations.append({
-                "id": t.get("thread_id", ""),
-                "title": first_msg if first_msg else "New Chat",
-                "timestamp": ts,
-                "preview": first_msg[:100] if first_msg else "",
-            })
+            conversations.append(
+                {
+                    "id": t.get("thread_id", ""),
+                    "title": first_msg if first_msg else "New Chat",
+                    "timestamp": ts,
+                    "preview": first_msg[:100] if first_msg else "",
+                }
+            )
         return JSONResponse(conversations)
     except Exception as e:
         logger.error(f"Failed to load conversations: {e}")
@@ -3236,7 +3245,12 @@ async def get_query(request: Request) -> Union[str, ActionResponse]:
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Request body was not valid JSON.")
 
-    if isinstance(data, dict) and "query" in data and isinstance(data["query"], str) and "messages" not in data:
+    if (
+        isinstance(data, dict)
+        and "query" in data
+        and isinstance(data["query"], str)
+        and "messages" not in data
+    ):
         query_text = data["query"]
         if not query_text.strip():
             raise HTTPException(status_code=422, detail="`query` may not be empty.")

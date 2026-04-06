@@ -16,7 +16,6 @@ Adding a new backend:
 
 from __future__ import annotations
 
-import logging
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Any
@@ -31,6 +30,7 @@ logger = loguru_logger
 # ---------------------------------------------------------------------------
 # Abstract base
 # ---------------------------------------------------------------------------
+
 
 class VectorStoreAdapter(ABC):
     """Unified interface for vector store operations.
@@ -74,11 +74,11 @@ class VectorStoreAdapter(ABC):
 # SQLiteVec backend (local default)
 # ---------------------------------------------------------------------------
 
+
 class SQLiteVecStore(VectorStoreAdapter):
     """SQLiteVec-backed vector store. File-based, zero external dependencies."""
 
     def __init__(self, collection: str, embeddings: Embeddings, persist_dir: Path, **kwargs: Any):
-        import math
         import sqlite3
 
         import sqlite_vec
@@ -95,6 +95,7 @@ class SQLiteVecStore(VectorStoreAdapter):
         self._conn = conn
 
         from langchain_community.vectorstores import SQLiteVec
+
         self._store = SQLiteVec(
             table=collection,
             connection=conn,
@@ -119,20 +120,15 @@ class SQLiteVecStore(VectorStoreAdapter):
     def delete_by_source(self, source_id: str) -> None:
         """Delete by source metadata (stored as JSON in metadata column)."""
         rows = self._conn.execute(
-            f"SELECT rowid FROM {self._collection} "
-            f"WHERE json_extract(metadata, '$.source') = ?",
+            f"SELECT rowid FROM {self._collection} WHERE json_extract(metadata, '$.source') = ?",
             (source_id,),
         ).fetchall()
         if not rows:
             return
         ids = [r["rowid"] for r in rows]
         placeholders = ",".join("?" * len(ids))
-        self._conn.execute(
-            f"DELETE FROM {self._collection} WHERE rowid IN ({placeholders})", ids
-        )
-        self._conn.execute(
-            f"DELETE FROM {self._collection}_vec WHERE rowid IN ({placeholders})", ids
-        )
+        self._conn.execute(f"DELETE FROM {self._collection} WHERE rowid IN ({placeholders})", ids)
+        self._conn.execute(f"DELETE FROM {self._collection}_vec WHERE rowid IN ({placeholders})", ids)
         self._conn.commit()
 
     def drop(self) -> None:
@@ -146,11 +142,18 @@ class SQLiteVecStore(VectorStoreAdapter):
 # Milvus backend (local Milvus Lite or remote Milvus server)
 # ---------------------------------------------------------------------------
 
+
 class MilvusStore(VectorStoreAdapter):
     """Milvus-backed vector store. Supports Milvus Lite (file) and remote server."""
 
-    def __init__(self, collection: str, embeddings: Embeddings, persist_dir: Path,
-                 metric_type: str = "COSINE", **kwargs: Any):
+    def __init__(
+        self,
+        collection: str,
+        embeddings: Embeddings,
+        persist_dir: Path,
+        metric_type: str = "COSINE",
+        **kwargs: Any,
+    ):
         from langchain_milvus import Milvus
 
         self._uri = str(persist_dir / "knowledge.db")
@@ -196,15 +199,14 @@ class MilvusStore(VectorStoreAdapter):
 # PGVector backend (production — requires running PostgreSQL)
 # ---------------------------------------------------------------------------
 
+
 class PGVectorStore(VectorStoreAdapter):
     """PostgreSQL + pgvector backed vector store. Production-grade."""
 
-    def __init__(self, collection: str, embeddings: Embeddings,
-                 connection_string: str = "", **kwargs: Any):
+    def __init__(self, collection: str, embeddings: Embeddings, connection_string: str = "", **kwargs: Any):
         if not connection_string:
             raise ValueError(
-                "pgvector_connection_string is required for pgvector backend. "
-                "Set it in knowledge settings."
+                "pgvector_connection_string is required for pgvector backend. Set it in knowledge settings."
             )
         from langchain_postgres import PGVector
 
@@ -272,10 +274,7 @@ def create_vector_store(
     """
     adapter_cls = BACKENDS.get(backend)
     if adapter_cls is None:
-        raise ValueError(
-            f"Unknown vector_store backend: '{backend}'. "
-            f"Available: {sorted(BACKENDS.keys())}"
-        )
+        raise ValueError(f"Unknown vector_store backend: '{backend}'. Available: {sorted(BACKENDS.keys())}")
 
     if backend == "pgvector":
         adapter = adapter_cls(

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass, field, fields as dc_fields
 from pathlib import Path
 from typing import Any
@@ -9,7 +8,9 @@ from typing import Any
 logger = logging.getLogger("cuga.knowledge")
 
 # Directory containing the profile TOML files
-_PROFILES_DIR = Path(__file__).resolve().parent.parent.parent / "configurations" / "knowledge" / "knowledge_profiles"
+_PROFILES_DIR = (
+    Path(__file__).resolve().parent.parent.parent / "configurations" / "knowledge" / "knowledge_profiles"
+)
 
 VALID_PROFILES = ("speed", "standard", "balanced", "max_quality")
 
@@ -93,8 +94,7 @@ class KnowledgeConfig:
 
     def to_dict(self) -> dict[str, Any]:
         """Serialize to dict for config_json storage (excludes persist_dir)."""
-        return {f.name: getattr(self, f.name)
-                for f in dc_fields(KnowledgeConfig) if f.name != "persist_dir"}
+        return {f.name: getattr(self, f.name) for f in dc_fields(KnowledgeConfig) if f.name != "persist_dir"}
 
     def vector_config_hash(self) -> str:
         """Short hash of fields that affect vector compatibility.
@@ -104,6 +104,7 @@ class KnowledgeConfig:
         default_limit or rag_profile are excluded.
         """
         import hashlib
+
         key = f"{self.embedding_provider}|{self.embedding_model}|{self.chunk_size}|{self.chunk_overlap}|{self.metric_type}"
         return hashlib.sha256(key.encode()).hexdigest()[:12]
 
@@ -220,9 +221,13 @@ class KnowledgeConfig:
             chunk_overlap=profile_chunking.get("chunk_overlap", chunking.get("chunk_overlap", 200)),
             rag_profile=profile_name,
             default_limit=profile_search.get("default_limit", search.get("default_limit", 10)),
-            default_score_threshold=profile_search.get("default_score_threshold", search.get("default_score_threshold", 0.0)),
+            default_score_threshold=profile_search.get(
+                "default_score_threshold", search.get("default_score_threshold", 0.0)
+            ),
             metric_type=search.get("metric_type", "COSINE"),
-            max_search_attempts=profile_search.get("max_search_attempts", search.get("max_search_attempts", 3)),
+            max_search_attempts=profile_search.get(
+                "max_search_attempts", search.get("max_search_attempts", 3)
+            ),
             max_ingest_workers=engine.get("max_ingest_workers", 2),
             max_pending_tasks=engine.get("max_pending_tasks", 10),
             max_upload_size_mb=limits.get("max_upload_size_mb", 100),

@@ -1559,12 +1559,14 @@ class CugaAgent:
             from cuga.backend.knowledge.engine import KnowledgeEngine
             from cuga.backend.knowledge.config import KnowledgeConfig
             from cuga.config import settings
+
             config = KnowledgeConfig.from_settings(settings)
             engine = KnowledgeEngine(config)
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
                 from cuga.backend.server.main import app as _app
+
                 _as = getattr(_app.state, "app_state", None)
                 _agent_id = getattr(_as, "agent_id", "cuga-default") if _as else "cuga-default"
             except Exception:

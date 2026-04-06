@@ -1,7 +1,5 @@
 """Tests for LLM tool_use_failed error recovery in errors.py."""
 
-import pytest
-
 from cuga.backend.llm.errors import (
     extract_code_from_tool_use_failed,
     failed_gen_to_code,
@@ -12,6 +10,7 @@ from cuga.backend.llm.errors import (
 # ---------------------------------------------------------------------------
 # parse_tool_use_failed_generation
 # ---------------------------------------------------------------------------
+
 
 class TestParseToolUseFailedGeneration:
     def test_groq_python_tool_single_quotes(self):
@@ -48,10 +47,7 @@ class TestParseToolUseFailedGeneration:
 
     def test_malformed_json_python_fallback(self):
         """When JSON parsing fails but 'name': 'python' is present, regex fallback kicks in."""
-        err = (
-            "tool_use_failed 'failed_generation': "
-            "'{\"name\": \"python\", \"arguments\": some_broken_json}'"
-        )
+        err = "tool_use_failed 'failed_generation': '{\"name\": \"python\", \"arguments\": some_broken_json}'"
         result = parse_tool_use_failed_generation(err)
         assert result is not None
         assert result["name"] == "python"
@@ -98,6 +94,7 @@ class TestParseToolUseFailedGeneration:
 # failed_gen_to_code
 # ---------------------------------------------------------------------------
 
+
 class TestFailedGenToCode:
     def test_python_tool_unwraps_code(self):
         result = failed_gen_to_code({"name": "python", "arguments": "x = 1\\nprint(x)"})
@@ -108,24 +105,30 @@ class TestFailedGenToCode:
         assert result == "print(1)"
 
     def test_named_tool_dict_args(self):
-        result = failed_gen_to_code({
-            "name": "knowledge_search_knowledge",
-            "arguments": {"query": "hello", "top_k": 5},
-        })
+        result = failed_gen_to_code(
+            {
+                "name": "knowledge_search_knowledge",
+                "arguments": {"query": "hello", "top_k": 5},
+            }
+        )
         assert result == "result = await knowledge_search_knowledge(query='hello', top_k=5)\nprint(result)"
 
     def test_named_tool_string_args_json(self):
-        result = failed_gen_to_code({
-            "name": "web_search",
-            "arguments": '{"query": "test"}',
-        })
+        result = failed_gen_to_code(
+            {
+                "name": "web_search",
+                "arguments": '{"query": "test"}',
+            }
+        )
         assert result == "result = await web_search(query='test')\nprint(result)"
 
     def test_named_tool_string_args_invalid_json(self):
-        result = failed_gen_to_code({
-            "name": "web_search",
-            "arguments": "not_valid_json",
-        })
+        result = failed_gen_to_code(
+            {
+                "name": "web_search",
+                "arguments": "not_valid_json",
+            }
+        )
         # Falls back to empty args
         assert result == "result = await web_search()\nprint(result)"
 
@@ -137,6 +140,7 @@ class TestFailedGenToCode:
 # ---------------------------------------------------------------------------
 # extract_code_from_tool_use_failed (end-to-end)
 # ---------------------------------------------------------------------------
+
 
 class TestExtractCodeFromToolUseFailed:
     def test_groq_python_e2e(self):

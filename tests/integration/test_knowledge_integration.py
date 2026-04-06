@@ -166,8 +166,10 @@ class TestCrossRestartDedup:
             persist_dir=tmp_path / "kb",
             embedding_provider="huggingface",
             embedding_model="sentence-transformers/all-MiniLM-L6-v2",
-            chunk_size=200, chunk_overlap=50,
-            max_ingest_workers=1, max_pending_tasks=5,
+            chunk_size=200,
+            chunk_overlap=50,
+            max_ingest_workers=1,
+            max_pending_tasks=5,
         )
 
         # First engine instance: ingest v1
@@ -195,8 +197,9 @@ class TestCrossRestartDedup:
         results_old = await engine2.search("kb_agent_test", "cats dogs", limit=10, score_threshold=0.7)
         # Old content should not be highly relevant anymore
         for r in results_old:
-            assert "cats" not in r.text.lower() or r.score < 0.7, \
+            assert "cats" not in r.text.lower() or r.score < 0.7, (
                 f"Found stale v1 chunk after restart+reingest: {r.text[:50]}"
+            )
 
         # Document list should show only 1 document
         docs = await engine2.list_documents("kb_agent_test")
@@ -333,17 +336,11 @@ class TestAwarenessGating:
         tools_for_execution = [find_tool, filesystem_tool, knowledge_tool]
 
         # Old behavior (bug): checks tools_for_prompt — misses knowledge
-        has_in_prompt = any(
-            getattr(t, "name", "").startswith("knowledge_")
-            for t in tools_for_prompt
-        )
+        has_in_prompt = any(getattr(t, "name", "").startswith("knowledge_") for t in tools_for_prompt)
         assert not has_in_prompt, "Knowledge should NOT be in tools_for_prompt under find_tools"
 
         # New behavior (fix): checks tools_for_execution — finds knowledge
-        has_in_execution = any(
-            getattr(t, "name", "").startswith("knowledge_")
-            for t in tools_for_execution
-        )
+        has_in_execution = any(getattr(t, "name", "").startswith("knowledge_") for t in tools_for_execution)
         assert has_in_execution, "Knowledge MUST be detected in tools_for_execution"
 
 

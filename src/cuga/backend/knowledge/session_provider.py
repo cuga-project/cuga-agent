@@ -47,7 +47,9 @@ class SessionKnowledgeState:
     tenant_id: str = ""  # Tenant ID for multi-tenant isolation
     filter_id: str | None = None  # Knowledge filter ID (legacy)
     filenames: list[str] = field(default_factory=list)  # Original filenames (without prefix, for display)
-    overrides: dict[str, Any] = field(default_factory=dict)  # Per-session config overrides (extension point — stored/patchable, not yet consumed by prompt/tools)
+    overrides: dict[str, Any] = field(
+        default_factory=dict
+    )  # Per-session config overrides (extension point — stored/patchable, not yet consumed by prompt/tools)
     created_at: str = ""  # ISO timestamp
 
     def to_dict(self) -> dict[str, Any]:
@@ -121,7 +123,10 @@ class SessionProvider:
         return self._sessions.get(thread_id)
 
     def get_or_create_session(
-        self, thread_id: str, user_id: str = "", tenant_id: str = "",
+        self,
+        thread_id: str,
+        user_id: str = "",
+        tenant_id: str = "",
     ) -> SessionKnowledgeState:
         if thread_id not in self._sessions:
             self._sessions[thread_id] = SessionKnowledgeState(
@@ -133,7 +138,10 @@ class SessionProvider:
         return self._sessions[thread_id]
 
     def check_session_access(
-        self, thread_id: str, user_id: str = "", tenant_id: str = "",
+        self,
+        thread_id: str,
+        user_id: str = "",
+        tenant_id: str = "",
     ) -> bool:
         """Check if user/tenant owns the session. Returns True if accessible."""
         state = self._sessions.get(thread_id)
@@ -173,8 +181,11 @@ class SessionProvider:
         return expired
 
     def patch_session_overrides(
-        self, thread_id: str, patch: dict[str, Any],
-        user_id: str = "", tenant_id: str = "",
+        self,
+        thread_id: str,
+        patch: dict[str, Any],
+        user_id: str = "",
+        tenant_id: str = "",
     ) -> SessionKnowledgeState:
         """Deep-merge *patch* into session overrides. Creates session if needed."""
         state = self.get_or_create_session(thread_id, user_id=user_id, tenant_id=tenant_id)
@@ -258,8 +269,11 @@ class PersistentSessionProvider(SessionProvider):
         self._persist()
 
     def patch_session_overrides(
-        self, thread_id: str, patch: dict[str, Any],
-        user_id: str = "", tenant_id: str = "",
+        self,
+        thread_id: str,
+        patch: dict[str, Any],
+        user_id: str = "",
+        tenant_id: str = "",
     ) -> SessionKnowledgeState:
         state = super().patch_session_overrides(thread_id, patch, user_id=user_id, tenant_id=tenant_id)
         self._persist()

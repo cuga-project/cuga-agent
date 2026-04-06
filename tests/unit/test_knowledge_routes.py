@@ -14,7 +14,9 @@ class _FakeEngine:
         self._config = SimpleNamespace(enabled=enabled, max_files_per_request=5)
         self._task = task
 
-    def _sanitize_and_validate(self, collection: str, tmp_path, replace_duplicates: bool, original_name: str) -> str:
+    def _sanitize_and_validate(
+        self, collection: str, tmp_path, replace_duplicates: bool, original_name: str
+    ) -> str:
         return original_name
 
     def _create_task_entry(self, collection: str, filename: str) -> dict[str, str]:

@@ -1,11 +1,8 @@
 """Tests for session-level knowledge: provider, deep-merge, MCP tools."""
 
 import json
-import tempfile
 from pathlib import Path
-from typing import Any
 
-import pytest
 
 from cuga.backend.knowledge.session_provider import (
     AgentKnowledgeState,
@@ -199,17 +196,20 @@ class TestCollectExpiredSessions:
 class TestPrefixHelpers:
     def test_session_prefix_normal(self):
         from cuga.backend.knowledge.session_provider import session_prefix
+
         result = session_prefix("abcdef1234567890extra")
         assert result == "sess_abcdef1234567890/"
 
     def test_session_prefix_short_id_padded(self):
         from cuga.backend.knowledge.session_provider import session_prefix
+
         result = session_prefix("abc")
         assert result == "sess_abc0000000000000/"
         assert len("abc0000000000000") == 16
 
     def test_agent_prefix(self):
         from cuga.backend.knowledge.session_provider import agent_prefix
+
         result = agent_prefix("cuga-default", "3")
         assert result == "agent_cuga-default_3/"
 
@@ -274,5 +274,3 @@ class TestPersistentSessionProvider:
         sp.delete_session("t1")
         data = json.loads(path.read_text())
         assert "t1" not in data["sessions"]
-
-

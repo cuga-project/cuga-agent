@@ -84,12 +84,12 @@ def _knowledge_configured() -> bool:
     """Knowledge is available when enabled in settings (default: true)."""
     try:
         from cuga.config import settings
+
         kb = settings.get("knowledge", {})
         if not kb:
             return True
-        return (
-            kb.get("enabled", True)
-            and (kb.get("agent_level_enabled", True) or kb.get("session_level_enabled", True))
+        return kb.get("enabled", True) and (
+            kb.get("agent_level_enabled", True) or kb.get("session_level_enabled", True)
         )
     except Exception:
         return True
@@ -400,7 +400,8 @@ def setup_demo_manage_config(
     try:
         from cuga.backend.knowledge.config import KnowledgeConfig as _KC
         from cuga.config import settings as _settings
-        import re as _re, shutil
+        import re as _re
+        import shutil
 
         _kc = _KC.from_settings(_settings)
         _san = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
@@ -472,6 +473,7 @@ def setup_demo_manage_config(
     try:
         from cuga.backend.knowledge.config import KnowledgeConfig as _KC
         from cuga.config import settings as _settings
+
         _kc = _KC.from_settings(_settings)
         knowledge_cfg["_vector_config_hash"] = _kc.vector_config_hash()
     except Exception:

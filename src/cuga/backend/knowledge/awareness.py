@@ -60,9 +60,7 @@ async def get_knowledge_summary(
                 lines = [_format_doc_line(d) for d in agent_docs[:max_docs]]
                 if len(agent_docs) > max_docs:
                     lines.append(f"- ... and {len(agent_docs) - max_docs} more")
-                sections.append(
-                    "### Agent Documents (permanent):\n" + "\n".join(lines)
-                )
+                sections.append("### Agent Documents (permanent):\n" + "\n".join(lines))
         except Exception as e:
             logger.warning(f"Failed to list agent docs for {agent_collection}: {e}")
 
@@ -75,9 +73,7 @@ async def get_knowledge_summary(
                 lines = [_format_doc_line(d) for d in session_docs[:max_docs]]
                 if len(session_docs) > max_docs:
                     lines.append(f"- ... and {len(session_docs) - max_docs} more")
-                sections.append(
-                    "### Session Documents (this conversation only):\n" + "\n".join(lines)
-                )
+                sections.append("### Session Documents (this conversation only):\n" + "\n".join(lines))
         except Exception as e:
             logger.warning(f"Failed to list session docs for {session_collection}: {e}")
 
@@ -87,12 +83,8 @@ async def get_knowledge_summary(
     summary = "## Your Knowledge Base\n\n" + "\n\n".join(sections)
 
     # Build scope-aware directive
-    has_agent = agent_collection and any(
-        s.startswith("### Agent Documents") for s in sections
-    )
-    has_session = session_collection and any(
-        s.startswith("### Session Documents") for s in sections
-    )
+    has_agent = agent_collection and any(s.startswith("### Agent Documents") for s in sections)
+    has_session = session_collection and any(s.startswith("### Session Documents") for s in sections)
 
     summary += "\n\n"
 
@@ -131,6 +123,7 @@ def get_engine_from_app_state() -> KnowledgeEngine | None:
     """
     try:
         from cuga.backend.server.main import app
+
         app_state = getattr(app.state, "app_state", None)
         return getattr(app_state, "knowledge_engine", None) if app_state else None
     except Exception:
@@ -158,9 +151,7 @@ def format_knowledge_context(
 
     return {
         "agent_collection": (
-            _agent_collection_name(agent_id, agent_config_hash)
-            if agent_id and agent_enabled
-            else None
+            _agent_collection_name(agent_id, agent_config_hash) if agent_id and agent_enabled else None
         ),
         "session_collection": f"kb_sess_{_sanitize(thread_id)}" if thread_id and session_enabled else None,
     }

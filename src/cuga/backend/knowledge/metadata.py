@@ -92,8 +92,7 @@ class MetadataDB:
 
     # --- Documents ---
 
-    def add_document(self, collection: str, filename: str, chunk_count: int,
-                     preview: str = "") -> None:
+    def add_document(self, collection: str, filename: str, chunk_count: int, preview: str = "") -> None:
         now = _now()
         with self._conn() as conn:
             conn.execute(
@@ -143,8 +142,9 @@ class MetadataDB:
 
     # --- Tasks ---
 
-    def create_task(self, task_id: str, collection: str, total_files: int,
-                    file_tasks: dict[str, dict]) -> dict[str, Any]:
+    def create_task(
+        self, task_id: str, collection: str, total_files: int, file_tasks: dict[str, dict]
+    ) -> dict[str, Any]:
         now = _now()
         with self._conn() as conn:
             conn.execute(
@@ -182,9 +182,7 @@ class MetadataDB:
                     (collection,),
                 ).fetchall()
             else:
-                rows = conn.execute(
-                    "SELECT * FROM tasks ORDER BY created_at DESC"
-                ).fetchall()
+                rows = conn.execute("SELECT * FROM tasks ORDER BY created_at DESC").fetchall()
             result = []
             for r in rows:
                 task = dict(r)
@@ -228,13 +226,12 @@ class MetadataDB:
 
     def get_collection_config(self, collection: str) -> dict[str, Any] | None:
         with self._conn() as conn:
-            row = conn.execute(
-                "SELECT * FROM collection_config WHERE collection=?", (collection,)
-            ).fetchone()
+            row = conn.execute("SELECT * FROM collection_config WHERE collection=?", (collection,)).fetchone()
             return dict(row) if row else None
 
-    def set_collection_config(self, collection: str, embedding_provider: str,
-                              embedding_model: str, embedding_dim: int) -> None:
+    def set_collection_config(
+        self, collection: str, embedding_provider: str, embedding_model: str, embedding_dim: int
+    ) -> None:
         now = _now()
         with self._conn() as conn:
             conn.execute(

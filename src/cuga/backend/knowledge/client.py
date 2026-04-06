@@ -46,7 +46,10 @@ class KnowledgeClient:
 
     def _resolve_collection(self, scope: str, thread_id: str | None = None) -> str:
         self._require_scope_enabled(scope)
-        sanitize = lambda v: re.sub(r"[^a-zA-Z0-9_]", "_", v)
+
+        def sanitize(v: str) -> str:
+            return re.sub(r"[^a-zA-Z0-9_]", "_", v)
+
         if scope == "session":
             if not thread_id:
                 raise ValueError("thread_id required for session scope")
@@ -65,10 +68,7 @@ class KnowledgeClient:
         """Search documents in the knowledge base."""
         collection = self._resolve_collection(scope, thread_id)
         results = await self._engine.search(collection, query, limit, score_threshold)
-        return [
-            {"text": r.text, "filename": r.filename, "page": r.page}
-            for r in results
-        ]
+        return [{"text": r.text, "filename": r.filename, "page": r.page} for r in results]
 
     async def ingest(
         self,
@@ -79,6 +79,7 @@ class KnowledgeClient:
     ) -> dict[str, Any]:
         """Ingest a document file."""
         from pathlib import Path
+
         collection = self._resolve_collection(scope, thread_id)
         return await self._engine.ingest(collection, Path(file_path), replace_duplicates)
 
@@ -101,9 +102,13 @@ class KnowledgeClient:
         collection = self._resolve_collection(scope, thread_id)
         docs = await self._engine.list_documents(collection)
         return [
-            {"filename": d.filename, "chunk_count": d.chunk_count,
-             "status": d.status, "ingested_at": d.ingested_at,
-             "preview": d.preview}
+            {
+                "filename": d.filename,
+                "chunk_count": d.chunk_count,
+                "status": d.status,
+                "ingested_at": d.ingested_at,
+                "preview": d.preview,
+            }
             for d in docs
         ]
 
@@ -156,13 +161,18 @@ class KnowledgeClient:
         )
 
         async def knowledge_search_knowledge(
-            query: str, scope: str = default_scope,
+            query: str,
+            scope: str = default_scope,
         ) -> dict:
-            results = await client.search(query, scope, _default_limit, _default_threshold, thread_id=_thread_id)
+            results = await client.search(
+                query, scope, _default_limit, _default_threshold, thread_id=_thread_id
+            )
             return {"results": results}
 
         async def knowledge_ingest_knowledge(
-            file_path: str, scope: str = default_scope, replace_duplicates: bool = True,
+            file_path: str,
+            scope: str = default_scope,
+            replace_duplicates: bool = True,
         ) -> dict:
             return await client.ingest(file_path, scope, replace_duplicates, thread_id=_thread_id)
 
@@ -174,7 +184,8 @@ class KnowledgeClient:
             return {"documents": docs}
 
         async def knowledge_delete_knowledge_document(
-            filename: str, scope: str = default_scope,
+            filename: str,
+            scope: str = default_scope,
         ) -> dict:
             return await client.delete_document(filename, scope, thread_id=_thread_id)
 
@@ -205,16 +216,13 @@ class KnowledgeClient:
             f"Supports PDF, DOCX, XLSX, PPTX, HTML, Markdown, images, and more. {scope_help}"
         )
         knowledge_ingest_knowledge_url.__doc__ = (
-            "Ingest a document from a URL into the knowledge base.\n\n"
-            f"{scope_help}"
+            f"Ingest a document from a URL into the knowledge base.\n\n{scope_help}"
         )
         knowledge_list_knowledge_documents.__doc__ = (
-            "List all documents in the knowledge base.\n\n"
-            f"{scope_help}"
+            f"List all documents in the knowledge base.\n\n{scope_help}"
         )
         knowledge_delete_knowledge_document.__doc__ = (
-            "Delete a document from the knowledge base by filename.\n\n"
-            f"{scope_help}"
+            f"Delete a document from the knowledge base by filename.\n\n{scope_help}"
         )
 
         tools = [

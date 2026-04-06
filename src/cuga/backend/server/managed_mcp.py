@@ -137,7 +137,7 @@ async def get_tools_from_agent_config(agent_id: str) -> list[dict[str, Any]]:
     Automatically includes the knowledge tool when the knowledge engine is
     enabled, matching the same pattern used during initial setup.
     """
-    from cuga.backend.server.config_store import _parse_agent_id, get_agent_tools, load_config, load_draft
+    from cuga.backend.server.config_store import _parse_agent_id, load_config, load_draft
     from cuga.backend.server.demo_manage_setup import _get_knowledge_tool, _knowledge_configured
 
     base_agent_id = _parse_agent_id(agent_id)
@@ -150,9 +150,8 @@ async def get_tools_from_agent_config(agent_id: str) -> list[dict[str, Any]]:
         tools = (config or {}).get("tools", []) or []
 
     knowledge_cfg = (config or {}).get("knowledge", {}) or {}
-    knowledge_enabled = (
-        knowledge_cfg.get("enabled", True)
-        and (knowledge_cfg.get("agent_level_enabled", True) or knowledge_cfg.get("session_level_enabled", True))
+    knowledge_enabled = knowledge_cfg.get("enabled", True) and (
+        knowledge_cfg.get("agent_level_enabled", True) or knowledge_cfg.get("session_level_enabled", True)
     )
     tools = [t for t in tools if t.get("name") != "knowledge" or knowledge_enabled]
 

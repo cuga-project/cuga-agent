@@ -98,7 +98,9 @@ class ChatNode(BaseNode):
             getattr(response, "tool_calls", None)
             and response.tool_calls
             and round_trips < max_round_trips
-            and all(agent.should_auto_execute_tool(tool_call.get("name")) for tool_call in response.tool_calls)
+            and all(
+                agent.should_auto_execute_tool(tool_call.get("name")) for tool_call in response.tool_calls
+            )
         ):
             for raw_tool_call in response.tool_calls:
                 tool = ToolCall(**raw_tool_call)
@@ -195,7 +197,11 @@ class ChatNode(BaseNode):
             state.hitl_action = create_new_flow_approve(tool=res.tool_calls[0])
             return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
 
-        if ENABLE_SAVE_REUSE and res.tool_calls and agent.requires_human_approval(res.tool_calls[0].get("name")):
+        if (
+            ENABLE_SAVE_REUSE
+            and res.tool_calls
+            and agent.requires_human_approval(res.tool_calls[0].get("name"))
+        ):
             state.final_answer = state.chat_agent_messages[-1].content
             state.sender = name
             state.hitl_action = create_flow_approve(tool=res.tool_calls[0])

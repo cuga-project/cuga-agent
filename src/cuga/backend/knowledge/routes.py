@@ -62,6 +62,7 @@ def _extract_task_error(task: dict[str, Any], fallback: str = "Ingestion failed"
 
 # --- Health ---
 
+
 @knowledge_router.get("/health")
 async def health(request: Request):
     app_state = getattr(request.app.state, "app_state", None)
@@ -91,7 +92,9 @@ async def health(request: Request):
         "healthy": enabled and status_state == "ready" and h["status"] == "healthy",
         "enabled": enabled,
         "agent_level_enabled": bool(getattr(getattr(engine, "_config", None), "agent_level_enabled", True)),
-        "session_level_enabled": bool(getattr(getattr(engine, "_config", None), "session_level_enabled", True)),
+        "session_level_enabled": bool(
+            getattr(getattr(engine, "_config", None), "session_level_enabled", True)
+        ),
         "status": status_state,
         "message": subsystem.get("message", ""),
         "details": subsystem.get("details", {}),
@@ -106,6 +109,7 @@ async def health(request: Request):
 
 
 # --- Settings ---
+
 
 @knowledge_router.get("/settings")
 async def get_settings(request: Request):
@@ -122,6 +126,7 @@ async def update_settings(request: Request, identity: KnowledgeIdentity = Depend
 
 
 # --- Search ---
+
 
 @knowledge_router.post("/search")
 async def search(
@@ -156,6 +161,7 @@ async def search(
 
 # --- Documents ---
 
+
 @knowledge_router.post("/documents")
 async def upload_documents(
     request: Request,
@@ -169,7 +175,9 @@ async def upload_documents(
     collection = resolve_collection(identity, scope, request)
 
     if len(files) > engine._config.max_files_per_request:
-        raise HTTPException(status_code=400, detail=f"Max {engine._config.max_files_per_request} files per request")
+        raise HTTPException(
+            status_code=400, detail=f"Max {engine._config.max_files_per_request} files per request"
+        )
 
     import tempfile
     from pathlib import Path
@@ -180,9 +188,7 @@ async def upload_documents(
     results: list[dict] = []
 
     for upload_file in files:
-        with tempfile.NamedTemporaryFile(
-            suffix=f"_{upload_file.filename}", delete=False
-        ) as tmp:
+        with tempfile.NamedTemporaryFile(suffix=f"_{upload_file.filename}", delete=False) as tmp:
             content = await upload_file.read()
             tmp.write(content)
             tmp_path = Path(tmp.name)
@@ -201,7 +207,9 @@ async def upload_documents(
             if isinstance(e, DocumentExistsError):
                 raise HTTPException(status_code=409, detail=f"file already indexed: {e.filename}")
             elif isinstance(e, FileTooLargeError):
-                raise HTTPException(status_code=400, detail=f"File too large: {e.size} bytes (max {e.max_size})")
+                raise HTTPException(
+                    status_code=400, detail=f"File too large: {e.size} bytes (max {e.max_size})"
+                )
             else:
                 raise HTTPException(status_code=429, detail=f"ingestion queue full (max {e.max_pending})")
 
@@ -213,8 +221,9 @@ async def upload_documents(
 
         # Await ingestion — response returns final status (no polling)
         try:
-            await engine._run_ingest(collection, tmp_path, filename_clean,
-                                     task_info["task_id"], replace_duplicates)
+            await engine._run_ingest(
+                collection, tmp_path, filename_clean, task_info["task_id"], replace_duplicates
+            )
         finally:
             tmp_path.unlink(missing_ok=True)
 
@@ -266,9 +275,13 @@ async def list_documents(
     docs = await engine.list_documents(collection)
     return {
         "documents": [
-            {"filename": d.filename, "chunk_count": d.chunk_count,
-             "status": d.status, "ingested_at": d.ingested_at,
-             "preview": d.preview}
+            {
+                "filename": d.filename,
+                "chunk_count": d.chunk_count,
+                "status": d.status,
+                "ingested_at": d.ingested_at,
+                "preview": d.preview,
+            }
             for d in docs
         ]
     }
@@ -339,6 +352,7 @@ async def delete_session_collection(
 
 # --- Reindex ---
 
+
 @knowledge_router.post("/reindex")
 async def reindex_collection(
     request: Request,
@@ -359,6 +373,7 @@ async def reindex_collection(
 
 
 # --- Tasks ---
+
 
 @knowledge_router.get("/tasks")
 async def list_tasks(

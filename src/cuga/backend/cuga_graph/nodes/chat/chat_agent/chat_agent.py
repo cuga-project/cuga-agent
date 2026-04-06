@@ -143,12 +143,12 @@ class ChatAgent(BaseAgent):
         deduped: List[BaseTool] = []
         seen: set[str] = set()
 
-        for tool in tools:
-            tool_name = getattr(tool, "name", None)
+        for base_tool in tools:
+            tool_name = getattr(base_tool, "name", None)
             if not tool_name or tool_name in seen:
                 continue
             seen.add(tool_name)
-            deduped.append(tool)
+            deduped.append(base_tool)
 
         return deduped
 

@@ -9,8 +9,8 @@ from __future__ import annotations
 import asyncio
 import collections
 import fcntl
+import functools
 import ipaddress
-import logging
 from loguru import logger as loguru_logger
 import re
 import shutil
@@ -23,14 +23,17 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
+from pydantic import ConfigDict
+
 from langchain_core.documents import Document
 from langchain_core.embeddings import Embeddings
-from langchain_core.indexing import InMemoryRecordManager, index
+from langchain_core.indexing import InMemoryRecordManager
 from langchain_docling import DoclingLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.metadata import MetadataDB
+from cuga.backend.knowledge.vector_store import VectorStoreAdapter
 
 logger = loguru_logger
 
@@ -78,9 +81,38 @@ def _translate_document_load_error(file_path: Path, exc: BaseException) -> Excep
     return RuntimeError(str(exc))
 
 
+def _page_from_docling_dl_meta(dl_meta: Any) -> int | None:
+    """Infer PDF page from Docling chunk metadata (``doc_items`` → ``prov`` → ``page_no``).
+
+    See https://docling-project.github.io/docling/concepts/chunking/ — chunk metadata
+    lists contributing document items; each item carries provenance with ``page_no``.
+    When a chunk spans multiple pages, we use the minimum page number (chunk start).
+    """
+    if not isinstance(dl_meta, dict):
+        return None
+    doc_items = dl_meta.get("doc_items")
+    if not isinstance(doc_items, list):
+        return None
+    pages: list[int] = []
+    for item in doc_items:
+        if not isinstance(item, dict):
+            continue
+        prov = item.get("prov")
+        if not isinstance(prov, list):
+            continue
+        for p in prov:
+            if not isinstance(p, dict):
+                continue
+            pn = p.get("page_no")
+            if isinstance(pn, int):
+                pages.append(pn)
+    if not pages:
+        return None
+    return min(pages)
 
 
 # --- Data classes ---
+
 
 @dataclass
 class SearchResult:
@@ -101,6 +133,7 @@ class DocInfo:
 
 # --- Errors ---
 
+
 class ReindexBusyError(Exception):
     """Raised when reindex cannot start because uploads are pending."""
 
@@ -111,10 +144,12 @@ class ReindexBusyError(Exception):
 
 class ReindexInProgressError(Exception):
     """Raised when upload is attempted during reindex."""
+
     pass
 
 
 # --- Prepared update result ---
+
 
 @dataclass
 class PreparedKnowledgeUpdate:
@@ -131,11 +166,13 @@ class PreparedKnowledgeUpdate:
 
 # --- Embedding factory ---
 
+
 class _FastEmbedEmbeddings(Embeddings):
     """LangChain Embeddings adapter around fastembed.TextEmbedding."""
 
     def __init__(self, model_name: str):
         from fastembed import TextEmbedding
+
         self._model = TextEmbedding(model_name)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
@@ -143,6 +180,44 @@ class _FastEmbedEmbeddings(Embeddings):
 
     def embed_query(self, text: str) -> list[float]:
         return next(self._model.embed([text])).tolist()
+
+
+def _fastembed_docling_seq_limit(model_name: str) -> int:
+    """Upper input length (tokens) for the configured fastembed ONNX model."""
+    m = (model_name or "").lower()
+    if "m-long" in m or "embed-m-long" in m:
+        return 2048
+    return 512
+
+
+@functools.lru_cache(maxsize=1)
+def _fastembed_docling_tokenizer_cls():
+    """HybridChunker tokenizer using fastembed's Rust tokenizer (avoids HF MiniLM download)."""
+    from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
+
+    class _FastEmbedDoclingTokenizer(BaseTokenizer):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+
+        text_embedding: Any
+        max_tokens: int
+
+        def _rust_tokenizer(self):
+            inner = self.text_embedding.model
+            if inner.tokenizer is None:
+                inner.load_onnx_model()
+            return inner.tokenizer
+
+        def count_tokens(self, text: str) -> int:
+            enc = self._rust_tokenizer().encode(text)
+            return int(sum(enc.attention_mask))
+
+        def get_max_tokens(self) -> int:
+            return self.max_tokens
+
+        def get_tokenizer(self) -> Any:
+            return self._rust_tokenizer()
+
+    return _FastEmbedDoclingTokenizer
 
 
 def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
@@ -175,6 +250,7 @@ def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
+
         api_key = config.embedding_api_key or os.environ.get("OPENAI_API_KEY")
         if not api_key:
             raise ValueError(
@@ -195,11 +271,8 @@ def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
         return OllamaEmbeddings(model=model or "nomic-embed-text", base_url=base_url)
 
     raise ValueError(
-        f"Unknown embedding provider: {provider}. "
-        f"Supported: fastembed, huggingface, openai, ollama"
+        f"Unknown embedding provider: {provider}. Supported: fastembed, huggingface, openai, ollama"
     )
-
-
 
 
 def _get_embedding_dim(embeddings: Embeddings) -> int:
@@ -209,6 +282,7 @@ def _get_embedding_dim(embeddings: Embeddings) -> int:
 
 
 # --- Engine ---
+
 
 class KnowledgeEngine:
     """In-process knowledge engine. No external services needed.
@@ -235,17 +309,14 @@ class KnowledgeEngine:
             fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
             self._lock_file.close()
-            raise RuntimeError(
-                "Knowledge engine already running in another process. "
-                "Start with --workers 1"
-            )
+            raise RuntimeError("Knowledge engine already running in another process. Start with --workers 1")
 
         # Default embeddings (lazy — initialized on first use to speed up startup)
         self._default_embeddings = None
         self._default_embedding_dim = None
 
         # Vector store LRU cache (bounded)
-        self._vector_stores: collections.OrderedDict[str, Milvus] = collections.OrderedDict()
+        self._vector_stores: collections.OrderedDict[str, VectorStoreAdapter] = collections.OrderedDict()
 
         # Record managers for dedup (InMemoryRecordManager per collection)
         self._record_managers: dict[str, InMemoryRecordManager] = {}
@@ -294,6 +365,7 @@ class KnowledgeEngine:
 
     def start_background_tasks(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Start background maintenance tasks. Call after event loop is running."""
+
         async def _maintenance_loop():
             while not self._shutdown_event.is_set():
                 try:
@@ -389,11 +461,16 @@ class KnowledgeEngine:
             # provider/model may differ (e.g. OpenAI vs HuggingFace both at 384 dims)
             pinned_provider = cfg["embedding_provider"]
             pinned_model = cfg["embedding_model"]
-            if (pinned_provider == self._config.embedding_provider
-                    and pinned_model == self._config.embedding_model):
+            if (
+                pinned_provider == self._config.embedding_provider
+                and pinned_model == self._config.embedding_model
+            ):
                 return self._default_embeddings
             from dataclasses import replace
-            pinned_cfg = replace(self._config, embedding_provider=pinned_provider, embedding_model=pinned_model)
+
+            pinned_cfg = replace(
+                self._config, embedding_provider=pinned_provider, embedding_model=pinned_model
+            )
             return create_embeddings(pinned_cfg)
         return self._default_embeddings
 
@@ -403,9 +480,7 @@ class KnowledgeEngine:
         if not self._metadata.get_collection_config(collection):
             provider = self._config.embedding_provider
             model = self._config.embedding_model
-            self._metadata.set_collection_config(
-                collection, provider, model, self._default_embedding_dim
-            )
+            self._metadata.set_collection_config(collection, provider, model, self._default_embedding_dim)
             logger.info(f"Created collection {collection} (dim={self._default_embedding_dim})")
 
     def _get_collection_lock(self, collection: str) -> asyncio.Lock:
@@ -415,9 +490,9 @@ class KnowledgeEngine:
 
     # --- Ingest ---
 
-    def _sanitize_and_validate(self, collection: str, file_path: Path,
-                               replace_duplicates: bool,
-                               original_filename: str | None = None) -> str:
+    def _sanitize_and_validate(
+        self, collection: str, file_path: Path, replace_duplicates: bool, original_filename: str | None = None
+    ) -> str:
         """Validate file and return sanitized filename. Raises on error."""
         filename = _sanitize_filename(original_filename or file_path.name)
         collection = _sanitize_collection(collection)
@@ -425,8 +500,7 @@ class KnowledgeEngine:
         if collection in self._reindex_in_progress:
             raise ReindexInProgressError()
 
-        pending = [t for t in self._metadata.list_tasks(collection)
-                   if t["status"] in ("pending", "running")]
+        pending = [t for t in self._metadata.list_tasks(collection) if t["status"] in ("pending", "running")]
         if len(pending) >= self._config.max_pending_tasks:
             raise IngestionQueueFullError(self._config.max_pending_tasks)
 
@@ -459,9 +533,15 @@ class KnowledgeEngine:
         file_tasks = {filename: {"filename": filename, "status": "pending"}}
         return self._metadata.create_task(task_id, collection, 1, file_tasks)
 
-    async def _run_ingest(self, collection: str, file_path: Path, filename: str,
-                          task_id: str, replace_duplicates: bool,
-                          skip_file_copy: bool = False) -> None:
+    async def _run_ingest(
+        self,
+        collection: str,
+        file_path: Path,
+        filename: str,
+        task_id: str,
+        replace_duplicates: bool,
+        skip_file_copy: bool = False,
+    ) -> None:
         """Run ingestion for a single file in a background thread.
 
         Serialized per-collection via asyncio.Lock so Milvus Lite never sees
@@ -483,13 +563,23 @@ class KnowledgeEngine:
                 self._get_vector_store(coll)
 
             await asyncio.to_thread(
-                self._ingest_sync, coll, file_path,
-                filename, task_id, replace_duplicates, cancel_event, skip_file_copy,
+                self._ingest_sync,
+                coll,
+                file_path,
+                filename,
+                task_id,
+                replace_duplicates,
+                cancel_event,
+                skip_file_copy,
             )
 
-    async def ingest(self, collection: str, file_path: Path,
-                     replace_duplicates: bool = True,
-                     original_filename: str | None = None) -> dict[str, Any]:
+    async def ingest(
+        self,
+        collection: str,
+        file_path: Path,
+        replace_duplicates: bool = True,
+        original_filename: str | None = None,
+    ) -> dict[str, Any]:
         """Ingest a document file into a collection. Validates, creates task, runs ingestion."""
         collection = _sanitize_collection(collection)
         filename = self._sanitize_and_validate(collection, file_path, replace_duplicates, original_filename)
@@ -497,10 +587,16 @@ class KnowledgeEngine:
         await self._run_ingest(collection, file_path, filename, task_info["task_id"], replace_duplicates)
         return self._metadata.get_task(task_info["task_id"])
 
-    def _ingest_sync(self, collection: str, file_path: Path, filename: str,
-                     task_id: str, replace_duplicates: bool,
-                     cancel_event: asyncio.Event,
-                     skip_file_copy: bool = False) -> None:
+    def _ingest_sync(
+        self,
+        collection: str,
+        file_path: Path,
+        filename: str,
+        task_id: str,
+        replace_duplicates: bool,
+        cancel_event: asyncio.Event,
+        skip_file_copy: bool = False,
+    ) -> None:
         """Synchronous ingestion worker. Runs in thread via asyncio.to_thread."""
         start = time.monotonic()
         try:
@@ -513,7 +609,8 @@ class KnowledgeEngine:
 
             if cancel_event.is_set():
                 self._metadata.update_task(
-                    task_id, status="cancelled",
+                    task_id,
+                    status="cancelled",
                     file_tasks={filename: {"filename": filename, "status": "skipped"}},
                 )
                 return
@@ -541,7 +638,12 @@ class KnowledgeEngine:
             # (dl_meta, headings, bounding_box etc. cause schema conflicts across formats)
             source_id = f"{collection}/{filename}"
             for doc in docs:
-                page = doc.metadata.get("page", doc.metadata.get("dl_meta", {}).get("page", None) if isinstance(doc.metadata.get("dl_meta"), dict) else None)
+                page = doc.metadata.get("page")
+                dl_meta = doc.metadata.get("dl_meta")
+                if page is None and isinstance(dl_meta, dict):
+                    page = dl_meta.get("page")
+                if page is None and isinstance(dl_meta, dict):
+                    page = _page_from_docling_dl_meta(dl_meta)
                 if page is not None:
                     try:
                         page = int(page)
@@ -570,9 +672,7 @@ class KnowledgeEngine:
                 f"collection {collection} for {filename}"
             )
             with self._milvus_lock:
-                result = self._insert_documents(
-                    collection, docs, source_id, filename, replace_duplicates
-                )
+                result = self._insert_documents(collection, docs, source_id, filename, replace_duplicates)
             logger.info(
                 f"{self._config.vector_store} insert complete for {filename}: "
                 f"added={result.get('num_added', 0)}, skipped={result.get('num_skipped', 0)}"
@@ -598,31 +698,52 @@ class KnowledgeEngine:
                 preview = preview[:_PREVIEW_MAX_CHARS].rsplit(" ", 1)[0] + "..."
             self._metadata.add_document(collection, filename, chunk_count or len(docs), preview=preview)
             self._metadata.update_task(
-                task_id, status="completed", processed_files=1, successful_files=1,
-                file_tasks={filename: {
-                    "filename": filename, "status": "indexed",
-                    "duration_seconds": round(duration, 2),
-                }},
+                task_id,
+                status="completed",
+                processed_files=1,
+                successful_files=1,
+                file_tasks={
+                    filename: {
+                        "filename": filename,
+                        "status": "indexed",
+                        "duration_seconds": round(duration, 2),
+                    }
+                },
             )
-            logger.info(f"Ingested {filename} -> {len(docs)} chunks in {collection} "
-                        f"(added={result.get('num_added', 0)}, skipped={result.get('num_skipped', 0)})")
+            logger.info(
+                f"Ingested {filename} -> {len(docs)} chunks in {collection} "
+                f"(added={result.get('num_added', 0)}, skipped={result.get('num_skipped', 0)})"
+            )
 
         except Exception as e:
             duration = time.monotonic() - start
             logger.error(f"Failed to ingest {filename}: {e}")
             self._metadata.update_task(
-                task_id, status="failed", processed_files=1, failed_files=1,
-                file_tasks={filename: {
-                    "filename": filename, "status": "failed",
-                    "error": str(e), "duration_seconds": round(duration, 2),
-                }},
+                task_id,
+                status="failed",
+                processed_files=1,
+                failed_files=1,
+                file_tasks={
+                    filename: {
+                        "filename": filename,
+                        "status": "failed",
+                        "error": str(e),
+                        "duration_seconds": round(duration, 2),
+                    }
+                },
             )
         finally:
             self._active_tasks.pop(task_id, None)
 
-    def _insert_documents(self, collection: str, docs: list, source_id: str,
-                          filename: str, replace_duplicates: bool,
-                          retry: bool = True) -> dict:
+    def _insert_documents(
+        self,
+        collection: str,
+        docs: list,
+        source_id: str,
+        filename: str,
+        replace_duplicates: bool,
+        retry: bool = True,
+    ) -> dict:
         """Insert documents into the vector store via adapter."""
         try:
             adapter = self._get_vector_store(collection)
@@ -643,7 +764,7 @@ class KnowledgeEngine:
                 _BATCH = 50
                 total_added = 0
                 for i in range(0, len(docs), _BATCH):
-                    result = adapter.add_documents(docs[i:i + _BATCH])
+                    result = adapter.add_documents(docs[i : i + _BATCH])
                     total_added += result.get("num_added", 0)
                 return {"num_added": total_added, "num_skipped": 0}
             elif not doc_exists:
@@ -677,8 +798,10 @@ class KnowledgeEngine:
         import tempfile
 
         async with httpx.AsyncClient(
-            follow_redirects=True, max_redirects=5,
-            timeout=30.0, trust_env=False,
+            follow_redirects=True,
+            max_redirects=5,
+            timeout=30.0,
+            trust_env=False,
         ) as client:
             resp = await client.get(url)
             resp.raise_for_status()
@@ -764,6 +887,7 @@ class KnowledgeEngine:
             if not cfg:
                 continue
             from datetime import datetime, timezone, timedelta
+
             try:
                 created = datetime.fromisoformat(cfg["created_at"])
                 if datetime.now(timezone.utc) - created > timedelta(days=max_age_days):
@@ -774,8 +898,9 @@ class KnowledgeEngine:
 
     # --- Search ---
 
-    async def search(self, collection: str, query: str,
-                     limit: int = 10, score_threshold: float = 0.0) -> list[SearchResult]:
+    async def search(
+        self, collection: str, query: str, limit: int = 10, score_threshold: float = 0.0
+    ) -> list[SearchResult]:
         """Search documents in a collection."""
         collection = _sanitize_collection(collection)
         limit = max(1, min(limit, 100))
@@ -805,15 +930,19 @@ class KnowledgeEngine:
                 if text in seen_texts:
                     continue
                 seen_texts.add(text)
-                results.append(SearchResult(
-                    text=text,
-                    filename=doc.metadata.get("filename", "unknown"),
-                    page=doc.metadata.get("page", None),
-                    score=round(score, 4),
-                ))
+                results.append(
+                    SearchResult(
+                        text=text,
+                        filename=doc.metadata.get("filename", "unknown"),
+                        page=doc.metadata.get("page", None),
+                        score=round(score, 4),
+                    )
+                )
 
         if results:
-            logger.debug(f"Search '{query[:30]}' on {collection}: top_score={results[0].score}, count={len(results)}")
+            logger.debug(
+                f"Search '{query[:30]}' on {collection}: top_score={results[0].score}, count={len(results)}"
+            )
         return results
 
     # --- List ---
@@ -1010,6 +1139,7 @@ class KnowledgeEngine:
             # the exact settings that produce that hash — they cannot be stale.
             # Only check staleness for legacy hash-less collections.
             import re as _re
+
             _has_hash = bool(_re.search(r"_[0-9a-f]{12}$", collection))
             if not _has_hash:
                 pinned = self._metadata.get_collection_config(collection)
@@ -1061,10 +1191,14 @@ class KnowledgeEngine:
                 # No cached adapter — create one just to drop
                 try:
                     from cuga.backend.knowledge.vector_store import create_vector_store
+
                     embeddings = self._get_embeddings_for_collection(collection)
                     temp = create_vector_store(
-                        self._config.vector_store, collection, embeddings,
-                        self._config.persist_dir, self._config.metric_type,
+                        self._config.vector_store,
+                        collection,
+                        embeddings,
+                        self._config.persist_dir,
+                        self._config.metric_type,
                         self._config.pgvector_connection_string,
                     )
                     temp.drop()
@@ -1120,8 +1254,9 @@ class KnowledgeEngine:
             # Phase 1: Atomic check + flag + drop (under collection lock).
             lock = self._get_collection_lock(collection)
             async with lock:
-                pending = [t for t in self._metadata.list_tasks(collection)
-                           if t["status"] in ("pending", "running")]
+                pending = [
+                    t for t in self._metadata.list_tasks(collection) if t["status"] in ("pending", "running")
+                ]
                 if pending:
                     raise ReindexBusyError(len(pending))
                 self._reindex_in_progress.add(collection)
@@ -1137,8 +1272,12 @@ class KnowledgeEngine:
                 try:
                     for fp, tid in zip(file_list, task_ids):
                         await self._run_ingest(
-                            collection, fp, fp.name, tid,
-                            replace_duplicates=True, skip_file_copy=True,
+                            collection,
+                            fp,
+                            fp.name,
+                            tid,
+                            replace_duplicates=True,
+                            skip_file_copy=True,
                         )
                 finally:
                     self._reindex_in_progress.discard(collection)
@@ -1161,9 +1300,24 @@ class KnowledgeEngine:
     # --- Document loading ---
 
     _DOCLING_FORMATS = {
-        ".pdf", ".docx", ".pptx", ".xlsx", ".html", ".htm",
-        ".md", ".csv", ".asciidoc", ".adoc", ".tex", ".latex",
-        ".png", ".jpg", ".jpeg", ".tiff", ".bmp", ".webp",
+        ".pdf",
+        ".docx",
+        ".pptx",
+        ".xlsx",
+        ".html",
+        ".htm",
+        ".md",
+        ".csv",
+        ".asciidoc",
+        ".adoc",
+        ".tex",
+        ".latex",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".tiff",
+        ".bmp",
+        ".webp",
     }
 
     def _get_effective_chunk_settings(self) -> tuple[int, int]:
@@ -1179,9 +1333,44 @@ class KnowledgeEngine:
         - ``merge_peers=True`` merges small sibling chunks for density
         - ``repeat_table_header=True`` repeats table/form headers in every
           chunk so field labels are preserved alongside their values
+
+        When embeddings use fastembed, the chunker tokenizer uses the same ONNX
+        tokenizer (avoids downloading sentence-transformers/all-MiniLM-L6-v2).
         """
         try:
             from docling_core.transforms.chunker import HybridChunker
+
+            if self._config.embedding_provider == "fastembed":
+                self._ensure_embeddings()
+                emb = self._default_embeddings
+                if isinstance(emb, _FastEmbedEmbeddings):
+                    seq = _fastembed_docling_seq_limit(self._config.embedding_model or "")
+                    cap = min(chunk_size, seq)
+                    fe = emb._model
+                    tok = _fastembed_docling_tokenizer_cls()(
+                        text_embedding=fe,
+                        max_tokens=cap,
+                    )
+                    mn = getattr(fe, "model_name", None)
+                    logger.debug(
+                        "HybridChunker tokenizer: fastembed ONNX (same model as embeddings) "
+                        "(model_name={!r}, chunk_token_limit={}, model_seq_limit={})",
+                        mn,
+                        cap,
+                        seq,
+                    )
+                    return HybridChunker(tokenizer=tok)
+                logger.debug(
+                    "HybridChunker tokenizer: expected _FastEmbedEmbeddings for provider=fastembed, "
+                    "got {}; using Docling default (HuggingFace MiniLM tokenizer)",
+                    type(emb).__name__,
+                )
+            else:
+                logger.debug(
+                    "HybridChunker tokenizer: Docling default HuggingFace "
+                    "(sentence-transformers/all-MiniLM-L6-v2); embedding_provider={!r}",
+                    self._config.embedding_provider,
+                )
 
             return HybridChunker(max_tokens=chunk_size)
         except Exception as e:
@@ -1192,6 +1381,7 @@ class KnowledgeEngine:
         """Get or create a reusable Docling DocumentConverter (loads weights once)."""
         if self._docling_converter is None:
             from docling.document_converter import DocumentConverter
+
             self._docling_converter = DocumentConverter()
             logger.info("Docling DocumentConverter initialized (weights loaded)")
         return self._docling_converter
@@ -1199,7 +1389,9 @@ class KnowledgeEngine:
     def _load_document(self, file_path: Path) -> list[Document]:
         """Load a document using Docling for supported formats, fallback for plain text."""
         suffix = file_path.suffix.lower()
-        logger.info(f"Loading document: {file_path.name} (suffix={suffix}, size={file_path.stat().st_size} bytes)")
+        logger.info(
+            f"Loading document: {file_path.name} (suffix={suffix}, size={file_path.stat().st_size} bytes)"
+        )
 
         chunk_size, chunk_overlap = self._get_effective_chunk_settings()
 
@@ -1220,22 +1412,29 @@ class KnowledgeEngine:
             except Exception as e:
                 translated = _translate_document_load_error(file_path, e)
                 logger.error(
-                    f"Docling failed to parse {file_path.name}: "
-                    f"{type(translated).__name__}: {translated}"
+                    f"Docling failed to parse {file_path.name}: {type(translated).__name__}: {translated}"
                 )
                 raise translated from e
-        elif suffix in (".txt", ".text", ".log", ".json", ".xml", ".yaml", ".yml",
-                        ".toml", ".ini", ".cfg", ".conf"):
+        elif suffix in (
+            ".txt",
+            ".text",
+            ".log",
+            ".json",
+            ".xml",
+            ".yaml",
+            ".yml",
+            ".toml",
+            ".ini",
+            ".cfg",
+            ".conf",
+        ):
             text = file_path.read_text(errors="replace")
             splitter = RecursiveCharacterTextSplitter(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
             )
             chunks = splitter.split_text(text)
-            docs = [
-                Document(page_content=chunk, metadata={"page": i + 1})
-                for i, chunk in enumerate(chunks)
-            ]
+            docs = [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
         else:
             try:
                 from langchain_docling.loader import ExportType
@@ -1283,12 +1482,21 @@ class KnowledgeEngine:
             raise ValueError(f"Port {port} not allowed")
         for family, _, _, _, sockaddr in socket.getaddrinfo(parsed.hostname, None):
             addr = ipaddress.ip_address(sockaddr[0])
-            if any([addr.is_private, addr.is_loopback, addr.is_link_local,
-                    addr.is_reserved, addr.is_multicast, addr.is_unspecified]):
+            if any(
+                [
+                    addr.is_private,
+                    addr.is_loopback,
+                    addr.is_link_local,
+                    addr.is_reserved,
+                    addr.is_multicast,
+                    addr.is_unspecified,
+                ]
+            ):
                 raise ValueError("Private/internal/reserved URLs not allowed")
 
 
 # --- Helpers ---
+
 
 def _sanitize_collection(name: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", name)
@@ -1304,6 +1512,7 @@ def _sanitize_filename(name: str) -> str:
 
 
 # --- Exceptions ---
+
 
 class IngestionQueueFullError(Exception):
     def __init__(self, max_pending: int):

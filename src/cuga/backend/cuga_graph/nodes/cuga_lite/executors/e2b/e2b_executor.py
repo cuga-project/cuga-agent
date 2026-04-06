@@ -214,11 +214,7 @@ if __name__ == "__main__":
         positional_names = self._KNOWLEDGE_POSITIONAL_ARGS.get(tool_name, [])
         allowed_scopes_repr = repr(list(allowed_scopes))
         positional_names_repr = repr(positional_names)
-        default_scope_line = (
-            f'            kwargs["scope"] = "{default_scope}"\n'
-            if default_scope
-            else ""
-        )
+        default_scope_line = f'            kwargs["scope"] = "{default_scope}"\n' if default_scope else ""
         thread_id_line = (
             f'        kwargs.setdefault("thread_id", "{thread_id}")\n'
             if thread_id and "session" in allowed_scopes

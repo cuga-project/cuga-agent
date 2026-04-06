@@ -115,8 +115,7 @@ async def require_internal_or_auth(request: Request) -> KnowledgeIdentity:
     )
 
 
-def resolve_collection(identity: KnowledgeIdentity, scope: str,
-                       request: Request | None = None) -> str:
+def resolve_collection(identity: KnowledgeIdentity, scope: str, request: Request | None = None) -> str:
     """Resolve collection name from identity and scope.
 
     Enforces session identity requirements and ownership before allowing access.

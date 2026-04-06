@@ -878,6 +878,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
 
         # Merge with existing draft knowledge
         from cuga.backend.server.config_store import load_draft
+
         existing_draft = await load_draft(agent_id) or {}
         existing_knowledge = existing_draft.get("knowledge", {})
         merged = {**existing_knowledge, **knowledge}
@@ -885,6 +886,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         # Filter to known KnowledgeConfig fields only
         from cuga.backend.knowledge.config import KnowledgeConfig
         from dataclasses import fields as _dc_fields
+
         known_fields = {f.name for f in _dc_fields(KnowledgeConfig)} - {"persist_dir"}
         filtered = {k: v for k, v in merged.items() if k in known_fields}
 
@@ -902,6 +904,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         if state:
             try:
                 from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
                 state.draft_knowledge_config = _KC.coerce_and_validate(filtered)
             except Exception:
                 pass
@@ -973,6 +976,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # If missing, snapshot current engine config or use defaults.
         if not knowledge_cfg or not isinstance(knowledge_cfg, dict):
             from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
             if engine and hasattr(engine, "config"):
                 knowledge_cfg = engine.config.to_dict()
             else:
@@ -988,6 +992,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 try:
                     from cuga.backend.knowledge.config import KnowledgeConfig
                     from cuga.backend.knowledge.engine import KnowledgeEngine
+
                     kb_config = KnowledgeConfig.coerce_and_validate(knowledge_cfg)
                     engine = KnowledgeEngine(kb_config)
                     app_state.knowledge_engine = engine
@@ -1006,6 +1011,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # model, chunk size, metric) so versions with identical vector settings
         # share the same collection.
         from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
         try:
             _kb_obj = _KC.coerce_and_validate(knowledge_cfg)
             _vec_hash = _kb_obj.vector_config_hash()
@@ -1017,6 +1023,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # Capture previous config hash before saving the new version, so we
         # can detect whether document migration is needed.
         from cuga.backend.server.config_store import load_config as _load_cfg
+
         _prev_hash = ""
         try:
             _prev_config, _ = await _load_cfg(version=None, agent_id=agent_id)
@@ -1031,6 +1038,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # reconnect to existing on-disk knowledge data without re-ingestion.
         if engine:
             import re as _re_snap
+
             _current_hash = _vec_hash or getattr(app_state, "knowledge_config_hash", "") or _prev_hash
             _snap_id = _re_snap.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
             _snap_col = f"kb_agent_{_snap_id}_{_current_hash}" if _current_hash else f"kb_agent_{_snap_id}"
@@ -1117,6 +1125,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # Reindex / migration decision.
         # Use hash-based collection name so different vector configs are isolated.
         import re as _re
+
         _san_id = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
         reindex_info = None
         _new_collection = f"kb_agent_{_san_id}_{_vec_hash}" if _vec_hash else f"kb_agent_{_san_id}"
@@ -1129,14 +1138,18 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     logger.info(
                         "Knowledge config hash changed (%s -> %s) but target collection "
                         "already has %d doc(s), skipping migration",
-                        _prev_hash or "(none)", _vec_hash, len(target_docs),
+                        _prev_hash or "(none)",
+                        _vec_hash,
+                        len(target_docs),
                     )
                 else:
                     old_docs = await engine.list_documents(_old_collection)
                     if old_docs:
                         logger.info(
                             "Knowledge config hash changed (%s -> %s), migrating %d doc(s) to new collection",
-                            _prev_hash or "(none)", _vec_hash, len(old_docs),
+                            _prev_hash or "(none)",
+                            _vec_hash,
+                            len(old_docs),
                         )
                         try:
                             await engine.copy_source_files(_old_collection, _new_collection)
@@ -1158,6 +1171,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                         reindex_info = await engine.reindex(_new_collection)
                     except Exception as reindex_err:
                         from cuga.backend.knowledge.engine import ReindexBusyError
+
                         if isinstance(reindex_err, ReindexBusyError):
                             reindex_info = {
                                 "status": "busy",
