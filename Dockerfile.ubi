@@ -46,6 +46,7 @@ RUN microdnf install -y \
         libxcb \
         libxkbcommon \
         mesa-libgbm \
+        mesa-libGL \
         nspr \
         nss \
         nss-util \
