@@ -32,6 +32,7 @@ async def engine(monkeypatch):
         lambda: ("local", isolated_db, ""),
     )
     config = KnowledgeConfig(
+        enabled=True,
         persist_dir=Path(tmpdir),
         embedding_provider="fastembed",
         embedding_model="",

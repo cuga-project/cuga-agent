@@ -14,7 +14,10 @@ from fastapi.responses import FileResponse
 
 from cuga.backend.knowledge.auth import (
     KnowledgeIdentity,
+    ensure_agent_knowledge_manage_access,
+    ensure_agent_scope_manage_if_needed,
     require_internal_or_auth,
+    require_knowledge_agent_manage_identity,
     resolve_collection,
 )
 from cuga.backend.knowledge.engine import (
@@ -30,6 +33,10 @@ from cuga.backend.knowledge.engine import (
 logger = logging.getLogger("cuga.knowledge")
 
 knowledge_router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+
+knowledge_agent_manage_router = APIRouter(
+    dependencies=[Depends(require_knowledge_agent_manage_identity)],
+)
 
 
 def _get_engine(request: Request) -> KnowledgeEngine:
@@ -62,7 +69,7 @@ def _extract_task_error(task: dict[str, Any], fallback: str = "Ingestion failed"
 # --- Enable (on-demand engine start) ---
 
 
-@knowledge_router.post("/enable")
+@knowledge_agent_manage_router.post("/enable")
 async def enable_knowledge(request: Request):
     """Start the knowledge engine on-demand if it is not already running.
 
@@ -140,14 +147,14 @@ async def health(request: Request):
 # --- Settings ---
 
 
-@knowledge_router.get("/settings")
+@knowledge_agent_manage_router.get("/settings")
 async def get_settings(request: Request):
     engine = _get_engine(request)
     return engine.get_settings()
 
 
-@knowledge_router.post("/settings")
-async def update_settings(request: Request, identity: KnowledgeIdentity = Depends(require_internal_or_auth)):
+@knowledge_agent_manage_router.post("/settings")
+async def update_settings(request: Request):
     engine = _get_engine(request)
     body = await request.json()
     knowledge_settings = body.get("knowledge", body)
@@ -201,6 +208,7 @@ async def upload_documents(
 ):
     engine = _get_engine(request)
     _ensure_enabled(engine)
+    ensure_agent_scope_manage_if_needed(identity, scope)
     collection = resolve_collection(identity, scope, request)
 
     if len(files) > engine._config.max_files_per_request:
@@ -278,6 +286,7 @@ async def ingest_url(
     _ensure_enabled(engine)
     body = await request.json()
     scope = body.get("scope", "agent")
+    ensure_agent_scope_manage_if_needed(identity, scope)
     collection = resolve_collection(identity, scope, request)
     url = body.get("url", "")
     if not url:
@@ -348,6 +357,7 @@ async def delete_document(
     _ensure_enabled(engine)
     body = await request.json()
     scope = body.get("scope", "agent")
+    ensure_agent_scope_manage_if_needed(identity, scope)
     filename = body.get("filename", "")
     if not filename:
         raise HTTPException(status_code=400, detail="filename is required")
@@ -391,6 +401,7 @@ async def reindex_collection(
     _ensure_enabled(engine)
     body = await request.json() if request.headers.get("content-length", "0") != "0" else {}
     scope = body.get("scope", "agent")
+    ensure_agent_scope_manage_if_needed(identity, scope)
     collection = resolve_collection(identity, scope, request)
     try:
         return await engine.reindex(collection)
@@ -466,5 +477,11 @@ async def cancel_task(
     if task["collection"] != expected_collection:
         raise HTTPException(status_code=403, detail="access denied")
 
+    if scope == "agent":
+        ensure_agent_knowledge_manage_access(identity)
+
     result = await engine.cancel_task(task_id)
     return result
+
+
+knowledge_router.include_router(knowledge_agent_manage_router)

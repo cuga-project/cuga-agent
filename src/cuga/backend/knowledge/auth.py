@@ -15,7 +15,7 @@ import re
 import secrets
 from dataclasses import dataclass
 
-from fastapi import Request, HTTPException
+from fastapi import Depends, HTTPException, Request
 
 logger = logging.getLogger("cuga.knowledge")
 
@@ -29,6 +29,7 @@ class KnowledgeIdentity:
     agent_id: str
     thread_id: str | None  # Only required for scope=session
     auth_mode: str  # "external" or "internal"
+    roles: frozenset[str] | None = None
 
 
 def _scope_enabled_for_request(scope: str, request: Request | None) -> bool:
@@ -53,6 +54,36 @@ def _scope_disabled_detail(scope: str) -> str:
     if scope == "session":
         return "Session-level knowledge is disabled for this agent"
     return "Agent-level knowledge is disabled for this agent"
+
+
+def ensure_agent_knowledge_manage_access(identity: KnowledgeIdentity) -> None:
+    """Restrict agent-level knowledge *management* to IAM manage roles (e.g. ServiceOwner, ServiceAdmin).
+
+    ServiceUser may still use session-scoped knowledge and read/search agent RAG. MCP internal
+    calls (localhost + internal token) are always allowed.
+    """
+    if identity.auth_mode == "internal":
+        return
+    from cuga.backend.server.auth.dependencies import (
+        _auth_enabled,
+        _authorization_enabled,
+        _get_manage_roles,
+    )
+
+    if not _auth_enabled() or not _authorization_enabled():
+        return
+    manage_roles = _get_manage_roles()
+    user_roles = identity.roles or frozenset()
+    if not any(role in manage_roles for role in user_roles):
+        raise HTTPException(
+            status_code=403,
+            detail=f"Agent-level knowledge management requires one of: {', '.join(manage_roles)}",
+        )
+
+
+def ensure_agent_scope_manage_if_needed(identity: KnowledgeIdentity, scope: str) -> None:
+    if scope == "agent":
+        ensure_agent_knowledge_manage_access(identity)
 
 
 async def require_internal_or_auth(request: Request) -> KnowledgeIdentity:
@@ -80,12 +111,14 @@ async def require_internal_or_auth(request: Request) -> KnowledgeIdentity:
                 agent_id=agent_id,
                 thread_id=request.headers.get("X-Thread-ID") or None,
                 auth_mode="internal",
+                roles=None,
             )
 
     # --- External mode (browser/SDK) ---
     # Check if auth is enabled
     from cuga.backend.server.auth.dependencies import _auth_enabled, get_current_user
 
+    current_user = None
     if _auth_enabled():
         try:
             current_user = await get_current_user(request)
@@ -98,7 +131,6 @@ async def require_internal_or_auth(request: Request) -> KnowledgeIdentity:
         user_id = getattr(current_user, "sub", None)
         tenant_id = getattr(current_user, "tenant_id", None)
     else:
-        # Auth disabled — allow unauthenticated access (dev mode)
         user_id = None
         tenant_id = None
 
@@ -106,12 +138,18 @@ async def require_internal_or_auth(request: Request) -> KnowledgeIdentity:
     if not agent_id:
         raise HTTPException(status_code=400, detail="X-Agent-ID required")
 
+    _roles: frozenset[str] | None = None
+    if current_user is not None:
+        ur = getattr(current_user, "roles", None)
+        _roles = frozenset(ur) if ur else None
+
     return KnowledgeIdentity(
         user_id=user_id,
         tenant_id=tenant_id,
         agent_id=agent_id,
         thread_id=request.headers.get("X-Thread-ID") or None,
         auth_mode="external",
+        roles=_roles,
     )
 
 
@@ -162,3 +200,15 @@ def resolve_collection(identity: KnowledgeIdentity, scope: str, request: Request
 
 def _sanitize(value: str) -> str:
     return re.sub(r"[^a-zA-Z0-9_]", "_", value)
+
+
+async def require_knowledge_agent_manage_identity(
+    identity: KnowledgeIdentity = Depends(require_internal_or_auth),
+) -> KnowledgeIdentity:
+    """Router dependency mirroring ``manage_routes`` (``APIRouter(dependencies=[...])``).
+
+    Unlike ``require_manage_access``, internal MCP requests stay allowed and JWT users must
+    satisfy ``manage_roles`` when auth + authorization are enabled.
+    """
+    ensure_agent_knowledge_manage_access(identity)
+    return identity
