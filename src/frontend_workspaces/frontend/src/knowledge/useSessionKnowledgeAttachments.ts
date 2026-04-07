@@ -151,6 +151,7 @@ export function useSessionKnowledgeAttachments({
   const isAvailable = enabled && (scope === "agent" || Boolean(threadId));
 
   useEffect(() => {
+    setDocuments([]);
     setPendingUploads([]);
     setDeletingFilenames(new Set());
     setTrackedDocumentFilenames(new Set());
@@ -206,7 +207,7 @@ export function useSessionKnowledgeAttachments({
 
   useEffect(() => {
     void refreshDocuments();
-  }, [refreshDocuments, sessionDocsVersion, threadId]);
+  }, [refreshDocuments, sessionDocsVersion, threadId, scope]);
 
   const uploadSingleFile = useCallback(
     async (upload: PendingUpload) => {

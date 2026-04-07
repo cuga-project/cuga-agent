@@ -20,7 +20,7 @@ import uuid
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
+from urllib.parse import urljoin, urlparse
 
 from pydantic import ConfigDict
 
@@ -818,19 +818,34 @@ class KnowledgeEngine:
         import httpx
         import tempfile
 
+        max_redirects = 5
+        current_url = url
         async with httpx.AsyncClient(
-            follow_redirects=True,
-            max_redirects=5,
+            follow_redirects=False,
             timeout=30.0,
             trust_env=False,
         ) as client:
-            resp = await client.get(url)
+            redirect_count = 0
+            while True:
+                resp = await client.get(current_url, follow_redirects=False)
+                if resp.is_redirect:
+                    if redirect_count >= max_redirects:
+                        raise ValueError(f"Too many redirects (max {max_redirects})")
+                    location = resp.headers.get("location")
+                    if not location:
+                        raise ValueError("Redirect response missing Location header")
+                    next_url = urljoin(str(resp.url), location.strip())
+                    self._validate_url(next_url)
+                    current_url = next_url
+                    redirect_count += 1
+                    continue
+                break
             resp.raise_for_status()
             max_bytes = self._config.max_url_download_size_mb * 1024 * 1024
             if len(resp.content) > max_bytes:
                 raise FileTooLargeError(len(resp.content), max_bytes)
 
-        parsed = urlparse(url)
+        parsed = urlparse(str(resp.url))
         filename = _sanitize_filename(Path(parsed.path).name or "downloaded_page.html")
 
         # Write to temp file — kept alive until ingest completes (ingest is awaited)

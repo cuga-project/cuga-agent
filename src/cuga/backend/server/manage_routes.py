@@ -1162,9 +1162,6 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             except Exception as e:
                 logger.warning("Failed to check docs for migration: %s", e)
 
-        if _vec_hash:
-            app_state.knowledge_config_hash = _vec_hash
-
         if not reindex_info and knowledge_result and knowledge_result.get("reindex_recommended") and engine:
             try:
                 docs = await engine.list_documents(_new_collection)
@@ -1185,6 +1182,17 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                             logger.warning("Reindex failed: %s", reindex_err)
             except Exception as e:
                 logger.warning("Failed to check docs for reindex: %s", e)
+
+        if _vec_hash:
+            if reindex_info and reindex_info.get("status") == "failed":
+                logger.error(
+                    "Keeping knowledge_config_hash=%r after vector-config migration/reindex failure "
+                    "(would have switched to %s)",
+                    getattr(app_state, "knowledge_config_hash", None),
+                    _vec_hash,
+                )
+            else:
+                app_state.knowledge_config_hash = _vec_hash
 
         if reindex_info:
             response_data["reindex"] = reindex_info

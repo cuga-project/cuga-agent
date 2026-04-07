@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from datetime import datetime, timezone
+import datetime
 import platform
 import re
 import shutil
@@ -210,7 +210,7 @@ class AppState:
         payload = {
             "state": state,
             "message": message,
-            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         if details:
             payload["details"] = details
@@ -224,7 +224,7 @@ class AppState:
             {
                 "state": "unknown",
                 "message": "",
-                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
                 "details": {},
             },
         )
@@ -1002,7 +1002,7 @@ async def save_conversation_to_db(
                     {
                         "role": role,
                         "content": msg.content if hasattr(msg, 'content') else str(msg),
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
                         "metadata": {"type": type(msg).__name__, "message_type": "chat_messages"},
                     }
                 )
@@ -1019,7 +1019,7 @@ async def save_conversation_to_db(
                         if isinstance(msg, AIMessage)
                         else "system",
                         "content": msg.content if hasattr(msg, 'content') else str(msg),
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
                         "metadata": {"type": type(msg).__name__, "message_type": "chat_agent_messages"},
                     }
                 )
@@ -1036,7 +1036,7 @@ async def save_conversation_to_db(
                         if isinstance(msg, AIMessage)
                         else "system",
                         "content": msg.content if hasattr(msg, 'content') else str(msg),
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
                         "metadata": {"type": type(msg).__name__, "message_type": "supervisor_chat_messages"},
                     }
                 )
@@ -1211,7 +1211,7 @@ async def event_stream(
             {
                 "event_name": "UserMessage",
                 "event_data": user_message_event_data,
-                "timestamp": datetime.utcnow().isoformat(),
+                "timestamp": datetime.datetime.utcnow().isoformat(),
                 "sequence": event_sequence,
             }
         )
@@ -1403,7 +1403,7 @@ async def event_stream(
                                 {
                                     "event_name": "Answer",
                                     "event_data": final_answer_text,
-                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "timestamp": datetime.datetime.utcnow().isoformat(),
                                     "sequence": event_sequence,
                                 }
                             )
@@ -1505,7 +1505,7 @@ async def event_stream(
                                 {
                                     "event_name": name,
                                     "event_data": event,
-                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "timestamp": datetime.datetime.utcnow().isoformat(),
                                     "sequence": event_sequence,
                                 }
                             )
@@ -2254,11 +2254,11 @@ async def delete_conversation(
     """Delete a conversation thread and its stream events."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     try:
-        await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
         conversation_db = get_conversation_db()
         success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
 
         if success:
+            await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
             logger.info(f"Deleted conversation and stream events: {conversation_id}")
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
         else:
