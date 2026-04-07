@@ -145,11 +145,13 @@ openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Re
                  # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
                  # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)
 
-[kaizen]
-enabled = true             # Master toggle for Kaizen integration
-url = "http://127.0.0.1:8201/sse"  # Kaizen MCP server SSE endpoint
-lite_mode_only = true        # Only activate Kaizen for CugaLite mode
+[evolve]
+enabled = true             # Master toggle for Evolve integration
+url = "http://127.0.0.1:8201/sse"  # Evolve MCP server SSE endpoint
+mode = "auto"               # "auto" = registry first, then direct SSE fallback; "registry" = registry only; "direct" = direct SSE only
+app_name = "evolve"         # MCP app/server name to use when Evolve is managed by the CUGA registry
+lite_mode_only = true        # Only activate Evolve for CugaLite mode
 save_on_success = true       # Save trajectory on successful task completion
 save_on_failure = true       # Save trajectory on failed task completion
 async_save = true            # Fire-and-forget trajectory saving (non-blocking)
-timeout = 30.0               # Timeout in seconds for Kaizen MCP calls
+timeout = 30.0               # Timeout in seconds for Evolve MCP calls

@@ -42,6 +42,25 @@ interface ToolTemplate {
 
 const TOOL_TEMPLATES: ToolTemplate[] = [
   {
+    id: "evolve",
+    name: "Evolve",
+    description: "Guideline retrieval and trajectory learning via Evolve MCP",
+    icon: Template,
+    config: {
+      name: "evolve",
+      type: "mcp",
+      mcpMode: "command",
+      command: "uv",
+      argsText: "run\npython\n-m\ncuga.backend.evolve.mcp_server",
+      description: "Local Evolve MCP server for guideline lookup and trajectory saving. Requires the optional evolve package to be installed.",
+      env: {
+        EVOLVE_MODEL_NAME: "Azure/gpt-4o",
+        OPENAI_API_KEY: "env://OPENAI_API_KEY", // pragma: allowlist secret
+      },
+      transport: "stdio",
+    },
+  },
+  {
     id: "filesystem",
     name: "Filesystem",
     description: "Read and write files in a specified directory",
@@ -100,6 +119,9 @@ function initFromTool(initial: ToolEntry | null | undefined) {
     url: initial?.url ?? "",
     command: initial?.command ?? "",
     argsText: (initial?.args ?? []).join("\n"),
+    envText: Object.entries(initial?.env ?? {})
+      .map(([key, value]) => `${key}=${value}`)
+      .join("\n"),
     description: initial?.description ?? "",
     authType: (!auth.type || auth.type === "none" ? "none" : auth.type) as AuthType,
     authKey: auth.key ?? "",
@@ -116,6 +138,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
   const [url, setUrl] = useState(init.url);
   const [command, setCommand] = useState(init.command);
   const [argsText, setArgsText] = useState(init.argsText);
+  const [envText, setEnvText] = useState(init.envText);
   const [description, setDescription] = useState(init.description);
   const [authType, setAuthType] = useState<AuthType>(init.authType);
   const [authKey, setAuthKey] = useState(init.authKey);
@@ -162,6 +185,11 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     setUrl(config.url || "");
     setCommand(config.command || "");
     setArgsText(config.argsText || (config.args || []).join("\n"));
+    setEnvText(
+      Object.entries(config.env || {})
+        .map(([key, value]) => `${key}=${value}`)
+        .join("\n")
+    );
     setDescription(config.description || "");
     const auth = config.auth ?? emptyAuth;
     setAuthType(auth.type === "none" || !auth.type ? "none" : auth.type);
@@ -177,6 +205,17 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     e.preventDefault();
     const isCommandMcp = type === "mcp" && mcpMode === "command";
     const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
+    const envEntries = envText
+      .split("\n")
+      .map((s) => s.trim())
+      .filter(Boolean);
+    const env = Object.fromEntries(
+      envEntries.map((entry) => {
+        const idx = entry.indexOf("=");
+        if (idx === -1) return [entry, ""];
+        return [entry.slice(0, idx).trim(), entry.slice(idx + 1).trim()];
+      }).filter(([key]) => key.length > 0)
+    );
     const tool: ToolEntry = {
       name: name.trim(),
       type,
@@ -186,6 +225,7 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     if (isCommandMcp) {
       tool.command = command.trim();
       tool.args = args.length ? args : undefined;
+      tool.env = Object.keys(env).length ? env : undefined;
       tool.transport = "stdio";
     } else if (type === "mcp" && url.trim()) {
       tool.transport = mcpMode === "url-http" ? "http" : "sse";
@@ -356,6 +396,17 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                   placeholder={"-y\n@modelcontextprotocol/server-filesystem\n./cuga_workspace"}
                   rows={4}
                   helperText="One argument per line (e.g. -y, package name, working directory)"
+                />
+              </FormGroup>
+              <FormGroup legendText="">
+                <TextArea
+                  id="tool-env"
+                  labelText="Environment (KEY=VALUE, one per line)"
+                  value={envText}
+                  onChange={(e) => setEnvText(e.target.value)}
+                  placeholder={"EVOLVE_MODEL_NAME=Azure/gpt-4o\nOPENAI_API_KEY=env://OPENAI_API_KEY"} // pragma: allowlist secret
+                  rows={6}
+                  helperText="Optional. Values can be literals or secret/env refs such as env://OPENAI_API_KEY, db://my-secret, or vault://secret/path#value."
                 />
               </FormGroup>
             </>

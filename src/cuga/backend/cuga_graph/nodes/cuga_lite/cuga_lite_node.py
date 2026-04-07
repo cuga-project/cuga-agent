@@ -389,23 +389,23 @@ class CugaLiteNode(BaseNode):
                 goto=NodeNames.SUGGEST_HUMAN_ACTIONS,
             )
 
-        # Save trajectory to Kaizen if enabled
-        from cuga.backend.kaizen.kaizen_integration import KaizenIntegration
+        # Save trajectory to Evolve if enabled
+        from cuga.backend.evolve.integration import EvolveIntegration
 
-        if KaizenIntegration.is_enabled() and state.chat_messages:
+        if EvolveIntegration.is_enabled() and state.chat_messages:
             import asyncio as _asyncio
 
             task_id = state.sub_task or tracker.task_id or "unknown"
             state_error = getattr(state, "error", None)
             success = not (self._has_error(state.final_answer or "") or bool(state_error))
-            if settings.kaizen.async_save:
+            if settings.evolve.async_save:
                 task = _asyncio.create_task(
-                    KaizenIntegration.save_trajectory(state.chat_messages, task_id, success)
+                    EvolveIntegration.save_trajectory(state.chat_messages, task_id, success)
                 )
                 self._background_tasks.add(task)
                 task.add_done_callback(self._background_tasks.discard)
             else:
-                await KaizenIntegration.save_trajectory(state.chat_messages, task_id, success)
+                await EvolveIntegration.save_trajectory(state.chat_messages, task_id, success)
 
         # Get metadata from state
         metadata = state.cuga_lite_metadata or {}

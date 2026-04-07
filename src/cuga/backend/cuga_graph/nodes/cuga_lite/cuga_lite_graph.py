@@ -731,11 +731,11 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
 
-            # Fetch Kaizen guidelines if enabled
-            from cuga.backend.kaizen.kaizen_integration import KaizenIntegration
+            # Fetch Evolve guidelines if enabled
+            from cuga.backend.evolve.integration import EvolveIntegration
 
             special_instructions_final = base_special_instructions
-            if KaizenIntegration.is_enabled():
+            if EvolveIntegration.is_enabled():
                 task_description = ""
                 if state.sub_task:
                     task_description = state.sub_task
@@ -745,13 +745,13 @@ def create_cuga_lite_graph(
                             task_description = msg.content
                             break
                 if task_description:
-                    kaizen_guidelines = await KaizenIntegration.get_guidelines(task_description)
-                    if kaizen_guidelines:
-                        kaizen_section = f"\n\n## Kaizen Guidelines\n{kaizen_guidelines}"
-                        special_instructions_final = (special_instructions_final or "") + kaizen_section
-                        logger.info("Kaizen: Injected guidelines into system prompt")
+                    evolve_guidelines = await EvolveIntegration.get_guidelines(task_description)
+                    if evolve_guidelines:
+                        evolve_section = f"\n\n## Evolve Guidelines\n{evolve_guidelines}"
+                        special_instructions_final = (special_instructions_final or "") + evolve_section
+                        logger.info("Evolve: Injected guidelines into system prompt")
                         logger.debug(
-                            f"Kaizen: Full special_instructions with guidelines:\n{special_instructions_final}"
+                            f"Evolve: Full special_instructions with guidelines:\n{special_instructions_final}"
                         )
 
             # Create prompt dynamically

@@ -818,34 +818,78 @@ Watch CUGA with Memory enabled
 </details>
 
 <details>
-<summary><em style="color: #666;"> 🧠 Optional: Use Kaizen with CugaLite</em></summary>
+<summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CugaLite</em></summary>
 
-Kaizen can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
+Evolve can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
 
 This flow is:
 
 - **Opt-in** - disabled by default
-- **Non-blocking** - Kaizen failures do not fail the task
+- **Non-blocking** - Evolve failures do not fail the task
 - **CugaLite-focused** - enabled for lite mode by default
 
 ### Setup Steps:
 
-1. Start a Kaizen MCP server that exposes `get_guidelines` and `save_trajectory`
-2. Edit `./src/cuga/settings.toml` and enable lite mode plus Kaizen:
+1. Choose how Evolve will be started.
+
+   Recommended for normal CUGA usage: let the CUGA MCP registry launch Evolve for you.
+
+   In the manager UI, add an MCP tool with:
+
+   - Name: `evolve`
+   - Connection type: `Command (stdio)`
+   - Command: `uv`
+   - Args:
+
+   ```text
+   run
+   python
+   -m
+   cuga.backend.evolve.mcp_server
+   ```
+
+   Then set the tool environment values in the UI. Recommended defaults:
+
+   ```text
+   EVOLVE_MODEL_NAME=Azure/gpt-4o
+   OPENAI_API_KEY=env://OPENAI_API_KEY # pragma: allowlist secret
+   ```
+
+   Notes:
+   - Use a model your gateway/team is actually allowed to access. Replace `Azure/gpt-4o` with the exact allowed model if needed.
+   - `OPENAI_API_KEY=env://OPENAI_API_KEY` means "read the real value from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
+   - If your OpenAI-compatible gateway also requires a custom base URL, add `OPENAI_BASE_URL=env://OPENAI_BASE_URL`.
+
+   Important: this command starts Evolve in `stdio` mode. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
+
+   Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
+
+   ```bash
+   uv run python -m cuga.backend.evolve.mcp_server --transport sse --port 8201
+   ```
+2. Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
 
 ```toml
 [advanced_features]
 lite_mode = true
 
-[kaizen]
+[evolve]
 enabled = true
 url = "http://127.0.0.1:8201/sse"
+mode = "auto"
+app_name = "evolve"
 lite_mode_only = true
 save_on_success = true
 save_on_failure = true
 async_save = true
 timeout = 30.0
 ```
+
+If you use the recommended registry-managed setup above, keep `mode = "auto"` or set `mode = "registry"`.
+
+If you run Evolve manually as a standalone SSE server, keep `url = "http://127.0.0.1:8201/sse"` and set `mode = "direct"` if you want to skip registry lookup entirely.
+
+If you use Evolve tip generation, make sure the environment for the Evolve MCP server includes the required Evolve model settings. Otherwise `save_trajectory` may fail later with a LiteLLM/OpenAI model access error even when the MCP connection itself works.
 
 3. Start CUGA normally:
 
@@ -858,16 +902,19 @@ cuga start demo
 ### What happens during a run?
 
 1. CUGA derives the task description from the current sub-task or first user message
-2. CugaLite asks Kaizen for relevant guidelines
-3. Returned guidelines are appended to the system prompt under a `Kaizen Guidelines` section
+2. CugaLite asks Evolve for relevant guidelines
+3. Returned guidelines are appended to the system prompt under an `Evolve Guidelines` section
 4. The task executes normally
-5. The user / assistant trajectory is saved back to Kaizen after completion
+5. The user / assistant trajectory is saved back to Evolve after completion
 
 ### Notes
 
 - `async_save = true` saves trajectories in the background and avoids blocking the response
 - `save_on_success` and `save_on_failure` let you control which runs are recorded
-- If Kaizen is unavailable, times out, or returns no guidance, CUGA continues normally
+- `mode = "auto"` lets CUGA use a registry-managed Evolve MCP server when available and fall back to the direct SSE URL otherwise
+- `mode = "registry"` is best when you want Evolve to be fully managed as a normal CUGA MCP tool
+- `mode = "direct"` is best when you are manually running an SSE Evolve server outside CUGA
+- If Evolve is unavailable, times out, or returns no guidance, CUGA continues normally
 - This integration is separate from the older `cuga start memory` namespace / tip workflow
 
 </details>
