@@ -452,10 +452,17 @@ if __name__ == "__main__":
 
 📚 **Documentation**: [SDK Guide](https://docs.cuga.dev/docs/sdk/cuga_agent/) | [Policies Guide](https://docs.cuga.dev/docs/sdk/policies/)
 
-### Knowledge Base (RAG)
+### Knowledge Base
 
-CUGA includes a built-in knowledge base powered by LangChain, Docling, and local vector stores.
-When enabled, the agent can search, ingest, and manage documents — no external services required.
+CUGA includes a built-in knowledge base powered by LangChain and local vector stores. **Docling** is integrated for document ingestion: it parses and normalizes PDFs, Office files, HTML, Markdown, images, and other supported types before chunking and embedding, so the pipeline stays self-contained with no external document services.
+
+When enabled, the agent can search, ingest, and manage documents.
+
+**Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
+
+```bash
+cuga start demo_knowledge
+```
 
 Knowledge is **enabled by default** via `settings.toml`. The SDK auto-injects knowledge tools
 and awareness into the agent, so it knows what documents are available and how to search them.
