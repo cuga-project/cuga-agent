@@ -1,9 +1,8 @@
 """
-Launch helper for the optional Evolve MCP server.
+Launch helper for the Evolve MCP server.
 
 This lets CUGA spawn Evolve through the existing MCP registry using a local
-command without hard-coding a vendored repo path. The `evolve` package still
-needs to be installed in the active environment.
+command.
 """
 
 from __future__ import annotations
@@ -41,12 +40,11 @@ def main() -> None:
         from evolve.frontend.mcp.mcp_server import mcp
     except ImportError as exc:  # pragma: no cover - exercised through manual startup
         print(
-            "Unable to import the optional 'evolve' package required for the Evolve MCP server.",
+            "Unable to import the required 'evolve' package for the Evolve MCP server.",
             file=sys.stderr,
         )
         print(
-            "Install the package first, for example by installing altk-evolve into the active environment, "
-            "then retry this command.",
+            "Ensure the active CUGA environment has the required Evolve dependency installed, then retry this command.",
             file=sys.stderr,
         )
         raise SystemExit(1) from exc

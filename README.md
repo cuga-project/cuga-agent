@@ -827,6 +827,7 @@ This flow is:
 - **Opt-in** - disabled by default
 - **Non-blocking** - Evolve failures do not fail the task
 - **CugaLite-focused** - enabled for lite mode by default
+- **Bundled as a required dependency** - standard CUGA installs include the `evolve` package
 
 ### Setup Steps:
 

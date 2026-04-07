@@ -52,7 +52,7 @@ const TOOL_TEMPLATES: ToolTemplate[] = [
       mcpMode: "command",
       command: "uv",
       argsText: "run\npython\n-m\ncuga.backend.evolve.mcp_server",
-      description: "Local Evolve MCP server for guideline lookup and trajectory saving. Requires the optional evolve package to be installed.",
+      description: "Local Evolve MCP server for guideline lookup and trajectory saving.",
       env: {
         EVOLVE_MODEL_NAME: "Azure/gpt-4o",
         OPENAI_API_KEY: "env://OPENAI_API_KEY", // pragma: allowlist secret
