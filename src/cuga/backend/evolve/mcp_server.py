@@ -37,14 +37,19 @@ def main() -> None:
     args = _build_parser().parse_args()
 
     try:
-        from evolve.frontend.mcp.mcp_server import mcp
+        try:
+            from altk_evolve.frontend.mcp.mcp_server import mcp
+        except ImportError:
+            # Fallback for local/dev module layouts that still expose `evolve`.
+            from evolve.frontend.mcp.mcp_server import mcp
     except ImportError as exc:  # pragma: no cover - exercised through manual startup
         print(
-            "Unable to import the required 'evolve' package for the Evolve MCP server.",
+            "Unable to import the required Evolve package for the Evolve MCP server.",
             file=sys.stderr,
         )
         print(
-            "Ensure the active CUGA environment has the required Evolve dependency installed, then retry this command.",
+            "Ensure the active CUGA environment has the required dependency installed "
+            "(PyPI package `altk-evolve`, import path `altk_evolve` or `evolve`), then retry this command.",
             file=sys.stderr,
         )
         raise SystemExit(1) from exc
