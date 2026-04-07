@@ -430,8 +430,11 @@ def setup_demo_manage_config(
     if reset_knowledge:
         try:
             from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+            from cuga.backend.knowledge.interprocess_lock import (
+                acquire_exclusive_nonblocking as _lock_acquire,
+                release_exclusive as _lock_release,
+            )
             from cuga.config import settings as _settings
-            import fcntl
             import re as _re
             import shutil
 
@@ -440,9 +443,9 @@ def setup_demo_manage_config(
 
             # Check flock to avoid deleting files from under a running server.
             lock_path = _kc.persist_dir / ".lock"
-            _lock_fd = open(lock_path, "w")
+            _lock_fd = open(lock_path, "w+b")
             try:
-                fcntl.flock(_lock_fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                _lock_acquire(_lock_fd)
             except OSError:
                 _lock_fd.close()
                 logger.error("Knowledge reset: another server is still running (holds .lock). Stop it first.")
@@ -484,7 +487,7 @@ def setup_demo_manage_config(
                     session_state.unlink()
                     logger.info("Knowledge reset: removed session_knowledge.json")
             finally:
-                fcntl.flock(_lock_fd, fcntl.LOCK_UN)
+                _lock_release(_lock_fd)
                 _lock_fd.close()
 
         except ImportError:

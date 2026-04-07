@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import asyncio
 import collections
-import fcntl
 import functools
 import ipaddress
 from loguru import logger as loguru_logger
@@ -32,6 +31,7 @@ from langchain_docling import DoclingLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
 from cuga.backend.knowledge.config import KnowledgeConfig, knowledge_vector_backend_for_settings
+from cuga.backend.knowledge.interprocess_lock import acquire_exclusive_nonblocking, release_exclusive
 from cuga.backend.knowledge.metadata import create_knowledge_metadata
 from cuga.backend.storage.facade import get_storage_connection_params
 from cuga.backend.knowledge.vector_store_base import VectorStoreAdapter
@@ -297,10 +297,10 @@ class KnowledgeEngine:
         config.persist_dir.mkdir(parents=True, exist_ok=True)
         self._files_dir.mkdir(parents=True, exist_ok=True)
 
-        # Single-writer lock (flock — race-free)
-        self._lock_file = open(config.persist_dir / ".lock", "w")
+        # Single-writer lock (flock / msvcrt — race-free)
+        self._lock_file = open(config.persist_dir / ".lock", "w+b")
         try:
-            fcntl.flock(self._lock_file, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            acquire_exclusive_nonblocking(self._lock_file)
         except OSError:
             self._lock_file.close()
             raise RuntimeError("Knowledge engine already running in another process. Start with --workers 1")
@@ -400,7 +400,7 @@ class KnowledgeEngine:
         for task in self._background_tasks:
             task.cancel()
         try:
-            fcntl.flock(self._lock_file, fcntl.LOCK_UN)
+            release_exclusive(self._lock_file)
             self._lock_file.close()
         except Exception:
             pass
