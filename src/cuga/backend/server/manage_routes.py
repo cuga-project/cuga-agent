@@ -1,6 +1,7 @@
 """Manage endpoints: draft config (auto-save) and publish (new version)."""
 
 import os
+from collections.abc import Mapping
 from typing import Any, Optional
 
 import httpx
@@ -961,7 +962,13 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         )
 
     try:
-        from cuga.backend.server.config_store import save_config, save_draft
+        from cuga.backend.server.config_store import (
+            load_config,
+            load_draft,
+            save_config,
+            save_draft,
+            update_published_config_at_version,
+        )
 
         data = await request.json()
         config = data.get("config", data)
@@ -977,9 +984,26 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         if not knowledge_cfg or not isinstance(knowledge_cfg, dict):
             from cuga.backend.knowledge.config import KnowledgeConfig as _KC
 
-            if engine and hasattr(engine, "config"):
-                knowledge_cfg = engine.config.to_dict()
-            else:
+            knowledge_cfg = None
+            if engine is not None:
+                eng_attr = getattr(engine, "config", None)
+                if eng_attr is not None:
+                    to_dict = getattr(eng_attr, "to_dict", None)
+                    if callable(to_dict):
+                        _snap = to_dict()
+                        if isinstance(_snap, dict):
+                            knowledge_cfg = _snap
+                    elif isinstance(eng_attr, dict):
+                        knowledge_cfg = dict(eng_attr)
+                if knowledge_cfg is None:
+                    for _getter in ("get_config", "get_knowledge_config"):
+                        _fn = getattr(engine, _getter, None)
+                        if callable(_fn):
+                            _cand = _fn()
+                            if isinstance(_cand, dict):
+                                knowledge_cfg = _cand
+                                break
+            if knowledge_cfg is None:
                 knowledge_cfg = _KC().to_dict()
             if config is None:
                 config = {}
@@ -1008,31 +1032,52 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 except (ValueError, TypeError) as ve:
                     raise HTTPException(status_code=400, detail=f"Invalid knowledge config: {ve}")
 
-        # Compute vector-config hash and embed it in the config before saving.
-        # This hash covers only fields that affect stored vectors (embedding
-        # model, chunk size, metric) so versions with identical vector settings
-        # share the same collection.
+        # Vector-config hash: fields that affect stored vectors (embedding model,
+        # chunk size, metric). When a file copy + reindex migration is required,
+        # the persisted _vector_config_hash stays at the previous value until
+        # that migration succeeds; see promotion after copy_source_files/reindex.
         from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
+        _prev_hash = ""
+        try:
+            _prev_config, _ = await load_config(version=None, agent_id=agent_id)
+            if _prev_config:
+                _prev_hash = (_prev_config.get("knowledge") or {}).get("_vector_config_hash", "")
+        except Exception:
+            pass
 
         try:
             _kb_obj = _KC.coerce_and_validate(knowledge_cfg)
             _vec_hash = _kb_obj.vector_config_hash()
         except Exception:
             _vec_hash = ""
+
+        import re as _re_coll
+
+        _san_id = _re_coll.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+        _new_collection = f"kb_agent_{_san_id}_{_vec_hash}" if _vec_hash else f"kb_agent_{_san_id}"
+        _old_collection = f"kb_agent_{_san_id}_{_prev_hash}" if _prev_hash else f"kb_agent_{_san_id}"
+
+        _migration_precheck_done = False
+        _defer_vector_hash_promotion = False
+        _target_docs_precheck = None
+        _old_docs_precheck = None
+
+        if engine and _vec_hash and _prev_hash != _vec_hash:
+            try:
+                _target_docs_precheck = await engine.list_documents(_new_collection)
+                _old_docs_precheck = await engine.list_documents(_old_collection)
+                _migration_precheck_done = True
+                if not _target_docs_precheck and _old_docs_precheck:
+                    _defer_vector_hash_promotion = True
+            except Exception as _pre_err:
+                logger.warning("Vector migration precheck failed: %s", _pre_err)
+
         if _vec_hash:
-            config["knowledge"]["_vector_config_hash"] = _vec_hash
-
-        # Capture previous config hash before saving the new version, so we
-        # can detect whether document migration is needed.
-        from cuga.backend.server.config_store import load_config as _load_cfg
-
-        _prev_hash = ""
-        try:
-            _prev_config, _ = await _load_cfg(version=None, agent_id=agent_id)
-            if _prev_config:
-                _prev_hash = (_prev_config.get("knowledge") or {}).get("_vector_config_hash", "")
-        except Exception:
-            pass
+            if _defer_vector_hash_promotion:
+                config["knowledge"]["_vector_config_hash"] = _prev_hash
+            else:
+                config["knowledge"]["_vector_config_hash"] = _vec_hash
 
         # Snapshot knowledge state for import/export portability.
         # Stores collection name, persist_dir, pinned collection config, and
@@ -1041,7 +1086,11 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         if engine:
             import re as _re_snap
 
-            _current_hash = _vec_hash or getattr(app_state, "knowledge_config_hash", "") or _prev_hash
+            _current_hash = (
+                (_prev_hash if _defer_vector_hash_promotion else _vec_hash)
+                or getattr(app_state, "knowledge_config_hash", "")
+                or _prev_hash
+            )
             _snap_id = _re_snap.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
             _snap_col = f"kb_agent_{_snap_id}_{_current_hash}" if _current_hash else f"kb_agent_{_snap_id}"
             try:
@@ -1049,8 +1098,8 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     "collection": _snap_col,
                     "persist_dir": str(engine._config.persist_dir),
                 }
-                _col_cfg = engine._metadata.get_collection_config(_snap_col)
-                if _col_cfg:
+                _col_cfg = await engine._metadata.get_collection_config(_snap_col)
+                if _col_cfg and (isinstance(_col_cfg, dict) or isinstance(_col_cfg, Mapping)):
                     _state["collection_config"] = {
                         "embedding_provider": _col_cfg.get("embedding_provider", ""),
                         "embedding_model": _col_cfg.get("embedding_model", ""),
@@ -1124,18 +1173,18 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 
         response_data: dict[str, Any] = {"status": "success", "version": ver, "agent_id": agent_id}
 
-        # Reindex / migration decision.
-        # Use hash-based collection name so different vector configs are isolated.
-        import re as _re
-
-        _san_id = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
         reindex_info = None
-        _new_collection = f"kb_agent_{_san_id}_{_vec_hash}" if _vec_hash else f"kb_agent_{_san_id}"
-        _old_collection = f"kb_agent_{_san_id}_{_prev_hash}" if _prev_hash else f"kb_agent_{_san_id}"
 
         if engine and _vec_hash and _prev_hash != _vec_hash:
             try:
-                target_docs = await engine.list_documents(_new_collection)
+                if (
+                    _migration_precheck_done
+                    and _target_docs_precheck is not None
+                    and _old_docs_precheck is not None
+                ):
+                    target_docs = _target_docs_precheck
+                else:
+                    target_docs = await engine.list_documents(_new_collection)
                 if target_docs:
                     logger.info(
                         "Knowledge config hash changed (%s -> %s) but target collection "
@@ -1145,7 +1194,10 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                         len(target_docs),
                     )
                 else:
-                    old_docs = await engine.list_documents(_old_collection)
+                    if _migration_precheck_done and _old_docs_precheck is not None:
+                        old_docs = _old_docs_precheck
+                    else:
+                        old_docs = await engine.list_documents(_old_collection)
                     if old_docs:
                         logger.info(
                             "Knowledge config hash changed (%s -> %s), migrating %d doc(s) to new collection",
@@ -1161,6 +1213,24 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                             reindex_info = {"status": "failed", "error": str(mig_err)}
             except Exception as e:
                 logger.warning("Failed to check docs for migration: %s", e)
+
+        if _defer_vector_hash_promotion and ver:
+            _promote_failed = reindex_info and reindex_info.get("status") == "failed"
+            if not _promote_failed and reindex_info is not None:
+                try:
+                    pub_cfg, _ = await load_config(version=ver, agent_id=agent_id)
+                    if pub_cfg and isinstance(pub_cfg.get("knowledge"), dict):
+                        pub_cfg["knowledge"]["_vector_config_hash"] = _vec_hash
+                        await update_published_config_at_version(pub_cfg, agent_id, ver)
+                    draft_for_hash = await load_draft(agent_id)
+                    if draft_for_hash and isinstance(draft_for_hash.get("knowledge"), dict):
+                        draft_for_hash["knowledge"]["_vector_config_hash"] = _vec_hash
+                        await save_draft(draft_for_hash, agent_id)
+                except Exception as promo_err:
+                    logger.warning(
+                        "Migrated knowledge files but failed to persist new _vector_config_hash: %s",
+                        promo_err,
+                    )
 
         if not reindex_info and knowledge_result and knowledge_result.get("reindex_recommended") and engine:
             try:

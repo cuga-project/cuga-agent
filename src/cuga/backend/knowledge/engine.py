@@ -632,12 +632,6 @@ class KnowledgeEngine:
                 )
                 return
 
-            if not skip_file_copy:
-                dest_dir = self._files_dir / collection
-                dest_dir.mkdir(parents=True, exist_ok=True)
-                dest = dest_dir / filename
-                await asyncio.to_thread(shutil.copy2, str(file_path), str(dest))
-
             docs = await asyncio.to_thread(self._load_document, file_path)
             if not docs:
                 raise ValueError(f"No content extracted from {filename}")
@@ -710,6 +704,22 @@ class KnowledgeEngine:
             if len(preview) > _PREVIEW_MAX_CHARS:
                 preview = preview[:_PREVIEW_MAX_CHARS].rsplit(" ", 1)[0] + "..."
             await self._metadata.add_document(collection, filename, chunk_count or len(docs), preview=preview)
+
+            if not skip_file_copy:
+                dest_dir = self._files_dir / collection
+                dest_dir.mkdir(parents=True, exist_ok=True)
+                dest = dest_dir / filename
+                if file_path.resolve() != dest.resolve():
+                    try:
+                        await asyncio.to_thread(shutil.copy2, str(file_path), str(dest))
+                    except Exception:
+                        if dest.exists():
+                            try:
+                                await asyncio.to_thread(dest.unlink)
+                            except OSError:
+                                pass
+                        raise
+
             await self._metadata.update_task(
                 task_id,
                 status="completed",
@@ -820,6 +830,7 @@ class KnowledgeEngine:
 
         max_redirects = 5
         current_url = url
+        fetch_result: tuple[str, bytes] | None = None
         async with httpx.AsyncClient(
             follow_redirects=False,
             timeout=30.0,
@@ -827,30 +838,41 @@ class KnowledgeEngine:
         ) as client:
             redirect_count = 0
             while True:
-                resp = await client.get(current_url, follow_redirects=False)
-                if resp.is_redirect:
-                    if redirect_count >= max_redirects:
-                        raise ValueError(f"Too many redirects (max {max_redirects})")
-                    location = resp.headers.get("location")
-                    if not location:
-                        raise ValueError("Redirect response missing Location header")
-                    next_url = urljoin(str(resp.url), location.strip())
-                    self._validate_url(next_url)
-                    current_url = next_url
-                    redirect_count += 1
-                    continue
-                break
-            resp.raise_for_status()
-            max_bytes = self._config.max_url_download_size_mb * 1024 * 1024
-            if len(resp.content) > max_bytes:
-                raise FileTooLargeError(len(resp.content), max_bytes)
+                async with client.stream("GET", current_url, follow_redirects=False) as resp:
+                    if resp.is_redirect:
+                        if redirect_count >= max_redirects:
+                            raise ValueError(f"Too many redirects (max {max_redirects})")
+                        location = resp.headers.get("location")
+                        if not location:
+                            raise ValueError("Redirect response missing Location header")
+                        next_url = urljoin(str(resp.url), location.strip())
+                        self._validate_url(next_url)
+                        current_url = next_url
+                        redirect_count += 1
+                        continue
+                    resp.raise_for_status()
+                    max_bytes = self._config.max_url_download_size_mb * 1024 * 1024
+                    total = 0
+                    buf = bytearray()
+                    async for chunk in resp.aiter_bytes(8192):
+                        n = len(chunk)
+                        total += n
+                        if total > max_bytes:
+                            raise FileTooLargeError(total, max_bytes)
+                        buf.extend(chunk)
+                    fetch_result = (str(resp.url), bytes(buf))
+                    break
 
-        parsed = urlparse(str(resp.url))
+        if fetch_result is None:
+            raise RuntimeError("URL download finished without a response body")
+        final_url, downloaded = fetch_result
+
+        parsed = urlparse(final_url)
         filename = _sanitize_filename(Path(parsed.path).name or "downloaded_page.html")
 
         # Write to temp file — kept alive until ingest completes (ingest is awaited)
         with tempfile.NamedTemporaryFile(suffix=f"_{filename}", delete=False) as tmp:
-            tmp.write(resp.content)
+            tmp.write(downloaded)
             tmp_path = Path(tmp.name)
 
         try:
@@ -1128,6 +1150,9 @@ class KnowledgeEngine:
         return self.commit_knowledge_update(prepared)
 
     # --- Settings ---
+
+    def get_knowledge_config(self) -> dict[str, Any]:
+        return self._config.to_dict()
 
     def get_settings(self) -> dict[str, Any]:
         from cuga.backend.knowledge.config import list_profiles

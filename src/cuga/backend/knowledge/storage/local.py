@@ -1,4 +1,4 @@
-"""Knowledge vectors using :class:`LocalEmbeddingStore` (sqlite-vec, same DB file as storage.local)."""
+"""Knowledge vectors using :class:`LocalEmbeddingStore` (sqlite-vec in ``knowledge_vectors.db`` under persist_dir)."""
 
 from __future__ import annotations
 

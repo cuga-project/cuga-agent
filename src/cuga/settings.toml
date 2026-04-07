@@ -64,7 +64,7 @@ pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and
 # | Data | local | prod |
 # |------|-------|------|
 # | Policy vectors | sqlite-vec in `[policy].policy_db_path` or `storage.local_db_path` (default `DBS_DIR/cuga.db`); table `[policy].collection_name` | `storage.postgres_url` (pgvector) |
-# | Knowledge vectors | same sqlite file, per-collection vec0 tables | `storage.postgres_url` (same stack as policy) |
+# | Knowledge vectors | `{knowledge.persist_dir}/knowledge_vectors.db` (vec0 tables per collection) | `storage.postgres_url` (same stack as policy) |
 # | Knowledge metadata (tasks, documents, collection_config, settings) | `{knowledge.persist_dir}/metadata.db` (default `<cwd>/.cuga/knowledge/`) | Postgres tables `cuga_knowledge_meta_*` on `storage.postgres_url` (uploaded **files** stay under `persist_dir/files/`) |
 #
 # Defaults: `DBS_DIR` = package `dbs/` or `CUGA_DBS_DIR`. Override `knowledge.persist_dir` in knowledge_settings.toml.

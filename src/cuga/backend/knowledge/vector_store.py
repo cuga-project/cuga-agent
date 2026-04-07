@@ -18,6 +18,11 @@ from cuga.backend.knowledge.vector_store_base import VectorStoreAdapter
 
 logger = loguru_logger
 
+# Local knowledge embeddings: single sqlite-vec file under ``knowledge.persist_dir``
+# (default ``<cwd>/.cuga/knowledge``), not ``storage.local_db_path`` — so config resets
+# that delete ``cuga.db`` do not wipe RAG vectors.
+KNOWLEDGE_LOCAL_VECTORS_DB = "knowledge_vectors.db"
+
 
 def create_vector_store(
     backend: str,
@@ -34,15 +39,16 @@ def create_vector_store(
         backend: ``storage_local`` or ``storage_prod``.
         collection: Table/collection name.
         embeddings: LangChain embeddings.
-        persist_dir: Unused; kept for API stability.
+        persist_dir: For ``storage_local``, directory containing ``knowledge_vectors.db``
+            (sqlite-vec). Defaults to ``Path.cwd() / ".cuga" / "knowledge"`` via ``KnowledgeConfig``.
         metric_type: Unused; kept for API stability.
         pgvector_connection_string: Optional Postgres URL for ``storage_prod`` when
             ``storage.postgres_url`` is not set (legacy ``knowledge.pgvector_connection_string``).
     """
     if backend == "storage_local":
-        from cuga.backend.storage.facade import get_storage_connection_params
-
-        _mode, local_path, _pg = get_storage_connection_params()
+        persist_dir = Path(persist_dir)
+        persist_dir.mkdir(parents=True, exist_ok=True)
+        local_path = str(persist_dir / KNOWLEDGE_LOCAL_VECTORS_DB)
         from cuga.backend.knowledge.storage.local import create_storage_local_knowledge_store
 
         adapter = create_storage_local_knowledge_store(collection, embeddings, local_path)

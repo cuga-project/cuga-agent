@@ -3,7 +3,7 @@ enabled = false
 agent_level_enabled = true
 session_level_enabled = true
 persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
-# Vectors + metadata tables follow [storage].mode in settings.toml (local: sqlite / prod: Postgres).
+# Local: vectors in persist_dir/knowledge_vectors.db; metadata in persist_dir/metadata.db. Prod: storage.postgres_url.
 # Uploaded source files always remain under persist_dir/files/ (filesystem).
 
 [knowledge.embeddings]
