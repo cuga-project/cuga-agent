@@ -90,6 +90,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.direct_langchain_tools_provider imp
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -1139,6 +1140,7 @@ class CugaAgent:
         cuga_folder: Path to .cuga folder containing policy markdown files (default: ".cuga")
         auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke/stream
         filesystem_sync: If True, automatically saves policies to .cuga folder when added/updated (default: True)
+        enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
 
     Attributes:
         graph: The underlying LangGraph StateGraph (compiled)
@@ -1206,6 +1208,7 @@ class CugaAgent:
         auto_load_policies: Optional[bool] = None,
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
+        enable_knowledge: Optional[bool] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1221,6 +1224,7 @@ class CugaAgent:
             auto_load_policies: If True, automatically loads policies from cuga_folder
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
+            enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
 
         Example with tool approval policy:
             ```python
@@ -1264,6 +1268,9 @@ class CugaAgent:
         )
         self._reset_policy_storage = reset_policy_storage
 
+        # Knowledge configuration
+        self._enable_knowledge = enable_knowledge  # None = auto from settings
+
         # Setup tool provider
         if tool_provider:
             self.tool_provider = tool_provider
@@ -1275,6 +1282,9 @@ class CugaAgent:
             self.tool_provider = DirectLangChainToolsProvider(tools=[], app_name="runtime_tools")
             logger.warning("No tools provided - agent will have limited capabilities")
 
+        # Track knowledge auto-injection (lazy — runs on first graph build)
+        self._knowledge_auto_injected = False
+
         # Initialize model
         if not self._model:
             from cuga.config import settings
@@ -1285,6 +1295,9 @@ class CugaAgent:
 
         # Initialize policies manager (cached instance)
         self._policies_manager = None
+
+        # Initialize knowledge manager (cached instance)
+        self._knowledge_client = None
 
     async def initialize(self):
         """
@@ -1320,6 +1333,37 @@ class CugaAgent:
         """Ensure tool provider is initialized."""
         if not hasattr(self.tool_provider, 'initialized') or not self.tool_provider.initialized:
             await self.tool_provider.initialize()
+
+        # Auto-inject knowledge tools (lazy, once, deduplicated)
+        if not self._knowledge_auto_injected:
+            try:
+                from cuga.backend.knowledge.config import KnowledgeConfig
+                from cuga.config import settings
+
+                # Determine if knowledge is enabled: explicit param > settings
+                if self._enable_knowledge is not None:
+                    kb_enabled = self._enable_knowledge
+                else:
+                    kb_config = KnowledgeConfig.from_settings(settings)
+                    kb_enabled = kb_config.enabled
+
+                if kb_enabled and isinstance(self.tool_provider, DirectLangChainToolsProvider):
+                    existing_names = {t.name for t in self.tool_provider.tools}
+                    knowledge_tools = self.knowledge.get_langchain_tools()
+                    new_tools = [t for t in knowledge_tools if t.name not in existing_names]
+                    if new_tools:
+                        self.tool_provider.add_tools(new_tools)
+                        logger.info(f"Auto-injected {len(new_tools)} knowledge tools into SDK agent")
+                # Mark success only after injection completes (or knowledge disabled)
+                self._knowledge_auto_injected = True
+            except Exception as e:
+                # Don't set flag — retry on next call
+                logger.warning(f"Knowledge auto-injection failed (will retry): {e}")
+
+    def _inject_knowledge_to_config(self, run_config: dict) -> None:
+        """Add knowledge engine to configurable for awareness injection."""
+        if self._knowledge_client is not None:
+            run_config["configurable"]["knowledge_engine"] = self._knowledge_client._engine
 
     def _create_graph(self, thread_id: Optional[str] = None):
         """Create the LangGraph graph with HITL support."""
@@ -1508,6 +1552,48 @@ class CugaAgent:
         return self._policies_manager
 
     @property
+    def knowledge(self):
+        """Access knowledge base operations via KnowledgeClient."""
+        if not hasattr(self, '_knowledge_client') or self._knowledge_client is None:
+            from cuga.backend.knowledge.client import KnowledgeClient
+            from cuga.backend.knowledge.engine import KnowledgeEngine
+            from cuga.backend.knowledge.config import KnowledgeConfig
+            from cuga.config import settings
+
+            config = KnowledgeConfig.from_settings(settings)
+            engine = KnowledgeEngine(config)
+            # Use agent_id from app_state if running in server, else "cuga-default"
+            _agent_id = "cuga-default"
+            try:
+                from cuga.backend.server.main import app as _app
+
+                _as = getattr(_app.state, "app_state", None)
+                _agent_id = getattr(_as, "agent_id", "cuga-default") if _as else "cuga-default"
+            except Exception:
+                pass
+            self._knowledge_client = KnowledgeClient(engine, default_agent_id=_agent_id)
+        return self._knowledge_client
+
+    async def aclose(self) -> None:
+        """Close resources held by the agent (e.g. knowledge client).
+
+        Should be called when the agent is no longer needed in long-lived
+        processes to avoid leaking connections.
+
+        Example:
+            ```python
+            agent = CugaAgent(tools=[my_tool])
+            try:
+                result = await agent.invoke("Hello")
+            finally:
+                await agent.aclose()
+            ```
+        """
+        if self._knowledge_client is not None:
+            await self._knowledge_client.close()
+            self._knowledge_client = None
+
+    @property
     def graph(self):
         """
         Get the underlying LangGraph StateGraph (compiled).
@@ -1666,6 +1752,9 @@ class CugaAgent:
             if self._policy_system:
                 run_config["configurable"]["policy_system"] = self._policy_system
 
+            # Add knowledge engine for awareness injection
+            self._inject_knowledge_to_config(run_config)
+
             # Add callbacks to config (both top-level and configurable for nodes)
 
             # If action_response provided, update state with it
@@ -1805,6 +1894,9 @@ class CugaAgent:
                 f"Added {len(self._callbacks)} callback(s) to config: {[type(cb).__name__ for cb in self._callbacks]}"
             )
 
+        # Add knowledge engine for awareness injection
+        self._inject_knowledge_to_config(run_config)
+
         # Invoke the graph
         total_messages = len(initial_state_pydantic.chat_messages or [])
         logger.debug(f"Invoking agent with {total_messages} total message(s) in conversation")
@@ -1915,6 +2007,9 @@ class CugaAgent:
                 run_config["callbacks"] = self._callbacks
                 run_config["configurable"]["callbacks"] = self._callbacks
 
+            # Add knowledge engine for awareness injection
+            self._inject_knowledge_to_config(run_config)
+
             # If action_response provided, update state with it
             if action_response:
                 self.graph.update_state(run_config, {"hitl_response": action_response})
@@ -1963,6 +2058,9 @@ class CugaAgent:
         if self._callbacks:
             run_config["callbacks"] = self._callbacks
             run_config["configurable"]["callbacks"] = self._callbacks
+
+        # Add knowledge engine for awareness injection
+        self._inject_knowledge_to_config(run_config)
 
         # Stream the graph with subgraph updates enabled
         logger.debug(f"Streaming agent with {len(messages)} messages")

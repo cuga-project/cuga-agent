@@ -18,14 +18,17 @@ export function ConfigHeader({
   useEffect(() => {
     api.getAgentContext()
       .then((res) => (res.ok ? res.json() : null))
-      .then(
-        (data) =>
-          data &&
+      .then((data) => {
+        if (data) {
+          const agentId = data.agent_id ?? "cuga-default";
           setAgentContext({
-            agent_id: data.agent_id ?? "cuga-default",
+            agent_id: agentId,
             config_version: data.config_version ?? null,
-          })
-      )
+          });
+          // Set agent ID for knowledge API calls
+          api.setKnowledgeAgentId(agentId);
+        }
+      })
       .catch(() => {});
   }, []);
 

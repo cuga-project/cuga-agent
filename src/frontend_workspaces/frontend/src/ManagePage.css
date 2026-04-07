@@ -612,3 +612,27 @@
   max-width: 100%;
   box-sizing: border-box;
 }
+
+/* Knowledge accordion section */
+.manage-knowledge-status {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.manage-knowledge-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.manage-knowledge-group-title {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--cds-text-secondary, #525252);
+  padding-top: 0.5rem;
+  border-top: 1px solid var(--cds-border-subtle, #e0e0e0);
+}

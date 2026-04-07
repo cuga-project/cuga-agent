@@ -46,6 +46,7 @@ RUN microdnf install -y \
         libxcb \
         libxkbcommon \
         mesa-libgbm \
+        mesa-libGL \
         nspr \
         nss \
         nss-util \
@@ -61,7 +62,10 @@ ENV PATH="/usr/local/bin:$PATH"
 
 WORKDIR /app
 
-RUN mkdir -p /app/cuga_workspace /app/crm_tmp /data/dbs && chown -R 1001:0 /data
+# 1001:0 matches USER 1001; g+rwX lets OpenShift's arbitrary UID run with GID 0 (typical restricted SCC).
+RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs && \
+    chown -R 1001:0 /data /app/.cuga && \
+    chmod -R g+rwX /app/.cuga
 
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/.venv /app/.venv
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/.playwright /app/.playwright

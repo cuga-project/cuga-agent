@@ -38,9 +38,10 @@ interface LeftSidebarProps {
   activeTab?: "conversations" | "variables" | "savedflows";
   onTabChange?: (tab: "conversations" | "variables" | "savedflows") => void;
   leftSidebarRef?: React.RefObject<{ addConversation: (title: string) => void }>;
+  onSelectConversation?: (threadId: string) => void;
 }
 
-const ENABLE_CHAT_HISTORY = false;
+const ENABLE_CHAT_HISTORY = true;
 const ENABLE_SAVED_FLOWS = false;
 
 export function LeftSidebar({
@@ -51,7 +52,8 @@ export function LeftSidebar({
   isCollapsed = false,
   activeTab = "conversations",
   onTabChange,
-  leftSidebarRef
+  leftSidebarRef,
+  onSelectConversation
 }: LeftSidebarProps) {
   const [isExpanded, setIsExpanded] = useState(!isCollapsed);
 
@@ -274,7 +276,7 @@ export function LeftSidebar({
                   <div
                     key={conv.id}
                     className={`conversation-item ${selectedConversation === conv.id ? "selected" : ""}`}
-                    onClick={() => setSelectedConversation(conv.id)}
+                    onClick={() => { setSelectedConversation(conv.id); onSelectConversation?.(conv.id); }}
                   >
                     <div className="conversation-header">
                       <MessageSquare size={14} />

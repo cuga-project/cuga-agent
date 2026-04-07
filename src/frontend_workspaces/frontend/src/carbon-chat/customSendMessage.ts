@@ -26,6 +26,7 @@ import {
 } from "./carbonChatHelpers";
 
 import * as api from "../api";
+import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowledgeAttachments";
 
 // Import thread ID management from CarbonChat
 import { getOrCreateThreadId, generateUUID } from './CarbonChat';
@@ -112,6 +113,7 @@ export async function customSendMessage(
   useDraft: boolean = false,
   disableHistory: boolean = false,
   actionResponse?: any,
+  attachmentSnapshot?: KnowledgeAttachmentSnapshot[],
 ) {
   const userMessage = request.input.text?.trim() ?? "";
   
@@ -169,12 +171,13 @@ export async function customSendMessage(
       headers["X-Disable-History"] = "true";
     }
     
-    const body = actionResponse
-      ? JSON.stringify(actionResponse)
-      : JSON.stringify({ query: userMessage });
-    
     const response = await api.postStream(
-      actionResponse || { query: userMessage },
+      actionResponse || {
+        query: userMessage,
+        ...(attachmentSnapshot && attachmentSnapshot.length > 0
+          ? { attachments: attachmentSnapshot }
+          : {}),
+      },
       {
         threadId,
         useDraft,

@@ -1,17 +1,12 @@
 import React, { useState, useEffect, useCallback } from "react";
 import * as api from "./api";
 import { ConfigHeader } from "./ConfigHeader";
-import CarbonChat from "./carbon-chat/CarbonChat";
+import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
 import {
   IconButton,
   Tag,
   TreeView,
   TreeNode,
-  Tabs,
-  Tab,
-  TabList,
-  TabPanels,
-  TabPanel,
   ComposedModal,
   ModalHeader,
   ModalBody,
@@ -26,7 +21,7 @@ import {
   TrashCan,
   Folder,
   FolderOpen,
-  Debug,
+  Settings,
   Application,
   ChevronRight,
   DocumentBlank,
@@ -38,6 +33,8 @@ import {
   ChevronUp,
   Download,
 } from "@carbon/icons-react";
+import { KnowledgeSidePanel } from "agentic_chat/KnowledgeSidePanel";
+import type { SessionAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
 import "./ChatLanding.css";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -91,6 +88,48 @@ interface HomescreenConfig {
   greeting?: string;
   starters?: string[];
 }
+
+type RightPanelSection = "configuration" | "workspace" | "knowledge";
+
+interface DraftThreadState {
+  threadId: string;
+  hasSentFirstMessage: boolean;
+  updatedAt: string;
+}
+
+interface KnowledgePreviewModalState {
+  attachment: SessionAttachmentSnapshot;
+  content?: string;
+  downloadUrl: string;
+  isPdf: boolean;
+}
+
+const RIGHT_PANEL_META: Record<
+  RightPanelSection,
+  { title: string; subtitle: string; icon: React.ElementType; badgeClass: string; ariaLabel: string }
+> = {
+  configuration: {
+    title: "Configuration",
+    subtitle: "Apps and tools available to this agent",
+    icon: Settings,
+    badgeClass: "agent-section-badge--configuration",
+    ariaLabel: "Configuration section",
+  },
+  workspace: {
+    title: "Workspace",
+    subtitle: "Files available in the current workspace",
+    icon: Folder,
+    badgeClass: "agent-section-badge--workspace",
+    ariaLabel: "Workspace section",
+  },
+  knowledge: {
+    title: "Knowledge",
+    subtitle: "Agent and conversation documents for retrieval",
+    icon: DocumentBlank,
+    badgeClass: "agent-section-badge--knowledge",
+    ariaLabel: "Knowledge section",
+  },
+};
 
 // ─── Mock data ────────────────────────────────────────────────────────────────
 
@@ -150,6 +189,7 @@ const MOCK_AGENT_CONFIG: AgentConfig = {
 
 const BP_HIDE_RIGHT = 1100; // px — hide right panel below this
 const BP_HIDE_LEFT = 768; // px — hide left panel below this
+const DRAFT_THREAD_STORAGE_KEY = "cuga-demo-draft-thread";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -177,6 +217,44 @@ const truncateText = (text: string, maxLength: number = 100): string => {
 };
 
 const TEXT_EXTENSIONS = [".txt", ".md", ".json", ".yaml", ".yml", ".log", ".csv", ".html", ".css", ".js", ".ts", ".py"];
+
+const createDraftThreadState = (): DraftThreadState => ({
+  threadId: generateUUID(),
+  hasSentFirstMessage: false,
+  updatedAt: new Date().toISOString(),
+});
+
+const loadDraftThreadState = (): DraftThreadState | null => {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(DRAFT_THREAD_STORAGE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as Partial<DraftThreadState>;
+    if (typeof parsed.threadId !== "string" || !parsed.threadId || parsed.hasSentFirstMessage === true) {
+      window.sessionStorage.removeItem(DRAFT_THREAD_STORAGE_KEY);
+      return null;
+    }
+    return {
+      threadId: parsed.threadId,
+      hasSentFirstMessage: false,
+      updatedAt: typeof parsed.updatedAt === "string" ? parsed.updatedAt : new Date().toISOString(),
+    };
+  } catch (error) {
+    console.error("Failed to restore draft thread state:", error);
+    window.sessionStorage.removeItem(DRAFT_THREAD_STORAGE_KEY);
+    return null;
+  }
+};
+
+const persistDraftThreadState = (draftThread: DraftThreadState) => {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.setItem(DRAFT_THREAD_STORAGE_KEY, JSON.stringify(draftThread));
+};
+
+const clearDraftThreadState = () => {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.removeItem(DRAFT_THREAD_STORAGE_KEY);
+};
 
 // ─── Inline style constants ───────────────────────────────────────────────────
 
@@ -221,13 +299,20 @@ const LEFT_W = "22rem";
 const RIGHT_W = "26rem";
 
 export function ChatLanding() {
+  const [draftThread, setDraftThread] = useState<DraftThreadState>(() => loadDraftThreadState() ?? createDraftThreadState());
   const [windowW, setWindowW] = useState(window.innerWidth);
   const [leftOpen, setLeftOpen] = useState(true);
   const [rightOpen, setRightOpen] = useState(true);
   const [threads, setThreads] = useState<ConversationThread[]>([]);
   const [loading, setLoading] = useState(true);
   const [selectedThreadId, setSelectedThreadId] = useState<string | null>(null);
-  const [activeThreadId, setActiveThreadId] = useState<string | null>(null);
+  const [activeThreadId, setActiveThreadId] = useState<string>(draftThread.threadId);
+  const [rightSection, setRightSection] = useState<RightPanelSection>("workspace");
+  const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
+  const [knowledgeEnabled, setKnowledgeEnabled] = useState(false);
+  const [agentKnowledgeEnabled, setAgentKnowledgeEnabled] = useState(false);
+  const [sessionKnowledgeEnabled, setSessionKnowledgeEnabled] = useState(false);
+  const [sessionDocsVersion, setSessionDocsVersion] = useState(0);
   const [agentConfig, setAgentConfig] = useState<AgentConfig>(MOCK_AGENT_CONFIG);
   const [homescreenConfig, setHomescreenConfig] = useState<HomescreenConfig | undefined>(undefined);
   const [configLoading, setConfigLoading] = useState(true);
@@ -236,6 +321,15 @@ export function ChatLanding() {
   const [workspaceTree, setWorkspaceTree] = useState<FileNode[]>([]);
   const [workspaceTreeLoading, setWorkspaceTreeLoading] = useState(true);
   const [fileModal, setFileModal] = useState<{ path: string; content: string; name: string } | null>(null);
+  const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<KnowledgePreviewModalState | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (knowledgePreviewModal?.downloadUrl) {
+        URL.revokeObjectURL(knowledgePreviewModal.downloadUrl);
+      }
+    };
+  }, [knowledgePreviewModal]);
 
   // ── Responsive: auto-collapse on small screens ──────────────────────────────
   useEffect(() => {
@@ -270,6 +364,82 @@ export function ChatLanding() {
     setToastNotifications((prev) => prev.filter((t) => t.id !== id));
   }, []);
 
+  const currentChatThreadId = activeThreadId;
+
+  const refreshKnowledgeDocCount = useCallback(
+    async (threadId: string) => {
+      if (!knowledgeEnabled || (!agentKnowledgeEnabled && !sessionKnowledgeEnabled)) {
+        setKnowledgeDocCount(0);
+        return;
+      }
+      try {
+        const [agentDocsResponse, sessionDocsResponse] = await Promise.all([
+          agentKnowledgeEnabled ? api.listKnowledgeDocuments() : Promise.resolve(null),
+          sessionKnowledgeEnabled ? api.listSessionKnowledgeDocuments(threadId) : Promise.resolve(null),
+        ]);
+
+        const agentDocs = agentDocsResponse && agentDocsResponse.ok
+          ? (((await agentDocsResponse.json()).documents ?? []) as Array<unknown>)
+          : [];
+        const sessionDocs = sessionDocsResponse && sessionDocsResponse.ok
+          ? (((await sessionDocsResponse.json()).documents ?? []) as Array<unknown>)
+          : [];
+
+        setKnowledgeDocCount(agentDocs.length + sessionDocs.length);
+      } catch (error) {
+        console.error("Failed to refresh knowledge doc count:", error);
+      }
+    },
+    [agentKnowledgeEnabled, knowledgeEnabled, sessionKnowledgeEnabled],
+  );
+
+  useEffect(() => {
+    if (!draftThread.hasSentFirstMessage && selectedThreadId == null) {
+      persistDraftThreadState(draftThread);
+      return;
+    }
+    clearDraftThreadState();
+  }, [draftThread, selectedThreadId]);
+
+  useEffect(() => {
+    if (selectedThreadId == null) {
+      setActiveThreadId(draftThread.threadId);
+    }
+  }, [draftThread.threadId, selectedThreadId]);
+
+  useEffect(() => {
+    void refreshKnowledgeDocCount(currentChatThreadId);
+  }, [currentChatThreadId, refreshKnowledgeDocCount, sessionDocsVersion]);
+
+  const handleSessionDocsChanged = useCallback(() => {
+    setSessionDocsVersion((version) => version + 1);
+  }, []);
+
+  const createAndActivateDraftThread = useCallback(() => {
+    const nextDraft = createDraftThreadState();
+    setDraftThread(nextDraft);
+    setSelectedThreadId(null);
+    setActiveThreadId(nextDraft.threadId);
+    setSessionDocsVersion((version) => version + 1);
+    return nextDraft;
+  }, []);
+
+  const clearDraftSessionFiles = useCallback(
+    async (threadId: string) => {
+      try {
+        const res = await api.deleteSessionKnowledgeCollection(threadId);
+        if (!res.ok) {
+          console.error(`Failed to delete session knowledge collection for draft ${threadId}:`, res.statusText);
+          addToast("warning", "Draft cleanup incomplete", "The draft knowledge collection could not be removed.");
+        }
+      } catch (error) {
+        console.error("Failed to clear draft session knowledge collection:", error);
+        addToast("warning", "Draft cleanup incomplete", "The draft knowledge collection could not be removed.");
+      }
+    },
+    [addToast],
+  );
+
   // ── Thread helpers ──────────────────────────────────────────────────────────
   const refreshThreads = useCallback(async () => {
     try {
@@ -283,23 +453,36 @@ export function ChatLanding() {
   const handleThreadChange = useCallback(
     async (threadId: string) => {
       setActiveThreadId(threadId);
+      if (!draftThread.hasSentFirstMessage && threadId === draftThread.threadId) {
+        setDraftThread((prev) => ({
+          ...prev,
+          hasSentFirstMessage: true,
+          updatedAt: new Date().toISOString(),
+        }));
+      }
       if (threadId !== selectedThreadId) {
         setSelectedThreadId(threadId);
         setTimeout(refreshThreads, 500);
       }
     },
-    [selectedThreadId, refreshThreads],
+    [draftThread.hasSentFirstMessage, draftThread.threadId, selectedThreadId, refreshThreads],
   );
+
+  const handleSelectThread = useCallback((threadId: string) => {
+    setSelectedThreadId(threadId);
+  }, []);
 
   const handleRemoveAll = async () => {
     if (!window.confirm("Remove all conversations? This cannot be undone.")) return;
     try {
+      if (!draftThread.hasSentFirstMessage) {
+        await clearDraftSessionFiles(draftThread.threadId);
+      }
       await Promise.all(
         threads.map((t) => api.deleteConversation(t.thread_id)),
       );
       setThreads([]);
-      setSelectedThreadId(null);
-      setActiveThreadId(null);
+      createAndActivateDraftThread();
     } catch (err) {
       console.error(err);
       alert("Failed to remove conversations.");
@@ -328,6 +511,24 @@ export function ChatLanding() {
           const contextData = await contextRes.json();
           agentIdFallback = contextData.agent_id ?? agentIdFallback;
           configVersion = contextData.config_version ?? null;
+          const kEnabled = contextData.knowledge_enabled ?? false;
+          const agentKEnabled = contextData.agent_level_knowledge_enabled ?? false;
+          const sessionKEnabled = contextData.session_level_knowledge_enabled ?? false;
+          setKnowledgeEnabled(kEnabled);
+          setAgentKnowledgeEnabled(agentKEnabled);
+          setSessionKnowledgeEnabled(sessionKEnabled);
+          api.setKnowledgeAgentId(agentIdFallback);
+
+          // Eagerly fetch doc count so it's available on first render.
+          if (kEnabled && agentKEnabled) {
+            try {
+              const docsRes = await api.listKnowledgeDocuments();
+              if (docsRes.ok) {
+                const docsData = await docsRes.json();
+                setKnowledgeDocCount((docsData.documents ?? []).length);
+              }
+            } catch { /* will be retried by refreshKnowledgeDocCount effect */ }
+          }
         }
 
         let manageData: { config?: { agent?: { name?: string; description?: string }; homescreen?: { isOn?: boolean; greeting?: string; starters?: string[] } } } | null = null;
@@ -385,6 +586,23 @@ export function ChatLanding() {
         } else {
           const errorMsg = `Failed to load tools list (${toolsListRes.status} ${toolsListRes.statusText})`;
           addToast("warning", "Tools Load Warning", errorMsg);
+        }
+
+        if (manageRes.ok && manageData) {
+          const hs = manageData.config?.homescreen;
+          const knowledgeConfig = (manageData as any).config?.knowledge;
+          if (hs && typeof hs === "object") {
+            setHomescreenConfig({
+              isOn: hs.isOn ?? true,
+              greeting: hs.greeting,
+              starters: Array.isArray(hs.starters) ? hs.starters.slice(0, 4) : undefined,
+            });
+          }
+          if (knowledgeConfig && typeof knowledgeConfig === "object") {
+            setKnowledgeEnabled(knowledgeConfig.enabled ?? false);
+            setAgentKnowledgeEnabled(knowledgeConfig.agent_level_enabled ?? false);
+            setSessionKnowledgeEnabled(knowledgeConfig.session_level_enabled ?? false);
+          }
         }
 
         const config: AgentConfig = {
@@ -470,6 +688,62 @@ export function ChatLanding() {
     }
   }, [addToast]);
 
+  const closeKnowledgePreviewModal = useCallback(() => {
+    setKnowledgePreviewModal((current) => {
+      if (current?.downloadUrl) {
+        URL.revokeObjectURL(current.downloadUrl);
+      }
+      return null;
+    });
+  }, []);
+
+  const handlePreviewKnowledgeAttachment = useCallback(async (attachment: SessionAttachmentSnapshot) => {
+    try {
+      const response = await api.getKnowledgeDocumentFile(
+        attachment.scope,
+        attachment.knowledge_filename,
+        attachment.scope === "session" ? currentChatThreadId : undefined,
+      );
+      if (!response.ok) {
+        addToast("error", "Preview unavailable", response.statusText || "Failed to load attachment.");
+        return;
+      }
+
+      const blob = await response.blob();
+      const lowerName = attachment.display_name.toLowerCase();
+      const downloadUrl = URL.createObjectURL(blob);
+
+      if (lowerName.endsWith(".pdf")) {
+        setKnowledgePreviewModal({
+          attachment,
+          downloadUrl,
+          isPdf: true,
+        });
+        return;
+      }
+
+      const isTextFile = TEXT_EXTENSIONS.some((ext) => lowerName.endsWith(ext));
+      if (isTextFile) {
+        const content = await blob.text();
+        setKnowledgePreviewModal({
+          attachment,
+          content,
+          downloadUrl,
+          isPdf: false,
+        });
+        return;
+      }
+
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.download = attachment.display_name;
+      anchor.click();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      addToast("error", "Preview unavailable", error instanceof Error ? error.message : "Unknown error");
+    }
+  }, [addToast, currentChatThreadId]);
+
   const renderFileNode = useCallback(
     (node: FileNode) => (
       <TreeNode
@@ -501,25 +775,54 @@ export function ChatLanding() {
   );
 
   const handleToggleLeft = () => canShowLeft && setLeftOpen((v) => !v);
-  const handleToggleWorkspace = () => canShowRight && setRightOpen((v) => !v);
+  const handleToggleWorkspace = () => {
+    if (!canShowRight) return;
+    setRightSection("workspace");
+    setRightOpen(true);
+  };
+  const handleToggleKnowledge = () => {
+    if (!canShowRight) return;
+    setRightSection("knowledge");
+    setRightOpen(true);
+  };
+  const handleToggleConfiguration = () => {
+    if (!canShowRight) return;
+    setRightSection("configuration");
+    setRightOpen(true);
+  };
+  const activeKnowledgeThreadId = currentChatThreadId;
+  const sectionCounts: Record<RightPanelSection, number> = {
+    configuration: totalTools,
+    workspace: workspaceTree.length,
+    knowledge: knowledgeDocCount,
+  };
+  const activeSectionMeta = RIGHT_PANEL_META[rightSection];
+  const ActiveSectionIcon = activeSectionMeta.icon;
 
   return (
     <div className="chat-landing">
-      <ConfigHeader
-        onToggleLeftSidebar={handleToggleLeft}
-        onToggleWorkspace={handleToggleWorkspace}
-        leftSidebarCollapsed={!leftOpen}
-        workspaceOpen={rightOpen}
-      />
+        <ConfigHeader
+          onToggleLeftSidebar={handleToggleLeft}
+          onToggleWorkspace={handleToggleWorkspace}
+          leftSidebarCollapsed={!leftOpen}
+          workspaceOpen={rightOpen}
+        />
 
       {/* ── Full-width chat — panels float on top ─────────────────────────── */}
       <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
         <CarbonChat
           contained={true}
-          threadId={selectedThreadId}
+          threadId={selectedThreadId ?? currentChatThreadId}
+          attachmentScope="session"
+          knowledgeEnabled={knowledgeEnabled}
+          sessionKnowledgeEnabled={sessionKnowledgeEnabled}
           isReadonly={selectedThreadId != null && selectedThreadId !== activeThreadId}
           onThreadChange={handleThreadChange}
           homescreen={homescreenConfig}
+          sessionDocsVersion={sessionDocsVersion}
+          onSessionDocsChanged={handleSessionDocsChanged}
+          onOpenKnowledge={handleToggleKnowledge}
+          onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
         />
       </div>
 
@@ -548,9 +851,11 @@ export function ChatLanding() {
                   label="New conversation"
                   kind="ghost"
                   size="sm"
-                  onClick={() => {
-                    setSelectedThreadId(null);
-                    setActiveThreadId(null);
+                  onClick={async () => {
+                    if (!draftThread.hasSentFirstMessage) {
+                      await clearDraftSessionFiles(draftThread.threadId);
+                    }
+                    createAndActivateDraftThread();
                   }}
                 >
                   <Add />
@@ -570,11 +875,11 @@ export function ChatLanding() {
               </div>
             </div>
 
-            {selectedThreadId && (
+            {currentChatThreadId && (
               <div style={{ marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.375rem" }}>
                 <Time size={12} style={{ color: "var(--cds-text-secondary)" }} />
                 <code style={{ fontSize: "0.6rem", color: "var(--cds-text-secondary)", fontFamily: "monospace" }}>
-                  {selectedThreadId}
+                  {currentChatThreadId}
                 </code>
               </div>
             )}
@@ -606,7 +911,7 @@ export function ChatLanding() {
                 return (
                   <button
                     key={thread.thread_id}
-                    onClick={() => setSelectedThreadId(thread.thread_id)}
+                    onClick={() => handleSelectThread(thread.thread_id)}
                     style={{
                       display: "block",
                       width: "100%",
@@ -700,32 +1005,55 @@ export function ChatLanding() {
             </div>
           </div>
 
-          {/* Tabs */}
-          <Tabs style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}>
-            <TabList aria-label="Agent panel tabs" style={{ flexShrink: 0 }}>
-              <Tab>
-                <span style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
-                  <Debug size={14} />
-                  Configuration
-                  <Tag type="teal" size="sm" style={{ marginLeft: "0.25rem" }}>
-                    {totalTools}
-                  </Tag>
-                </span>
-              </Tab>
-              <Tab>
-                <span style={{ display: "flex", alignItems: "center", gap: "0.375rem" }}>
-                  <Folder size={14} />
-                  Workspace
-                  <Tag type="blue" size="sm" style={{ marginLeft: "0.25rem" }}>
-                    {workspaceTree.length}
-                  </Tag>
-                </span>
-              </Tab>
-            </TabList>
+          <div
+            className="agent-info-panel"
+            style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}
+          >
+            <div className="agent-section-switcher">
+              {(["configuration", "workspace", "knowledge"] as RightPanelSection[]).map((section) => {
+                const meta = RIGHT_PANEL_META[section];
+                const SectionIcon = meta.icon;
+                const handleClick =
+                  section === "configuration"
+                    ? handleToggleConfiguration
+                    : section === "workspace"
+                      ? handleToggleWorkspace
+                      : handleToggleKnowledge;
+                return (
+                  <button
+                    key={section}
+                    type="button"
+                    className={`agent-section-button ${rightSection === section ? "active" : ""}`}
+                    onClick={handleClick}
+                    aria-label={meta.ariaLabel}
+                    title={meta.title}
+                  >
+                    <SectionIcon size={18} />
+                    <span className={`agent-section-badge ${meta.badgeClass}`}>{sectionCounts[section]}</span>
+                  </button>
+                );
+              })}
+            </div>
 
-            <TabPanels style={{ flex: 1, overflowY: "auto" }}>
-              {/* ── Configuration tab ── */}
-              <TabPanel style={{ padding: "1rem", overflowY: "scroll" }}>
+            <div className="agent-section-content">
+              <div className="agent-section-header">
+                <div className="agent-section-header__icon">
+                  <ActiveSectionIcon size={18} />
+                </div>
+                <div className="agent-section-header__copy">
+                  <div className="agent-section-header__title-row">
+                    <h3>{activeSectionMeta.title}</h3>
+                    <Tag size="sm" type="gray">
+                      {sectionCounts[rightSection]}
+                    </Tag>
+                  </div>
+                  <p>{activeSectionMeta.subtitle}</p>
+                </div>
+              </div>
+
+              <div style={{ flex: 1, overflowY: "auto" }}>
+              {rightSection === "configuration" && (
+                <div style={{ padding: "1rem", overflowY: "scroll" }}>
                 <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
                   {agentConfig.apps.map((app) => {
                     const isExpanded = expandedApps.has(app.appName);
@@ -834,10 +1162,11 @@ export function ChatLanding() {
                     );
                   })}
                 </div>
-              </TabPanel>
+                </div>
+              )}
 
-              {/* ── Workspace tab ── */}
-              <TabPanel style={{ padding: "1rem", overflowY: "scroll" }}>
+              {rightSection === "workspace" && (
+                <div style={{ padding: "1rem", overflowY: "scroll" }}>
                 {workspaceTreeLoading ? (
                   <div style={{ padding: "1rem" }}>
                     <SkeletonText paragraph lineCount={5} />
@@ -859,9 +1188,30 @@ export function ChatLanding() {
                     {workspaceTree.map((node) => renderFileNode(node))}
                   </TreeView>
                 )}
-              </TabPanel>
-            </TabPanels>
-          </Tabs>
+                </div>
+              )}
+
+              {rightSection === "knowledge" && (
+                <KnowledgeSidePanel
+                  inline={true}
+                  isOpen={true}
+                  onToggle={handleToggleWorkspace}
+                  threadId={activeKnowledgeThreadId}
+                  sessionDocsVersion={sessionDocsVersion}
+                  onSessionDocsChanged={() => {
+                    handleSessionDocsChanged();
+                    setRightSection("knowledge");
+                  }}
+                  onDocCountChanged={setKnowledgeDocCount}
+                  knowledgeEnabled={knowledgeEnabled}
+                  agentKnowledgeEnabled={agentKnowledgeEnabled}
+                  sessionKnowledgeEnabled={sessionKnowledgeEnabled}
+                  agentLabel={agentConfig.name}
+                />
+              )}
+              </div>
+            </div>
+          </div>
         </div>
       )}
 
@@ -960,6 +1310,56 @@ export function ChatLanding() {
               Download
             </Button>
             <Button kind="primary" onClick={() => setFileModal(null)}>
+              Close
+            </Button>
+          </ModalFooter>
+        )}
+      </ComposedModal>
+
+      <ComposedModal
+        open={!!knowledgePreviewModal}
+        onClose={closeKnowledgePreviewModal}
+        size="lg"
+        isFullWidth
+      >
+        <ModalHeader
+          title={knowledgePreviewModal?.attachment.display_name ?? ""}
+          buttonOnClick={closeKnowledgePreviewModal}
+        />
+        <ModalBody hasScrollingContent className="chat-landing-file-modal-body">
+          {knowledgePreviewModal && (
+            knowledgePreviewModal.isPdf ? (
+              <iframe
+                title={knowledgePreviewModal.attachment.display_name}
+                src={knowledgePreviewModal.downloadUrl}
+                style={{ width: "100%", minHeight: "70vh", border: "none" }}
+              />
+            ) : (
+              <div className="chat-landing-file-modal-markdown">
+                <Markdown>
+                  {knowledgePreviewModal.attachment.display_name.toLowerCase().endsWith(".md")
+                    ? knowledgePreviewModal.content ?? ""
+                    : `\`\`\`\n${knowledgePreviewModal.content ?? ""}\n\`\`\``}
+                </Markdown>
+              </div>
+            )
+          )}
+        </ModalBody>
+        {knowledgePreviewModal && (
+          <ModalFooter className="chat-landing-file-modal-footer">
+            <Button
+              kind="secondary"
+              renderIcon={Download}
+              onClick={() => {
+                const anchor = document.createElement("a");
+                anchor.href = knowledgePreviewModal.downloadUrl;
+                anchor.download = knowledgePreviewModal.attachment.display_name;
+                anchor.click();
+              }}
+            >
+              Download
+            </Button>
+            <Button kind="primary" onClick={closeKnowledgePreviewModal}>
               Close
             </Button>
           </ModalFooter>

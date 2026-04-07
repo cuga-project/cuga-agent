@@ -13,6 +13,13 @@ import subprocess
 import psutil
 from pathlib import Path
 
+from cuga.backend.tools_env.registry.tests.e2e_helpers import (
+    REPO_ROOT,
+    get_registry_port,
+    wait_for_http_ok,
+)
+from cuga.config import PACKAGE_ROOT
+
 
 def kill_process_on_port(port):
     """Kill any process running on the specified port"""
@@ -116,24 +123,26 @@ class TestAuthenticationE2E:
 
             server_process = subprocess.Popen(
                 ['uv', 'run', 'python', str(server_script)],
+                cwd=str(REPO_ROOT),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
 
-            await asyncio.sleep(3)
-
-            async with httpx.AsyncClient() as client:
-                for i in range(10):
-                    try:
-                        response = await client.get(f"http://localhost:{server_port}/health")
-                        if response.status_code == 200:
-                            print(f"✅ Auth test server started on port {server_port}")
-                            break
-                    except Exception:
-                        pass
-                    await asyncio.sleep(1)
-                else:
-                    raise Exception("Auth test server failed to start")
+            await asyncio.sleep(2)
+            try:
+                await wait_for_http_ok(
+                    f"http://127.0.0.1:{server_port}/health",
+                    timeout_seconds=120.0,
+                )
+            except RuntimeError:
+                server_process.terminate()
+                try:
+                    _, err_b = server_process.communicate(timeout=10)
+                    err = (err_b or b"").decode(errors="replace")
+                except Exception:
+                    err = "(could not read stderr)"
+                raise RuntimeError(f"Auth test server failed to start. stderr:\n{err}") from None
+            print(f"✅ Auth test server started on port {server_port}")
 
             yield f"http://localhost:{server_port}"
 
@@ -156,7 +165,7 @@ class TestAuthenticationE2E:
     @pytest_asyncio.fixture(scope="class")
     async def registry_server(self, auth_server):
         """Start API Registry server with auth test configuration"""
-        server_port = 8001
+        server_port = get_registry_port()
         server_process = None
 
         try:
@@ -166,8 +175,6 @@ class TestAuthenticationE2E:
             test_dir = Path(__file__).parent
             config_path = test_dir / "mcp_servers_auth_test.yaml"
 
-            from cuga.config import PACKAGE_ROOT
-
             registry_script = os.path.join(
                 PACKAGE_ROOT, 'backend', 'tools_env', 'registry', 'registry', 'api_registry_server.py'
             )
@@ -176,24 +183,26 @@ class TestAuthenticationE2E:
 
             server_process = subprocess.Popen(
                 ['uv', 'run', 'python', registry_script],
+                cwd=str(REPO_ROOT),
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
             )
 
-            await asyncio.sleep(3)
-
-            async with httpx.AsyncClient() as client:
-                for i in range(10):
-                    try:
-                        response = await client.get(f"http://127.0.0.1:{server_port}/")
-                        if response.status_code == 200:
-                            print(f"✅ Registry server started on port {server_port}")
-                            break
-                    except Exception:
-                        pass
-                    await asyncio.sleep(1)
-                else:
-                    raise Exception("Registry server failed to start")
+            await asyncio.sleep(2)
+            try:
+                await wait_for_http_ok(
+                    f"http://127.0.0.1:{server_port}/",
+                    timeout_seconds=120.0,
+                )
+            except RuntimeError:
+                server_process.terminate()
+                try:
+                    _, err_b = server_process.communicate(timeout=10)
+                    err = (err_b or b"").decode(errors="replace")
+                except Exception:
+                    err = "(could not read stderr)"
+                raise RuntimeError(f"Registry server failed to start. stderr:\n{err}") from None
+            print(f"✅ Registry server started on port {server_port}")
 
             yield f"http://127.0.0.1:{server_port}"
 

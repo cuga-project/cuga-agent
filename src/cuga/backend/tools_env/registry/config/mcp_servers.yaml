@@ -62,3 +62,24 @@ services:
 #     url: http://127.0.0.1:8000/sse
 #     transport: sse
 #     description: Local Digital Sales API
+
+# Knowledge service (LangChain + Milvus Lite)
+# Auto-initializes on startup — no external services needed.
+mcpServers:
+  knowledge:
+    command: python3
+    args: ["-m", "cuga.backend.knowledge.mcp_server"]
+    transport: stdio
+    description: "Knowledge service for semantic document search and management"
+    include:
+      - search_knowledge
+      - ingest_knowledge
+      - ingest_knowledge_url
+      - list_knowledge_documents
+      - delete_knowledge_document
+      - get_ingestion_status
+      - get_knowledge_status
+    env:
+      CUGA_BACKEND_URL: CUGA_BACKEND_URL
+      CUGA_INTERNAL_TOKEN_FILE: CUGA_INTERNAL_TOKEN_FILE
+      CUGA_AGENT_ID: CUGA_AGENT_ID

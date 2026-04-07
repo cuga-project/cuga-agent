@@ -403,6 +403,7 @@ def create_mcp_prompt(
     skills_enabled: bool = False,
     skills_prompt_section: str = "",
     enable_shell_tool: bool = False,
+    has_knowledge=False,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -421,6 +422,7 @@ def create_mcp_prompt(
         skills_enabled: If True, render the skills block (load_skill, available skills list)
         skills_prompt_section: Pre-formatted markdown/XML block from the skills registry
         enable_shell_tool: If True, include run_command / npm / sandbox workspace bullets in the prompt (OpenSandbox shell tools; defaults False in settings)
+        has_knowledge: If True, include knowledge-base search guidance in the prompt
     """
     processed_tools = []
     # Graph passes "" when no DB instructions; still allow CLI/demo env (e.g. cuga start demo_crm).
@@ -473,5 +475,6 @@ def create_mcp_prompt(
         skills_enabled=skills_enabled,
         skills_prompt_section=skills_prompt_section,
         enable_shell_tool=enable_shell_tool,
+        has_knowledge=has_knowledge,
     )
     return prompt

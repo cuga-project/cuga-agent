@@ -178,6 +178,7 @@ validators = [
     Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
     Validator("skills.enabled", default=False),
+    Validator("advanced_features.builtin_tools", default=["knowledge"]),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")
@@ -216,6 +217,10 @@ mem0_file_path = os.path.join(MEMORY_DIR, "memory_settings.mem0.toml")
 milvus_file_path = os.path.join(MEMORY_DIR, "memory_settings.milvus.toml")
 tips_extractor_file_path = os.path.join(MEMORY_DIR, "memory_settings.tips_extractor.toml")
 
+# Knowledge configuration
+KNOWLEDGE_DIR = os.path.join(CONFIGURATIONS_DIR, "knowledge")
+knowledge_file_path = os.path.join(KNOWLEDGE_DIR, "knowledge_settings.toml")
+
 if base_settings.advanced_features.enable_memory:
     logger.info(f"Mem0 config path:   {mem0_file_path}")
     logger.info(f"Milvus config path:   {milvus_file_path}")
@@ -253,6 +258,7 @@ settings_files = [
     mem0_file_path,
     milvus_file_path,
     tips_extractor_file_path,
+    knowledge_file_path,
 ]
 
 settings = Dynaconf(

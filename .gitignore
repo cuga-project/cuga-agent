@@ -81,6 +81,8 @@ registry.env
 deployment/helm/openshift.env
 deployment/helm/*.env
 !deployment/helm/openshift.example.env
+KNOWLEDGE_PIPELINE.md
+docs/examples/demo_apps/file_system/build/
 
 # Examples that use repo-root uv.lock only (see CONTRIBUTING.md)
 docs/examples/cuga_as_mcp/uv.lock

@@ -2150,3 +2150,94 @@
   box-shadow: 0 2px 6px rgba(102, 126, 234, 0.2);
 }
 
+/* ── Drag-and-drop overlay ── */
+.custom-chat-container.dragging-files {
+  box-shadow: inset 0 0 0 2px #0f62fe;
+  border-radius: 8px;
+}
+
+.chat-drag-overlay {
+  position: absolute;
+  bottom: 80px;
+  left: 50%;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px 20px;
+  background: #0f62fe;
+  color: white;
+  border-radius: 20px;
+  font-size: 13px;
+  font-weight: 500;
+  box-shadow: 0 4px 16px rgba(15, 98, 254, 0.3);
+  z-index: 100;
+  pointer-events: none;
+  animation: dragBadgeFadeIn 0.15s ease;
+}
+
+@keyframes dragBadgeFadeIn {
+  from { opacity: 0; transform: translateX(-50%) translateY(8px); }
+  to { opacity: 1; transform: translateX(-50%) translateY(0); }
+}
+
+/* ── Attachment bar (above chat input) ── */
+.session-attachment-bar {
+  display: flex;
+  gap: 8px;
+  padding: 8px 16px;
+  overflow-x: auto;
+  border-bottom: 1px solid #e5e7eb;
+  background: #f9fafb;
+}
+
+.attachment-chip {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px 4px 4px;
+  border-radius: 16px;
+  background: white;
+  border: 1px solid #e5e7eb;
+  font-size: 12px;
+  white-space: nowrap;
+  transition: opacity 0.3s;
+}
+
+.attachment-chip--uploading { opacity: 0.7; }
+.attachment-chip--error { border-color: #da1e28; }
+
+.attachment-chip-name {
+  max-width: 120px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: #374151;
+}
+
+.attachment-chip-remove {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: none;
+  color: #9ca3af;
+  cursor: pointer;
+  padding: 0;
+  border-radius: 50%;
+}
+.attachment-chip-remove:hover { background: #f3f4f6; color: #374151; }
+
+.attachment-status-circle { flex-shrink: 0; }
+
+.attachment-spinner {
+  animation: attachment-spin 1s linear infinite;
+  transform-origin: center;
+}
+
+@keyframes attachment-spin {
+  from { transform: rotate(0deg); }
+  to { transform: rotate(360deg); }
+}
+
