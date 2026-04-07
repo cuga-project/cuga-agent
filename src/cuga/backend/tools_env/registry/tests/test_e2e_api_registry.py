@@ -12,6 +12,12 @@ import httpx
 import tempfile
 import subprocess
 import psutil
+
+from cuga.backend.tools_env.registry.tests.e2e_helpers import (
+    REPO_ROOT,
+    get_registry_port,
+    wait_for_http_ok,
+)
 from cuga.config import PACKAGE_ROOT
 
 
@@ -120,7 +126,7 @@ mcpServers:
 @pytest_asyncio.fixture(scope="module")
 async def registry_server():
     """Start API Registry server for testing"""
-    server_port = 8001
+    server_port = get_registry_port()
     server_process = None
     config_path = None
 
@@ -137,34 +143,18 @@ async def registry_server():
         # Set environment variable
         os.environ["MCP_SERVERS_FILE"] = config_path
 
-        # Start server in background
-        server_process = subprocess.Popen(
-            [
-                'uv',
-                'run',
-                'python',
-                os.path.join(
-                    PACKAGE_ROOT, 'backend', 'tools_env', 'registry', 'registry', 'api_registry_server.py'
-                ),
-            ],
-            cwd=None,
+        registry_script = os.path.join(
+            PACKAGE_ROOT, 'backend', 'tools_env', 'registry', 'registry', 'api_registry_server.py'
         )
 
-        # Wait for server to start
-        await asyncio.sleep(3)
+        # Start server in background (cwd=repo root so `uv run` resolves the project)
+        server_process = subprocess.Popen(
+            ['uv', 'run', 'python', registry_script],
+            cwd=str(REPO_ROOT),
+        )
 
-        # Check if server is running
-        async with httpx.AsyncClient() as client:
-            for i in range(10):  # Try for 10 seconds
-                try:
-                    response = await client.get(f"http://127.0.0.1:{server_port}/")
-                    if response.status_code == 200:
-                        break
-                except Exception:
-                    pass
-                await asyncio.sleep(1)
-            else:
-                raise Exception("Server failed to start")
+        await asyncio.sleep(2)
+        await wait_for_http_ok(f"http://127.0.0.1:{server_port}/", timeout_seconds=120.0)
 
         yield f"http://127.0.0.1:{server_port}"
 
