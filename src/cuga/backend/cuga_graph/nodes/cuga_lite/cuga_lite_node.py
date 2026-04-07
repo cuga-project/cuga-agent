@@ -396,7 +396,8 @@ class CugaLiteNode(BaseNode):
             import asyncio as _asyncio
 
             task_id = state.sub_task or tracker.task_id or "unknown"
-            success = not (self._has_error(state.final_answer or "") or bool(state.error))
+            state_error = getattr(state, "error", None)
+            success = not (self._has_error(state.final_answer or "") or bool(state_error))
             if settings.kaizen.async_save:
                 task = _asyncio.create_task(
                     KaizenIntegration.save_trajectory(state.chat_messages, task_id, success)

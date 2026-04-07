@@ -146,7 +146,7 @@ openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Re
                  # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)
 
 [kaizen]
-enabled = false             # Master toggle for Kaizen integration
+enabled = true             # Master toggle for Kaizen integration
 url = "http://127.0.0.1:8201/sse"  # Kaizen MCP server SSE endpoint
 lite_mode_only = true        # Only activate Kaizen for CugaLite mode
 save_on_success = true       # Save trajectory on successful task completion
