@@ -25,15 +25,15 @@ def test_evolve_templates_use_upstream_package_entrypoint() -> None:
     assert f'argsText: "{expected_args}"' in source_template
     assert "cuga-evolve-mcp" not in source_template
     assert "cuga.backend.evolve.mcp_server" not in source_template
-    assert 'OPENAI_BASE_URL: "https://ete-litellm.bx.cloud9.ibm.com"' in source_template
+    assert 'OPENAI_BASE_URL: "env://OPENAI_BASE_URL"' in source_template
 
     assert f'argsText: "{expected_args}"' in bundled_template
     assert "cuga.backend.evolve.mcp_server" not in bundled_template
-    assert 'OPENAI_BASE_URL: "https://ete-litellm.bx.cloud9.ibm.com"' in bundled_template
+    assert 'OPENAI_BASE_URL: "env://OPENAI_BASE_URL"' in bundled_template
 
     assert "cuga-evolve-mcp" not in readme
     assert "cuga.backend.evolve.mcp_server" not in readme
     assert str(repo_root / "altk-evolve") in readme
     assert "evolve-mcp" in readme
     assert "setuptools<70" in readme
-    assert "https://ete-litellm.bx.cloud9.ibm.com" in readme
+    assert "OPENAI_BASE_URL=env://OPENAI_BASE_URL" in readme

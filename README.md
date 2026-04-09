@@ -855,13 +855,13 @@ This flow is:
    ```text
    EVOLVE_MODEL_NAME=Azure/gpt-4o
    OPENAI_API_KEY=env://OPENAI_API_KEY # pragma: allowlist secret
-   OPENAI_BASE_URL=https://ete-litellm.bx.cloud9.ibm.com
+   OPENAI_BASE_URL=env://OPENAI_BASE_URL # pragma: allowlist secret
    ```
 
    Notes:
    - Use a model your gateway/team is actually allowed to access. Replace `Azure/gpt-4o` with the exact allowed model if needed.
    - `OPENAI_API_KEY=env://OPENAI_API_KEY` means "read the real value from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
-   - `OPENAI_BASE_URL=https://ete-litellm.bx.cloud9.ibm.com` points Evolve at the IBM LiteLLM gateway used in local development here.
+   - `OPENAI_BASE_URL=env://OPENAI_BASE_URL` means "read the LiteLLM/OpenAI-compatible base URL from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
    - `setuptools<70` is included because `milvus-lite` still imports `pkg_resources`.
 
    Important: this command starts Evolve in `stdio` mode through the upstream Evolve package. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.

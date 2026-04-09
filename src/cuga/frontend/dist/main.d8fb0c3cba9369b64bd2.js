@@ -2136,7 +2136,7 @@ const TOOL_TEMPLATES = [{
     env: {
       EVOLVE_MODEL_NAME: "Azure/gpt-4o",
       OPENAI_API_KEY: "env://OPENAI_API_KEY",
-      OPENAI_BASE_URL: "https://ete-litellm.bx.cloud9.ibm.com"
+      OPENAI_BASE_URL: "env://OPENAI_BASE_URL"
     },
     transport: "stdio"
   }
