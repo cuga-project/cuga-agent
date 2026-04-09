@@ -33,8 +33,7 @@ dependencies = [
     "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
-    "litellm>=1.83.0",
-    "openlit>=1.40.3",
+    "litellm==1.83.4",
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
@@ -59,6 +58,8 @@ e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]
+# OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
+observability = ["openlit>=1.40.3"]
 
 [project.urls]
 Homepage = "https://cuga.dev"
@@ -72,9 +73,10 @@ constraint-dependencies = [
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
     "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
 ]
+# litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
+override-dependencies = ["python-dotenv>=1.1.0"]
 
-# OpenLit 1.40.x declares openai<2 on PyPI; litellm>=1.83 needs openai>=2. Core behavior is compatible with
-# OpenAI v2 — override metadata so installs resolve. Refresh when bumping openlit if PyPI relaxes this.
+# PyPI openlit declares openai<2; litellm 1.83.x needs openai 2.x. Override for uv lock / Docker / dev only.
 [[tool.uv.dependency-metadata]]
 name = "openlit"
 version = "1.40.3"

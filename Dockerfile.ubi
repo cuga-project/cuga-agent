@@ -15,7 +15,8 @@ COPY pyproject.toml uv.lock README.md ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-RUN rm -rf src/*.egg-info && uv sync --no-editable --no-dev
+# Default deps omit openlit (optional `observability` extra; keeps pip/uvx core resolvable with litellm 1.83.x).
+RUN rm -rf src/*.egg-info && uv sync --no-editable --no-dev --extra observability
 
 # Download only the headless_shell binary (no full Chromium, no ffmpeg) — ~3x smaller than default.
 RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run playwright install --only-shell chromium
