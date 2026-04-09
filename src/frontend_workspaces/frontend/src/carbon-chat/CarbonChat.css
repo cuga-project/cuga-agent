@@ -13,6 +13,210 @@
   position: relative;
 }
 
+/* ── Composer toolbar (paperclip + chips row) ── */
+
+.cuga-composer-toolbar {
+  padding: 0.35rem 0.75rem 0.25rem;
+}
+
+.cuga-composer-toolbar__row {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+}
+
+.cuga-composer-toolbar__attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 1.75rem;
+  height: 1.75rem;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--cds-icon-secondary, #525252);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cuga-composer-toolbar__attach:hover {
+  background: rgba(15, 98, 254, 0.1);
+  color: var(--cds-link-primary, #0f62fe);
+}
+
+.cuga-composer-toolbar__divider {
+  width: 1px;
+  height: 1.1rem;
+  background: rgba(141, 141, 141, 0.25);
+  flex-shrink: 0;
+}
+
+.cuga-composer-toolbar__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  min-width: 0;
+  flex: 1;
+}
+
+.cuga-composer-toolbar__manage {
+  flex-shrink: 0;
+  border: none;
+  background: none;
+  color: var(--cds-link-primary, #0f62fe);
+  font-size: 0.72rem;
+  font-weight: 500;
+  cursor: pointer;
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  transition: background 0.15s ease;
+}
+
+.cuga-composer-toolbar__manage:hover {
+  background: rgba(15, 98, 254, 0.08);
+}
+
+/* ── Attachment chips ── */
+
+.cuga-composer-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  max-width: 100%;
+  border-radius: 6px;
+  border: 1px solid rgba(141, 141, 141, 0.2);
+  background: rgba(255, 255, 255, 0.9);
+  padding: 0.15rem 0.25rem 0.15rem 0.45rem;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+
+.cuga-composer-chip:hover {
+  border-color: rgba(141, 141, 141, 0.35);
+}
+
+.cuga-composer-chip--uploading {
+  border-color: rgba(15, 98, 254, 0.3);
+  background: rgba(15, 98, 254, 0.05);
+}
+
+.cuga-composer-chip--error {
+  border-color: rgba(218, 30, 40, 0.3);
+  background: rgba(218, 30, 40, 0.05);
+}
+
+.cuga-composer-chip--deleting {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.cuga-composer-chip__main {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  min-width: 0;
+  border: none;
+  background: none;
+  padding: 0;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+}
+
+.cuga-composer-chip__main:disabled {
+  cursor: default;
+}
+
+.cuga-composer-chip__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 12rem;
+  font-size: 0.73rem;
+  color: var(--cds-text-primary, #161616);
+}
+
+.cuga-composer-chip__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  background: none;
+  color: var(--cds-text-secondary, #525252);
+  cursor: pointer;
+  width: 1.25rem;
+  height: 1.25rem;
+  border-radius: 4px;
+  padding: 0;
+  flex-shrink: 0;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.cuga-composer-chip__action:hover {
+  background: rgba(0, 0, 0, 0.08);
+  color: var(--cds-text-primary, #161616);
+}
+
+.cuga-composer-chip__spinner {
+  animation: cuga-carbon-spin 1s linear infinite;
+}
+
+/* ── Chat wrapper & drag/drop ── */
+
+.cuga-carbon-chat-wrapper {
+  position: relative;
+  width: 100%;
+  height: 100%;
+}
+
+.cuga-carbon-chat-wrapper.cuga-carbon-composer--dragover {
+  outline: 2px dashed rgba(15, 98, 254, 0.6);
+  outline-offset: -2px;
+  border-radius: 8px;
+}
+
+.cuga-carbon-chat-wrapper.cuga-carbon-composer--dragover::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: rgba(15, 98, 254, 0.04);
+  border-radius: 8px;
+  pointer-events: none;
+  z-index: 1;
+}
+
+.cuga-carbon-message-attachments {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+  margin: 0 0 0.55rem;
+}
+
+.cuga-carbon-message-attachment {
+  border: 1px solid rgba(15, 98, 254, 0.2);
+  background: rgba(15, 98, 254, 0.06);
+  color: var(--cds-link-primary, #0f62fe);
+  border-radius: 999px;
+  padding: 0.18rem 0.6rem;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+
+.cuga-carbon-message-attachment:hover {
+  background: rgba(15, 98, 254, 0.12);
+}
+
+@keyframes cuga-carbon-spin {
+  from {
+    transform: rotate(0deg);
+  }
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 /* Debug Panel Styles */
 .debug-toggle-button {
   display: none;

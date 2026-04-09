@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
-import { Send, RotateCcw, Bot, User, FileText, Database, Code, Terminal, Cpu, Globe, Settings, ChevronRight } from "lucide-react";
+import { Send, RotateCcw, Bot, User, FileText, Database, Code, Terminal, Cpu, Globe, Settings, ChevronRight, Paperclip } from "lucide-react";
 import CardManager from "./CardManager";
 import { StopButton } from "./floating/stop_button";
 import { fetchStreamingData } from "./StreamingWorkflow";
@@ -8,6 +8,7 @@ import { DebugPanel } from "./DebugPanel";
 import { FollowupSuggestions } from "./FollowupSuggestions";
 import { exampleUtterances } from "./exampleUtterances";
 import { apiFetch } from "../../frontend/src/api";
+import SessionAttachments, { type SessionAttachmentsHandle } from "./SessionAttachments";
 import "./CustomChat.css";
 
 interface Message {
@@ -40,9 +41,17 @@ interface CustomChatProps {
   forceAdvancedMode?: boolean;
   /** When true, stream uses draft config agent (Manage page). */
   useDraftAgent?: boolean;
+  /** Incremented when session docs change (for cross-component sync). */
+  sessionDocsVersion?: number;
+  /** Called when session docs are uploaded/deleted in this chat. */
+  onSessionDocsChanged?: () => void;
+  /** When set externally (e.g. from sidebar), switches to this thread and loads its messages. */
+  externalThreadId?: string;
+  /** Whether session-level knowledge uploads are enabled for this chat. */
+  knowledgeEnabled?: boolean | null;
 }
 
-export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false, useDraftAgent = false }: CustomChatProps) {
+export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false, useDraftAgent = false, sessionDocsVersion = 0, onSessionDocsChanged, externalThreadId, knowledgeEnabled }: CustomChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -62,6 +71,9 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
   const effectiveHasStartedChat = forceAdvancedMode || hasStartedChat;
   const [followupSuggestions, setFollowupSuggestions] = useState<string[]>([]);
   const [lastUserQuery, setLastUserQuery] = useState<string>("");
+  const sessionAttachmentsRef = useRef<SessionAttachmentsHandle>(null);
+  const [isDraggingFiles, setIsDraggingFiles] = useState(false);
+  const dragCounter = useRef(0);
   const [expandedFiles, setExpandedFiles] = useState<Set<string>>(new Set(['contacts.txt']));
 
   useEffect(() => {
@@ -79,6 +91,36 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
       onThreadIdChange(newThreadId);
     }
   }, [onThreadIdChange]);
+
+  // Switch to an existing thread when selected from sidebar
+  useEffect(() => {
+    if (!externalThreadId || externalThreadId === threadIdRef.current) return;
+    setThreadId(externalThreadId);
+    threadIdRef.current = externalThreadId;
+    if (onThreadIdChange) onThreadIdChange(externalThreadId);
+    // Load messages for this thread
+    (async () => {
+      try {
+        const resp = await apiFetch(`/api/conversation-messages/${externalThreadId}?agent_id=cuga-default`);
+        if (resp.ok) {
+          const data = await resp.json();
+          const loaded: Message[] = (data.messages || [])
+            .filter((m: any) => m.role === "user" || m.role === "assistant")
+            .map((m: any, i: number) => ({
+              id: `loaded-${i}`,
+              text: m.content || "",
+              isUser: m.role === "user",
+              timestamp: m.timestamp ? new Date(m.timestamp).getTime() : Date.now(),
+            }));
+          setMessages(loaded);
+          setShowExampleUtterances(false);
+          setFollowupSuggestions([]);
+        }
+      } catch (e) {
+        console.error("Failed to load thread messages:", e);
+      }
+    })();
+  }, [externalThreadId, onThreadIdChange]);
 
   // Create a simple chat instance interface
   const createChatInstance = useCallback((): ChatInstance => {
@@ -744,7 +786,21 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
   };
 
   return (
-    <div className="custom-chat-container">
+    <div
+      className={`custom-chat-container${isDraggingFiles ? " dragging-files" : ""}`}
+      onDragEnter={(e) => { e.preventDefault(); dragCounter.current++; setIsDraggingFiles(true); }}
+      onDragOver={(e) => e.preventDefault()}
+      onDragLeave={(e) => { e.preventDefault(); dragCounter.current--; if (dragCounter.current === 0) setIsDraggingFiles(false); }}
+      onDrop={(e) => {
+        e.preventDefault();
+        dragCounter.current = 0;
+        setIsDraggingFiles(false);
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length > 0 && sessionAttachmentsRef.current) {
+          sessionAttachmentsRef.current.handleFileDrop(files);
+        }
+      }}
+    >
       {effectiveHasStartedChat && (
         <div className="custom-chat-header">
           <div className="chat-header-left">
@@ -1097,6 +1153,16 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
                 />
               </div>
             )}
+            {/* Attachment bar + paperclip button — single instance for shared state */}
+            {knowledgeEnabled !== false && (
+              <SessionAttachments
+                ref={sessionAttachmentsRef}
+                threadId={threadIdRef.current || threadId}
+                disabled={isProcessing}
+                sessionDocsVersion={sessionDocsVersion}
+                onSessionDocsChanged={onSessionDocsChanged ?? (() => {})}
+              />
+            )}
             <div className="chat-input-container-chat">
             <div className="textarea-wrapper">
               <div
@@ -1118,6 +1184,14 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
                 }}
               />
             </div>
+            <button
+              className="session-attach-btn"
+              onClick={() => sessionAttachmentsRef.current?.triggerFilePicker()}
+              disabled={isProcessing || !threadId}
+              title="Attach documents"
+            >
+              <Paperclip size={16} />
+            </button>
             <StopButton location="inline" />
             <button
               className="chat-send-btn"
@@ -1208,7 +1282,12 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
         </div>
       )}
       <DebugPanel threadId={threadIdRef.current || threadId || ""} />
+      {isDraggingFiles && (
+        <div className="chat-drag-overlay">
+          <FileText size={32} />
+          <span>Drop to attach</span>
+        </div>
+      )}
     </div>
   );
 }
-

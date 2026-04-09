@@ -31,7 +31,7 @@ async def storage():
     """Create a test storage instance with embeddings."""
     # Use environment variable or default to local
     embedding_provider = os.getenv("POLICY_EMBEDDING_PROVIDER", "local")
-    embedding_model = os.getenv("POLICY_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+    embedding_model = os.getenv("POLICY_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
 
     # Get correct embedding dimension for the model
     from cuga.backend.cuga_graph.policy.utils import get_embedding_dimension
@@ -370,7 +370,7 @@ This guide helps users complete their purchase successfully.
         logger.warning("⚠️  No embedding function available")
         logger.info("   To enable embeddings:")
         logger.info("   - Set OPENAI_API_KEY environment variable, OR")
-        logger.info("   - Install 'sentence-transformers' package")
+        logger.info("   - Install 'fastembed' package")
 
     logger.info("=" * 80)
     logger.success("🎉 Integration test completed successfully!")
@@ -386,7 +386,7 @@ if __name__ == "__main__":
 
         # Use local embeddings by default
         embedding_provider = os.getenv("POLICY_EMBEDDING_PROVIDER", "local")
-        embedding_model = os.getenv("POLICY_EMBEDDING_MODEL", "all-MiniLM-L6-v2")
+        embedding_model = os.getenv("POLICY_EMBEDDING_MODEL", "BAAI/bge-small-en-v1.5")
         embedding_dim = get_embedding_dimension(embedding_provider, embedding_model)
 
         # Create storage

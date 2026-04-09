@@ -47,10 +47,12 @@ import {
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import CarbonChat from "./carbon-chat/CarbonChat";
 import PoliciesConfig from "agentic_chat/PoliciesConfig";
+import KnowledgePanel from "agentic_chat/KnowledgePanel";
 import VariablesSidebar from "agentic_chat/VariablesSidebar";
 import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfig";
 import { SecretsManager } from "./SecretsManager";
 import type { ToolEntry } from "./types/tools";
+import type { KnowledgeAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
 import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
@@ -79,10 +81,42 @@ export interface AgentConfig {
     reflection?: boolean;
     max_steps?: number;
     shortlisting_tool_threshold?: number;
+    builtin_tools?: string[];
   };
   policies?: { enablePolicies: boolean; policies: unknown[] };
   homescreen?: HomescreenConfig;
+  knowledge?: {
+    enabled?: boolean;
+    agent_level_enabled?: boolean;
+    session_level_enabled?: boolean;
+    embedding_provider?: string;
+    embedding_model?: string;
+    chunk_size?: number;
+    chunk_overlap?: number;
+    metric_type?: string;
+    max_pending_tasks?: number;
+    max_upload_size_mb?: number;
+    max_url_download_size_mb?: number;
+    max_files_per_request?: number;
+    max_chunks_per_document?: number;
+  };
 }
+
+const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
+  enabled: false,
+  agent_level_enabled: true,
+  session_level_enabled: true,
+  embedding_provider: "huggingface",
+  embedding_model: "",
+  chunk_size: 1000,
+  chunk_overlap: 200,
+  metric_type: "COSINE",
+  max_pending_tasks: 10,
+  max_upload_size_mb: 100,
+  max_url_download_size_mb: 50,
+  max_files_per_request: 10,
+  max_chunks_per_document: 10000,
+};
 
 const DEFAULT_HOMESCREEN: HomescreenConfig = {
   isOn: true,
@@ -116,6 +150,8 @@ const DEFAULT_CONFIG: AgentConfig = {
   feature_flags: { enable_todos: false, reflection: false, max_steps: 70, shortlisting_tool_threshold: 35 },
   homescreen: { ...DEFAULT_HOMESCREEN },
 };
+
+const TEXT_EXTENSIONS = [".txt", ".md", ".json", ".csv", ".html", ".xml", ".yaml", ".yml", ".py"];
 
 const POLICY_TYPE_LABELS: Record<string, string> = {
   intent_guard: "Intent guards",
@@ -161,6 +197,7 @@ function maskSecrets(obj: unknown): unknown {
 
 export function ManagePage() {
   const { agentId } = useParams<{ agentId: string }>();
+  const effectiveAgentId = agentId ?? "cuga-default";
   const location = useLocation();
   const search = location.search || "";
   const [llmConfig, setLlmConfig] = useState<NonNullable<AgentConfig["llm"]>>(DEFAULT_CONFIG.llm!);
@@ -189,6 +226,24 @@ export function ManagePage() {
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
   const [secretsModalOpen, setSecretsModalOpen] = useState(false);
+  const [showKnowledgeModal, setShowKnowledgeModal] = useState(false);
+  const [knowledgeHealthy, setKnowledgeHealthy] = useState<boolean | null>(null);
+  const [knowledgeHealthStatus, setKnowledgeHealthStatus] = useState<string>("unknown");
+  const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
+  const [knowledgeDocsVersion, setKnowledgeDocsVersion] = useState(0);
+  const [knowledgeConfig, setKnowledgeConfig] = useState<NonNullable<AgentConfig["knowledge"]>>({ ...DEFAULT_KNOWLEDGE_CONFIG });
+  const [knowledgeSavedSnapshot, setKnowledgeSavedSnapshot] = useState<AgentConfig["knowledge"] | null>(null);
+  const [knowledgeReindexNeeded, setKnowledgeReindexNeeded] = useState(false);
+  const [knowledgeReindexing, setKnowledgeReindexing] = useState(false);
+  const [knowledgeStale, setKnowledgeStale] = useState(false);
+  const [knowledgeReindexDeferred, setKnowledgeReindexDeferred] = useState(false);
+  const [ragProfiles, setRagProfiles] = useState<Record<string, any>>({});
+  const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<{
+    attachment: KnowledgeAttachmentSnapshot;
+    content?: string;
+    downloadUrl: string;
+    isPdf: boolean;
+  } | null>(null);
   const [llmUseSavedSecret, setLlmUseSavedSecret] = useState(false);
   const [llmSecretsList, setLlmSecretsList] = useState<{ id: string; description?: string; ref: string }[]>([]);
   const [llmForceEnv, setLlmForceEnv] = useState(false);
@@ -250,6 +305,9 @@ export function ManagePage() {
       if (Array.isArray(t.include) && t.include.length > 0) {
         entry.include = t.include as string[];
       }
+      if (t.env != null && typeof t.env === "object" && !Array.isArray(t.env) && Object.keys(t.env as Record<string, unknown>).length > 0) {
+        entry.env = t.env as Record<string, string>;
+      }
       if (t.command != null && String(t.command).trim()) {
         entry.command = String(t.command).trim();
         entry.args = Array.isArray(t.args) ? (t.args as string[]) : [];
@@ -265,14 +323,8 @@ export function ManagePage() {
 
   const addToast = useCallback((kind: "error" | "info" | "success" | "warning", title: string, subtitle: string) => {
     const id = `toast-${Date.now()}-${Math.random()}`;
-    console.log('[Toast Debug] Adding toast:', { id, kind, title, subtitle });
-    setToastNotifications((prev: ToastNotification[]) => {
-      const newToasts = [...prev, { id, kind, title, subtitle }];
-      console.log('[Toast Debug] Current toasts:', newToasts);
-      return newToasts;
-    });
+    setToastNotifications((prev: ToastNotification[]) => [...prev, { id, kind, title, subtitle }]);
     setTimeout(() => {
-      console.log('[Toast Debug] Removing toast:', id);
       setToastNotifications((prev: ToastNotification[]) => prev.filter((t: ToastNotification) => t.id !== id));
     }, 5000);
   }, []);
@@ -281,7 +333,82 @@ export function ManagePage() {
     setToastNotifications((prev: ToastNotification[]) => prev.filter((t: ToastNotification) => t.id !== id));
   }, []);
 
-  const effectiveAgentId = agentId ?? "cuga-default";
+  const refreshKnowledgeDocCount = useCallback(async () => {
+    try {
+      const response = await api.listKnowledgeDocuments();
+      if (!response.ok) {
+        return;
+      }
+      const data = await response.json().catch(() => ({}));
+      setKnowledgeDocCount(data.documents?.length ?? 0);
+    } catch {
+      // Count refresh is best-effort; keep existing count on transient failures.
+    }
+  }, []);
+
+  const handleKnowledgeDocsChanged = useCallback((count?: number) => {
+    if (typeof count === "number") {
+      setKnowledgeDocCount(count);
+    } else {
+      void refreshKnowledgeDocCount();
+    }
+    setKnowledgeDocsVersion((current) => current + 1);
+  }, [refreshKnowledgeDocCount]);
+
+  const closeKnowledgePreviewModal = useCallback(() => {
+    setKnowledgePreviewModal((current) => {
+      if (current?.downloadUrl) {
+        URL.revokeObjectURL(current.downloadUrl);
+      }
+      return null;
+    });
+  }, []);
+
+  const handlePreviewKnowledgeAttachment = useCallback(async (attachment: KnowledgeAttachmentSnapshot) => {
+    try {
+      const response = await api.getKnowledgeDocumentFile(
+        attachment.scope,
+        attachment.knowledge_filename,
+      );
+      if (!response.ok) {
+        addToast("error", "Preview unavailable", response.statusText || "Failed to load attachment.");
+        return;
+      }
+
+      const blob = await response.blob();
+      const lowerName = attachment.display_name.toLowerCase();
+      const downloadUrl = URL.createObjectURL(blob);
+
+      if (lowerName.endsWith(".pdf")) {
+        setKnowledgePreviewModal({
+          attachment,
+          downloadUrl,
+          isPdf: true,
+        });
+        return;
+      }
+
+      const isTextFile = TEXT_EXTENSIONS.some((ext) => lowerName.endsWith(ext));
+      if (isTextFile) {
+        const content = await blob.text();
+        setKnowledgePreviewModal({
+          attachment,
+          content,
+          downloadUrl,
+          isPdf: false,
+        });
+        return;
+      }
+
+      const anchor = document.createElement("a");
+      anchor.href = downloadUrl;
+      anchor.download = attachment.display_name;
+      anchor.click();
+      URL.revokeObjectURL(downloadUrl);
+    } catch (error) {
+      addToast("error", "Preview unavailable", error instanceof Error ? error.message : "Unknown error");
+    }
+  }, [addToast]);
 
   const loadLatest = useCallback(async () => {
     try {
@@ -401,6 +528,21 @@ export function ManagePage() {
       setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
       setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
       setPolicies(out.policies ?? { enablePolicies: true, policies: [] });
+      if (out.knowledge) {
+        setKnowledgeConfig({ ...DEFAULT_KNOWLEDGE_CONFIG, ...out.knowledge });
+        setKnowledgeSavedSnapshot(out.knowledge);
+      } else {
+        // Fallback: load from knowledge engine
+        api.getKnowledgeSettings()
+          .then((res) => (res.ok ? res.json() : null))
+          .then((sData) => {
+            if (sData?.knowledge) {
+              setKnowledgeConfig((prev) => ({ ...prev, ...sData.knowledge }));
+              setKnowledgeSavedSnapshot(sData.knowledge);
+            }
+          })
+          .catch(() => {});
+      }
       setCurrentVersion(version);
       setLoadError(null);
       setTimeout(() => {
@@ -473,6 +615,82 @@ export function ManagePage() {
     loadHistory();
   }, [loadLatest, loadHistory]);
 
+  useEffect(() => {
+    if (!(knowledgeConfig.enabled ?? true) || !(knowledgeConfig.agent_level_enabled ?? true)) {
+      setKnowledgeDocCount(0);
+    }
+  }, [knowledgeConfig.agent_level_enabled, knowledgeConfig.enabled]);
+
+  const refreshKnowledgeHealth = useCallback(async () => {
+    try {
+      const res = await api.getKnowledgeHealth();
+      const data = res.ok ? await res.json() : null;
+      if (!data) {
+        setKnowledgeHealthy(false);
+        setKnowledgeHealthStatus("failed");
+        return null;
+      }
+      setKnowledgeHealthy(data.healthy ?? false);
+      setKnowledgeHealthStatus(data.status ?? (data.healthy ? "ready" : "unknown"));
+      setKnowledgeStale(data.stale ?? false);
+      setKnowledgeReindexDeferred(data.reindex_deferred ?? false);
+      return data;
+    } catch {
+      setKnowledgeHealthy(false);
+      setKnowledgeHealthStatus("failed");
+      return null;
+    }
+  }, []);
+
+  // Knowledge health check and doc count on mount
+  useEffect(() => {
+    api.setKnowledgeAgentId(effectiveAgentId || "cuga-default");
+
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | null = null;
+
+    const scheduleHealthRefresh = async (attempt = 0) => {
+      const data = await refreshKnowledgeHealth();
+      if (cancelled || !data) {
+        return;
+      }
+
+      const stillStarting = data.enabled !== false && !data.healthy && data.status === "starting";
+      if (stillStarting && attempt < 20) {
+        retryTimer = setTimeout(() => {
+          void scheduleHealthRefresh(attempt + 1);
+        }, 1500);
+      }
+    };
+
+    void scheduleHealthRefresh();
+
+    api.listKnowledgeDocuments()
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data && !cancelled) {
+          setKnowledgeDocCount(data.documents?.length ?? 0);
+        }
+      })
+      .catch(() => {});
+
+    api.getKnowledgeSettings()
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.rag_profiles && !cancelled) {
+          setRagProfiles(data.rag_profiles);
+        }
+      })
+      .catch(() => {});
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) {
+        clearTimeout(retryTimer);
+      }
+    };
+  }, [effectiveAgentId, refreshKnowledgeHealth]);
+
   const assembleConfig = useCallback(
     (overrides?: Partial<AgentConfig>): AgentConfig => {
       const c: AgentConfig = {
@@ -482,10 +700,11 @@ export function ManagePage() {
         feature_flags: featureFlags,
         homescreen,
         policies,
+        knowledge: knowledgeConfig,
       };
       return overrides ? { ...c, ...overrides } : c;
     },
-    [agentName, agentDescription, llmConfig, tools, featureFlags, homescreen, policies]
+    [agentName, agentDescription, llmConfig, tools, featureFlags, homescreen, policies, knowledgeConfig]
   );
 
   const performDraftSave = useCallback(
@@ -609,6 +828,37 @@ export function ManagePage() {
     };
   }, [tools, effectiveAgentId, addToast]);
 
+  // Knowledge reindex detection — compare current config against the last
+  // saved/published state. Merge snapshot with defaults so missing fields
+  // (e.g. first demo config that only has _vector_config_hash) don't
+  // trigger a false positive.
+  useEffect(() => {
+    if (!knowledgeSavedSnapshot) return;
+    const saved = { ...DEFAULT_KNOWLEDGE_CONFIG, ...knowledgeSavedSnapshot };
+    const changed =
+      knowledgeConfig.embedding_provider !== saved.embedding_provider ||
+      knowledgeConfig.embedding_model !== saved.embedding_model ||
+      knowledgeConfig.chunk_size !== saved.chunk_size ||
+      knowledgeConfig.chunk_overlap !== saved.chunk_overlap ||
+      knowledgeConfig.metric_type !== saved.metric_type;
+    setKnowledgeReindexNeeded(changed && knowledgeDocCount > 0);
+  }, [knowledgeConfig, knowledgeSavedSnapshot, knowledgeDocCount]);
+
+  // Debounced auto-save for knowledge config
+  useEffect(() => {
+    if (skipDraftSaveRef.current) return;
+    const t = setTimeout(async () => {
+      try {
+        const res = await api.patchManageConfigDraftKnowledge(knowledgeConfig, effectiveAgentId);
+        if (res.ok) {
+          setCurrentVersion("draft");
+        }
+      } catch {
+        // silent
+      }
+    }, 800);
+    return () => clearTimeout(t);
+  }, [knowledgeConfig, effectiveAgentId]);
 
   useEffect(() => {
     if (importStatus === "ok") {
@@ -633,6 +883,8 @@ export function ManagePage() {
         setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
         setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
         setPolicies(next.policies ?? { enablePolicies: true, policies: [] });
+        setKnowledgeConfig(next.knowledge ? { ...DEFAULT_KNOWLEDGE_CONFIG, ...next.knowledge } : { ...DEFAULT_KNOWLEDGE_CONFIG });
+        setKnowledgeSavedSnapshot(next.knowledge ?? null);
         setCurrentVersion(version);
         addToast("success", "Version Loaded", `Loaded version ${version}`);
       } else {
@@ -649,7 +901,18 @@ export function ManagePage() {
     }
   };
 
+  const [showReindexConfirm, setShowReindexConfirm] = useState(false);
+
+  const handleSaveClick = () => {
+    if (knowledgeReindexNeeded && knowledgeDocCount > 0) {
+      setShowReindexConfirm(true);
+    } else {
+      saveConfig();
+    }
+  };
+
   const saveConfig = async () => {
+    setShowReindexConfirm(false);
     if (!agentName.trim()) {
       addToast("error", "Agent name required", "Please enter an agent name before publishing.");
       return;
@@ -663,26 +926,23 @@ export function ManagePage() {
       const res = await api.postManageConfig(toSave, effectiveAgentId);
       if (res.ok) {
         const data = await res.json();
-        console.log('[Save Config] Response data:', data);
-        
+
         // Check for partial status and tool errors
         const hasPartialErrors = data.status === "partial" && data.tool_errors;
-        console.log('[Save Config] Has partial errors:', hasPartialErrors);
-        
+
         if (hasPartialErrors) {
-          console.log('[Save Config] Processing tool errors:', data.tool_errors);
           // Show warning toast for each tool error
           Object.entries(data.tool_errors as Record<string, any>).forEach(([toolName, errorInfo]: [string, any]) => {
             const errorMsg = errorInfo.error || errorInfo.message || "Unknown error";
             const errorType = errorInfo.type ? ` (${errorInfo.type})` : "";
             addToast("warning", `Tool initialization failed: ${toolName}`, `${errorMsg}${errorType}`);
           });
-          
+
           // Show summary message
           const errorCount = Object.keys(data.tool_errors).length;
           addToast("info", "Configuration partially saved", data.message || `${errorCount} tool(s) failed to initialize`);
         }
-        
+
         // Also check for legacy partial_errors format
         if (data.partial_errors && Array.isArray(data.partial_errors) && data.partial_errors.length > 0) {
           data.partial_errors.forEach((error: any) => {
@@ -690,8 +950,70 @@ export function ManagePage() {
             addToast("warning", "Partial save error", errorMsg);
           });
         }
+
+        // Handle reindex: keep the publish button in "saving" state until done.
+        if (data.reindex && data.reindex.status === "started") {
+          const taskIds: string[] = data.reindex.task_ids ?? [];
+          const total = data.reindex.count ?? taskIds.length;
+          setSaveStatus("saving"); // keep spinner
+          addToast("info", "Publishing", `Re-indexing ${total} document(s)...`);
+
+          if (taskIds.length > 0) {
+            // Poll until all tasks complete, then finish the publish.
+            await new Promise<void>((resolve) => {
+              let polling = false;
+              const cleanup = () => { clearInterval(pollInterval); clearTimeout(timeoutId); resolve(); };
+
+              const pollInterval = setInterval(async () => {
+                if (polling) return;
+                polling = true;
+                try {
+                  const statuses = await Promise.all(
+                    taskIds.map((tid: string) =>
+                      api.getKnowledgeTaskStatus(tid)
+                        .then((r) => r.ok ? r.json() : { status: "unknown" })
+                        .catch(() => ({ status: "unknown" }))
+                    )
+                  );
+                  const completed = statuses.filter((t: any) => t.status === "completed").length;
+                  const failed = statuses.filter((t: any) => t.status === "failed").length;
+
+                  if (completed + failed >= taskIds.length) {
+                    cleanup();
+                    if (failed === 0) {
+                      addToast("success", "Re-index complete", `All ${completed} document(s) re-indexed.`);
+                    } else {
+                      addToast("warning", "Re-index partial", `${completed} succeeded, ${failed} failed.`);
+                    }
+                    api.listKnowledgeDocuments()
+                      .then((r) => r.ok ? r.json() : null)
+                      .then((d) => { if (d) setKnowledgeDocCount(d.documents?.length ?? 0); })
+                      .catch(() => {});
+                  }
+                } catch {
+                  cleanup();
+                } finally {
+                  polling = false;
+                }
+              }, 2000);
+
+              const timeoutId = setTimeout(() => {
+                cleanup();
+                addToast("warning", "Re-index timeout", "Still running. Check knowledge health.");
+              }, 300000); // 5 min timeout
+            });
+          }
+        } else if (data.reindex && data.reindex.status === "busy") {
+          addToast("warning", "Re-index deferred", "Uploads in progress. Re-publish after uploads complete.");
+        }
+
         setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
         setSaveStatus("success");
+        // Snapshot the knowledge config so reindex detection compares against
+        // the just-published state, not the initial load.
+        setKnowledgeSavedSnapshot({ ...knowledgeConfig });
+        // Refresh health/stale flags so warnings clear after publish + reindex.
+        refreshKnowledgeHealth();
         if (!hasPartialErrors && (!data.partial_errors || data.partial_errors.length === 0)) {
           addToast("success", "Configuration saved", "Your configuration has been saved successfully");
         }
@@ -799,11 +1121,20 @@ export function ManagePage() {
                 : DEFAULT_HOMESCREEN.starters ?? [],
             };
           }
+          if (raw.knowledge && typeof raw.knowledge === "object") {
+            out.knowledge = { ...DEFAULT_KNOWLEDGE_CONFIG, ...(raw.knowledge as Record<string, unknown>) };
+          }
+          if (raw.agent && typeof raw.agent === "object") {
+            const a = raw.agent as { name?: string; description?: string };
+            if (a.name) setAgentName(a.name);
+            if (a.description !== undefined) setAgentDescription(a.description);
+          }
           setLlmConfig(out.llm ?? DEFAULT_CONFIG.llm!);
           setToolsState(Array.isArray(out.tools) ? out.tools : []);
           setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
           setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
           setPolicies(out.policies ?? { enablePolicies: true, policies: [] });
+          setKnowledgeConfig(out.knowledge ?? { ...DEFAULT_KNOWLEDGE_CONFIG });
           setImportStatus("ok");
           setImportError(null);
           setTimeout(() => setImportStatus("idle"), 2500);
@@ -1153,6 +1484,7 @@ export function ManagePage() {
                     connectedApps={connectedApps}
                     connectedTools={connectedTools}
                     agentId={effectiveAgentId}
+                    builtinTools={featureFlags.builtin_tools}
                     onError={(title, message) => addToast("error", title, message)}
                     onOpenSecrets={() => setSecretsModalOpen(true)}
                   />
@@ -1300,6 +1632,50 @@ export function ManagePage() {
                   </Stack>
               </AccordionItem>
 
+              <AccordionItem title="Knowledge">
+                  <Stack gap={3} orientation="vertical">
+                    <div className="manage-knowledge-status">
+                      <span
+                        className="manage-knowledge-dot"
+                        style={{
+                          background:
+                            knowledgeHealthStatus === "starting" || knowledgeHealthy === null
+                              ? "#9ca3af"
+                              : knowledgeHealthy
+                              ? "#10b981"
+                              : "#ef4444",
+                        }}
+                      />
+                      <span className="cds--type-body-compact-01">
+                        {knowledgeHealthStatus === "starting" || knowledgeHealthy === null
+                          ? "Starting knowledge..."
+                          : knowledgeHealthy
+                          ? `Connected${knowledgeDocCount > 0 ? ` · ${knowledgeDocCount} document${knowledgeDocCount !== 1 ? "s" : ""} indexed` : ""}`
+                          : knowledgeHealthStatus === "disabled"
+                          ? "Disabled"
+                          : "Disconnected"}
+                      </span>
+                    </div>
+                    {(knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
+                      <InlineNotification
+                        kind="warning"
+                        title="Re-index recommended"
+                        subtitle="Settings changed. Existing documents may use outdated embeddings."
+                        lowContrast
+                        hideCloseButton
+                      />
+                    )}
+                    <Button
+                      kind="secondary"
+                      size="sm"
+                      renderIcon={DocumentIcon}
+                      onClick={() => setShowKnowledgeModal(true)}
+                    >
+                      Configure knowledge base
+                    </Button>
+                  </Stack>
+              </AccordionItem>
+
               <AccordionItem title="Version History">
                   <p className="cds--type-helper-text-01 manage-history-helper">
                     Click a version to set it as your current configuration.
@@ -1369,7 +1745,7 @@ export function ManagePage() {
                     <Button
                       kind="primary"
                       renderIcon={Save}
-                      onClick={saveConfig}
+                      onClick={handleSaveClick}
                       disabled={saveStatus === "saving"}
                       className="manage-save-bar-button"
                     >
@@ -1419,8 +1795,15 @@ export function ManagePage() {
             <CarbonChat
               contained={true}
               useDraft={true}
+              attachmentScope="agent"
+              knowledgeEnabled={knowledgeConfig.enabled ?? true}
+              agentKnowledgeEnabled={knowledgeConfig.agent_level_enabled ?? true}
               disableHistory={true}
               homescreen={homescreen}
+              sessionDocsVersion={knowledgeDocsVersion}
+              onSessionDocsChanged={() => handleKnowledgeDocsChanged()}
+              onOpenKnowledge={() => setShowKnowledgeModal(true)}
+              onPreviewKnowledgeAttachment={handlePreviewKnowledgeAttachment}
             />
           </div>
         </Layer>
@@ -1471,9 +1854,125 @@ export function ManagePage() {
         <PoliciesConfig
           draftMode={true}
           onClose={() => setShowPoliciesModal(false)}
-          onSave={(policies) => setPolicies(policies)}
+          onSave={(policies: any) => setPolicies(policies)}
         />
       )}
+
+      {showKnowledgeModal && (
+        <KnowledgePanel
+          onClose={() => setShowKnowledgeModal(false)}
+          onDocsChanged={handleKnowledgeDocsChanged}
+          onHealthChanged={(healthy) => {
+            setKnowledgeHealthy(healthy);
+            setKnowledgeHealthStatus(healthy ? "ready" : "failed");
+          }}
+          onToast={(kind: "error" | "success" | "warning", title: string, message: string) => addToast(kind, title, message)}
+          knowledgeConfig={knowledgeConfig}
+          onKnowledgeConfigChange={setKnowledgeConfig}
+          knowledgeReindexNeeded={knowledgeReindexNeeded}
+          knowledgeStale={knowledgeStale}
+          knowledgeReindexDeferred={knowledgeReindexDeferred}
+          knowledgeReindexing={knowledgeReindexing}
+          ragProfiles={ragProfiles}
+          onReindex={async () => {
+            setKnowledgeReindexing(true);
+            try {
+              const res = await api.triggerKnowledgeReindex();
+              if (res.ok) {
+                const data = await res.json();
+                setKnowledgeReindexing(false);
+                // Settings have been applied — update snapshot so the
+                // "reindex needed" warning clears.
+                setKnowledgeSavedSnapshot({ ...knowledgeConfig });
+                return { count: data.count ?? 0, task_ids: data.task_ids ?? [] };
+              } else if (res.status === 409) {
+                addToast("warning", "Cannot re-index", "Uploads in progress. Try again later.");
+              } else {
+                addToast("error", "Re-index failed", `Error ${res.status}`);
+              }
+            } catch {
+              addToast("error", "Re-index failed", "Network error");
+            }
+            setKnowledgeReindexing(false);
+            return null;
+          }}
+        />
+      )}
+
+      {showReindexConfirm && (
+        <ComposedModal
+          open
+          onClose={() => setShowReindexConfirm(false)}
+          size="sm"
+        >
+          <ModalHeader title="Re-index required" />
+          <ModalBody>
+            <p>
+              Embedding or chunking settings changed. Publishing will re-index{" "}
+              {knowledgeDocCount} document{knowledgeDocCount !== 1 ? "s" : ""} in the background.
+              Search may return incomplete results during re-indexing.
+            </p>
+          </ModalBody>
+          <ModalFooter>
+            <Button kind="secondary" onClick={() => setShowReindexConfirm(false)}>
+              Cancel
+            </Button>
+            <Button kind="danger" onClick={() => saveConfig()}>
+              Publish &amp; Re-index
+            </Button>
+          </ModalFooter>
+        </ComposedModal>
+      )}
+
+      <ComposedModal
+        open={!!knowledgePreviewModal}
+        onClose={closeKnowledgePreviewModal}
+        size="lg"
+        isFullWidth
+      >
+        <ModalHeader
+          title={knowledgePreviewModal?.attachment.display_name ?? ""}
+          buttonOnClick={closeKnowledgePreviewModal}
+        />
+        <ModalBody hasScrollingContent>
+          {knowledgePreviewModal && (
+            knowledgePreviewModal.isPdf ? (
+              <iframe
+                title={knowledgePreviewModal.attachment.display_name}
+                src={knowledgePreviewModal.downloadUrl}
+                style={{ width: "100%", minHeight: "70vh", border: "none" }}
+              />
+            ) : (
+              <div className="manage-json-viewer-markdown">
+                <Markdown>
+                  {knowledgePreviewModal.attachment.display_name.toLowerCase().endsWith(".md")
+                    ? knowledgePreviewModal.content ?? ""
+                    : `\`\`\`\n${knowledgePreviewModal.content ?? ""}\n\`\`\``}
+                </Markdown>
+              </div>
+            )
+          )}
+        </ModalBody>
+        {knowledgePreviewModal && (
+          <ModalFooter>
+            <Button
+              kind="secondary"
+              renderIcon={Download}
+              onClick={() => {
+                const anchor = document.createElement("a");
+                anchor.href = knowledgePreviewModal.downloadUrl;
+                anchor.download = knowledgePreviewModal.attachment.display_name;
+                anchor.click();
+              }}
+            >
+              Download
+            </Button>
+            <Button kind="primary" onClick={closeKnowledgePreviewModal}>
+              Close
+            </Button>
+          </ModalFooter>
+        )}
+      </ComposedModal>
 
       <ComposedModal
         open={!!viewVersion}
@@ -1489,7 +1988,7 @@ export function ManagePage() {
           {viewVersion && (
             <div className="manage-json-viewer-markdown">
               <Markdown>
-                {"```json\n" + JSON.stringify(maskSecrets(viewVersion.config), null, 2) + "\n```"}
+                {"```json\n" + JSON.stringify(maskSecrets((() => { const { knowledge_state: _ks, ...rest } = viewVersion.config as Record<string, unknown>; return rest; })()), null, 2) + "\n```"}
               </Markdown>
             </div>
           )}
@@ -1527,6 +2026,8 @@ export function ManagePage() {
                 setFeatureFlags(next.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
                 setHomescreen(next.homescreen ?? DEFAULT_HOMESCREEN);
                 setPolicies(next.policies ?? { enablePolicies: true, policies: [] });
+                setKnowledgeConfig(next.knowledge ? { ...DEFAULT_KNOWLEDGE_CONFIG, ...next.knowledge } : { ...DEFAULT_KNOWLEDGE_CONFIG });
+                setKnowledgeSavedSnapshot(next.knowledge ?? null);
                 setCurrentVersion(viewVersion.version);
                 setViewVersion(null);
                 addToast("success", "Version loaded", `Version ${viewVersion.version} is now your current configuration`);
@@ -1551,10 +2052,7 @@ export function ManagePage() {
           maxWidth: "400px"
         }}
       >
-        {console.log('[Toast Debug] Rendering toasts:', toastNotifications)}
-        {toastNotifications.map((toast: { id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }) => {
-          console.log('[Toast Debug] Rendering individual toast:', toast);
-          return (
+        {toastNotifications.map((toast: { id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }) => (
             <ToastNotification
               key={toast.id}
               kind={toast.kind}
@@ -1564,8 +2062,7 @@ export function ManagePage() {
               onClose={() => removeToast(toast.id)}
               lowContrast
             />
-          );
-        })}
+        ))}
       </div>
     </div>
   );

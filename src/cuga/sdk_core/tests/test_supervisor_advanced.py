@@ -108,6 +108,7 @@ class TestSupervisorAdvanced:
         supervisor = CugaSupervisor(
             agents={"user_finder": agent_a, "account_manager": agent_b, "bonus_processor": agent_c},
             callbacks=callbacks_supervisor,
+            cuga_lite_max_steps=120,
         )
 
         # The task requires sequential logic and variable passing

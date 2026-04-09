@@ -49,7 +49,7 @@ async def setup_policy_storage(
     # For tests, prefer local embeddings (more reliable, no API key needed)
     # But allow override via environment variable
     final_provider = os.getenv("POLICY_EMBEDDING_PROVIDER", embedding_provider)
-    final_model = os.getenv("POLICY_EMBEDDING_MODEL", embedding_model) or "all-MiniLM-L6-v2"
+    final_model = os.getenv("POLICY_EMBEDDING_MODEL", embedding_model) or "BAAI/bge-small-en-v1.5"
 
     # Get correct embedding dimension for the model
     from cuga.backend.cuga_graph.policy.utils import get_embedding_dimension
@@ -69,9 +69,9 @@ async def setup_policy_storage(
         raise ValueError(
             f"Failed to initialize embedding function with provider '{final_provider}' and model '{final_model}'. "
             f"Please ensure:\n"
-            f"  1. For 'local' provider: Install 'sentence-transformers' package\n"
+            f"  1. For 'local' provider: Install 'fastembed' package\n"
             f"  2. For 'openai' provider: Set OPENAI_API_KEY environment variable\n"
-            f"  3. For 'auto' provider: Either install 'sentence-transformers' or set OPENAI_API_KEY"
+            f"  3. For 'auto' provider: Either install 'fastembed' or set OPENAI_API_KEY"
         )
 
     return storage

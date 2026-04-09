@@ -2,7 +2,7 @@ import json
 import uuid
 from typing import Literal, Optional, Dict, Callable
 
-from langchain_core.messages import HumanMessage, ToolCall, BaseMessage
+from langchain_core.messages import HumanMessage, ToolCall, BaseMessage, ToolMessage
 from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
@@ -85,6 +85,41 @@ class ChatNode(BaseNode):
         return instance
 
     @staticmethod
+    async def _execute_direct_tool_calls(
+        state: AgentState,
+        agent: ChatAgent,
+        initial_response: BaseMessage,
+        max_round_trips: int = 4,
+    ) -> BaseMessage:
+        response = initial_response
+        round_trips = 0
+
+        while (
+            getattr(response, "tool_calls", None)
+            and response.tool_calls
+            and round_trips < max_round_trips
+            and all(
+                agent.should_auto_execute_tool(tool_call.get("name")) for tool_call in response.tool_calls
+            )
+        ):
+            for raw_tool_call in response.tool_calls:
+                tool = ToolCall(**raw_tool_call)
+                tool_result = await agent.execute_tool(tool)
+                state.chat_agent_messages.append(
+                    ToolMessage(
+                        content=agent._serialize_tool_result(tool_result),
+                        tool_call_id=raw_tool_call.get("id", raw_tool_call.get("name", "tool_call")),
+                        name=raw_tool_call.get("name"),
+                    )
+                )
+
+            response = await agent.invoke(state.chat_agent_messages, state)
+            state.chat_agent_messages.append(response)
+            round_trips += 1
+
+        return response
+
+    @staticmethod
     def format_function_call(func_dict):
         name = func_dict["name"]
         args = func_dict["args"]
@@ -151,6 +186,10 @@ class ChatNode(BaseNode):
         state.chat_agent_messages.append(HumanMessage(content=state.input))
         res: BaseMessage = await agent.invoke(state.chat_agent_messages, state)
         state.chat_agent_messages.append(res)
+
+        if res.tool_calls:
+            res = await ChatNode._execute_direct_tool_calls(state, agent, res)
+
         # Handle tool calls - require human approval
         if ENABLE_SAVE_REUSE and res.tool_calls and res.tool_calls[0].get("name") == "run_new_flow":
             state.final_answer = state.chat_agent_messages[-1].content
@@ -158,7 +197,11 @@ class ChatNode(BaseNode):
             state.hitl_action = create_new_flow_approve(tool=res.tool_calls[0])
             return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
 
-        if ENABLE_SAVE_REUSE and res.tool_calls:
+        if (
+            ENABLE_SAVE_REUSE
+            and res.tool_calls
+            and agent.requires_human_approval(res.tool_calls[0].get("name"))
+        ):
             state.final_answer = state.chat_agent_messages[-1].content
             state.sender = name
             state.hitl_action = create_flow_approve(tool=res.tool_calls[0])

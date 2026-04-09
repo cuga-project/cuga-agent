@@ -19,8 +19,11 @@ case "$MODE" in
   docs|demo_docs)
     exec uv run cuga start demo_docs --host 0.0.0.0
     ;;
+  knowledge|demo_knowledge)
+    exec uv run cuga start demo_knowledge --host 0.0.0.0
+    ;;
   *)
-    echo "Unknown CUGA_DEMO_MODE=$MODE. Use: default, crm, digital_sales, health, docs (or demo_docs)"
+    echo "Unknown CUGA_DEMO_MODE=$MODE. Use: default, crm, digital_sales, health, docs (or demo_docs), knowledge (or demo_knowledge)"
     exit 1
     ;;
 esac

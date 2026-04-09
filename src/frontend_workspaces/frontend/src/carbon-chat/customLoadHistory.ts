@@ -41,6 +41,13 @@ interface ConversationMessage {
   metadata?: {
     type: string;
     message_type?: string;
+    attachments?: Array<{
+      knowledge_filename: string;
+      display_name: string;
+      mime_type?: string;
+      size_bytes?: number;
+      scope?: string;
+    }>;
   };
 }
 
@@ -81,18 +88,28 @@ async function customLoadHistory(
       const actualData = extractEventData(event.event_data);
 
       switch (event.event_name) {
-        case "UserMessage":
+        case "UserMessage": {
+          let userText = actualData;
+          try {
+            const parsed = JSON.parse(actualData);
+            if (typeof parsed?.text === "string") {
+              userText = parsed.text;
+            }
+          } catch {
+            // Keep legacy plain-text event payloads as-is.
+          }
           history.push({
             message: {
               id: generateMessageId(event.timestamp, "user"),
               input: {
-                text: actualData,
+                text: userText,
                 message_type: MessageInputType.TEXT,
               },
             } as MessageRequest,
             time: event.timestamp,
           });
           break;
+        }
 
         case "FinalAnswerAgent":
           try {

@@ -224,6 +224,26 @@ export async function postManageConfig(config: unknown, agentId?: string): Promi
   });
 }
 
+export async function patchManageConfigDraftKnowledge(
+  knowledge: unknown,
+  agentId?: string
+): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft/knowledge${q}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ knowledge }),
+  });
+}
+
+export function triggerKnowledgeReindex(): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/reindex", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope: "agent" }),
+  });
+}
+
 export async function getToolsList(draft?: boolean): Promise<Response> {
   const q = draft ? "?draft=1" : "";
   return apiFetch(`/api/tools/list${q}`);
@@ -299,4 +319,177 @@ export async function deleteSecret(id: string): Promise<Response> {
   return apiFetch(`/api/secrets/${encodeURIComponent(id)}`, {
     method: "DELETE",
   });
+}
+
+// ---------------------------------------------------------------------------
+// Knowledge API (unified — LangChain + Milvus Lite engine)
+// ---------------------------------------------------------------------------
+
+// Current agent context — set by the app when agent is selected
+let _knowledgeAgentId = "default";
+export function setKnowledgeAgentId(agentId: string) {
+  _knowledgeAgentId = agentId;
+}
+
+/**
+ * Central knowledge API helper. Injects X-Agent-ID and optional X-Thread-ID
+ * on every knowledge request. All knowledge calls MUST go through this helper.
+ */
+function knowledgeApiFetch(
+  url: string,
+  init?: RequestInit,
+  threadId?: string
+): Promise<Response> {
+  const headers: Record<string, string> = {
+    ...(init?.headers as Record<string, string> || {}),
+    "X-Agent-ID": _knowledgeAgentId,
+  };
+  if (threadId) {
+    headers["X-Thread-ID"] = threadId;
+  }
+  return apiFetch(url, { ...init, headers });
+}
+
+// --- Health & Settings ---
+
+export function getKnowledgeHealth(): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/health");
+}
+
+export function enableKnowledge(): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/enable", { method: "POST" });
+}
+
+export function getKnowledgeSettings(): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/settings");
+}
+
+export function updateKnowledgeSettings(settings: Record<string, unknown>): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/settings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(settings),
+  });
+}
+
+// --- Documents (agent scope) ---
+
+export function uploadKnowledgeDocuments(files: File[], replaceDuplicates = true): Promise<Response> {
+  const formData = new FormData();
+  files.forEach((f) => formData.append("files", f));
+  formData.append("scope", "agent");
+  formData.append("replace_duplicates", String(replaceDuplicates));
+  return knowledgeApiFetch("/api/knowledge/documents", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function uploadKnowledgeDocument(file: File, replaceDuplicates = true): Promise<Response> {
+  const formData = new FormData();
+  formData.append("files", file);
+  formData.append("scope", "agent");
+  formData.append("replace_duplicates", String(replaceDuplicates));
+  return knowledgeApiFetch("/api/knowledge/documents", {
+    method: "POST",
+    body: formData,
+  });
+}
+
+export function listKnowledgeDocuments(): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/documents?scope=agent");
+}
+
+export function deleteKnowledgeDocument(filename: string): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/documents", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope: "agent", filename }),
+  });
+}
+
+export function getKnowledgeDocumentFile(
+  scope: "agent" | "session",
+  filename: string,
+  threadId?: string
+): Promise<Response> {
+  const params = new URLSearchParams({
+    scope,
+    filename,
+  });
+  return knowledgeApiFetch(`/api/knowledge/documents/file?${params.toString()}`, undefined, threadId);
+}
+
+// --- Search ---
+
+export function searchKnowledge(
+  query: string,
+  limit = 10,
+  scoreThreshold = 0
+): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/search", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope: "agent", query, limit, score_threshold: scoreThreshold, include_scores: true }),
+  });
+}
+
+// --- Tasks ---
+
+export function getKnowledgeTasks(): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/tasks?scope=agent");
+}
+
+export function getKnowledgeTaskStatus(taskId: string): Promise<Response> {
+  return knowledgeApiFetch(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`);
+}
+
+export function cancelKnowledgeTask(taskId: string): Promise<Response> {
+  return knowledgeApiFetch(`/api/knowledge/tasks/${encodeURIComponent(taskId)}/cancel`, {
+    method: "POST",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Session-level knowledge (scope=session via unified API)
+// ---------------------------------------------------------------------------
+
+export function uploadSessionKnowledgeDocuments(
+  threadId: string,
+  files: File[],
+  replaceDuplicates = true
+): Promise<Response> {
+  const formData = new FormData();
+  files.forEach((f) => formData.append("files", f));
+  formData.append("scope", "session");
+  formData.append("replace_duplicates", String(replaceDuplicates));
+  return knowledgeApiFetch("/api/knowledge/documents", {
+    method: "POST",
+    body: formData,
+  }, threadId);
+}
+
+export function listSessionKnowledgeDocuments(
+  threadId: string
+): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/documents?scope=session", undefined, threadId);
+}
+
+export function deleteSessionKnowledgeDocument(
+  threadId: string,
+  filename: string
+): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/documents", {
+    method: "DELETE",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ scope: "session", filename }),
+  }, threadId);
+}
+
+export function deleteSessionKnowledgeCollection(
+  threadId: string
+): Promise<Response> {
+  return knowledgeApiFetch("/api/knowledge/session", {
+    method: "DELETE",
+  }, threadId);
 }

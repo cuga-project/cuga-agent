@@ -79,6 +79,7 @@ async def test_agent_registry_loading_from_db(mock_db_tools):
                     ]
                     manager.mcp_clients[name] = config.command
                     manager.auth_config[name] = config.auth
+                    manager._set_service_status(name, "ready", "Mock MCP initialized")
 
             mock_init.side_effect = mock_initialize
 

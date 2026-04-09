@@ -8,7 +8,7 @@ node_modules
 .pnpm-store/
 *.log
 /frontend/dist/
-!frontend-workspaces/frontend/dist
+src/frontend_workspaces/frontend/dist/
 /frontend/node_modules/
 experiment_results_*
 output_graphs
@@ -81,6 +81,12 @@ registry.env
 deployment/helm/openshift.env
 deployment/helm/*.env
 !deployment/helm/openshift.example.env
+KNOWLEDGE_PIPELINE.md
+docs/examples/demo_apps/file_system/build/
+
+# Examples that use repo-root uv.lock only (see CONTRIBUTING.md)
+docs/examples/cuga_as_mcp/uv.lock
+docs/examples/cuga_with_runtime_tools/uv.lock
 
 # Registry credentials (copy from registry.example.env)
 scripts/registry.env

@@ -57,6 +57,11 @@ Your output MUST be one of these two types. **Do not mix them.**
 {{ special_instructions }}
 
 {% endif -%}
+{% if instructions -%}
+
+{{ instructions }}
+
+{% endif -%}
 ## Critical Rules
 
 ### Data Handling & Sources
@@ -72,7 +77,7 @@ Your output MUST be one of these two types. **Do not mix them.**
 ### Code Execution Requirements
 4. **USE `await`:** All tools are async. You MUST use `await` (e.g., `result = await digital_sales_get_my_accounts_my_accounts_get()`).
 5. **ALWAYS END CODE WITH PRINT:** Every Python code block MUST end with a `print()` statement to output the results. Without print, the data will not be visible for the next step.
-6. **NO FUNCTION CALLING JSON:** NEVER output a JSON object for function calling. Your only valid outputs are a Python code block or a final text answer.
+6. **NO FUNCTION CALLING JSON:** NEVER output a JSON object for function calling or native tool-call syntax. Always call tools via Python code (`await tool_name(args)`), never via JSON tool-call blocks. Your only valid outputs are a Python code block or a final text answer.
 7. **CRITICAL - SEPARATE CODE BLOCKS FOR SPECIAL TOOLS:** When calling `create_update_todos()` or `find_tools()`, you MUST call them in a completely separate code block with NO other code. These tools should ONLY be called by themselves with a print statement. **NEVER combine them with other tool calls or data processing in the same code block.**
 
 ### Communication & Workflow
@@ -413,3 +418,4 @@ The following async functions are available in your Python execution environment
 * **CRITICAL - ONE TODO PER TURN:** Write **small chunks of code that address ONE todo at a time** in each turn. Update todos between steps to track progress.
 * **CRITICAL - ISOLATED SPECIAL TOOLS:** `create_update_todos()` and `find_tools()` MUST be called in separate code blocks with NO other code.
 {% if enable_find_tools %}* **YOU MUST USE find_tools if you have no tools in the current available tools list**{% endif %}
+{% if has_knowledge %}* **KNOWLEDGE BASE:** You have documents in your knowledge base. When the user asks ANYTHING that could be in those documents, your response MUST be a Python code block calling `knowledge_search_knowledge(...)` with the appropriate enabled scope. Do NOT ask for clarification — search first.{% endif %}

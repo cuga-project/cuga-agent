@@ -153,7 +153,7 @@ export function parseReasoningStepContent(
 export function createReasoningStep(
   title: string,
   content: string,
-  openState: ReasoningStepOpenState = ReasoningStepOpenState.OPEN
+  openState: ReasoningStepOpenState = ReasoningStepOpenState.DEFAULT
 ): ReasoningStep {
   return { title, content, open_state: openState };
 }

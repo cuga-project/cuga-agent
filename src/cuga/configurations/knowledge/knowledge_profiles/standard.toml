@@ -1,0 +1,16 @@
+[profile]
+name = "Standard"
+description = "Balanced speed and accuracy. Multi-hop retrieval with moderate result counts. Works well for most use cases."
+
+[search]
+max_search_attempts = 2
+default_limit = 15
+default_score_threshold = 0.0
+
+[chunking]
+chunk_size = 1000
+chunk_overlap = 200
+
+[instructions]
+# No addendum — the base knowledge_instructions.md is calibrated for this profile.
+addendum = ""

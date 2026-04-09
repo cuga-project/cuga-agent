@@ -91,7 +91,7 @@ pytest -v cuga/backend/tools_env/registry/tests/
 - Start the server:
   ```bash
   cd ./docs/examples/cuga_with_runtime_tools
-  uv run python fast_mcp_example.py &
+  uv run --project ../../../ python fast_mcp_example.py &
   ```
 
 ### For E2E Tests

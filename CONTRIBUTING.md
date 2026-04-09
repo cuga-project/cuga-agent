@@ -154,6 +154,12 @@ Must:
 - If your change touches the browser/env, verify relevant demos still run.
 - Update README.md or docs if only needed, discuss before
 
+## Dependency lockfile (`uv.lock`)
+
+Only the **repository root** `uv.lock` is committed. After changing dependencies in the root `pyproject.toml`, run `uv lock` from the repo root.
+
+Examples under `docs/examples/cuga_as_mcp` and `docs/examples/cuga_with_runtime_tools` do **not** carry their own lockfiles: they resolve `cuga` from a path dependency and reuse the root lockfile’s resolution (including root-only `[tool.uv.dependency-metadata]`). Run commands from the example directory with `uv run --project ../../../ …` so `uv` uses the root project; see each example README.
+
 ## Security Scanning
 
 Before committing, run security scanning to detect potential secrets:

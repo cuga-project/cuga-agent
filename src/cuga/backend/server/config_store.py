@@ -126,6 +126,31 @@ async def save_config(config: dict[str, Any], agent_id: str = "cuga-default") ->
         await store.close()
 
 
+async def update_published_config_at_version(config: dict[str, Any], agent_id: str, version: str) -> None:
+    """Replace config_json for an existing published version without bumping the version number."""
+    if not version or version == "draft" or not str(version).isdigit():
+        raise ValueError("version must be a numeric published version string")
+    normalize_policies_for_save(config)
+    base_agent_id = _parse_agent_id(agent_id)
+    store = _get_store()
+    tenant_id = _tenant_id()
+    inst_id = _instance_id()
+    try:
+        await _ensure_schema(store)
+        now = datetime.utcnow().isoformat()
+        await store.execute(
+            """
+            UPDATE agent_configs
+            SET config_json = ?, updated_at = ?
+            WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version = ?
+            """,
+            (json.dumps(config), now, tenant_id, inst_id, base_agent_id, version),
+        )
+        await store.commit()
+    finally:
+        await store.close()
+
+
 async def load_config(
     version: str | None = None, agent_id: str = "cuga-default"
 ) -> tuple[dict[str, Any] | None, str | None]:

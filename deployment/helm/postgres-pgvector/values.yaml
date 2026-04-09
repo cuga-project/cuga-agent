@@ -3,6 +3,9 @@ image:
   tag: pg16
   pullPolicy: IfNotPresent
 
+# Optional (e.g. Docker Hub authenticated pulls). K8s format: [{ name: "secret-name" }]
+imagePullSecrets: []
+
 auth:
   database: cuga
   username: cuga

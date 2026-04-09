@@ -52,6 +52,8 @@ class CugaSupervisorState(AgentState):
     # Metadata for tracking
     supervisor_metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    cuga_lite_max_steps: Optional[int] = None
+
     class Config:
         arbitrary_types_allowed = True
 

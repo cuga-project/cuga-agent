@@ -6,7 +6,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo ""
     echo "Test runner script:"
     echo "  (no args)    Run default tests (registry + e2e + memory + stability tests)"
-    echo "  unit_tests         Run unit tests only (registry + variables manager + sandbox + E2B lite)"
+    echo "  unit_tests         Run unit tests only (registry + variables manager + sandbox + E2B lite + knowledge)"
     echo "  --skip-stability   Run all tests except stability tests"
     echo "  --help, -h   Show this help message"
     echo ""
@@ -86,6 +86,15 @@ echo "Running unit tests (registry + variables manager + local sandbox + E2B lit
 run_pytest ./src/cuga/backend/tools_env/registry/tests/
 run_pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
 run_pytest_with_e2b ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
+echo "Running knowledge tests..."
+run_pytest \
+    tests/unit/test_knowledge_engine.py \
+    tests/unit/test_session_knowledge.py \
+    tests/unit/test_knowledge_routes.py \
+    tests/unit/test_cuga_lite_knowledge_scopes.py \
+    tests/unit/test_chat_knowledge_mode.py \
+    tests/unit/test_chat_agent_knowledge_toggle.py \
+    tests/integration/test_knowledge_integration.py
 echo "✅ All unit tests passed!"
 
 # Check for test type flag

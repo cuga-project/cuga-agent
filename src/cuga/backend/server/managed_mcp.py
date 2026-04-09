@@ -132,10 +132,32 @@ def write_managed_mcp_yaml(config: dict[str, Any], path: str | None = None) -> s
 
 
 async def get_tools_from_agent_config(agent_id: str) -> list[dict[str, Any]]:
-    """Get all tools for an agent from their config in database."""
-    from cuga.backend.server.config_store import get_agent_tools
+    """Get all tools for an agent from their config in database.
 
-    return await get_agent_tools(agent_id)
+    Automatically includes the knowledge tool when the knowledge engine is
+    enabled, matching the same pattern used during initial setup.
+    """
+    from cuga.backend.server.config_store import _parse_agent_id, load_config, load_draft
+    from cuga.backend.server.demo_manage_setup import _get_knowledge_tool, _knowledge_configured
+
+    base_agent_id = _parse_agent_id(agent_id)
+    version = "draft" if str(agent_id).endswith("--draft") else None
+    if version == "draft":
+        config = await load_draft(base_agent_id) or {}
+        tools = config.get("tools", []) or []
+    else:
+        config, _ = await load_config(None, base_agent_id)
+        tools = (config or {}).get("tools", []) or []
+
+    knowledge_cfg = (config or {}).get("knowledge", {}) or {}
+    knowledge_enabled = knowledge_cfg.get("enabled", True) and (
+        knowledge_cfg.get("agent_level_enabled", True) or knowledge_cfg.get("session_level_enabled", True)
+    )
+    tools = [t for t in tools if t.get("name") != "knowledge" or knowledge_enabled]
+
+    if knowledge_enabled and _knowledge_configured() and not any(t.get("name") == "knowledge" for t in tools):
+        tools.append(_get_knowledge_tool())
+    return tools
 
 
 async def get_registry_yaml_from_agent_config(agent_id: str) -> dict[str, Any]:

@@ -12,7 +12,11 @@ class LocalRelationalStore:
         if self._conn is None:
             self._conn = sqlite3.connect(self._db_path, check_same_thread=False)
             self._conn.row_factory = sqlite3.Row
+            self._on_connection_opened(self._conn)
         return self._conn
+
+    def _on_connection_opened(self, conn: sqlite3.Connection) -> None:
+        """Called once when the SQLite connection is created. Subclasses may override (e.g. PRAGMA)."""
 
     def _execute_sync(self, sql: str, params: tuple = ()) -> None:
         cur = self._get_conn().execute(sql, params)

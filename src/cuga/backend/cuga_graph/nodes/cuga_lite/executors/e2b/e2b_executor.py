@@ -12,6 +12,29 @@ from ..base_executor import RemoteExecutor
 class E2BExecutor(RemoteExecutor):
     """Handles code execution in E2B remote sandbox."""
 
+    _KNOWLEDGE_POSITIONAL_ARGS = {
+        "knowledge_search_knowledge": [
+            "query",
+            "scope",
+            "limit",
+            "score_threshold",
+            "agent_id",
+            "thread_id",
+        ],
+        "knowledge_ingest_knowledge": [
+            "file_path",
+            "scope",
+            "replace_duplicates",
+            "agent_id",
+            "thread_id",
+        ],
+        "knowledge_ingest_knowledge_url": ["url", "scope", "agent_id", "thread_id"],
+        "knowledge_list_knowledge_documents": ["scope", "agent_id", "thread_id"],
+        "knowledge_delete_knowledge_document": ["filename", "scope", "agent_id", "thread_id"],
+        "knowledge_get_ingestion_status": ["task_id", "agent_id"],
+        "knowledge_get_knowledge_status": ["agent_id"],
+    }
+
     async def execute_for_cuga_lite(
         self,
         wrapped_code: str,
@@ -142,6 +165,11 @@ if __name__ == "__main__":
                 continue
 
             try:
+                knowledge_scopes = getattr(tool_func, "_knowledge_allowed_scopes", None)
+                if knowledge_scopes is not None:
+                    lines.append(self._serialize_knowledge_tool_stub(tool_name, tool_func))
+                    continue
+
                 source = inspect.getsource(tool_func)
                 dedented_source = textwrap.dedent(source)
 
@@ -178,6 +206,39 @@ if __name__ == "__main__":
                 lines.append(stub)
 
         return "\n".join(lines) + "\n\n" if len(lines) > 1 else ""
+
+    def _serialize_knowledge_tool_stub(self, tool_name: str, tool_func: Any) -> str:
+        allowed_scopes = tuple(getattr(tool_func, "_knowledge_allowed_scopes", ()))
+        default_scope = getattr(tool_func, "_knowledge_default_scope", None)
+        thread_id = getattr(tool_func, "_knowledge_thread_id", "") or ""
+        positional_names = self._KNOWLEDGE_POSITIONAL_ARGS.get(tool_name, [])
+        allowed_scopes_repr = repr(list(allowed_scopes))
+        positional_names_repr = repr(positional_names)
+        default_scope_line = f'            kwargs["scope"] = "{default_scope}"\n' if default_scope else ""
+        thread_id_line = (
+            f'        kwargs.setdefault("thread_id", "{thread_id}")\n'
+            if thread_id and "session" in allowed_scopes
+            else ""
+        )
+        default_scope_block = default_scope_line if default_scope_line else "            pass\n"
+        thread_id_block = thread_id_line if thread_id_line else ""
+
+        return f"""async def {tool_name}(*args, **kwargs):
+    \"\"\"Context-aware knowledge tool stub for remote execution.\"\"\"
+    positional_names = {positional_names_repr}
+    for name, value in zip(positional_names, args):
+        kwargs.setdefault(name, value)
+    allowed_scopes = {allowed_scopes_repr}
+    if allowed_scopes:
+        if "scope" not in kwargs:
+{default_scope_block}
+        scope = kwargs.get("scope")
+        if scope not in allowed_scopes:
+            allowed_text = ", ".join(allowed_scopes)
+            return {{"error": f"Knowledge scope '{{scope}}' is unavailable in this context. Allowed scopes: {{allowed_text}}"}}
+{thread_id_block}
+    return await call_api("knowledge", "{tool_name}", kwargs)
+"""
 
     def _parse_execution_output(self, raw_output: str) -> tuple[str, dict[str, Any]]:
         """Parse execution output to extract result and locals.
