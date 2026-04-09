@@ -940,6 +940,69 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
           outputElements.push(newElem);
         }
 
+        // Detect knowledge tool results by tool identity
+        const toolName = parsedContent?.additional_data?.tool?.name || "";
+        if (toolName.endsWith("search_knowledge")) {
+          try {
+            const searchData = typeof parsedContent.data === "string"
+              ? JSON.parse(parsedContent.data)
+              : parsedContent.data || parsedContent;
+            if (searchData?.results) {
+              const resultItems = searchData.results as Array<{ filename: string; page?: number; content: string; score: number }>;
+              outputElements.push(
+                <div key="knowledge-search" className="knowledge-results">
+                  <div className="knowledge-results-header">📚 Knowledge Search Results ({resultItems.length})</div>
+                  {resultItems.map((r: any, i: number) => (
+                    <div key={i} className="knowledge-result-item">
+                      <div className="knowledge-result-meta">
+                        <span className="knowledge-result-filename">📄 {r.filename}{r.page != null && <span className="knowledge-result-page"> p.{r.page}</span>}</span>
+                        <span className="knowledge-result-score" style={{ color: r.score > 0.8 ? "#10b981" : r.score > 0.5 ? "#f59e0b" : "#ef4444" }}>
+                          {(r.score * 100).toFixed(0)}%
+                        </span>
+                      </div>
+                      <p className="knowledge-result-content">{r.content?.length > 300 ? r.content.slice(0, 300) + "..." : r.content}</p>
+                    </div>
+                  ))}
+                </div>
+              );
+              return <div>{outputElements}</div>;
+            }
+          } catch { /* fall through to default rendering */ }
+        }
+        if (toolName.endsWith("chat_knowledge")) {
+          try {
+            const chatData = typeof parsedContent.data === "string"
+              ? JSON.parse(parsedContent.data)
+              : parsedContent.data || parsedContent;
+            if (chatData?.response || chatData?.sources) {
+              const sources = (chatData.sources || []) as Array<{ filename: string; page?: number; content: string; relevance_score: number }>;
+              outputElements.push(
+                <div key="knowledge-chat" className="knowledge-results">
+                  <div className="knowledge-results-header">📚 Knowledge Answer</div>
+                  {chatData.response && <p className="knowledge-chat-response">{chatData.response}</p>}
+                  {sources.length > 0 && (
+                    <details style={{ marginTop: 8 }}>
+                      <summary style={{ cursor: "pointer", fontSize: 13, color: "#6b7280", fontWeight: 500 }}>Sources ({sources.length})</summary>
+                      {sources.map((s: any, i: number) => (
+                        <div key={i} className="knowledge-result-item" style={{ marginTop: 6 }}>
+                          <div className="knowledge-result-meta">
+                            <span className="knowledge-result-filename">📄 {s.filename}{s.page != null && <span className="knowledge-result-page"> p.{s.page}</span>}</span>
+                            <span className="knowledge-result-score" style={{ color: (s.relevance_score || 0) > 0.8 ? "#10b981" : (s.relevance_score || 0) > 0.5 ? "#f59e0b" : "#ef4444" }}>
+                              {((s.relevance_score || 0) * 100).toFixed(0)}%
+                            </span>
+                          </div>
+                          <p className="knowledge-result-content">{s.content?.length > 200 ? s.content.slice(0, 200) + "..." : s.content}</p>
+                        </div>
+                      ))}
+                    </details>
+                  )}
+                </div>
+              );
+              return <div>{outputElements}</div>;
+            }
+          } catch { /* fall through to default rendering */ }
+        }
+
         let mainElement = null;
 
         switch (step.title) {

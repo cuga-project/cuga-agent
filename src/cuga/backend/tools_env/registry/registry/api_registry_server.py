@@ -115,6 +115,30 @@ async def _get_or_create_registry(
         config_file = get_config_filename()
         services = load_service_configs(str(config_file))
 
+    # Override knowledge server transport based on KnowledgeConfig
+    if "knowledge" in services:
+        try:
+            from cuga.backend.knowledge.config import KnowledgeConfig
+
+            kb_config = KnowledgeConfig.from_settings(settings)
+            if kb_config.enabled and kb_config.mcp_transport == "http":
+                svc = services["knowledge"]
+                svc.transport = "http"
+                svc.url = f"http://127.0.0.1:{kb_config.mcp_port}/mcp"
+                svc.command = None
+                svc.args = None
+                svc.readiness_url = (
+                    f"http://127.0.0.1:{settings.server_ports.demo}/health/readiness?subsystem=knowledge"
+                )
+                svc.readiness_path = "status"
+                svc.ready_values = ["ready"]
+                svc.readiness_timeout_seconds = 2.0
+                logger.info(f"Knowledge MCP: using HTTP transport at {svc.url}")
+            else:
+                logger.debug("Knowledge MCP: using stdio transport")
+        except Exception as e:
+            logger.debug(f"Knowledge MCP transport override skipped: {e}")
+
     manager = MCPManager(config=services)
     reg = ApiRegistry(client=manager)
     await reg.start_servers()
@@ -150,6 +174,9 @@ async def lifespan(app: FastAPI):
     # Cleanup: close all agent registries
     for agent_id, (mgr, reg) in agent_registries.items():
         logger.info(f"Cleaning up registry for agent: {agent_id}")
+        await mgr.shutdown()
+    if not database_mode and 'mcp_manager' in globals():
+        await mcp_manager.shutdown()
 
 
 # --- FastAPI Server Setup ---
@@ -218,6 +245,28 @@ async def list_all_apis(
         _, reg = await _get_or_create_registry(agent_id)
         return await reg.show_all_apis(include_response_schema)
     return await registry.show_all_apis(include_response_schema)
+
+
+@app.get("/status", tags=["Status"])
+async def service_status(
+    agent_id: Optional[str] = Query(None, description="Agent ID (database mode only)"),
+):
+    global registry, database_mode
+
+    if database_mode and agent_id:
+        _, reg = await _get_or_create_registry(agent_id)
+        statuses = await reg.get_service_statuses()
+    else:
+        statuses = await registry.get_service_statuses()
+
+    overall = "ready"
+    states = [status.get("state") for status in statuses.values()]
+    if any(state == "failed" for state in states):
+        overall = "degraded"
+    elif any(state != "ready" for state in states):
+        overall = "starting"
+
+    return {"status": overall, "services": statuses}
 
 
 class AuthAppsRequest(BaseModel):
@@ -424,7 +473,8 @@ async def reload_config(
                 logger.info(f"Reloading from database for agent: {agent_id}")
                 # Clear cache for this agent
                 if agent_id in agent_registries:
-                    del agent_registries[agent_id]
+                    old_mgr, _ = agent_registries.pop(agent_id)
+                    await old_mgr.shutdown()
                 # Recreate registry for this agent with retry on empty
                 await _get_or_create_registry(agent_id, retry_on_empty=True)
                 # If this is the default agent, update global registry
@@ -449,6 +499,8 @@ async def reload_config(
                 # Reload all agents (clear cache)
                 logger.info("Reloading all agents from database")
                 agent_ids = list(agent_registries.keys())
+                for old_mgr, _ in agent_registries.values():
+                    await old_mgr.shutdown()
                 agent_registries.clear()
                 # Recreate default agent
                 mcp_manager, registry = await _get_or_create_registry(default_agent_id)
@@ -466,6 +518,8 @@ async def reload_config(
             new_manager = MCPManager(config=services)
             new_registry = ApiRegistry(client=new_manager)
             await new_registry.start_servers()
+            if 'mcp_manager' in globals():
+                await mcp_manager.shutdown()
             mcp_manager = new_manager
             registry = new_registry
             logger.info("Registry reloaded from %s", config_path)
@@ -490,13 +544,16 @@ async def clear_agent_cache(
     try:
         if agent_id:
             if agent_id in agent_registries:
-                del agent_registries[agent_id]
+                mgr, _ = agent_registries.pop(agent_id)
+                await mgr.shutdown()
                 logger.info(f"Cleared cache for agent: {agent_id}")
                 return {"status": "ok", "message": f"Cache cleared for agent: {agent_id}"}
             else:
                 return {"status": "ok", "message": f"No cache found for agent: {agent_id}"}
         else:
             count = len(agent_registries)
+            for mgr, _ in agent_registries.values():
+                await mgr.shutdown()
             agent_registries.clear()
             logger.info(f"Cleared cache for {count} agents")
             return {"status": "ok", "message": f"Cache cleared for {count} agents"}

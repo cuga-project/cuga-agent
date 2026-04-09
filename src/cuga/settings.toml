@@ -27,7 +27,7 @@ code_planner_enabled = true
 api_planner_hitl = false
 lite_mode = true  # Enable CugaLite for simple API tasks (faster execution)
 lite_mode_tool_threshold = 70  # Route to CugaLite if app has fewer than this many tools
-force_lite_mode_apps = []  # List of app names to force into lite mode (e.g., ["app1", "app2"])
+force_lite_mode_apps = ["knowledge"]  # List of app names to force into lite mode (e.g., ["app1", "app2"])
 shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools exceeds this threshold
 enable_todos = false  # Enable todos feature for complex multi-step task management
 enable_memory = false
@@ -59,6 +59,15 @@ agent_approval = true  # Require user approval before executing any sub-agent (h
 pass_variables_a2a = false  # When true, A2A delegate tool accepts variables and sends them in request metadata (A2A protocol extension)
 
 [storage]
+# [storage].mode selects policy vectors, knowledge vectors, and knowledge metadata backend (see table).
+#
+# | Data | local | prod |
+# |------|-------|------|
+# | Policy vectors | sqlite-vec in `[policy].policy_db_path` or `storage.local_db_path` (default `DBS_DIR/cuga.db`); table `[policy].collection_name` | `storage.postgres_url` (pgvector) |
+# | Knowledge vectors | `{knowledge.persist_dir}/knowledge_vectors.db` (vec0 tables per collection) | `storage.postgres_url` (same stack as policy) |
+# | Knowledge metadata (tasks, documents, collection_config, settings) | `{knowledge.persist_dir}/metadata.db` (default `<cwd>/.cuga/knowledge/`) | Postgres tables `cuga_knowledge_meta_*` on `storage.postgres_url` (uploaded **files** stay under `persist_dir/files/`) |
+#
+# Defaults: `DBS_DIR` = package `dbs/` or `CUGA_DBS_DIR`. Override `knowledge.persist_dir` in knowledge_settings.toml.
 mode = "local"  # "local" | "prod"
 local_db_path = ""  # default DBS_DIR/cuga.db when empty
 postgres_url = ""  # required when mode=prod

@@ -1,0 +1,19 @@
+[profile]
+name = "Speed"
+description = "Fastest responses, single search pass. Lowest latency and cost, lower accuracy. Best for simple lookups in well-structured documents."
+
+[search]
+max_search_attempts = 1
+default_limit = 10
+default_score_threshold = 0.0
+
+[chunking]
+chunk_size = 1500
+chunk_overlap = 100
+
+[instructions]
+addendum = """
+You have a single search attempt. Make it count — craft the most precise query you can.
+Do not decompose the question into sub-queries.
+If results are partial, answer with what you have and note any gaps.
+"""

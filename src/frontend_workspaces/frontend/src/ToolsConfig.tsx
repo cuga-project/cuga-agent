@@ -37,13 +37,16 @@ interface ToolsConfigProps {
   connectedApps?: ConnectedApp[];
   connectedTools?: ConnectedTool[];
   agentId?: string;
+  builtinTools?: string[];
   onError?: (title: string, message: string) => void;
   onOpenSecrets?: () => void;
 }
 
 const TOOLS_PREVIEW_COUNT = 3;
+const DEFAULT_BUILTIN_TOOLS = ["knowledge"];
 
-function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", onError, onOpenSecrets }: ToolsConfigProps) {
+function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", builtinTools = DEFAULT_BUILTIN_TOOLS, onError, onOpenSecrets }: ToolsConfigProps) {
+  const builtinSet = useMemo(() => new Set(builtinTools.map(n => n.toLowerCase())), [builtinTools]);
   const [modalOpen, setModalOpen] = useState(false);
   const [secretsOpen, setSecretsOpen] = useState(false);
   const [editingIndex, setEditingIndex] = useState<number | null>(null);
@@ -157,6 +160,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
         <Stack gap={3} orientation="vertical" className="tools-config-list">
           {displayTools.map((t, i) => {
             const isConnected = connectedTools.some((ct) => ct.app === t.name);
+            const isBuiltIn = builtinSet.has(t.name?.toLowerCase());
             const source = t.url || (t.command ? `${t.command}${t.args?.length ? ` ${t.args.join(" ")}` : ""}` : null);
             const hasSubset = t.include && t.include.length > 0;
             return (
@@ -167,6 +171,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                     <Tag type={t.type === "mcp" ? "blue" : "green"} size="sm">
                       {t.type === "mcp" ? "MCP" : "OpenAPI"}
                     </Tag>
+                    {isBuiltIn && <Tag type="purple" size="sm">Built-in</Tag>}
                     {isConnected && <span className="tools-config-tile-badge">Connected</span>}
                     {hasSubset && (
                       <span className="tools-config-tile-badge tools-config-tile-badge-subset">
@@ -192,6 +197,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                       iconDescription="Edit"
                       renderIcon={Edit}
                       onClick={() => setEditingIndex(i)}
+                      disabled={isBuiltIn}
                     />
                     <Button
                       kind="ghost"
@@ -200,6 +206,7 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                       iconDescription="Remove"
                       renderIcon={TrashCan}
                       onClick={() => handleRemove(i)}
+                      disabled={isBuiltIn}
                     />
                   </HStack>
                 </div>

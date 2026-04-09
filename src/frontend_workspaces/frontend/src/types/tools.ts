@@ -30,6 +30,8 @@ export interface ToolEntry {
   /** Environment variables for command-based MCP servers. Values may be literal strings or secret refs. */
   env?: Record<string, string>;
   transport?: McpTransport;
+  /** Environment variables passed to STDIO transport subprocess. */
+  env?: Record<string, string>;
 }
 
 export const AUTH_TYPE_OPTIONS: { value: AuthType; label: string; needsKey: boolean }[] = [

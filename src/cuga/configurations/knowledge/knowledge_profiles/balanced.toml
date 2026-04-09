@@ -1,0 +1,20 @@
+[profile]
+name = "Balanced"
+description = "More thorough search with extra retrieval passes and more results per search. Better recall for complex questions. Moderate latency increase."
+
+[search]
+max_search_attempts = 5
+default_limit = 20
+default_score_threshold = 0.0
+
+[chunking]
+chunk_size = 800
+chunk_overlap = 200
+
+[instructions]
+addendum = """
+You have extra search capacity. On your first search, use a broad query to understand what is available.
+Then refine with 2-3 targeted follow-up queries.
+Consider decomposing complex questions into sub-questions and searching for each.
+When both scopes have documents, search both systematically.
+"""

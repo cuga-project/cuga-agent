@@ -1,0 +1,38 @@
+[knowledge]
+enabled = false
+agent_level_enabled = true
+session_level_enabled = true
+persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
+# Local: vectors in persist_dir/knowledge_vectors.db; metadata in persist_dir/metadata.db. Prod: storage.postgres_url.
+# Uploaded source files always remain under persist_dir/files/ (filesystem).
+
+[knowledge.embeddings]
+provider = "fastembed"  # fastembed | huggingface (requires: pip install sentence-transformers langchain-huggingface) | openai | ollama
+model = ""         # empty = auto-detect per provider (fastembed/huggingface: all-MiniLM-L6-v2, openai: text-embedding-3-small, ollama: nomic-embed-text)
+api_key = ""       # required for openai provider (or set OPENAI_API_KEY env var)
+base_url = ""      # custom endpoint for openai-compatible or ollama (default: localhost:11434)
+
+[knowledge.chunking]
+chunk_size = 1000
+chunk_overlap = 200
+
+[knowledge.search]
+rag_profile = "standard"  # speed | standard | balanced | max_quality
+default_limit = 10
+default_score_threshold = 0.0
+metric_type = "COSINE"
+max_search_attempts = 3  # max knowledge searches per user question (multi-hop)
+
+[knowledge.mcp]
+transport = "http"  # http | stdio
+port = 8113         # port for HTTP mode
+
+[knowledge.engine]
+max_ingest_workers = 2
+max_pending_tasks = 10
+
+[knowledge.limits]
+max_upload_size_mb = 100
+max_url_download_size_mb = 50
+max_files_per_request = 10
+max_chunks_per_document = 10000

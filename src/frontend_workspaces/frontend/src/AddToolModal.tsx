@@ -120,9 +120,6 @@ function initFromTool(initial: ToolEntry | null | undefined) {
     url: initial?.url ?? "",
     command: initial?.command ?? "",
     argsText: (initial?.args ?? []).join("\n"),
-    envText: Object.entries(initial?.env ?? {})
-      .map(([key, value]) => `${key}=${value}`)
-      .join("\n"),
     description: initial?.description ?? "",
     authType: (!auth.type || auth.type === "none" ? "none" : auth.type) as AuthType,
     authKey: auth.key ?? "",
@@ -139,8 +136,10 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
   const [url, setUrl] = useState(init.url);
   const [command, setCommand] = useState(init.command);
   const [argsText, setArgsText] = useState(init.argsText);
-  const [envText, setEnvText] = useState(init.envText);
   const [description, setDescription] = useState(init.description);
+  const [envText, setEnvText] = useState(
+    Object.entries(initial?.env ?? {}).map(([k, v]) => `${k}=${v}`).join("\n")
+  );
   const [authType, setAuthType] = useState<AuthType>(init.authType);
   const [authKey, setAuthKey] = useState(init.authKey);
   const [authValue, setAuthValue] = useState(init.authValue);
@@ -186,16 +185,12 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     setUrl(config.url || "");
     setCommand(config.command || "");
     setArgsText(config.argsText || (config.args || []).join("\n"));
-    setEnvText(
-      Object.entries(config.env || {})
-        .map(([key, value]) => `${key}=${value}`)
-        .join("\n")
-    );
     setDescription(config.description || "");
     const auth = config.auth ?? emptyAuth;
     setAuthType(auth.type === "none" || !auth.type ? "none" : auth.type);
     setAuthKey(auth.key ?? "");
     setAuthValue(auth.value ?? "");
+    setEnvText(Object.entries(config.env ?? {}).map(([k, v]) => `${k}=${v}`).join("\n"));
     setShowTemplates(false);
   };
 
@@ -206,17 +201,6 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     e.preventDefault();
     const isCommandMcp = type === "mcp" && mcpMode === "command";
     const args = argsText.split("\n").map((s) => s.trim()).filter(Boolean);
-    const envEntries = envText
-      .split("\n")
-      .map((s) => s.trim())
-      .filter(Boolean);
-    const env = Object.fromEntries(
-      envEntries.map((entry) => {
-        const idx = entry.indexOf("=");
-        if (idx === -1) return [entry, ""];
-        return [entry.slice(0, idx).trim(), entry.slice(idx + 1).trim()];
-      }).filter(([key]) => key.length > 0)
-    );
     const tool: ToolEntry = {
       name: name.trim(),
       type,
@@ -226,8 +210,19 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
     if (isCommandMcp) {
       tool.command = command.trim();
       tool.args = args.length ? args : undefined;
-      tool.env = Object.keys(env).length ? env : undefined;
       tool.transport = "stdio";
+      const envEntries = envText
+        .split("\n")
+        .map((l) => l.trim())
+        .filter(Boolean)
+        .map((l) => {
+          const idx = l.indexOf("=");
+          return idx > 0 ? [l.slice(0, idx).trim(), l.slice(idx + 1).trim()] : null;
+        })
+        .filter((e): e is [string, string] => e !== null && e[0].length > 0);
+      if (envEntries.length > 0) {
+        tool.env = Object.fromEntries(envEntries);
+      }
     } else if (type === "mcp" && url.trim()) {
       tool.transport = mcpMode === "url-http" ? "http" : "sse";
     }
@@ -274,7 +269,18 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
       : "";
 
   const isCommandMcp = type === "mcp" && mcpMode === "command";
-  const valid = !nameError && description.trim().length > 0 && (
+
+  // Validate env lines only in command/stdio mode (env UI is hidden otherwise)
+  const envLines = isCommandMcp ? envText.split("\n").map((l) => l.trim()).filter(Boolean) : [];
+  const badEnvLines = envLines.filter((l) => {
+    const idx = l.indexOf("=");
+    return idx <= 0 || l.slice(0, idx).trim().length === 0;
+  });
+  const envError = badEnvLines.length > 0
+    ? `Invalid env line${badEnvLines.length > 1 ? "s" : ""}: ${badEnvLines.map((l) => `"${l}"`).join(", ")}. Use KEY=VALUE format.`
+    : "";
+
+  const valid = !nameError && !envError && description.trim().length > 0 && (
     type === "openapi"
       ? url.trim().length > 0
       : isCommandMcp
@@ -402,12 +408,14 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
               <FormGroup legendText="">
                 <TextArea
                   id="tool-env"
-                  labelText="Environment (KEY=VALUE, one per line)"
+                  labelText="Environment variables (one per line)"
                   value={envText}
                   onChange={(e) => setEnvText(e.target.value)}
-                  placeholder={"EVOLVE_MODEL_NAME=Azure/gpt-4o\nOPENAI_API_KEY=env://OPENAI_API_KEY"} // pragma: allowlist secret
+                  placeholder={"EVOLVE_MODEL_NAME=Azure/gpt-4o\nOPENAI_API_KEY=env://OPENAI_API_KEY\nOPENAI_BASE_URL=env://OPENAI_BASE_URL"} // pragma: allowlist secret
                   rows={6}
-                  helperText="Optional. Values can be literals or secret/env refs such as env://OPENAI_API_KEY, db://my-secret, or vault://secret/path#value."
+                  invalid={!!envError}
+                  invalidText={envError}
+                  helperText={!envError ? "KEY=VALUE per line. Values can be literals or refs such as env://OPENAI_API_KEY, db://my-secret, or vault://secret/path#value." : undefined}
                 />
               </FormGroup>
             </>

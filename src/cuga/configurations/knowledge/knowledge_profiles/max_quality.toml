@@ -1,0 +1,21 @@
+[profile]
+name = "Max Quality"
+description = "Exhaustive multi-hop retrieval. Decomposes questions into sub-queries, cross-references results. Highest accuracy, highest latency and cost."
+
+[search]
+max_search_attempts = 8
+default_limit = 30
+default_score_threshold = 0.0
+
+[chunking]
+chunk_size = 500
+chunk_overlap = 150
+
+[instructions]
+addendum = """
+Maximize retrieval thoroughness. Decompose every question into its constituent sub-questions and search for each independently.
+After initial results, extract entities, dates, and terminology to form follow-up queries.
+Cross-reference results from different searches to ensure completeness.
+Use all available search attempts before synthesizing your answer.
+When both scopes have documents, search both systematically.
+"""

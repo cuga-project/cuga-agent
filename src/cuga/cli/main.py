@@ -58,7 +58,9 @@ def _make_app_manager() -> AppManager:
         kill_ports=kill_processes_by_port,
         kill_process=kill_process_tree,
         wait_tcp=lambda p, lbl, r, i: wait_for_tcp_port(p, lbl, max_retries=r, retry_interval=i),
-        wait_http=lambda p, name: wait_for_server(p, name, https=_demo_uses_ssl() and p == _demo_port()),
+        wait_http=lambda p, name: wait_for_server(
+            p, name, max_retries=240, https=_demo_uses_ssl() and p == _demo_port()
+        ),
     )
 
 
@@ -688,6 +690,7 @@ def validate_service(service: str):
         "demo_crm",
         "demo_docs",
         "demo_health",
+        "demo_knowledge",
         "demo_supervisor",
         "manager",
         "registry",
@@ -727,7 +730,7 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, appworld, or memory",
+        help="Service to start: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, manager, registry, appworld, or memory",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -784,6 +787,11 @@ def start(
         "--oak-health",
         help="Enable healthcare insurance OpenAPI (cuga-oak-health; port from settings server_ports.oak_health_api)",
     ),
+    reset: bool = typer.Option(
+        False,
+        "--reset",
+        help="For demo_knowledge: Wipe all knowledge data (vector DB, metadata, files, sessions) before starting fresh",
+    ),
     cuga_workspace: str | None = typer.Option(
         None,
         "--cuga-workspace",
@@ -796,6 +804,7 @@ def start(
     Available services:
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
+      - demo_knowledge: Same as demo but with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
       - demo_health: Starts cuga-oak-health OpenAPI, registry, and demo (insurance member APIs + OAK playbooks; add --filesystem for workspace MCP)
@@ -818,6 +827,8 @@ def start(
       cuga start manager --crm --email    # filesystem + crm + email
       cuga start manager --digital-sales  # filesystem + digital_sales
       cuga start manager --docs  # add IBM Docs MCP server
+      cuga start demo_knowledge             # demo + knowledge engine
+      cuga start demo_knowledge --reset     # wipe knowledge data + fresh start
       cuga start demo_docs  # registry + demo + IBM Docs MCP only
       cuga start demo_health  # oak health OpenAPI + registry + demo
       cuga start demo_health --filesystem  # also workspace filesystem MCP
@@ -829,6 +840,9 @@ def start(
       cuga start memory                   # memory service
     """
     validate_service(service)
+
+    if reset and service != "demo_knowledge":
+        logger.warning("--reset is only supported for demo_knowledge and will be ignored for '%s'", service)
 
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
@@ -994,6 +1008,72 @@ def start(
 
         except Exception as e:
             logger.error(f"Error starting demo services: {e}")
+            stop_direct_processes()
+            raise typer.Exit(1)
+        return
+
+    if service == "demo_knowledge":
+        os.environ["CUGA_DEMO_ADVANCED"] = "true"
+        os.environ["CUGA_MANAGER_MODE"] = "true"
+        os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+        os.environ["MCP_SERVERS_FILE"] = "none"
+        os.environ["DYNACONF_KNOWLEDGE__ENABLED"] = "true"
+        os.environ["DYNACONF_KNOWLEDGE__AGENT_LEVEL_ENABLED"] = "true"
+        os.environ["DYNACONF_KNOWLEDGE__SESSION_LEVEL_ENABLED"] = "true"
+        ensure_managed_mcp_file_exists(get_managed_mcp_path())
+
+        try:
+            if reset:
+                logger.info("🧹 Resetting knowledge data...")
+            logger.info("🧹 Setting up demo_knowledge config...")
+            setup_demo_manage_config("demo_knowledge", tools=resolved_tools, reset_knowledge=reset)
+            logger.info("🧹 Checking for existing processes on required ports...")
+            app_mgr = _make_app_manager()
+            workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
+            ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, app_docs, app_oak_health))
+            kill_processes_by_port(ports_to_clean)
+
+            os.environ["CUGA_HOST"] = host
+            if sandbox:
+                os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
+
+            app_mgr.prepare_workspace(workspace_path)
+            app_mgr.start_filesystem(workspace_path)
+
+            registry_process = app_mgr.start_registry(host)
+            if registry_process is None or registry_process.poll() is not None:
+                logger.error("Registry service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            demo_process = app_mgr.start_demo(host, sandbox=sandbox)
+            if demo_process is None or demo_process.poll() is not None:
+                logger.error("Demo service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            if direct_processes:
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Service", style="bold white")
+                table.add_column("URL", style="cyan")
+                table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
+                table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
+
+                console.print()
+                console.print(
+                    Panel(
+                        table,
+                        title="[bold yellow]Knowledge demo (manage mode). Press Ctrl+C to stop[/bold yellow]",
+                        border_style="cyan",
+                        padding=(1, 2),
+                    )
+                )
+                wait_for_direct_processes()
+
+        except Exception as e:
+            logger.error(f"Error starting demo_knowledge services: {e}")
             stop_direct_processes()
             raise typer.Exit(1)
         return
@@ -1277,6 +1357,18 @@ def manage_service(action: str, service: str):
                     del direct_processes[service_name]
             if not stopped_any:
                 logger.info("demo_health services are not running")
+        elif service == "demo_knowledge":
+            stopped_any = False
+            for service_name in ["filesystem-server", "registry", "demo"]:
+                if service_name in direct_processes:
+                    process = direct_processes[service_name]
+                    if process and process.poll() is None:
+                        logger.info(f"Stopping {service_name}...")
+                        kill_process_tree(process.pid)
+                        stopped_any = True
+                    del direct_processes[service_name]
+            if not stopped_any:
+                logger.info("demo_knowledge services are not running")
         elif service == "registry":
             # Stop only registry for registry service
             if "registry" in direct_processes:
@@ -1322,7 +1414,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, or memory",
+        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, registry, appworld, or memory",
     ),
 ):
     """
@@ -1333,6 +1425,7 @@ def stop(
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Stops docs MCP, registry, and demo
       - demo_health: Stops oak-health API, registry, and demo (and filesystem MCP if started with --filesystem)
+      - demo_knowledge: Stops filesystem MCP, registry, and demo (knowledge engine)
       - demo_supervisor: Same as demo_crm
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)
@@ -1341,6 +1434,7 @@ def stop(
     Examples:
       cuga stop demo             # Stop both registry and demo services
       cuga stop demo_crm         # Stop all CRM demo services
+      cuga stop demo_knowledge   # Stop knowledge demo services
       cuga stop demo_supervisor  # Stop all supervisor demo services
       cuga stop registry         # Stop only the registry service
       cuga stop appworld         # Stop AppWorld servers

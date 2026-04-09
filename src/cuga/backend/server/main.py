@@ -1,5 +1,7 @@
+from __future__ import annotations
+
 import asyncio
-from datetime import datetime
+import datetime
 import platform
 import re
 import shutil
@@ -14,7 +16,7 @@ from typing import List, Dict, Any, Union, Optional
 from pathlib import Path
 import traceback
 from pydantic import BaseModel, ValidationError
-from fastapi import Depends, FastAPI, Request, HTTPException
+from fastapi import Depends, FastAPI, Request, HTTPException, Query
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -67,6 +69,40 @@ from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
 DEFAULT_USER_ID = "default_user"
+
+
+def _session_knowledge_collection(thread_id: str) -> str:
+    return f"kb_sess_{re.sub(r'[^a-zA-Z0-9_]', '_', thread_id)}"
+
+
+async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
+    if not app_state:
+        return
+
+    engine = getattr(app_state, "knowledge_engine", None)
+    if engine:
+        await engine.drop_collection(_session_knowledge_collection(thread_id))
+
+    provider = getattr(app_state, "knowledge_provider", None)
+    if provider:
+        provider.delete_session(thread_id)
+
+
+def _knowledge_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+    engine = getattr(app_state, "knowledge_engine", None) if app_state else None
+    config = getattr(engine, "_config", None) if engine else None
+    return bool(config and getattr(config, "enabled", False))
+
+
+def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: str) -> bool:
+    engine = getattr(app_state, "knowledge_engine", None) if app_state else None
+    config = getattr(engine, "_config", None) if engine else None
+    if not config or not getattr(config, "enabled", False):
+        return False
+    if scope == "session":
+        return bool(getattr(config, "session_level_enabled", True))
+    return bool(getattr(config, "agent_level_enabled", True))
+
 
 try:
     from langfuse.langchain import CallbackHandler
@@ -159,10 +195,42 @@ class AppState:
         self.save_reuse_process: Optional[asyncio.subprocess.Process] = None
         self.agent_id: str = "cuga-default"
         self.config_version: Optional[int] = None
+        # Session/agent knowledge state provider (initialized lazily)
+        self.knowledge_provider: Optional[Any] = None
         self.tools_include_by_app: Optional[Dict[str, List[str]]] = None
         self.tools_include_version: int = 0
         self.current_llm: Optional[Any] = None
+        self.background_tasks: List[asyncio.Task] = []
+        self.subsystem_statuses: Dict[str, Dict[str, Any]] = {}
         self.initialize_sdk()
+
+    def set_subsystem_status(
+        self, name: str, state: str, message: str = "", details: Optional[Dict[str, Any]] = None
+    ) -> None:
+        payload = {
+            "state": state,
+            "message": message,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        if details:
+            payload["details"] = details
+        else:
+            payload["details"] = {}
+        self.subsystem_statuses[name] = payload
+
+    def get_subsystem_status(self, name: str) -> Dict[str, Any]:
+        return self.subsystem_statuses.get(
+            name,
+            {
+                "state": "unknown",
+                "message": "",
+                "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "details": {},
+            },
+        )
+
+    def get_subsystem_statuses(self) -> Dict[str, Dict[str, Any]]:
+        return {name: status.copy() for name, status in self.subsystem_statuses.items()}
 
     def initialize_sdk(self):
         """Initializes the analytics SDK and logging."""
@@ -191,6 +259,7 @@ class DraftAppState:
         self.agent: Optional[DynamicAgentGraph] = None
         self.policy_system: Optional[Any] = None
         self.policy_filesystem_sync: Optional[Any] = None  # PolicyFilesystemSync instance for draft
+        self.draft_knowledge_config: Optional[Any] = None  # Draft knowledge config for Try-It-Out
 
 
 # Create a single instance of the AppState class to be used throughout the application.
@@ -201,6 +270,14 @@ draft_app_state = DraftAppState()
 class ChatRequest(BaseModel):
     messages: List[Dict[str, Any]]
     stream: bool = False
+
+
+class AttachmentSnapshotItem(BaseModel):
+    knowledge_filename: str
+    display_name: str
+    mime_type: Optional[str] = None
+    size_bytes: Optional[int] = None
+    scope: str = "session"
 
 
 def format_time_custom():
@@ -250,6 +327,8 @@ async def manage_save_reuse_server():
 async def lifespan(app: FastAPI):
     """Asynchronous context manager for application startup and shutdown."""
     logger.info("Application is starting up...")
+    app_state.set_subsystem_status("policy", "starting", "Initializing policy subsystem")
+    app_state.set_subsystem_status("knowledge", "starting", "Initializing knowledge subsystem")
 
     try:
         from cuga.backend.secrets.seed import seed_secrets_from_env
@@ -277,6 +356,7 @@ async def lifespan(app: FastAPI):
             from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
             from cuga.backend.cuga_graph.policy.folder_loader import load_policies_from_folder
 
+            app_state.set_subsystem_status("policy", "starting", "Initializing policy system")
             app_state.policy_system = PolicyConfigurable.get_instance()
             await app_state.policy_system.initialize()
             logger.info("✅ Policy system initialized")
@@ -332,14 +412,128 @@ async def lifespan(app: FastAPI):
                 logger.info(f"Policy folder {cuga_folder} not found, skipping auto-load")
                 app_state.policy_filesystem_sync = None
 
+            app_state.set_subsystem_status("policy", "ready", "Policy subsystem ready")
+
         except Exception as e:
             logger.warning(f"Failed to initialize policy system: {e}")
             app_state.policy_system = None
             app_state.policy_filesystem_sync = None
+            app_state.set_subsystem_status(
+                "policy",
+                "failed",
+                "Policy subsystem failed to initialize",
+                {"error": str(e)},
+            )
     else:
         logger.info("Policy system disabled in settings")
         app_state.policy_system = None
         app_state.policy_filesystem_sync = None
+        app_state.set_subsystem_status("policy", "disabled", "Policy subsystem disabled")
+
+    # -------------------------------------------------------------------
+    # Knowledge engine — in-process LangChain + vector store (storage_local / pgvector / …)
+    # -------------------------------------------------------------------
+    from cuga.backend.knowledge.config import KnowledgeConfig
+    from cuga.backend.knowledge.engine import KnowledgeEngine
+
+    async def initialize_knowledge_engine(app_state, kb_config: "KnowledgeConfig") -> None:
+        """Start the knowledge engine, session provider, MCP server, and warmup.
+
+        Can be called at startup or on-demand (e.g. when user enables knowledge via UI publish).
+        Safe to call when engine is already running (no-op).
+        """
+        if getattr(app_state, "knowledge_engine", None) is not None:
+            return  # Already running
+
+        app_state.set_subsystem_status("knowledge", "starting", "Initializing knowledge engine")
+        app_state.knowledge_engine = KnowledgeEngine(kb_config)
+
+        # Initialize session provider for ownership enforcement
+        from cuga.backend.knowledge.session_provider import PersistentSessionProvider
+
+        if not getattr(app_state, "knowledge_provider", None):
+            _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
+            app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
+
+        # Start background maintenance tasks (cleanup, purge, reconcile)
+        app_state.knowledge_engine.start_background_tasks()
+
+        # Generate internal token for MCP subprocess auth (atomic write)
+        if not getattr(app_state, "internal_token", None):
+            import secrets
+            import tempfile
+
+            token = secrets.token_urlsafe(32)
+            app_state.internal_token = token
+            token_path = Path.cwd() / ".cuga" / ".internal_token"
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                mode="w", dir=token_path.parent, delete=False, suffix=".tmp"
+            ) as tmp:
+                tmp.write(token)
+                tmp_name = tmp.name
+            Path(tmp_name).rename(token_path)
+            token_path.chmod(0o600)
+            os.environ["CUGA_INTERNAL_TOKEN_FILE"] = str(token_path)
+            if not os.environ.get("CUGA_BACKEND_URL"):
+                os.environ["CUGA_BACKEND_URL"] = f"http://localhost:{os.environ.get('PORT', '7860')}"
+
+        logger.info("Knowledge engine started at %s", kb_config.persist_dir)
+        app_state.set_subsystem_status(
+            "knowledge",
+            "starting",
+            "Knowledge engine initialized; warming embeddings",
+            {"mcp_transport": kb_config.mcp_transport, "mcp_port": kb_config.mcp_port},
+        )
+
+        # Start knowledge MCP server in HTTP mode (background thread)
+        if kb_config.mcp_transport == "http" and not getattr(app_state, "_knowledge_mcp_started", False):
+            import threading
+
+            def _start_knowledge_mcp():
+                try:
+                    from cuga.backend.knowledge.mcp_server import run_http
+
+                    run_http(host="127.0.0.1", port=kb_config.mcp_port)
+                except Exception as e:
+                    logger.error("Knowledge MCP HTTP server failed: %s", e)
+
+            _mcp_thread = threading.Thread(target=_start_knowledge_mcp, daemon=True, name="knowledge-mcp")
+            _mcp_thread.start()
+            app_state._knowledge_mcp_started = True
+            logger.info("Knowledge MCP server starting on http://127.0.0.1:%s", kb_config.mcp_port)
+
+        async def _warm():
+            try:
+                app_state.set_subsystem_status("knowledge", "starting", "Loading knowledge embedding model")
+                warmup_result = await app_state.knowledge_engine.warmup()
+                app_state.set_subsystem_status(
+                    "knowledge", "ready", "Knowledge subsystem ready", warmup_result
+                )
+                logger.info("Knowledge subsystem warmup complete")
+            except Exception as e:
+                logger.exception("Knowledge subsystem warmup failed: %s", e)
+                app_state.set_subsystem_status(
+                    "knowledge", "failed", "Knowledge subsystem failed during warmup", {"error": str(e)}
+                )
+
+        app_state.background_tasks.append(asyncio.create_task(_warm()))
+
+    # Store the initializer on app_state so manage_routes can call it on-demand
+    app_state.initialize_knowledge_engine = initialize_knowledge_engine
+
+    # Load config from settings if available, otherwise use defaults
+    try:
+        kb_config = KnowledgeConfig.from_settings(settings)
+    except Exception:
+        kb_config = KnowledgeConfig()
+
+    if kb_config.enabled:
+        await initialize_knowledge_engine(app_state, kb_config)
+    else:
+        app_state.knowledge_engine = None
+        logger.info("Knowledge features disabled (knowledge.enabled=false)")
+        app_state.set_subsystem_status("knowledge", "disabled", "Knowledge subsystem disabled")
 
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
@@ -444,6 +638,28 @@ async def lifespan(app: FastAPI):
             )
         except Exception as _cfg_err:
             logger.warning("Startup: failed to apply saved config: %s", _cfg_err)
+
+    # Initialise knowledge_config_hash on app_state so that resolve_collection()
+    # can route to the correct hash-based collection from the first request.
+    _startup_knowledge = (_startup_config or {}).get("knowledge") or {}
+    _startup_vec_hash = _startup_knowledge.get("_vector_config_hash")
+    if not _startup_vec_hash:
+        # Compute hash from saved knowledge config, or from the runtime engine config
+        # as fallback (e.g. first run / demo where no knowledge config was saved yet).
+        try:
+            from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
+            if _startup_knowledge:
+                _kc = _KC.coerce_and_validate(_startup_knowledge)
+            else:
+                # No saved knowledge config — use the runtime engine's config
+                _engine = getattr(app_state, "knowledge_engine", None)
+                _kc = getattr(_engine, "_config", None)
+            if _kc:
+                _startup_vec_hash = _kc.vector_config_hash()
+        except Exception:
+            _startup_vec_hash = None
+    app_state.knowledge_config_hash = _startup_vec_hash
 
     def _get_include_by_app():
         return (
@@ -580,6 +796,20 @@ async def lifespan(app: FastAPI):
         await app_state.save_reuse_process.wait()
         logger.info("save_reuse server terminated.")
 
+    for task in app_state.background_tasks:
+        task.cancel()
+    if app_state.background_tasks:
+        await asyncio.gather(*app_state.background_tasks, return_exceptions=True)
+        app_state.background_tasks.clear()
+
+    # Shutdown knowledge engine
+    if hasattr(app_state, "knowledge_engine") and app_state.knowledge_engine:
+        try:
+            await app_state.knowledge_engine.aclose()
+        except Exception as e:
+            logger.debug(f"Knowledge engine aclose: {e}")
+        app_state.knowledge_engine.shutdown()
+
     # Clean up embedded assets
     if USE_EMBEDDED_ASSETS:
         embedded_assets.cleanup()
@@ -688,11 +918,22 @@ async def setup_page_info(state: AgentState, env: ExtensionEnv | BrowserEnvGymAs
 
 
 async def _save_conversation_and_events_async(
-    agent_id: str, thread_id: str, user_id: str, state: AgentState, events: List[Dict[str, Any]]
+    agent_id: str,
+    thread_id: str,
+    user_id: str,
+    state: AgentState,
+    events: List[Dict[str, Any]],
+    user_attachments: Optional[List[Dict[str, Any]]] = None,
 ):
     """Save conversation history and stream events asynchronously."""
     try:
-        await save_conversation_to_db(agent_id, thread_id, state, user_id)
+        await save_conversation_to_db(
+            agent_id,
+            thread_id,
+            state,
+            user_id,
+            user_attachments=user_attachments,
+        )
         if events:
             conversation_db = get_conversation_db()
             await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
@@ -702,7 +943,11 @@ async def _save_conversation_and_events_async(
 
 
 async def save_conversation_to_db(
-    agent_id: str, thread_id: str, state: AgentState, user_id: str = DEFAULT_USER_ID
+    agent_id: str,
+    thread_id: str,
+    state: AgentState,
+    user_id: str = DEFAULT_USER_ID,
+    user_attachments: Optional[List[Dict[str, Any]]] = None,
 ):
     """
     Save conversation history to database.
@@ -757,7 +1002,7 @@ async def save_conversation_to_db(
                     {
                         "role": role,
                         "content": msg.content if hasattr(msg, 'content') else str(msg),
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
                         "metadata": {"type": type(msg).__name__, "message_type": "chat_messages"},
                     }
                 )
@@ -774,7 +1019,7 @@ async def save_conversation_to_db(
                         if isinstance(msg, AIMessage)
                         else "system",
                         "content": msg.content if hasattr(msg, 'content') else str(msg),
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
                         "metadata": {"type": type(msg).__name__, "message_type": "chat_agent_messages"},
                     }
                 )
@@ -791,10 +1036,18 @@ async def save_conversation_to_db(
                         if isinstance(msg, AIMessage)
                         else "system",
                         "content": msg.content if hasattr(msg, 'content') else str(msg),
-                        "timestamp": datetime.utcnow().isoformat(),
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
                         "metadata": {"type": type(msg).__name__, "message_type": "supervisor_chat_messages"},
                     }
                 )
+
+        if user_attachments:
+            for message in reversed(messages):
+                if message.get("role") == "user":
+                    metadata = dict(message.get("metadata") or {})
+                    metadata["attachments"] = user_attachments
+                    message["metadata"] = metadata
+                    break
 
         # Save to database
         if messages:
@@ -852,6 +1105,7 @@ async def event_stream(
     agent=None,
     disable_history: bool = False,
     user_id: str = DEFAULT_USER_ID,
+    user_attachments: Optional[List[Dict[str, Any]]] = None,
 ):
     """Handles the main agent event stream. If agent is None, uses app_state.agent (published)."""
     run_agent = agent if agent is not None else app_state.agent
@@ -950,11 +1204,14 @@ async def event_stream(
 
     # Add user message to buffer as first event
     if query and thread_id:
+        user_message_event_data = (
+            json.dumps({"text": query, "attachments": user_attachments or []}) if user_attachments else query
+        )
         stream_events_buffer.append(
             {
                 "event_name": "UserMessage",
-                "event_data": query,
-                "timestamp": datetime.utcnow().isoformat(),
+                "event_data": user_message_event_data,
+                "timestamp": datetime.datetime.utcnow().isoformat(),
                 "sequence": event_sequence,
             }
         )
@@ -972,6 +1229,35 @@ async def event_stream(
         # The trace ID will be available after the first LLM call
         print("Note: Trace ID will be available after the first LLM operation")
 
+    # Build knowledge context for agent prompt injection
+    _knowledge_ctx = {}
+    if _knowledge_enabled_for_app_state(app_state) and app_state.knowledge_provider and thread_id:
+        # Agent-level knowledge
+        _agent_id = app_state.agent_id
+        _config_ver = str(app_state.config_version or "draft")
+        _agent_key = f"{_agent_id}:{_config_ver}"
+        _agent_kb = app_state.knowledge_provider.get_agent(_agent_key)
+        if _knowledge_scope_enabled_for_app_state(app_state, "agent") and _agent_kb and _agent_kb.filenames:
+            _knowledge_ctx["agent_knowledge"] = {
+                "filter_id": _agent_kb.filter_id,
+                "prefix": _agent_kb.prefix,
+                "filenames": _agent_kb.filenames,
+            }
+        # Session-level knowledge
+        _session_kb = app_state.knowledge_provider.get_session(thread_id)
+        if (
+            _knowledge_scope_enabled_for_app_state(app_state, "session")
+            and _session_kb
+            and _session_kb.filenames
+        ):
+            from cuga.backend.knowledge.session_provider import session_prefix as _sess_prefix
+
+            _knowledge_ctx["session_knowledge"] = {
+                "filter_id": _session_kb.filter_id,
+                "prefix": _sess_prefix(thread_id),
+                "filenames": _session_kb.filenames,
+            }
+
     agent_loop_obj = AgentLoop(
         graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
@@ -983,6 +1269,7 @@ async def event_stream(
         shortlisting_tool_threshold=getattr(run_agent, "shortlisting_tool_threshold", None),
         cuga_lite_max_steps=getattr(run_agent, "cuga_lite_max_steps", None),
         current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
+        knowledge_context=_knowledge_ctx or None,
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 
@@ -1116,7 +1403,7 @@ async def event_stream(
                                 {
                                     "event_name": "Answer",
                                     "event_data": final_answer_text,
-                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "timestamp": datetime.datetime.utcnow().isoformat(),
                                     "sequence": event_sequence,
                                 }
                             )
@@ -1131,6 +1418,7 @@ async def event_stream(
                                     user_id=user_id,
                                     state=local_state if local_state else AgentState(),
                                     events=stream_events_buffer.copy(),
+                                    user_attachments=user_attachments,
                                 )
                             else:
                                 logger.info(f"History saving disabled for thread_id: {thread_id}")
@@ -1217,7 +1505,7 @@ async def event_stream(
                                 {
                                     "event_name": name,
                                     "event_data": event,
-                                    "timestamp": datetime.utcnow().isoformat(),
+                                    "timestamp": datetime.datetime.utcnow().isoformat(),
                                     "sequence": event_sequence,
                                 }
                             )
@@ -1250,6 +1538,12 @@ async def event_stream(
 app = FastAPI(lifespan=lifespan)
 app.state.app_state = app_state
 app.state.draft_app_state = draft_app_state
+
+# Register knowledge routes at module level (engine initialized in lifespan).
+# _get_engine() in routes.py returns 503 if engine isn't initialized yet.
+from cuga.backend.knowledge.routes import knowledge_router  # noqa: E402
+
+app.include_router(knowledge_router)
 _cors_origins = (
     ["https://localhost:7860", "https://localhost:3002"]
     if (getattr(settings, "auth", None) and getattr(settings.auth, "enabled", False))
@@ -1269,7 +1563,40 @@ app.include_router(secrets_routes.router)
 
 @app.get("/health")
 async def health():
-    return JSONResponse({"status": "ok"})
+    return JSONResponse({"status": "ok", "subsystems": app_state.get_subsystem_statuses()})
+
+
+@app.get("/health/readiness")
+async def readiness(subsystem: Optional[str] = Query(None)):
+    statuses = app_state.get_subsystem_statuses()
+
+    if subsystem:
+        status = app_state.get_subsystem_status(subsystem)
+        return JSONResponse(
+            {
+                "subsystem": subsystem,
+                "status": status["state"],
+                "ready": status["state"] == "ready",
+                "message": status.get("message", ""),
+                "details": status.get("details", {}),
+                "updated_at": status.get("updated_at"),
+            }
+        )
+
+    active_states = [info["state"] for info in statuses.values() if info["state"] != "disabled"]
+    overall = "ready"
+    if any(state == "failed" for state in active_states):
+        overall = "degraded"
+    elif any(state != "ready" for state in active_states):
+        overall = "starting"
+
+    return JSONResponse(
+        {
+            "status": overall,
+            "ready": overall == "ready",
+            "subsystems": statuses,
+        }
+    )
 
 
 @app.get("/api/auth/config")
@@ -1593,6 +1920,7 @@ async def stream(
     """Endpoint to start the agent stream. Use draft agent when X-Use-Draft is set."""
     user_id = current_user.sub if current_user else DEFAULT_USER_ID
     query = await get_query(request)
+    user_attachments = await get_attachment_snapshot(request)
     thread_id = request.headers.get("X-Thread-ID")
     if not thread_id:
         thread_id = str(uuid.uuid4())
@@ -1629,6 +1957,7 @@ async def stream(
             agent=run_agent,
             disable_history=disable_history,
             user_id=user_id,
+            user_attachments=user_attachments,
         ),
         media_type="text/event-stream",
     )
@@ -1859,38 +2188,35 @@ async def save_model_config(
         raise HTTPException(status_code=500, detail=f"Failed to save model config: {str(e)}")
 
 
-@app.get("/api/config/knowledge")
-async def get_knowledge_config(current_user: Optional[UserInfo] = Depends(require_auth)):
-    """Endpoint to retrieve knowledge configuration."""
-    try:
-        return JSONResponse({})
-    except Exception as e:
-        logger.error(f"Failed to load knowledge config: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to load knowledge config: {str(e)}")
-
-
-@app.post("/api/config/knowledge")
-async def save_knowledge_config(
-    request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
-):
-    """Endpoint to save knowledge configuration."""
-    try:
-        await request.json()
-        logger.info("Knowledge configuration saved (placeholder)")
-        return JSONResponse({"status": "success", "message": "Knowledge configuration saved"})
-    except Exception as e:
-        logger.error(f"Failed to save knowledge config: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to save knowledge config: {str(e)}")
-
-
 @app.get("/api/conversations")
-async def get_conversations(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+async def get_conversations(
+    agent_id: str = "cuga-default",
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
     """Endpoint to retrieve conversation history."""
+    user_id = current_user.sub if current_user else DEFAULT_USER_ID
     try:
-        # TODO: Implement actual conversation storage
-        # For now, return empty list
-        return JSONResponse([])
+        conversation_db = get_conversation_db()
+        threads = await conversation_db.get_all_threads_for_agent(agent_id, user_id)
+        # Map to the format the frontend expects: [{id, title, timestamp, preview}]
+        conversations = []
+        for t in threads:
+            first_msg = t.get("first_message", "")
+            # Convert ISO timestamp to epoch ms for frontend
+            ts = 0
+            try:
+                ts = int(datetime.datetime.fromisoformat(t.get("updated_at", "")).timestamp() * 1000)
+            except Exception:
+                pass
+            conversations.append(
+                {
+                    "id": t.get("thread_id", ""),
+                    "title": first_msg if first_msg else "New Chat",
+                    "timestamp": ts,
+                    "preview": first_msg[:100] if first_msg else "",
+                }
+            )
+        return JSONResponse(conversations)
     except Exception as e:
         logger.error(f"Failed to load conversations: {e}")
         raise HTTPException(status_code=500, detail=f"Failed to load conversations: {str(e)}")
@@ -1920,6 +2246,7 @@ async def create_conversation(
 
 @app.delete("/api/conversations/{conversation_id}")
 async def delete_conversation(
+    request: Request,
     conversation_id: str,
     agent_id: str = "cuga-default",
     current_user: Optional[UserInfo] = Depends(require_chat_access),
@@ -1931,6 +2258,7 @@ async def delete_conversation(
         success = await conversation_db.delete_thread(agent_id, conversation_id, user_id)
 
         if success:
+            await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
             logger.info(f"Deleted conversation and stream events: {conversation_id}")
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
         else:
@@ -2656,6 +2984,9 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
         {
             "agent_id": getattr(app_state, "agent_id", "cuga-default"),
             "config_version": getattr(app_state, "config_version", None),
+            "knowledge_enabled": _knowledge_enabled_for_app_state(app_state),
+            "agent_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "agent"),
+            "session_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "session"),
         }
     )
 
@@ -2931,7 +3262,12 @@ async def get_query(request: Request) -> Union[str, ActionResponse]:
     except json.JSONDecodeError:
         raise HTTPException(status_code=400, detail="Request body was not valid JSON.")
 
-    if isinstance(data, dict) and set(data.keys()) == {"query"} and isinstance(data["query"], str):
+    if (
+        isinstance(data, dict)
+        and "query" in data
+        and isinstance(data["query"], str)
+        and "messages" not in data
+    ):
         query_text = data["query"]
         if not query_text.strip():
             raise HTTPException(status_code=422, detail="`query` may not be empty.")
@@ -2956,6 +3292,28 @@ async def get_query(request: Request) -> Union[str, ActionResponse]:
             return query_text
         except ValidationError as e:
             raise HTTPException(status_code=422, detail=f"Invalid ChatRequest JSON: {e.errors()}")
+
+
+async def get_attachment_snapshot(request: Request) -> Optional[List[Dict[str, Any]]]:
+    """Extract optional per-message attachment metadata from the request body."""
+    try:
+        data = await request.json()
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Request body was not valid JSON.")
+
+    if not isinstance(data, dict):
+        return None
+
+    raw_attachments = data.get("attachments")
+    if raw_attachments is None:
+        return None
+    if not isinstance(raw_attachments, list):
+        raise HTTPException(status_code=422, detail="`attachments` must be an array when provided.")
+
+    try:
+        return [AttachmentSnapshotItem.model_validate(item).model_dump() for item in raw_attachments]
+    except ValidationError as e:
+        raise HTTPException(status_code=422, detail=f"Invalid attachment metadata: {e.errors()}")
 
 
 @app.get("/flows/{full_path:path}")

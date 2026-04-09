@@ -42,6 +42,12 @@ class ProdEmbeddingStore:
             await self._ensure_table()
         return self._pool
 
+    async def close_pool(self) -> None:
+        """Release the pool (required when the surrounding event loop is discarded, e.g. after ``asyncio.run``)."""
+        if self._pool is not None:
+            await self._pool.close()
+            self._pool = None
+
     def _scope_cols(self) -> List[str]:
         meta = self._schema.metadata_columns
         return [c for c in SCOPE_COLS if c in meta]

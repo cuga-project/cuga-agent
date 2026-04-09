@@ -1,6 +1,7 @@
 """Manage endpoints: draft config (auto-save) and publish (new version)."""
 
 import os
+from collections.abc import Mapping
 from typing import Any, Optional
 
 import httpx
@@ -73,6 +74,8 @@ def _merge_feature_flags_defaults(config: dict[str, Any]) -> None:
         ff["shortlisting_tool_threshold"] = getattr(af, "shortlisting_tool_threshold", 35)
     if "max_steps" not in ff:
         ff["max_steps"] = getattr(af, "cuga_lite_max_steps", 70)
+    if "builtin_tools" not in ff:
+        ff["builtin_tools"] = list(getattr(af, "builtin_tools", ["knowledge"]))
 
 
 def _merge_mcp_yaml_into_config(config: dict[str, Any]) -> None:
@@ -860,10 +863,88 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.patch("/config/draft/knowledge")
+async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None):
+    """Update knowledge section of draft. No engine mutation (draft isolation)."""
+    if agent_id is None:
+        agent_id = "cuga-default"
+    try:
+        from cuga.backend.server.config_store import _parse_agent_id
+        from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
+
+        data = await request.json()
+        knowledge = data.get("knowledge", data)
+        if not isinstance(knowledge, dict):
+            raise HTTPException(status_code=400, detail="knowledge must be a dict")
+
+        # Merge with existing draft knowledge
+        from cuga.backend.server.config_store import load_draft
+
+        existing_draft = await load_draft(agent_id) or {}
+        existing_knowledge = existing_draft.get("knowledge", {})
+        merged = {**existing_knowledge, **knowledge}
+
+        # Filter to known KnowledgeConfig fields only
+        from cuga.backend.knowledge.config import KnowledgeConfig
+        from dataclasses import fields as _dc_fields
+
+        known_fields = {f.name for f in _dc_fields(KnowledgeConfig)} - {"persist_dir"}
+        filtered = {k: v for k, v in merged.items() if k in known_fields}
+
+        # Validate via shared helper (same coercion + validation as engine apply)
+        try:
+            KnowledgeConfig.coerce_and_validate(filtered)
+        except (ValueError, TypeError) as ve:
+            raise HTTPException(status_code=400, detail=str(ve))
+
+        # Save to draft only — no engine mutation
+        full_draft = await _load_and_patch_draft(agent_id, "knowledge", filtered)
+
+        # Store draft knowledge config so Try-It-Out can use it for search behavior.
+        state = getattr(request.app.state, "draft_app_state", None)
+        if state:
+            try:
+                from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
+                state.draft_knowledge_config = _KC.coerce_and_validate(filtered)
+            except Exception:
+                pass
+        if state:
+            try:
+                base_agent_id = _parse_agent_id(str(agent_id))
+                draft_agent_id = f"{base_agent_id}--draft"
+                registry_url = get_registry_base_url()
+                async with httpx.AsyncClient() as client:
+                    r = await client.post(f"{registry_url}/reload?agent_id={draft_agent_id}", timeout=10.0)
+                    r.raise_for_status()
+            except Exception as reload_err:
+                logger.warning("Failed to reload registry for PATCH knowledge: %s", reload_err)
+
+            try:
+                draft_agent = getattr(state, "agent", None)
+                if draft_agent:
+                    tp = getattr(draft_agent, "tool_provider", None)
+                    if tp is not None and hasattr(tp, "reset"):
+                        tp.reset()
+                    llm_cfg = (full_draft or {}).get("llm") or {}
+                    draft_agent.llm_config = llm_cfg if llm_cfg else None
+                    await draft_agent.build_graph()
+            except Exception as rebuild_err:
+                logger.warning("Failed to rebuild draft agent graph after knowledge PATCH: %s", rebuild_err)
+
+        return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to patch draft knowledge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/config")
 async def save_manage_config_publish(request: Request, agent_id: Optional[str] = None):
     """Create new version from current config and apply to agent (live)."""
-    # Determine agent_id from parameter or default to cuga-default
+    # IMPORTANT: _apply_published_config is called at startup (main.py:488,582).
+    # Do NOT add knowledge/reindex logic there. Knowledge apply belongs here only.
     if agent_id is None:
         agent_id = "cuga-default"
 
@@ -881,11 +962,184 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         )
 
     try:
-        from cuga.backend.server.config_store import save_config
+        from cuga.backend.server.config_store import (
+            load_config,
+            load_draft,
+            save_config,
+            save_draft,
+            update_published_config_at_version,
+        )
 
-        ver = await save_config(config, agent_id)
+        data = await request.json()
+        config = data.get("config", data)
+
+        # Phase A: Validate + preflight knowledge (no mutation, no version save yet)
+        prepared_knowledge = None
+        knowledge_result = None
+        knowledge_cfg = (config or {}).get("knowledge")
+        engine = getattr(app_state, "knowledge_engine", None)
+
+        # Ensure knowledge config is always present in published versions.
+        # If missing, snapshot current engine config or use defaults.
+        if not knowledge_cfg or not isinstance(knowledge_cfg, dict):
+            from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
+            knowledge_cfg = None
+            if engine is not None:
+                eng_attr = getattr(engine, "config", None)
+                if eng_attr is not None:
+                    to_dict = getattr(eng_attr, "to_dict", None)
+                    if callable(to_dict):
+                        _snap = to_dict()
+                        if isinstance(_snap, dict):
+                            knowledge_cfg = _snap
+                    elif isinstance(eng_attr, dict):
+                        knowledge_cfg = dict(eng_attr)
+                if knowledge_cfg is None:
+                    for _getter in ("get_config", "get_knowledge_config"):
+                        _fn = getattr(engine, _getter, None)
+                        if callable(_fn):
+                            _cand = _fn()
+                            if isinstance(_cand, dict):
+                                knowledge_cfg = _cand
+                                break
+            if knowledge_cfg is None:
+                knowledge_cfg = _KC().to_dict()
+            if config is None:
+                config = {}
+            config["knowledge"] = knowledge_cfg
+
+        if knowledge_cfg and isinstance(knowledge_cfg, dict):
+            # Lazy engine creation: if knowledge was disabled at startup but user
+            # enables it via Publish, create the engine now (full init with MCP + warmup).
+            if not engine and knowledge_cfg.get("enabled", False):
+                try:
+                    from cuga.backend.knowledge.config import KnowledgeConfig
+
+                    kb_config = KnowledgeConfig.coerce_and_validate(knowledge_cfg)
+                    _initializer = getattr(app_state, "initialize_knowledge_engine", None)
+                    if _initializer:
+                        await _initializer(app_state, kb_config)
+                        engine = app_state.knowledge_engine
+                        logger.info("Knowledge engine created via publish (was disabled at startup)")
+                    else:
+                        logger.warning("Knowledge engine initializer not available")
+                except Exception as e:
+                    logger.warning(f"Failed to create knowledge engine on publish: {e}")
+            if engine:
+                try:
+                    prepared_knowledge = engine.prepare_knowledge_update(knowledge_cfg)
+                except (ValueError, TypeError) as ve:
+                    raise HTTPException(status_code=400, detail=f"Invalid knowledge config: {ve}")
+
+        # Vector-config hash: fields that affect stored vectors (embedding model,
+        # chunk size, metric). When a file copy + reindex migration is required,
+        # the persisted _vector_config_hash stays at the previous value until
+        # that migration succeeds; see promotion after copy_source_files/reindex.
+        from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
+        _prev_hash = ""
+        try:
+            _prev_config, _ = await load_config(version=None, agent_id=agent_id)
+            if _prev_config:
+                _prev_hash = (_prev_config.get("knowledge") or {}).get("_vector_config_hash", "")
+        except Exception:
+            pass
+
+        try:
+            _kb_obj = _KC.coerce_and_validate(knowledge_cfg)
+            _vec_hash = _kb_obj.vector_config_hash()
+        except Exception:
+            _vec_hash = ""
+
+        import re as _re_coll
+
+        _san_id = _re_coll.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+        _new_collection = f"kb_agent_{_san_id}_{_vec_hash}" if _vec_hash else f"kb_agent_{_san_id}"
+        _old_collection = f"kb_agent_{_san_id}_{_prev_hash}" if _prev_hash else f"kb_agent_{_san_id}"
+
+        _migration_precheck_done = False
+        _defer_vector_hash_promotion = False
+        _target_docs_precheck = None
+        _old_docs_precheck = None
+
+        if engine and _vec_hash and _prev_hash != _vec_hash:
+            try:
+                _target_docs_precheck = await engine.list_documents(_new_collection)
+                _old_docs_precheck = await engine.list_documents(_old_collection)
+                _migration_precheck_done = True
+                if not _target_docs_precheck and _old_docs_precheck:
+                    _defer_vector_hash_promotion = True
+            except Exception as _pre_err:
+                logger.warning("Vector migration precheck failed: %s", _pre_err)
+
+        if _vec_hash:
+            if _defer_vector_hash_promotion:
+                config["knowledge"]["_vector_config_hash"] = _prev_hash
+            else:
+                config["knowledge"]["_vector_config_hash"] = _vec_hash
+
+        # Snapshot knowledge state for import/export portability.
+        # Stores collection name, persist_dir, pinned collection config, and
+        # document metadata (filenames + file paths) so an imported config can
+        # reconnect to existing on-disk knowledge data without re-ingestion.
+        if engine:
+            import re as _re_snap
+
+            _current_hash = (
+                (_prev_hash if _defer_vector_hash_promotion else _vec_hash)
+                or getattr(app_state, "knowledge_config_hash", "")
+                or _prev_hash
+            )
+            _snap_id = _re_snap.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+            _snap_col = f"kb_agent_{_snap_id}_{_current_hash}" if _current_hash else f"kb_agent_{_snap_id}"
+            try:
+                _state: dict[str, Any] = {
+                    "collection": _snap_col,
+                    "persist_dir": str(engine._config.persist_dir),
+                }
+                _col_cfg = await engine._metadata.get_collection_config(_snap_col)
+                if _col_cfg and (isinstance(_col_cfg, dict) or isinstance(_col_cfg, Mapping)):
+                    _state["collection_config"] = {
+                        "embedding_provider": _col_cfg.get("embedding_provider", ""),
+                        "embedding_model": _col_cfg.get("embedding_model", ""),
+                        "embedding_dim": _col_cfg.get("embedding_dim"),
+                    }
+                _docs = await engine.list_documents(_snap_col)
+                if _docs:
+                    _files_dir = engine._files_dir / _snap_col
+                    _state["documents"] = [
+                        {
+                            "filename": d.filename,
+                            "file_path": str(_files_dir / d.filename),
+                            "chunk_count": d.chunk_count,
+                            "status": d.status,
+                            "ingested_at": d.ingested_at,
+                        }
+                        for d in _docs
+                    ]
+                config["knowledge_state"] = _state
+            except Exception as _snap_err:
+                logger.warning("Failed to snapshot knowledge state: %s", _snap_err)
+
+        # Phase B: Save version + commit knowledge immediately after
+        # Keep draft aligned with the just-published configuration because
+        # Manage loads draft first on re-entry.
+        await save_draft(config or {}, agent_id)
+        ver = await save_config(config or {}, agent_id)
         app_state.config_version = ver
         app_state.tools_include_version = int(ver) if ver else 0
+
+        # NOTE: knowledge_config_hash is updated AFTER migration completes (below)
+        # to avoid a race where queries hit the new (empty) collection during migration.
+
+        # Commit knowledge to runtime (pure in-memory, cannot fail from infra)
+        if prepared_knowledge:
+            knowledge_result = engine.commit_knowledge_update(prepared_knowledge)
+
+        # Phase C: Apply LLM/tools/policies + rebuild (existing, best-effort)
+        # Strip knowledge_state before runtime apply — it's for export/import only.
+        config.pop("knowledge_state", None)
         await _apply_published_config(app_state, config or {})
 
         # Rebuild the production agent graph to pick up new tools + LLM config
@@ -906,7 +1160,6 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     prod_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
                 if overrides["cuga_lite_max_steps"] is not None:
                     prod_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
-                # Propagate published LLM config so build_graph uses the correct provider/model
                 llm_cfg = (config or {}).get("llm") or {}
                 prod_agent.llm_config = llm_cfg if llm_cfg else None
                 await prod_agent.build_graph()
@@ -917,9 +1170,104 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         except Exception as rebuild_err:
             logger.error(f"Failed to rebuild production agent graph: {rebuild_err}")
             logger.exception("[DEBUG] Full traceback:")
-            # Don't fail the request if rebuild fails, just log it
 
-        return JSONResponse({"status": "success", "version": ver, "agent_id": agent_id})
+        response_data: dict[str, Any] = {"status": "success", "version": ver, "agent_id": agent_id}
+
+        reindex_info = None
+
+        if engine and _vec_hash and _prev_hash != _vec_hash:
+            try:
+                if (
+                    _migration_precheck_done
+                    and _target_docs_precheck is not None
+                    and _old_docs_precheck is not None
+                ):
+                    target_docs = _target_docs_precheck
+                else:
+                    target_docs = await engine.list_documents(_new_collection)
+                if target_docs:
+                    logger.info(
+                        "Knowledge config hash changed (%s -> %s) but target collection "
+                        "already has %d doc(s), skipping migration",
+                        _prev_hash or "(none)",
+                        _vec_hash,
+                        len(target_docs),
+                    )
+                else:
+                    if _migration_precheck_done and _old_docs_precheck is not None:
+                        old_docs = _old_docs_precheck
+                    else:
+                        old_docs = await engine.list_documents(_old_collection)
+                    if old_docs:
+                        logger.info(
+                            "Knowledge config hash changed (%s -> %s), migrating %d doc(s) to new collection",
+                            _prev_hash or "(none)",
+                            _vec_hash,
+                            len(old_docs),
+                        )
+                        try:
+                            await engine.copy_source_files(_old_collection, _new_collection)
+                            reindex_info = await engine.reindex(_new_collection)
+                        except Exception as mig_err:
+                            logger.warning("Document migration failed: %s", mig_err)
+                            reindex_info = {"status": "failed", "error": str(mig_err)}
+            except Exception as e:
+                logger.warning("Failed to check docs for migration: %s", e)
+
+        if _defer_vector_hash_promotion and ver:
+            _promote_failed = reindex_info and reindex_info.get("status") == "failed"
+            if not _promote_failed and reindex_info is not None:
+                try:
+                    pub_cfg, _ = await load_config(version=ver, agent_id=agent_id)
+                    if pub_cfg and isinstance(pub_cfg.get("knowledge"), dict):
+                        pub_cfg["knowledge"]["_vector_config_hash"] = _vec_hash
+                        await update_published_config_at_version(pub_cfg, agent_id, ver)
+                    draft_for_hash = await load_draft(agent_id)
+                    if draft_for_hash and isinstance(draft_for_hash.get("knowledge"), dict):
+                        draft_for_hash["knowledge"]["_vector_config_hash"] = _vec_hash
+                        await save_draft(draft_for_hash, agent_id)
+                except Exception as promo_err:
+                    logger.warning(
+                        "Migrated knowledge files but failed to persist new _vector_config_hash: %s",
+                        promo_err,
+                    )
+
+        if not reindex_info and knowledge_result and knowledge_result.get("reindex_recommended") and engine:
+            try:
+                docs = await engine.list_documents(_new_collection)
+                if docs:
+                    try:
+                        reindex_info = await engine.reindex(_new_collection)
+                    except Exception as reindex_err:
+                        from cuga.backend.knowledge.engine import ReindexBusyError
+
+                        if isinstance(reindex_err, ReindexBusyError):
+                            reindex_info = {
+                                "status": "busy",
+                                "detail": f"{reindex_err.pending_count} upload(s) in progress",
+                                "pending_count": reindex_err.pending_count,
+                            }
+                            engine._reindex_deferred.add(_new_collection)
+                        else:
+                            logger.warning("Reindex failed: %s", reindex_err)
+            except Exception as e:
+                logger.warning("Failed to check docs for reindex: %s", e)
+
+        if _vec_hash:
+            if reindex_info and reindex_info.get("status") == "failed":
+                logger.error(
+                    "Keeping knowledge_config_hash=%r after vector-config migration/reindex failure "
+                    "(would have switched to %s)",
+                    getattr(app_state, "knowledge_config_hash", None),
+                    _vec_hash,
+                )
+            else:
+                app_state.knowledge_config_hash = _vec_hash
+
+        if reindex_info:
+            response_data["reindex"] = reindex_info
+
+        return JSONResponse(response_data)
     except HTTPException:
         raise
     except Exception as e:
@@ -930,11 +1278,12 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 @router.get("/config/history")
 async def get_manage_config_history(agent_id: Optional[str] = None):
     """List published config versions (newest first)."""
+    if agent_id is None:
+        agent_id = "cuga-default"
     try:
         from cuga.backend.server.config_store import list_versions
 
-        aid = agent_id or "cuga-default"
-        versions = await list_versions(aid)
+        versions = await list_versions(agent_id)
         return JSONResponse({"versions": versions})
     except Exception as e:
         logger.error(f"Failed to list config history: {e}")

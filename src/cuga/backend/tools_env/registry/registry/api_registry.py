@@ -74,6 +74,9 @@ class ApiRegistry:
 
         return app_list
 
+    async def get_service_statuses(self) -> Dict[str, Dict[str, Any]]:
+        return self.mcp_client.get_service_statuses()
+
     async def show_apis_for_app(self, app_name: str, include_response_schema: bool = False) -> List[Dict]:
         """Lists API definitions of a specific app."""
         logger.debug(f"ApiRegistry: show_apis_for_app(app_name='{app_name}') called.")

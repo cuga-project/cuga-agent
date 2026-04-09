@@ -1,6 +1,8 @@
 import asyncio
+import json
 import os
 from typing import Any, List, Optional
+from pathlib import Path
 
 import aiohttp
 from langchain_mcp_adapters.tools import load_mcp_tools
@@ -78,6 +80,7 @@ class ChatAgent(BaseAgent):
         self.session = None
         self._connection = None
         self.tools: Optional[List[BaseTool]] = None
+        self.base_tools: List[BaseTool] = []
         self.prompt_template = prompt_template
         self.use_regular_chat = None
         self.llm = llm
@@ -104,9 +107,7 @@ class ChatAgent(BaseAgent):
             self.use_regular_chat = True
 
         if self.use_regular_chat:
-            # Initialize chain for regular mode
-            model = llm_manager.get_model(settings.agent.planner.model)
-            self.chain = load_prompt_chat("./prompts/pmt_chat.jinja2") | model.bind_tools([execute_task])
+            self.base_tools = [execute_task]
             logger.info("Using regular chat mode (legacy execution)")
         else:
             # Connect via SSE for MCP client mode
@@ -121,27 +122,145 @@ class ChatAgent(BaseAgent):
                     await self.session.initialize()
 
                     # Load tools and create agent
-                    self.tools = await load_mcp_tools(self.session)
-                    self.tools.extend(additional_tool)
-                    logger.debug("Loaded tools, {}".format(len(self.tools)))
-                    model = llm_manager.get_model(settings.agent.planner.model)
-                    self.agent = load_prompt_chat("./prompts/pmt.jinja2") | model.bind_tools(self.tools)
+                    self.base_tools = await load_mcp_tools(self.session)
+                    self.base_tools.extend(additional_tool)
+                    logger.debug("Loaded base tools, {}".format(len(self.base_tools)))
                     logger.info("MCP client mode initialized successfully")
                 except Exception as e:
                     logger.error(f"Failed to initialize MCP client: {e}")
                     # Fallback to tools-only mode
-                    self.tools = additional_tool
-                    model = llm_manager.get_model(settings.agent.planner.model)
-                    self.agent = load_prompt_chat("./prompts/pmt.jinja2") | model.bind_tools(self.tools)
+                    self.base_tools = additional_tool
                     logger.info("Initialized with basic tools only due to MCP connection failure")
             else:
-                self.tools = additional_tool
-                logger.debug("Loaded tools, {}".format(len(self.tools)))
-                model = llm_manager.get_model(settings.agent.planner.model)
-                self.agent = load_prompt_chat("./prompts/pmt.jinja2") | model.bind_tools(self.tools)
+                self.base_tools = additional_tool
+                logger.debug("Loaded base tools, {}".format(len(self.base_tools)))
                 logger.info("Initialized without MCP connection")
 
         self._is_setup = True
+
+    @staticmethod
+    def _dedupe_tools(tools: List[BaseTool]) -> List[BaseTool]:
+        deduped: List[BaseTool] = []
+        seen: set[str] = set()
+
+        for base_tool in tools:
+            tool_name = getattr(base_tool, "name", None)
+            if not tool_name or tool_name in seen:
+                continue
+            seen.add(tool_name)
+            deduped.append(base_tool)
+
+        return deduped
+
+    @staticmethod
+    def should_auto_execute_tool(tool_name: Optional[str]) -> bool:
+        return bool(tool_name and tool_name.startswith("knowledge_"))
+
+    @staticmethod
+    def requires_human_approval(tool_name: Optional[str]) -> bool:
+        return bool(tool_name and not ChatAgent.should_auto_execute_tool(tool_name))
+
+    @staticmethod
+    def _load_knowledge_instructions() -> str:
+        try:
+            kb_instructions_path = (
+                Path(__file__).resolve().parents[5]
+                / "configurations"
+                / "knowledge"
+                / "knowledge_instructions.md"
+            )
+            if kb_instructions_path.exists():
+                return kb_instructions_path.read_text(encoding="utf-8").strip()
+        except Exception as exc:
+            logger.debug(f"Failed to load chat knowledge instructions: {exc}")
+        return ""
+
+    @staticmethod
+    def _knowledge_enabled(app_state: Any) -> bool:
+        engine = getattr(app_state, "knowledge_engine", None) if app_state else None
+        config = getattr(engine, "_config", None) if engine else None
+        return bool(config and getattr(config, "enabled", False))
+
+    @staticmethod
+    def _serialize_tool_result(result: Any) -> str:
+        if isinstance(result, str):
+            return result
+
+        try:
+            return json.dumps(result, ensure_ascii=False, default=str)
+        except Exception:
+            return str(result)
+
+    async def _build_runtime_context(self, state: AgentState) -> tuple[List[BaseTool], dict[str, Any]]:
+        apps = await self.tool_provider.get_apps()
+        apps_list = "\n".join([f"- {app.name}: {app.description or 'No description'}" for app in apps])
+
+        knowledge_tools: List[BaseTool] = []
+        knowledge_block = ""
+        knowledge_instructions = ""
+
+        try:
+            from cuga.backend.server.main import app as backend_app
+            from cuga.backend.knowledge.awareness import (
+                get_knowledge_summary,
+                format_knowledge_context,
+            )
+            from cuga.backend.knowledge.client import KnowledgeClient
+
+            app_state = getattr(backend_app.state, "app_state", None)
+            engine = getattr(app_state, "knowledge_engine", None) if app_state else None
+            agent_id = getattr(app_state, "agent_id", None) if app_state else None
+            knowledge_config_hash = getattr(app_state, "knowledge_config_hash", None) if app_state else None
+
+            if engine and self._knowledge_enabled(app_state):
+                knowledge_client = KnowledgeClient(
+                    engine,
+                    default_agent_id=agent_id or "cuga-default",
+                    agent_collection_hash=knowledge_config_hash,
+                )
+                knowledge_tools = knowledge_client.get_langchain_tools(thread_id=state.thread_id)
+
+                kb_ctx = format_knowledge_context(
+                    agent_id or "cuga-default",
+                    state.thread_id,
+                    engine=engine,
+                    agent_config_hash=knowledge_config_hash,
+                )
+                knowledge_summary = await get_knowledge_summary(
+                    engine,
+                    agent_collection=kb_ctx.get("agent_collection"),
+                    session_collection=kb_ctx.get("session_collection"),
+                    max_search_attempts=getattr(engine._config, "max_search_attempts", None),
+                    default_limit=getattr(engine._config, "default_limit", None),
+                    rag_profile=getattr(engine._config, "rag_profile", "standard"),
+                )
+                if knowledge_summary:
+                    knowledge_block = knowledge_summary
+                    knowledge_instructions = self._load_knowledge_instructions()
+        except Exception as exc:
+            logger.debug(f"Chat knowledge context unavailable: {exc}")
+
+        runtime_tools = self._dedupe_tools([*self.base_tools, *knowledge_tools])
+        tools_list = "\n".join(
+            [f"- {tool.name}: {tool.description or 'No description'}" for tool in runtime_tools]
+        )
+
+        return runtime_tools, {
+            "conversation": self.map_chat_messages(state.chat_agent_messages),
+            "variables_history": state.variables_manager.get_variables_summary(last_n=10),
+            "apps_list": apps_list or "No apps available",
+            "tools_list": tools_list or "No tools available",
+            "knowledge_block": knowledge_block,
+            "knowledge_instructions": knowledge_instructions,
+        }
+
+    async def _build_bound_agent(self, state: AgentState):
+        runtime_tools, prompt_inputs = await self._build_runtime_context(state)
+        model = self.llm or llm_manager.get_model(settings.agent.planner.model)
+        prompt_path = "./prompts/pmt_chat.jinja2" if self.use_regular_chat else "./prompts/pmt.jinja2"
+        bound_agent = load_prompt_chat(prompt_path) | model.bind_tools(runtime_tools)
+        self.tools = runtime_tools
+        return bound_agent, prompt_inputs
 
     def _is_session_valid(self) -> bool:
         """Check if the MCP session is still valid"""
@@ -208,24 +327,17 @@ class ChatAgent(BaseAgent):
                 logger.warning("MCP session invalid during invoke, reconnecting...")
                 await self.setup()
 
-            if not self.agent:
-                raise RuntimeError("Agent not setup properly.")
-
             try:
-                return await self.agent.ainvoke(
-                    {
-                        "conversation": self.map_chat_messages(chat_messages),
-                    }
-                )
+                state.chat_agent_messages = chat_messages
+                agent, prompt_inputs = await self._build_bound_agent(state)
+                return await agent.ainvoke(prompt_inputs)
             except Exception as e:
                 if "ClosedResourceError" in str(type(e)):
                     logger.warning("Connection closed during invoke, attempting reconnect...")
                     await self.setup()
-                    return await self.agent.ainvoke(
-                        {
-                            "conversation": self.map_chat_messages(chat_messages),
-                        }
-                    )
+                    state.chat_agent_messages = chat_messages
+                    agent, prompt_inputs = await self._build_bound_agent(state)
+                    return await agent.ainvoke(prompt_inputs)
                 raise e
 
     def map_chat_messages(self, chat_messages: List[BaseMessage]):
@@ -272,20 +384,9 @@ class ChatAgent(BaseAgent):
 
     async def _run_regular(self, chat_messages: List[BaseMessage], state: AgentState) -> BaseMessage:
         """Regular run method implementation"""
-        if not self.chain:
-            raise RuntimeError("Chain not initialized for regular mode.")
-
-        apps = await self.tool_provider.get_apps()
-        apps_list = "\n".join([f"- {app.name}: {app.description or 'No description'}" for app in apps])
-
-        res = await self.chain.ainvoke(
-            {
-                "conversation": self.map_chat_messages(chat_messages),
-                "variables_history": state.variables_manager.get_variables_summary(last_n=10),
-                "apps_list": apps_list or "No apps available",
-            }
-        )
-        return res
+        state.chat_agent_messages = chat_messages
+        chain, prompt_inputs = await self._build_bound_agent(state)
+        return await chain.ainvoke(prompt_inputs)
 
     async def _run_mcp_client(self, chat_messages: List[BaseMessage], state: AgentState):
         """MCP client run method implementation"""
@@ -326,6 +427,7 @@ class ChatAgent(BaseAgent):
 
             # Reset state
             self.tools = None
+            self.base_tools = []
             self.agent = None
             self._is_setup = False
             logger.debug("ChatAgent cleanup completed")
@@ -336,5 +438,6 @@ class ChatAgent(BaseAgent):
             self.session = None
             self._connection = None
             self.tools = None
+            self.base_tools = []
             self.agent = None
             self._is_setup = False
