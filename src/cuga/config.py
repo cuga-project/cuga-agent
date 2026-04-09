@@ -18,6 +18,8 @@ from loguru import logger
 
 # Get the package root from path_store
 PACKAGE_ROOT = Path(os.environ.get("CUGA_PACKAGE_ROOT", Path(__file__).parent.resolve()))
+DEMO_TOOLS_ROOT = (PACKAGE_ROOT / "demo_tools").resolve()
+REPO_ROOT = PACKAGE_ROOT.parent.parent.resolve()
 LOGGING_DIR = os.environ.get("CUGA_LOGGING_DIR", os.path.join(PACKAGE_ROOT, "./logging"))
 TRAJECTORY_DATA_DIR = os.path.join(LOGGING_DIR, "trajectory_data")
 TRACES_DIR = os.path.join(LOGGING_DIR, "traces")

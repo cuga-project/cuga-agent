@@ -118,15 +118,13 @@ deployment/certs/*.crt
 .secrets.*
 !.secrets.baseline
 
-# Documentation (but include demo_apps for demo_crm and huggingface examples)
+# Documentation — demo MCP sources now live under src/cuga/demo_tools (copied with image)
 docs/**
-!docs/examples/demo_apps/
-!docs/examples/huggingface/
-!docs/examples/docs_mcp/
-# Exclude demo_app .venv, build, db - local dev artifacts, not needed at runtime
-docs/examples/demo_apps/**/.venv/
-docs/examples/demo_apps/**/build/
-docs/examples/demo_apps/**/*.db
+# Bundled demo tools: exclude local dev artifacts only
+src/cuga/demo_tools/**/.venv/
+src/cuga/demo_tools/**/build/
+src/cuga/demo_tools/**/*.db
+src/cuga/demo_tools/email_mcp/mcp_mail/
 
 
 # Secrets and local dev

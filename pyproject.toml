@@ -128,6 +128,7 @@ cuga = [
     "backend/**/*.js",
     "backend/server/demo_setup_utils/*.json",
     "frontend/dist/**",
+    "demo_tools/**",
 ]
 scripts = ["*.py"]
 system_tests = ["**/*.py", "**/*.yaml", "**/*.sh"]
