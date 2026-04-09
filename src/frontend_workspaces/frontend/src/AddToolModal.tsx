@@ -51,7 +51,7 @@ const TOOL_TEMPLATES: ToolTemplate[] = [
       type: "mcp",
       mcpMode: "command",
       command: "uvx",
-      argsText: "--from\n/Users/gaodanfang/Documents/projects/opensource/cuga-agent/altk-evolve\n--with\nsetuptools<70\nevolve-mcp",
+      argsText: "--from\naltk-evolve\n--with\nsetuptools<70\nevolve-mcp",
       description: "Evolve MCP server for guideline lookup and trajectory saving.",
       env: {
         EVOLVE_MODEL_NAME: "Azure/gpt-4o",

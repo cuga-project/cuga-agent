@@ -19,7 +19,7 @@ def test_evolve_templates_use_upstream_package_entrypoint() -> None:
     bundled_template = next((repo_root / "src/cuga/frontend/dist").glob("main.*.js")).read_text()
     readme = (repo_root / "README.md").read_text()
 
-    expected_args = f"--from\\n{repo_root / 'altk-evolve'}\\n--with\\nsetuptools<70\\nevolve-mcp"
+    expected_args = "--from\\naltk-evolve\\n--with\\nsetuptools<70\\nevolve-mcp"
 
     assert 'command: "uvx"' in source_template
     assert f'argsText: "{expected_args}"' in source_template
@@ -33,7 +33,7 @@ def test_evolve_templates_use_upstream_package_entrypoint() -> None:
 
     assert "cuga-evolve-mcp" not in readme
     assert "cuga.backend.evolve.mcp_server" not in readme
-    assert str(repo_root / "altk-evolve") in readme
+    assert "--from altk-evolve" in readme or "--from\naltk-evolve" in readme
     assert "evolve-mcp" in readme
     assert "setuptools<70" in readme
     assert "OPENAI_BASE_URL=env://OPENAI_BASE_URL" in readme

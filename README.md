@@ -899,7 +899,7 @@ This flow is:
 - **Opt-in** - disabled by default
 - **Non-blocking** - Evolve failures do not fail the task
 - **CugaLite-focused** - enabled for lite mode by default
-- **Bundled as a required dependency** - standard CUGA installs include the `evolve` package
+- **Optional integration** - install `cuga[evolve]` if you want the upstream Evolve package available locally, or let `uvx` fetch it on demand
 
 ### Setup Steps:
 
@@ -916,7 +916,7 @@ This flow is:
 
    ```text
    --from
-   /Users/gaodanfang/Documents/projects/opensource/cuga-agent/altk-evolve
+   altk-evolve
    --with
    setuptools<70
    evolve-mcp
@@ -941,7 +941,7 @@ This flow is:
    Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
 
    ```bash
-   uvx --from /Users/gaodanfang/Documents/projects/opensource/cuga-agent/altk-evolve --with setuptools<70 evolve-mcp --transport sse --port 8201
+   uvx --from altk-evolve --with setuptools<70 evolve-mcp --transport sse --port 8201
    ```
 2. Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
 
