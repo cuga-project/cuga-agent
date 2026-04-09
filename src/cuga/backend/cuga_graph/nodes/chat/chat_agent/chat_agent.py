@@ -115,13 +115,13 @@ class ChatAgent(BaseAgent):
 
         if self.use_regular_chat:
             self.base_tools = [execute_task]
-            
+
             # Store metadata for context management (used in context summarization)
             model = llm_manager.get_model(settings.agent.planner.model)
             self.model = model
             self.model_name = getattr(model, 'model_name', None)
             self.tools_for_context = [execute_task]
-            
+
             # Extract system prompt text from the prompt template for context management
             try:
                 prompt = load_prompt_chat("./prompts/pmt_chat.jinja2")
@@ -133,7 +133,7 @@ class ChatAgent(BaseAgent):
             except Exception as e:
                 logger.debug(f"Could not extract system prompt during setup: {e}")
                 self.system_prompt_text = None
-            
+
             logger.info("Using regular chat mode (legacy execution)")
         else:
             # Connect via SSE for MCP client mode
