@@ -2130,12 +2130,13 @@ const TOOL_TEMPLATES = [{
     name: "evolve",
     type: "mcp",
     mcpMode: "command",
-    command: "uv",
-    argsText: "run\npython\n-m\ncuga.backend.evolve.mcp_server",
-    description: "Local Evolve MCP server for guideline lookup and trajectory saving. Requires the optional evolve package to be installed.",
+    command: "uvx",
+    argsText: "--from\n/Users/gaodanfang/Documents/projects/opensource/cuga-agent/altk-evolve\n--with\nsetuptools<70\nevolve-mcp",
+    description: "Evolve MCP server for guideline lookup and trajectory saving.",
     env: {
       EVOLVE_MODEL_NAME: "Azure/gpt-4o",
-      OPENAI_API_KEY: "env://OPENAI_API_KEY"
+      OPENAI_API_KEY: "env://OPENAI_API_KEY",
+      OPENAI_BASE_URL: "https://ete-litellm.bx.cloud9.ibm.com"
     },
     transport: "stdio"
   }

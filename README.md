@@ -839,14 +839,15 @@ This flow is:
 
    - Name: `evolve`
    - Connection type: `Command (stdio)`
-   - Command: `uv`
+   - Command: `uvx`
    - Args:
 
    ```text
-   run
-   python
-   -m
-   cuga.backend.evolve.mcp_server
+   --from
+   /Users/gaodanfang/Documents/projects/opensource/cuga-agent/altk-evolve
+   --with
+   setuptools<70
+   evolve-mcp
    ```
 
    Then set the tool environment values in the UI. Recommended defaults:
@@ -854,19 +855,21 @@ This flow is:
    ```text
    EVOLVE_MODEL_NAME=Azure/gpt-4o
    OPENAI_API_KEY=env://OPENAI_API_KEY # pragma: allowlist secret
+   OPENAI_BASE_URL=https://ete-litellm.bx.cloud9.ibm.com
    ```
 
    Notes:
    - Use a model your gateway/team is actually allowed to access. Replace `Azure/gpt-4o` with the exact allowed model if needed.
    - `OPENAI_API_KEY=env://OPENAI_API_KEY` means "read the real value from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
-   - If your OpenAI-compatible gateway also requires a custom base URL, add `OPENAI_BASE_URL=env://OPENAI_BASE_URL`.
+   - `OPENAI_BASE_URL=https://ete-litellm.bx.cloud9.ibm.com` points Evolve at the IBM LiteLLM gateway used in local development here.
+   - `setuptools<70` is included because `milvus-lite` still imports `pkg_resources`.
 
-   Important: this command starts Evolve in `stdio` mode. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
+   Important: this command starts Evolve in `stdio` mode through the upstream Evolve package. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
 
    Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
 
    ```bash
-   uv run python -m cuga.backend.evolve.mcp_server --transport sse --port 8201
+   uvx --from /Users/gaodanfang/Documents/projects/opensource/cuga-agent/altk-evolve --with setuptools<70 evolve-mcp --transport sse --port 8201
    ```
 2. Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
 
