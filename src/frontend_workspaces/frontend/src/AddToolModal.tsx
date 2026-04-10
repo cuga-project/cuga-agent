@@ -411,11 +411,11 @@ export function AddToolModal({ onClose, onSave, initial, agentId }: AddToolModal
                   labelText="Environment variables (one per line)"
                   value={envText}
                   onChange={(e) => setEnvText(e.target.value)}
-                  placeholder={"EVOLVE_MODEL_NAME=Azure/gpt-4o\nOPENAI_API_KEY=env://OPENAI_API_KEY\nOPENAI_BASE_URL=env://OPENAI_BASE_URL"} // pragma: allowlist secret
-                  rows={6}
+                  placeholder={"API_KEY=your_api_key\nBASE_URL=http://localhost:8000"}
+                  rows={3}
                   invalid={!!envError}
                   invalidText={envError}
-                  helperText={!envError ? "KEY=VALUE per line. Values can be literals or refs such as env://OPENAI_API_KEY, db://my-secret, or vault://secret/path#value." : undefined}
+                  helperText={!envError ? "KEY=VALUE per line. Use ENV_VAR_NAME as value to reference process env (e.g. MY_KEY=MY_KEY)" : undefined}
                 />
               </FormGroup>
             </>
