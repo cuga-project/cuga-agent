@@ -29,11 +29,11 @@ RUN uv sync
 # Create cuga_workspace directory
 RUN mkdir -p /app/cuga_workspace
 
-# Copy example files from huggingface examples
-COPY docs/examples/huggingface/contacts.txt /app/cuga_workspace/contacts.txt
-COPY docs/examples/huggingface/cuga_knowledge.md /app/cuga_workspace/cuga_knowledge.md
-COPY docs/examples/huggingface/cuga_playbook.md /app/cuga_workspace/cuga_playbook.md
-COPY docs/examples/huggingface/email_template.md /app/cuga_workspace/email_template.md
+# Copy example files from bundled demo_tools samples
+COPY src/cuga/demo_tools/huggingface/contacts.txt /app/cuga_workspace/contacts.txt
+COPY src/cuga/demo_tools/huggingface/cuga_knowledge.md /app/cuga_workspace/cuga_knowledge.md
+COPY src/cuga/demo_tools/huggingface/cuga_playbook.md /app/cuga_workspace/cuga_playbook.md
+COPY src/cuga/demo_tools/huggingface/email_template.md /app/cuga_workspace/email_template.md
 
 # Expose port 7860 (Hugging Face Spaces default)
 EXPOSE 7860

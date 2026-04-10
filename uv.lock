@@ -927,7 +927,7 @@ wheels = [
 
 [[package]]
 name = "cuga"
-version = "0.2.16"
+version = "0.2.18"
 source = { editable = "." }
 dependencies = [
     { name = "a2a-sdk", extra = ["http-server"] },
@@ -1050,7 +1050,7 @@ requires-dist = [
     { name = "langchain-text-splitters", specifier = ">=0.3,<0.4" },
     { name = "langfuse" },
     { name = "langgraph" },
-    { name = "litellm", specifier = "==1.83.4" },
+    { name = "litellm", specifier = ">=1.83.0" },
     { name = "loguru" },
     { name = "markdownify" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.23.0" },

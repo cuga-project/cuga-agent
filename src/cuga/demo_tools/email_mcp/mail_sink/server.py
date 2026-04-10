@@ -44,7 +44,7 @@ from email.message import Message
 from email.header import decode_header, make_header
 
 
-STORAGE_DIR = Path().cwd() / "docs/examples/demo_apps/email_mcp/mcp_mail"
+STORAGE_DIR = Path(__file__).resolve().parents[1] / "mcp_mail"
 STORAGE_DIR.mkdir(parents=True, exist_ok=True)
 
 

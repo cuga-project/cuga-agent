@@ -1,6 +1,6 @@
 [project]
 name = "cuga"
-version = "0.2.16"
+version = "0.2.18"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
@@ -33,7 +33,7 @@ dependencies = [
     "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
-    "litellm==1.83.4",
+    "litellm>=1.83.0",
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
@@ -60,6 +60,7 @@ knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]
 evolve = ["altk-evolve>=1.0.6; python_version>='3.12'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
+# Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
 observability = ["openlit>=1.40.3"]
 
 [project.urls]
@@ -128,6 +129,7 @@ cuga = [
     "backend/**/*.js",
     "backend/server/demo_setup_utils/*.json",
     "frontend/dist/**",
+    "demo_tools/**",
 ]
 scripts = ["*.py"]
 system_tests = ["**/*.py", "**/*.yaml", "**/*.sh"]
