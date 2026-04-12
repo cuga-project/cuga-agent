@@ -31,7 +31,7 @@ except ImportError:
 
 class ContextSummarizer:
     """
-    Manages context summarization for conversation history.
+    Manages context summarization for conversation history
 
     This is a wrapper around LangChain's SummarizationMiddleware that provides:
     - Configuration from settings.toml
