@@ -42,26 +42,6 @@ interface ToolTemplate {
 
 const TOOL_TEMPLATES: ToolTemplate[] = [
   {
-    id: "evolve",
-    name: "Evolve",
-    description: "Guideline retrieval and trajectory learning via Evolve MCP",
-    icon: Template,
-    config: {
-      name: "evolve",
-      type: "mcp",
-      mcpMode: "command",
-      command: "uvx",
-      argsText: "--from\naltk-evolve\n--with\nsetuptools<70\nevolve-mcp",
-      description: "Evolve MCP server for guideline lookup and trajectory saving.",
-      env: {
-        EVOLVE_MODEL_NAME: "Azure/gpt-4o",
-        OPENAI_API_KEY: "env://OPENAI_API_KEY", // pragma: allowlist secret
-        OPENAI_BASE_URL: "env://OPENAI_BASE_URL", // pragma: allowlist secret
-      },
-      transport: "stdio",
-    },
-  },
-  {
     id: "filesystem",
     name: "Filesystem",
     description: "Read and write files in a specified directory",
