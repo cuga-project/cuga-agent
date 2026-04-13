@@ -91,7 +91,7 @@ class PolicyFilesystemSync:
         # Build frontmatter
         # Get policy type - try 'type' first, then 'policy_type'
         policy_type = getattr(policy, 'type', None) or getattr(policy, 'policy_type', None)
-        policy_type_value = policy_type.value if hasattr(policy_type, 'value') else str(policy_type)
+        policy_type_value = policy_type.value if policy_type is not None and hasattr(policy_type, 'value') else str(policy_type)
 
         frontmatter = {
             'id': policy.id,
@@ -103,10 +103,11 @@ class PolicyFilesystemSync:
         }
 
         # Add triggers if present
-        if hasattr(policy, 'triggers') and policy.triggers:
+        policy_triggers = getattr(policy, 'triggers', None)
+        if policy_triggers:
             triggers_config = {}
 
-            for trigger in policy.triggers:
+            for trigger in policy_triggers:
                 if isinstance(trigger, KeywordTrigger):
                     triggers_config['keywords'] = trigger.value
                     triggers_config['target'] = trigger.target
@@ -133,6 +134,10 @@ class PolicyFilesystemSync:
             frontmatter['target_tools'] = policy.target_tools
             if policy.target_apps:
                 frontmatter['target_apps'] = policy.target_apps
+            if policy.tool_guards:
+                frontmatter['tool_guards'] = {
+                    tool_name: guard.model_dump() for tool_name, guard in policy.tool_guards.items()
+                }
             frontmatter['prepend'] = policy.prepend
             content = policy.guide_content or ""
         elif isinstance(policy, IntentGuard):

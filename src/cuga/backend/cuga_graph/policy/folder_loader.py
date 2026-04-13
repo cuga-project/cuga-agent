@@ -7,7 +7,7 @@ from a folder structure where each policy is defined in a markdown file with fro
 
 import os
 from pathlib import Path
-from typing import Dict, Any, List
+from typing import Dict, Any, List, cast
 import yaml
 from loguru import logger
 
@@ -15,12 +15,14 @@ from cuga.backend.cuga_graph.policy.models import (
     Playbook,
     OutputFormatter,
     ToolGuide,
+    ToolGuard,
     IntentGuard,
     ToolApproval,
     KeywordTrigger,
     NaturalLanguageTrigger,
     AlwaysTrigger,
     IntentGuardResponse,
+    Trigger,
 )
 
 
@@ -123,7 +125,7 @@ def create_playbook_from_markdown(
         raise ValueError(f"Playbook in {file_path} missing 'name' in frontmatter")
 
     triggers_config = frontmatter.get('triggers', {})
-    triggers = create_triggers_from_metadata(triggers_config)
+    triggers = cast(List[Trigger], create_triggers_from_metadata(triggers_config))
 
     if not triggers:
         raise ValueError(f"Playbook {name} must have at least one trigger")
@@ -160,10 +162,10 @@ def create_output_formatter_from_markdown(
         raise ValueError(f"OutputFormatter in {file_path} missing 'name' in frontmatter")
 
     triggers_config = frontmatter.get('triggers', {})
-    triggers = create_triggers_from_metadata(triggers_config)
+    triggers = cast(List[Trigger], create_triggers_from_metadata(triggers_config))
 
     if not triggers:
-        triggers = [AlwaysTrigger()]
+        triggers = cast(List[Trigger], [AlwaysTrigger()])
 
     format_type = frontmatter.get('format_type', 'markdown')
     if format_type not in ['markdown', 'json_schema', 'direct']:
@@ -205,10 +207,17 @@ def create_tool_guide_from_markdown(
         raise ValueError(f"ToolGuide {name} must specify 'target_tools'")
 
     triggers_config = frontmatter.get('triggers', {})
-    triggers = create_triggers_from_metadata(triggers_config)
+    triggers = cast(List[Trigger], create_triggers_from_metadata(triggers_config))
 
     if not triggers:
-        triggers = [AlwaysTrigger()]
+        triggers = cast(List[Trigger], [AlwaysTrigger()])
+
+    raw_tool_guards = frontmatter.get('tool_guards')
+    tool_guards = (
+        {tool_name: ToolGuard(**guard_config) for tool_name, guard_config in raw_tool_guards.items()}
+        if isinstance(raw_tool_guards, dict)
+        else None
+    )
 
     return ToolGuide(
         id=frontmatter.get('id', f"tool_guide_{Path(file_path).stem}"),
@@ -218,6 +227,7 @@ def create_tool_guide_from_markdown(
         target_tools=target_tools,
         target_apps=frontmatter.get('target_apps'),
         guide_content=content,
+        tool_guards=tool_guards,
         prepend=frontmatter.get('prepend', False),
         priority=frontmatter.get('priority', 50),
         enabled=frontmatter.get('enabled', True),
@@ -244,7 +254,7 @@ def create_intent_guard_from_markdown(
         raise ValueError(f"IntentGuard in {file_path} missing 'name' in frontmatter")
 
     triggers_config = frontmatter.get('triggers', {})
-    triggers = create_triggers_from_metadata(triggers_config)
+    triggers = cast(List[Trigger], create_triggers_from_metadata(triggers_config))
 
     if not triggers:
         raise ValueError(f"IntentGuard {name} must have at least one trigger")
@@ -261,6 +271,7 @@ def create_intent_guard_from_markdown(
         response=IntentGuardResponse(
             response_type=response_type,
             content=content,
+            status_code=frontmatter.get('status_code'),
         ),
         allow_override=frontmatter.get('allow_override', False),
         priority=frontmatter.get('priority', 50),

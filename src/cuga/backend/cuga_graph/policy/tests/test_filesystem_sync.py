@@ -24,6 +24,7 @@ from cuga.backend.cuga_graph.policy.models import (
     IntentGuard,
     Playbook,
     ToolGuide,
+    ToolGuard,
     ToolApproval,
     OutputFormatter,
     KeywordTrigger,
@@ -163,6 +164,40 @@ class TestFilesystemSyncBasics:
                 content = f.read()
                 for expected in expected_content:
                     assert expected in content
+
+    @pytest.mark.asyncio
+    async def test_save_tool_guide_with_tool_guards_to_filesystem(self, temp_cuga_folder):
+        """Test saving tool_guards in ToolGuide frontmatter."""
+        fs_sync = PolicyFilesystemSync(cuga_folder=temp_cuga_folder)
+        policy = ToolGuide(
+            id="test_guide_with_guards",
+            name="Guide With Guards",
+            description="Test tool guide with per-tool guard configuration",
+            triggers=[AlwaysTrigger()],
+            target_tools=["test_tool"],
+            target_apps=None,
+            guide_content="## Guidelines\n- Be careful",
+            tool_guards={
+                "test_tool": ToolGuard(
+                    description="Only allow safe usage",
+                    violating_examples=["Deleting all records without confirmation"],
+                    compliance_examples=["Delete one record after explicit confirmation"],
+                    policy_code="def validate(call):\n    return True",
+                )
+            },
+            prepend=False,
+            priority=0,
+            enabled=True,
+        )
+
+        file_path = fs_sync.save_policy_to_file(policy)
+
+        with open(file_path, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        assert "tool_guards:" in content
+        assert "test_tool:" in content
+        assert "Only allow safe usage" in content
 
     @pytest.mark.asyncio
     async def test_delete_policy_file(self, temp_cuga_folder):
@@ -376,7 +411,19 @@ class TestAutoLoadPolicies:
             description="Test",
             triggers=[AlwaysTrigger()],
             target_tools=["*"],
+            target_apps=None,
             guide_content="## Test",
+            tool_guards={
+                "test_tool": ToolGuard(
+                    description="Guard loaded from filesystem",
+                    violating_examples=["bad_example()"],
+                    compliance_examples=["good_example()"],
+                    policy_code="def validate(call):\n    return True",
+                )
+            },
+            prepend=False,
+            priority=0,
+            enabled=True,
         )
 
         fs_sync.save_policy_to_file(guard)
@@ -398,6 +445,11 @@ class TestAutoLoadPolicies:
         assert "intent_guard" in policy_types
         assert "playbook" in policy_types
         assert "tool_guide" in policy_types
+
+        loaded_guide = next(p for p in policies if p["id"] == "guide_1")
+        assert loaded_guide["policy"].tool_guards is not None
+        assert "test_tool" in loaded_guide["policy"].tool_guards
+        assert loaded_guide["policy"].tool_guards["test_tool"].description == "Guard loaded from filesystem"
 
     @pytest.mark.asyncio
     async def test_auto_load_disabled(self, temp_cuga_folder):

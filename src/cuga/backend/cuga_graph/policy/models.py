@@ -165,6 +165,21 @@ class IntentGuardResponse(BaseModel):
     status_code: Optional[int] = Field(None, description="HTTP status code if applicable")
 
 
+class ToolGuard(BaseModel):
+    """Guard configuration for a specific tool with compliance rules."""
+
+    description: str = Field(..., description="Description of the guard rules for this tool")
+    violating_examples: List[str] = Field(
+        default_factory=list, description="Examples of violating usage patterns"
+    )
+    compliance_examples: List[str] = Field(
+        default_factory=list, description="Examples of compliant usage patterns"
+    )
+    policy_code: str = Field(
+        default="", description="Python code that validates tool usage compliance"
+    )
+
+
 class IntentGuard(BaseModel):
     """Guard that intercepts intents and provides custom responses."""
 
@@ -214,6 +229,9 @@ class ToolGuide(BaseModel):
         None, description="List of app names to enrich tools for (optional)"
     )
     guide_content: str = Field(..., description="Markdown content to append to tool descriptions")
+    tool_guards: Optional[Dict[str, ToolGuard]] = Field(
+        None, description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)"
+    )
     prepend: bool = Field(False, description="Whether to prepend content instead of appending")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     priority: int = Field(0, description="Priority when multiple guides match (higher = more important)")
