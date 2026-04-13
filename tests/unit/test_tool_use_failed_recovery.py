@@ -1,10 +1,35 @@
 """Tests for LLM tool_use_failed error recovery in errors.py."""
 
 from cuga.backend.llm.errors import (
+    _parse_tool_use_failed_from_body,
     extract_code_from_tool_use_failed,
     failed_gen_to_code,
+    is_tool_use_failed_retryable_error,
     parse_tool_use_failed_generation,
 )
+
+
+# ---------------------------------------------------------------------------
+# is_tool_use_failed_retryable_error
+# ---------------------------------------------------------------------------
+
+
+class TestIsToolUseFailedRetryableError:
+    def test_body_code(self):
+        err = Exception("x")
+        err.body = {  # type: ignore[attr-defined]
+            "error": {"code": "tool_use_failed", "message": "bad json"},
+        }
+        assert is_tool_use_failed_retryable_error(err) is True
+
+    def test_message_substring(self):
+        assert (
+            is_tool_use_failed_retryable_error(Exception("Failed to parse tool call arguments as JSON"))
+            is True
+        )
+
+    def test_unrelated_false(self):
+        assert is_tool_use_failed_retryable_error(Exception("rate limited")) is False
 
 
 # ---------------------------------------------------------------------------
@@ -191,3 +216,38 @@ class TestExtractCodeFromToolUseFailed:
         assert code is not None
         assert "knowledge_search_knowledge" in code
         assert "query='GPA'" in code
+
+    def test_reads_failed_generation_from_response_json_when_body_none(self):
+        """Groq may attach error JSON on response.json() only."""
+
+        class FakeResp:
+            def json(self):
+                return {
+                    "error": {
+                        "code": "tool_use_failed",
+                        "failed_generation": '{"name": "python", "arguments": "print(99)"}',
+                    }
+                }
+
+        class FakeErr(Exception):
+            def __init__(self):
+                self.body = None
+                self.response = FakeResp()
+                super().__init__("400")
+
+        code = extract_code_from_tool_use_failed(FakeErr())
+        assert code == "print(99)"
+
+    def test_execute_python_malformed_json_recovered(self):
+        raw = '{"name": "execute_python", "arguments": {\n  "code": "x = 1\\nprint(x\\\'s test)"\n}}'
+        out = _parse_tool_use_failed_from_body(
+            {
+                "error": {
+                    "code": "tool_use_failed",
+                    "failed_generation": raw,
+                }
+            }
+        )
+        assert out is not None
+        assert out["name"] == "execute_python"
+        assert "print" in failed_gen_to_code(out)

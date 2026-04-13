@@ -72,7 +72,7 @@ from langgraph.types import Command
 from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.llm.models import LLMManager
-from cuga.backend.llm.errors import extract_code_from_tool_use_failed
+from cuga.backend.llm.errors import extract_code_from_tool_use_failed, is_tool_use_failed_retryable_error
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt, PromptUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
@@ -97,6 +97,9 @@ except ImportError:
 
 tracker = ActivityTracker()
 llm_manager = LLMManager()
+
+# Initial attempt + 3 retries when Groq (etc.) rejects malformed tool-call JSON
+_TOOL_USE_FAILED_MAX_RETRIES = 3
 
 BACKTICK_PATTERN = r'```python(.*?)```'
 
@@ -385,6 +388,111 @@ class TodosOutput(BaseModel):
     todos: List[Todo] = Field(..., description="List of todos with their current status")
 
 
+class ExecutePythonInput(BaseModel):
+    """Python source executed in the sandbox with app tools available as async callables."""
+
+    code: str = Field(
+        ...,
+        description=(
+            "Full Python script. Use await for async tools; end with print(...) of the main result. "
+            "Imports allowed: json, re, typing, datetime."
+        ),
+    )
+
+
+def create_execute_python_tool() -> StructuredTool:
+    """Tool used with native function calling to pass Python into the execution sandbox."""
+
+    async def _run(code: str) -> str:
+        return ""
+
+    return StructuredTool.from_function(
+        coroutine=_run,
+        name="execute_python",
+        description=(
+            "Run Python in the execution environment where connected-app tools are available as async functions. "
+            "Use for loops and pagination, transforming data when schemas are known, orchestrating multiple "
+            "tool calls, or composing tools from connected apps (including after find_tools). "
+            "For a single straightforward tool call with no extra logic, call that tool directly instead. "
+            "The code must use await for async tools and end with print(...)."
+        ),
+        args_schema=ExecutePythonInput,
+    )
+
+
+def _normalize_tool_calls(raw: Any) -> List[Dict[str, Any]]:
+    out: List[Dict[str, Any]] = []
+    if not raw:
+        return out
+    for tc in raw:
+        if isinstance(tc, dict):
+            name = tc.get("name")
+            args = tc.get("args")
+            if args is None and tc.get("arguments") is not None:
+                argstr = tc["arguments"]
+                if isinstance(argstr, str):
+                    try:
+                        args = json.loads(argstr)
+                    except json.JSONDecodeError:
+                        args = {}
+                else:
+                    args = argstr
+            args = args or {}
+        else:
+            name = getattr(tc, "name", None)
+            args = getattr(tc, "args", None) or {}
+        if name:
+            out.append({"name": name, "args": args})
+    return out
+
+
+def _arg_to_py_literal(val: Any) -> str:
+    if val is None:
+        return "None"
+    if val is True:
+        return "True"
+    if val is False:
+        return "False"
+    if isinstance(val, (int, float)):
+        return str(val)
+    if isinstance(val, str):
+        return repr(val)
+    if isinstance(val, list):
+        return "[" + ", ".join(_arg_to_py_literal(x) for x in val) + "]"
+    if isinstance(val, dict):
+        return "{" + ", ".join(f"{repr(k)}: {_arg_to_py_literal(v)}" for k, v in val.items()) + "}"
+    return repr(val)
+
+
+def tool_calls_to_python_script(tool_calls: List[Dict[str, Any]]) -> str:
+    """Turn model tool_calls into sandbox Python (await + execute_python code)."""
+    if not tool_calls:
+        return ""
+    segments: List[str] = []
+    last_direct_var: Optional[str] = None
+    idx = 0
+    for tc in tool_calls:
+        name = tc["name"]
+        args = tc.get("args") or {}
+        if name == "execute_python":
+            code = (args.get("code") or args.get("python") or "").strip()
+            if code:
+                segments.append(code)
+            last_direct_var = None
+            continue
+        kw = ", ".join(f"{k}={_arg_to_py_literal(v)}" for k, v in args.items())
+        var = f"_fc_{idx}"
+        idx += 1
+        segments.append(f"{var} = await {name}({kw})")
+        last_direct_var = var
+    if not segments:
+        return ""
+    body = "\n".join(segments)
+    if last_direct_var is not None:
+        body += f"\nprint({last_direct_var})"
+    return body
+
+
 async def create_find_tools_tool(
     all_tools: Sequence[StructuredTool],
     all_apps: List[Any],
@@ -471,21 +579,28 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
         StructuredTool configured for creating and updating todos
     """
 
-    async def create_update_todos_func(input_data) -> str:
+    async def create_update_todos_func(*args: Any, **kwargs: Any) -> str:
         """Create or update a list of todos for complex multi-step tasks.
 
         Use this tool when you have a complex task that requires multiple steps.
         This helps you track progress and organize your work.
 
+        Bound schema uses ``todos=`` (native function calling). Sandbox code may pass a
+        single positional list or dict instead.
+
         Args:
-            input_data: Can be:
-                       - A TodosInput Pydantic model
-                       - A dict with 'todos' key: {"todos": [...]}
-                       - A list directly: [...] (will be wrapped in {"todos": [...]})
+            Positional or ``todos``: A TodosInput model, ``{"todos": [...]}``, or a bare list.
 
         Returns:
             Simple confirmation message
         """
+        if "todos" in kwargs:
+            input_data = kwargs["todos"]
+        elif args:
+            input_data = args[0]
+        else:
+            input_data = {}
+
         # Handle different input types
         if isinstance(input_data, TodosInput):
             todos_list = input_data.todos
@@ -574,6 +689,7 @@ def create_cuga_lite_graph(
         base_instructions,
         tools_context_dict,
         base_special_instructions,
+        tools_for_llm_ref: Dict[str, Any],
     ):
         """Factory to create prepare node with closure over tool provider and config."""
 
@@ -741,6 +857,7 @@ def create_cuga_lite_graph(
                     else todos_tool.func
                 )
                 tools_context_dict['create_update_todos'] = make_tool_awaitable(todos_tool_func)
+                tools_for_prompt.append(create_execute_python_tool())
 
             # Apply tool guide if guides exist in metadata and haven't been applied yet
             # Guides should apply regardless of whether a playbook matched
@@ -887,6 +1004,16 @@ def create_cuga_lite_graph(
                 # Note: scope rules are injected once via effective_instructions.
                 # No per-tool decoration needed — avoids repeated text in prompt.
 
+                # Native function calling: keep knowledge_* on the bound tool list even when
+                # find_tools shortlisting replaces the rest of the prompt tool list.
+                if allowed_knowledge_scopes:
+                    _prompt_tool_names = {getattr(t, "name", None) for t in tools_for_prompt}
+                    for _tool in tools_for_execution:
+                        _tn = getattr(_tool, "name", "")
+                        if _tn.startswith("knowledge_") and _tn not in _prompt_tool_names:
+                            tools_for_prompt.append(_tool)
+                            _prompt_tool_names.add(_tn)
+
             # Inject knowledge base awareness if knowledge tools are available
             effective_instructions = base_instructions
             # Detect knowledge tools — works for both registry (app named
@@ -1022,6 +1149,11 @@ def create_cuga_lite_graph(
                     has_knowledge=has_knowledge_tools,
                 )
 
+            if enable_todos:
+                tools_for_llm_ref["bind_tools_list"] = list(tools_for_prompt)
+            else:
+                tools_for_llm_ref["bind_tools_list"] = None
+
             return Command(
                 goto="call_model",
                 update={
@@ -1035,7 +1167,12 @@ def create_cuga_lite_graph(
         return prepare_tools_and_apps
 
     # Factory function to create call_model node with access to model
-    def create_call_model_node(base_model, base_callbacks, model_settings=None):
+    def create_call_model_node(
+        base_model,
+        base_callbacks,
+        model_settings=None,
+        tools_for_llm_ref: Optional[Dict[str, Any]] = None,
+    ):
         """Factory to create call_model node. Model is taken from config['configurable']['llm']
         when set (injected at invocation), otherwise uses base_model from graph build.
         """
@@ -1046,6 +1183,13 @@ def create_cuga_lite_graph(
             max_steps = (
                 configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
             )
+            enable_todos = (
+                configurable.get("enable_todos")
+                if "enable_todos" in configurable
+                else settings.advanced_features.enable_todos
+            )
+            bind_tools_list = (tools_for_llm_ref or {}).get("bind_tools_list") if tools_for_llm_ref else None
+            use_function_calling = bool(enable_todos and bind_tools_list)
 
             logger.debug(
                 f"[APPROVAL DEBUG] call_model received cuga_lite_metadata: {state.cuga_lite_metadata}"
@@ -1218,21 +1362,35 @@ def create_cuga_lite_graph(
 
             logger.debug(f"Total messages for model (including system): {len(messages_for_model)}")
 
-            try:
-                response = await active_model.ainvoke(
-                    messages_for_model, config={"callbacks": current_callbacks}
-                )
-            except Exception as e:
-                code = extract_code_from_tool_use_failed(e)
-                if code:
-                    logger.warning(
-                        "Model attempted tool call without tools bound (tool_use_failed). "
-                        "Using generated code in sandbox"
+            invoke_model = active_model.bind_tools(bind_tools_list) if use_function_calling else active_model
+
+            response = None
+            for attempt in range(_TOOL_USE_FAILED_MAX_RETRIES + 1):
+                try:
+                    response = await invoke_model.ainvoke(
+                        messages_for_model, config={"callbacks": current_callbacks}
                     )
-                    response = type(
-                        "_FakeResponse", (), {"content": f"```python\n{code}\n```", "additional_kwargs": {}}
-                    )()
-                else:
+                    break
+                except Exception as e:
+                    if attempt < _TOOL_USE_FAILED_MAX_RETRIES and is_tool_use_failed_retryable_error(e):
+                        logger.warning(
+                            "LLM tool call JSON rejected by provider (tool_use_failed), retrying ({}/{})",
+                            attempt + 1,
+                            _TOOL_USE_FAILED_MAX_RETRIES,
+                        )
+                        continue
+                    code = extract_code_from_tool_use_failed(e)
+                    if code:
+                        logger.warning(
+                            "Model attempted tool call without tools bound (tool_use_failed). "
+                            "Using generated code in sandbox"
+                        )
+                        response = type(
+                            "_FakeResponse",
+                            (),
+                            {"content": f"```python\n{code}\n```", "additional_kwargs": {}},
+                        )()
+                        break
                     raise e
 
             content = response.content
@@ -1240,8 +1398,15 @@ def create_cuga_lite_graph(
 
             tracker.collect_step(step=Step(name="Raw_Assistant_Response", data=content))
 
-            # Try to extract code from content first, then reasoning_content if content has no code
-            code = extract_and_combine_codeblocks(content) if content else ""
+            code = ""
+            if use_function_calling and getattr(response, "tool_calls", None):
+                norm = _normalize_tool_calls(response.tool_calls)
+                code = tool_calls_to_python_script(norm)
+                if code:
+                    content = f"```python\n{code}\n```"
+
+            if not code:
+                code = extract_and_combine_codeblocks(content) if content else ""
 
             if not code and reasoning_content:
                 code = extract_and_combine_codeblocks(reasoning_content)
@@ -1262,7 +1427,11 @@ def create_cuga_lite_graph(
                         return approval_command
 
                 # Build updated messages from modified_chat_messages + new AI response
-                updated_messages = modified_chat_messages + [AIMessage(content=content)]
+                _r_tc = getattr(response, "tool_calls", None)
+                _ai_kw: Dict[str, Any] = {"content": content}
+                if _r_tc:
+                    _ai_kw["tool_calls"] = _r_tc
+                updated_messages = modified_chat_messages + [AIMessage(**_ai_kw)]
                 new_step_count = state.step_count + 1
 
                 # Check step limit
@@ -1296,6 +1465,11 @@ def create_cuga_lite_graph(
                     },
                 )
             else:
+                if use_function_calling and getattr(response, "tool_calls", None) and not code:
+                    logger.warning(
+                        "tool_calls were returned but no executable script was produced; "
+                        "treating model output as text"
+                    )
                 tracker.collect_step(step=Step(name="Assistant_nl", data=content))
                 planning_response = response.content
 
@@ -1519,6 +1693,8 @@ def create_cuga_lite_graph(
     tools_context = {}
 
     # Create node instances using factories
+    tools_for_llm_ref: Dict[str, Any] = {}
+
     prepare_node = create_prepare_node(
         tool_provider,
         prompt_template,
@@ -1526,8 +1702,11 @@ def create_cuga_lite_graph(
         instructions,
         tools_context,
         special_instructions,
+        tools_for_llm_ref,
     )
-    call_model_node = create_call_model_node(model, callbacks, model_settings=model_settings)
+    call_model_node = create_call_model_node(
+        model, callbacks, model_settings=model_settings, tools_for_llm_ref=tools_for_llm_ref
+    )
     sandbox_node = create_sandbox_node(tools_context, thread_id, apps_list)
 
     # Build the graph

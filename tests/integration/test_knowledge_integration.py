@@ -332,14 +332,13 @@ class TestAwareness:
 
 
 class TestAwarenessGating:
-    """Verify awareness detects knowledge tools correctly under find_tools mode."""
+    """Verify knowledge tools are present for execution and merged into the prompt for FC."""
 
-    def test_has_knowledge_tools_in_execution_not_prompt(self):
-        """When find_tools is enabled, knowledge tools are in tools_for_execution
-        but tools_for_prompt is [find_tool]. Awareness must check tools_for_execution."""
+    def test_has_knowledge_tools_in_execution_and_prompt_after_merge(self):
+        """When find_tools shortlists the prompt list, knowledge_* tools are appended
+        for native function calling (bind_tools). Awareness still uses tools_for_execution."""
         from unittest.mock import MagicMock
 
-        # Simulate find_tools mode: prompt has only find_tool, execution has knowledge
         find_tool = MagicMock()
         find_tool.name = "find_tools"
 
@@ -349,14 +348,19 @@ class TestAwarenessGating:
         filesystem_tool = MagicMock()
         filesystem_tool.name = "filesystem_read_file"
 
-        tools_for_prompt = [find_tool]  # find_tools mode
+        tools_for_prompt = [find_tool]
         tools_for_execution = [find_tool, filesystem_tool, knowledge_tool]
 
-        # Old behavior (bug): checks tools_for_prompt — misses knowledge
-        has_in_prompt = any(getattr(t, "name", "").startswith("knowledge_") for t in tools_for_prompt)
-        assert not has_in_prompt, "Knowledge should NOT be in tools_for_prompt under find_tools"
+        _prompt_tool_names = {getattr(t, "name", None) for t in tools_for_prompt}
+        for _t in tools_for_execution:
+            _tn = getattr(_t, "name", "")
+            if _tn.startswith("knowledge_") and _tn not in _prompt_tool_names:
+                tools_for_prompt.append(_t)
+                _prompt_tool_names.add(_tn)
 
-        # New behavior (fix): checks tools_for_execution — finds knowledge
+        has_in_prompt = any(getattr(t, "name", "").startswith("knowledge_") for t in tools_for_prompt)
+        assert has_in_prompt, "Knowledge should be in tools_for_prompt after merge for FC"
+
         has_in_execution = any(getattr(t, "name", "").startswith("knowledge_") for t in tools_for_execution)
         assert has_in_execution, "Knowledge MUST be detected in tools_for_execution"
 
