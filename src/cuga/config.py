@@ -18,6 +18,8 @@ from loguru import logger
 
 # Get the package root from path_store
 PACKAGE_ROOT = Path(os.environ.get("CUGA_PACKAGE_ROOT", Path(__file__).parent.resolve()))
+DEMO_TOOLS_ROOT = (PACKAGE_ROOT / "demo_tools").resolve()
+REPO_ROOT = PACKAGE_ROOT.parent.parent.resolve()
 LOGGING_DIR = os.environ.get("CUGA_LOGGING_DIR", os.path.join(PACKAGE_ROOT, "./logging"))
 TRAJECTORY_DATA_DIR = os.path.join(LOGGING_DIR, "trajectory_data")
 TRACES_DIR = os.path.join(LOGGING_DIR, "traces")
@@ -179,6 +181,16 @@ validators = [
     Validator("auth.role_token_source", default="auto"),
     Validator("skills.enabled", default=False),
     Validator("advanced_features.builtin_tools", default=["knowledge"]),
+    # Evolve integration
+    Validator("evolve.enabled", default=False),
+    Validator("evolve.url", default="http://127.0.0.1:8201/sse"),
+    Validator("evolve.mode", default="auto"),
+    Validator("evolve.app_name", default="evolve"),
+    Validator("evolve.lite_mode_only", default=True),
+    Validator("evolve.save_on_success", default=True),
+    Validator("evolve.save_on_failure", default=True),
+    Validator("evolve.async_save", default=True),
+    Validator("evolve.timeout", default=30.0),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

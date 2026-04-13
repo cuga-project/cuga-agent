@@ -34,7 +34,7 @@ jobs:
       - name: Copy huggingface examples
         run: |
           mkdir -p ./cuga_workspace
-          cp -r docs/examples/huggingface/* ./cuga_workspace/
+          cp -r src/cuga/demo_tools/huggingface/* ./cuga_workspace/
 
       - name: Run stability tests
         continue-on-error: true
@@ -110,7 +110,7 @@ jobs:
       - name: Copy huggingface examples
         run: |
           New-Item -ItemType Directory -Force -Path ./cuga_workspace
-          Copy-Item -Recurse -Force docs/examples/huggingface/* ./cuga_workspace/
+          Copy-Item -Recurse -Force src/cuga/demo_tools/huggingface/* ./cuga_workspace/
 
       - name: Run stability tests
         continue-on-error: true

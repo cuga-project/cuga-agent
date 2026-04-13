@@ -121,6 +121,7 @@ class CugaLiteNode(BaseNode):
         self.prompt_template = load_one_prompt(prompt_filename)
         self.langfuse_handler = langfuse_handler
         self.hitl_handler = CugaLiteHumanInTheLoopHandler()
+        self._background_tasks: set = set()
 
     @staticmethod
     async def read_text_file(file_path: str) -> Optional[str]:
@@ -387,6 +388,25 @@ class CugaLiteNode(BaseNode):
                 update=state.model_dump(),  # Pass full state to ensure sender is included
                 goto=NodeNames.SUGGEST_HUMAN_ACTIONS,
             )
+
+        # Save trajectory to Evolve if enabled
+        from cuga.backend.evolve.integration import EvolveIntegration
+
+        if EvolveIntegration.is_enabled() and state.chat_messages:
+            import asyncio as _asyncio
+
+            task_id = state.sub_task or tracker.task_id or "unknown"
+            state_error = getattr(state, "error", None)
+            success = not (self._has_error(state.final_answer or "") or bool(state_error))
+            messages_snapshot = list(state.chat_messages)
+            if settings.evolve.async_save:
+                task = _asyncio.create_task(
+                    EvolveIntegration.save_trajectory(messages_snapshot, task_id, success)
+                )
+                self._background_tasks.add(task)
+                task.add_done_callback(self._background_tasks.discard)
+            else:
+                await EvolveIntegration.save_trajectory(messages_snapshot, task_id, success)
 
         # Get metadata from state
         metadata = state.cuga_lite_metadata or {}

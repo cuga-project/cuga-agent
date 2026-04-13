@@ -2,12 +2,17 @@
 
 import os
 import shutil
+import sys
 import time
 from typing import Any, Callable
 
 from loguru import logger
 
-from cuga.config import PACKAGE_ROOT, settings
+from cuga.config import DEMO_TOOLS_ROOT, PACKAGE_ROOT, REPO_ROOT, settings
+
+
+def _demo_app_path(*parts: str) -> str:
+    return str(DEMO_TOOLS_ROOT.joinpath(*parts).resolve())
 
 
 def _port(key: str, default: str) -> int:
@@ -95,14 +100,14 @@ class AppManager:
     def start_email(self, use_cache: bool = True) -> tuple[int, int]:
         """Start email sink and MCP server. Returns (sink_port, mcp_port)."""
         cmd = ["uvx"] + ([] if use_cache else ["--no-cache"])
-        cmd.extend(["--from", "./docs/examples/demo_apps/email_mcp/mail_sink", "email_sink"])
+        cmd.extend(["--from", _demo_app_path("email_mcp", "mail_sink"), "email_sink"])
         self._run("email-sink", cmd, {"DYNACONF_SERVER_PORTS__EMAIL_SINK": str(self.email_sink_port)})
         logger.info("Email sink started, waiting for it to be ready...")
         self._wait_tcp(self.email_sink_port, "Email sink", 60, 0.5)
         time.sleep(1)
 
         cmd = ["uvx"] + ([] if use_cache else ["--no-cache"])
-        cmd.extend(["--from", "./docs/examples/demo_apps/email_mcp/mcp_server", "email_mcp"])
+        cmd.extend(["--from", _demo_app_path("email_mcp", "mcp_server"), "email_mcp"])
         self._run(
             "email-mcp",
             cmd,
@@ -123,7 +128,7 @@ class AppManager:
     ) -> int:
         """Start filesystem MCP server. Returns fs_port."""
         cmd = ["uvx"] + ([] if use_cache else ["--no-cache"])
-        cmd.extend(["--from", "./docs/examples/demo_apps/file_system", "filesystem-server"])
+        cmd.extend(["--from", _demo_app_path("file_system"), "filesystem-server"])
         if read_only:
             cmd.append("--read-only")
         cmd.append(workspace_path)
@@ -136,7 +141,8 @@ class AppManager:
         """Start docs MCP server. Returns docs_port."""
         port = self.docs_port
         logger.info(f"Starting docs MCP server on port {port}")
-        cmd = ["uv", "run", "python", "docs/examples/docs_mcp/docs_mcp_server.py"]
+        docs_script = DEMO_TOOLS_ROOT / "docs_mcp" / "docs_mcp_server.py"
+        cmd = [sys.executable, str(docs_script)]
         self._run("docs-mcp", cmd, {"DYNACONF_SERVER_PORTS__DOCS_MCP": str(port)})
         logger.info("Docs MCP server started")
         time.sleep(2)
@@ -147,7 +153,7 @@ class AppManager:
         port = settings.server_ports.crm_api
         logger.info(f"Starting CRM server on port {port}")
         cmd = ["uvx"] + ([] if use_cache else ["--no-cache"])
-        cmd.extend(["--from", "./docs/examples/demo_apps/crm", "crm-server", "--port", str(port)])
+        cmd.extend(["--from", _demo_app_path("crm"), "crm-server", "--port", str(port)])
         self._run(
             "crm-server",
             cmd,
@@ -204,7 +210,7 @@ class AppManager:
             uvicorn_base += ["--ssl-keyfile", ssl_keyfile, "--ssl-certfile", ssl_certfile]
 
         if sandbox:
-            cmd = ["uv", "run", "--group", "sandbox"] + uvicorn_base
+            cmd = ["uv", "run", "--directory", str(REPO_ROOT), "--group", "sandbox"] + uvicorn_base
         elif use_ssl:
             cmd = uvicorn_base
         else:
@@ -243,6 +249,8 @@ class AppManager:
         cmd = [
             "uv",
             "run",
+            "--directory",
+            str(REPO_ROOT),
             "--active",
             "--extra",
             "memory",
@@ -320,7 +328,7 @@ class AppManager:
         os.makedirs(workspace_path, exist_ok=True)
         if not copy_examples:
             return []
-        source = PACKAGE_ROOT.parent.parent / "docs" / "examples" / "huggingface"
+        source = DEMO_TOOLS_ROOT / "huggingface"
         examples = ["contacts.txt", "cuga_knowledge.md", "cuga_playbook.md", "email_template.md"]
         copied: list[str] = []
         for name in examples:

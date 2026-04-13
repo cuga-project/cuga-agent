@@ -880,6 +880,28 @@ def create_cuga_lite_graph(
                     f"[OpenSandbox] Injected sandbox tools (thread_id={runtime_thread_id!r}) into execution context and prompt: {[t.name for t in sandbox_tools]}"
                 )
 
+            from cuga.backend.evolve.integration import EvolveIntegration
+
+            special_instructions_final = effective_special or ""
+            if EvolveIntegration.is_enabled():
+                task_description = ""
+                if state.sub_task:
+                    task_description = state.sub_task
+                elif state.chat_messages:
+                    for msg in state.chat_messages:
+                        if isinstance(msg, HumanMessage):
+                            task_description = msg.content
+                            break
+                if task_description:
+                    evolve_guidelines = await EvolveIntegration.get_guidelines(task_description)
+                    if evolve_guidelines:
+                        evolve_section = f"\n\n## Evolve Guidelines\n{evolve_guidelines}"
+                        special_instructions_final = (special_instructions_final or "") + evolve_section
+                        logger.info("Evolve: Injected guidelines into system prompt")
+                        logger.debug(
+                            f"Evolve: Full special_instructions with guidelines:\n{special_instructions_final}"
+                        )
+
             cfg = config.get("configurable", {}) if config else {}
             _thread_id = cfg.get("thread_id") or ""
             _knowledge_engine = cfg.get("knowledge_engine")
@@ -1074,7 +1096,6 @@ def create_cuga_lite_graph(
                             logger.info(f"Knowledge awareness injected: {len(knowledge_block)} chars")
                 except Exception as e:
                     logger.debug(f"Knowledge awareness injection skipped: {e}")
-
             # Create prompt dynamically
             dynamic_prompt = prompt
 
@@ -1090,7 +1111,7 @@ def create_cuga_lite_graph(
                     or is_autonomous_subtask,
                     prompt_template=selected_prompt_template,
                     enable_find_tools=enable_find_tools,
-                    special_instructions=effective_special,
+                    special_instructions=special_instructions_final,
                     skills_enabled=skills_enabled,
                     skills_prompt_section=skills_prompt_section,
                     enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),

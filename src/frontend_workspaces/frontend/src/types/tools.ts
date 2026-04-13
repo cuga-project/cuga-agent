@@ -27,6 +27,8 @@ export interface ToolEntry {
   /** Command-based MCP (e.g. npx). When set, transport is stdio. */
   command?: string;
   args?: string[];
+  /** Environment variables for command-based MCP servers. Values may be literal strings or secret refs. */
+  env?: Record<string, string>;
   transport?: McpTransport;
   /** Environment variables passed to STDIO transport subprocess. */
   env?: Record<string, string>;

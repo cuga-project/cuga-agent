@@ -12,10 +12,7 @@ src/frontend_workspaces/frontend/dist/
 /frontend/node_modules/
 experiment_results_*
 output_graphs
-docs/examples/demo_apps/email_mcp/mail_sink/buil
 *.egg-info/
-docs/examples/demo_apps/email_mcp/mail_sink/build
-docs/examples/demo_apps/email_mcp/mcp_server/build
 backup_*
 test_results.json
 vendor
@@ -62,7 +59,11 @@ experiments/outputs
 /evaluation/data/tasks/
 /evaluation/data/
 /build/
-docs/examples/demo_apps/email_mcp/mcp_mail
+src/cuga/demo_tools/email_mcp/mcp_mail
+src/cuga/demo_tools/email_mcp/mail_sink/build
+src/cuga/demo_tools/email_mcp/mcp_server/build
+src/cuga/demo_tools/file_system/build
+src/cuga/demo_tools/**/*.egg-info/
 
 # Local dependencies
 vendor/
@@ -82,7 +83,6 @@ deployment/helm/openshift.env
 deployment/helm/*.env
 !deployment/helm/openshift.example.env
 KNOWLEDGE_PIPELINE.md
-docs/examples/demo_apps/file_system/build/
 
 # Examples that use repo-root uv.lock only (see CONTRIBUTING.md)
 docs/examples/cuga_as_mcp/uv.lock

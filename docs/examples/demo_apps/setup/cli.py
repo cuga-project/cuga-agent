@@ -33,6 +33,13 @@ class Colors:
 running_processes: List[subprocess.Popen] = []
 
 
+def _default_demo_tools_root() -> Path:
+    """Same as ``cuga.config.DEMO_TOOLS_ROOT`` (honours ``CUGA_PACKAGE_ROOT``)."""
+    from cuga.config import DEMO_TOOLS_ROOT
+
+    return DEMO_TOOLS_ROOT
+
+
 def cleanup():
     """Clean up all running processes on exit"""
     if running_processes:
@@ -363,7 +370,7 @@ def start_filesystem_server(
 
     workspace_str = str(workspace)
     if local:
-        demo_base = source_dir or Path(__file__).parent.parent  # Go up to demo_apps directory
+        demo_base = source_dir or _default_demo_tools_root()
         filesystem_path = demo_base / "file_system"
         cmd = [
             'uv',
@@ -389,7 +396,7 @@ def start_filesystem_server(
         cmd.extend(
             [
                 '--from',
-                'git+https://github.com/cuga-project/cuga-agent.git#subdirectory=docs/examples/demo_apps/file_system',
+                'git+https://github.com/cuga-project/cuga-agent.git#subdirectory=src/cuga/demo_tools/file_system',
                 'filesystem-server',
                 workspace_str,
             ]
@@ -425,7 +432,7 @@ def start_crm_server(
     print_step(5, 6, "Starting CRM MCP Server")
 
     if local:
-        demo_base = source_dir or Path(__file__).parent.parent  # Go up to demo_apps directory
+        demo_base = source_dir or _default_demo_tools_root()
         crm_path = demo_base / "crm"
         cmd = [
             'uv',
@@ -451,7 +458,7 @@ def start_crm_server(
         cmd.extend(
             [
                 '--from',
-                'git+https://github.com/cuga-project/cuga-agent.git#subdirectory=docs/examples/demo_apps/crm',
+                'git+https://github.com/cuga-project/cuga-agent.git#subdirectory=src/cuga/demo_tools/crm',
                 'crm',
             ]
         )
@@ -485,7 +492,7 @@ def start_email_sink(
     print_info("Starting Email SMTP Sink")
 
     if local:
-        demo_base = source_dir or Path(__file__).parent.parent  # Go up to demo_apps directory
+        demo_base = source_dir or _default_demo_tools_root()
         email_sink_path = demo_base / "email_mcp" / "mail_sink"
         cmd = [
             'uv',
@@ -510,7 +517,7 @@ def start_email_sink(
         cmd.extend(
             [
                 '--from',
-                'git+https://github.com/cuga-project/cuga-agent.git#subdirectory=docs/examples/demo_apps/email_mcp/mail_sink',
+                'git+https://github.com/cuga-project/cuga-agent.git#subdirectory=src/cuga/demo_tools/email_mcp/mail_sink',
                 'email_sink',
             ]
         )
@@ -545,7 +552,7 @@ def start_email_server(
     print_info("Starting Email MCP Server")
 
     if local:
-        demo_base = source_dir or Path(__file__).parent.parent  # Go up to demo_apps directory
+        demo_base = source_dir or _default_demo_tools_root()
         email_server_path = demo_base / "email_mcp" / "mcp_server"
         cmd = [
             'uv',
@@ -570,7 +577,7 @@ def start_email_server(
         cmd.extend(
             [
                 '--from',
-                'git+https://github.com/cuga-project/cuga-agent.git#subdirectory=docs/examples/demo_apps/email_mcp/mcp_server',
+                'git+https://github.com/cuga-project/cuga-agent.git#subdirectory=src/cuga/demo_tools/email_mcp/mcp_server',
                 'email_mcp',
             ]
         )
@@ -793,12 +800,11 @@ def main():
             args.source_dir = Path(os.getenv('CUGA_SOURCE_DIR'))
         else:
             # Try to find it relative to current working directory
-            potential_source = Path.cwd() / "docs" / "examples" / "demo_apps"
-            if potential_source.exists():
-                args.source_dir = potential_source
+            cwd_tools = Path.cwd() / "src" / "cuga" / "demo_tools"
+            if cwd_tools.exists():
+                args.source_dir = cwd_tools
             else:
-                # Fallback to relative path from script location
-                args.source_dir = Path(__file__).parent.parent
+                args.source_dir = _default_demo_tools_root()
         print_info(f"Using local demo apps from: {args.source_dir}")
     else:
         print_info("Using remote demo apps from git repository")
