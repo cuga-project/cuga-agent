@@ -1,0 +1,39 @@
+name: Smoke pip install (isolated)
+
+on:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main, develop]
+  workflow_dispatch:
+
+concurrency:
+  group: smoke-pip-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke-pip-isolated:
+    name: Wheel install + demo_crm OpenAPI
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Isolated wheel smoke (demo_crm → OpenAPI)
+        run: bash scripts/smoke_pip_install_isolated.sh

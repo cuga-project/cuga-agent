@@ -61,3 +61,12 @@ dev-dependencies = [
     "httpx>=0.25.0",
     "faker>=20.1.0",
 ]
+
+# ECDSA Minerva timing attack: NO PATCH AVAILABLE
+# RISK ACCEPTED: ecdsa is transitive dependency via python-jose[cryptography]
+# - Vulnerability: Timing attack on P-256 curve can leak nonce, potentially exposing private keys
+# - Impact: Affects ECDSA signatures, key generation, and ECDH operations (not signature verification)
+# - Upstream status: python-ecdsa maintainers consider side-channel attacks out of scope; no planned fix
+# - Mitigation: CRM demo tool uses python-jose for JWT validation (signature verification), not signing
+# - Alternative: Consider migrating to PyJWT[crypto] which uses cryptography library (constant-time operations)
+# - Monitor: Check if python-jose adds support for alternative crypto backends

@@ -70,26 +70,48 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 [tool.uv]
 package = true
 constraint-dependencies = [
-    "pillow>=12.1.1",  # CVE-2026-25990: Out-of-bounds write in PSD loading
+    "pillow>=12.2.0",  # CVE-2026-25990 (PSD), FITS decompression bomb (10.3.0-12.1.x)
     "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
-    # setuptools: GHSA-cx63-2mw6-8hw5 (command injection via package URL) affects <70.0.0
-    # RISK ACCEPTED: Constrained to <70 due to milvus-lite dependency on pkg_resources
+    # setuptools: Multiple vulnerabilities require >=78.1.1, but constrained to <70 due to milvus-lite
+    # RISK ACCEPTED: Constrained to <70 due to milvus-lite 2.5.1 dependency on pkg_resources
+    # VULNERABILITIES:
+    # - GHSA-cx63-2mw6-8hw5 (<70.0.0): Command injection via package URL
+    # - Path traversal in PackageIndex (<78.1.1): Arbitrary file write leading to potential RCE
+    # JUSTIFICATION:
     # - milvus-lite 2.5.1 (latest) uses pkg_resources for version detection only
     # - pkg_resources removed in setuptools 70+, causing ImportError
-    # - Vulnerability requires attacker control of package URLs passed to setuptools
+    # - Vulnerabilities require attacker control of package URLs or malicious package index
     # - setuptools primarily used at build-time; runtime exposure minimal
-    # - Mitigation: Monitor for milvus-lite updates that migrate to importlib.metadata
-    # - Alternative: Implement pkg_resources shim if setuptools upgrade becomes critical
+    # - easy_install and package_index (vulnerable components) are deprecated
+    # MITIGATION:
+    # - Monitor for milvus-lite updates that migrate to importlib.metadata
+    # - Consider implementing pkg_resources shim if setuptools upgrade becomes critical
+    # - Avoid using easy_install or untrusted package indexes
     "setuptools<70",
     # Security updates for transitive dependencies
     "authlib>=1.6.9",      # GHSA-wvwj-cvrp-7pv5, GHSA-m344-f55w-2m6j, GHSA-7wc2-qxgw-g8gg, GHSA-7432-952r-cw78
     "orjson>=3.11.6",      # GHSA-hx9q-6w63-j58v
     "pyasn1>=0.6.3",       # GHSA-jr27-m4p2-rc6r
     "protobuf>=5.29.6",    # GHSA-7gcm-g887-7qv7
+    "strawberry-graphql>=0.312.3",  # CVE: Auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2)
+    "arize-phoenix>=14.3.1",  # Upgrade to use strawberry-graphql>=0.312.3 (fixes auth bypass vulnerability)
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 override-dependencies = ["python-dotenv>=1.1.0"]
+
+# NOTE: uv.lock includes graphql-core 3.3.0a12 (pre-release) to fix strawberry-graphql security vulnerability
+# RISK ACCEPTED: graphql-core pre-release required by arize-phoenix 14.3.1+ for secure strawberry-graphql
+# - Lock file generated with: uv lock --upgrade-package strawberry-graphql --upgrade-package arize-phoenix --prerelease=allow
+# - graphql-core is mature; alpha is for new features, not instability
+# - Monitor for graphql-core 3.3.0 stable release to remove pre-release dependency
+
+# NLTK WordNet Browser DoS vulnerability (<=3.9.3): NO PATCH AVAILABLE
+# RISK ACCEPTED: nltk is dev-only dependency; vulnerable wordnet_app HTTP server is not used in codebase
+# - Vulnerability: Unauthenticated remote shutdown via GET /SHUTDOWN%20THE%20SERVER
+# - Impact: DoS only, affects nltk.app.wordnet_app when exposed on network
+# - Mitigation: wordnet_app is not imported or used anywhere in the project
+# - Monitor: Check for NLTK security releases that patch nltk/app/wordnet_app.py
 
 # PyPI openlit declares openai<2; litellm 1.83.x needs openai 2.x. Override for uv lock / Docker / dev only.
 [[tool.uv.dependency-metadata]]
