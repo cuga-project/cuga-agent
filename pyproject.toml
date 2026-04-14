@@ -47,7 +47,7 @@ dependencies = [
     # Knowledge engine (replaces OpenRAG)
     "langchain-docling>=2.0,<3.0",
     "langchain-ollama>=0.2.0",
-    "langchain-text-splitters>=0.3,<0.4",
+    "langchain-text-splitters>=1.0,<2.0",
     "beautifulsoup4>=4.12",
     "psycopg[binary]>=3.2",
 ]
