@@ -19,7 +19,7 @@ dependencies = [
     "fastapi[standard]",
     "langfuse",
     "dynaconf>=3.2.13",
-    "playwright==1.49.0",
+    "playwright>=1.49.0",
     "browsergym-core==0.13.0",
     "python-dotenv",
     "loguru",
