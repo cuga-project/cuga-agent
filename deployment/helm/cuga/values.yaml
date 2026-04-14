@@ -43,6 +43,8 @@ env:
   DYNACONF_STORAGE__POSTGRES_URL: ""
   DYNACONF_SECRETS__FORCE_ENV: "false"
   DYNACONF_SECRETS__VAULT_SKIP_VERIFY: "false"
+  DYNACONF_OBSERVABILITY__OPENLIT: "false"
+  OTEL_EXPORTER_OTLP_ENDPOINT: ""
 
 # Name of an existing Secret containing sensitive env vars.
 # When set, sensitive keys are sourced via secretKeyRef instead of plain value.
