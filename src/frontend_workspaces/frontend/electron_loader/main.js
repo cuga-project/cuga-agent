@@ -3,13 +3,15 @@ const path = require('path');
 
 let mainWindow;
 
-app.on('ready', () => {
+function createWindow() {
     mainWindow = new BrowserWindow({
         width: 800,
         height: 600,
         webPreferences: {
-            // preload: path.join(__dirname, 'preload.js'), // Optional
-            nodeIntegration: true,
+            preload: path.join(__dirname, 'preload.js'),
+            nodeIntegration: false,
+            contextIsolation: true,
+            sandbox: true,
         },
     });
 
@@ -18,6 +20,10 @@ app.on('ready', () => {
 
     // Open DevTools (optional)
     mainWindow.webContents.openDevTools();
+}
+
+app.whenReady().then(() => {
+    createWindow();
 });
 
 app.on('window-all-closed', () => {
@@ -26,15 +32,6 @@ app.on('window-all-closed', () => {
 
 app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
-        mainWindow = new BrowserWindow({
-            width: '100%',
-            height: '100%',
-            webPreferences: {
-                // preload: path.join(__dirname, 'preload.js'),
-                nodeIntegration: true,
-            },
-        });
-
-        mainWindow.loadFile('dist/index.html');
+        createWindow();
     }
 });
