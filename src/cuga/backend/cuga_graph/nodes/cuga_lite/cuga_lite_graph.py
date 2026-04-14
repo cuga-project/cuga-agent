@@ -406,22 +406,24 @@ class ExecutePythonInput(BaseModel):
     )
 
 
-def create_execute_python_tool() -> StructuredTool:
+def create_execute_python_tool(*, description: Optional[str] = None) -> StructuredTool:
     """Tool used with native function calling to pass Python into the execution sandbox."""
 
     async def _run(code: str) -> str:
         return ""
 
+    default_description = (
+        "Run Python in the execution environment where connected-app tools are available as async functions. "
+        "Use for loops and pagination, transforming data when schemas are known, orchestrating multiple "
+        "tool calls, or composing tools from connected apps (including after find_tools). "
+        "For a single straightforward tool call with no extra logic, call that tool directly instead. "
+        "The code must use await for async tools and end with print(...)."
+    )
+
     return StructuredTool.from_function(
         coroutine=_run,
         name="execute_python",
-        description=(
-            "Run Python in the execution environment where connected-app tools are available as async functions. "
-            "Use for loops and pagination, transforming data when schemas are known, orchestrating multiple "
-            "tool calls, or composing tools from connected apps (including after find_tools). "
-            "For a single straightforward tool call with no extra logic, call that tool directly instead. "
-            "The code must use await for async tools and end with print(...)."
-        ),
+        description=description or default_description,
         args_schema=ExecutePythonInput,
     )
 
@@ -1383,7 +1385,17 @@ def create_cuga_lite_graph(
 
             logger.debug(f"Total messages for model (including system): {len(messages_for_model)}")
 
-            invoke_model = active_model.bind_tools(bind_tools_list) if use_function_calling else active_model
+            invoke_model = active_model
+            if use_function_calling:
+                try:
+                    invoke_model = active_model.bind_tools(bind_tools_list)
+                except Exception as e:
+                    logger.warning(
+                        "bind_tools failed; falling back to unbound model (function calling may be unsupported): {}",
+                        e,
+                    )
+                    invoke_model = active_model
+                    use_function_calling = False
 
             response = None
             for attempt in range(_TOOL_USE_FAILED_MAX_RETRIES + 1):

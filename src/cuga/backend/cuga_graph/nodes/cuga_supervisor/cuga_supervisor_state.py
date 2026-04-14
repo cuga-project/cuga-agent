@@ -54,6 +54,11 @@ class CugaSupervisorState(AgentState):
 
     cuga_lite_max_steps: Optional[int] = None
 
+    task_todos: Optional[List[Dict[str, Any]]] = Field(
+        default=None,
+        description="Todo list from create_update_todos; appended to system prompt as Current plan",
+    )
+
     class Config:
         arbitrary_types_allowed = True
 

@@ -30,6 +30,21 @@ from cuga.sdk import CugaAgent
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
+    _normalize_tool_calls,
+    create_execute_python_tool,
+    create_update_todos_tool,
+    tool_calls_to_python_script,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import format_current_plan_system_suffix
+
+_SUPERVISOR_EXECUTE_PYTHON_DESCRIPTION = (
+    "Run Python in the supervisor sandbox where delegate_to_* agents are available as async functions. "
+    "Use for loops, transforming data, orchestrating multiple await delegate_to_... calls in one script, "
+    "or composing delegations with variables= when passing named context to a sub-agent. "
+    "For a single straightforward delegation with no extra logic, a minimal fenced python block with one await is enough. "
+    "Use await for async agents; end with print(...). Imports allowed: json, re, typing, datetime."
+)
 
 # Pattern for extracting Python code blocks
 BACKTICK_PATTERN = r'```python(.*?)```'
@@ -201,6 +216,7 @@ def _create_supervisor_conversational_graph(
 
     # Create mutable agent delegation tools context
     agent_tools_context = {}
+    tools_for_llm_ref: Dict[str, Any] = {}
     pass_variables_a2a = getattr(settings.supervisor, "pass_variables_a2a", False)
 
     def create_agent_delegation_func(
@@ -263,7 +279,9 @@ def _create_supervisor_conversational_graph(
         return delegate_to_agent
 
     # Factory function to create prepare_agents_and_prompt node
-    def create_prepare_agents_and_prompt_node(base_agents, base_prompt_template_str, base_instructions):
+    def create_prepare_agents_and_prompt_node(
+        base_agents, base_prompt_template_str, base_instructions, tools_for_llm_ref: Dict[str, Any]
+    ):
         """Factory to create prepare node with closure over agents and prompt template."""
 
         async def prepare_agents_and_prompt(
@@ -347,20 +365,38 @@ def _create_supervisor_conversational_graph(
                     }
                 agent_tools_for_prompt.append(tool_info)
 
-            # Always enable todos tool for supervisor conversational mode
-            from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_update_todos_tool
-
-            todos_tool = await create_update_todos_tool()
-            agent_tools_context['create_update_todos'] = make_tool_awaitable(todos_tool.func)
-            agent_tools_for_prompt.append(
-                {
-                    "name": "create_update_todos",
-                    "description": todos_tool.description,
-                    "params_str": "todos: List[Dict[str, str]]",
-                    "params_doc": "todos: List of todo items, each with 'text' and 'status' ('pending' or 'completed')",
-                    "response_doc": "Returns the current list of todos with their status.",
-                }
-            )
+            if settings.advanced_features.enable_todos:
+                todos_tool = await create_update_todos_tool(agent_state=state)
+                exec_python_tool = create_execute_python_tool(
+                    description=_SUPERVISOR_EXECUTE_PYTHON_DESCRIPTION
+                )
+                agent_tools_context['create_update_todos'] = make_tool_awaitable(todos_tool.func)
+                tools_for_llm_ref["bind_tools_list"] = [todos_tool, exec_python_tool]
+                agent_tools_for_prompt.append(
+                    {
+                        "name": "create_update_todos",
+                        "description": todos_tool.description,
+                        "params_str": "todos: List[Dict[str, str]]",
+                        "params_doc": "todos: List of todo items, each with 'text' and 'status' ('pending' or 'completed')",
+                        "response_doc": "Returns the current list of todos with their status.",
+                    }
+                )
+                agent_tools_for_prompt.append(
+                    {
+                        "name": exec_python_tool.name,
+                        "description": exec_python_tool.description,
+                        "params_str": "code: str",
+                        "params_doc": (
+                            "- code (str): Full Python script. Use await with delegate_to_* agents; use "
+                            "variables=[...] on a delegation when the sub-agent needs named values from context. "
+                            "End with print(...). Imports allowed: json, re, typing, datetime."
+                        ),
+                        "response_doc": "Stdout from print(...); execution may add variables to your context.",
+                        "returns_doc": "**Returns:** Captured stdout from your `print(...)` calls; side effects may add variables.",
+                    }
+                )
+            else:
+                tools_for_llm_ref["bind_tools_list"] = None
 
             # Create prompt using template (similar to create_mcp_prompt)
             is_autonomous_subtask = state.sub_task is not None and state.sub_task.strip() != ""
@@ -375,7 +411,7 @@ def _create_supervisor_conversational_graph(
                 tools=agent_tools_for_prompt,
                 is_autonomous_subtask=is_autonomous_subtask,
                 instructions=base_instructions,
-                enable_todos=True,  # Always enable todos for supervisor conversational mode
+                enable_todos=settings.advanced_features.enable_todos,
                 special_instructions=None,
             )
 
@@ -397,7 +433,7 @@ def _create_supervisor_conversational_graph(
         return prepare_agents_and_prompt
 
     # Factory function to create call_model node
-    def create_call_model_node(base_model):
+    def create_call_model_node(base_model, tools_for_llm_ref: Optional[Dict[str, Any]] = None):
         """Factory to create call_model node with closure over model."""
 
         async def call_model(state: CugaSupervisorState, config: Optional[RunnableConfig] = None) -> Command:
@@ -405,10 +441,13 @@ def _create_supervisor_conversational_graph(
             # ============================================================================
             # CONTEXT SUMMARIZATION - Manage context before LLM invocation
             # ============================================================================
+            dynamic_prompt = state.prepared_prompt
+            full_system = (dynamic_prompt or "") + format_current_plan_system_suffix(state.task_todos)
+
             effective_chat_messages = await apply_context_summarization(
                 state.supervisor_chat_messages or [],
                 base_model,
-                system_prompt=state.prepared_prompt,
+                system_prompt=full_system,
                 tools=None,  # Supervisor doesn't use traditional tools
                 tracker=None,  # Supervisor doesn't have a tracker
                 variables_storage=state.supervisor_variables,
@@ -422,11 +461,8 @@ def _create_supervisor_conversational_graph(
 
             logger.info("Supervisor conversational: calling model")
 
-            # Get prompt from state
-            dynamic_prompt = state.prepared_prompt
-
             # Convert supervisor_chat_messages to messages for model
-            messages_for_model = [{"role": "system", "content": dynamic_prompt}]
+            messages_for_model = [{"role": "system", "content": full_system}]
 
             # Add chat history from supervisor_chat_messages
             # Also add variables summary if available
@@ -512,19 +548,44 @@ def _create_supervisor_conversational_graph(
 
             logger.debug(f"Total messages for model (including system): {len(messages_for_model)}")
 
-            response = await base_model.ainvoke(messages_for_model, config=config or {})
+            bind_tools_list = (tools_for_llm_ref or {}).get("bind_tools_list") if tools_for_llm_ref else None
+            use_function_calling = bool(bind_tools_list)
+
+            invoke_model = base_model
+            if use_function_calling:
+                try:
+                    invoke_model = base_model.bind_tools(bind_tools_list)
+                except Exception as e:
+                    logger.warning(
+                        "bind_tools failed; falling back to unbound model (function calling may be unsupported): {}",
+                        e,
+                    )
+                    invoke_model = base_model
+                    use_function_calling = False
+
+            response = await invoke_model.ainvoke(messages_for_model, config=config or {})
             content = response.content
             reasoning_content = response.additional_kwargs.get('reasoning_content')
 
-            # Extract code
-            code = extract_and_combine_codeblocks(content) if content else ""
+            code = ""
+            if use_function_calling and getattr(response, "tool_calls", None):
+                norm = _normalize_tool_calls(response.tool_calls)
+                code = tool_calls_to_python_script(norm)
+                if code:
+                    content = f"```python\n{code}\n```"
+
+            if not code:
+                code = extract_and_combine_codeblocks(content) if content else ""
             if not code and reasoning_content:
                 code = extract_and_combine_codeblocks(reasoning_content)
 
             if code:
                 logger.info(f"Supervisor conversational: extracted code block ({len(code)} chars)")
-                # Append AI response to our local modified_chat_messages
-                final_messages = modified_chat_messages + [AIMessage(content=content)]
+                _r_tc = getattr(response, "tool_calls", None)
+                _ai_kw: Dict[str, Any] = {"content": content}
+                if _r_tc:
+                    _ai_kw["tool_calls"] = _r_tc
+                final_messages = modified_chat_messages + [AIMessage(**_ai_kw)]
 
                 # Check step limit
                 max_steps = getattr(settings.advanced_features, 'cuga_lite_max_steps', 50)
@@ -550,9 +611,12 @@ def _create_supervisor_conversational_graph(
                     },
                 )
             else:
-                # No code - final text answer
+                if use_function_calling and getattr(response, "tool_calls", None) and not code:
+                    logger.warning(
+                        "tool_calls were returned but no executable script was produced; "
+                        "treating model output as text"
+                    )
                 logger.info("Supervisor conversational: final text answer (no code)")
-                # Append AI response to our local modified_chat_messages
                 final_messages = modified_chat_messages + [AIMessage(content=content)]
 
                 # Check step limit
@@ -600,6 +664,15 @@ def _create_supervisor_conversational_graph(
             # Add agent tools to context
             context = {**existing_vars, **base_agent_tools_context}
 
+            if settings.advanced_features.enable_todos and "create_update_todos" in context:
+                todos_tool = await create_update_todos_tool(agent_state=state)
+                todos_tool_func = (
+                    todos_tool.coroutine
+                    if hasattr(todos_tool, "coroutine") and todos_tool.coroutine
+                    else todos_tool.func
+                )
+                context["create_update_todos"] = make_tool_awaitable(todos_tool_func)
+
             try:
                 # Execute code using CodeExecutor (reuse from cuga_lite)
                 output, new_vars = await CodeExecutor.eval_with_tools_async(
@@ -637,6 +710,7 @@ def _create_supervisor_conversational_graph(
                     "supervisor_chat_messages": updated_messages,
                     "supervisor_variables": state.supervisor_variables,
                     "step_count": state.step_count + 1,
+                    "task_todos": state.task_todos,
                 }
             except Exception as e:
                 error_msg = f"Error during execution: {str(e)}"
@@ -659,8 +733,10 @@ def _create_supervisor_conversational_graph(
         return execute_agent_tool
 
     # Create node instances
-    prepare_node = create_prepare_agents_and_prompt_node(agents, prompt_template_str, instructions)
-    call_model_node = create_call_model_node(supervisor_model)
+    prepare_node = create_prepare_agents_and_prompt_node(
+        agents, prompt_template_str, instructions, tools_for_llm_ref
+    )
+    call_model_node = create_call_model_node(supervisor_model, tools_for_llm_ref)
     execute_agent_tool_node = create_execute_agent_tool_node(agent_tools_context)
 
     # Build the graph
