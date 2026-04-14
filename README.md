@@ -941,8 +941,10 @@ This flow is:
    Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
 
    ```bash
-   uvx --from altk-evolve --with setuptools<70 evolve-mcp --transport sse --port 8201
+   uvx --from altk-evolve --with 'setuptools<70' evolve-mcp --transport sse --port 8201
    ```
+
+   Quote `setuptools<70` when running this in a shell; otherwise `zsh`/`bash` treat `<` as input redirection.
 2. Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
 
 ```toml
