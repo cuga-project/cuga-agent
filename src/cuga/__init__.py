@@ -28,7 +28,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import tracked_to
 from cuga.backend.knowledge import KnowledgeClient, KnowledgeEngine
 from cuga.backend.knowledge.config import KnowledgeConfig
 
-__version__ = "0.2.6"
+__version__ = "0.2.20"
 __all__ = [
     "CugaAgent",
     "CugaSupervisor",
