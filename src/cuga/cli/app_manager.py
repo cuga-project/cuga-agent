@@ -133,8 +133,8 @@ class AppManager:
             cmd.append("--read-only")
         cmd.append(workspace_path)
         self._run("filesystem-server", cmd, {"DYNACONF_SERVER_PORTS__FILESYSTEM_MCP": str(self.fs_port)})
-        logger.info("Filesystem MCP server started")
-        time.sleep(2)
+        logger.info("Filesystem MCP subprocess started; waiting until port %s accepts HTTP…", self.fs_port)
+        self._wait_http(self.fs_port, "Filesystem MCP server")
         return self.fs_port
 
     def start_docs(self, use_cache: bool = True) -> int:

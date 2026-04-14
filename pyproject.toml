@@ -1,6 +1,6 @@
 [project]
 name = "cuga"
-version = "0.2.20"
+version = "0.2.21"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
