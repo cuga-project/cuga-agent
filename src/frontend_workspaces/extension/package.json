@@ -42,9 +42,9 @@
         "terser": "^5.27.0",
         "typescript": "^5.5.4",
         "vite": "^8.0.8",
-        "vite-plugin-checker": "^0.9.0",
-        "vite-plugin-static-copy": "^2.3.0",
-        "vite-plugin-web-extension": "^4.0.0",
+        "vite-plugin-checker": "^0.12.0",
+        "vite-plugin-static-copy": "^4.0.1",
+        "vite-plugin-web-extension": "^4.5.1",
         "wxt": "^0.20.6"
     },
     "dependencies": {
