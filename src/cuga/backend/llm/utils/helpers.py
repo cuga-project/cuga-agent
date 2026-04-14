@@ -93,7 +93,7 @@ def load_prompt_with_image(
         system_path,
         partial_variables={
             "format_instructions": (
-                format_instructions if model_config and model_config.enable_format else ""
+                format_instructions if model_config and getattr(model_config, 'enable_format', False) else ""
             ),
             "current_date": datetime.now().strftime("%m/%d/%Y"),
             # "sitemap": open("cuga/backend/knowledge/shopping_admin/sitemap.txt").read(),
@@ -134,7 +134,9 @@ def load_prompt_simple(
         system_path,
         template_format="jinja2",
         partial_variables={
-            "format_instructions": format_instructions if model_config and model_config.enable_format else "",
+            "format_instructions": format_instructions
+            if model_config and getattr(model_config, 'enable_format', False)
+            else "",
         },
         encoding='utf-8',
     )

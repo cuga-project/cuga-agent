@@ -16,6 +16,7 @@ from mcp import ClientSession
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_prompt_chat
@@ -90,6 +91,12 @@ class ChatAgent(BaseAgent):
         self._is_setup = False
         self.tool_provider = CombinedToolProvider()
 
+        # Context management metadata (extracted during setup)
+        self.model = None
+        self.model_name = None
+        self.tools_for_context = None
+        self.system_prompt_text = None
+
     async def setup(self):
         """Initialize the connection and agent"""
         # Clean up any existing connections first
@@ -108,6 +115,25 @@ class ChatAgent(BaseAgent):
 
         if self.use_regular_chat:
             self.base_tools = [execute_task]
+
+            # Store metadata for context management (used in context summarization)
+            model = llm_manager.get_model(settings.agent.planner.model)
+            self.model = model
+            self.model_name = getattr(model, 'model_name', None)
+            self.tools_for_context = [execute_task]
+
+            # Extract system prompt text from the prompt template for context management
+            try:
+                prompt = load_prompt_chat("./prompts/pmt_chat.jinja2")
+                if hasattr(prompt, 'messages'):
+                    for msg_template in prompt.messages:
+                        if hasattr(msg_template, 'prompt') and hasattr(msg_template.prompt, 'template'):
+                            self.system_prompt_text = msg_template.prompt.template
+                            break
+            except Exception as e:
+                logger.debug(f"Could not extract system prompt during setup: {e}")
+                self.system_prompt_text = None
+
             logger.info("Using regular chat mode (legacy execution)")
         else:
             # Connect via SSE for MCP client mode
@@ -383,8 +409,29 @@ class ChatAgent(BaseAgent):
         return result
 
     async def _run_regular(self, chat_messages: List[BaseMessage], state: AgentState) -> BaseMessage:
-        """Regular run method implementation"""
-        state.chat_agent_messages = chat_messages
+        """Regular run method implementation with context summarization"""
+        # Apply context summarization using metadata extracted during setup
+        logger.info(
+            f"ChatAgent: Applying context summarization with model_name={self.model_name}, "
+            f"tools={len(self.tools_for_context) if self.tools_for_context else 0}, "
+            f"system_prompt={len(self.system_prompt_text) if self.system_prompt_text else 0} chars"
+        )
+
+        effective_chat_messages = await apply_context_summarization(
+            chat_messages,
+            self.model,
+            system_prompt=self.system_prompt_text,
+            tools=self.tools_for_context,
+            tracker=tracker,
+            variables_storage=state.variables_storage,
+            variable_counter_state=state.variable_counter_state,
+            variable_creation_order=state.variable_creation_order,
+        )
+
+        logger.info("ChatAgent: Context summarization completed successfully")
+
+        # Use the _build_bound_agent pattern with summarized messages
+        state.chat_agent_messages = effective_chat_messages
         chain, prompt_inputs = await self._build_bound_agent(state)
         return await chain.ainvoke(prompt_inputs)
 

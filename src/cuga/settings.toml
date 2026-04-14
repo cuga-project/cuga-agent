@@ -149,7 +149,32 @@ trm_url = 8080
 memory = 8888
 oak_health_api = 8090  # cuga-oak-health OpenAPI (demo_health)
 
+[context_summarization]
+enabled = false  # Enable intelligent context summarization
+keep_last_n_messages = 10  # Number of recent messages to preserve unsummarized
+trim_tokens_to_summarize = 500  # Target token count for generated summaries
+summarization_model = "gpt-4o-mini"  # Model to use for generating summaries (fast and cost-effective)
+
+# Trigger conditions (at least one should be set, multiple can be active):
+trigger_fraction = 0.75  # Trigger at 75% of context window (recommended for production)
+# trigger_tokens = 2000  # Alternative: trigger when total tokens exceed this count
+# trigger_messages = 20  # Alternative: trigger after N messages since last summary
+
+# Optional custom summary prompt (uses LangChain default if not set):
+# custom_summary_prompt = "Provide a concise summary of the conversation: {messages}"
+
 [observability]
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
                  # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
                  # See deployment/docker-compose/openlit/ for a local testing stack (OTel Collector + Tempo + Prometheus + Grafana)
+
+[evolve]
+enabled = true             # Master toggle for Evolve integration
+url = "http://127.0.0.1:8201/sse"  # Evolve MCP server SSE endpoint
+mode = "auto"               # "auto" = registry first, then direct SSE fallback; "registry" = registry only; "direct" = direct SSE only
+app_name = "evolve"         # MCP app/server name to use when Evolve is managed by the CUGA registry
+lite_mode_only = true        # Only activate Evolve for CugaLite mode
+save_on_success = true       # Save trajectory on successful task completion
+save_on_failure = true       # Save trajectory on failed task completion
+async_save = true            # Fire-and-forget trajectory saving (non-blocking)
+timeout = 30.0               # Timeout in seconds for Evolve MCP calls

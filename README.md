@@ -870,7 +870,7 @@ instruction_set = "default"  # or any instruction set above
 <summary><em style="color: #666;"> 📹 Optional: Run with memory</em></summary>
 
 1. Install memory dependencies `uv sync --extra memory`
-1. Change `enable_memory = true` in `setting.toml`
+1. Change `enable_memory = true` in `settings.toml`
 2. Run `cuga start memory`
 
 Watch CUGA with Memory enabled
@@ -886,6 +886,112 @@ Watch CUGA with Memory enabled
 3. Run `cuga start demo_crm --sample-memory-data` 
 4. go to the cuga webpage and type `Identify the common cities between my cuga_workspace/cities.txt and cuga_workspace/company.txt` . Here you should see the errors related to CodeAgent. Wait for a minute for `tips` to be generated. `Tips` generation can be confirmed from the  terminal where` cuga start memory` was run
 5. Re-run the same utterance again and it should finish in lesser number of steps
+
+</details>
+
+<details>
+<summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CugaLite</em></summary>
+
+Evolve can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
+
+This flow is:
+
+- **Opt-in** - disabled by default
+- **Non-blocking** - Evolve failures do not fail the task
+- **CugaLite-focused** - enabled for lite mode by default
+- **Optional integration** - install `cuga[evolve]` if you want the upstream Evolve package available locally, or let `uvx` fetch it on demand
+
+### Setup Steps:
+
+1. Choose how Evolve will be started.
+
+   Recommended for normal CUGA usage: let the CUGA MCP registry launch Evolve for you.
+
+   In the manager UI, add an MCP tool with:
+
+   - Name: `evolve`
+   - Connection type: `Command (stdio)`
+   - Command: `uvx`
+   - Args:
+
+   ```text
+   --from
+   altk-evolve
+   --with
+   setuptools<70
+   evolve-mcp
+   ```
+
+   Then set the tool environment values in the UI. Recommended defaults:
+
+   ```text
+   EVOLVE_MODEL_NAME=Azure/gpt-4o
+   OPENAI_API_KEY=env://OPENAI_API_KEY # pragma: allowlist secret
+   OPENAI_BASE_URL=env://OPENAI_BASE_URL # pragma: allowlist secret
+   ```
+
+   Notes:
+   - Use a model your gateway/team is actually allowed to access. Replace `Azure/gpt-4o` with the exact allowed model if needed.
+   - `OPENAI_API_KEY=env://OPENAI_API_KEY` means "read the real value from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
+   - `OPENAI_BASE_URL=env://OPENAI_BASE_URL` means "read the LiteLLM/OpenAI-compatible base URL from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
+   - `setuptools<70` is included because `milvus-lite` still imports `pkg_resources`.
+
+   Important: this command starts Evolve in `stdio` mode through the upstream Evolve package. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
+
+   Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
+
+   ```bash
+   uvx --from altk-evolve --with setuptools<70 evolve-mcp --transport sse --port 8201
+   ```
+2. Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
+
+```toml
+[advanced_features]
+lite_mode = true
+
+[evolve]
+enabled = true
+url = "http://127.0.0.1:8201/sse"
+mode = "auto"
+app_name = "evolve"
+lite_mode_only = true
+save_on_success = true
+save_on_failure = true
+async_save = true
+timeout = 30.0
+```
+
+If you use the recommended registry-managed setup above, keep `mode = "auto"` or set `mode = "registry"`.
+
+If you run Evolve manually as a standalone SSE server, keep `url = "http://127.0.0.1:8201/sse"` and set `mode = "direct"` if you want to skip registry lookup entirely.
+
+If you use Evolve tip generation, make sure the environment for the Evolve MCP server includes the required Evolve model settings. Otherwise `save_trajectory` may fail later with a LiteLLM/OpenAI model access error even when the MCP connection itself works.
+
+3. Start CUGA normally:
+
+```bash
+cuga start demo
+```
+
+4. Run a task that routes through CugaLite
+
+### What happens during a run?
+
+1. CUGA derives the task description from the current sub-task or first user message
+2. CugaLite asks Evolve for relevant guidelines
+3. Returned guidelines are appended to the system prompt under an `Evolve Guidelines` section
+4. The task executes normally
+5. The user / assistant trajectory is saved back to Evolve after completion
+
+### Notes
+
+- `async_save = true` saves trajectories in the background and avoids blocking the response
+- `save_on_success` and `save_on_failure` let you control which runs are recorded
+- `mode = "auto"` lets CUGA use a registry-managed Evolve MCP server when available and fall back to the direct SSE URL otherwise
+- `mode = "registry"` is best when you want Evolve to be fully managed as a normal CUGA MCP tool
+- `mode = "direct"` is best when you are manually running an SSE Evolve server outside CUGA
+- If Evolve is unavailable, times out, or returns no guidance, CUGA continues normally
+- This integration is separate from the older `cuga start memory` namespace / tip workflow
 
 </details>
 

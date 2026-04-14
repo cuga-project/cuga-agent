@@ -200,20 +200,31 @@ def wait_for_server(
     url = f"{scheme}://127.0.0.1:{port}/"
 
     for attempt in range(max_retries):
+        if attempt > 0 and attempt % 20 == 0:
+            logger.info(
+                f"Still waiting for {server_name} on port {port}… "
+                f"({attempt}/{max_retries} checks, ~{attempt * retry_interval:.0f}s elapsed)"
+            )
         try:
             with httpx.Client(timeout=1.0, verify=False) as client:
                 response = client.get(url)
-                if response.status_code == 200:
+                # Any non-5xx response means something is listening; many apps have no GET / route (404).
+                if response.status_code < 500:
                     logger.info(f"{server_name} is ready!")
                     return
         except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
-            if attempt < max_retries - 1:
-                time.sleep(retry_interval)
-            else:
+            if attempt >= max_retries - 1:
                 raise TimeoutError(
                     f"{server_name} did not become ready after {max_retries * retry_interval:.1f} seconds. "
                     f"Please check if the server started correctly on port {port}."
                 )
+        if attempt < max_retries - 1:
+            time.sleep(retry_interval)
+
+    raise TimeoutError(
+        f"{server_name} did not become ready after {max_retries * retry_interval:.1f} seconds. "
+        f"Please check if the server started correctly on port {port}."
+    )
 
 
 def wait_for_registry_server(port: int, max_retries: int = None, retry_interval: float = 0.5):
@@ -800,6 +811,9 @@ def start(
 ):
     """
     Start the specified service.
+
+    Demo MCP subprocesses and default workspace sample files are loaded from ``cuga.demo_tools``
+    (on disk under ``site-packages/cuga/demo_tools`` when installed).
 
     Available services:
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)

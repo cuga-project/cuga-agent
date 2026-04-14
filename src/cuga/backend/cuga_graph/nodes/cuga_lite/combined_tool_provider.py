@@ -229,6 +229,7 @@ class CombinedToolProvider(ToolProviderInterface):
             tracker_apps = tracker.apps
 
         registry_apps = []
+        # Check if registry is enabled (default is True per config.py validator)
         if settings.advanced_features.registry:
             try:
                 registry_apps = await get_apps(agent_id=self.agent_id)

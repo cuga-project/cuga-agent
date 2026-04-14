@@ -38,7 +38,7 @@ fi
 # Copy huggingface examples to cuga_workspace
 echo "Copying huggingface examples to cuga_workspace..."
 mkdir -p ./cuga_workspace
-cp -r docs/examples/huggingface/* ./cuga_workspace/
+cp -r src/cuga/demo_tools/huggingface/* ./cuga_workspace/
 
 # Helper function to run pytest and exit on failure
 # Exit codes: 0=success, 1-4=failures, 5=no tests collected (treat as success)

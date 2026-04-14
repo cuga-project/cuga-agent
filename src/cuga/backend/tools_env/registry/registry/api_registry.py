@@ -423,7 +423,7 @@ class ApiRegistry:
                 "error_detail": error_detail,
             }
         except Exception as e:
-            logger.error(traceback.format_exc())
+            logger.error(tb.format_exc())
             logger.error(f"Error calling MCP function '{function_name}': {e}")
             print(f"\n{'=' * 60}")
             print(f"ERROR: Calling MCP function '{function_name}' failed")
@@ -431,7 +431,7 @@ class ApiRegistry:
             print(f"Error Type: {type(e).__name__}")
             print(f"Error Message: {str(e)}")
             print(f"{'=' * 60}\n")
-            traceback.print_exc()
+            tb.print_exc()
 
             # Extract detailed message from exception if it has one
             detailed_message = str(e)

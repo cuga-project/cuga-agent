@@ -311,6 +311,11 @@ export function ManagePage() {
       if (t.command != null && String(t.command).trim()) {
         entry.command = String(t.command).trim();
         entry.args = Array.isArray(t.args) ? (t.args as string[]) : [];
+        if (t.env && typeof t.env === "object" && !Array.isArray(t.env)) {
+          entry.env = Object.fromEntries(
+            Object.entries(t.env as Record<string, unknown>).map(([k, v]) => [k, String(v ?? "")])
+          );
+        }
         entry.transport = (t.transport as ToolEntry["transport"]) || "stdio";
       } else if (type === "mcp" && entry.url) {
         entry.transport = (t.transport as ToolEntry["transport"]) || "sse";

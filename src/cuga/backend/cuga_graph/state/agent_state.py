@@ -22,6 +22,8 @@ from cuga.backend.cuga_graph.nodes.task_decomposition_planning.task_decompositio
     TaskDecompositionPlan,
 )
 from cuga.config import settings
+from cuga.backend.cuga_graph.utils.context_summarizer import ContextSummarizer
+from cuga.backend.activity_tracker.tracker import ActivityTracker
 
 
 class ToolCallRecord(BaseModel):
@@ -988,6 +990,9 @@ class AgentState(BaseModel):
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
+    last_summarization_metrics: Optional[Dict[str, Any]] = (
+        None  # Stores metrics from the most recent summarization
+    )
 
     @property
     def variables_manager(self) -> 'StateVariablesManager':
@@ -1028,3 +1033,143 @@ class AgentState(BaseModel):
 
     def format_subtask(self):
         return "{} (type = '{}', app='{}')".format(self.sub_task, self.sub_task_type, self.sub_task_app[:30])
+
+    async def manage_message_context(
+        self,
+        model=None,
+        model_name: Optional[str] = None,
+        tools: Optional[List[Any]] = None,
+        system_prompt: Optional[str] = None,
+    ):
+        """
+        Manage conversation context using intelligent summarization or sliding window.
+
+        If context summarization is enabled and model is provided, uses ContextSummarizer
+        to intelligently compress older messages while preserving recent context.
+        Otherwise, falls back to the original rolling window approach.
+
+        Args:
+            model: Optional BaseChatModel instance for summarization
+            model_name: Optional model name for token counting
+            tools: Optional list of tools for accurate context calculation
+            system_prompt: Optional system prompt for accurate context calculation
+        """
+        # Check if summarization is enabled and model is available
+        if settings.context_summarization.enabled and model and model_name:
+            # Get ActivityTracker singleton (if available)
+            tracker = None
+            try:
+                tracker = ActivityTracker()
+            except Exception as e:
+                logger.debug(f"ActivityTracker not available: {e}")
+
+            # Create ContextSummarizer instance
+            summarizer = ContextSummarizer(model, model_name, tracker=tracker)
+            if not summarizer.middleware:
+                logger.warning("Context summarizer unavailable; falling back to sliding window")
+                self.apply_message_sliding_window()
+                return
+
+            # Summarize all three message lists
+            self.chat_messages = await self._summarize_message_list(
+                self.chat_messages,
+                "chat_messages",
+                summarizer,
+                store_metrics=True,
+                tools=tools,
+                system_prompt=system_prompt,
+            )
+            self.chat_agent_messages = await self._summarize_message_list(
+                self.chat_agent_messages,
+                "chat_agent_messages",
+                summarizer,
+                store_metrics=False,
+                tools=tools,
+                system_prompt=system_prompt,
+            )
+            self.supervisor_chat_messages = await self._summarize_message_list(
+                self.supervisor_chat_messages,
+                "supervisor_chat_messages",
+                summarizer,
+                store_metrics=False,
+                tools=tools,
+                system_prompt=system_prompt,
+            )
+        else:
+            # Fall back to original rolling window approach
+            self.apply_message_sliding_window()
+
+    async def _summarize_message_list(
+        self,
+        messages: Optional[List[BaseMessage]],
+        list_name: str,
+        summarizer: ContextSummarizer,
+        store_metrics: bool = False,
+        tools: Optional[List[Any]] = None,
+        system_prompt: Optional[str] = None,
+    ) -> Optional[List[BaseMessage]]:
+        """
+        Helper method to summarize a message list and log results.
+
+        Args:
+            messages: List of messages to potentially summarize (can be None)
+            list_name: Name of the message list (for logging)
+            summarizer: ContextSummarizer instance
+            store_metrics: Whether to store metrics in last_summarization_metrics
+            tools: Optional list of tools for accurate context calculation
+            system_prompt: Optional system prompt for accurate context calculation
+
+        Returns:
+            Summarized or original message list (or None if input was None)
+        """
+        if not messages:
+            return messages
+
+        # Check if summarization should trigger
+        should_summarize, metrics = summarizer.should_summarize(messages, tools, system_prompt)
+
+        if should_summarize:
+            # Log trigger information
+            logger.info(
+                f"Context summarization triggered for {list_name}: {metrics.get('trigger_reason', 'unknown')}"
+            )
+            logger.info(
+                f"Before: {metrics['message_count']} messages, "
+                f"{metrics['token_count']} message tokens, "
+                f"{metrics.get('total_token_count', metrics['token_count'])} total tokens "
+                f"({metrics['usage_percentage']:.1f}% of context)"
+            )
+
+            # Perform summarization
+            messages, summary_metrics = await summarizer.summarize_messages(messages)
+
+            # Handle different result types
+            if "skipped" in summary_metrics:
+                logger.info(f"Summarization skipped: {summary_metrics['skipped']}")
+            elif "error" in summary_metrics:
+                logger.warning(f"Summarization error: {summary_metrics['error']}")
+            elif "after" in summary_metrics:
+                # Successful summarization
+                logger.info(
+                    f"After: {summary_metrics['after']['message_count']} messages, "
+                    f"{summary_metrics['after']['token_count']} tokens "
+                    f"(saved {summary_metrics['tokens_saved']} tokens, "
+                    f"{summary_metrics['compression_ratio']:.1%} compression)"
+                )
+
+                # Store metrics for streaming to frontend (only for chat_messages)
+                if store_metrics:
+                    self.last_summarization_metrics = {
+                        list_name: summary_metrics,
+                        "timestamp": summary_metrics.get("timestamp"),
+                    }
+
+        return messages
+
+    async def manage_rolling_window(self):
+        """
+        Deprecated: Use manage_message_context() instead.
+
+        This method is kept for backward compatibility and calls manage_message_context().
+        """
+        await self.manage_message_context()
