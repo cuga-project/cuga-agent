@@ -18,8 +18,10 @@ function createWindow() {
     // Load your React app
     mainWindow.loadFile('dist/index.html');
 
-    // Open DevTools (optional)
-    mainWindow.webContents.openDevTools();
+    // Open DevTools only in development builds
+    if (!app.isPackaged) {
+        mainWindow.webContents.openDevTools();
+    }
 }
 
 app.whenReady().then(() => {
