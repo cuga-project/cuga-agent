@@ -48,7 +48,7 @@
       "vite": ">=6.4.2",
       "electron": ">=39.8.5",
       "@xmldom/xmldom": ">=0.8.12",
-      "path-to-regexp": ">=0.1.13",
+      "path-to-regexp": ">=8.4.2",
       "defu": ">=6.1.5"
     }
   },
