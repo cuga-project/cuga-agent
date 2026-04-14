@@ -74,7 +74,11 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed, is_tool_use_failed_retryable_error
 from cuga.backend.cuga_graph.state.agent_state import AgentState
-from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt, PromptUtils
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    create_mcp_prompt,
+    format_current_plan_system_suffix,
+    PromptUtils,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
@@ -228,6 +232,7 @@ class CugaLiteState(BaseModel):
     - script, execution_complete, error, metrics
     - tools_prepared: bool (flag indicating tools have been prepared)
     - prepared_prompt: str (dynamically generated prompt)
+    - task_todos: list of {text, status} mirrored into the system prompt Current plan section
     """
 
     # Shared keys (compatible with AgentState)
@@ -252,6 +257,7 @@ class CugaLiteState(BaseModel):
     # Subgraph-only keys
     tools_prepared: bool = False
     prepared_prompt: Optional[str] = None
+    task_todos: Optional[List[Dict[str, Any]]] = None
     script: Optional[str] = None
     execution_complete: bool = False
     error: Optional[str] = None
@@ -481,6 +487,10 @@ def tool_calls_to_python_script(tool_calls: List[Dict[str, Any]]) -> str:
             last_direct_var = None
             continue
         kw = ", ".join(f"{k}={_arg_to_py_literal(v)}" for k, v in args.items())
+        if name in ("find_tools", "create_update_todos"):
+            segments.append(f"print(await {name}({kw}))")
+            last_direct_var = None
+            continue
         var = f"_fc_{idx}"
         idx += 1
         segments.append(f"{var} = await {name}({kw})")
@@ -628,11 +638,22 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
                 # Last resort: wrap in a list
                 todos_list = [Todo(**input_data) if isinstance(input_data, dict) else input_data]
 
-        # Store todos in agent_state if available
-        logger.info(
-            f"🔍 DEBUG create_update_todos: agent_state type = {type(agent_state).__name__ if agent_state else 'None'}"
-        )
-        logger.info(f"🔍 DEBUG create_update_todos: agent_state exists = {agent_state is not None}")
+        serialized: List[Dict[str, Any]] = []
+        for t in todos_list:
+            if isinstance(t, Todo):
+                serialized.append(t.model_dump())
+            elif isinstance(t, dict):
+                serialized.append(
+                    {
+                        "text": str(t.get("text", "")),
+                        "status": str(t.get("status", "pending")),
+                    }
+                )
+            else:
+                serialized.append({"text": str(t), "status": "pending"})
+
+        if agent_state is not None and hasattr(agent_state, "task_todos"):
+            agent_state.task_todos = serialized
 
         return "Todos have been updated"
 
@@ -1202,9 +1223,7 @@ def create_cuga_lite_graph(
 
             # Get prompt from state (tools are available via sandbox context, not needed here)
             dynamic_prompt = state.prepared_prompt
-
-            # Convert BaseMessage objects to dict format for model invocation
-            messages_for_model = [{"role": "system", "content": dynamic_prompt}]
+            full_system = (dynamic_prompt or "") + format_current_plan_system_suffix(state.task_todos)
 
             # Check if we have variables and this is a new question (not a follow-up with existing AI responses)
             # If this is a new question (1 user msg, 0 AI msgs) or follow-up, add variables to the last user message
@@ -1257,7 +1276,7 @@ def create_cuga_lite_graph(
             effective_chat_messages = await apply_context_summarization(
                 state.chat_messages or [],
                 active_model,
-                system_prompt=dynamic_prompt,
+                system_prompt=full_system,
                 tools=None,
                 tracker=tracker,
                 variables_storage=state.variables_storage,
@@ -1266,6 +1285,8 @@ def create_cuga_lite_graph(
             )
             # effective_chat_messages may contain summarized messages if context limit exceeded
             # ─────────────────────────────────────────────────────────────────────
+
+            messages_for_model = [{"role": "system", "content": full_system}]
 
             # Build messages_for_model from effective_chat_messages (post-summarization)
             # Also build modified_chat_messages with playbook/pi/variables injected
@@ -1547,6 +1568,20 @@ def create_cuga_lite_graph(
             # Add tools to context
             context = {**existing_vars, **base_tools_context}
 
+            enable_todos = (
+                configurable.get("enable_todos")
+                if "enable_todos" in configurable
+                else settings.advanced_features.enable_todos
+            )
+            if enable_todos and "create_update_todos" in context:
+                todos_tool = await create_update_todos_tool(agent_state=state)
+                todos_tool_func = (
+                    todos_tool.coroutine
+                    if hasattr(todos_tool, "coroutine") and todos_tool.coroutine
+                    else todos_tool.func
+                )
+                context["create_update_todos"] = make_tool_awaitable(todos_tool_func)
+
             # Start tool call tracking (only if enabled via invoke parameter)
             ToolCallTracker.start_tracking(enabled=track_tool_calls)
 
@@ -1653,6 +1688,7 @@ def create_cuga_lite_graph(
                             "variable_counter_state": state.variable_counter_state,
                             "variable_creation_order": state.variable_creation_order,
                             "tool_calls": accumulated_tool_calls,
+                            "task_todos": state.task_todos,
                         },
                     )
 
@@ -1663,6 +1699,7 @@ def create_cuga_lite_graph(
                     "variable_creation_order": state.variable_creation_order,
                     "step_count": state.step_count + 1,
                     "tool_calls": accumulated_tool_calls,
+                    "task_todos": state.task_todos,
                 }
             except Exception as e:
                 # Collect tool calls even on error
@@ -1677,7 +1714,12 @@ def create_cuga_lite_graph(
                 )
 
                 if limit_error_message:
-                    return create_error_command(updated_messages, limit_error_message, state.step_count)
+                    return create_error_command(
+                        updated_messages,
+                        limit_error_message,
+                        state.step_count,
+                        additional_updates={"task_todos": state.task_todos},
+                    )
 
                 return {
                     "chat_messages": updated_messages,
@@ -1685,6 +1727,7 @@ def create_cuga_lite_graph(
                     "execution_complete": True,
                     "step_count": state.step_count + 1,
                     "tool_calls": accumulated_tool_calls,
+                    "task_todos": state.task_todos,
                 }
 
         return sandbox

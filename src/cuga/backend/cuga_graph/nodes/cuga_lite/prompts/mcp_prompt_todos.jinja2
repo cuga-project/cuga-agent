@@ -40,6 +40,8 @@ Create and update the todo list for **multi-step** tasks. Each item has `text` a
 
 **When to use:** More than one logical step, pagination plus follow-up calls, or any work you need to track across turns.
 
+**System prompt sync:** After each successful call, the runtime appends a **Current plan** section at the **end** of your system message (on the next model turn). It lists the same steps and statuses — treat that block as the live plan; keep it accurate by calling **`create_update_todos`** whenever the plan changes.
+
 **Isolation:** In a single assistant turn, **do not** mix **`create_update_todos`** with other tool calls — call **only** `create_update_todos`, then use other tools on later turns.
 
 ### find_tools
@@ -230,11 +232,17 @@ These tools are bound for **function calling** (signatures are indicative — us
 
 {% endfor %}
 
+# Current plan
+
+When you have called **`create_update_todos`**, the **Current plan** block appears **below** this section at the very end of the system message. update it only via **`create_update_todos`**.
+
+---
+
 # FINAL REMINDER
 
 * Use **native tool / function calls** — not markdown Python, not raw JSON in the user-visible content.
 * For Python logic, use **`execute_python`** with a `code` string; for single calls, call app tools directly.
 * **Pagination:** loop until all pages are consumed.
-* **Todos:** use **`create_update_todos`** for complex work; keep it isolated from other tools in the same turn.
+* **Todos:** use **`create_update_todos`** for complex work; keep it isolated from other tools in the same turn. The **Current plan** section at the end of the system message reflects the latest todos.
 {% if enable_find_tools %}* If the bound list is only **`find_tools`**, you **must** use **`find_tools`** before other app tools.{% endif %}
 {% if has_knowledge %}* **Knowledge:** When documents may answer the question, call the knowledge tools with the correct scope before giving up.{% endif %}

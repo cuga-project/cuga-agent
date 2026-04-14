@@ -467,3 +467,24 @@ def create_mcp_prompt(
         has_knowledge=has_knowledge,
     )
     return prompt
+
+
+def format_current_plan_system_suffix(task_todos: Optional[list] = None) -> str:
+    """Append to system prompt: live todo list after create_update_todos runs."""
+    if not task_todos:
+        return ""
+    lines = ["", "---", "", "# Current plan", ""]
+    labels = {
+        "pending": "Pending",
+        "in_progress": "In progress",
+        "completed": "Completed",
+    }
+    for item in task_todos:
+        if not isinstance(item, dict):
+            continue
+        text = str(item.get("text", "")).strip()
+        raw_status = str(item.get("status", "pending")).strip().lower().replace(" ", "_")
+        label = labels.get(raw_status, raw_status.replace("_", " ").title())
+        lines.append(f"- **{label}** — {text}")
+    lines.append("")
+    return "\n".join(lines)
