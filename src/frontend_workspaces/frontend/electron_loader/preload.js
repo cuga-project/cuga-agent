@@ -14,10 +14,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Example: Receive message from main process
     receive: (channel, func) => {
         const validChannels = ['fromMain'];
-        if (validChannels.includes(channel)) {
-            // Deliberately strip event as it includes `sender` 
-            ipcRenderer.on(channel, (event, ...args) => func(...args));
+        if (!validChannels.includes(channel)) {
+            throw new Error(`Unsupported IPC channel: ${channel}`);
         }
+
+        const listener = (_event, ...args) => func(...args);
+        ipcRenderer.on(channel, listener);
+
+        return () => {
+            ipcRenderer.removeListener(channel, listener);
+        };
     },
     // Example: Invoke method (request-response pattern)
     invoke: (channel, data) => {
