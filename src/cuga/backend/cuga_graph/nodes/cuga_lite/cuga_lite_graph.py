@@ -880,7 +880,9 @@ def create_cuga_lite_graph(
                     else todos_tool.func
                 )
                 tools_context_dict['create_update_todos'] = make_tool_awaitable(todos_tool_func)
-                tools_for_prompt.append(create_execute_python_tool())
+
+            # Always expose execute_python for orchestration/pagination (bound with app tools when FC is on)
+            tools_for_prompt.append(create_execute_python_tool())
 
             # Apply tool guide if guides exist in metadata and haven't been applied yet
             # Guides should apply regardless of whether a playbook matched
@@ -1172,10 +1174,7 @@ def create_cuga_lite_graph(
                     has_knowledge=has_knowledge_tools,
                 )
 
-            if enable_todos:
-                tools_for_llm_ref["bind_tools_list"] = list(tools_for_prompt)
-            else:
-                tools_for_llm_ref["bind_tools_list"] = None
+            tools_for_llm_ref["bind_tools_list"] = list(tools_for_prompt) if tools_for_prompt else None
 
             return Command(
                 goto="call_model",
@@ -1206,13 +1205,8 @@ def create_cuga_lite_graph(
             max_steps = (
                 configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
             )
-            enable_todos = (
-                configurable.get("enable_todos")
-                if "enable_todos" in configurable
-                else settings.advanced_features.enable_todos
-            )
             bind_tools_list = (tools_for_llm_ref or {}).get("bind_tools_list") if tools_for_llm_ref else None
-            use_function_calling = bool(enable_todos and bind_tools_list)
+            use_function_calling = bool(bind_tools_list)
 
             logger.debug(
                 f"[APPROVAL DEBUG] call_model received cuga_lite_metadata: {state.cuga_lite_metadata}"
