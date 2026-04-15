@@ -231,6 +231,7 @@ class CugaLiteState(BaseModel):
     - prepared_prompt: str (dynamically generated prompt)
     - reflection_apps: list of dicts (name, type, description) for reflection prompt
     - reflection_enable_find_tools: whether find_tools shortlisting was enabled
+    - task_todos: latest todo list from create_update_todos (injected as Current Plan on the system prompt)
     """
 
     # Shared keys (compatible with AgentState)
@@ -257,6 +258,7 @@ class CugaLiteState(BaseModel):
     prepared_prompt: Optional[str] = None
     reflection_apps: List[Dict[str, Any]] = Field(default_factory=list)
     reflection_enable_find_tools: bool = False
+    task_todos: Optional[List[Dict[str, Any]]] = Field(default=None)
     script: Optional[str] = None
     execution_complete: bool = False
     error: Optional[str] = None
@@ -393,6 +395,36 @@ class TodosOutput(BaseModel):
     todos: List[Todo] = Field(..., description="List of todos with their current status")
 
 
+def _try_parse_todos_payload(value: Any) -> Optional[List[Dict[str, Any]]]:
+    if not isinstance(value, dict) or "todos" not in value:
+        return None
+    raw = value["todos"]
+    if not isinstance(raw, list):
+        return None
+    if not raw:
+        return []
+    if not all(isinstance(x, dict) and "text" in x and "status" in x for x in raw):
+        return None
+    return raw
+
+
+def extract_task_todos_from_new_vars(new_vars: dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    for val in new_vars.values():
+        parsed = _try_parse_todos_payload(val)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def format_current_plan_section(task_todos: List[Dict[str, Any]]) -> str:
+    lines = ["## Current Plan", ""]
+    for item in task_todos:
+        text = str(item.get("text", "")).strip()
+        status = str(item.get("status", "pending")).strip()
+        lines.append(f"- **[{status}]** {text}")
+    return "\n".join(lines) + "\n"
+
+
 async def create_find_tools_tool(
     all_tools: Sequence[StructuredTool],
     all_apps: List[Any],
@@ -479,7 +511,7 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
         StructuredTool configured for creating and updating todos
     """
 
-    async def create_update_todos_func(input_data) -> str:
+    async def create_update_todos_func(input_data) -> TodosOutput:
         """Create or update a list of todos for complex multi-step tasks.
 
         Use this tool when you have a complex task that requires multiple steps.
@@ -492,7 +524,7 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
                        - A list directly: [...] (will be wrapped in {"todos": [...]})
 
         Returns:
-            Simple confirmation message
+            Structured todo list (also mirrored under **Current Plan** on the system prompt after execution).
         """
         # Handle different input types
         if isinstance(input_data, TodosInput):
@@ -521,18 +553,13 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
                 # Last resort: wrap in a list
                 todos_list = [Todo(**input_data) if isinstance(input_data, dict) else input_data]
 
-        # Store todos in agent_state if available
-        logger.info(
-            f"🔍 DEBUG create_update_todos: agent_state type = {type(agent_state).__name__ if agent_state else 'None'}"
-        )
-        logger.info(f"🔍 DEBUG create_update_todos: agent_state exists = {agent_state is not None}")
-
-        return "Todos have been updated"
+        normalized = [t if isinstance(t, Todo) else Todo(**t) for t in todos_list]
+        return TodosOutput(todos=normalized)
 
     return StructuredTool.from_function(
         func=create_update_todos_func,
         name="create_update_todos",
-        description="Create or update a list of todos for complex multi-step tasks. Use this when you have a task that requires more than one step. You can pass either: (1) A list directly: create_update_todos([{'text': '...', 'status': 'pending'}, ...]) or (2) A dict with 'todos' key: create_update_todos({'todos': [{'text': '...', 'status': 'pending'}, ...]}). Each todo dict should have 'text' (task description) and 'status' ('pending', 'in_progress', or 'completed'). Returns a simple confirmation message.",
+        description="Create or update a list of todos for complex multi-step tasks. Use this when you have a task that requires more than one step. You can pass either: (1) A list directly: create_update_todos([{'text': '...', 'status': 'pending'}, ...]) or (2) A dict with 'todos' key: create_update_todos({'todos': [{'text': '...', 'status': 'pending'}, ...]}). Each todo dict should have 'text' (task description) and 'status' ('pending', 'in_progress', or 'completed'). Returns a todos payload; the same list is appended to the system prompt as Current Plan after the code runs.",
         args_schema=TodosInput,
         return_direct=False,
     )
@@ -1069,7 +1096,17 @@ def create_cuga_lite_graph(
                 return ToolApprovalHandler.handle_approval_resumption(state)
 
             # Get prompt from state (tools are available via sandbox context, not needed here)
-            dynamic_prompt = state.prepared_prompt
+            dynamic_prompt = state.prepared_prompt or ""
+            _cfg_early = config.get("configurable", {}) if config else {}
+            _enable_todos_prompt = (
+                _cfg_early.get("enable_todos")
+                if "enable_todos" in _cfg_early
+                else settings.advanced_features.enable_todos
+            )
+            if _enable_todos_prompt and state.task_todos:
+                dynamic_prompt = (
+                    f"{dynamic_prompt.rstrip()}\n\n{format_current_plan_section(state.task_todos)}"
+                )
 
             # Convert BaseMessage objects to dict format for model invocation
             messages_for_model = [{"role": "system", "content": dynamic_prompt}]
@@ -1452,6 +1489,7 @@ def create_cuga_lite_graph(
                                 "coder_agent_output": output,
                                 "apps": state.reflection_apps or [],
                                 "enable_find_tools": state.reflection_enable_find_tools,
+                                "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
                             }
                         )
                         reflection_output = reflection_result.content
@@ -1496,7 +1534,8 @@ def create_cuga_lite_graph(
                         },
                     )
 
-                return {
+                todo_state_update = extract_task_todos_from_new_vars(new_vars)
+                base_update = {
                     "chat_messages": updated_messages,
                     "variables_storage": state.variables_storage,
                     "variable_counter_state": state.variable_counter_state,
@@ -1504,6 +1543,9 @@ def create_cuga_lite_graph(
                     "step_count": state.step_count + 1,
                     "tool_calls": accumulated_tool_calls,
                 }
+                if todo_state_update is not None:
+                    base_update["task_todos"] = todo_state_update
+                return base_update
             except Exception as e:
                 # Collect tool calls even on error
                 execution_tool_calls = ToolCallTracker.stop_tracking()

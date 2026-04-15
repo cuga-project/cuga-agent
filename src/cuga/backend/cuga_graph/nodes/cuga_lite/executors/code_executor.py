@@ -152,7 +152,12 @@ class CodeExecutor:
         result = format_execution_output(result)
 
         # Add variables summary to the formatted output
-        result = VariableUtils.add_variables_to_manager(new_vars, state.variables_manager, result)
+        result = VariableUtils.add_variables_to_manager(
+            new_vars,
+            state.variables_manager,
+            result,
+            skip_summary_keys={'todos'},
+        )
 
         return result, new_vars
 
