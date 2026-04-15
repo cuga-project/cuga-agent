@@ -45,7 +45,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Extract Docker metadata
+      - name: Extract Docker metadata (multi-arch)
         id: meta
         uses: docker/metadata-action@v5
         with:
@@ -60,7 +60,24 @@ jobs:
             org.opencontainers.image.title=${{ vars.IMAGE_NAME }}
             org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
 
-      - name: Build and push image to GHCR
+      - name: Extract Docker metadata (amd64-only)
+        id: meta_amd64
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/${{ vars.IMAGE_NAME }}
+          flavor: |
+            suffix=-amd64
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=${{ inputs.image_tag }},enable=${{ inputs.image_tag != '' }}
+            type=raw,value=latest,enable=${{ inputs.image_tag == '' && github.event_name != 'push' }}
+          labels: |
+            org.opencontainers.image.title=${{ vars.IMAGE_NAME }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+
+      - name: Build and push image to GHCR (linux/amd64, linux/arm64)
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -69,3 +86,13 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
+
+      - name: Build and push image to GHCR (linux/amd64 only)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: ./Dockerfile.ubi
+          push: true
+          platforms: linux/amd64
+          tags: ${{ steps.meta_amd64.outputs.tags }}
+          labels: ${{ steps.meta_amd64.outputs.labels }}
