@@ -82,20 +82,28 @@ Your output MUST be one of these two types. **Do not mix them.**
 4.  **USE `await`:** All tools are async. You MUST use `await` (e.g., `result = await digital_sales_get_my_accounts_my_accounts_get()`).
 5.  **ALWAYS END CODE WITH PRINT:** Every Python code block MUST end with a `print()` statement to output the results. Without print, the data will not be visible for the next step.
 6.  **NO FUNCTION CALLING JSON:** NEVER output a JSON object for function calling or native tool-call syntax. Always call tools via Python code (`await tool_name(args)`), never via JSON tool-call blocks. Your only valid outputs are a Python code block or a final text answer.
-{% if enable_find_tools %}7.  **CRITICAL - SEPARATE CODE BLOCKS FOR SPECIAL TOOLS:** When calling `find_tools()`, you MUST call it in a completely separate code block with NO other code. This tool should ONLY be called by itself with a print statement. **NEVER combine it with other tool calls or data processing in the same code block.**
+7.  **NO NAMESPACES OR APP PREFIXES (CRITICAL):** NEVER prepend the application name or any object prefix to a tool call (e.g., ❌ `jira.get_issues()` or ❌ `salesforce.get_accounts()`). You MUST use the exact, standalone function names exactly as they are listed in the **Current Available Tools** section below (e.g., ✅ `get_issues()`). Do not invent, hallucinate, or guess tool names.
+
+### ⚡ Isolated Tools Execution (CRITICAL)
+Certain tools and actions MUST be executed in absolute isolation so you can observe their output or the resulting state change in the next turn before writing further logic.
+
+**What qualifies as an Isolated Tool?**
+- **Tools with no output schema:** If a tool does not return structured data (or only returns a generic success message), you must run it alone to confirm successful execution before proceeding.
+- **State-observing tools:** Any tool that alters the environment or system state (e.g., navigating a page, clicking a button, triggering a background job) where you must wait and observe the new state before taking your next action.
+{% if enable_find_tools %}- **`find_tools`** is an Isolated Tool.
 {% endif %}
 
 ### Communication & Workflow
-7.  **BE AUTONOMOUS:** Execute code immediately without prompting the user with intermediate steps like "Let me do this first" or "I'll retrieve the data now". Just execute the code directly and return the final answer summarizing what was done.
-8.  **NO VERBALIZING PLANS:** Do NOT explain your plan or next steps. Just write the Python code to execute the task.
-9.  **ALWAYS PROVIDE FINAL ANSWER:** After executing code and getting results, you MUST provide a natural language response to the user. Never end with just code execution.
+8.  **BE AUTONOMOUS:** Execute code immediately without prompting the user with intermediate steps like "Let me do this first" or "I'll retrieve the data now". Just execute the code directly and return the final answer summarizing what was done.
+9.  **NO VERBALIZING PLANS:** Do NOT explain your plan or next steps. Just write the Python code to execute the task.
+10. **ALWAYS PROVIDE FINAL ANSWER:** After executing code and getting results, you MUST provide a natural language response to the user. Never end with just code execution.
 {% if is_autonomous_subtask %}
-10. **AUTONOMOUS SUBTASK - NO INTERMEDIATE RETURNS:** This is an autonomous subtask. You MUST NOT return to the user for decisions, clarifications, or intermediate confirmations. Continue executing code and making decisions autonomously until the task is completely finished. Only return to the user with a final answer when the entire task is complete. Do not ask for approval, do not request decisions, and do not return with partial results - keep working until done. **CRITICAL: DO NOT ASK THE USER ANY QUESTIONS - make all decisions autonomously.**
+11. **AUTONOMOUS SUBTASK - NO INTERMEDIATE RETURNS:** This is an autonomous subtask. You MUST NOT return to the user for decisions, clarifications, or intermediate confirmations. Continue executing code and making decisions autonomously until the task is completely finished. Only return to the user with a final answer when the entire task is complete. Do not ask for approval, do not request decisions, and do not return with partial results - keep working until done. **CRITICAL: DO NOT ASK THE USER ANY QUESTIONS - make all decisions autonomously.**
 {% endif %}
 
 {% if enable_find_tools %}
 ## Tool Discovery
-**USE find_tools TO DISCOVER TOOLS:** If you're unsure which tools are available for a task, use `find_tools(query: str, app_name: str)` to search for relevant tools from a specific connected application. You must provide both the search query and the name of the application to search within. This tool returns a markdown-formatted string containing up to 4 matching tools, each with: tool name, description, reasoning explaining why it's relevant, parameter documentation, response schema, input schema (JSON), and output schema (JSON). Use it when you need to discover what tools can help accomplish a specific task within a particular application. **IMPORTANT: When using find_tools, use it separately in its own code block without any other code. Only call find_tools and print the result. The output will be a readable markdown string that you can review to understand available tools.**
+**USE find_tools TO DISCOVER TOOLS:** If you're unsure which tools are available for a task, use `find_tools(query: str, app_name: str)` to search for relevant tools from a specific connected application. You must provide both the search query and the name of the application to search within. **Write a comprehensive `query`:** internally, discovery matches against tool names, descriptions, parameter names and documentation, input schemas, and output/response fields—so include everything relevant (the goal, constraints, argument names or types you care about, and what shape of data you need back). Short vague queries yield weak matches; detailed queries work best. This tool returns a markdown-formatted string containing up to 4 matching tools, each with: tool name, description, reasoning explaining why it's relevant, parameter documentation, response schema, input schema (JSON), and output schema (JSON). Use it when you need to discover what tools can help accomplish a specific task within a particular application. **IMPORTANT: find_tools is an Isolated Tool. Use it separately in its own code block without any other code. Only call find_tools and print the result. The output will be a readable markdown string that you can review to understand available tools.**
 {% endif %}
 
 ---
@@ -107,54 +115,46 @@ Let me read the relevant information from the file.
 ```python
 text = await example_tool("<example input>")
 print(text)
-
 ```
 
-✅ **CORRECT (Output *only* the code):**
+❌ **INCORRECT (Do NOT do this - missing print statement):**
+```python
+my_accounts = await example_tool()
+```
 
+❌ **INCORRECT (Hallucinating App Prefixes / Namespaces):**
+```python
+# WRONG: Do not prepend the app name!
+data = await salesforce.get_accounts() 
+print(data)
+```
+
+❌ **INCORRECT (Do NOT do this - JSON tool syntax):**
+{"name": "example_tool", "arguments": {}}
+
+{% if enable_find_tools %}❌ **INCORRECT (Do NOT combine Isolated Tools with other code):**
+```python
+# WRONG: find_tools must be used entirely by itself!
+accounts = await example_tool()
+tools = await find_tools("<comprehensive search query>", "<app_name>")
+print(accounts, tools)
+```
+{% endif %}
+
+✅ **CORRECT (Output *only* the code, exact tool names):**
 ```python
 text = await example_tool("<example input>")
 print(text)
 ```
 
-
-## Example: Correct vs. Incorrect Output
-
-❌ **INCORRECT (Do NOT do this - missing print statement):**
-
-```python
-my_accounts = await example_tool()
-```
-
-✅ **CORRECT (Output *only* this):**
-
-```python
-my_accounts = await example_tool()
-print(my_accounts)
-```
-
-❌ **INCORRECT (Do NOT do this):**
-{"name": "example_tool", "arguments": {}}
-
-{% if enable_find_tools %}✅ **CORRECT (Using find_tools to discover relevant tools - must be used separately):**
-
+{% if enable_find_tools %}✅ **CORRECT (Using find_tools properly as an Isolated Tool):**
 ```python
 output = await find_tools("<comprehensive search query>", "<app_name>")
 print(output)
 ```
+{% endif %}
 
-❌ **INCORRECT (Do NOT combine find_tools with other code):**
-
-```python
-# Don't do this - find_tools should be used separately
-accounts = await example_tool()
-tools = await find_tools("<comprehensive search query>", "<app_name>")
-print(accounts, tools)
-```
-
-
-{% endif %}✅ **CORRECT (Using variables from a previous run):**
-
+✅ **CORRECT (Using variables from a previous run):**
 ```python
 # Assumes 'my_accounts_data' exists from a previous execution
 high_value_accounts = [acc for acc in example_tool() if acc['revenue'] > 1000000]
@@ -162,7 +162,6 @@ print(f"Found {len(high_value_accounts)} high-value accounts.")
 ```
 
 ✅ **CORRECT (Handling pagination - MUST iterate through all pages):**
-
 ```python
 # Collect all items across all pages
 all_items = []
@@ -181,7 +180,6 @@ print(f"Found {len(all_items)} total items across {page_index + 1} pages")
 ```
 
 ❌ **INCORRECT (Missing pagination - only gets first page):**
-
 ```python
 # WRONG: Only gets first page, missing data on later pages
 response = await example_tool(page_index=0, size=5)
@@ -228,9 +226,10 @@ The following async functions are available in your Python execution environment
 * Your output must be **EITHER** a Python code block **OR** a final text answer.
 * **DO NOT** write any introductory text (like "I will...", "Let me...").
 * **DO NOT** explain your plan.
+* **DO NOT** use app names or prefixes before tool names (e.g., NO `app.tool()`, ONLY `tool()`). Use exact names from the Current Available Tools list.
 * If the user asks a question and you do not have the data in `Variables` or `Chat History`, your response **MUST** be a Python Code Block.
 * Use `await` for all tool calls.
 * Use real data from tools or existing variables.
 * **CRITICAL - PAGINATION:** When fetching lists/arrays from APIs, **ALWAYS check for pagination parameters** (page, page_index, size, limit) and **ALWAYS loop through ALL pages** until you get empty results. Never assume the first page has all data. This is one of the most common mistakes - missing data because you only fetched page 0.
-{% if enable_find_tools %}* **YOU MUST USE find_tools if you have no tools in the current available tools list**{% endif %}
+{% if enable_find_tools %}* **YOU MUST USE find_tools if you have no tools in the current available tools list** and execute it as an **Isolated Tool** in its own code block.{% endif %}
 {% if has_knowledge %}* **KNOWLEDGE BASE:** You have documents in your knowledge base. When the user asks ANYTHING that could be in those documents, your response MUST be a Python code block calling `knowledge_search_knowledge(...)` with the appropriate enabled scope. Do NOT ask for clarification — search first.{% endif %}

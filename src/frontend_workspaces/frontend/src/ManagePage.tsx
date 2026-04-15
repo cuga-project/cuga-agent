@@ -1554,7 +1554,6 @@ export function ManagePage() {
                         checked={flags.enable_todos ?? false}
                         onChange={(_e, { checked }) => {
                           updateFeatureFlag("enable_todos", !!checked);
-                          setTimeout(() => performDraftSave(), 0);
                         }}
                       />
                     </FormGroup>
@@ -1565,7 +1564,6 @@ export function ManagePage() {
                         checked={flags.reflection ?? false}
                         onChange={(_e, { checked }) => {
                           updateFeatureFlag("reflection", !!checked);
-                          setTimeout(() => performDraftSave(), 0);
                         }}
                       />
                     </FormGroup>
