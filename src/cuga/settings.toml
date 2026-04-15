@@ -50,7 +50,7 @@ cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
-execution_output_max_length = 50000  # Maximum characters to show in execution output (prevents token overflow)
+execution_output_max_length = 70000  # Maximum characters to show in execution output (prevents token overflow)
 
 [supervisor]
 enabled = false  # Enable CugaSupervisor for multi-agent coordination

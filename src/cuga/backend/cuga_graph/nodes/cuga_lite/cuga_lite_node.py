@@ -420,6 +420,7 @@ class CugaLiteNode(BaseNode):
         self._log_variable_changes(state, initial_var_names)
 
         # Process the results using the existing logic
+
         result = await self._process_results(
             state=state,
             answer=answer,

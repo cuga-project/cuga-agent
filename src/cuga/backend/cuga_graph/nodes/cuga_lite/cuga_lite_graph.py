@@ -74,7 +74,11 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.backend.cuga_graph.state.agent_state import AgentState
-from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt, PromptUtils
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    create_mcp_prompt,
+    format_apps_for_prompt,
+    PromptUtils,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
@@ -225,6 +229,8 @@ class CugaLiteState(BaseModel):
     - script, execution_complete, error, metrics
     - tools_prepared: bool (flag indicating tools have been prepared)
     - prepared_prompt: str (dynamically generated prompt)
+    - reflection_apps: list of dicts (name, type, description) for reflection prompt
+    - reflection_enable_find_tools: whether find_tools shortlisting was enabled
     """
 
     # Shared keys (compatible with AgentState)
@@ -249,6 +255,8 @@ class CugaLiteState(BaseModel):
     # Subgraph-only keys
     tools_prepared: bool = False
     prepared_prompt: Optional[str] = None
+    reflection_apps: List[Dict[str, Any]] = Field(default_factory=list)
+    reflection_enable_find_tools: bool = False
     script: Optional[str] = None
     execution_complete: bool = False
     error: Optional[str] = None
@@ -1022,6 +1030,8 @@ def create_cuga_lite_graph(
                     has_knowledge=has_knowledge_tools,
                 )
 
+            reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
+
             return Command(
                 goto="call_model",
                 update={
@@ -1029,6 +1039,8 @@ def create_cuga_lite_graph(
                     "prepared_prompt": dynamic_prompt,
                     "step_count": 0,
                     "cuga_lite_metadata": state.cuga_lite_metadata,
+                    "reflection_apps": reflection_apps_snapshot,
+                    "reflection_enable_find_tools": enable_find_tools,
                 },
             )
 
@@ -1438,6 +1450,8 @@ def create_cuga_lite_graph(
                                 "agent_history": agent_history,
                                 "shortlister_agent_output": "",
                                 "coder_agent_output": output,
+                                "apps": state.reflection_apps or [],
+                                "enable_find_tools": state.reflection_enable_find_tools,
                             }
                         )
                         reflection_output = reflection_result.content

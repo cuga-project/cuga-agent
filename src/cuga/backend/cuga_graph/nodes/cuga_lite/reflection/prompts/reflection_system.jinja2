@@ -9,6 +9,18 @@ As an advanced strategic guidance and analysis agent, your primary objective is 
 3.  **Find tools output**: Details on which tools were identified as potentially relevant for the `Current Task`.
 4.  **Code in previous turn**: The results of code execution, including any variables output, errors encountered, or successes achieved, from the latest attempt at the `Current Task`.
 
+{% if apps and apps|length > 0 %}
+### Connected applications (same scope as the executor)
+
+The task is executed against **connected applications** below. Tools and API calls in the conversation apply to these apps only (unless the history explicitly shows otherwise). When recommending `find_tools` or specific tool names, stay consistent with these apps.
+
+{% if enable_find_tools %}The executor may use **`find_tools(query, app_name)`** to discover tools **within a named application** from this list—you must pass the correct `app_name` for the app you intend to search.{% endif %}
+
+{% for app in apps %}
+- **{{ app['name'] }}** ({{ app['type']|upper if app['type'] else 'API' }}): {{ app['description'] if app['description'] else 'No description available' }}
+{% endfor %}
+
+{% endif %}
 ---
 
 ### Your Core Responsibilities:

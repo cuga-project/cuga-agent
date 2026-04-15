@@ -344,5 +344,18 @@ def get_tenant_id() -> str:
     return str(getattr(getattr(settings, "service", None), "tenant_id", "") or "")
 
 
+def resolved_benchmark() -> str:
+    """Benchmark profile (e.g. ``appworld``, ``default``).
+
+    Prefer ``DYNACONF_ADVANCED_FEATURES__BENCHMARK`` from the process environment so
+    values set in the shell or via ``os.environ`` after ``cuga.config`` is imported
+    still apply; then fall back to :attr:`settings.advanced_features.benchmark`.
+    """
+    val = os.environ.get("DYNACONF_ADVANCED_FEATURES__BENCHMARK")
+    if val is not None and str(val).strip():
+        return str(val).strip()
+    return str(getattr(getattr(settings, "advanced_features", None), "benchmark", None) or "default")
+
+
 if __name__ == "__main__":
     model = settings.agent.task_decomposition.model

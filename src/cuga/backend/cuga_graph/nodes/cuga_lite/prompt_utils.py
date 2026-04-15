@@ -388,6 +388,26 @@ class PromptUtils:
         return wrapper
 
 
+def format_apps_for_prompt(apps) -> list:
+    """Normalize app definitions to dicts for Jinja (name, type, description), matching mcp_prompt."""
+    processed_apps = []
+    if not apps:
+        return processed_apps
+    for app in apps:
+        description = getattr(app, 'description', 'No description available')
+        max_length = 1000
+        if len(description) > max_length:
+            description = description[:max_length] + '...'
+        processed_apps.append(
+            {
+                'name': app.name,
+                'type': getattr(app, 'type', 'api'),
+                'description': description,
+            }
+        )
+    return processed_apps
+
+
 def create_mcp_prompt(
     tools,
     base_prompt=None,
@@ -438,20 +458,7 @@ def create_mcp_prompt(
             }
         )
 
-    processed_apps = []
-    if apps:
-        for app in apps:
-            description = getattr(app, 'description', 'No description available')
-            max_length = 300
-            if len(description) > max_length:
-                description = description[:max_length] + '...'
-            processed_apps.append(
-                {
-                    'name': app.name,
-                    'type': getattr(app, 'type', 'api'),
-                    'description': description,
-                }
-            )
+    processed_apps = format_apps_for_prompt(apps)
 
     prompt = prompt_template.format(
         base_prompt=base_prompt,
