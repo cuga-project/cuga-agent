@@ -70,14 +70,12 @@ Tool Approval Example (with HITL):
 
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 import uuid
-from langchain_groq import ChatGroq
 from loguru import logger
 from pydantic import BaseModel, Field
 from langchain_core.tools import BaseTool
 from langchain_core.language_models import BaseChatModel
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.runnables import RunnableConfig
-from cuga.backend.llm.utils.helpers import load_prompt_simple
 from cuga.backend.observability.openlit_init import init_openlit, set_session_attribute
 from cuga.config import settings
 
@@ -95,6 +93,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import Tool
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
     FinalAnswerAppworldOutput,
+    load_appworld_final_answer_prompt,
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from langgraph.graph import StateGraph, START, END
@@ -1935,12 +1934,7 @@ class CugaAgent:
         # Get tool calls from result (only if tracking was enabled)
         tool_calls = result.get("tool_calls", []) if track_tool_calls else []
         if settings.advanced_features.benchmark == "appworld":
-            pmt = load_prompt_simple(
-                "/Users/samimarreed/dev/cuga-agent/src/cuga/backend/cuga_graph/nodes/answer/final_answer_agent/prompts/system_appworld.jinja2",
-                "/Users/samimarreed/dev/cuga-agent/src/cuga/backend/cuga_graph/nodes/answer/final_answer_agent/prompts/user_msg_appworld.jinja2",
-                model_config=settings.agent.final_answer.model,
-                relative_to_caller=False,
-            )
+            pmt = load_appworld_final_answer_prompt(model_config=settings.agent.final_answer.model)
             llm_model = llm_manager.get_model(settings.agent.final_answer.model)
             chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
             final_answer_res = await chain.ainvoke(

@@ -10,6 +10,7 @@ from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
     FinalAnswerOutput,
     FinalAnswerAppworldOutput,
+    load_appworld_final_answer_prompt,
     parser,
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -86,11 +87,7 @@ class FinalAnswerAgent(BaseAgent):
         dyna_model = settings.agent.final_answer.model
         if settings.advanced_features.benchmark == "appworld":
             return FinalAnswerAgent(
-                prompt_template=load_prompt_simple(
-                    "./prompts/system_appworld.jinja2",
-                    "./prompts/user_msg_appworld.jinja2",
-                    model_config=dyna_model,
-                ),
+                prompt_template=load_appworld_final_answer_prompt(model_config=dyna_model),
                 mode="appworld",
                 llm=llm_manager.get_model(dyna_model),
             )

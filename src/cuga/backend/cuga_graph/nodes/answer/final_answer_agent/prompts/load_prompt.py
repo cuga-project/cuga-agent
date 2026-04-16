@@ -1,7 +1,10 @@
-from typing import List, Literal
+from typing import List, Literal, Any, Optional
 
 from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.prompts import ChatPromptTemplate
 from pydantic import BaseModel, Field
+
+from cuga.backend.llm.utils.helpers import load_prompt_simple
 
 
 class FinalAnswerOutput(BaseModel):
@@ -29,3 +32,13 @@ class FinalAnswerAppworldOutput(BaseModel):
 
 
 parser = PydanticOutputParser(pydantic_object=FinalAnswerOutput)
+
+
+def load_appworld_final_answer_prompt(model_config: Optional[Any] = None) -> ChatPromptTemplate:
+    """Chat prompt for AppWorld benchmark final-answer formatting (system + user templates)."""
+    return load_prompt_simple(
+        "system_appworld.jinja2",
+        "user_msg_appworld.jinja2",
+        model_config=model_config,
+        relative_to_caller=True,
+    )

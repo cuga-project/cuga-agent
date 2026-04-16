@@ -419,6 +419,7 @@ def create_mcp_prompt(
     is_autonomous_subtask=False,
     prompt_template=None,
     enable_find_tools=False,
+    enable_todos=False,
     special_instructions=None,
     has_knowledge=False,
 ):
@@ -436,6 +437,7 @@ def create_mcp_prompt(
         is_autonomous_subtask: If True, indicates this is an autonomous subtask that should complete without user interaction
         prompt_template: Jinja2 template for the prompt
         enable_find_tools: If True, includes find_tools instructions in the prompt
+        enable_todos: If True, includes create_update_todos instructions in the prompt
     """
     processed_tools = []
     if special_instructions is None:
@@ -470,6 +472,7 @@ def create_mcp_prompt(
         task_loaded_from_file=task_loaded_from_file,
         is_autonomous_subtask=is_autonomous_subtask,
         enable_find_tools=enable_find_tools,
+        enable_todos=enable_todos,
         special_instructions=special_instructions,
         has_knowledge=has_knowledge,
     )

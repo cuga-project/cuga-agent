@@ -597,15 +597,11 @@ def create_cuga_lite_graph(
     """
     prompts_dir = Path(__file__).parent / "prompts"
     prompt_template = load_one_prompt(str(prompts_dir / "mcp_prompt.jinja2"), relative_to_caller=False)
-    prompt_template_todos = load_one_prompt(
-        str(prompts_dir / "mcp_prompt_todos.jinja2"), relative_to_caller=False
-    )
     instructions = get_all_instructions_formatted()
 
     def create_prepare_node(
         base_tool_provider,
         base_prompt_template,
-        base_prompt_template_todos,
         base_instructions,
         tools_context_dict,
         base_special_instructions,
@@ -634,8 +630,6 @@ def create_cuga_lite_graph(
                 if "shortlisting_tool_threshold" in configurable
                 else settings.advanced_features.shortlisting_tool_threshold
             )
-            selected_prompt_template = base_prompt_template_todos if enable_todos else base_prompt_template
-
             logger.debug(
                 f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
             )
@@ -1051,8 +1045,9 @@ def create_cuga_lite_graph(
                     task_loaded_from_file=task_loaded_from_file,
                     is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
                     or is_autonomous_subtask,
-                    prompt_template=selected_prompt_template,
+                    prompt_template=base_prompt_template,
                     enable_find_tools=enable_find_tools,
+                    enable_todos=enable_todos,
                     special_instructions=special_instructions_final,
                     has_knowledge=has_knowledge_tools,
                 )
@@ -1571,7 +1566,6 @@ def create_cuga_lite_graph(
     prepare_node = create_prepare_node(
         tool_provider,
         prompt_template,
-        prompt_template_todos,
         instructions,
         tools_context,
         special_instructions,
