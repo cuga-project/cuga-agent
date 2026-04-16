@@ -70,6 +70,7 @@ Tool Approval Example (with HITL):
 
 from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
 import uuid
+from langchain_groq import ChatGroq
 from loguru import logger
 from pydantic import BaseModel, Field
 from langchain_core.tools import BaseTool
@@ -1940,9 +1941,8 @@ class CugaAgent:
                 model_config=settings.agent.final_answer.model,
                 relative_to_caller=False,
             )
-            chain = BaseAgent.get_chain(
-                pmt, llm_manager.get_model(settings.agent.final_answer.model), FinalAnswerAppworldOutput
-            )
+            llm_model = llm_manager.get_model(settings.agent.final_answer.model)
+            chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
             final_answer_res = await chain.ainvoke(
                 {
                     "input": message if isinstance(message, str) else message[-1].content,

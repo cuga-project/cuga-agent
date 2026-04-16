@@ -1178,11 +1178,6 @@ def create_cuga_lite_graph(
             for i, msg in enumerate(effective_chat_messages):
                 msg_type = type(msg).__name__
                 msg_role = getattr(msg, 'type', None)
-                logger.debug(
-                    f"Message {i}: type={msg_type}, role={msg_role}, "
-                    f"isinstance(HumanMessage)={isinstance(msg, HumanMessage)}, "
-                    f"isinstance(AIMessage)={isinstance(msg, AIMessage)}"
-                )
 
                 if isinstance(msg, HumanMessage):
                     content = msg.content
@@ -1264,8 +1259,6 @@ def create_cuga_lite_graph(
                         logger.warning(
                             f"Skipping message {i} with unknown type: {msg_type}, role: {msg_role}"
                         )
-
-            logger.debug(f"Total messages for model (including system): {len(messages_for_model)}")
 
             try:
                 response = await active_model.ainvoke(
