@@ -425,11 +425,34 @@ def format_current_plan_section(task_todos: List[Dict[str, Any]]) -> str:
     return "\n".join(lines) + "\n"
 
 
+def _first_user_message_text(chat_messages: Optional[List[BaseMessage]]) -> Optional[str]:
+    if not chat_messages:
+        return None
+    for msg in chat_messages:
+        if isinstance(msg, HumanMessage):
+            raw = msg.content
+            text = raw.strip() if isinstance(raw, str) else str(raw).strip()
+            return text or None
+    return None
+
+
+def _compose_find_tools_shortlister_query(query: str, initial_user_message: Optional[str]) -> str:
+    q = query.strip()
+    init = (initial_user_message or "").strip()
+    if not init:
+        return q
+    return (
+        f"Query: {q}\n"
+        f"Task context (initial user message): {init}"
+    )
+
+
 async def create_find_tools_tool(
     all_tools: Sequence[StructuredTool],
     all_apps: List[Any],
     app_to_tools_map: Optional[Dict[str, List[StructuredTool]]] = None,
     llm: Optional[Any] = None,
+    initial_user_message: Optional[str] = None,
 ) -> StructuredTool:
     """Create a find_tools StructuredTool for tool discovery.
 
@@ -437,6 +460,7 @@ async def create_find_tools_tool(
         all_tools: All available tools to search through
         all_apps: All available app definitions
         app_to_tools_map: Optional mapping of app_name -> list of tools. If provided, used for filtering by app_name.
+        initial_user_message: First human message in the session; combined with the tool `query` for shortlisting.
 
     Returns:
         StructuredTool configured for finding relevant tools
@@ -469,13 +493,15 @@ async def create_find_tools_tool(
 
         from langchain_core.exceptions import OutputParserException
 
+        shortlister_query = _compose_find_tools_shortlister_query(query, initial_user_message)
+
         try:
             return await PromptUtils.find_tools(
-                query=query, all_tools=filtered_tools, all_apps=filtered_apps, llm=llm
+                query=shortlister_query, all_tools=filtered_tools, all_apps=filtered_apps, llm=llm
             )
         except OutputParserException as e:
             logger.bind(
-                query_len=len(query),
+                query_len=len(shortlister_query),
                 error_type=type(e).__name__,
             ).opt(exception=True).warning(
                 "Tool shortlisting failed due to parser error; returning error to agent"
@@ -486,7 +512,7 @@ async def create_find_tools_tool(
             )
         except Exception as e:
             logger.bind(
-                query_len=len(query),
+                query_len=len(shortlister_query),
                 error_type=type(e).__name__,
             ).opt(exception=True).warning("Tool shortlisting failed unexpectedly; returning error to agent")
             return (
@@ -742,6 +768,7 @@ def create_cuga_lite_graph(
                     all_apps=apps_for_prompt,
                     app_to_tools_map=app_to_tools_map,
                     llm=active_model,
+                    initial_user_message=_first_user_message_text(state.chat_messages),
                 )
                 tools_for_prompt = [find_tool]
                 # Add find_tools to tools context for sandbox execution

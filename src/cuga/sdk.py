@@ -93,7 +93,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import Tool
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
     FinalAnswerAppworldOutput,
+    appworld_plain_post_llm_runnable,
     load_appworld_final_answer_prompt,
+    load_appworld_plain_final_answer_prompt,
+    parse_appworld_plain_completion,
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from langgraph.graph import StateGraph, START, END
@@ -110,7 +113,7 @@ from cuga.backend.cuga_graph.policy.models import (
     IntentGuardResponse,
     AlwaysTrigger,
 )
-from langchain_core.messages import HumanMessage, BaseMessage
+from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 
 llm_manager = LLMManager()
@@ -1934,16 +1937,37 @@ class CugaAgent:
         # Get tool calls from result (only if tracking was enabled)
         tool_calls = result.get("tool_calls", []) if track_tool_calls else []
         if settings.advanced_features.benchmark == "appworld":
-            pmt = load_appworld_final_answer_prompt(model_config=settings.agent.final_answer.model)
             llm_model = llm_manager.get_model(settings.agent.final_answer.model)
-            chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
+            appworld_plain = getattr(settings.advanced_features, "appworld_final_answer_plain", False)
+            if appworld_plain:
+                pmt = load_appworld_plain_final_answer_prompt(model_config=settings.agent.final_answer.model)
+                chain = (
+                    BaseAgent.get_chain(pmt, llm_model, wx_json_mode="no_format")
+                    | appworld_plain_post_llm_runnable()
+                )
+            else:
+                pmt = load_appworld_final_answer_prompt(model_config=settings.agent.final_answer.model)
+                chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
             final_answer_res = await chain.ainvoke(
                 {
                     "input": message if isinstance(message, str) else message[-1].content,
                     "last_planner_answer": final_answer,
                 }
             )
-            final_answer = final_answer_res.final_answer
+            if appworld_plain:
+                if isinstance(final_answer_res, FinalAnswerAppworldOutput):
+                    final_answer = final_answer_res.final_answer
+                elif isinstance(final_answer_res, AIMessage):
+                    raw = final_answer_res.content
+                    if isinstance(raw, list):
+                        raw = "".join(
+                            (b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw
+                        )
+                    final_answer = parse_appworld_plain_completion(str(raw))
+                else:
+                    final_answer = str(final_answer_res)
+            else:
+                final_answer = final_answer_res.final_answer
         return InvokeResult(
             answer=final_answer,
             tool_calls=tool_calls,

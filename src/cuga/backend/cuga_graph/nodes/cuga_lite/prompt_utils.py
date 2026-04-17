@@ -208,7 +208,7 @@ class PromptUtils:
                 """,
                 ),
                 ('ai', 'Sure, now give me the intent'),
-                ('human', 'User Intent: {input}'),
+                ('human', '{input}'),
             ],
         )
         # Serialize tools properly, converting args_schema class to dict

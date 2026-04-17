@@ -121,6 +121,7 @@ validators = [
     Validator("advanced_features.langfuse_tracing", default=False),
     Validator("observability.openlit", default=False),
     Validator("advanced_features.benchmark", default="default"),
+    Validator("advanced_features.appworld_final_answer_plain", default=False),
     Validator("advanced_features.tracker_enabled", default=False),
     Validator("advanced_features.lite_mode", default=False),
     Validator("advanced_features.lite_mode_tool_threshold", default=15),

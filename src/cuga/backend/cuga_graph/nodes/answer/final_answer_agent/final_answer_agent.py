@@ -10,7 +10,9 @@ from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
     FinalAnswerOutput,
     FinalAnswerAppworldOutput,
+    appworld_plain_post_llm_runnable,
     load_appworld_final_answer_prompt,
+    load_appworld_plain_final_answer_prompt,
     parser,
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -30,7 +32,7 @@ class FinalAnswerAgent(BaseAgent):
         self,
         prompt_template: ChatPromptTemplate,
         llm: BaseChatModel,
-        mode: Literal['default', 'appworld'] = 'default',
+        mode: Literal['default', 'appworld', 'appworld_plain'] = 'default',
         tools: Any = None,
     ):
         super().__init__()
@@ -40,6 +42,12 @@ class FinalAnswerAgent(BaseAgent):
         if mode == "default":
             self.chain = BaseAgent.get_chain(prompt_template, llm, wx_json_mode="no_format") | (
                 parser_default.bind(name=self.name)
+            )
+        elif mode == "appworld_plain":
+            self.chain = (
+                BaseAgent.get_chain(prompt_template, llm, wx_json_mode="no_format")
+                | appworld_plain_post_llm_runnable()
+                | parser.bind(name=self.name)
             )
         else:
             self.chain = BaseAgent.get_chain(prompt_template, llm, FinalAnswerAppworldOutput) | (
@@ -86,6 +94,12 @@ class FinalAnswerAgent(BaseAgent):
     def create():
         dyna_model = settings.agent.final_answer.model
         if settings.advanced_features.benchmark == "appworld":
+            if getattr(settings.advanced_features, "appworld_final_answer_plain", False):
+                return FinalAnswerAgent(
+                    prompt_template=load_appworld_plain_final_answer_prompt(model_config=dyna_model),
+                    mode="appworld_plain",
+                    llm=llm_manager.get_model(dyna_model),
+                )
             return FinalAnswerAgent(
                 prompt_template=load_appworld_final_answer_prompt(model_config=dyna_model),
                 mode="appworld",
