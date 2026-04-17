@@ -73,11 +73,6 @@ app = typer.Typer(
     short_help="Service management tool for Cuga components",
 )
 
-if settings.advanced_features.enable_memory:
-    from cuga.backend.memory.cli import memory_app
-
-    app.add_typer(memory_app, name="memory")
-
 app.add_typer(policy_app, name="policy")
 
 # Global variables to track running direct processes (registry/demo)
@@ -373,8 +368,6 @@ def signal_handler(signum, frame):
         ports_to_kill.append(settings.server_ports.registry)
     if "demo" in direct_processes:
         ports_to_kill.append(settings.server_ports.demo)
-    if "memory" in direct_processes:
-        ports_to_kill.append(settings.server_ports.memory)
     if "appworld-environment" in direct_processes:
         ports_to_kill.append(settings.server_ports.environment_url)
     if "appworld-api" in direct_processes:
@@ -515,15 +508,12 @@ def callback(
     - demo_health: Healthcare insurance demo (cuga-oak-health OpenAPI + manage UI)
     - registry: The MCP registry service only (runs directly)
     - appworld: AppWorld environment and API servers (runs directly)
-    - memory: The memory service (runs directly)
-
     Examples:
       cuga start demo           # Start both registry and demo agent directly
       cuga start demo_crm       # Start CRM demo with all required services
       cuga start demo_supervisor # Start CRM demo with supervisor multi-agent mode
       cuga start registry       # Start registry only
       cuga start appworld       # Start AppWorld servers
-      cuga start memory         # Start memory service
     """
     if verbose:
         logger.level("DEBUG")
@@ -706,7 +696,6 @@ def validate_service(service: str):
         "manager",
         "registry",
         "appworld",
-        "memory",
     ]
 
     if service not in valid_services:
@@ -825,8 +814,6 @@ def start(
       - manager: Manage-config mode: registry uses managed MCP YAML, policy filesync off, demo on 7860
       - registry: Starts only the registry service directly (uvicorn on port 8001)
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
-      - memory: Starts the memory service directly (uvicorn on port 8888)
-
     App flags (--crm, --email, --digital-sales, --docs, --filesystem) add apps to the preset:
       - demo: default = digital_sales + filesystem
       - demo_crm: default = crm + filesystem + email
@@ -851,7 +838,6 @@ def start(
       cuga start demo --sandbox           # with remote sandbox
       cuga start registry                 # registry only
       cuga start appworld                 # AppWorld servers
-      cuga start memory                   # memory service
     """
     validate_service(service)
 
@@ -1285,29 +1271,6 @@ def start(
             raise typer.Exit(1)
         return
 
-    elif service == "memory":
-        try:
-            app_mgr = _make_app_manager()
-            app_mgr.start_memory(host)
-
-            if direct_processes:
-                console.print()
-                console.print(
-                    Panel(
-                        f"[bold white]Memory:[/bold white] [cyan]http://localhost:{settings.server_ports.memory}[/cyan]",
-                        title="[bold yellow]Memory service is running. Press Ctrl+C to stop[/bold yellow]",
-                        border_style="cyan",
-                        padding=(1, 2),
-                    )
-                )
-                wait_for_direct_processes()
-
-        except Exception as e:
-            logger.error(f"Error starting memory service: {e}")
-            stop_direct_processes()
-            raise typer.Exit(1)
-        return
-
 
 def manage_service(action: str, service: str):
     """Common function for stopping or restarting services."""
@@ -1406,16 +1369,6 @@ def manage_service(action: str, service: str):
                     del direct_processes[service_name]
             if not stopped_any:
                 logger.info("AppWorld services are not running")
-        elif service == "memory":
-            # Stop memory service
-            if "memory" in direct_processes:
-                process = direct_processes["memory"]
-                if process and process.poll() is None:
-                    logger.info("Stopping memory...")
-                    kill_process_tree(process.pid)
-                del direct_processes["memory"]
-            else:
-                logger.info("Memory service is not running")
     elif action == "restart":
         # Stop if running, then start
         manage_service("stop", service)
@@ -1428,7 +1381,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, registry, appworld, or memory",
+        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, registry, or appworld",
     ),
 ):
     """
@@ -1443,8 +1396,6 @@ def stop(
       - demo_supervisor: Same as demo_crm
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)
-      - memory: Stops the memory service (direct process)
-
     Examples:
       cuga stop demo             # Stop both registry and demo services
       cuga stop demo_crm         # Stop all CRM demo services
@@ -1452,7 +1403,6 @@ def stop(
       cuga stop demo_supervisor  # Stop all supervisor demo services
       cuga stop registry         # Stop only the registry service
       cuga stop appworld         # Stop AppWorld servers
-      cuga stop memory           # Stop memory service
     """
     manage_service("stop", service)
 
@@ -1486,7 +1436,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, memory, or all",
+        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, or all",
     ),
 ):
     """
@@ -1500,7 +1450,6 @@ def status(
       - demo_supervisor: Same as demo_crm
       - registry: Shows status of registry service only (direct process)
       - appworld: Shows status of both AppWorld environment and API servers (direct processes)
-      - memory: Shows status of memory service (direct process)
       - all: Shows status of all services (default)
 
     Examples:
@@ -1509,7 +1458,6 @@ def status(
       cuga status demo_crm     # Show status of CRM demo services
       cuga status registry     # Show status of registry only
       cuga status appworld     # Show status of AppWorld servers
-      cuga status memory       # Show status of memory service
     """
     if service in ("demo", "manager"):
         for service_name in ["registry", "demo"]:
@@ -1586,17 +1534,6 @@ def status(
                 logger.info(f"{service_name.replace('appworld-', '').capitalize()} service: Not running")
         return
 
-    elif service == "memory":
-        if "memory" in direct_processes:
-            process = direct_processes["memory"]
-            if process.poll() is None:
-                logger.info(f"Memory service: Running (PID: {process.pid})")
-            else:
-                logger.info("Memory service: Terminated")
-        else:
-            logger.info("Memory service: Not running")
-        return
-
     elif service == "all":
         # Show direct processes status
         logger.info("Services:")
@@ -1611,7 +1548,6 @@ def status(
             "filesystem-server",
             "appworld-environment",
             "appworld-api",
-            "memory",
         ]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]

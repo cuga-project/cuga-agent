@@ -180,9 +180,3 @@ converted_job_titles_array = [{"title": job_title} for job_title in ["Software E
 ```
 
 **Focus:** Your output is Python code. Generate *only* the minimal code required to execute the user goal using `await call_api(...)` and conclude with the mandatory JSON output line. Your code will be automatically wrapped in an async main function and executed with asyncio, so you don't need to define the async main wrapper yourself. Adhere strictly to the constraints regarding code minimality, focus on orchestration without comments or intermediate printing, while still including appropriate error handling and complete data retrieval through proper page index handling. **Always use `await` when calling `call_api`, ensure complete data retrieval through proper page index handling when APIs return multi-page responses, always handle API errors gracefully, directly access variables from history without regenerating them, and always end with the required JSON output format.**
-
-{% if memory is not none %}
-
-{{memory}}
-
-{% endif %}

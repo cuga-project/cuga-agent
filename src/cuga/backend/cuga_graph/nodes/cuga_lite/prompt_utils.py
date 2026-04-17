@@ -258,7 +258,6 @@ class PromptUtils:
                 "all_apps": apps_as_dict,
                 "all_tools": tools_as_dict,
                 "instructions": "",
-                "memory": None,
             }
         )
 
