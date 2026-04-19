@@ -464,6 +464,9 @@ When enabled, the agent can search, ingest, and manage documents.
 cuga start demo_knowledge
 ```
 
+> Walk through a full HR-Benefits demo with sample documents and example prompts:
+> **[docs/examples/knowledge_demo/](./docs/examples/knowledge_demo)**
+
 Knowledge is **enabled by default** via `settings.toml`. The SDK auto-injects knowledge tools
 and awareness into the agent, so it knows what documents are available and how to search them.
 
@@ -1043,6 +1046,7 @@ CUGA supports three types of tool integrations. Each approach has its own use ca
 - **Tool Registry**: [./src/cuga/backend/tools_env/registry/README.md](./src/cuga/backend/tools_env/registry/README.md)
 - **Comprehensive example with different tools + MCP**: [./docs/examples/cuga_with_runtime_tools/README.md](Adding Tools)
 - **CUGA as MCP**: [./docs/examples/cuga_as_mcp/README.md](docs/examples/cuga_as_mcp)
+- **Knowledge Engine demo**: [./docs/examples/knowledge_demo/README.md](./docs/examples/knowledge_demo) — agent-level + session-level knowledge walkthrough
 
 </details>
 
