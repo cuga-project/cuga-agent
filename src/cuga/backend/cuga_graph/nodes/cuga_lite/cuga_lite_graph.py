@@ -282,6 +282,20 @@ class CugaLiteState(BaseModel):
         return StateVariablesManager(self)
 
 
+def _reflection_current_task(state: CugaLiteState) -> str:
+    """Prefer ``sub_task``; else last user message that is not sandbox ``Execution output`` feedback."""
+    if (state.sub_task or "").strip():
+        return state.sub_task.strip()
+    if state.chat_messages:
+        execution_prefix = "Execution output:"
+        for msg in reversed(state.chat_messages):
+            if isinstance(msg, HumanMessage):
+                c = (msg.content or "").strip()
+                if c and not c.startswith(execution_prefix):
+                    return c
+    return ""
+
+
 def extract_and_combine_codeblocks(text: str) -> str:
     """Extract all codeblocks from a text string and combine them."""
     code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
@@ -1494,13 +1508,12 @@ def create_cuga_lite_graph(
                             if agent_history_parts
                             else "No previous conversation history"
                         )
-
                         reflection_result = await reflection_agent.ainvoke(
                             {
                                 "instructions": "",
-                                "current_task": state.sub_task,
+                                "current_task": _reflection_current_task(state)
+                                or "(no task text)",
                                 "agent_history": agent_history,
-                                "shortlister_agent_output": "",
                                 "coder_agent_output": output,
                                 "apps": state.reflection_apps or [],
                                 "enable_find_tools": state.reflection_enable_find_tools,

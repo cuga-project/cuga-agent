@@ -22,7 +22,7 @@ langfuse_tracing = false
 wxo_integration = false
 benchmark = "default"
 # When benchmark is appworld: use plain `answer:` completion prompts (no JSON) for final formatting
-appworld_final_answer_plain = false
+appworld_final_answer_plain = true
 mode = 'api'
 use_extension = false
 code_planner_enabled = true

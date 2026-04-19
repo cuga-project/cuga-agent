@@ -10,15 +10,16 @@ Respond with **only** a completion line in this shape (pick one prefix — both 
 Rules:
 
 - Output **nothing else**: no JSON, no markdown fences, no `thoughts`, no explanation before or after the line (unless the value itself must span lines — then use one prefix line and put the value on following lines; see below).
-- **Strip** leading/trailing whitespace from `<value>` when it is a single token or short string.
+- **Strip** only **outer** leading/trailing whitespace from `<value>`. Do **not** remove punctuation that is part of the answer (including trailing periods, commas, or ellipsis `...`).
 - **Currency / money amounts:** When the answer is a monetary value, output **only the numeric part** — remove currency symbols (`$`, `€`, `£`, `¥`, etc.), thousands separators (commas), and surrounding words. Use **no decimal part** → output as an integer text (e.g. `1250`); **with a fractional part** → output as a decimal text (e.g. `1250.75`). Do not keep `$`, `USD`, or comma groupings in `<value>`.
 - **Durations, counts, and unit stripping:** When the intent asks **how long**, **how many minutes/hours/seconds**, or similar and `system_answer` gives a duration, output **only the number** in the relevant unit — strip unit words (`minutes`, `mins`, `minute`, `hours`, `hrs`, `seconds`, `secs`, etc.). Example: `answer: 45` — **not** `answer: 45 minutes`. Same for other scalars if the task expects a bare number (e.g. step count `8200` not `8200 steps`). **Exception:** Keep composed readings where the benchmark expects them (e.g. temperatures like `25°C` when the answer is inherently tied to that symbol).
 - **Totals, sums, and combining amounts:** If `user_intent` asks for a **total**, **combined**, **overall**, **how much in all**, **sent and received** (as one figure), **this month so far**, or similar, you must **compute one number** from everything relevant in `system_answer` (usually **add** the parts — e.g. two bill lines, sent + received, or all line items). Output **a single** numeric `<value>` after **Currency / money amounts** rules. Do **not** output comma-separated partials like `84.50, 31.25` unless the user explicitly asked for separate figures or a list. Same idea as **Calculation Intent** in the JSON prompt: summing / combining when the task demands it.
 - **Entity / extraction tasks:** When the intent asks for one concrete thing (an ID, name, note body, email, price, temperature string, etc.), `<value>` is **only that entity** — not a sentence, not `"The answer is …"`, not quotes unless the entity itself contains quotes.
+- **Notes, messages, and arbitrary strings:** When the task is to **retrieve**, **read**, or **return** a note, memo, message, caption, or other verbatim text, copy it **faithfully** from `system_answer` (after dropping only a clear label prefix like `Note content:` if the benchmark expects the body alone). Preserve **all meaningful punctuation and detail** — periods, commas, apostrophes, ellipsis (`...`), line breaks where needed — and do **not** paraphrase, summarize, or “clean up” the wording.
 
 ### Same task types as the JSON variant (simplified)
 
-1. **Single value / entity:** Extract exactly the requested piece from `system_answer` (e.g. “What is your ID?” → digits only if that’s what’s asked; “extract the note” → the note text only).
+1. **Single value / entity:** Extract exactly the requested piece from `system_answer` (e.g. “What is your ID?” → digits only if that’s what’s asked; “extract the note” → the **full** note text, punctuation intact).
 2. **List / several items:** If the intent asks for a **list** (e.g. user names, emails, “each amount”), put comma-separated entries or multiline as specified. Do **not** confuse this with an aggregate: “total / how much overall / sent and received” → one combined number (see **Totals, sums, and combining amounts** above), not a list of parts.
 3. **Calculation:** If the intent requires summing, averaging, or otherwise **combining** multiple numbers in `system_answer`, `<value>` is the **single computed result** as text (e.g. `2137` or `1592.00`). Strip currency formatting from operands and from the final numeric result the same way as in **Currency / money amounts** above.
 4. **Update / action / no return value:** If the intent is only an action or setting change with no sensible extractable datum, use exactly: `answer: N/A`
@@ -42,7 +43,10 @@ Or a single line with `\n` escaped only if the benchmark expects literal newline
 **Output:** `answer: 25°C`
 
 **Input:** `user_intent`: "extract a note" · `system_answer`: "Note content: Remember to call Dana tomorrow."  
-**Output:** `answer: Remember to call Dana tomorrow`
+**Output:** `answer: Remember to call Dana tomorrow.`
+
+**Input:** `user_intent`: "What does the sticky note say?" · `system_answer`: "The note says: Finish the report... then email Pat."  
+**Output:** `answer: Finish the report... then email Pat.`
 
 **Input:** `user_intent`: "list the user names" · `system_answer`: "Active users: Alice, Bob, Carol."  
 **Output:** `answer: Alice, Bob, Carol`
