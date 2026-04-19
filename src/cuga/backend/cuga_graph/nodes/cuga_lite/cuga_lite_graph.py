@@ -79,8 +79,15 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     format_apps_for_prompt,
     PromptUtils,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
+    CodeExecutor,
+    is_find_tools_listing_markdown,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+    classify_nl_auto_continue,
+    normalize_assistant_text,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
@@ -455,10 +462,7 @@ def _compose_find_tools_shortlister_query(query: str, initial_user_message: Opti
     init = (initial_user_message or "").strip()
     if not init:
         return q
-    return (
-        f"Query: {q}\n"
-        f"Task context (initial user message): {init}"
-    )
+    return f"Query: {q}\nTask context (initial user message): {init}"
 
 
 async def create_find_tools_tool(
@@ -1150,6 +1154,9 @@ def create_cuga_lite_graph(
             # Check if we have variables and this is a new question (not a follow-up with existing AI responses)
             # If this is a new question (1 user msg, 0 AI msgs) or follow-up, add variables to the last user message
             var_manager = state.variables_manager
+            for _vn in list(var_manager.get_variable_names()):
+                if is_find_tools_listing_markdown(var_manager.get_variable(_vn)):
+                    var_manager.remove_variable(_vn)
             existing_variable_names = var_manager.get_variable_names()
             variables_summary_text = None
 
@@ -1313,16 +1320,16 @@ def create_cuga_lite_graph(
                 else:
                     raise e
 
-            content = response.content
-            reasoning_content = response.additional_kwargs.get('reasoning_content')
+            content = normalize_assistant_text(response.content)
+            reasoning_str = normalize_assistant_text(response.additional_kwargs.get('reasoning_content'))
 
             tracker.collect_step(step=Step(name="Raw_Assistant_Response", data=content))
 
-            # Try to extract code from content first, then reasoning_content if content has no code
+            # Try to extract code from content first, then reasoning if content has no code
             code = extract_and_combine_codeblocks(content) if content else ""
 
-            if not code and reasoning_content:
-                code = extract_and_combine_codeblocks(reasoning_content)
+            if not code and reasoning_str:
+                code = extract_and_combine_codeblocks(reasoning_str)
 
             if code:
                 tracker.collect_step(step=Step(name="Assistant_code", data=content))
@@ -1375,7 +1382,7 @@ def create_cuga_lite_graph(
                 )
             else:
                 tracker.collect_step(step=Step(name="Assistant_nl", data=content))
-                planning_response = response.content
+                planning_response = content or ""
 
                 # Build updated messages from modified_chat_messages + new AI response
                 updated_messages = modified_chat_messages + [AIMessage(content=planning_response)]
@@ -1401,6 +1408,33 @@ def create_cuga_lite_graph(
                 updated_metadata = state.cuga_lite_metadata or {}
                 if playbook_guidance:
                     updated_metadata = {**updated_metadata, "playbook_guidance_added": True}
+
+                should_auto_continue = await classify_nl_auto_continue(
+                    active_model,
+                    planning_response,
+                    reasoning_str or None,
+                )
+                tracker.collect_step(
+                    step=Step(
+                        name="NL_Auto_Continue_Classifier",
+                        data=json.dumps({"auto_continue": should_auto_continue}),
+                    )
+                )
+                if should_auto_continue:
+                    logger.info(
+                        "CugaLite: NL-only response classified as interim; simulating user 'continue'"
+                    )
+                    return Command(
+                        goto="call_model",
+                        update={
+                            "chat_messages": updated_messages + [HumanMessage(content="continue")],
+                            "script": None,
+                            "final_answer": "",
+                            "execution_complete": False,
+                            "step_count": new_step_count,
+                            "cuga_lite_metadata": updated_metadata,
+                        },
+                    )
 
                 return Command(
                     goto=END,
@@ -1445,8 +1479,12 @@ def create_cuga_lite_graph(
 
             # Get existing variables using CugaLiteState's own variables_manager
             existing_vars = {}
-            for var_name in state.variables_manager.get_variable_names():
-                existing_vars[var_name] = state.variables_manager.get_variable(var_name)
+            for var_name in list(state.variables_manager.get_variable_names()):
+                var_value = state.variables_manager.get_variable(var_name)
+                if is_find_tools_listing_markdown(var_value):
+                    state.variables_manager.remove_variable(var_name)
+                    continue
+                existing_vars[var_name] = var_value
 
             # Add tools to context
             context = {**existing_vars, **base_tools_context}
@@ -1481,6 +1519,8 @@ def create_cuga_lite_graph(
                 # Update variables using CugaLiteState's variables_manager
                 # This automatically updates state.variables_storage
                 for name, value in new_vars.items():
+                    if is_find_tools_listing_markdown(value):
+                        continue
                     state.variables_manager.add_variable(
                         value, name=name, description="Created during code execution"
                     )
@@ -1511,8 +1551,7 @@ def create_cuga_lite_graph(
                         reflection_result = await reflection_agent.ainvoke(
                             {
                                 "instructions": "",
-                                "current_task": _reflection_current_task(state)
-                                or "(no task text)",
+                                "current_task": _reflection_current_task(state) or "(no task text)",
                                 "agent_history": agent_history,
                                 "coder_agent_output": output,
                                 "apps": state.reflection_apps or [],

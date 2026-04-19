@@ -16,6 +16,7 @@ from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt
     parser,
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_prompt_simple
 from cuga.config import settings
@@ -37,6 +38,7 @@ class FinalAnswerAgent(BaseAgent):
     ):
         super().__init__()
         self.name = "FinalAnswerAgent"
+        self._mode = mode
         parser = RunnableLambda(FinalAnswerAgent.output_parser)
         parser_default = RunnableLambda(FinalAnswerAgent.default_answer_parser)
         if mode == "default":
@@ -71,6 +73,8 @@ class FinalAnswerAgent(BaseAgent):
             data = input_variables.model_dump()
             data["variable_summary"] = input_variables.variables_manager.get_variables_summary(last_n=2)
             data["instructions"] = instructions_manager.get_instructions(self.name)
+            if self._mode == "appworld_plain":
+                return await ainvoke_with_retry_on_tool_choice_none(self.chain, data)
             return await self.chain.ainvoke(data)
         else:
             last_variable_name, last_variable = input_variables.variables_manager.get_last_variable()

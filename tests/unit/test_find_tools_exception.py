@@ -111,6 +111,5 @@ async def test_find_tools_composes_query_with_initial_user_message(mock_tools, m
     mock_find.assert_awaited_once()
     call_kw = mock_find.await_args.kwargs
     assert call_kw["query"] == (
-        "query: list calendar tools,\n"
-        "Task context (initial user message): Book a flight to NYC"
+        "query: list calendar tools,\nTask context (initial user message): Book a flight to NYC"
     )

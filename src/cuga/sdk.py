@@ -98,6 +98,7 @@ from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt
     load_appworld_plain_final_answer_prompt,
     parse_appworld_plain_completion,
 )
+from cuga.backend.llm.errors import ainvoke_with_retry_on_tool_choice_none
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from langgraph.graph import StateGraph, START, END
 from langgraph.checkpoint.memory import MemorySaver
@@ -1948,21 +1949,21 @@ class CugaAgent:
             else:
                 pmt = load_appworld_final_answer_prompt(model_config=settings.agent.final_answer.model)
                 chain = BaseAgent.get_chain(pmt, llm_model, FinalAnswerAppworldOutput)
-            final_answer_res = await chain.ainvoke(
-                {
-                    "input": message if isinstance(message, str) else message[-1].content,
-                    "last_planner_answer": final_answer,
-                }
-            )
+            invoke_payload = {
+                "input": message if isinstance(message, str) else message[-1].content,
+                "last_planner_answer": final_answer,
+            }
+            if appworld_plain:
+                final_answer_res = await ainvoke_with_retry_on_tool_choice_none(chain, invoke_payload)
+            else:
+                final_answer_res = await chain.ainvoke(invoke_payload)
             if appworld_plain:
                 if isinstance(final_answer_res, FinalAnswerAppworldOutput):
                     final_answer = final_answer_res.final_answer
                 elif isinstance(final_answer_res, AIMessage):
                     raw = final_answer_res.content
                     if isinstance(raw, list):
-                        raw = "".join(
-                            (b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw
-                        )
+                        raw = "".join((b.get("text", "") if isinstance(b, dict) else str(b)) for b in raw)
                     final_answer = parse_appworld_plain_completion(str(raw))
                 else:
                     final_answer = str(final_answer_res)

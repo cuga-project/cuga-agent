@@ -139,6 +139,7 @@ validators = [
     Validator("advanced_features.e2b_cleanup_frequency", default=0),
     Validator("advanced_features.enable_web_search", default=False),
     Validator("advanced_features.execution_output_max_length", default=3500),
+    Validator("advanced_features.cuga_lite_nl_auto_continue", default=True),
     Validator("features.chat", default=True),
     Validator("features.memory_provider", default="mem0"),
     Validator("playwright_args", default=[]),

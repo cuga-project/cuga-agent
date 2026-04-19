@@ -354,10 +354,11 @@ class VariablesManager(object):
                 return "..."
 
             if isinstance(val, str):
-                if len(val) <= max_string_chars:
+                limit = max_length if depth == 0 else max_string_chars
+                if len(val) <= limit:
                     return repr(val)
-                truncated = val[:max_string_chars] + "..."
-                return repr(truncated)
+                remaining = len(val) - limit
+                return f"{repr(val[:limit])} (+{remaining} more chars)"
 
             if isinstance(val, (list, tuple)):
                 open_b, close_b = ("[", "]") if isinstance(val, list) else ("(", ")")
