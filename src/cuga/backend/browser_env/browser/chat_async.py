@@ -36,7 +36,9 @@ class Chat:
     async def init(self):
         pw: playwright.async_api.Playwright = await _get_global_playwright_async()
         self.browser = await pw.chromium.launch(
-            headless=self.headless, args=[f"--window-size={self.chat_size[0]},{self.chat_size[1]}"]
+            channel="chrome",
+            headless=self.headless,
+            args=[f"--window-size={self.chat_size[0]},{self.chat_size[1]}"],
         )
         self.context = await self.browser.new_context(
             no_viewport=True,
