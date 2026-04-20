@@ -64,7 +64,9 @@ class BrowserEnvSimple:
 
     def start_browser(self, headless=False):
         # Launch the browser
-        self.browser = self.playwright.chromium.launch(headless=headless, args=["--no-sandbox"])
+        self.browser = self.playwright.chromium.launch(
+            channel="chrome", headless=headless, args=["--no-sandbox"]
+        )
         self.page = self.browser.new_page()
         self.context = self.browser.contexts[0]
 
