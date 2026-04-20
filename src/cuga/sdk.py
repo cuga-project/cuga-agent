@@ -1292,6 +1292,103 @@ class PoliciesManager:
         )
         
         return violating_examples, compliance_examples
+    
+    async def generate_tool_guard_code(
+        self,
+        policy_id: str,
+        target_tool: str,
+        app_name: str = "cuga_app"
+    ) -> str:
+        """
+        Generate guard code for a specific tool in a policy.
+        
+        This method uses the ToolGuardManager to generate executable guard code
+        that validates tool usage compliance with the policy guidelines.
+        
+        Args:
+            policy_id: The ID of the policy to generate guard code for
+            target_tool: The specific tool name to generate guard code for
+            app_name: Application name for the generated code (default: "cuga_app")
+            
+        Returns:
+            String containing the generated guard code
+            
+        Raises:
+            ValueError: If policy not found, not a ToolGuide, target_tool not in policy,
+                       or if the policy doesn't have examples for the target tool
+            RuntimeError: If ToolGuardManager initialization fails
+            
+        Example:
+            ```python
+            agent = CugaAgent(tools=[delete_file])
+            
+            # Add a tool guide policy with examples
+            policy_id = await agent.policies.add_tool_guide(
+                name="File Safety",
+                target_tools=["delete_file"],
+                content="Never delete system files"
+            )
+            
+            # Generate examples first
+            violating, compliance = await agent.policies.generate_tool_guard_examples(
+                policy_id=policy_id,
+                target_tool="delete_file"
+            )
+            
+            # Update policy with examples
+            await agent.policies.update_tool_guard(
+                policy_id=policy_id,
+                target_tool="delete_file",
+                violating_examples=violating,
+                compliance_examples=compliance
+            )
+            
+            # Generate guard code
+            guard_code = await agent.policies.generate_tool_guard_code(
+                policy_id=policy_id,
+                target_tool="delete_file"
+            )
+            
+            print(f"Generated guard code:\n{guard_code}")
+            ```
+        """
+        from cuga.backend.cuga_graph.policy.tool_guard.manager import ToolGuardManager
+        from cuga.backend.cuga_graph.policy.models import PolicyType
+        
+        # Ensure policy system is initialized
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            raise RuntimeError("Policy system is disabled")
+        
+        # Get the policy
+        policy_data = await self.get(policy_id)
+        if policy_data is None:
+            raise ValueError(f"Policy with ID '{policy_id}' not found")
+        
+        policy = policy_data.get('policy')
+        if policy is None:
+            raise ValueError(f"Could not retrieve policy object for ID '{policy_id}'")
+        
+        # Validate policy type
+        if policy.type != PolicyType.TOOL_GUIDE:
+            raise ValueError(
+                f"Policy must be of type 'tool_guide', got '{policy.type}'. "
+                f"Only tool_guide policies can generate guard code."
+            )
+        
+        # Create and initialize ToolGuardManager
+        manager = ToolGuardManager(self._agent)
+        await manager.initialize()
+        
+        # Generate guard code using the manager
+        guard_code = await manager.generate_guard_code(
+            policy=policy,
+            target_tool=target_tool,
+            app_name=app_name
+        )
+        
+        return guard_code
+        return violating_examples, compliance_examples
 
 
 class CugaAgent:
