@@ -6,7 +6,8 @@ policy enforcement framework.
 """
 
 from .cuga_to_tool_info import cuga_tools_to_oas
+from .manager import ToolGuardManager
 
-__all__ = ["cuga_tools_to_oas"]
+__all__ = ["cuga_tools_to_oas", "ToolGuardManager"]
 
 # Made with Bob

@@ -428,6 +428,7 @@ class TestSDKToolGuidePolicy:
         assert policy_id is not None
 
         policy_details = await agent.policies.get(policy_id)
+     
         assert policy_details is not None
         assert policy_details["policy"].target_tools == ["*"]
 

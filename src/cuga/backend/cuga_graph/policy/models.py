@@ -230,7 +230,7 @@ class ToolGuide(BaseModel):
     )
     guide_content: str = Field(..., description="Markdown content to append to tool descriptions")
     tool_guards: Optional[Dict[str, ToolGuard]] = Field(
-        None, description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)"
+        default=None, description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)"
     )
     prepend: bool = Field(False, description="Whether to prepend content instead of appending")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")

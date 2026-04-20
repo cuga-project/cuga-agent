@@ -42,7 +42,19 @@ async def main():
         description="Safety guidelines for file deletion operations to prevent accidental data loss",
     )
     print(f"Created policy with ID: {policy_id}")
-    
+    policies = await agent.policies.list()
+    print(policies[0]["name"])
+    print(policies[0]["type"])
+
+    policy_details = agent.policies.get(policy_id)
+    for policy in policies:
+        print(f"ID: {policy['id']}")
+        print(f"Name: {policy['name']}")
+        print(f"Type: {policy['type']}")
+        print(f"Enabled: {policy['enabled']}")
+        print(f"Priority: {policy['priority']}")
+        print("Policy updated with tool_guards")
+        
     # Step 2b: Update the policy with tool_guards
     print("\nStep 2b: Updating policy with tool_guards...")
     await agent.policies.update_tool_guard(
