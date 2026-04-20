@@ -920,10 +920,10 @@ EVOLVE_BACKEND=postgres
 EVOLVE_PG_HOST=localhost
 EVOLVE_PG_PORT=5432
 EVOLVE_PG_USER=postgres
-EVOLVE_PG_PASSWORD=postgres # pragma: allowlist secret
+EVOLVE_PG_PASSWORD=postgres
 EVOLVE_PG_DBNAME=evolve
 EVOLVE_MODEL_NAME=Azure/gpt-4o
-OPENAI_API_KEY=env://OPENAI_API_KEY # pragma: allowlist secret
+OPENAI_API_KEY=env://OPENAI_API_KEY
 OPENAI_BASE_URL=env://OPENAI_BASE_URL
 ```
 
