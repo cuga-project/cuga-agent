@@ -13,6 +13,7 @@ from pydantic import create_model, Field
 from langchain_core.tools import StructuredTool
 
 from cuga.backend.tools_env.registry.utils.api_utils import get_apis, get_apps, get_registry_base_url
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_args import merge_tool_call_args
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
     ToolProviderInterface,
     AppDefinition,
@@ -201,7 +202,7 @@ def create_tool_from_api_dict(
                     if isinstance(default_val, list):
                         default_val = None  # Skip unhashable defaults
                     field_definitions[param_name] = (
-                        python_type,
+                        Optional[python_type],
                         Field(default=default_val, description=param_desc),
                     )
 
@@ -216,20 +217,8 @@ def create_tool_from_api_dict(
 
     async def tool_func(*args, **kwargs):
         try:
-            # Combine positional and keyword arguments
-            all_kwargs = {}
             param_names = list(field_definitions.keys()) if field_definitions else []
-
-            # Map positional arguments to parameter names
-            for i, arg in enumerate(args):
-                if i < len(param_names):
-                    all_kwargs[param_names[i]] = arg
-                else:
-                    # If more positional args than expected, add them as extra
-                    all_kwargs[f"arg{i}"] = arg
-
-            # Add keyword arguments
-            all_kwargs.update(kwargs)
+            all_kwargs = merge_tool_call_args(args, kwargs, param_names)
 
             # Call API with timeout (timeout is handled inside call_api)
             result = await call_api(

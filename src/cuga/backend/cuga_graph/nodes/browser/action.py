@@ -1,4 +1,3 @@
-import functools
 import re
 from typing import Any, Dict, Union
 
@@ -118,9 +117,13 @@ class ActionNode(BaseNode):
     def __init__(self, action_agent: ActionAgent):
         super().__init__()
         self.action_agent = action_agent
-        self.node = functools.partial(
-            ActionNode.node_handler, agent=self.action_agent, name=self.action_agent.name
-        )
+        agent = self.action_agent
+        name = self.action_agent.name
+
+        def node(state: AgentState) -> AgentState:
+            return ActionNode.node_handler(state, agent=agent, name=name)
+
+        self.node = node
 
     @staticmethod
     def node_handler(state: AgentState, agent: ActionAgent, name: str) -> AgentState:

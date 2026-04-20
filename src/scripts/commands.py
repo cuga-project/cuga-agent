@@ -156,7 +156,12 @@ def test_llm():
     llm_manager = LLMManager()
     model_config = getattr(settings.agent.chat, "model", None) or settings.agent.code.model
     model = llm_manager.get_model(model_config)
-    response = model.invoke([HumanMessage(content="hi")])
+    response = model.invoke([HumanMessage(content="hi, think step by step")])
+    print("--- additional_kwargs ---")
+    print(response.additional_kwargs)
+    print("--- reasoning_content ---")
+    print(response.additional_kwargs.get("reasoning_content"))
+    print("--- content ---")
     print(response.content)
 
 

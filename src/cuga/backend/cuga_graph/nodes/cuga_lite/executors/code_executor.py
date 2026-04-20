@@ -1,4 +1,4 @@
-from typing import Any, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -16,6 +16,17 @@ from .base_executor import BaseExecutor, RemoteExecutor
 
 def _skills_enabled() -> bool:
     return getattr(settings.skills, "enabled", False)
+
+
+def is_find_tools_listing_markdown(value: Any) -> bool:
+    """True if value is the markdown string produced for find_tools / matching-tool listings."""
+    if not isinstance(value, str):
+        return False
+    return "# Found" in value and "Matching Tool(s)" in value and "**Query:**" in value
+
+
+def _omit_find_tools_listing_vars(new_vars: Dict[str, Any]) -> Dict[str, Any]:
+    return {k: v for k, v in new_vars.items() if not is_find_tools_listing_markdown(v)}
 
 
 def format_execution_output(output: str, max_length: Optional[int] = None) -> str:
@@ -171,12 +182,18 @@ class CodeExecutor:
         # Limit variables to keep based on configuration
         keep_last_n = settings.advanced_features.code_executor_keep_last_n
         new_vars = VariableUtils.limit_variables_to_keep(new_vars, keep_last_n)
+        new_vars = _omit_find_tools_listing_vars(new_vars)
 
         # Format/trim the output before adding variables
         result = format_execution_output(result)
 
         # Add variables summary to the formatted output
-        result = VariableUtils.add_variables_to_manager(new_vars, state.variables_manager, result)
+        result = VariableUtils.add_variables_to_manager(
+            new_vars,
+            state.variables_manager,
+            result,
+            skip_summary_keys={'todos'},
+        )
 
         return result, new_vars
 

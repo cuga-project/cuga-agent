@@ -96,7 +96,7 @@ class BaseAgent(ABC):
 
         # Add retry logic to the entire validated chain
         # When validation fails, the whole chain will retry (including the LLM call)
-        validated_chain = validated_chain.with_retry(stop_after_attempt=3)
+        validated_chain = validated_chain.with_retry(stop_after_attempt=4)
 
         return validated_chain
 

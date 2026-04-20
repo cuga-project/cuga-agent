@@ -1,4 +1,3 @@
-import functools
 import json
 from typing import Literal, Dict, Callable
 
@@ -64,13 +63,16 @@ class FinalAnswerNode(BaseNode):
         super().__init__()
         self.final_answer_agent = final_answer_agent
         self.hitl_handler = HumanInTheLoopHandler()
+        agent = self.final_answer_agent
+        name = self.final_answer_agent.name
+        hitl_handler = self.hitl_handler
 
-        self.node = functools.partial(
-            FinalAnswerNode.node_handler,
-            agent=self.final_answer_agent,
-            name=self.final_answer_agent.name,
-            hitl_handler=self.hitl_handler,
-        )
+        async def node(state: AgentState):
+            return await FinalAnswerNode.node_handler(
+                state, agent=agent, name=name, hitl_handler=hitl_handler
+            )
+
+        self.node = node
 
     @staticmethod
     async def node_handler(

@@ -92,5 +92,5 @@ ENV CUGA_DBS_DIR=/data/dbs
 ENV DYNACONF_CRM_DB_PATH=/tmp/crm_tmp/crm_db_default
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
 
-ENTRYPOINT ["/app/scripts/docker-entrypoint.sh"]
+ENTRYPOINT ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
 CMD []
