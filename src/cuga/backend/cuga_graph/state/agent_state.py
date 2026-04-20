@@ -427,7 +427,10 @@ class VariablesManager(object):
 
         preview = shorten(value, 0, 0)
         if len(preview) > max_length:
-            return preview[:max_length] + "..."
+            ellipsis = "..."
+            if max_length <= len(ellipsis):
+                return preview[:max_length]
+            return preview[: max_length - len(ellipsis)] + ellipsis
         return preview
 
     def get_variables_formatted(self) -> str:
