@@ -248,6 +248,7 @@ class BrowserEnvGym(gym.Env, ABC):
         # create a new browser context for pages
         self.context = pw.chromium.launch_persistent_context(
             "",
+            channel="chrome",
             no_viewport=True if self.resizeable_window else None,
             headless=self.headless,
             slow_mo=slow_mo,
