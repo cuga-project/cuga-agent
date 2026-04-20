@@ -55,30 +55,35 @@ async def main():
         print(f"Priority: {policy['priority']}")
         print("Policy updated with tool_guards")
         
-    # Step 2b: Update the policy with tool_guards
-    print("\nStep 2b: Updating policy with tool_guards...")
+    # Step 2b: Generate examples using the new SDK function
+    print("\nStep 2b: Generating tool guard examples using SDK...")
+    violating_examples, compliance_examples = await agent.policies.generate_tool_guard_examples(
+        policy_id=policy_id,
+        target_tool="delete_file"
+    )
+    
+    print(f"Generated {len(violating_examples)} violating examples and {len(compliance_examples)} compliance examples")
+    print("\nViolating examples:")
+    for i, example in enumerate(violating_examples, 1):
+        print(f"  {i}. {example}")
+    print("\nCompliance examples:")
+    for i, example in enumerate(compliance_examples, 1):
+        print(f"  {i}. {example}")
+    
+    # Step 2c: Update the policy with generated tool_guards
+    print("\nStep 2c: Updating policy with generated tool_guards...")
     await agent.policies.update_tool_guard(
         policy_id=policy_id,
         tool_guards={
             "delete_file": {
                 "description": "Guard rules for safe file deletion to prevent accidental data loss",
-                "violating_examples": [
-                    "Deleting system files like /etc/passwd or C:\\Windows\\System32",
-                    "Deleting files without user confirmation",
-                    "Deleting files in protected directories",
-                    "Bulk deletion without verification"
-                ],
-                "compliance_examples": [
-                    "Verify file path is in user's home directory before deletion",
-                    "Request explicit user confirmation before deleting",
-                    "Check file is not a system file or in protected directory",
-                    "Log all deletion operations with timestamp and user"
-                ],
+                "violating_examples": violating_examples,
+                "compliance_examples": compliance_examples,
                 "policy_code": ""
             }
         }
     )
-    print(f"Updated policy {policy_id} with tool_guards")
+    print(f"Updated policy {policy_id} with generated tool_guards")
     
     # Step 3: Save the policy
     print("\nStep 3: Saving policy...")

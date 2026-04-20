@@ -68,7 +68,7 @@ Tool Approval Example (with HITL):
     ```
 """
 
-from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
+from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import uuid
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -1213,7 +1213,85 @@ class PoliciesManager:
             }
         except Exception as e:
             logger.error(f"Failed to sync from filesystem: {e}")
-            return {"loaded": 0, "removed": 0, "errors": [str(e)]}
+
+    async def generate_tool_guard_examples(
+        self,
+        policy_id: str,
+        target_tool: str
+    ) -> Tuple[List[str], List[str]]:
+        """
+        Generate violating and compliance examples for a specific tool in a policy.
+        
+        This method uses the ToolGuardManager to generate examples that demonstrate
+        both violations and compliance with the policy guidelines for a specific tool.
+        
+        Args:
+            policy_id: The ID of the policy to generate examples for
+            target_tool: The specific tool name to generate examples for
+            
+        Returns:
+            Tuple of (violating_examples, compliance_examples)
+            
+        Raises:
+            ValueError: If policy not found, not a ToolGuide, or target_tool not in policy
+            RuntimeError: If ToolGuardManager initialization fails
+            
+        Example:
+            ```python
+            agent = CugaAgent(tools=[delete_file])
+            
+            # Add a tool guide policy
+            policy_id = await agent.policies.add_tool_guide(
+                name="File Safety",
+                target_tools=["delete_file"],
+                content="Never delete system files"
+            )
+            
+            # Generate examples
+            violating, compliance = await agent.policies.generate_tool_guard_examples(
+                policy_id=policy_id,
+                target_tool="delete_file"
+            )
+            
+            print(f"Violating: {violating}")
+            print(f"Compliance: {compliance}")
+            ```
+        """
+        from cuga.backend.cuga_graph.policy.tool_guard.manager import ToolGuardManager
+        from cuga.backend.cuga_graph.policy.models import PolicyType
+        
+        # Ensure policy system is initialized
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            raise RuntimeError("Policy system is disabled")
+        
+        # Get the policy
+        policy_data = await self.get(policy_id)
+        if policy_data is None:
+            raise ValueError(f"Policy with ID '{policy_id}' not found")
+        
+        policy = policy_data.get('policy')
+        if policy is None:
+            raise ValueError(f"Could not retrieve policy object for ID '{policy_id}'")
+        
+        # Validate policy type
+        if policy.type != PolicyType.TOOL_GUIDE:
+            raise ValueError(
+                f"Policy must be of type 'tool_guide', got '{policy.type}'. "
+                f"Only tool_guide policies can generate examples."
+            )
+        
+        # Create and initialize ToolGuardManager
+        manager = ToolGuardManager(self._agent)
+        await manager.initialize()
+        
+        # Generate examples using the manager
+        violating_examples, compliance_examples = await manager.generate_examples(
+            policy=policy,
+            target_tool=target_tool
+        )
+        
+        return violating_examples, compliance_examples
 
 
 class CugaAgent:
