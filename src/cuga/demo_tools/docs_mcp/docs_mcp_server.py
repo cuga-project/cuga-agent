@@ -46,7 +46,7 @@ async def _fetch_single_page(url: str) -> str:
     from playwright.async_api import async_playwright
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
+        browser = await p.chromium.launch(channel="chrome", headless=True)
         try:
             context = await browser.new_context(user_agent=_UA)
             page = await context.new_page()
