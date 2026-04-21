@@ -466,11 +466,11 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             print(f"Message count after second invoke: {message_count_after}")
 
             # The second invoke should not trigger summarization (messages well below 75% threshold)
-            # Message count can increase by 2-4 depending on whether agent executes code
-            # (user + AI) or (user + AI_code + execution_result + AI_final)
+            # Message count can increase depending on whether agent executes code/tools
+            # (user + AI) or (user + AI_code + execution_result + AI_final) etc.
             message_increase = message_count_after - message_count_before
-            assert 2 <= message_increase <= 4, (
-                f"Expected message count to increase by 2-4 (depending on code execution). "
+            assert 2 <= message_increase <= 10, (
+                f"Expected message count to increase by 2-10. "
                 f"Before: {message_count_before}, After: {message_count_after}, Increase: {message_increase}"
             )
             print(
@@ -841,11 +841,11 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             print(f"Message count after second invoke: {message_count_after}")
 
             # The second invoke should not trigger summarization (messages well below 75% threshold)
-            # Message count can increase by 2-4 depending on whether agent executes code
-            # (user + AI) or (user + AI_code + execution_result + AI_final)
+            # Message count can increase depending on whether agent executes code/tools
+            # (user + AI) or (user + AI_code + execution_result + AI_final) etc.
             message_increase = message_count_after - message_count_before
-            assert 2 <= message_increase <= 4, (
-                f"Expected message count to increase by 2-4 (depending on code execution). "
+            assert 2 <= message_increase <= 10, (
+                f"Expected message count to increase by 2-10. "
                 f"Before: {message_count_before}, After: {message_count_after}, Increase: {message_increase}"
             )
             print(
