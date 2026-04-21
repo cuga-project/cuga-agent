@@ -108,7 +108,8 @@ vault_k8s_jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 vault_cacert = ""  # PEM bundle path; env VAULT_CACERT (internal / route CA)
 vault_skip_verify = false  # dev only; env VAULT_SKIP_VERIFY=true
 vault_mount = "secret"
-vault_kv_version = ""  # "1" or "2"; leave empty to auto-detect
+vault_kv_version = ""  # "1" or "2"; empty = KV v2 (use "1" only for KV v1 mounts)
+vault_secret_path = ""  # Base path for secrets (env: DYNACONF_SECRETS__VAULT_SECRET_PATH)
 vault_write_enabled = false
 aws_region = ""
 

@@ -162,6 +162,7 @@ validators = [
     Validator("secrets.vault_skip_verify", default=False),
     Validator("secrets.vault_mount", default="secret"),
     Validator("secrets.vault_kv_version", default=""),
+    Validator("secrets.vault_secret_path", default=""),
     Validator("secrets.vault_write_enabled", default=False),
     Validator("secrets.aws_region", default=""),
     Validator("auth.enabled", default=False),
