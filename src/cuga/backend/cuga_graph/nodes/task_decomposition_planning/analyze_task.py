@@ -52,6 +52,7 @@ class TaskAnalyzer(BaseNode):
         available_apps: List[AppDefinition],
         typo_match_cutoff: float = 0.8,
         max_typo_length_delta: int = 2,
+        min_typo_score_margin: float = 0.05,
     ) -> List[str]:
         """Resolve LLM-selected app names to known app names (with strict typo correction)."""
         by_lower_name = {app.name.lower(): app.name for app in available_apps if app and app.name}
@@ -71,17 +72,25 @@ class TaskAnalyzer(BaseNode):
                 continue
 
             normalized_lower = normalized.lower()
-            best_match = None
-            best_score = 0.0
+            scored_matches: List[Tuple[float, str]] = []
             for known_lower in by_lower_name.keys():
                 if abs(len(known_lower) - len(normalized_lower)) > max_typo_length_delta:
                     continue
                 score = SequenceMatcher(None, normalized_lower, known_lower).ratio()
-                if score > best_score:
-                    best_score = score
-                    best_match = known_lower
+                if score >= typo_match_cutoff:
+                    scored_matches.append((score, known_lower))
 
-            if best_match and best_score >= typo_match_cutoff:
+            scored_matches.sort(key=lambda item: item[0], reverse=True)
+            if scored_matches:
+                best_score, best_match = scored_matches[0]
+                close_top_matches = [
+                    known_lower
+                    for score, known_lower in scored_matches
+                    if best_score - score < min_typo_score_margin
+                ]
+                if len(close_top_matches) > 1:
+                    continue
+
                 corrected = by_lower_name[best_match]
                 logger.warning(f"Correcting unmatched app '{normalized}' to closest known app '{corrected}'")
                 if corrected not in seen:
