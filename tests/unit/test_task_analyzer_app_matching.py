@@ -49,6 +49,24 @@ def test_resolve_relevant_apps_mixed_forced_list_keeps_only_valid_and_correctabl
     assert resolved == ["venmo"]
 
 
+def test_resolve_relevant_apps_skips_ambiguous_top_fuzzy_matches():
+    apps = [
+        AppDefinition(name="venomy", description="App A", url="https://a.example.com"),
+        AppDefinition(name="venomz", description="App B", url="https://b.example.com"),
+    ]
+    resolved = TaskAnalyzer.resolve_relevant_apps(["venomq"], apps)
+    assert resolved == []
+
+
+def test_resolve_relevant_apps_corrects_when_clear_top_fuzzy_winner_exists():
+    apps = [
+        AppDefinition(name="spotify", description="Music app", url="https://spotify.com"),
+        AppDefinition(name="calendar", description="Calendar app", url="https://calendar.example.com"),
+    ]
+    resolved = TaskAnalyzer.resolve_relevant_apps(["sptify"], apps)
+    assert resolved == ["spotify"]
+
+
 @pytest.mark.asyncio
 async def test_match_apps_corrects_simple_typo_from_forced_apps(monkeypatch):
     apps = _apps()
