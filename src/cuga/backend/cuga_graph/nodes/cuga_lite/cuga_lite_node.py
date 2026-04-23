@@ -114,11 +114,7 @@ class CugaLiteNode(BaseNode):
     def __init__(self, langfuse_handler: Optional[Any] = None, prompt_template: Optional[str] = None):
         super().__init__()
         self.name = "CugaLite"
-        if settings.advanced_features.enable_todos:
-            prompt_filename = 'prompts/mcp_prompt_todos.jinja2'
-        else:
-            prompt_filename = 'prompts/mcp_prompt.jinja2'
-        self.prompt_template = load_one_prompt(prompt_filename)
+        self.prompt_template = load_one_prompt('prompts/mcp_prompt.jinja2')
         self.langfuse_handler = langfuse_handler
         self.hitl_handler = CugaLiteHumanInTheLoopHandler()
         self._background_tasks: set = set()
@@ -420,6 +416,7 @@ class CugaLiteNode(BaseNode):
         self._log_variable_changes(state, initial_var_names)
 
         # Process the results using the existing logic
+
         result = await self._process_results(
             state=state,
             answer=answer,

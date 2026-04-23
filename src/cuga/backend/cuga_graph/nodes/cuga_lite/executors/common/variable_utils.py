@@ -1,5 +1,5 @@
 import types
-from typing import Any, Set
+from typing import Any, Optional, Set
 from loguru import logger
 
 
@@ -171,19 +171,29 @@ class VariableUtils:
         return dict(limited_items)
 
     @staticmethod
-    def add_variables_to_manager(new_vars: dict[str, Any], var_manager, result: str) -> str:
+    def add_variables_to_manager(
+        new_vars: dict[str, Any],
+        var_manager,
+        result: str,
+        skip_summary_keys: Optional[Set[str]] = None,
+    ) -> str:
         """Add new variables to VariablesManager and append summary to result.
 
         Args:
             new_vars: Dictionary of new variables
             var_manager: VariablesManager instance
             result: Current execution result string
+            skip_summary_keys: Variable names to still store but omit from the execution-output
+                summary (e.g. ``todos`` from ``create_update_todos``, shown via Current Plan instead).
 
         Returns:
             Updated result string with variables summary
         """
         if not new_vars:
             return result
+
+        if skip_summary_keys is None:
+            skip_summary_keys = set()
 
         existing_names = (
             set(var_manager.get_variable_names()) if hasattr(var_manager, 'get_variable_names') else set()
@@ -193,14 +203,18 @@ class VariableUtils:
 
         for var_name, var_value in new_vars.items():
             if var_name in existing_names:
-                updated_names.append(var_name)
+                if var_name not in skip_summary_keys:
+                    updated_names.append(var_name)
             else:
-                created_names.append(var_name)
+                if var_name not in skip_summary_keys:
+                    created_names.append(var_name)
             var_manager.add_variable(var_value, name=var_name, description="Created during code execution")
 
         try:
-            all_names = list(new_vars.keys())
-            variables_summary = var_manager.get_variables_summary(variable_names=all_names)
+            summary_names = [k for k in new_vars.keys() if k not in skip_summary_keys]
+            if not summary_names:
+                return result
+            variables_summary = var_manager.get_variables_summary(variable_names=summary_names)
             if variables_summary and variables_summary != "# No variables stored":
                 if created_names and updated_names:
                     header = "## New Variables Created / Updated:"

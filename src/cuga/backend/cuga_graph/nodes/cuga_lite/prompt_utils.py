@@ -208,7 +208,7 @@ class PromptUtils:
                 """,
                 ),
                 ('ai', 'Sure, now give me the intent'),
-                ('human', 'User Intent: {input}'),
+                ('human', '{input}'),
             ],
         )
         # Serialize tools properly, converting args_schema class to dict
@@ -387,6 +387,26 @@ class PromptUtils:
         return wrapper
 
 
+def format_apps_for_prompt(apps) -> list:
+    """Normalize app definitions to dicts for Jinja (name, type, description), matching mcp_prompt."""
+    processed_apps = []
+    if not apps:
+        return processed_apps
+    for app in apps:
+        description = getattr(app, 'description', 'No description available')
+        max_length = 1000
+        if len(description) > max_length:
+            description = description[:max_length] + '...'
+        processed_apps.append(
+            {
+                'name': app.name,
+                'type': getattr(app, 'type', 'api'),
+                'description': description,
+            }
+        )
+    return processed_apps
+
+
 def create_mcp_prompt(
     tools,
     base_prompt=None,
@@ -398,6 +418,7 @@ def create_mcp_prompt(
     is_autonomous_subtask=False,
     prompt_template=None,
     enable_find_tools=False,
+    enable_todos=False,
     special_instructions=None,
     has_knowledge=False,
 ):
@@ -415,6 +436,7 @@ def create_mcp_prompt(
         is_autonomous_subtask: If True, indicates this is an autonomous subtask that should complete without user interaction
         prompt_template: Jinja2 template for the prompt
         enable_find_tools: If True, includes find_tools instructions in the prompt
+        enable_todos: If True, includes create_update_todos instructions in the prompt
     """
     processed_tools = []
     if special_instructions is None:
@@ -437,20 +459,7 @@ def create_mcp_prompt(
             }
         )
 
-    processed_apps = []
-    if apps:
-        for app in apps:
-            description = getattr(app, 'description', 'No description available')
-            max_length = 300
-            if len(description) > max_length:
-                description = description[:max_length] + '...'
-            processed_apps.append(
-                {
-                    'name': app.name,
-                    'type': getattr(app, 'type', 'api'),
-                    'description': description,
-                }
-            )
+    processed_apps = format_apps_for_prompt(apps)
 
     prompt = prompt_template.format(
         base_prompt=base_prompt,
@@ -462,6 +471,7 @@ def create_mcp_prompt(
         task_loaded_from_file=task_loaded_from_file,
         is_autonomous_subtask=is_autonomous_subtask,
         enable_find_tools=enable_find_tools,
+        enable_todos=enable_todos,
         special_instructions=special_instructions,
         has_knowledge=has_knowledge,
     )
