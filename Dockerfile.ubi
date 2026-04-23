@@ -16,7 +16,7 @@ COPY src/ ./src/
 COPY docs/ ./docs/
 
 # Default deps omit openlit (optional `observability` extra; keeps pip/uvx core resolvable with litellm 1.83.x).
-RUN rm -rf src/*.egg-info && uv sync --no-editable --no-dev --extra observability
+RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + && uv sync --no-editable --no-dev --extra observability
 
 # Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
 # NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
