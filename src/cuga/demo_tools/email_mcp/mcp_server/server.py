@@ -71,8 +71,7 @@ class ListItem(BaseModel):
     to: Optional[List[str]] = None
     date: Optional[str] = None
 
-    class Config:
-        allow_population_by_field_name = True
+    model_config = {"populate_by_name": True}
 
 
 class ListEmailsResult(BaseModel):
@@ -177,8 +176,7 @@ def read_email(id: str) -> dict | ErrorResult:
     }
 
 
-# --------- Server bootstrap (SSE) -------------------------------------------
-def main():
+if __name__ == "__main__":
     print("[Email MCP] Environment check:")
     print(
         f"[Email MCP]   DYNACONF_SERVER_PORTS__EMAIL_MCP = {os.environ.get('DYNACONF_SERVER_PORTS__EMAIL_MCP', 'NOT SET')}"
