@@ -46,18 +46,6 @@ class APICodePlannerAgent(BaseAgent):
             else "N/A"
         )
 
-        # memory integration
-        rtrvd_tips_formatted = None
-        if settings.advanced_features.enable_memory:
-            from cuga.backend.memory.agentic_memory.utils.memory_tips_formatted import get_formatted_tips
-
-            rtrvd_tips_formatted = get_formatted_tips(
-                namespace_id="memory",
-                agent_id='APICodePlannerAgent',
-                query=input_variables.coder_task,
-                limit=3,
-            )
-
         return await self.chain.ainvoke(
             input={
                 "current_datetime": input_variables.current_datetime,
@@ -65,7 +53,6 @@ class APICodePlannerAgent(BaseAgent):
                 "coder_task": input_variables.coder_task,
                 "instructions": instructions_manager.get_instructions(self.name),
                 "api_shortlister_planner_filtered_apis": input_variables.api_shortlister_planner_filtered_apis,
-                "memory": rtrvd_tips_formatted,
             }
         )
 

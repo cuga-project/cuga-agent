@@ -5,7 +5,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage: $0 [OPTION]"
     echo ""
     echo "Test runner script:"
-    echo "  (no args)    Run default tests (registry + e2e + memory + stability tests)"
+    echo "  (no args)    Run default tests (registry + e2e + stability tests)"
     echo "  unit_tests         Run unit tests only (registry + variables manager + sandbox + E2B lite + knowledge)"
     echo "  --skip-stability   Run all tests except stability tests"
     echo "  --help, -h   Show this help message"
@@ -53,21 +53,6 @@ run_pytest() {
     fi
 }
 
-# Helper function to run pytest with memory dependencies installed
-# Exit codes: 0=success, 1-4=failures, 5=no tests collected (treat as success)
-run_pytest_with_memory() {
-    # Sync memory dependency groups before running tests
-    uv sync --extra memory
-    uv run pytest "$@" -v
-    local ec=$?
-    echo "pytest (with memory) $* exited with code $ec"
-    # Exit code 5 means no tests collected, which is not a failure
-    if [ $ec -ne 0 ] && [ $ec -ne 5 ]; then
-        echo "❌ Test failed! Exiting..."
-        exit 1
-    fi
-}
-
 # Helper function to run pytest with e2b dependencies installed
 # Exit codes: 0=success, 1-4=failures, 5=no tests collected (treat as success)
 run_pytest_with_e2b() {
@@ -107,10 +92,6 @@ else
     run_pytest ./src/cuga/sdk_core/tests/
     echo "Running manager API integration tests..."
     run_pytest ./tests/system/test_manager_api_integration.py
-    echo "Running memory tests..."
-    run_pytest_with_memory ./src/system_tests/unit/test_cli.py
-    run_pytest_with_memory ./src/system_tests/e2e/test_memory_integration.py
-    run_pytest_with_memory ./src/system_tests/e2e/balanced_test_memory.py
     if [ -n "$SKIP_STABILITY" ]; then
         echo "Skipping stability tests (--skip-stability)"
         echo "✅ All tests passed!"

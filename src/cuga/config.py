@@ -51,9 +51,6 @@ SETTINGS_TOML_PATH = _find_config_file("settings.toml", "SETTINGS_TOML_PATH")
 CONFIGURATIONS_DIR = os.environ.get("CUGA_CONFIGURATIONS_DIR", os.path.join(PACKAGE_ROOT, "configurations"))
 MODELS_DIR = os.path.join(CONFIGURATIONS_DIR, "models")
 MODES_DIR = os.path.join(CONFIGURATIONS_DIR, "modes")
-MEMORY_DIR = os.path.join(CONFIGURATIONS_DIR, "memory")
-
-
 # from feature_flags import FeatureFlags as flags
 
 # 1) Let users (or CI) force a path when needed
@@ -125,8 +122,6 @@ validators = [
     Validator("advanced_features.tracker_enabled", default=False),
     Validator("advanced_features.lite_mode", default=False),
     Validator("advanced_features.lite_mode_tool_threshold", default=15),
-    Validator("advanced_features.enable_memory", default=False),
-    Validator("advanced_features.enable_fact", default=False),
     Validator("advanced_features.decomposition_strategy", default="flexible"),
     Validator("advanced_features.local_sandbox", default=True),
     Validator("advanced_features.message_window_limit", default=20),
@@ -142,7 +137,6 @@ validators = [
     Validator("advanced_features.enable_shell_tool", default=False),
     Validator("advanced_features.cuga_lite_nl_auto_continue", default=True),
     Validator("features.chat", default=True),
-    Validator("features.memory_provider", default="mem0"),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),
     Validator("storage.mode", default="local"),
@@ -228,18 +222,9 @@ modes_file_path = os.path.join(MODES_DIR, f"{base_settings.features.cuga_mode}.t
 logger.info(f"Models config path: {models_file_path}")
 logger.info(f"Mode config path:   {modes_file_path}")
 
-mem0_file_path = os.path.join(MEMORY_DIR, "memory_settings.mem0.toml")
-milvus_file_path = os.path.join(MEMORY_DIR, "memory_settings.milvus.toml")
-tips_extractor_file_path = os.path.join(MEMORY_DIR, "memory_settings.tips_extractor.toml")
-
 # Knowledge configuration
 KNOWLEDGE_DIR = os.path.join(CONFIGURATIONS_DIR, "knowledge")
 knowledge_file_path = os.path.join(KNOWLEDGE_DIR, "knowledge_settings.toml")
-
-if base_settings.advanced_features.enable_memory:
-    logger.info(f"Mem0 config path:   {mem0_file_path}")
-    logger.info(f"Milvus config path:   {milvus_file_path}")
-    logger.info(f"Memory tips extractor config path:   {tips_extractor_file_path}")
 
 # Fail fast with clear error if files are missing (helps especially on Windows)
 if os.getenv("CUGA_STRICT_CONFIG", "1") == "1":
@@ -252,27 +237,12 @@ if os.getenv("CUGA_STRICT_CONFIG", "1") == "1":
     if not os.path.isfile(modes_file_path):
         raise FileNotFoundError(f"Could not find mode configuration file: {modes_file_path}.")
 
-    if base_settings.advanced_features.enable_memory:
-        if not os.path.isfile(mem0_file_path):
-            raise FileNotFoundError(f"Could not find memory configuration file: {mem0_file_path}.")
-
-        if not os.path.isfile(milvus_file_path):
-            raise FileNotFoundError(f"Could not find memory configuration file: {milvus_file_path}.")
-
-        if not os.path.isfile(tips_extractor_file_path):
-            raise FileNotFoundError(
-                f"Could not find tips extractor configuration file: {tips_extractor_file_path}."
-            )
-
 settings_files = [
     SETTINGS_TOML_PATH,
     ENV_FILE_PATH,
     EVAL_CONFIG_TOML_PATH,
     models_file_path,
     modes_file_path,
-    mem0_file_path,
-    milvus_file_path,
-    tips_extractor_file_path,
     knowledge_file_path,
 ]
 

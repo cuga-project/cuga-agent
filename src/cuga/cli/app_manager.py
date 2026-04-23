@@ -1,4 +1,4 @@
-"""App lifecycle manager: start/stop demo apps (email, filesystem, CRM) and core services (registry, demo, appworld, memory)."""
+"""App lifecycle manager: start/stop demo apps (email, filesystem, CRM) and core services (registry, demo, appworld)."""
 
 import os
 import shutil
@@ -243,25 +243,6 @@ class AppManager:
         logger.info("Waiting for AppWorld environment server to start...")
         time.sleep(5)
         self._run("appworld-api", ["appworld", "serve", "apis", "--port", str(api_port)], None)
-
-    def start_memory(self, host: str = "0.0.0.0"):
-        """Start memory service. Returns process."""
-        cmd = [
-            "uv",
-            "run",
-            "--directory",
-            str(REPO_ROOT),
-            "--active",
-            "--extra",
-            "memory",
-            "uvicorn",
-            "cuga.backend.memory.agentic_memory.main:app",
-            "--host",
-            host,
-            "--port",
-            str(settings.server_ports.memory),
-        ]
-        return self._run("memory", cmd, None)
 
     def stop_email(self) -> None:
         """Stop email sink and MCP if running."""

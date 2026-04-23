@@ -10,7 +10,6 @@ start_url = "https://opensource-demo.orangehrmlive.com/web/index.php/auth/login"
 
 [features]
 cuga_mode = "balanced"
-memory_provider = "mem0"
 
 [advanced_features]
 web_arena_eval = false
@@ -32,8 +31,6 @@ lite_mode_tool_threshold = 70  # Route to CugaLite if app has fewer than this ma
 force_lite_mode_apps = ["knowledge"]  # List of app names to force into lite mode (e.g., ["app1", "app2"])
 shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools exceeds this threshold
 enable_todos = false  # Enable todos feature for complex multi-step task management
-enable_memory = false
-enable_fact = false
 reflection_enabled = false
 save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
 decomposition_strategy = "flexible"  # "exact" = one subtask per app, "flexible" = allows multiple subtasks per app
@@ -172,7 +169,6 @@ petstore_api = 8081
 graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
-memory = 8888
 oak_health_api = 8090  # cuga-oak-health OpenAPI (demo_health)
 
 [context_summarization]
