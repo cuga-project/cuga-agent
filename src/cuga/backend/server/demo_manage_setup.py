@@ -599,9 +599,6 @@ def setup_demo_manage_config(
         "llm": llm_cfg,
         "knowledge": knowledge_cfg,
     }
-    if tools and any(t.get("name") == "docs" for t in tools):
-        config["feature_flags"] = config.get("feature_flags") or {}
-        config["feature_flags"]["enable_todos"] = True
 
     async def _setup():
         await save_draft(config, agent_id)

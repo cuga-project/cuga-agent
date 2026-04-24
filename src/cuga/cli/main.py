@@ -189,7 +189,7 @@ def wait_for_server(
     """
     # Use longer timeout on Windows due to slower package installation and process startup
     if max_retries is None:
-        max_retries = 600 if platform.system() == "Windows" else 240  # Increased timeout
+        max_retries = 300 if platform.system() == "Windows" else 120
 
     scheme = "https" if https else "http"
     url = f"{scheme}://127.0.0.1:{port}/"
@@ -203,6 +203,7 @@ def wait_for_server(
         try:
             with httpx.Client(timeout=1.0, verify=False) as client:
                 response = client.get(url)
+                # Any non-5xx response means something is listening; many apps have no GET / route (404).
                 if response.status_code < 500:
                     logger.info(f"{server_name} is ready!")
                     return
@@ -407,19 +408,6 @@ def stop_direct_processes():
     direct_processes.clear()
 
 
-def _stream_output(process: subprocess.Popen, service_name: str) -> None:
-    """Read lines from process stdout and forward them to the logger."""
-    for raw in process.stdout:
-        line = raw.decode('utf-8', errors='replace').rstrip()
-        if line:
-            logger.debug(f"[{service_name}] {line}")
-    rc = process.wait()
-    if rc != 0:
-        logger.error(f"[{service_name}] process exited with code {rc}")
-    else:
-        logger.debug(f"[{service_name}] process exited cleanly (code 0)")
-
-
 def run_direct_service(
     service_name: str,
     command: List[str],
@@ -440,7 +428,6 @@ def run_direct_service(
         # Use PACKAGE_ROOT to find the src directory consistently across installations
         src_root = os.path.abspath(os.path.join(PACKAGE_ROOT, ".."))
         env['PYTHONPATH'] = os.path.pathsep.join([src_root, env.get('PYTHONPATH', '')]).strip(os.path.pathsep)
-
         # On Windows, set UTF-8 encoding to handle Unicode characters in subprocess output
         if IS_WINDOWS:
             env['PYTHONIOENCODING'] = 'utf-8'
@@ -463,6 +450,7 @@ def run_direct_service(
         # Start the process with a new process group to make it easier to kill
         kwargs = {'cwd': cwd, 'env': env, 'preexec_fn': os.setsid if not IS_WINDOWS else None}
 
+        # Redirect output to log file if provided
         if log_file:
             log_path = os.path.abspath(log_file)
             log_dir = os.path.dirname(log_path)
@@ -471,15 +459,8 @@ def run_direct_service(
             kwargs['stdout'] = log_handle
             kwargs['stderr'] = subprocess.STDOUT
             logger.info(f"Redirecting {service_name} output to {log_path}")
-        else:
-            kwargs['stdout'] = subprocess.PIPE
-            kwargs['stderr'] = subprocess.STDOUT
 
         process = subprocess.Popen(command, **kwargs)
-
-        if not log_file:
-            t = threading.Thread(target=_stream_output, args=(process, service_name), daemon=True)
-            t.start()
 
         direct_processes[service_name] = process
         return process
