@@ -163,6 +163,10 @@ trigger_fraction = 0.75  # Trigger at 75% of context window (recommended for pro
 # Optional custom summary prompt (uses LangChain default if not set):
 # custom_summary_prompt = "Provide a concise summary of the conversation: {messages}"
 
+[connections]
+inference_ca_cert = ""  # Path to a CA certificate for LLM inference HTTP clients (e.g. "vault-root-ca.crt"). Applied to OpenAI and LiteLLM. Env: CUGA_INFERENCE_CA_CERT
+inference_disable_ssl = false  # Disable SSL verification for all inference connections (overrides inference_ca_cert). Env: CUGA_DISABLE_SSL
+
 [observability]
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
                  # Configure the OTLP endpoint via: OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318
