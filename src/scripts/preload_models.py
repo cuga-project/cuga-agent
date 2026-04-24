@@ -7,6 +7,7 @@ Models are cached to their default locations and will be available offline.
 Set HF_HUB_OFFLINE=1 at runtime to prevent any accidental network access.
 """
 
+import os
 import sys
 
 
@@ -15,12 +16,13 @@ def preload_fastembed() -> None:
     try:
         from fastembed import TextEmbedding
 
+        cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
         models = [
             "BAAI/bge-small-en-v1.5",  # default embedding model
         ]
         for model_name in models:
             print(f"  Downloading {model_name}...")
-            model = TextEmbedding(model_name)
+            model = TextEmbedding(model_name, cache_dir=cache_dir)
             # Run one inference pass to ensure ONNX runtime initializes
             list(model.embed(["warmup"]))
             print(f"  ✓ {model_name}")
@@ -29,7 +31,6 @@ def preload_fastembed() -> None:
 
 
 def preload_docling() -> None:
-    import os
     from pathlib import Path
 
     print("→ Preloading docling models...")
@@ -61,7 +62,8 @@ def preload_fastembed_tokenizer() -> None:
     try:
         from fastembed.text.onnx_embedding import OnnxTextEmbedding  # type: ignore[import]
 
-        model = OnnxTextEmbedding(model_name="BAAI/bge-small-en-v1.5")
+        cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
+        model = OnnxTextEmbedding(model_name="BAAI/bge-small-en-v1.5", cache_dir=cache_dir)
         _ = model.tokenizer
         print("  ✓ tokenizer ready")
     except Exception as e:
