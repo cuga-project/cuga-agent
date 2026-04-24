@@ -406,8 +406,7 @@ def setup_demo_manage_config(
         "account's revenue percentile across all accounts. Finally, draft an email based on email_template.md "
         "template summarizing the result and show it to me",
         "from contacts.txt show me which users belong to the crm system",
-        "./cuga_workspace/cuga_playbook.md",
-        "What is CUGA?",
+        "What can you do?",
     ]
     DEMO_DOCS_STARTERS = [
         "What was the latest watsonx orchestrate release?",
@@ -552,7 +551,12 @@ def setup_demo_manage_config(
         knowledge_cfg["_vector_config_hash"] = _kc.vector_config_hash()
     except Exception:
         pass
-    if use_crm_starters:
+    if demo_type == "manager":
+        agent_meta = {
+            "name": "Default",
+            "description": "Configurable agent for manage mode (filesystem and optional integrations)",
+        }
+    elif use_crm_starters:
         agent_meta = {
             "name": "CRM Agent",
             "description": "CRM-enabled agent with email and filesystem for managing contacts and accounts",
