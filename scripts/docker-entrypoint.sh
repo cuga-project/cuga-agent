@@ -15,7 +15,7 @@ case "$MODE" in
     exec "$CUGA" start demo_crm --host 0.0.0.0 --cuga-workspace /app/cuga_workspace
     ;;
   digital_sales)
-    exec "$CUGA" start demo --host 0.0.0.0
+    exec "$CUGA" start demo --host 0.0.0.0 --digital-sales
     ;;
   health)
     exec "$CUGA" start demo_health --host 0.0.0.0

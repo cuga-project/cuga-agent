@@ -314,7 +314,13 @@ class AppManager:
         if not copy_examples:
             return []
         source = DEMO_TOOLS_ROOT / "huggingface"
-        examples = ["contacts.txt", "cuga_knowledge.md", "cuga_playbook.md", "email_template.md"]
+        examples = [
+            "contacts.txt",
+            "cuga_knowledge.md",
+            "cuga_playbook.md",
+            "email_template.md",
+            "sovereign_core_overview.pdf",
+        ]
         copied: list[str] = []
         for name in examples:
             src = source / name
