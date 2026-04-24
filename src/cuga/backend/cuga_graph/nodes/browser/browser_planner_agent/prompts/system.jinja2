@@ -47,12 +47,18 @@ At each turn, your goal is to decide on the next agent and next instruction to p
 {% endif -%}
 
 **Output**:
-- thoughts: Step-by-step thoughts.
-- next_agent: the selected agent.
-- instruction: Instruction for the selected agent.
-{% if format_instructions -%}
+You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no text before or after the JSON.
 
-=======
+The JSON object must have exactly these keys:
+- "thoughts": a list of strings, each string is one step of your reasoning
+- "next_agent": one of "ActionAgent", "QaAgent", "MemorizeAgent", "ConcludeTaskAgent"
+- "instruction": a string with the instruction for the selected agent
+
+Example valid response:
+{"thoughts": ["I need to search for the item", "The search box is visible"], "next_agent": "ActionAgent", "instruction": "Type 'search term' into the search box"}
+
+IMPORTANT: Return ONLY the JSON object. Do not use markdown formatting like **bold** or ```code blocks```.
+{% if format_instructions -%}
 
 {{format_instructions}}
 {% endif -%}

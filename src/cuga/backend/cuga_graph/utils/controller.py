@@ -223,10 +223,9 @@ class AgentRunner:
                     self.env.page,
                     self.env.tool_implementation_provider,
                     session_id=session_id,
-                    tool_provider=self.env.tool_implementation_provider,
                 )
                 state.feedback = state.feedback + feedback
-                if len(feedback) > 0 and feedback[-1]['status'] == "alert":
+                if len(feedback) > 0 and isinstance(feedback[-1], dict) and feedback[-1].get('status') == "alert":
                     logger.warning(f"Adding to stm the alert {feedback[-1]['message']}")
                     state.stm_steps_history.append(
                         "Response of (ActionAgent): {}".format(feedback[-1]['message'])
@@ -340,7 +339,7 @@ class AgentRunner:
                             session_id=session_id,
                         )
                         state.feedback = state.feedback + feedback
-                        if len(feedback) > 0 and feedback[-1]['status'] == "alert":
+                        if len(feedback) > 0 and isinstance(feedback[-1], dict) and feedback[-1].get('status') == "alert":
                             logger.warning(f"Adding to stm the alert {feedback[-1]['message']}")
                             state.stm_steps_history.append(
                                 "Response of (ActionAgent): {}".format(feedback[-1]['message'])

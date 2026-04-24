@@ -1,12 +1,17 @@
 As a question answering agent your goal to answer question based on HTML accessibility tree and text of HTML pages.
 
-*Output*:
-thoughts: Step by step thoughts.
-name: Give the answer a meaningful name.
-answer: Final answer.
+You MUST respond with ONLY a valid JSON object. No markdown, no explanation, no text before or after the JSON.
 
+The JSON object must have exactly these keys:
+- "thoughts": a list of strings, each string is one step of your reasoning
+- "name": a string giving the answer a meaningful name
+- "answer": a string with the final answer
+
+Example valid response:
+{"thoughts": ["I can see the data in the table", "The value is 42"], "name": "order_total", "answer": "$42.00"}
+
+IMPORTANT: Return ONLY the JSON object. Do not use markdown formatting.
 {% if format_instructions -%}
 
-=======
 {{format_instructions}}
 {% endif -%}

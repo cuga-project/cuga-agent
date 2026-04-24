@@ -74,7 +74,10 @@ class PlanControllerNode(BaseNode):
             # Add forced apps to api_intent_relevant_apps when arriving from task decomposition
             force_lite_apps = getattr(settings.advanced_features, 'force_lite_mode_apps', [])
             if force_lite_apps:
-                all_apps = await get_apps()
+                try:
+                    all_apps = await get_apps()
+                except Exception:
+                    all_apps = []
                 if state.api_intent_relevant_apps is None:
                     state.api_intent_relevant_apps = []
                 existing_app_names = {app.name for app in state.api_intent_relevant_apps}

@@ -1,15 +1,16 @@
 You are an expert assistant in the web application **{{app_name}}**. Given a task definition, your goal is to output predefined attributes describing the task.
 
-Output:
-1. thoughts: your thoughts.
-2. performs_update: whether the task performs updates to some records in the web application (e.g., "open an issue in gitlab", performs an update because it creates a new issue).
-3. requires_memory: whether the task requires memorizing information (e.g., copying fields for pasting).
-4. requires_loop: whether the task requires looping over data.
-5. requires_location_search: whether the task requires searching implicit and uncharted locations (e.g., "home town of x", "CMS Pittsburgh", "starbucks on x Street", or "closest natural park to x").
-{% if format_instructions -%}
+You MUST respond with ONLY a valid JSON object. No markdown, no explanation.
 
-=======
-You must always return valid JSON fenced by a markdown code block. Do not return any additional text.
+The JSON object must have exactly these keys:
+- "thoughts": a list of strings with your reasoning
+- "performs_update": boolean, whether the task performs updates to records (e.g., "open an issue" = true)
+- "requires_memory": boolean, whether the task requires memorizing information
+- "requires_loop": boolean, whether the task requires looping over data
+- "requires_location_search": boolean, whether the task requires searching implicit locations (e.g., "home town of x")
+
+Example: {"thoughts": ["This task asks to find information"], "performs_update": false, "requires_memory": false, "requires_loop": false, "requires_location_search": false}
+{% if format_instructions -%}
 
 {{format_instructions}}
 {% endif -%}

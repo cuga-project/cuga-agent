@@ -87,7 +87,13 @@ class BaseAgent(ABC):
         logger.debug("Creating validated structured output chain for OpenAI/Groq interface")
 
         # Create the base chain with structured output
-        base_chain = prompt_template | llm.with_structured_output(schema, method="json_schema")
+        import os
+        _so_method = os.environ.get("CUGA_STRUCTURED_OUTPUT_METHOD", "json_schema")
+        if _so_method == "parser":
+            _parser = PydanticOutputParser(pydantic_object=schema)
+            base_chain = prompt_template | llm | _parser
+        else:
+            base_chain = prompt_template | llm.with_structured_output(schema, method=_so_method)
 
         # Add validation
         validated_chain = base_chain | RunnableLambda(
@@ -175,4 +181,10 @@ JSON schema:
             return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
         else:
             logger.debug("Getting model for azure")
-            return prompt_template | llm.with_structured_output(schema, method="json_schema")
+            import os
+            _so_method = os.environ.get("CUGA_STRUCTURED_OUTPUT_METHOD", "json_schema")
+            if _so_method == "parser":
+                parser = PydanticOutputParser(pydantic_object=schema)
+                chain = prompt_template | llm | parser
+                return chain.with_retry(stop_after_attempt=3)
+            return prompt_template | llm.with_structured_output(schema, method=_so_method)
