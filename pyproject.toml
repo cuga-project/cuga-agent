@@ -53,10 +53,7 @@ dependencies = [
     "beautifulsoup4>=4.12",
     "psycopg[binary]>=3.2",
     "cuga-oak-health; python_version>='3.12'",
-    "email-sink",
-    "email-mcp-server",
-    "filesystem-mcp-server",
-    "crm-system-api",
+    "aiosmtpd",
 ]
 
 [project.optional-dependencies]
@@ -108,10 +105,6 @@ constraint-dependencies = [
 override-dependencies = ["python-dotenv>=1.1.0"]
 
 [tool.uv.sources]
-crm-system-api        = { path = "src/cuga/demo_tools/crm",                      editable = true }
-email-sink            = { path = "src/cuga/demo_tools/email_mcp/mail_sink",       editable = true }
-email-mcp-server      = { path = "src/cuga/demo_tools/email_mcp/mcp_server",      editable = true }
-filesystem-mcp-server = { path = "src/cuga/demo_tools/file_system",              editable = true }
 torch                 = { index = "pytorch-cpu" }
 torchvision           = { index = "pytorch-cpu" }
 torchaudio            = { index = "pytorch-cpu" }

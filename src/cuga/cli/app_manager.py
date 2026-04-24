@@ -155,7 +155,7 @@ class AppManager:
         """Start CRM API server. Returns crm_port."""
         port = settings.server_ports.crm_api
         logger.info(f"Starting CRM server on port {port}")
-        cmd = [sys.executable, "-m", "crm_api.main", "--port", str(port)]
+        cmd = [sys.executable, "-m", "cuga.demo_tools.crm.crm_api.main", "--port", str(port)]
         self._run(
             "crm-server",
             cmd,

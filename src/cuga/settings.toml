@@ -46,7 +46,7 @@ max_input_length = 5000  # Maximum characters allowed in user input (prevents ab
 sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
-cuga_lite_nl_auto_continue = true  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
+cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError

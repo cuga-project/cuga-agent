@@ -1,10 +1,7 @@
-from sqlalchemy.orm import Session
+import sqlite3
 from datetime import datetime, timedelta
 from math import gcd
 
-from crm_api.models import Account, Lead, Contact, Opportunity
-
-# Sample data for realistic CRM data
 INDUSTRIES = [
     "Technology",
     "Healthcare",
@@ -100,7 +97,6 @@ DEPARTMENTS = [
     "Procurement",
 ]
 
-# Predefined company names
 COMPANY_NAMES = [
     "Acme Corporation",
     "Tech Solutions Inc",
@@ -229,7 +225,6 @@ COMPANY_NAMES = [
     "Recharged Corp",
 ]
 
-# Predefined first names
 FIRST_NAMES = [
     "John",
     "Jane",
@@ -403,7 +398,6 @@ FIRST_NAMES = [
     "Carol",
 ]
 
-# Predefined last names
 LAST_NAMES = [
     "Smith",
     "Johnson",
@@ -587,7 +581,6 @@ LAST_NAMES = [
     "Fox",
 ]
 
-# Predefined email domains
 EMAIL_DOMAINS = [
     "gmail.com",
     "yahoo.com",
@@ -628,7 +621,6 @@ EMAIL_DOMAINS = [
     "consulting.com",
 ]
 
-# Predefined cities
 CITIES = [
     "New York",
     "Los Angeles",
@@ -703,7 +695,6 @@ CITIES = [
     "Milwaukee",
 ]
 
-# Predefined states
 STATES = [
     "Alabama",
     "Alaska",
@@ -757,7 +748,6 @@ STATES = [
     "Wyoming",
 ]
 
-# Predefined countries
 COUNTRIES = [
     "United States",
     "Canada",
@@ -817,7 +807,6 @@ COUNTRIES = [
     "Suriname",
 ]
 
-# Predefined opportunity names
 OPPORTUNITY_NAMES = [
     "Enterprise Software License",
     "Cloud Migration Project",
@@ -906,7 +895,6 @@ OPPORTUNITY_NAMES = [
     "ESG Consulting",
 ]
 
-# Predefined opportunity descriptions
 OPPORTUNITY_DESCRIPTIONS = [
     "Comprehensive solution for enterprise needs",
     "Scalable platform for business growth",
@@ -941,302 +929,225 @@ OPPORTUNITY_DESCRIPTIONS = [
 ]
 
 
-def permuted_revenue(
-    account_id: int,
-    min_value: int = 100_000,
-    max_value: int = 10_000_000,
-    step: int = 10_000,
-    a_hint: int = 1_234_567,
-    b: int = 9_876,
-) -> int:
-    """
-    Deterministic permutation for annual revenue that generates 1000 unique values.
-    - Returns values aligned to 'step' (10k increments)
-    - Same account_id always produces the same revenue value
-    """
-    if step <= 0:
-        raise ValueError("step must be positive")
-
-    # Align to the step
-    min_aligned = ((min_value + step - 1) // step) * step
-    max_aligned = (max_value // step) * step
-    if min_aligned > max_aligned:
-        raise ValueError("Range too narrow after alignment to 'step'.")
-
-    # Number of distinct revenue buckets
-    K = (max_aligned - min_aligned) // step + 1
-
-    # Map ID into [0, K-1]
-    x = account_id % K
-
-    # Pick 'a' coprime with K (so the affine map is a permutation)
+def _permuted(id_: int, min_v: int, max_v: int, step: int, a_hint: int, b: int) -> int:
+    min_a = ((min_v + step - 1) // step) * step
+    max_a = (max_v // step) * step
+    K = (max_a - min_a) // step + 1
+    x = id_ % K
     a = a_hint
     while gcd(a, K) != 1:
         a += 1
-
-    # Affine permutation
-    rank = (a * x + b) % K
-
-    # Map back to the value space
-    return min_aligned + rank * step
+    return min_a + ((a * x + b) % K) * step
 
 
-def permuted_value_1k(
-    opportunity_id: int,
-    min_value: int = 5_000,
-    max_value: int = 500_000,
-    step: int = 1_000,
-    a_hint: int = 1_664_525,  # seed for 'a'
-    b: int = 12_345,
-) -> int:
-    """
-    Deterministic permutation over K thousand-buckets so the last 3 digits are 000.
-    - Adjusts min/max to multiples of 'step'.
-    - Uses an affine permutation modulo K: rank = (a*x + b) % K with gcd(a, K) == 1.
-    - Returns: min_aligned + rank*step
-    """
-    if step <= 0:
-        raise ValueError("step must be positive")
-
-    # Align to the step (1,000) so values end with 000
-    min_aligned = ((min_value + step - 1) // step) * step
-    max_aligned = (max_value // step) * step
-    if min_aligned > max_aligned:
-        raise ValueError("Range too narrow after alignment to 'step'.")
-
-    # Number of distinct thousand-buckets
-    K = (max_aligned - min_aligned) // step + 1
-
-    # Map ID into [0, K-1]
-    x = opportunity_id % K
-
-    # Pick 'a' coprime with K (so the affine map is a permutation)
-    a = a_hint
-    # Nudge 'a' until gcd(a, K) == 1
-    while gcd(a, K) != 1:
-        a += 1
-
-    # Affine permutation
-    rank = (a * x + b) % K
-
-    # Map back to the value space (always ends with 000)
-    return min_aligned + rank * step
-
-
-def generate_accounts(count: int = 1000):
-    """Generate sample accounts using predefined arrays"""
-    accounts = []
+def generate_accounts(count: int = 1000) -> list[dict]:
+    rows = []
     for i in range(count):
-        # Cycle through arrays to ensure variety
-        company_name = COMPANY_NAMES[i % len(COMPANY_NAMES)]
-        industry = INDUSTRIES[i % len(INDUSTRIES)]
-        city = CITIES[i % len(CITIES)]
-        state = STATES[i % len(STATES)]
-        country = COUNTRIES[i % len(COUNTRIES)]
-        region = REGIONS[i % len(REGIONS)]
-
-        # Generate email based on company name
-        # email_domain = EMAIL_DOMAINS[i % len(EMAIL_DOMAINS)]
-        # email = f"contact@{company_name.lower().replace(' ', '').replace('.', '').replace(',', '')}.{email_domain}"
-
-        # Generate phone number
-        phone = f"+1-{555:03d}-{1000 + (i % 9000):04d}"
-
-        # Generate website
-        website = f"https://www.{company_name.lower().replace(' ', '').replace('.', '').replace(',', '')}.com"
-
-        # Generate address
-        address = f"{100 + (i % 9000)} {CITIES[i % len(CITIES)]} Street"
-
-        # Generate revenue using deterministic permutation (1000 unique values)
-        annual_revenue = permuted_revenue(i, min_value=100_000, max_value=10_000_000, step=10_000)
-        employee_count = 10 + (i % 100) * 50  # 10 to 5000
-
-        account = Account(
-            name=company_name,
-            industry=industry,
-            website=website,
-            phone=phone,
-            # email=email,
-            address=address,
-            city=city,
-            state=state,
-            country=country,
-            region=region,
-            annual_revenue=annual_revenue,
-            employee_count=employee_count,
+        company = COMPANY_NAMES[i % len(COMPANY_NAMES)]
+        rows.append(
+            {
+                "name": company,
+                "industry": INDUSTRIES[i % len(INDUSTRIES)],
+                "website": f"https://www.{company.lower().replace(' ', '').replace('.', '').replace(',', '')}.com",
+                "phone": f"+1-555-{1000 + (i % 9000):04d}",
+                "address": f"{100 + (i % 9000)} {CITIES[i % len(CITIES)]} Street",
+                "city": CITIES[i % len(CITIES)],
+                "state": STATES[i % len(STATES)],
+                "country": COUNTRIES[i % len(COUNTRIES)],
+                "region": REGIONS[i % len(REGIONS)],
+                "annual_revenue": _permuted(i, 100_000, 10_000_000, 10_000, 1_234_567, 9_876),
+                "employee_count": 10 + (i % 100) * 50,
+            }
         )
-        accounts.append(account)
-    return accounts
+    return rows
 
 
-def generate_leads(count: int = 2000):
-    """Generate sample leads using predefined arrays"""
-    leads = []
+def generate_leads(count: int = 2000) -> list[dict]:
+    score_map = {
+        "new": 20,
+        "contacted": 40,
+        "qualified": 60,
+        "proposal": 80,
+        "negotiation": 90,
+        "closed-won": 100,
+        "closed-lost": 0,
+    }
+    rows = []
     for i in range(count):
-        first_name = FIRST_NAMES[i % len(FIRST_NAMES)]
-        last_name = LAST_NAMES[i % len(LAST_NAMES)]
+        first = FIRST_NAMES[i % len(FIRST_NAMES)]
+        last = LAST_NAMES[i % len(LAST_NAMES)]
+        status = LEAD_STATUSES[i % len(LEAD_STATUSES)]
+        domain = EMAIL_DOMAINS[i % len(EMAIL_DOMAINS)]
+        source = LEAD_SOURCES[i % len(LEAD_SOURCES)]
+        industry = INDUSTRIES[i % len(INDUSTRIES)]
         company = COMPANY_NAMES[i % len(COMPANY_NAMES)]
         job_title = JOB_TITLES[i % len(JOB_TITLES)]
-        industry = INDUSTRIES[i % len(INDUSTRIES)]
-        source = LEAD_SOURCES[i % len(LEAD_SOURCES)]
-        status = LEAD_STATUSES[i % len(LEAD_STATUSES)]
-        email_domain = EMAIL_DOMAINS[i % len(EMAIL_DOMAINS)]
-
-        # Generate email
-        email = f"{first_name.lower()}.{last_name.lower()}@{email_domain}"
-
-        # Generate phone
-        phone = f"+1-{555:03d}-{2000 + (i % 8000):04d}"
-
-        # Generate score based on status
-        score_map = {
-            "new": 20,
-            "contacted": 40,
-            "qualified": 60,
-            "proposal": 80,
-            "negotiation": 90,
-            "closed-won": 100,
-            "closed-lost": 0,
-        }
-        score = score_map.get(status, 20)
-
-        # Generate notes
-        notes = f"Lead from {source} for {industry} industry. Contact at {company} as {job_title}."
-
-        lead = Lead(
-            first_name=first_name,
-            last_name=last_name,
-            email=email,
-            phone=phone,
-            company=company,
-            job_title=job_title,
-            industry=industry,
-            source=source,
-            status=status,
-            score=score,
-            notes=notes,
+        rows.append(
+            {
+                "first_name": first,
+                "last_name": last,
+                "email": f"{first.lower()}.{last.lower()}@{domain}",
+                "phone": f"+1-555-{2000 + (i % 8000):04d}",
+                "company": company,
+                "job_title": job_title,
+                "industry": industry,
+                "source": source,
+                "status": status,
+                "score": score_map.get(status, 20),
+                "notes": f"Lead from {source} for {industry} industry. Contact at {company} as {job_title}.",
+            }
         )
-        leads.append(lead)
-    return leads
+    return rows
 
 
-def generate_contacts(accounts: list, contacts_per_account: int = 5):
-    """Generate sample contacts for accounts using predefined arrays"""
-    contacts = []
+def generate_contacts(accounts: list[dict]) -> list[dict]:
+    rows = []
     contact_id = 0
     for account in accounts:
-        # Generate 3-8 contacts per account
-        num_contacts = 1  # 3 + (contact_id % 6)
-        for i in range(num_contacts):
-            first_name = FIRST_NAMES[contact_id % len(FIRST_NAMES)]
-            last_name = LAST_NAMES[contact_id % len(LAST_NAMES)]
-            job_title = JOB_TITLES[contact_id % len(JOB_TITLES)]
-            department = DEPARTMENTS[contact_id % len(DEPARTMENTS)]
-            email_domain = EMAIL_DOMAINS[contact_id % len(EMAIL_DOMAINS)]
-
-            # Generate email
-            email = f"{first_name.lower()}.{last_name.lower()}@{account.name.lower().replace(' ', '').replace('.', '').replace(',', '')}.{email_domain}"
-
-            # Generate phone
-            phone = f"+1-{555:03d}-{3000 + (contact_id % 7000):04d}"
-
-            contact = Contact(
-                first_name=first_name,
-                last_name=last_name,
-                email=email,
-                phone=phone,
-                job_title=job_title,
-                department=department,
-                is_primary=(i == 0),  # First contact is primary
-                account_id=account.id,
-            )
-            contacts.append(contact)
-            contact_id += 1
-    return contacts
+        first = FIRST_NAMES[contact_id % len(FIRST_NAMES)]
+        last = LAST_NAMES[contact_id % len(LAST_NAMES)]
+        domain = EMAIL_DOMAINS[contact_id % len(EMAIL_DOMAINS)]
+        slug = account["name"].lower().replace(" ", "").replace(".", "").replace(",", "")
+        rows.append(
+            {
+                "first_name": first,
+                "last_name": last,
+                "email": f"{first.lower()}.{last.lower()}@{slug}.{domain}",
+                "phone": f"+1-555-{3000 + (contact_id % 7000):04d}",
+                "job_title": JOB_TITLES[contact_id % len(JOB_TITLES)],
+                "department": DEPARTMENTS[contact_id % len(DEPARTMENTS)],
+                "is_primary": 1,
+                "account_id": account["id"],
+            }
+        )
+        contact_id += 1
+    return rows
 
 
-def generate_opportunities(accounts: list, opportunities_per_account: int = 8):
-    """Generate sample opportunities for accounts using predefined arrays"""
-    opportunities = []
-    opportunity_id = 0
+def generate_opportunities(accounts: list[dict]) -> list[dict]:
+    prob_map = {
+        "prospecting": 0.1,
+        "qualification": 0.3,
+        "proposal": 0.6,
+        "negotiation": 0.8,
+        "closed-won": 1.0,
+        "closed-lost": 0.0,
+    }
+    rows = []
+    opp_id = 0
     for idx, account in enumerate(accounts):
         if idx % 5 != 0:
             continue
-        # Generate 2-10 opportunities per account
-        num_opportunities = 2  # + (opportunity_id % 9)
-        for i in range(num_opportunities):
-            opportunity_name = OPPORTUNITY_NAMES[opportunity_id % len(OPPORTUNITY_NAMES)]
-            description = OPPORTUNITY_DESCRIPTIONS[opportunity_id % len(OPPORTUNITY_DESCRIPTIONS)]
-            stage = OPPORTUNITY_STAGES[opportunity_id % len(OPPORTUNITY_STAGES)]
-
-            # Generate close date within next 12 months
-            days_ahead = 30 + (opportunity_id % 365)
-            close_date = datetime.now() + timedelta(days=days_ahead)
-
-            # Generate value with some variation
-            # base_value = 5000 + (opportunity_id % 50) * 1000  # 5k to 50k base
-            # multiplier = 1 + (opportunity_id % 10)  # 1x to 10x multiplier
-            value = permuted_value_1k(opportunity_id)
-
-            # Generate probability based on stage
-            prob_map = {
-                "prospecting": 0.1,
-                "qualification": 0.3,
-                "proposal": 0.6,
-                "negotiation": 0.8,
-                "closed-won": 1.0,
-                "closed-lost": 0.0,
-            }
-            probability = prob_map.get(stage, 0.5)
-
-            opportunity = Opportunity(
-                name=f"{account.name} - {opportunity_name}",
-                description=description,
-                value=value,
-                currency="USD",
-                stage=stage,
-                probability=probability,
-                close_date=close_date,
-                account_id=account.id,
+        for _ in range(2):
+            stage = OPPORTUNITY_STAGES[opp_id % len(OPPORTUNITY_STAGES)]
+            close_date = (datetime.now() + timedelta(days=30 + (opp_id % 365))).strftime("%Y-%m-%dT%H:%M:%S")
+            opp_name = OPPORTUNITY_NAMES[opp_id % len(OPPORTUNITY_NAMES)]
+            rows.append(
+                {
+                    "name": f"{account['name']} - {opp_name}",
+                    "description": OPPORTUNITY_DESCRIPTIONS[opp_id % len(OPPORTUNITY_DESCRIPTIONS)],
+                    "value": float(_permuted(opp_id, 5_000, 500_000, 1_000, 1_664_525, 12_345)),
+                    "currency": "USD",
+                    "stage": stage,
+                    "probability": prob_map.get(stage, 0.5),
+                    "close_date": close_date,
+                    "account_id": account["id"],
+                }
             )
-            opportunities.append(opportunity)
-            opportunity_id += 1
-    return opportunities
+            opp_id += 1
+    return rows
 
 
-def seed_database(db: Session):
-    """Seed the database with sample data"""
+def seed_database(conn: sqlite3.Connection) -> None:
     print("Seeding database with sample data...")
 
-    # Generate accounts (1000)
     print("Generating 1000 accounts...")
-    accounts = generate_accounts(1000)
-    db.add_all(accounts)
-    db.commit()
-    db.refresh(accounts[0])  # Refresh to get IDs
+    account_rows = generate_accounts(1000)
+    conn.executemany(
+        "INSERT INTO accounts (name,industry,website,phone,address,city,state,country,region,annual_revenue,employee_count) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                r["name"],
+                r["industry"],
+                r["website"],
+                r["phone"],
+                r["address"],
+                r["city"],
+                r["state"],
+                r["country"],
+                r["region"],
+                r["annual_revenue"],
+                r["employee_count"],
+            )
+            for r in account_rows
+        ],
+    )
+    conn.commit()
+    accounts_with_ids = [dict(r) for r in conn.execute("SELECT id, name FROM accounts").fetchall()]
 
-    # Generate leads (2000)
     print("Generating 2000 leads...")
-    leads = generate_leads(2000)
-    db.add_all(leads)
-    db.commit()
+    lead_rows = generate_leads(2000)
+    conn.executemany(
+        "INSERT INTO leads (first_name,last_name,email,phone,company,job_title,industry,source,status,score,notes) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+        [
+            (
+                r["first_name"],
+                r["last_name"],
+                r["email"],
+                r["phone"],
+                r["company"],
+                r["job_title"],
+                r["industry"],
+                r["source"],
+                r["status"],
+                r["score"],
+                r["notes"],
+            )
+            for r in lead_rows
+        ],
+    )
+    conn.commit()
 
-    # Generate contacts for accounts (5000+)
     print("Generating contacts...")
-    contacts = generate_contacts(accounts)
-    db.add_all(contacts)
-    db.commit()
+    contact_rows = generate_contacts(accounts_with_ids)
+    conn.executemany(
+        "INSERT INTO contacts (first_name,last_name,email,phone,job_title,department,is_primary,account_id) VALUES (?,?,?,?,?,?,?,?)",
+        [
+            (
+                r["first_name"],
+                r["last_name"],
+                r["email"],
+                r["phone"],
+                r["job_title"],
+                r["department"],
+                r["is_primary"],
+                r["account_id"],
+            )
+            for r in contact_rows
+        ],
+    )
+    conn.commit()
 
-    # Generate opportunities for accounts (8000+)
     print("Generating opportunities...")
-    opportunities = generate_opportunities(accounts)
-    db.add_all(opportunities)
-    db.commit()
+    opp_rows = generate_opportunities(accounts_with_ids)
+    conn.executemany(
+        "INSERT INTO opportunities (name,description,value,currency,stage,probability,close_date,account_id) VALUES (?,?,?,?,?,?,?,?)",
+        [
+            (
+                r["name"],
+                r["description"],
+                r["value"],
+                r["currency"],
+                r["stage"],
+                r["probability"],
+                r["close_date"],
+                r["account_id"],
+            )
+            for r in opp_rows
+        ],
+    )
+    conn.commit()
 
-    print("Database seeded successfully!")
-    print(f"- {len(accounts)} accounts")
-    print(f"- {len(leads)} leads")
-    print(f"- {len(contacts)} contacts")
-    print(f"- {len(opportunities)} opportunities")
-    print(f"- Total records: {len(accounts) + len(leads) + len(contacts) + len(opportunities)}")
+    print(
+        f"Database seeded: {len(account_rows)} accounts, {len(lead_rows)} leads, {len(contact_rows)} contacts, {len(opp_rows)} opportunities"
+    )

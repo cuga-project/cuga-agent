@@ -1,4 +1,4 @@
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel
 from typing import Optional, List, Generic, TypeVar
 from datetime import datetime
 
@@ -21,7 +21,7 @@ class AccountBase(BaseModel):
     industry: Optional[str] = None
     website: Optional[str] = None
     phone: Optional[str] = None
-    # email: Optional[EmailStr] = None
+    # email: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
@@ -40,7 +40,7 @@ class AccountUpdate(BaseModel):
     industry: Optional[str] = None
     website: Optional[str] = None
     phone: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     address: Optional[str] = None
     city: Optional[str] = None
     state: Optional[str] = None
@@ -63,7 +63,7 @@ class AccountResponse(AccountBase):
 class LeadBase(BaseModel):
     first_name: str
     last_name: str
-    email: EmailStr
+    email: str
     phone: Optional[str] = None
     company: Optional[str] = None
     job_title: Optional[str] = None
@@ -81,7 +81,7 @@ class LeadCreate(LeadBase):
 class LeadUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     phone: Optional[str] = None
     company: Optional[str] = None
     job_title: Optional[str] = None
@@ -105,7 +105,7 @@ class LeadResponse(LeadBase):
 class ContactBase(BaseModel):
     first_name: str
     last_name: str
-    email: EmailStr
+    email: str
     phone: Optional[str] = None
     job_title: Optional[str] = None
     department: Optional[str] = None
@@ -120,7 +120,7 @@ class ContactCreate(ContactBase):
 class ContactUpdate(BaseModel):
     first_name: Optional[str] = None
     last_name: Optional[str] = None
-    email: Optional[EmailStr] = None
+    email: Optional[str] = None
     phone: Optional[str] = None
     job_title: Optional[str] = None
     department: Optional[str] = None
