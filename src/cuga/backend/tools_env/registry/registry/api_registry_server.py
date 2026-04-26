@@ -140,7 +140,19 @@ async def _get_or_create_registry(
             logger.debug(f"Knowledge MCP transport override skipped: {e}")
 
     manager = MCPManager(config=services)
-    reg = ApiRegistry(client=manager)
+    
+    # Get policy storage if policy system is enabled
+    policy_storage = None
+    if settings.policy.enabled:
+        try:
+            from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+            policy_storage = PolicyStorage()
+            await policy_storage.connect()
+            logger.info("✅ Connected policy storage for ToolGuardRuntime")
+        except Exception as e:
+            logger.warning(f"Failed to connect policy storage: {e}")
+    
+    reg = ApiRegistry(client=manager, policy_storage=policy_storage)
     await reg.start_servers()
 
     agent_registries[agent_id] = (manager, reg)
@@ -166,7 +178,19 @@ async def lifespan(app: FastAPI):
         print(f"Using configuration file: {config_file}")
         services = load_service_configs(str(config_file))
         mcp_manager = MCPManager(config=services)
-        registry = ApiRegistry(client=mcp_manager)
+        
+        # Get policy storage if policy system is enabled
+        policy_storage = None
+        if settings.policy.enabled:
+            try:
+                from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+                policy_storage = PolicyStorage()
+                await policy_storage.connect()
+                logger.info("✅ Connected policy storage for ToolGuardRuntime")
+            except Exception as e:
+                logger.warning(f"Failed to connect policy storage: {e}")
+        
+        registry = ApiRegistry(client=mcp_manager, policy_storage=policy_storage)
         await registry.start_servers()
 
     yield
@@ -516,7 +540,19 @@ async def reload_config(
             logger.info(f"Reloading from file: {config_path}")
             services = load_service_configs(config_path)
             new_manager = MCPManager(config=services)
-            new_registry = ApiRegistry(client=new_manager)
+            
+            # Get policy storage if policy system is enabled
+            policy_storage = None
+            if settings.policy.enabled:
+                try:
+                    from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+                    policy_storage = PolicyStorage()
+                    await policy_storage.connect()
+                    logger.info("✅ Connected policy storage for ToolGuardRuntime")
+                except Exception as e:
+                    logger.warning(f"Failed to connect policy storage: {e}")
+            
+            new_registry = ApiRegistry(client=new_manager, policy_storage=policy_storage)
             await new_registry.start_servers()
             if 'mcp_manager' in globals():
                 await mcp_manager.shutdown()

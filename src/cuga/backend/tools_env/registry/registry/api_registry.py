@@ -29,12 +29,17 @@ class ApiRegistry:
     interacting with the mcp manager
     """
 
-    def __init__(self, client: MCPManager):
+    def __init__(self, client: MCPManager, policy_storage=None):
         logger.info("ApiRegistry: Initializing.")
         self.mcp_client = client
         self.auth_manager = None
         self.tavily_client = None
         self._init_tavily_if_enabled()
+        
+        # ToolGuardRuntime support for policy-based tool validation
+        self.policy_storage = policy_storage
+        self.tool_guard_runtime = None
+        self._tool_guard_initialized = False
 
     def _init_tavily_if_enabled(self):
         """Initialize Tavily client if web search is enabled."""
@@ -60,6 +65,49 @@ class ApiRegistry:
         """Start servers and load tools"""
         await self.mcp_client.load_tools()
         logger.info("ApiRegistry: Servers started successfully.")
+        
+        # Initialize ToolGuardRuntime after tools are loaded
+        await self._initialize_tool_guard_runtime()
+    
+    async def _initialize_tool_guard_runtime(self):
+        """
+        Initialize ToolGuardRuntime after tools are loaded.
+        
+        This is called after load_tools() to ensure both tools and policies are available.
+        """
+        if self._tool_guard_initialized:
+            return
+        
+        self._tool_guard_initialized = True
+        
+        if self.policy_storage is None:
+            logger.debug("ToolGuardRuntime: No policy storage provided, skipping initialization")
+            return
+        
+        try:
+            from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
+            
+            # Note: tool_provider is only needed if guards invoke tools via the invoker
+            # For most guards that just validate arguments, it's not used
+            # We pass self.mcp_client which can be wrapped if needed
+            self.tool_guard_runtime = ToolGuardRuntime(
+                tool_provider=self.mcp_client,
+                policy_storage=self.policy_storage
+            )
+            
+            await self.tool_guard_runtime.initialize()
+            
+            guarded_tools = self.tool_guard_runtime.get_guarded_tools()
+            logger.info(
+                f"✅ ToolGuardRuntime initialized with guards for {len(guarded_tools)} tools"
+            )
+            if guarded_tools:
+                logger.debug(f"   Guarded tools: {', '.join(guarded_tools)}")
+            
+        except Exception as e:
+            logger.warning(f"Failed to initialize ToolGuardRuntime: {e}")
+            logger.debug(f"ToolGuardRuntime initialization error details:", exc_info=True)
+            self.tool_guard_runtime = None
 
     async def show_applications(self) -> List[AppDefinition]:
         """Lists application names and their descriptions."""
@@ -179,6 +227,35 @@ class ApiRegistry:
         self, app_name: str, function_name: str, arguments: Dict[str, Any], auth_config=None
     ) -> Dict[str, Any]:
         """Calls a function via the mcp_client."""
+        
+        # Validate tool call against ToolGuard policies
+        if self.tool_guard_runtime and self.tool_guard_runtime.is_initialized:
+            try:
+                error_message = await self.tool_guard_runtime.guard_tool_call(
+                    app_name=app_name,
+                    function_name=function_name,
+                    arguments=arguments
+                )
+                
+                if error_message:
+                    # Guard validation failed - return error without executing tool
+                    logger.warning(
+                        f"🛡️ Tool guard blocked call to '{function_name}': {error_message}"
+                    )
+                    return {
+                        "status": "exception",
+                        "status_code": 403,
+                        "message": f"Tool guard policy violation: {error_message}",
+                        "error_type": "ToolGuardViolation",
+                        "function_name": function_name,
+                    }
+                else:
+                    logger.debug(f"✅ Tool guard validation passed for '{function_name}'")
+            except Exception as e:
+                # Log guard execution error but don't block the tool call
+                # This ensures a broken guard doesn't break the entire system
+                logger.error(f"Error executing tool guard for '{function_name}': {e}", exc_info=True)
+        
         if app_name == "web" and function_name == "search_web" and self._is_web_search_enabled():
             args = arguments.get('params', arguments) if isinstance(arguments, dict) else arguments
             query = args.get('query') if isinstance(args, dict) else str(args)

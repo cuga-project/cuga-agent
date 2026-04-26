@@ -8,6 +8,8 @@ ToolGuide policies with policy_code.
 from typing import Dict, Any, List, Optional
 from loguru import logger
 
+from toolguard.runtime.data_types import PolicyViolationException
+
 from cuga.backend.cuga_graph.policy.tool_guard.tool_invoker import ToolGuardInvoker
 from cuga.backend.cuga_graph.policy.models import ToolGuide, PolicyType
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
@@ -162,42 +164,146 @@ class ToolGuardRuntime:
                     f"Executing guard '{policy.name}' for tool '{function_name}'"
                 )
                 
-                # Create execution context with necessary variables
+                def rule(name: str):
+                    """Decorator for policy rules - just returns the function."""
+                    def decorator(func):
+                        return func
+                    return decorator
+                
+                def assert_any_condition_met(*conditions):
+                    """Mock function for assert_any_condition_met."""
+                    pass
+                
+                # Create a simple args object from the arguments dict
+                class Args:
+                    def __init__(self, **kwargs):
+                        for key, value in kwargs.items():
+                            setattr(self, key, value)
+                
+                args_obj = Args(**arguments)
+                
+                # Create a dynamic API wrapper that provides method-like access to tools
+                class DynamicAPIWrapper:
+                    """Wrapper that allows calling tools as methods on the api object."""
+                    
+                    def __init__(self, invoker):
+                        self._invoker = invoker
+                    
+                    def __getattr__(self, tool_name: str):
+                        """
+                        Return a callable that invokes the tool with the given name.
+                        This allows code like: api.get_membership(args)
+                        """
+                        async def tool_caller(args_obj):
+                            # Convert args object to dict
+                            if hasattr(args_obj, '__dict__'):
+                                args_dict = args_obj.__dict__
+                            else:
+                                args_dict = args_obj
+                            
+                            # Invoke the tool through the invoker
+                            result = await self._invoker.invoke(
+                                toolname=tool_name,
+                                arguments=args_dict,
+                                return_type=str  # Default to str, could be improved
+                            )
+                            return result
+                        
+                        return tool_caller
+                
+                api_wrapper = DynamicAPIWrapper(self.invoker)
+                
+                # Create execution context with necessary variables and mocks
                 exec_globals = {
                     'app_name': app_name,
                     'function_name': function_name,
                     'arguments': arguments,
                     'invoker': self.invoker,
+                    # Mock imports for generated code
+                    'PolicyViolationException': PolicyViolationException,
+                    'rule': rule,
+                    'assert_any_condition_met': assert_any_condition_met,
+                    'typing': __import__('typing'),
+                    'Any': Any,
+                    'Dict': Dict,
+                    'List': List,
+                    'Optional': Optional,
                 }
                 
                 # Execute the policy code
-                # The policy_code should define a 'validate' function
+                # The policy_code may define either:
+                # 1. A 'validate' function (legacy format)
+                # 2. A decorated function with @rule (generated format)
                 exec(tool_guard.policy_code, exec_globals)
                 
-                # Check if validate function was defined
-                if 'validate' not in exec_globals:
+                # Find the validation function
+                validate_fn = None
+                
+                # First, check for 'validate' function (legacy format)
+                if 'validate' in exec_globals:
+                    validate_fn = exec_globals['validate']
+                    logger.debug(f"Found 'validate' function in policy code")
+                else:
+                    # Look for any function that starts with 'guard_' (generated format)
+                    for name, obj in exec_globals.items():
+                        if name.startswith('guard_') and callable(obj):
+                            validate_fn = obj
+                            logger.debug(f"Found guard function '{name}' in policy code")
+                            break
+                
+                if validate_fn is None:
                     logger.warning(
                         f"Policy code for '{policy.name}' does not define "
-                        f"a 'validate' function, skipping"
+                        f"a 'validate' or 'guard_*' function, skipping"
                     )
                     continue
-                
-                validate_fn = exec_globals['validate']
                 
                 # Call the validate function
                 # Support both sync and async validate functions
                 import inspect
-                if inspect.iscoroutinefunction(validate_fn):
-                    error = await validate_fn(
-                        app_name=app_name,
-                        function_name=function_name,
-                        arguments=arguments
-                    )
-                else:
-                    error = validate_fn(
-                        app_name=app_name,
-                        function_name=function_name,
-                        arguments=arguments
+                
+                # Determine the function signature to call it correctly
+                sig = inspect.signature(validate_fn)
+                params = list(sig.parameters.keys())
+                
+                error: Optional[str] = None
+                
+                # Call the validate function and catch PolicyViolationException
+                try:
+                    if inspect.iscoroutinefunction(validate_fn):
+                        # For generated code format: func(api, args)
+                        if len(params) >= 2 and params[0] in ['api', 'invoker']:
+                            await validate_fn(api_wrapper, args_obj)
+                        # For legacy format: func(app_name, function_name, arguments)
+                        elif 'app_name' in params or 'function_name' in params:
+                            result = await validate_fn(
+                                app_name=app_name,
+                                function_name=function_name,
+                                arguments=arguments
+                            )
+                            error = str(result) if result else None
+                        else:
+                            # Try calling with api_wrapper and args
+                            await validate_fn(api_wrapper, args_obj)
+                    else:
+                        # Sync function
+                        if len(params) >= 2 and params[0] in ['api', 'invoker']:
+                            validate_fn(api_wrapper, args_obj)
+                        elif 'app_name' in params or 'function_name' in params:
+                            result = validate_fn(
+                                app_name=app_name,
+                                function_name=function_name,
+                                arguments=arguments
+                            )
+                            error = str(result) if result else None
+                        else:
+                            validate_fn(api_wrapper, args_obj)
+                
+                except PolicyViolationException as e:
+                    # Policy violation - this is expected behavior
+                    error = str(e)
+                    logger.debug(
+                        f"Guard '{policy.name}' caught policy violation: {error}"
                     )
                 
                 # If validation failed, return the error message
@@ -211,6 +317,16 @@ class ToolGuardRuntime:
                 logger.debug(
                     f"Guard '{policy.name}' passed for tool '{function_name}'"
                 )
+                    
+            except PolicyViolationException as e:
+                # Policy violation at the outer level - should have been caught above
+                # but handle it here as well for safety
+                error = str(e)
+                logger.warning(
+                    f"Tool guard '{policy.name}' blocked call to "
+                    f"'{function_name}': {error}"
+                )
+                return error
                     
             except Exception as e:
                 logger.error(
