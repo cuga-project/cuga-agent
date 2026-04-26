@@ -164,11 +164,14 @@ JSON schema:
                 # with_structured_output path.
                 if "$defs" in schema.model_json_schema():
                     logger.debug(
-                        "Schema has $defs/$ref; using prompt-based JSON parsing "
-                        "for watsonx (response_format triggers empty content)"
+                        "Schema has $defs/$ref; trying guided decoding first, "
+                        "falling back to prompt-based parsing on failure"
                     )
-                    chain = prompt_template | llm | parser
-                    return chain.with_retry(stop_after_attempt=3)
+                    guided_chain = BaseAgent.create_validated_structured_output_chain(
+                        llm, schema, prompt_template
+                    )
+                    fallback_chain = (prompt_template | llm | parser).with_retry(stop_after_attempt=3)
+                    return guided_chain.with_fallbacks([fallback_chain])
                 return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
             elif wx_json_mode == "function_calling" or wx_json_mode == "json_mode":
                 chain = prompt_template | llm.with_structured_output(schema, method=wx_json_mode)
