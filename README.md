@@ -867,29 +867,6 @@ instruction_set = "default"  # or any instruction set above
 </details>
 
 <details>
-<summary><em style="color: #666;"> 📹 Optional: Run with memory</em></summary>
-
-1. Install memory dependencies `uv sync --extra memory`
-1. Change `enable_memory = true` in `settings.toml`
-2. Run `cuga start memory`
-
-Watch CUGA with Memory enabled
-
-[LINK]
-
-<b>Would you like to test this? (Advanced Demo)</b>
-
-### Setup Steps:
-
-1. set `enable_memory` flag to true
-2. Run `cuga start memory`
-3. Run `cuga start demo_crm --sample-memory-data` 
-4. go to the cuga webpage and type `Identify the common cities between my cuga_workspace/cities.txt and cuga_workspace/company.txt` . Here you should see the errors related to CodeAgent. Wait for a minute for `tips` to be generated. `Tips` generation can be confirmed from the  terminal where` cuga start memory` was run
-5. Re-run the same utterance again and it should finish in lesser number of steps
-
-</details>
-
-<details>
 <summary><em style="color: #666;"> 🧠 Optional: Use Evolve with CugaLite</em></summary>
 
 Evolve can now be used with **CugaLite** to bring task-specific guidance into the prompt before execution and save completed trajectories after the run.
@@ -904,48 +881,32 @@ This flow is:
 ### Setup Steps:
 
 1. Choose how Evolve will be started.
-
-   Recommended for normal CUGA usage: let the CUGA MCP registry launch Evolve for you.
-
+  Recommended for normal CUGA usage: let the CUGA MCP registry launch Evolve for you.
    In the manager UI, add an MCP tool with:
-
-   - Name: `evolve`
-   - Connection type: `Command (stdio)`
-   - Command: `uvx`
-   - Args:
-
-   ```text
-   --from
-   altk-evolve
-   --with
-   setuptools<70
-   evolve-mcp
-   ```
-
-   Then set the tool environment values in the UI. Recommended defaults:
-
-   ```text
-   EVOLVE_MODEL_NAME=Azure/gpt-4o
-   OPENAI_API_KEY=env://OPENAI_API_KEY # pragma: allowlist secret
-   OPENAI_BASE_URL=env://OPENAI_BASE_URL # pragma: allowlist secret
-   ```
-
-   Notes:
-   - Use a model your gateway/team is actually allowed to access. Replace `Azure/gpt-4o` with the exact allowed model if needed.
-   - `OPENAI_API_KEY=env://OPENAI_API_KEY` means "read the real value from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
-   - `OPENAI_BASE_URL=env://OPENAI_BASE_URL` means "read the LiteLLM/OpenAI-compatible base URL from the CUGA process environment at runtime". <!-- pragma: allowlist secret -->
-   - `setuptools<70` is included because `milvus-lite` still imports `pkg_resources`.
-
+  - Name: `evolve`
+  - Connection type: `Command (stdio)`
+  - Command: `uvx`
+  - Args: `--from altk-evolve --with setuptools<70 evolve-mcp`
    Important: this command starts Evolve in `stdio` mode through the upstream Evolve package. It is intended to be launched by the CUGA registry, not run manually in a separate terminal.
-
    Alternative for standalone/manual debugging: run Evolve yourself as an SSE server:
+   If you run Evolve from a checked-out `altk-evolve` repo instead of `uvx`, install the Postgres extras first with `uv sync --extra pgvector`.
+2. Add these environment values in the MCP tool UI:
 
-   ```bash
-   uvx --from altk-evolve --with 'setuptools<70' evolve-mcp --transport sse --port 8201
-   ```
+```env
+EVOLVE_BACKEND=postgres
+EVOLVE_PG_HOST=localhost
+EVOLVE_PG_PORT=5432
+EVOLVE_PG_USER=postgres
+EVOLVE_PG_PASSWORD=postgres
+EVOLVE_PG_DBNAME=evolve
+EVOLVE_MODEL_NAME=Azure/gpt-4o
+OPENAI_API_KEY=env://OPENAI_API_KEY
+OPENAI_BASE_URL=env://OPENAI_BASE_URL
+```
 
-   Quote `setuptools<70` when running this in a shell; otherwise `zsh`/`bash` treat `<` as input redirection.
-2. Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
+Each `env://...` value tells CUGA to read the real secret or setting from its own process environment at runtime, so make sure PostgreSQL is reachable, `pgvector` is available, and the configured OpenAI/LiteLLM-compatible model is one your gateway is allowed to use.
+
+1. **[Optional]** Edit `./src/cuga/settings.toml` and enable lite mode plus Evolve:
 
 ```toml
 [advanced_features]
@@ -969,13 +930,17 @@ If you run Evolve manually as a standalone SSE server, keep `url = "http://127.0
 
 If you use Evolve tip generation, make sure the environment for the Evolve MCP server includes the required Evolve model settings. Otherwise `save_trajectory` may fail later with a LiteLLM/OpenAI model access error even when the MCP connection itself works.
 
-3. Start CUGA normally:
+1. Start the same CRM demo with sample workspace files:
 
 ```bash
-cuga start demo
+cuga start demo_crm --sample-memory-data
 ```
 
-4. Run a task that routes through CugaLite
+1. Run a task that routes through CugaLite, for example:
+
+```text
+Identify the common cities between my cuga_workspace/cities.txt and cuga_workspace/company.txt
+```
 
 ### What happens during a run?
 
@@ -993,7 +958,6 @@ cuga start demo
 - `mode = "registry"` is best when you want Evolve to be fully managed as a normal CUGA MCP tool
 - `mode = "direct"` is best when you are manually running an SSE Evolve server outside CUGA
 - If Evolve is unavailable, times out, or returns no guidance, CUGA continues normally
-- This integration is separate from the older `cuga start memory` namespace / tip workflow
 
 </details>
 

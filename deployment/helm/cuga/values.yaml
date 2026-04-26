@@ -50,6 +50,14 @@ env:
 # When set, sensitive keys are sourced via secretKeyRef instead of plain value.
 existingSecret: ""
 
+resources:
+  requests:
+    memory: 2Gi
+    cpu: 200m
+  limits:
+    memory: 4Gi
+    cpu: "2"
+
 persistence:
   dbs:
     enabled: true

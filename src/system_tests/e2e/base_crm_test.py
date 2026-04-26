@@ -44,11 +44,7 @@ class BaseCRMTestServerStream(BaseTestServerStream):
         await asyncio.sleep(2)
 
         # Set MCP servers file for CRM configuration
-        os.environ["MCP_SERVERS_FILE"] = os.path.join(
-            os.path.dirname(__file__),
-            "config",
-            "mcp_servers_crm_hf.yaml" if self.mode == "hf" else "mcp_servers_crm.yaml",
-        )
+        os.environ["MCP_SERVERS_FILE"] = "none"
         print(f"Set MCP_SERVERS_FILE to: {os.environ['MCP_SERVERS_FILE']}")
 
         # Set environment variables for this test class

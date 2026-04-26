@@ -1,7 +1,10 @@
 **Current Task**: {{current_task}}
 
-**Conversation history**: {{agent_history}}
+{% if apps and apps|length > 0 %}
+**Connected applications** (executor scope; tool calls and `find_tools` apply to these): {% for app in apps %}{{ app['name'] }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% if enable_find_tools %} Discovery: `find_tools(query, app_name)` searches tools **within** the given `app_name` from the list above.{% endif %}
 
-**Find tools output**: {{shortlister_agent_output}}
+{% endif %}
+**Conversation history**: {{agent_history}}
 
 **Code in previous turn**: {{coder_agent_output}}

@@ -25,6 +25,34 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 
+def _pending_tool_approval_code(state: AgentState) -> str:
+    """Code pending tool approval: prefer metadata (matches policy check), else chat AI text."""
+    md = state.cuga_lite_metadata or {}
+    full = md.get("full_code")
+    if isinstance(full, str) and full.strip():
+        return full
+    preview = md.get("code_preview")
+    if preview:
+        return "\n".join(preview)
+    for msg in reversed(state.chat_messages or []):
+        if getattr(msg, "type", None) != "ai":
+            continue
+        content = getattr(msg, "content", None)
+        if isinstance(content, str) and content.strip():
+            return content
+        if isinstance(content, list):
+            parts: list[str] = []
+            for block in content:
+                if isinstance(block, str):
+                    parts.append(block)
+                elif isinstance(block, dict):
+                    parts.append(str(block.get("text", "")))
+            joined = "\n".join(parts)
+            if joined.strip():
+                return joined
+    return ""
+
+
 def create_digital_sales_tool_provider() -> ToolProviderInterface:
     """Create a tool provider with digital_sales tools for testing.
 
@@ -396,13 +424,11 @@ async def test_tool_approval_modification_flow():
         state_values = AgentState(**state_snapshot.values)
         assert state_values.hitl_action is not None, "hitl_action should be set"
 
-        # Get the original code
-        original_code = None
-        for msg in reversed(state_values.chat_messages):
-            if msg.type == "ai" and "digital_sales" in msg.content.lower():
-                original_code = msg.content
-                break
-        assert original_code, "Should have original code"
+        original_code = _pending_tool_approval_code(state_values)
+        assert original_code, "Should have original code pending approval"
+        assert "digital_sales" in original_code.lower() or "get_my_accounts" in original_code.lower(), (
+            "Pending code should reference the digital_sales tool"
+        )
         print("  ✅ Original code retrieved")
         print(f"  Original code preview: {original_code[:100]}...")
 
@@ -449,14 +475,12 @@ async def test_tool_approval_modification_flow():
         assert state_snapshot_2.next, "Graph should be interrupted waiting for approval"
         print("  ✅ Graph interrupted again for approval")
 
-        # Get the modified code
         state_values_2 = AgentState(**state_snapshot_2.values)
-        modified_code = None
-        for msg in reversed(state_values_2.chat_messages):
-            if msg.type == "ai" and "digital_sales" in msg.content.lower():
-                modified_code = msg.content
-                break
-        assert modified_code, "Should have modified code"
+        modified_code = _pending_tool_approval_code(state_values_2)
+        assert modified_code, "Should have modified code pending approval"
+        assert "digital_sales" in modified_code.lower() or "get_my_accounts" in modified_code.lower(), (
+            "Pending code should reference the digital_sales tool"
+        )
         print("  ✅ Modified code retrieved")
         print(f"  Modified code preview: {modified_code[:100]}...")
 

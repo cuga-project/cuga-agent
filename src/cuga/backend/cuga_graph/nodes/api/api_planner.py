@@ -193,31 +193,6 @@ class ApiPlanner(BaseNode):
                     logger.debug(f"Human consultation response received: {human_response}")
                     state.sender = name
 
-        if settings.advanced_features.enable_fact and settings.advanced_features.enable_memory:
-            from cuga.backend.memory.memory import Memory
-
-            logger.info("Retrieving facts stored in memory")
-            filters = {
-                "user_id": state.user_id,
-            }
-            memory = Memory()
-            try:
-                retrieved_facts = memory.search_for_facts(
-                    namespace_id='memory', query=state.input, filters=filters
-                )
-            except Exception as e:
-                logger.warning(f"Failed to retrieve facts from memory: {e}")
-                retrieved_facts = None
-
-            if retrieved_facts:
-                for fact in retrieved_facts:
-                    if "variable_name" in fact.content:
-                        mem_dict = json.loads(fact.content)
-                        state.variables_manager.add_variable(
-                            name=mem_dict.get("variable_name"),
-                            description=mem_dict.get("description", ""),
-                            value=mem_dict.get("value"),
-                        )
         # First time visit
         if (
             state.api_last_step

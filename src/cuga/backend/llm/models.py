@@ -461,6 +461,49 @@ class LLMManager:
             # For other platforms, use TOML settings
             return model_settings.get('url')
 
+    def _get_ssl_verify(self, model_settings: Dict[str, Any]) -> "bool | str":
+        """Return the ssl verify value for httpx / litellm clients.
+
+        Priority:
+        1. disable_ssl flag (model_settings or CUGA_DISABLE_SSL env) → False
+        2. ssl_ca_bundle in model_settings → cert path string
+        3. CUGA_SSL_CA_BUNDLE env var → cert path string
+        4. settings.connections.ssl_ca_bundle (TOML) → cert path string
+        5. OPENAI_SSL_VERIFY=false env var → False
+        6. Default → True
+        """
+        disable_ssl = model_settings.get("disable_ssl") or os.environ.get("CUGA_DISABLE_SSL", "").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        if disable_ssl:
+            return False
+
+        # Explicit verify=false via legacy env var
+        if os.environ.get("OPENAI_SSL_VERIFY", "true").lower() in ("false", "0", "no"):
+            return False
+
+        # Per-model CA bundle from config dict
+        ca_bundle = model_settings.get("ssl_ca_bundle")
+        if ca_bundle and str(ca_bundle).strip():
+            return str(ca_bundle).strip()
+
+        # Global env var override
+        env_bundle = os.environ.get("CUGA_SSL_CA_BUNDLE", "").strip()
+        if env_bundle:
+            return env_bundle
+
+        # Global TOML setting via dynaconf
+        try:
+            toml_bundle = settings.connections.ssl_ca_bundle
+            if toml_bundle and str(toml_bundle).strip():
+                return str(toml_bundle).strip()
+        except Exception:
+            pass
+
+        return True
+
     def _is_reasoning_model(self, model_name: str) -> bool:
         """Check if model is a reasoning model that doesn't support temperature
 
@@ -536,16 +579,10 @@ class LLMManager:
             if base_url:
                 openai_params["openai_api_base"] = base_url
 
-            disable_ssl = model_settings.get("disable_ssl") or os.environ.get(
-                "CUGA_DISABLE_SSL", ""
-            ).lower() in ("true", "1", "yes")
-            ssl_verify = (
-                os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
-                and not disable_ssl
-            )
-            if not ssl_verify:
-                openai_params["http_client"] = httpx.Client(verify=False)
-                openai_params["http_async_client"] = httpx.AsyncClient(verify=False)
+            ssl_verify = self._get_ssl_verify(model_settings)
+            if ssl_verify is not True:
+                openai_params["http_client"] = httpx.Client(verify=ssl_verify)
+                openai_params["http_async_client"] = httpx.AsyncClient(verify=ssl_verify)
 
             llm = ChatOpenAI(**openai_params)
         elif platform == "groq":
@@ -647,21 +684,13 @@ class LLMManager:
             llm = ChatOpenAI(**openrouter_params)
         elif platform == "litellm" and ChatLiteLLM is not None:
             logger.debug(f"Creating LiteLLM model: {model_name}")
-            disable_ssl = model_settings.get("disable_ssl") or os.environ.get(
-                "CUGA_DISABLE_SSL", ""
-            ).lower() in ("true", "1", "yes")
-            ssl_verify = (
-                os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
-                and not disable_ssl
-            )
+            ssl_verify = self._get_ssl_verify(model_settings)
 
-            # Import litellm and configure global settings
             import litellm
 
-            litellm.drop_params = True  # Disable default prefix globally
-
-            if not ssl_verify:
-                litellm.ssl_verify = False
+            litellm.drop_params = True
+            if ssl_verify is not True:
+                litellm.ssl_verify = ssl_verify
 
             litellm_params: Dict[str, Any] = {
                 "model": model_name,
@@ -839,6 +868,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         "api_key": api_key,
         "temperature": llm_cfg.get("temperature", 0.1),
         "disable_ssl": llm_cfg.get("disable_ssl", False),
+        "ssl_ca_bundle": llm_cfg.get("ssl_ca_bundle") or None,
         "auth_type": llm_cfg.get("auth_type"),
         "auth_header_name": llm_cfg.get("auth_header_name"),
         "max_tokens": max_tokens,

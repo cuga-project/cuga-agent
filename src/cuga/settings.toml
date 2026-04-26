@@ -10,7 +10,6 @@ start_url = "https://opensource-demo.orangehrmlive.com/web/index.php/auth/login"
 
 [features]
 cuga_mode = "balanced"
-memory_provider = "mem0"
 
 [advanced_features]
 web_arena_eval = false
@@ -21,6 +20,8 @@ use_location_resolver = false
 langfuse_tracing = false
 wxo_integration = false
 benchmark = "default"
+# When benchmark is appworld: use plain `answer:` completion prompts (no JSON) for final formatting
+appworld_final_answer_plain = true
 mode = 'api'
 use_extension = false
 code_planner_enabled = true
@@ -30,8 +31,6 @@ lite_mode_tool_threshold = 70  # Route to CugaLite if app has fewer than this ma
 force_lite_mode_apps = ["knowledge"]  # List of app names to force into lite mode (e.g., ["app1", "app2"])
 shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools exceeds this threshold
 enable_todos = false  # Enable todos feature for complex multi-step task management
-enable_memory = false
-enable_fact = false
 reflection_enabled = false
 save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
 decomposition_strategy = "flexible"  # "exact" = one subtask per app, "flexible" = allows multiple subtasks per app
@@ -47,10 +46,11 @@ max_input_length = 5000  # Maximum characters allowed in user input (prevents ab
 sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
+cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
-execution_output_max_length = 50000  # Maximum characters to show in execution output (prevents token overflow)
+execution_output_max_length = 70000  # Maximum characters to show in execution output (prevents token overflow)
 
 [supervisor]
 enabled = false  # Enable CugaSupervisor for multi-agent coordination
@@ -105,7 +105,8 @@ vault_k8s_jwt_path = "/var/run/secrets/kubernetes.io/serviceaccount/token"
 vault_cacert = ""  # PEM bundle path; env VAULT_CACERT (internal / route CA)
 vault_skip_verify = false  # dev only; env VAULT_SKIP_VERIFY=true
 vault_mount = "secret"
-vault_kv_version = ""  # "1" or "2"; leave empty to auto-detect
+vault_kv_version = ""  # "1" or "2"; empty = KV v2 (use "1" only for KV v1 mounts)
+vault_secret_path = ""  # Base path for secrets (env: DYNACONF_SECRETS__VAULT_SECRET_PATH)
 vault_write_enabled = false
 aws_region = ""
 
@@ -146,7 +147,6 @@ petstore_api = 8081
 graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
-memory = 8888
 oak_health_api = 8090  # cuga-oak-health OpenAPI (demo_health)
 
 [context_summarization]
@@ -162,6 +162,10 @@ trigger_fraction = 0.75  # Trigger at 75% of context window (recommended for pro
 
 # Optional custom summary prompt (uses LangChain default if not set):
 # custom_summary_prompt = "Provide a concise summary of the conversation: {messages}"
+
+[connections]
+inference_ca_cert = ""  # Path to a CA certificate for LLM inference HTTP clients (e.g. "vault-root-ca.crt"). Applied to OpenAI and LiteLLM. Env: CUGA_INFERENCE_CA_CERT
+inference_disable_ssl = false  # Disable SSL verification for all inference connections (overrides inference_ca_cert). Env: CUGA_DISABLE_SSL
 
 [observability]
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]

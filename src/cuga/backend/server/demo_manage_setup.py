@@ -13,7 +13,6 @@ logger = logging.getLogger("cuga.demo")
 
 _OAK_POLICIES_PATH = Path(__file__).resolve().parent / "demo_setup_utils" / "oak_policies.json"
 
-
 DIGITAL_SALES_OPENAPI_URL = (
     "https://digitalsales.19pc1vtv090u.us-east.codeengine.appdomain.cloud/openapi.json"
 )
@@ -343,7 +342,7 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
         return {
             "crm": False,
             "email": False,
-            "digital_sales": True,
+            "digital_sales": False,
             "docs": False,
             "filesystem": True,
             "oak_health": False,
@@ -406,8 +405,7 @@ def setup_demo_manage_config(
         "account's revenue percentile across all accounts. Finally, draft an email based on email_template.md "
         "template summarizing the result and show it to me",
         "from contacts.txt show me which users belong to the crm system",
-        "./cuga_workspace/cuga_playbook.md",
-        "What is CUGA?",
+        "What can you do?",
     ]
     DEMO_DOCS_STARTERS = [
         "What was the latest watsonx orchestrate release?",
@@ -422,6 +420,12 @@ def setup_demo_manage_config(
         "Find knee surgeons nearby and what are my benefits for surgery",
         "What is my deductible and out-of-pocket progress this plan year?",
         "Check the status of my referral and where it was sent",
+    ]
+    # Aligns with OOBE doc sovereign_core_overview.pdf (ingested on first demo_knowledge start).
+    DEMO_KNOWLEDGE_STARTERS = [
+        "What is Sovereign Core, and what problem does it solve?",
+        "Summarize the main themes from the Sovereign Core overview in my knowledge base.",
+        "What capabilities does the platform highlight on-premises use?",
     ]
     reset_config_db()
 
@@ -528,6 +532,15 @@ def setup_demo_manage_config(
             "greeting": "Ask about claims, benefits, coverage, and finding in-network care.",
             "starters": DEMO_HEALTH_STARTERS,
         }
+    elif use_knowledge:
+        homescreen = {
+            "isOn": True,
+            "greeting": (
+                "Sovereign Core puts this agent and your data under your control. "
+                "The overview (sovereign_core_overview.pdf) is in your knowledge base—ask anything about it."
+            ),
+            "starters": DEMO_KNOWLEDGE_STARTERS,
+        }
     else:
         homescreen = DEFAULT_HOMESCREEN
     llm_api_key_ref = ""
@@ -552,7 +565,12 @@ def setup_demo_manage_config(
         knowledge_cfg["_vector_config_hash"] = _kc.vector_config_hash()
     except Exception:
         pass
-    if use_crm_starters:
+    if demo_type == "manager":
+        agent_meta = {
+            "name": "Default",
+            "description": "Configurable agent for manage mode (filesystem and optional integrations)",
+        }
+    elif use_crm_starters:
         agent_meta = {
             "name": "CRM Agent",
             "description": "CRM-enabled agent with email and filesystem for managing contacts and accounts",
@@ -573,12 +591,20 @@ def setup_demo_manage_config(
     elif use_knowledge:
         agent_meta = {
             "name": "Knowledge Agent",
-            "description": "Agent with knowledge base, digital sales API, and filesystem for document-grounded workflows",
+            "description": (
+                "Document-grounded assistant; includes the Sovereign Core overview (sovereign_core_overview.pdf) "
+                "for onboarding Q&A, plus your workspace files."
+            ),
         }
-    else:
+    elif tools and any(t.get("name") == "digital_sales" for t in tools):
         agent_meta = {
             "name": "Digital Sales Agent",
             "description": "Agent with Digital Sales API and filesystem for sales workflows",
+        }
+    else:
+        agent_meta = {
+            "name": "Default",
+            "description": "Agent with workspace filesystem and optional tools",
         }
     policies: list[dict[str, Any]] = []
     if tools and any(t.get("name") == "oak_health" for t in tools):
@@ -595,12 +621,125 @@ def setup_demo_manage_config(
         "llm": llm_cfg,
         "knowledge": knowledge_cfg,
     }
-    if tools and any(t.get("name") == "docs" for t in tools):
-        config["feature_flags"] = config.get("feature_flags") or {}
-        config["feature_flags"]["enable_todos"] = True
 
     async def _setup():
         await save_draft(config, agent_id)
         await save_config(config, agent_id)
 
     asyncio.run(_setup())
+
+
+# Packaged with cuga at src/cuga/demo_tools/huggingface/; copied to workspace by prepare_workspace.
+DEMO_KNOWLEDGE_OOBE_PDF_NAME = "sovereign_core_overview.pdf"
+
+
+def _resolve_oobe_knowledge_pdf_path() -> Path | None:
+    """Package data path first; then cuga_workspace/ (e.g. Docker OOTB copy)."""
+    from cuga.config import DEMO_TOOLS_ROOT
+
+    primary = DEMO_TOOLS_ROOT / "huggingface" / DEMO_KNOWLEDGE_OOBE_PDF_NAME
+    if primary.is_file():
+        return primary
+    fallback = Path.cwd() / "cuga_workspace" / DEMO_KNOWLEDGE_OOBE_PDF_NAME
+    if fallback.is_file():
+        return fallback
+    return None
+
+
+def _demo_backend_base_url(demo_port: int) -> str:
+    """Same origin as the FastAPI app that mounts knowledge routes (port = demo/uvicorn)."""
+    from urllib.parse import urlparse
+
+    env = os.environ.get("CUGA_BACKEND_URL", "").strip().rstrip("/")
+    if env:
+        try:
+            p = urlparse(env)
+            if p.scheme and p.netloc:
+                return env
+        except Exception:
+            pass
+    return f"http://127.0.0.1:{demo_port}"
+
+
+def seed_demo_knowledge_oobe_pdf_if_needed(demo_port: int, agent_id: str = "cuga-default") -> None:
+    """Ingest the OOBE PDF into agent knowledge once the demo server is up; no-op if already indexed."""
+    import time
+
+    import httpx
+
+    from cuga.backend.knowledge.routes import KNOWLEDGE_HTTP_PREFIX
+
+    pdf_path = _resolve_oobe_knowledge_pdf_path()
+    if pdf_path is None:
+        from cuga.config import DEMO_TOOLS_ROOT
+
+        logger.warning(
+            "OOBE knowledge PDF not found (tried %s and cuga_workspace/); skipping seed",
+            DEMO_TOOLS_ROOT / "huggingface" / DEMO_KNOWLEDGE_OOBE_PDF_NAME,
+        )
+        return
+
+    base = _demo_backend_base_url(demo_port)
+    k_docs = f"{base}{KNOWLEDGE_HTTP_PREFIX}/documents"
+    ready = False
+    failed = False
+    for _ in range(240):
+        try:
+            with httpx.Client(timeout=5.0, verify=False) as client:
+                r = client.get(
+                    f"{base}/health/readiness",
+                    params={"subsystem": "knowledge"},
+                )
+                if r.status_code == 200:
+                    data = r.json()
+                    if data.get("status") == "failed":
+                        failed = True
+                        break
+                    if data.get("ready"):
+                        ready = True
+                        break
+        except httpx.RequestError:
+            pass
+        time.sleep(0.5)
+    if failed:
+        logger.warning("Knowledge subsystem failed; skip OOBE PDF seed")
+        return
+    if not ready:
+        logger.warning("Knowledge subsystem not ready in time; skip OOBE PDF seed")
+        return
+
+    token_path = Path.cwd() / ".cuga" / ".internal_token"
+    if not token_path.is_file():
+        logger.warning("Internal token missing at %s; skip OOBE PDF seed", token_path)
+        return
+    token = token_path.read_text(encoding="utf-8").strip()
+    headers = {"X-Internal-Token": token, "X-Agent-ID": agent_id}
+    try:
+        with httpx.Client(timeout=300.0, verify=False) as client:
+            r = client.get(
+                k_docs,
+                params={"scope": "agent"},
+                headers=headers,
+            )
+            if r.status_code != 200:
+                logger.warning("Could not list knowledge documents (%s): %s", r.status_code, r.text[:300])
+                return
+            docs = r.json().get("documents") or []
+            if any(d.get("filename") == DEMO_KNOWLEDGE_OOBE_PDF_NAME for d in docs):
+                logger.info("OOBE knowledge PDF already indexed; skip ingest")
+                return
+            with pdf_path.open("rb") as f:
+                r2 = client.post(
+                    k_docs,
+                    headers=headers,
+                    data={"scope": "agent", "replace_duplicates": "true"},
+                    files={"files": (DEMO_KNOWLEDGE_OOBE_PDF_NAME, f, "application/pdf")},
+                )
+            if r2.status_code == 409:
+                logger.info("OOBE knowledge PDF already present; skip ingest")
+            elif r2.status_code >= 400:
+                logger.warning("OOBE PDF ingest failed (%s): %s", r2.status_code, r2.text[:500])
+            else:
+                logger.info("Ingested OOBE knowledge PDF %s", DEMO_KNOWLEDGE_OOBE_PDF_NAME)
+    except Exception as e:
+        logger.warning("OOBE PDF seed failed: %s", e)

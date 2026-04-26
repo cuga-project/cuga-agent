@@ -7,15 +7,16 @@ Based on the `user_intent` and `system_answer`:
 
 1. **Determine `final_answer`:**
    * **Single Value Intent:** If the `user_intent` clearly requires returning a single, specific piece of information, and the `system_answer` contains this information, your `final_answer` should be **only that specific value extracted from the system_answer**. For example, if the intent is "What is your ID?" and the answer is "My ID is 123", the `final_answer` is "123". If the intent is "What is the temperature?" and the answer is "It's 25°C", the `final_answer` is "25°C".
+   * **Verbatim strings and notes:** When the intent asks to **retrieve**, **read**, or **return** a note, message, memo, or other free-form string, copy the text **exactly** — preserve punctuation that belongs to the content (periods, commas, apostrophes, ellipsis `...`, etc.) and do not paraphrase or drop trailing characters for neatness. Strip only clearly separable framing (e.g. a `Note content:` prefix) when the benchmark expects the body alone.
    * **Calculation Intent:** If the `user_intent` requires summing, calculating, or combining multiple values from the `system_answer`, your `final_answer` should be **the calculated result**. For example, if the intent asks for "total amount sent and received" and the answer provides separate amounts, sum them for the `final_answer`.
    * **Update/Action Intent:** If the `user_intent` primarily describes an update, a setting change, or an action that doesn't logically return a data value (e.g., "turn on light," "set volume"), your `final_answer` should be an **N/A (`"N/A"`)**, even if the system provides a confirmation message.
    * **Other Cases:** For all other scenarios (e.g., the system indicates an error, the answer is purely conversational, the intent requires a complex structured output not fitting the above, or the system cannot fulfill the request), your `final_answer` should be the **original `system_answer`**.
 
 2.  **Formulate `thoughts`:**
     * Briefly explain your reasoning for arriving at the `final_answer`.
-    * Mention how the `user_intent` and `system_answer` led to your decision (e.g., "Intent asks for a specific value, which was extracted." or "Intent is an action, so empty string.").
-    * Explain your choice for `final_answer_type` based on the content of `final_answer`.
-    * **`thoughts` should be a list of strings, where each string is a distinct point in your reasoning.**
+    * Mention how the `user_intent` and `system_answer` led to your decision (e.g., value extraction vs. update/action → `"N/A"`).
+    * Explain your choice for `final_answer_type` using the rules below (match the literal string to the shape of `final_answer`).
+    * **`thoughts` must be a JSON array of strings** (a list in JSON), not one long string.
 
 3.  **Determine `final_answer_type`:**
     * Based *only* on the final `final_answer` you've decided:
@@ -23,6 +24,8 @@ Based on the `user_intent` and `system_answer`:
         * If `final_answer` consists *exclusively* of digits, optionally with a leading minus sign (e.g., "7", "0", "98765", "-12"), `final_answer_type` is `int`.
         * If `final_answer` consists *exclusively* of digits and one decimal point, optionally with a leading minus sign (e.g., "7.0", "0.0", "19.99", "-0.54", "100."), `final_answer_type` is `float`.
         * In all other cases (e.g., "25°C", "MyHomeNetwork", "Error message", "Okay, done."), `final_answer_type` is `str`.
+
+    * **Literal values only:** In JSON, `final_answer_type` must be exactly one of the three strings **`"str"`**, **`"int"`**, or **`"float"`** — never `"string"`, `"integer"`, `"number"`, or bare words without quotes.
 
 ### Output Format:
 
@@ -40,7 +43,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
 }
 ```
 
-*(Note: The value for `final_answer_type` will be `int`, `float`, or `str` as appropriate.)*
+*(Note: `final_answer` is always a JSON string. `final_answer_type` is the separate field that records whether that string looks like a whole number, decimal, or general text.)*
 
 ---
 
@@ -56,7 +59,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent asks for a single specific value: the current temperature.",
     "The system answer provides 'The current temperature is 25°C.' The specific value to extract is '25°C'.",
-    "Since '25°C' contains non-numeric characters (°C) alongside the number, its type is string."
+    "Since '25°C' contains non-numeric characters (°C) alongside the number, final_answer_type is \"str\"."
   ],
   "final_answer": "25°C",
   "final_answer_type": "str"
@@ -73,8 +76,8 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent 'Set the thermostat to 22 degrees.' is an update action.",
     "It does not require a value to be returned, only confirmation.",
-    "Therefore, the output should be an empty string.",
-    "An empty string is of type string."
+    "Per rules, use final_answer \"N/A\" for this case.",
+    "N/A is typed as str."
   ],
   "final_answer": "N/A",
   "final_answer_type": "str"
@@ -91,7 +94,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent 'Get my account balance.' requests a single specific value.",
     "The system answer is 'Your current account balance is $1,250.75.' The specific value to extract is '$1,250.75'.",
-    "This value contains symbols ('$', ','), so a cleanup is needed and final value is of type float"
+    "After stripping currency formatting, \"1250.75\" has one decimal point, so final_answer_type is \"float\"."
   ],
   "final_answer": "1250.75",
   "final_answer_type": "float"
@@ -109,10 +112,10 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
     "The user intent 'How many total calories did I burn from cardio and strength training this week?' requests the sum of calories burned from two different workout types.",
     "The system answer provides two specific values: 1,245 calories from cardio and 892 calories from strength training.",
     "To get the total calories burned, I need to sum these values: 1,245 + 892 = 2,137.",
-    "The final answer should be the numerical sum representing total calories burned, of type float."
+    "The string \"2137\" is digits only, so final_answer_type is int."
   ],
   "final_answer": "2137",
-  "final_answer_type": "float"
+  "final_answer_type": "int"
 }
 ```
 
@@ -126,8 +129,8 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent 'Turn on the living room lights.' describes an action.",
     "It does not inherently return a value.",
-    "Thus, the output is an empty string.",
-    "An empty string is of type string."
+    "Per rules, use final_answer \"N/A\".",
+    "N/A is typed as str."
   ],
   "final_answer": "N/A",
   "final_answer_type": "str"
@@ -144,7 +147,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent asks for a single specific value: the Wi-Fi network name.",
     "The system answer is 'You are connected to \\'MyHomeNetwork\\'.' The specific value is 'MyHomeNetwork'.",
-    "This is a string of characters, so its type is string."
+    "This is general text, so final_answer_type is \"str\"."
   ],
   "final_answer": "MyHomeNetwork",
   "final_answer_type": "str"
@@ -161,7 +164,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent 'Add milk to my shopping list.' is an update action (modifying a list).",
     "It doesn't require a value to be returned.",
-    "So, the output is an empty string, which is of type string."
+    "Per rules, use final_answer \"N/A\", typed as str."
   ],
   "final_answer": "N/A",
   "final_answer_type": "str"
@@ -179,7 +182,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
     "The user intent asks for a single specific value: the user ID.",
     "The system answer is 'Your user ID is 98765.' The specific value to extract is '98765'.",
     "This value consists only of digits and represents a whole number.",
-    "Therefore, its type is integer."
+    "Therefore, final_answer_type is \"int\"."
   ],
   "final_answer": "98765",
   "final_answer_type": "int"
@@ -197,7 +200,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
     "The user intent 'Tell me a joke.' requests conversational content, not a specific extractable data value.",
     "The system provides a joke.",
     "This falls under 'Other Cases', so the original system answer is returned.",
-    "This is a string."
+    "The joke text is general text, so final_answer_type is \"str\"."
   ],
   "final_answer": "Why don't scientists trust atoms? Because they make up everything!",
   "final_answer_type": "str"
@@ -214,8 +217,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent 'Change my password.' is an update action.",
     "It doesn't return a value, only a confirmation.",
-    "Output should be an empty string.",
-    "An empty string is of type string."
+    "Per rules, use final_answer \"N/A\", typed as str."
   ],
   "final_answer": "N/A",
   "final_answer_type": "str"
@@ -232,7 +234,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent asks for a single specific value: the capital of France.",
     "The system answer is 'The capital of France is Paris.' The specific value to extract is 'Paris'.",
-    "This is a string of characters, so its type is string."
+    "This is general text, so final_answer_type is \"str\"."
   ],
   "final_answer": "Paris",
   "final_answer_type": "str"
@@ -249,7 +251,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
   "thoughts": [
     "The user intent 'Set a reminder...' is an action to create something.",
     "It does not return a queryable value from the system at this stage, only confirmation.",
-    "Output is an empty string, which is type string."
+    "Per rules, use final_answer \"N/A\", typed as str."
   ],
   "final_answer": "N/A",
   "final_answer_type": "str"
@@ -267,7 +269,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
     "The system indicates an error or inability to fulfill the request directly.",
     "This falls under 'Other Cases'.",
     "The original system answer should be returned.",
-    "This is a string."
+    "The full message is general text, so final_answer_type is \"str\"."
   ],
   "final_answer": "I'm sorry, I couldn't retrieve your current location. Please enable location services.",
   "final_answer_type": "str"
@@ -285,7 +287,7 @@ Your response for each input pair MUST be a single, valid JSON object with `thou
     "The user intent asks for a single specific value: the item's price.",
     "The system answer is 'The price of the item is 19.99 exactly.' The specific value to extract is '19.99'.",
     "This value consists only of digits and a decimal point, representing a floating-point number.",
-    "Therefore, its type is float."
+    "Therefore, final_answer_type is \"float\"."
   ],
   "final_answer": "19.99",
   "final_answer_type": "float"

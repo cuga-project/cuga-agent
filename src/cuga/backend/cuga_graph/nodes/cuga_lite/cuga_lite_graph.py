@@ -74,9 +74,20 @@ from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.backend.cuga_graph.state.agent_state import AgentState
-from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt, PromptUtils
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    create_mcp_prompt,
+    format_apps_for_prompt,
+    PromptUtils,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
+    CodeExecutor,
+    is_find_tools_listing_markdown,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
+    classify_nl_auto_continue,
+    normalize_assistant_text,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
@@ -225,6 +236,9 @@ class CugaLiteState(BaseModel):
     - script, execution_complete, error, metrics
     - tools_prepared: bool (flag indicating tools have been prepared)
     - prepared_prompt: str (dynamically generated prompt)
+    - reflection_apps: list of dicts (name, type, description) for reflection prompt
+    - reflection_enable_find_tools: whether find_tools shortlisting was enabled
+    - task_todos: latest todo list from create_update_todos (injected as Current Plan on the system prompt)
     """
 
     # Shared keys (compatible with AgentState)
@@ -249,6 +263,9 @@ class CugaLiteState(BaseModel):
     # Subgraph-only keys
     tools_prepared: bool = False
     prepared_prompt: Optional[str] = None
+    reflection_apps: List[Dict[str, Any]] = Field(default_factory=list)
+    reflection_enable_find_tools: bool = False
+    task_todos: Optional[List[Dict[str, Any]]] = Field(default=None)
     script: Optional[str] = None
     execution_complete: bool = False
     error: Optional[str] = None
@@ -270,6 +287,20 @@ class CugaLiteState(BaseModel):
         from cuga.backend.cuga_graph.state.agent_state import StateVariablesManager
 
         return StateVariablesManager(self)
+
+
+def _reflection_current_task(state: CugaLiteState) -> str:
+    """Prefer ``sub_task``; else last user message that is not sandbox ``Execution output`` feedback."""
+    if (state.sub_task or "").strip():
+        return state.sub_task.strip()
+    if state.chat_messages:
+        execution_prefix = "Execution output:"
+        for msg in reversed(state.chat_messages):
+            if isinstance(msg, HumanMessage):
+                c = (msg.content or "").strip()
+                if c and not c.startswith(execution_prefix):
+                    return c
+    return ""
 
 
 def extract_and_combine_codeblocks(text: str) -> str:
@@ -385,11 +416,61 @@ class TodosOutput(BaseModel):
     todos: List[Todo] = Field(..., description="List of todos with their current status")
 
 
+def _try_parse_todos_payload(value: Any) -> Optional[List[Dict[str, Any]]]:
+    if not isinstance(value, dict) or "todos" not in value:
+        return None
+    raw = value["todos"]
+    if not isinstance(raw, list):
+        return None
+    if not raw:
+        return []
+    if not all(isinstance(x, dict) and "text" in x and "status" in x for x in raw):
+        return None
+    return raw
+
+
+def extract_task_todos_from_new_vars(new_vars: dict[str, Any]) -> Optional[List[Dict[str, Any]]]:
+    for val in new_vars.values():
+        parsed = _try_parse_todos_payload(val)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def format_current_plan_section(task_todos: List[Dict[str, Any]]) -> str:
+    lines = ["## Current Plan", ""]
+    for item in task_todos:
+        text = str(item.get("text", "")).strip()
+        status = str(item.get("status", "pending")).strip()
+        lines.append(f"- **[{status}]** {text}")
+    return "\n".join(lines) + "\n"
+
+
+def _first_user_message_text(chat_messages: Optional[List[BaseMessage]]) -> Optional[str]:
+    if not chat_messages:
+        return None
+    for msg in chat_messages:
+        if isinstance(msg, HumanMessage):
+            raw = msg.content
+            text = raw.strip() if isinstance(raw, str) else str(raw).strip()
+            return text or None
+    return None
+
+
+def _compose_find_tools_shortlister_query(query: str, initial_user_message: Optional[str]) -> str:
+    q = query.strip()
+    init = (initial_user_message or "").strip()
+    if not init:
+        return q
+    return f"Query: {q}\nTask context (initial user message): {init}"
+
+
 async def create_find_tools_tool(
     all_tools: Sequence[StructuredTool],
     all_apps: List[Any],
     app_to_tools_map: Optional[Dict[str, List[StructuredTool]]] = None,
     llm: Optional[Any] = None,
+    initial_user_message: Optional[str] = None,
 ) -> StructuredTool:
     """Create a find_tools StructuredTool for tool discovery.
 
@@ -397,6 +478,7 @@ async def create_find_tools_tool(
         all_tools: All available tools to search through
         all_apps: All available app definitions
         app_to_tools_map: Optional mapping of app_name -> list of tools. If provided, used for filtering by app_name.
+        initial_user_message: First human message in the session; combined with the tool `query` for shortlisting.
 
     Returns:
         StructuredTool configured for finding relevant tools
@@ -429,13 +511,15 @@ async def create_find_tools_tool(
 
         from langchain_core.exceptions import OutputParserException
 
+        shortlister_query = _compose_find_tools_shortlister_query(query, initial_user_message)
+
         try:
             return await PromptUtils.find_tools(
-                query=query, all_tools=filtered_tools, all_apps=filtered_apps, llm=llm
+                query=shortlister_query, all_tools=filtered_tools, all_apps=filtered_apps, llm=llm
             )
         except OutputParserException as e:
             logger.bind(
-                query_len=len(query),
+                query_len=len(shortlister_query),
                 error_type=type(e).__name__,
             ).opt(exception=True).warning(
                 "Tool shortlisting failed due to parser error; returning error to agent"
@@ -446,7 +530,7 @@ async def create_find_tools_tool(
             )
         except Exception as e:
             logger.bind(
-                query_len=len(query),
+                query_len=len(shortlister_query),
                 error_type=type(e).__name__,
             ).opt(exception=True).warning("Tool shortlisting failed unexpectedly; returning error to agent")
             return (
@@ -471,7 +555,7 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
         StructuredTool configured for creating and updating todos
     """
 
-    async def create_update_todos_func(input_data) -> str:
+    async def create_update_todos_func(input_data) -> TodosOutput:
         """Create or update a list of todos for complex multi-step tasks.
 
         Use this tool when you have a complex task that requires multiple steps.
@@ -484,7 +568,7 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
                        - A list directly: [...] (will be wrapped in {"todos": [...]})
 
         Returns:
-            Simple confirmation message
+            Structured todo list (also mirrored under **Current Plan** on the system prompt after execution).
         """
         # Handle different input types
         if isinstance(input_data, TodosInput):
@@ -513,18 +597,13 @@ async def create_update_todos_tool(agent_state: Optional['AgentState'] = None) -
                 # Last resort: wrap in a list
                 todos_list = [Todo(**input_data) if isinstance(input_data, dict) else input_data]
 
-        # Store todos in agent_state if available
-        logger.info(
-            f"🔍 DEBUG create_update_todos: agent_state type = {type(agent_state).__name__ if agent_state else 'None'}"
-        )
-        logger.info(f"🔍 DEBUG create_update_todos: agent_state exists = {agent_state is not None}")
-
-        return "Todos have been updated"
+        normalized = [t if isinstance(t, Todo) else Todo(**t) for t in todos_list]
+        return TodosOutput(todos=normalized)
 
     return StructuredTool.from_function(
         func=create_update_todos_func,
         name="create_update_todos",
-        description="Create or update a list of todos for complex multi-step tasks. Use this when you have a task that requires more than one step. You can pass either: (1) A list directly: create_update_todos([{'text': '...', 'status': 'pending'}, ...]) or (2) A dict with 'todos' key: create_update_todos({'todos': [{'text': '...', 'status': 'pending'}, ...]}). Each todo dict should have 'text' (task description) and 'status' ('pending', 'in_progress', or 'completed'). Returns a simple confirmation message.",
+        description="Create or update a list of todos for complex multi-step tasks. Use this when you have a task that requires more than one step. You can pass either: (1) A list directly: create_update_todos([{'text': '...', 'status': 'pending'}, ...]) or (2) A dict with 'todos' key: create_update_todos({'todos': [{'text': '...', 'status': 'pending'}, ...]}). Each todo dict should have 'text' (task description) and 'status' ('pending', 'in_progress', or 'completed'). Returns a todos payload; the same list is appended to the system prompt as Current Plan after the code runs.",
         args_schema=TodosInput,
         return_direct=False,
     )
@@ -562,15 +641,11 @@ def create_cuga_lite_graph(
     """
     prompts_dir = Path(__file__).parent / "prompts"
     prompt_template = load_one_prompt(str(prompts_dir / "mcp_prompt.jinja2"), relative_to_caller=False)
-    prompt_template_todos = load_one_prompt(
-        str(prompts_dir / "mcp_prompt_todos.jinja2"), relative_to_caller=False
-    )
     instructions = get_all_instructions_formatted()
 
     def create_prepare_node(
         base_tool_provider,
         base_prompt_template,
-        base_prompt_template_todos,
         base_instructions,
         tools_context_dict,
         base_special_instructions,
@@ -599,8 +674,6 @@ def create_cuga_lite_graph(
                 if "shortlisting_tool_threshold" in configurable
                 else settings.advanced_features.shortlisting_tool_threshold
             )
-            selected_prompt_template = base_prompt_template_todos if enable_todos else base_prompt_template
-
             logger.debug(
                 f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
             )
@@ -713,6 +786,7 @@ def create_cuga_lite_graph(
                     all_apps=apps_for_prompt,
                     app_to_tools_map=app_to_tools_map,
                     llm=active_model,
+                    initial_user_message=_first_user_message_text(state.chat_messages),
                 )
                 tools_for_prompt = [find_tool]
                 # Add find_tools to tools context for sandbox execution
@@ -1016,11 +1090,14 @@ def create_cuga_lite_graph(
                     task_loaded_from_file=task_loaded_from_file,
                     is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
                     or is_autonomous_subtask,
-                    prompt_template=selected_prompt_template,
+                    prompt_template=base_prompt_template,
                     enable_find_tools=enable_find_tools,
+                    enable_todos=enable_todos,
                     special_instructions=special_instructions_final,
                     has_knowledge=has_knowledge_tools,
                 )
+
+            reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
 
             return Command(
                 goto="call_model",
@@ -1029,6 +1106,8 @@ def create_cuga_lite_graph(
                     "prepared_prompt": dynamic_prompt,
                     "step_count": 0,
                     "cuga_lite_metadata": state.cuga_lite_metadata,
+                    "reflection_apps": reflection_apps_snapshot,
+                    "reflection_enable_find_tools": enable_find_tools,
                 },
             )
 
@@ -1057,7 +1136,17 @@ def create_cuga_lite_graph(
                 return ToolApprovalHandler.handle_approval_resumption(state)
 
             # Get prompt from state (tools are available via sandbox context, not needed here)
-            dynamic_prompt = state.prepared_prompt
+            dynamic_prompt = state.prepared_prompt or ""
+            _cfg_early = config.get("configurable", {}) if config else {}
+            _enable_todos_prompt = (
+                _cfg_early.get("enable_todos")
+                if "enable_todos" in _cfg_early
+                else settings.advanced_features.enable_todos
+            )
+            if _enable_todos_prompt and state.task_todos:
+                dynamic_prompt = (
+                    f"{dynamic_prompt.rstrip()}\n\n{format_current_plan_section(state.task_todos)}"
+                )
 
             # Convert BaseMessage objects to dict format for model invocation
             messages_for_model = [{"role": "system", "content": dynamic_prompt}]
@@ -1065,6 +1154,9 @@ def create_cuga_lite_graph(
             # Check if we have variables and this is a new question (not a follow-up with existing AI responses)
             # If this is a new question (1 user msg, 0 AI msgs) or follow-up, add variables to the last user message
             var_manager = state.variables_manager
+            for _vn in list(var_manager.get_variable_names()):
+                if is_find_tools_listing_markdown(var_manager.get_variable(_vn)):
+                    var_manager.remove_variable(_vn)
             existing_variable_names = var_manager.get_variable_names()
             variables_summary_text = None
 
@@ -1129,11 +1221,6 @@ def create_cuga_lite_graph(
             for i, msg in enumerate(effective_chat_messages):
                 msg_type = type(msg).__name__
                 msg_role = getattr(msg, 'type', None)
-                logger.debug(
-                    f"Message {i}: type={msg_type}, role={msg_role}, "
-                    f"isinstance(HumanMessage)={isinstance(msg, HumanMessage)}, "
-                    f"isinstance(AIMessage)={isinstance(msg, AIMessage)}"
-                )
 
                 if isinstance(msg, HumanMessage):
                     content = msg.content
@@ -1216,8 +1303,6 @@ def create_cuga_lite_graph(
                             f"Skipping message {i} with unknown type: {msg_type}, role: {msg_role}"
                         )
 
-            logger.debug(f"Total messages for model (including system): {len(messages_for_model)}")
-
             try:
                 response = await active_model.ainvoke(
                     messages_for_model, config={"callbacks": current_callbacks}
@@ -1235,16 +1320,16 @@ def create_cuga_lite_graph(
                 else:
                     raise e
 
-            content = response.content
-            reasoning_content = response.additional_kwargs.get('reasoning_content')
+            content = normalize_assistant_text(response.content)
+            reasoning_str = normalize_assistant_text(response.additional_kwargs.get('reasoning_content'))
 
             tracker.collect_step(step=Step(name="Raw_Assistant_Response", data=content))
 
-            # Try to extract code from content first, then reasoning_content if content has no code
+            # Try to extract code from content first, then reasoning if content has no code
             code = extract_and_combine_codeblocks(content) if content else ""
 
-            if not code and reasoning_content:
-                code = extract_and_combine_codeblocks(reasoning_content)
+            if not code and reasoning_str:
+                code = extract_and_combine_codeblocks(reasoning_str)
 
             if code:
                 tracker.collect_step(step=Step(name="Assistant_code", data=content))
@@ -1297,7 +1382,7 @@ def create_cuga_lite_graph(
                 )
             else:
                 tracker.collect_step(step=Step(name="Assistant_nl", data=content))
-                planning_response = response.content
+                planning_response = content or ""
 
                 # Build updated messages from modified_chat_messages + new AI response
                 updated_messages = modified_chat_messages + [AIMessage(content=planning_response)]
@@ -1323,6 +1408,33 @@ def create_cuga_lite_graph(
                 updated_metadata = state.cuga_lite_metadata or {}
                 if playbook_guidance:
                     updated_metadata = {**updated_metadata, "playbook_guidance_added": True}
+
+                should_auto_continue = await classify_nl_auto_continue(
+                    active_model,
+                    planning_response,
+                    reasoning_str or None,
+                )
+                tracker.collect_step(
+                    step=Step(
+                        name="NL_Auto_Continue_Classifier",
+                        data=json.dumps({"auto_continue": should_auto_continue}),
+                    )
+                )
+                if should_auto_continue:
+                    logger.info(
+                        "CugaLite: NL-only response classified as interim; simulating user 'continue'"
+                    )
+                    return Command(
+                        goto="call_model",
+                        update={
+                            "chat_messages": updated_messages + [HumanMessage(content="continue")],
+                            "script": None,
+                            "final_answer": "",
+                            "execution_complete": False,
+                            "step_count": new_step_count,
+                            "cuga_lite_metadata": updated_metadata,
+                        },
+                    )
 
                 return Command(
                     goto=END,
@@ -1367,8 +1479,12 @@ def create_cuga_lite_graph(
 
             # Get existing variables using CugaLiteState's own variables_manager
             existing_vars = {}
-            for var_name in state.variables_manager.get_variable_names():
-                existing_vars[var_name] = state.variables_manager.get_variable(var_name)
+            for var_name in list(state.variables_manager.get_variable_names()):
+                var_value = state.variables_manager.get_variable(var_name)
+                if is_find_tools_listing_markdown(var_value):
+                    state.variables_manager.remove_variable(var_name)
+                    continue
+                existing_vars[var_name] = var_value
 
             # Add tools to context
             context = {**existing_vars, **base_tools_context}
@@ -1403,6 +1519,8 @@ def create_cuga_lite_graph(
                 # Update variables using CugaLiteState's variables_manager
                 # This automatically updates state.variables_storage
                 for name, value in new_vars.items():
+                    if is_find_tools_listing_markdown(value):
+                        continue
                     state.variables_manager.add_variable(
                         value, name=name, description="Created during code execution"
                     )
@@ -1430,14 +1548,15 @@ def create_cuga_lite_graph(
                             if agent_history_parts
                             else "No previous conversation history"
                         )
-
                         reflection_result = await reflection_agent.ainvoke(
                             {
                                 "instructions": "",
-                                "current_task": state.sub_task,
+                                "current_task": _reflection_current_task(state) or "(no task text)",
                                 "agent_history": agent_history,
-                                "shortlister_agent_output": "",
                                 "coder_agent_output": output,
+                                "apps": state.reflection_apps or [],
+                                "enable_find_tools": state.reflection_enable_find_tools,
+                                "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
                             }
                         )
                         reflection_output = reflection_result.content
@@ -1482,7 +1601,8 @@ def create_cuga_lite_graph(
                         },
                     )
 
-                return {
+                todo_state_update = extract_task_todos_from_new_vars(new_vars)
+                base_update = {
                     "chat_messages": updated_messages,
                     "variables_storage": state.variables_storage,
                     "variable_counter_state": state.variable_counter_state,
@@ -1490,6 +1610,9 @@ def create_cuga_lite_graph(
                     "step_count": state.step_count + 1,
                     "tool_calls": accumulated_tool_calls,
                 }
+                if todo_state_update is not None:
+                    base_update["task_todos"] = todo_state_update
+                return base_update
             except Exception as e:
                 # Collect tool calls even on error
                 execution_tool_calls = ToolCallTracker.stop_tracking()
@@ -1522,7 +1645,6 @@ def create_cuga_lite_graph(
     prepare_node = create_prepare_node(
         tool_provider,
         prompt_template,
-        prompt_template_todos,
         instructions,
         tools_context,
         special_instructions,
