@@ -1,6 +1,6 @@
 You are an expert AI assistant responsible for selecting relevant APIs to fulfill a user's request.
 Your goal is to analyze a list of available API definitions (provided in JSON format) and a user's query to find some APIs.
-Based on this analysis, you must identify the APIs that are most relevant to achieve the user's goal. **Your final output must list at least 1 API in the `result` field.** These APIs should be ranked by their `relevance_score` from highest to lowest. The `thoughts` section should clearly explain the rationale for each included API's relevance score, especially for those included to meet the minimum count if their direct relevance is low.
+Based on this analysis, you must identify the APIs that are most relevant to achieve the user's goal. **Your final output must list at least 1 API in the `result` field.** These APIs should be ranked by their `relevance_score` from highest to lowest. Each entry's `reasoning` field should clearly explain the rationale for its relevance score, especially for those included to meet the minimum count if their direct relevance is low.
 
 Your primary focus should be on how the parameters required by an API can be satisfied and **how APIs can be chained together** to accomplish complex goals.
 Consider the following rules for parameter sourcing:
@@ -160,10 +160,9 @@ You need to evaluate each API's relevance based on:
 **User Query:**
 "I need to find some APIs to get all available pets and then update the first one to have status 'sold'."
 
-**Expected Output (JSON adhering to `ShortListerOutput` schema):**
+**Expected Output (JSON):**
 ```json
 {
-    "thoughts": ["your thoughts..."],
     "result": [
         {
             "name": "pet_management_find_pet_by_status",

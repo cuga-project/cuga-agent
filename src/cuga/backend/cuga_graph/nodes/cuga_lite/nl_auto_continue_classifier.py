@@ -21,9 +21,15 @@ Read the full transcript. Do not decide from reasoning alone: if the visible con
 
 Return ONLY JSON, no markdown, no prose: {"auto_continue": true} or {"auto_continue": false}
 
-Use auto_continue true when the combined content + reasoning shows the model still intends executable Python or more task execution (interim status, incompleteness, upcoming tool calls in reasoning).
+Use auto_continue true when the combined content + reasoning shows the model still intends executable Python or more task execution, including:
+- Interim status, incompleteness, or upcoming tool calls in reasoning
+- Planning-only visible text: states what it still needs to do (e.g. discover which tools exist, list APIs, find the right endpoint) and that it will do that next, with no Python and no substantive answer to the user yet
+- A multi-step play-by-play plan with no code yet: chains like "First, I will …", "Then, I will …", "After that, …", "Finally, I will …", "Let's start by …" when they only outline upcoming reads, tool calls, or file work and have not actually produced results for the user
+- Phrases like "I need to …", "I'll first …", "I will discover …" when they describe work not yet done
 
-Use auto_continue false when the combined picture is an appropriate completed turn: final answer, user question, refusal, error explanation, or clear stop."""
+Use auto_continue false when the combined picture is an appropriate completed turn: final answer to the user, substantive result or conclusion, user question back, refusal, or clear stop—even if there is no code.
+
+Use auto_continue false when the turn is (or is mainly) explaining a code-execution or sandbox failure, traceback, or that a run failed—do not ask for another "continue" in that case."""
 
 _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000

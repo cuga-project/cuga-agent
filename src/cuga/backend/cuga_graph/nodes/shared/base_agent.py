@@ -70,6 +70,24 @@ class BaseAgent(ABC):
             raise
 
     @staticmethod
+    def create_validated_function_calling_chain(
+        llm: BaseChatModel, schema, prompt_template: ChatPromptTemplate = None
+    ):
+        """
+        Create a chain with function calling, validation, and retry logic for OpenAI/Groq LLMs.
+        """
+        base_chain = prompt_template | llm.with_structured_output(schema, method="function_calling")
+        validated_chain = base_chain | RunnableLambda(
+            lambda output: BaseAgent.validate_and_retry_output(output, schema)
+        )
+
+        # Add retry logic to the entire validated chain
+        # When validation fails, the whole chain will retry (including the LLM call)
+        validated_chain = validated_chain.with_retry(stop_after_attempt=4)
+
+        return validated_chain
+
+    @staticmethod
     def create_validated_structured_output_chain(
         llm: BaseChatModel, schema, prompt_template: ChatPromptTemplate = None
     ):
@@ -136,6 +154,14 @@ JSON schema:
     ):
         if wx_json_mode == "no_format":
             return prompt_template | llm
+        _wx_modes = ('function_calling', 'json_mode', 'no_format', 'response_format')
+        if wx_json_mode not in _wx_modes:
+            logger.warning(
+                "Invalid wx_json_mode {!r} (expected one of {}); using 'response_format'",
+                wx_json_mode,
+                _wx_modes,
+            )
+            wx_json_mode = 'response_format'
         # if "rits" in llm.model_name:
         #     logger.debug("Rits model")
         #     parser = PydanticOutputParser(pydantic_object=schema)
@@ -157,7 +183,10 @@ JSON schema:
             if wx_json_mode == "response_format":
                 return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
             elif wx_json_mode == "function_calling" or wx_json_mode == "json_mode":
-                chain = prompt_template | llm.with_structured_output(schema, method=wx_json_mode)
+                if wx_json_mode == "function_calling":
+                    return BaseAgent.create_validated_function_calling_chain(llm, schema, prompt_template)
+                else:
+                    return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
             else:
                 chain = prompt_template | llm | parser
 
@@ -168,9 +197,10 @@ JSON schema:
             return prompt_template | llm
         elif ChatLiteLLM is not None and isinstance(llm, ChatLiteLLM):
             logger.debug("Loading LLM for LiteLLM")
-            parser = PydanticOutputParser(pydantic_object=schema)
-            chain = prompt_template | llm | parser
-            return chain.with_retry(stop_after_attempt=3)
+            # LiteLLM provides an OpenAI-compatible interface; use with_structured_output
+            # so that models which return JSON via tool_calls (empty content) are handled
+            # correctly, rather than failing in PydanticOutputParser.
+            return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
         elif isinstance(llm, ChatOpenAI) or (ChatGroq is not None and isinstance(llm, ChatGroq)):
             return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
         else:

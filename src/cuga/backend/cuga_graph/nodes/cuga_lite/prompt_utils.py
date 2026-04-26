@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import AppDefinition
 from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
+from langchain_ibm.chat_models import ChatWatsonx
 import os
 
 
@@ -251,7 +252,11 @@ class PromptUtils:
 
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
-        chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
+        if isinstance(model, ChatWatsonx):
+            wx_json_mode = "function_calling"
+        else:
+            wx_json_mode = "response_format"
+        chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite, wx_json_mode=wx_json_mode)
         response = await chain.ainvoke(
             {
                 "input": query,
