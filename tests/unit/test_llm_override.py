@@ -11,7 +11,6 @@ import pytest
 
 from cuga.backend.llm.models import (
     LLMManager,
-    _ModelSettingsWrap,
     get_current_llm_override,
     set_current_llm_override,
 )
