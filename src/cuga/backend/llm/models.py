@@ -600,12 +600,36 @@ class LLMManager:
                 temperature=temperature,
             )
         elif platform == "watsonx":
-            llm = ChatWatsonx(
-                model_id=model_name,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                project_id=os.environ['WATSONX_PROJECT_ID'],
-            )
+            watsonx_params: Dict[str, Any] = {
+                "apikey": os.environ["WATSONX_APIKEY"],
+                "params": {
+                    "temperature": temperature,
+                    "max_tokens": max_tokens,
+                },
+            }
+
+            watsonx_url = model_settings.get("url")
+            if watsonx_url:
+                watsonx_params["url"] = watsonx_url
+
+            deployment_id = model_settings.get("deployment_id")
+            if deployment_id:
+                # Deployment id is model-specific configuration representating
+                # the id of a deployed model in production
+                watsonx_params["deployment_id"] = deployment_id
+            else:
+                # model id is not used when using a deployment id
+                watsonx_params["model_id"] = model_name
+
+            if os.getenv("WATSONX_SPACE_ID"):
+                watsonx_params["space_id"] = os.environ["WATSONX_SPACE_ID"]
+            elif os.getenv("WATSONX_PROJECT_ID"):
+                watsonx_params["project_id"] = os.environ["WATSONX_PROJECT_ID"]
+
+            if os.getenv("WATSONX_INSTANCE_ID"):
+                watsonx_params["instance_id"] = os.environ["WATSONX_INSTANCE_ID"]
+
+            llm = ChatWatsonx(**watsonx_params)
         elif platform == "rits":
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None

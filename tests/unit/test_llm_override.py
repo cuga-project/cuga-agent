@@ -4,6 +4,9 @@ is picked up by LLMManager.get_model() at call-time, and that a bad API key
 produces an authentication/connection error rather than silently using defaults.
 """
 
+import os
+from unittest.mock import patch
+
 import pytest
 
 from cuga.backend.llm.models import (
@@ -47,7 +50,7 @@ class TestLLMOverrideMechanism:
 
         mgr = LLMManager()
         with pytest.raises(openai.OpenAIError, match="api_key"):
-            mgr.get_model(_ModelSettingsWrap(BASE_MODEL_SETTINGS))
+            mgr.get_model(BASE_MODEL_SETTINGS)
 
     def test_override_is_applied(self):
         """Override fields are merged into the resolved model settings."""
@@ -207,3 +210,108 @@ class TestLLMOverrideMechanism:
             kw in error_lower
             for kw in ("auth", "api key", "invalid", "401", "403", "incorrect", "connection")
         ), f"Expected an auth/connection error, got: {error_msg}"
+
+    def test_watsonx_uses_default_endpoint_when_url_unset(self):
+        """When WATSONX_URL is absent, ChatWatsonx should rely on its default endpoint."""
+        env = {
+            "WATSONX_APIKEY": "wx-api-key",
+            "WATSONX_PROJECT_ID": "project-123",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            with patch("cuga.backend.llm.models.ChatWatsonx") as mock_chat_watsonx:
+                mock_chat_watsonx.return_value = object()
+                mgr = LLMManager()
+                settings_for_watsonx = {
+                    **BASE_MODEL_SETTINGS,
+                    "platform": "watsonx",
+                    "model": "configured-model-name",
+                }
+
+                mgr.get_model(settings_for_watsonx)
+
+        kwargs = mock_chat_watsonx.call_args.kwargs
+        assert "url" not in kwargs
+        assert kwargs["apikey"] == "wx-api-key"
+        assert kwargs["model_id"] == "configured-model-name"
+        assert kwargs["project_id"] == "project-123"
+        assert kwargs["params"]["temperature"] == BASE_MODEL_SETTINGS["temperature"]
+        assert kwargs["params"]["max_tokens"] == BASE_MODEL_SETTINGS["max_tokens"]
+
+    def test_watsonx_uses_model_settings_url_when_set(self):
+        """When url is provided in model settings, it should be forwarded to ChatWatsonx."""
+        env = {
+            "WATSONX_APIKEY": "wx-api-key",
+            "WATSONX_PROJECT_ID": "project-123",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            with patch("cuga.backend.llm.models.ChatWatsonx") as mock_chat_watsonx:
+                mock_chat_watsonx.return_value = object()
+                mgr = LLMManager()
+                settings_for_watsonx = {
+                    **BASE_MODEL_SETTINGS,
+                    "platform": "watsonx",
+                    "model": "configured-model-name",
+                    "url": "https://model-settings.watsonx.ai",
+                }
+
+                mgr.get_model(settings_for_watsonx)
+
+        kwargs = mock_chat_watsonx.call_args.kwargs
+        assert kwargs["url"] == "https://model-settings.watsonx.ai"
+        assert kwargs["apikey"] == "wx-api-key"
+        assert kwargs["model_id"] == "configured-model-name"
+        assert kwargs["project_id"] == "project-123"
+
+    def test_watsonx_uses_model_settings_deployment_id_over_model_id(self):
+        """deployment_id should come from model settings and replace model_id when provided."""
+        env = {
+            "WATSONX_APIKEY": "wx-api-key",
+            "WATSONX_URL": "https://example.watsonx.ai",
+            "WATSONX_PROJECT_ID": "project-123",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            with patch("cuga.backend.llm.models.ChatWatsonx") as mock_chat_watsonx:
+                mock_chat_watsonx.return_value = object()
+                mgr = LLMManager()
+                settings_for_watsonx = {
+                    **BASE_MODEL_SETTINGS,
+                    "platform": "watsonx",
+                    "model": "configured-model-name",
+                    "deployment_id": "deployment-123",
+                }
+
+                mgr.get_model(settings_for_watsonx)
+
+        kwargs = mock_chat_watsonx.call_args.kwargs
+        assert kwargs["url"] == "https://example.watsonx.ai"
+        assert kwargs["deployment_id"] == "deployment-123"
+        assert "model_id" not in kwargs
+
+    def test_watsonx_prefers_space_id_and_includes_instance_id(self):
+        """space_id should win over project_id, and instance_id should be forwarded when present."""
+        env = {
+            "WATSONX_APIKEY": "wx-api-key",
+            "WATSONX_SPACE_ID": "space-123",
+            "WATSONX_PROJECT_ID": "project-123",
+            "WATSONX_INSTANCE_ID": "instance-123",
+        }
+
+        with patch.dict(os.environ, env, clear=True):
+            with patch("cuga.backend.llm.models.ChatWatsonx") as mock_chat_watsonx:
+                mock_chat_watsonx.return_value = object()
+                mgr = LLMManager()
+                settings_for_watsonx = {
+                    **BASE_MODEL_SETTINGS,
+                    "platform": "watsonx",
+                    "model": "fallback-model",
+                }
+
+                mgr.get_model(settings_for_watsonx)
+
+        kwargs = mock_chat_watsonx.call_args.kwargs
+        assert kwargs["space_id"] == "space-123"
+        assert "project_id" not in kwargs
+        assert kwargs["instance_id"] == "instance-123"
