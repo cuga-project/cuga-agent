@@ -282,20 +282,27 @@ class ToolGuardRuntime:
             compiled_name = f"_compiled_guard_{index}"
             validate_alias = f"_guard_validate_{index}"
 
+            # Extract the guard function name from the policy code
+            # The generated code has @rule decorator followed by async def guard_xxx
+            guard_func_name = None
+            for line in tool_guard.policy_code.split('\n'):
+                line = line.strip()
+                if line.startswith('async def guard_'):
+                    # Extract function name: "async def guard_xxx(..." -> "guard_xxx"
+                    guard_func_name = line.split('(')[0].replace('async def ', '').strip()
+                    break
+            
+            if not guard_func_name:
+                logger.warning(
+                    f"Could not find guard function in policy code for '{policy.name}', skipping"
+                )
+                continue
+            
             guard_blocks.append(
                 f"# Policy: {policy.name}\n"
                 f"{tool_guard.policy_code}\n"
-                f"{compiled_name} = locals().get('validate')\n"
-                f"if {compiled_name} is None:\n"
-                f"    for _name, _obj in list(locals().items()):\n"
-                f"        if _name.startswith('guard_') and callable(_obj):\n"
-                f"            {compiled_name} = _obj\n"
-                f"            break\n"
-                f"if {compiled_name} is None:\n"
-                f"    raise ValueError(\n"
-                f"        \"Policy code for '{policy.name}' does not define a 'validate' or 'guard_*' function\"\n"
-                f"    )\n"
-                f"{validate_alias} = {compiled_name}\n"
+                f"# Assign the specific guard function for this policy\n"
+                f"{validate_alias} = {guard_func_name}\n"
             )
 
             guard_calls.extend(
@@ -303,7 +310,11 @@ class ToolGuardRuntime:
                     "    try:",
                     f"        await {validate_alias}(api=api, args=args)",
                     "    except PolicyViolationException as e:",
-                    f"        violations.append(\"[{policy.name}] \" + str(e))",
+                    f"        error_msg = str(e)",
+                    f"        # Check if error already contains policy name to avoid duplication",
+                    f"        if not error_msg.startswith('[{policy.name}]'):",
+                    f"            error_msg = f\"[{policy.name}] {{error_msg}}\"",
+                    f"        violations.append(error_msg)",
                 ]
             )
 
