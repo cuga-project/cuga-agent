@@ -176,7 +176,7 @@ async def create_and_process_policies(agent, policy_system):
             app_name="test_app"
         )
         print(f"✅ Generated guard code ({len(guard_code)} characters)")
-        print(f"✅ Code:\n{guard_code} ")
+        #print(f"✅ Code:\n{guard_code} ")
         
         # Update policy with guard code
         await agent.policies.update_tool_guard(
