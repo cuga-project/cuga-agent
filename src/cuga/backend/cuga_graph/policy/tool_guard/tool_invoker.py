@@ -76,7 +76,12 @@ class ToolGuardInvoker(IToolInvoker):
             RuntimeError: If tool invocation fails
         """
         try:
-            logger.debug(f"Invoking tool '{toolname}' with args: {arguments}")
+            # Redact sensitive arguments before logging
+            arg_summary = {
+                k: f"<{type(v).__name__}>" if v is not None else None
+                for k, v in (arguments.items() if isinstance(arguments, dict) else {})
+            }
+            logger.debug(f"Invoking tool '{toolname}' with arg keys: {list(arg_summary.keys())}")
             
             # Get the tool from the provider
             tools = await self._get_tools()

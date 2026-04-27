@@ -144,13 +144,18 @@ async def _get_or_create_registry(
     # Get policy storage if policy system is enabled
     policy_storage = None
     if settings.policy.enabled:
+        from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+        policy_storage = PolicyStorage()
         try:
-            from cuga.backend.cuga_graph.policy.storage import PolicyStorage
-            policy_storage = PolicyStorage()
             await policy_storage.connect()
             logger.info("✅ Connected policy storage for ToolGuardRuntime")
         except Exception as e:
-            logger.warning(f"Failed to connect policy storage: {e}")
+            logger.error(f"Failed to connect policy storage: {e}")
+            # Fail closed: if policy enforcement is enabled but storage fails,
+            # don't boot the registry unguarded
+            raise RuntimeError(
+                f"Policy system is enabled but PolicyStorage.connect() failed: {e}"
+            ) from e
     
     reg = ApiRegistry(client=manager, policy_storage=policy_storage)
     await reg.start_servers()
@@ -199,6 +204,12 @@ async def lifespan(app: FastAPI):
     for agent_id, (mgr, reg) in agent_registries.items():
         logger.info(f"Cleaning up registry for agent: {agent_id}")
         await mgr.shutdown()
+        # Disconnect policy storage if present
+        if reg.policy_storage is not None:
+            try:
+                await reg.policy_storage.disconnect()
+            except Exception as e:
+                logger.warning(f"Error disconnecting policy storage for agent {agent_id}: {e}")
     if not database_mode and 'mcp_manager' in globals():
         await mcp_manager.shutdown()
 
@@ -497,8 +508,13 @@ async def reload_config(
                 logger.info(f"Reloading from database for agent: {agent_id}")
                 # Clear cache for this agent
                 if agent_id in agent_registries:
-                    old_mgr, _ = agent_registries.pop(agent_id)
+                    old_mgr, old_reg = agent_registries.pop(agent_id)
                     await old_mgr.shutdown()
+                    if old_reg.policy_storage is not None:
+                        try:
+                            await old_reg.policy_storage.disconnect()
+                        except Exception as e:
+                            logger.warning(f"Error disconnecting policy storage: {e}")
                 # Recreate registry for this agent with retry on empty
                 await _get_or_create_registry(agent_id, retry_on_empty=True)
                 # If this is the default agent, update global registry
@@ -523,8 +539,13 @@ async def reload_config(
                 # Reload all agents (clear cache)
                 logger.info("Reloading all agents from database")
                 agent_ids = list(agent_registries.keys())
-                for old_mgr, _ in agent_registries.values():
+                for old_mgr, old_reg in agent_registries.values():
                     await old_mgr.shutdown()
+                    if old_reg.policy_storage is not None:
+                        try:
+                            await old_reg.policy_storage.disconnect()
+                        except Exception as e:
+                            logger.warning(f"Error disconnecting policy storage: {e}")
                 agent_registries.clear()
                 # Recreate default agent
                 mcp_manager, registry = await _get_or_create_registry(default_agent_id)
@@ -580,16 +601,26 @@ async def clear_agent_cache(
     try:
         if agent_id:
             if agent_id in agent_registries:
-                mgr, _ = agent_registries.pop(agent_id)
+                mgr, reg = agent_registries.pop(agent_id)
                 await mgr.shutdown()
+                if reg.policy_storage is not None:
+                    try:
+                        await reg.policy_storage.disconnect()
+                    except Exception as e:
+                        logger.warning(f"Error disconnecting policy storage: {e}")
                 logger.info(f"Cleared cache for agent: {agent_id}")
                 return {"status": "ok", "message": f"Cache cleared for agent: {agent_id}"}
             else:
                 return {"status": "ok", "message": f"No cache found for agent: {agent_id}"}
         else:
             count = len(agent_registries)
-            for mgr, _ in agent_registries.values():
+            for mgr, reg in agent_registries.values():
                 await mgr.shutdown()
+                if reg.policy_storage is not None:
+                    try:
+                        await reg.policy_storage.disconnect()
+                    except Exception as e:
+                        logger.warning(f"Error disconnecting policy storage: {e}")
             agent_registries.clear()
             logger.info(f"Cleared cache for {count} agents")
             return {"status": "ok", "message": f"Cache cleared for {count} agents"}

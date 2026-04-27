@@ -573,8 +573,10 @@ class PoliciesManager:
                 f"Policy '{policy_id}' is not a ToolGuide policy (type: {type(existing_policy).__name__})"
             )
 
-        # Convert tool_guards dict to ToolGuard objects
-        tool_guards_obj = {}
+        # Merge with existing tool_guards to preserve guards for other tools
+        tool_guards_obj = dict(existing_policy.tool_guards or {})
+        
+        # Convert and update only the incoming tool_guards
         for tool_name, guard_data in tool_guards.items():
             tool_guards_obj[tool_name] = ToolGuard(
                 description=guard_data.get("description", ""),
@@ -1213,6 +1215,12 @@ class PoliciesManager:
             }
         except Exception as e:
             logger.error(f"Failed to sync from filesystem: {e}")
+            return {
+                "loaded": 0,
+                "removed": 0,
+                "errors": [str(e)],
+                "files": [],
+            }
 
     async def generate_tool_guard_examples(
         self,

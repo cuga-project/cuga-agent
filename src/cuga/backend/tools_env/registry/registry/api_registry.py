@@ -106,7 +106,7 @@ class ApiRegistry:
             
         except Exception as e:
             logger.warning(f"Failed to initialize ToolGuardRuntime: {e}")
-            logger.debug(f"ToolGuardRuntime initialization error details:", exc_info=True)
+            logger.debug("ToolGuardRuntime initialization error details:", exc_info=True)
             self.tool_guard_runtime = None
 
     async def show_applications(self) -> List[AppDefinition]:
@@ -228,13 +228,16 @@ class ApiRegistry:
     ) -> Dict[str, Any]:
         """Calls a function via the mcp_client."""
         
+        # Normalize argument shape so guards and the tool see the same payload
+        unwrapped_args = arguments.get('params', arguments) if isinstance(arguments, dict) and 'params' in arguments else arguments
+        
         # Validate tool call against ToolGuard policies
         if self.tool_guard_runtime and self.tool_guard_runtime.is_initialized:
             try:
                 error_message = await self.tool_guard_runtime.guard_tool_call(
                     app_name=app_name,
                     function_name=function_name,
-                    arguments=arguments
+                    arguments=unwrapped_args if isinstance(unwrapped_args, dict) else {}
                 )
                 
                 if error_message:
@@ -257,8 +260,7 @@ class ApiRegistry:
                 logger.error(f"Error executing tool guard for '{function_name}': {e}", exc_info=True)
         
         if app_name == "web" and function_name == "search_web" and self._is_web_search_enabled():
-            args = arguments.get('params', arguments) if isinstance(arguments, dict) else arguments
-            query = args.get('query') if isinstance(args, dict) else str(args)
+            query = unwrapped_args.get('query') if isinstance(unwrapped_args, dict) else str(unwrapped_args)
             if not query:
                 return {
                     "status": "exception",
@@ -361,13 +363,12 @@ class ApiRegistry:
             f"ApiRegistry: call_function(function_name='{function_name}', arguments={arguments}, headers={headers}) called."
         )
         try:
-            # Delegate the call to the client
-            args = arguments['params'] if 'params' in arguments else arguments
+            # Delegate the call to the client (use already-unwrapped args)
             if self.auth_manager:
                 headers["_tokens"] = json.dumps(self.auth_manager.get_stored_tokens())
             result = await self.mcp_client.call_tool(
                 tool_name=function_name,
-                args=args,
+                args=unwrapped_args,
                 headers=headers,
             )
             logger.debug("Response:", result)

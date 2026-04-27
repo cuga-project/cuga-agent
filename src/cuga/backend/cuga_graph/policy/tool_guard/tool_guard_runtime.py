@@ -87,6 +87,11 @@ class ToolGuardRuntime:
 
     def _reset_state(self) -> None:
         """Reset internal state for reinitialization."""
+        if self._runtime is not None:
+            try:
+                self._runtime.__exit__(None, None, None)
+            except Exception:
+                logger.exception("Error while exiting previous ToolGuard runtime")
         self.tool_to_guards = {}
         self._runtime = None
         self._runtime_domain = None
@@ -411,14 +416,19 @@ class ToolGuardRuntime:
             f"{validate_alias} = {guard_func_name}\n"
         )
 
+        # Sanitize policy name for safe embedding in generated Python code
+        policy_name_literal = repr(policy.name)
+        
         guard_calls.extend([
             "    try:",
             f"        await {validate_alias}(api=api, args=args)",
             "    except PolicyViolationException as e:",
             "        error_msg = str(e)",
-            f"        # Check if error already contains policy name to avoid duplication",
-            f"        if not error_msg.startswith('[{policy.name}]'):",
-            f"            error_msg = f\"[{policy.name}] {{error_msg}}\"",
+            "        # Check if error already contains policy name to avoid duplication",
+            f"        _policy_name = {policy_name_literal}",
+            "        _prefix = f\"[{_policy_name}]\"",
+            "        if not error_msg.startswith(_prefix):",
+            "            error_msg = f\"{_prefix} {error_msg}\"",
             "        violations.append(error_msg)",
         ])
 
@@ -575,7 +585,12 @@ class ToolGuardRuntime:
                 f"Error executing umbrella guard for tool '{function_name}': {e}",
                 exc_info=True
             )
-            return None
+            # Fail closed: treat internal guard errors as a violation so a buggy
+            # or malformed guard cannot silently bypass policy enforcement.
+            return (
+                f"Internal guard error for '{function_name}': {e}. "
+                "Tool call blocked as a safety precaution."
+            )
 
         logger.debug(f"Tool call '{function_name}' passed all guards")
         return None
@@ -605,3 +620,14 @@ class ToolGuardRuntime:
             List of ToolGuide policies with guards for this tool
         """
         return self.tool_to_guards.get(tool_name, [])
+
+    async def shutdown(self) -> None:
+        """Release in-memory ToolGuard runtime resources."""
+        if self._runtime is not None:
+            try:
+                self._runtime.__exit__(None, None, None)
+            except Exception:
+                logger.exception("Error while shutting down ToolGuard runtime")
+            self._runtime = None
+        self._initialized = False
+        logger.debug("ToolGuardRuntime shutdown complete")

@@ -446,7 +446,8 @@ class TestAutoLoadPolicies:
         assert "playbook" in policy_types
         assert "tool_guide" in policy_types
 
-        loaded_guide = next(p for p in policies if p["id"] == "guide_1")
+        loaded_guide = await agent.policies.get("guide_1")
+        assert loaded_guide is not None
         assert loaded_guide["policy"].tool_guards is not None
         assert "test_tool" in loaded_guide["policy"].tool_guards
         assert loaded_guide["policy"].tool_guards["test_tool"].description == "Guard loaded from filesystem"

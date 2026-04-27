@@ -176,7 +176,13 @@ class ToolGuard(BaseModel):
         default_factory=list, description="Examples of compliant usage patterns"
     )
     policy_code: str = Field(
-        default="", description="Python code that validates tool usage compliance"
+        default="",
+        description=(
+            "Python code that validates tool usage compliance. "
+            "WARNING: This code is executed unsandboxed at runtime. "
+            "Only trusted administrators with manage access should be allowed to modify policy code. "
+            "Malicious code can compromise system security."
+        )
     )
 
 

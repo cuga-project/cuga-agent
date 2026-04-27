@@ -11,9 +11,11 @@ This script demonstrates:
 Configuration:
 - Set DELETE_ALL_POLICIES_AT_START = True to delete all existing policies before running
 - Set DELETE_ALL_POLICIES_AT_START = False to preserve existing policies (default)
+- Set environment variable CUGA_E2E_ALLOW_DESTRUCTIVE=true to enable destructive cleanup
 """
 
 import asyncio
+import os
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -25,7 +27,8 @@ from cuga.backend.cuga_graph.policy.tool_guard import ToolGuardRuntime
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-DELETE_ALL_POLICIES_AT_START = True
+# Default to False for safety - require explicit opt-in for destructive operations
+DELETE_ALL_POLICIES_AT_START = os.environ.get("CUGA_E2E_ALLOW_DESTRUCTIVE", "").lower() in ("true", "1", "yes")
 # ============================================================================
 
 # Define policies to create

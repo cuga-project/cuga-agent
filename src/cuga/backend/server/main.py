@@ -2395,9 +2395,13 @@ async def get_policies_config(
 @app.post("/api/config/policies")
 async def save_policies_config(
     request: Request,
-    current_user: Optional[UserInfo] = Depends(require_auth),
+    current_user: Optional[UserInfo] = Depends(require_manage_access),
 ):
-    """Endpoint to save policies configuration. Use draft collection when X-Use-Draft header is set."""
+    """Endpoint to save policies configuration. Use draft collection when X-Use-Draft header is set.
+    
+    Security: Requires manage access role. Policy code is executed unsandboxed at runtime,
+    so only trusted administrators should be allowed to modify policies.
+    """
     if not settings.policy.enabled:
         return JSONResponse(
             {"status": "error", "message": "Policy system is disabled in settings"},

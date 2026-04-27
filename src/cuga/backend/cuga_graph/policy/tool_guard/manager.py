@@ -121,8 +121,14 @@ class ToolGuardManager:
 
     @contextmanager
     def _temp_directory(self) -> Iterator[Path]:
-        """Context manager for temporary toolguard directory."""
-        tmp_dir = Path(self.work_dir) / "tmp"
+        """Context manager for temporary toolguard directory.
+        
+        Creates a unique temporary subdirectory per invocation to avoid
+        race conditions when generate_examples() or generate_guard_code()
+        are called concurrently.
+        """
+        import uuid
+        tmp_dir = Path(self.work_dir) / f"tmp_{uuid.uuid4().hex}"
         tmp_dir.mkdir(parents=True, exist_ok=True)
         try:
             yield tmp_dir

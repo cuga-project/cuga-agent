@@ -105,7 +105,12 @@ class CugaLLMAdapter(LanguageModelBase):
             if "content" not in msg:
                 raise ValueError(f"Message at index {i} missing 'content' key: {msg}")
             
-            role = msg["role"].lower()
+            raw_role = msg["role"]
+            if not isinstance(raw_role, str):
+                raise ValueError(
+                    f"Message at index {i} has non-string 'role': {type(raw_role).__name__}"
+                )
+            role = raw_role.lower()
             content = msg["content"]
             
             # Convert to appropriate LangChain message type
