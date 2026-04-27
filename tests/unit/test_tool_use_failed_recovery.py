@@ -1,8 +1,12 @@
 """Tests for LLM tool_use_failed error recovery in errors.py."""
 
+import pytest
+
 from cuga.backend.llm.errors import (
+    ainvoke_with_retry_on_tool_choice_none,
     extract_code_from_tool_use_failed,
     failed_gen_to_code,
+    is_tool_choice_none_tool_use_failed,
     parse_tool_use_failed_generation,
 )
 
@@ -191,3 +195,69 @@ class TestExtractCodeFromToolUseFailed:
         assert code is not None
         assert "knowledge_search_knowledge" in code
         assert "query='GPA'" in code
+
+
+class TestIsToolChoiceNoneToolUseFailed:
+    def test_true_from_exception_body(self):
+        class FakeErr(Exception):
+            def __init__(self):
+                self.body = {
+                    "error": {
+                        "message": "Tool choice is none, but model called a tool",
+                        "code": "tool_use_failed",
+                    }
+                }
+                super().__init__("400")
+
+        assert is_tool_choice_none_tool_use_failed(FakeErr()) is True
+
+    def test_true_from_error_string(self):
+        err = (
+            "Error code: 400 - {'error': {'message': 'Tool choice is none, but model called a tool', "
+            "'code': 'tool_use_failed'}}"
+        )
+        assert is_tool_choice_none_tool_use_failed(err) is True
+
+    def test_false_for_other_tool_use_failed(self):
+        err = (
+            "Error code: 400 - {'error': {'message': 'Failed to call a function', 'code': 'tool_use_failed'}}"
+        )
+        assert is_tool_choice_none_tool_use_failed(err) is False
+
+
+class TestAinvokeWithRetryOnToolChoiceNone:
+    async def test_retries_once_then_succeeds(self):
+        calls = {"n": 0}
+
+        class Chain:
+            async def ainvoke(self, data):
+                calls["n"] += 1
+                if calls["n"] == 1:
+                    err = Exception("400")
+                    err.body = {
+                        "error": {
+                            "message": "Tool choice is none, but model called a tool",
+                            "code": "tool_use_failed",
+                        }
+                    }
+                    raise err
+                return "ok"
+
+        r = await ainvoke_with_retry_on_tool_choice_none(Chain(), {})
+        assert r == "ok"
+        assert calls["n"] == 2
+
+    async def test_raises_after_exhausting_retries(self):
+        class Chain:
+            async def ainvoke(self, data):
+                err = Exception("400")
+                err.body = {
+                    "error": {
+                        "message": "Tool choice is none, but model called a tool",
+                        "code": "tool_use_failed",
+                    }
+                }
+                raise err
+
+        with pytest.raises(Exception):
+            await ainvoke_with_retry_on_tool_choice_none(Chain(), {})

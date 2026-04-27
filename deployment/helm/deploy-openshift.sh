@@ -16,12 +16,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WITH_POSTGRES=false
 WITH_VAULT=false
+AIRGAPPED=false
 ENV_FILE=""
 for arg in "$@"; do
   if [[ "$arg" == "--with-postgres" ]]; then
     WITH_POSTGRES=true
   elif [[ "$arg" == "--with-vault" ]]; then
     WITH_VAULT=true
+  elif [[ "$arg" == "--airgapped" ]]; then
+    AIRGAPPED=true
   else
     [[ -z "$ENV_FILE" ]] && ENV_FILE="$arg"
   fi
@@ -106,6 +109,9 @@ fi
 if [[ "$WITH_VAULT" == true ]]; then
   echo "  Vault     : enabled"
 fi
+if [[ "$AIRGAPPED" == true ]]; then
+  echo "  Airgapped : enabled (NetworkPolicy blocking egress applied)"
+fi
 echo "========================================"
 echo ""
 
@@ -156,7 +162,7 @@ if [[ "$WITH_POSTGRES" == true ]]; then
     --set "auth.username=${POSTGRES_USER:-cuga}" \
     --set "auth.existingSecret=postgres-secret" \
     --set "auth.existingSecretKey=password" \
-    "${POSTGRES_PGVECTOR_HELM_EXTRA[@]}"
+    ${POSTGRES_PGVECTOR_HELM_EXTRA[@]+"${POSTGRES_PGVECTOR_HELM_EXTRA[@]}"}
   ((STEP++))
 fi
 
@@ -250,6 +256,38 @@ fi
 # 5. Helm deploy (cuga)
 # ---------------------------------------------------------------------------
 
+if [[ "$AIRGAPPED" == true ]]; then
+  echo "[${STEP}/${TOTAL_STEPS}] Applying Airgap NetworkPolicy (deny egress)"
+  # Policy logic:
+  # 1. Deny all egress by default (achieved by policyTypes: [Egress] with no catch-all allow)
+  # 2. Allow egress to local namespace (for postgres, internal services)
+  # 3. Allow DNS (UDP/TCP 53)
+  # 4. Allow Groq IPs if resolved
+  
+  cat <<EOF | kubectl apply -n "${NAMESPACE}" -f -
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: "${INSTANCE_ID}-airgap-egress"
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: "${RELEASE_NAME}"
+  policyTypes:
+  - Egress
+  egress:
+  - to:
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: "${NAMESPACE}"
+  - ports:
+    - port: 53
+      protocol: UDP
+    - port: 53
+      protocol: TCP
+EOF
+fi
+
 echo "[${STEP}/${TOTAL_STEPS}] Deploying Helm release: ${RELEASE_NAME}"
 
 STORAGE_MODE="${DYNACONF_STORAGE__MODE:-local}"
@@ -280,6 +318,8 @@ HELM_ARGS=(
   --set "env.DYNACONF_UI__HIDE_CUGA_LOGO=${DYNACONF_UI__HIDE_CUGA_LOGO:-false}"
   --set "env.DYNACONF_UI__BRAND_NAME=${DYNACONF_UI__BRAND_NAME:-}"
   --set "env.CUGA_DEMO_MODE=${CUGA_DEMO_MODE:-default}"
+  --set "env.DYNACONF_OBSERVABILITY__OPENLIT=${DYNACONF_OBSERVABILITY__OPENLIT:-false}"
+  --set "env.OTEL_EXPORTER_OTLP_ENDPOINT=${OTEL_EXPORTER_OTLP_ENDPOINT:-}"
   --set "route.enabled=true"
 )
 

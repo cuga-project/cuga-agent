@@ -32,7 +32,10 @@ from cuga.backend.knowledge.engine import (
 
 logger = logging.getLogger("cuga.knowledge")
 
-knowledge_router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
+# Public HTTP path for the knowledge API (match include_router mount; use for client-side URL building).
+KNOWLEDGE_HTTP_PREFIX = "/api/knowledge"
+
+knowledge_router = APIRouter(prefix=KNOWLEDGE_HTTP_PREFIX, tags=["knowledge"])
 
 knowledge_agent_manage_router = APIRouter(
     dependencies=[Depends(require_knowledge_agent_manage_identity)],

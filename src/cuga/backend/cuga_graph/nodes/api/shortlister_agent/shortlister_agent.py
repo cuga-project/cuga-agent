@@ -100,18 +100,6 @@ class ShortlisterAgent(BaseAgent):
 
     async def get_shortlisted_apis(self, input_variables: AgentState, app_name: str, apis: dict):
         """Get shortlisted APIs for a specific app"""
-
-        # memory integration
-        rtrvd_tips_formatted = None
-        if settings.advanced_features.enable_memory:
-            from cuga.backend.memory.agentic_memory.utils.memory_tips_formatted import get_formatted_tips
-
-            rtrvd_tips_formatted = get_formatted_tips(
-                namespace_id="memory",
-                agent_id='APIShortlisterAgent',
-                query=input_variables.shortlister_query,
-                limit=3,
-            )
         res = await self.chain.ainvoke(
             {
                 "input": input_variables.shortlister_query,
@@ -119,7 +107,6 @@ class ShortlisterAgent(BaseAgent):
                 "api_shortlister_current_app": app_name,
                 "api_shortlister_app_description": "",
                 "api_shortlister_current_app_apis": json.dumps(apis, indent=2),
-                "memory": rtrvd_tips_formatted,
             }
         )
         return res

@@ -1,6 +1,6 @@
 [project]
 name = "cuga"
-version = "0.2.18"
+version = "0.2.25"
 description = "CUGA is an open-source generalist agent for the enterprise, supporting complex task execution on web and APIs, OpenAPI/MCP integrations, composable architecture, reasoning modes, and policy-aware features."
 readme = "README.md"
 license = "Apache-2.0"
@@ -9,8 +9,8 @@ dependencies = [
     "langchain>=1.0",
     "langchain-ibm>=0.3.9",
     "langchain-openai",
-    "langchain-core",
-    "aiohttp",
+    "langchain-core>=1.2.22",
+    "aiohttp>=3.13.5",
     "httpx",
     "docker",
     "langgraph",
@@ -18,8 +18,8 @@ dependencies = [
     "uvicorn",
     "fastapi[standard]",
     "langfuse",
-    "dynaconf",
-    "playwright==1.49.0",
+    "dynaconf>=3.2.13",
+    "playwright>=1.49.0",
     "browsergym-core==0.13.0",
     "python-dotenv",
     "loguru",
@@ -37,20 +37,24 @@ dependencies = [
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
-    "sqlite-vec>=0.1.6",
+    "sqlite-vec>=0.1.6",  # GHSA-vrcx-gx3g-j3h8 affects <0.1.3 only; 0.1.6 is safe
     "pgvector>=0.4.2",
     "asyncpg>=0.30",
-    "PyJWT[crypto]>=2.10.0",
-    "cryptography>=44.0.0",
+    "PyJWT[crypto]>=2.12.0",
+    "cryptography>=46.0.7",
     "hvac>=2.0.0",
     "boto3>=1.34.0",
     # Knowledge engine (replaces OpenRAG)
     "langchain-docling>=2.0,<3.0",
+    "torch",       # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels
+    "torchvision", # explicit: must match torch variant (cpu) to avoid operator registration errors
     "langchain-ollama>=0.2.0",
-    "langchain-text-splitters>=0.3,<0.4",
+    "langchain-text-splitters>=1.0,<2.0",
     "beautifulsoup4>=4.12",
     "psycopg[binary]>=3.2",
     "toolguard>=0.2.16",
+    "cuga-oak-health; python_version>='3.12'",
+    "aiosmtpd",
 ]
 
 [project.optional-dependencies]
@@ -58,7 +62,7 @@ evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
 memory = ["mem0ai[extras]"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
-health = ["cuga-oak-health; python_version>='3.12'"]
+health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 evolve = ["altk-evolve>=1.0.6; python_version>='3.12'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
 # Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
@@ -71,13 +75,58 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 [tool.uv]
 package = true
 constraint-dependencies = [
-    "pillow>=12.1.1",  # CVE-2026-25990: Out-of-bounds write in PSD loading
+    "pillow>=12.2.0",  # CVE-2026-25990 (PSD), FITS decompression bomb (10.3.0-12.1.x)
     "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
-    "setuptools<70",   # milvus-lite requires pkg_resources (removed in setuptools 70+)
+    # setuptools: Multiple vulnerabilities require >=78.1.1, but constrained to <70 due to milvus-lite
+    # RISK ACCEPTED: Constrained to <70 due to milvus-lite 2.5.1 dependency on pkg_resources
+    # VULNERABILITIES:
+    # - GHSA-cx63-2mw6-8hw5 (<70.0.0): Command injection via package URL
+    # - Path traversal in PackageIndex (<78.1.1): Arbitrary file write leading to potential RCE
+    # JUSTIFICATION:
+    # - milvus-lite 2.5.1 (latest) uses pkg_resources for version detection only
+    # - pkg_resources removed in setuptools 70+, causing ImportError
+    # - Vulnerabilities require attacker control of package URLs or malicious package index
+    # - setuptools primarily used at build-time; runtime exposure minimal
+    # - easy_install and package_index (vulnerable components) are deprecated
+    # MITIGATION:
+    # - Monitor for milvus-lite updates that migrate to importlib.metadata
+    # - Consider implementing pkg_resources shim if setuptools upgrade becomes critical
+    # - Avoid using easy_install or untrusted package indexes
+    "setuptools<70",
+    # Security updates for transitive dependencies
+    "authlib>=1.6.9",      # GHSA-wvwj-cvrp-7pv5, GHSA-m344-f55w-2m6j, GHSA-7wc2-qxgw-g8gg, GHSA-7432-952r-cw78
+    "orjson>=3.11.6",      # GHSA-hx9q-6w63-j58v
+    "pyasn1>=0.6.3",       # GHSA-jr27-m4p2-rc6r
+    "protobuf>=5.29.6",    # GHSA-7gcm-g887-7qv7
+    "strawberry-graphql>=0.312.3",  # CVE: Auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2)
+    "arize-phoenix>=14.3.1",  # Upgrade to use strawberry-graphql>=0.312.3 (fixes auth bypass vulnerability)
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 override-dependencies = ["python-dotenv>=1.1.0"]
+
+[tool.uv.sources]
+torch                 = { index = "pytorch-cpu" }
+torchvision           = { index = "pytorch-cpu" }
+torchaudio            = { index = "pytorch-cpu" }
+
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+# NOTE: uv.lock includes graphql-core 3.3.0a12 (pre-release) to fix strawberry-graphql security vulnerability
+# RISK ACCEPTED: graphql-core pre-release required by arize-phoenix 14.3.1+ for secure strawberry-graphql
+# - Lock file generated with: uv lock --upgrade-package strawberry-graphql --upgrade-package arize-phoenix --prerelease=allow
+# - graphql-core is mature; alpha is for new features, not instability
+# - Monitor for graphql-core 3.3.0 stable release to remove pre-release dependency
+
+# NLTK WordNet Browser DoS vulnerability (<=3.9.3): NO PATCH AVAILABLE
+# RISK ACCEPTED: nltk is dev-only dependency; vulnerable wordnet_app HTTP server is not used in codebase
+# - Vulnerability: Unauthenticated remote shutdown via GET /SHUTDOWN%20THE%20SERVER
+# - Impact: DoS only, affects nltk.app.wordnet_app when exposed on network
+# - Mitigation: wordnet_app is not imported or used anywhere in the project
+# - Monitor: Check for NLTK security releases that patch nltk/app/wordnet_app.py
 
 # PyPI openlit declares openai<2; litellm 1.83.x needs openai 2.x. Override for uv lock / Docker / dev only.
 [[tool.uv.dependency-metadata]]

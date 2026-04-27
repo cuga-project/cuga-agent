@@ -55,19 +55,6 @@ class TaskDecompositionAgent(BaseAgent):
         data["instructions"] = instructions_manager.get_instructions(self.name)
         data["decomposition_strategy"] = settings.advanced_features.decomposition_strategy
 
-        # memory integration
-        rtrvd_tips_formatted = None
-        if settings.advanced_features.enable_memory:
-            from cuga.backend.memory.agentic_memory.utils.memory_tips_formatted import get_formatted_tips
-
-            rtrvd_tips_formatted = get_formatted_tips(
-                namespace_id="memory",
-                agent_id='TaskDecompositionAgent',
-                query=input_variables.shortlister_query,
-                limit=3,
-            )
-        data['memory'] = rtrvd_tips_formatted
-
         if input_variables.sites is not None and len(input_variables.sites) > 1:
             out = await self.chain_multi.ainvoke(data)
             result = AIMessage(content=json.dumps(out.model_dump()), name=self.name)

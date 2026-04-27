@@ -173,8 +173,15 @@ class _FastEmbedEmbeddings(Embeddings):
 
     def __init__(self, model_name: str):
         from fastembed import TextEmbedding
+        import os
 
-        self._model = TextEmbedding(model_name)
+        # fastembed defaults cache_dir to ~/fastembed_cache which resolves to
+        # /tmp/fastembed_cache when HOME=/tmp (container). Explicitly pass the
+        # build-time cache so it finds the pre-extracted model dir immediately,
+        # before ever reaching the local_files_only check.
+        cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
+        local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+        self._model = TextEmbedding(model_name, cache_dir=cache_dir, local_files_only=local_files_only)
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
         return [v.tolist() for v in self._model.embed(texts)]
@@ -1436,9 +1443,19 @@ class KnowledgeEngine:
     def _get_docling_converter(self):
         """Get or create a reusable Docling DocumentConverter (loads weights once)."""
         if self._docling_converter is None:
-            from docling.document_converter import DocumentConverter
+            import os
+            from docling.document_converter import DocumentConverter, PdfFormatOption
+            from docling.datamodel.base_models import InputFormat
+            from docling.datamodel.pipeline_options import PdfPipelineOptions
 
-            self._docling_converter = DocumentConverter()
+            from pathlib import Path
+
+            artifacts_path_str = os.environ.get("DOCLING_ARTIFACTS_PATH")
+            artifacts_path = Path(artifacts_path_str) if artifacts_path_str else None
+            pipeline_options = PdfPipelineOptions(artifacts_path=artifacts_path)
+            self._docling_converter = DocumentConverter(
+                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+            )
             logger.info("Docling DocumentConverter initialized (weights loaded)")
         return self._docling_converter
 

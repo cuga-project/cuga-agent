@@ -90,3 +90,6 @@ docs/examples/cuga_with_runtime_tools/uv.lock
 
 # Registry credentials (copy from registry.example.env)
 scripts/registry.env
+
+# Tracked even if core.excludesfile / global gitignore lists this basename
+!scripts/smoke_pip_install_isolated.sh
