@@ -197,8 +197,7 @@ async def create_and_process_policies(agent, policy_system):
             raise ValueError(f"Failed to retrieve policy {policy_id}")
         
         policy = policy_tool_guide["policy"]
-        if agent.policies._fs_sync:
-            agent.policies._fs_sync.save_policy_to_file(policy)
+        
         
         print(f"✅ Policy saved successfully")
         
@@ -381,4 +380,3 @@ async def main():
 if __name__ == "__main__":
     asyncio.run(main())
 
-# Made with Bob

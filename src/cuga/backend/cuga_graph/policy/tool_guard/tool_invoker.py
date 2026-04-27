@@ -116,5 +116,3 @@ class ToolGuardInvoker(IToolInvoker):
         self._tools_cache = None
         logger.debug("Cleared tools cache")
 
-
-# Made with Bob

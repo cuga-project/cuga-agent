@@ -351,4 +351,3 @@ class ToolGuardManager:
         return [tool.name for tool in self.langchain_tools]
 
 
-# Made with Bob

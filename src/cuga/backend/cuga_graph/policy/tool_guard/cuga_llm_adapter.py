@@ -197,4 +197,4 @@ class CugaLLMAdapter(LanguageModelBase):
                 "Check that your model is properly configured and has valid credentials."
             ) from e
 
-# Made with Bob
+
