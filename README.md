@@ -259,22 +259,27 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 **Setup Instructions:**
 
 1. Access [IBM WatsonX](https://www.ibm.com/watsonx)
-2. Create a project and get your credentials:
-   - Project ID
+2. Create a project or space and get your credentials:
+   - Project ID or Space ID
    - API Key
    - Region/URL
 3. Add to your `.env` file:
 
    ```env
    # WatsonX Configuration
-   WATSONX_API_KEY=your-watsonx-api-key
+   WATSONX_APIKEY=your-watsonx-api-key
    WATSONX_PROJECT_ID=your-project-id
+   # WATSONX_SPACE_ID=your-space-id  # Alternative to WATSONX_PROJECT_ID
    WATSONX_URL=https://us-south.ml.cloud.ibm.com  # or your region
    AGENT_SETTING_CONFIG="settings.watsonx.toml"
 
    # Optional override
    MODEL_NAME=meta-llama/llama-4-maverick-17b-128e-instruct-fp8  # Override model for all agents
    ```
+
+**Notes:**
+- Use either [`WATSONX_PROJECT_ID`](README.md:271) or [`WATSONX_SPACE_ID`](README.md:272) depending on how your WatsonX assets are organized.
+- [`WATSONX_SPACE_ID`](README.md:272) is supported as an alternative to [`WATSONX_PROJECT_ID`](README.md:271) in CUGA.
 
 **Default Values:**
 
