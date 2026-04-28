@@ -601,7 +601,6 @@ class LLMManager:
             )
         elif platform == "watsonx":
             watsonx_params: Dict[str, Any] = {
-                "apikey": os.environ["WATSONX_APIKEY"],
                 "params": {
                     "temperature": temperature,
                     "max_tokens": max_tokens,
@@ -625,9 +624,6 @@ class LLMManager:
                 watsonx_params["space_id"] = os.environ["WATSONX_SPACE_ID"]
             elif os.getenv("WATSONX_PROJECT_ID"):
                 watsonx_params["project_id"] = os.environ["WATSONX_PROJECT_ID"]
-
-            if os.getenv("WATSONX_INSTANCE_ID"):
-                watsonx_params["instance_id"] = os.environ["WATSONX_INSTANCE_ID"]
 
             llm = ChatWatsonx(**watsonx_params)
         elif platform == "rits":
