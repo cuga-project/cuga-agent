@@ -161,6 +161,12 @@ async def _get_or_create_registry(
     try:
         await reg.start_servers()
     except Exception:
+        # Clean up manager if start_servers fails
+        try:
+            await manager.shutdown()
+        except Exception as cleanup_error:
+            logger.warning(f"Error shutting down manager during cleanup: {cleanup_error}")
+        
         # Clean up policy_storage if start_servers fails
         if policy_storage is not None:
             try:
@@ -213,6 +219,12 @@ async def lifespan(app: FastAPI):
         try:
             await registry.start_servers()
         except Exception:
+            # Clean up mcp_manager if start_servers fails
+            try:
+                await mcp_manager.shutdown()
+            except Exception as cleanup_error:
+                logger.warning(f"Error shutting down mcp_manager during cleanup: {cleanup_error}")
+            
             # Clean up policy_storage if start_servers fails
             if policy_storage is not None:
                 try:
@@ -612,6 +624,12 @@ async def reload_config(
             try:
                 await new_registry.start_servers()
             except Exception:
+                # Clean up new_manager if start_servers fails
+                try:
+                    await new_manager.shutdown()
+                except Exception as cleanup_error:
+                    logger.warning(f"Error shutting down new_manager during cleanup: {cleanup_error}")
+                
                 # Clean up new policy_storage if start_servers fails
                 if policy_storage is not None:
                     try:

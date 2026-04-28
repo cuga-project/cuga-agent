@@ -50,8 +50,9 @@ class ToolGuardRuntime:
         self.policy_storage = policy_storage
         self.invoker = ToolGuardInvoker(tool_provider)
         self.tool_to_guards: Dict[str, List[ToolGuide]] = {}
-        self._runtime = None
-        self._runtime_domain: Optional[RuntimeDomain] = None
+        # Per-app runtime mapping to avoid cross-app collisions
+        self._runtimes_by_app: Dict[str, Any] = {}
+        self._runtime_domains_by_app: Dict[str, RuntimeDomain] = {}
         self._initialized = False
         logger.debug("Created ToolGuardRuntime instance")
 
@@ -63,8 +64,7 @@ class ToolGuardRuntime:
         1. Fetches all ToolGuide policies from storage
         2. Filters for policies that have tool_guards with policy_code
         3. Builds the tool_to_guards mapping
-        4. Creates umbrella guard functions per tool
-        5. Builds an in-memory ToolGuard runtime
+        4. Per-app runtimes will be lazily loaded on first use
         """
         logger.info("Initializing ToolGuardRuntime...")
         self._reset_state()
@@ -78,23 +78,21 @@ class ToolGuardRuntime:
         tool_guide_policies = [p for p in policies if isinstance(p, ToolGuide)]
         self._build_tool_to_guards_mapping(tool_guide_policies)
 
-        if self.tool_to_guards:
-            self._runtime_domain = self._load_runtime_domain()
-            self._runtime = self._build_runtime()
-
         self._initialized = True
         self._log_initialization_summary()
 
     def _reset_state(self) -> None:
         """Reset internal state for reinitialization."""
-        if self._runtime is not None:
-            try:
-                self._runtime.__exit__(None, None, None)
-            except Exception:
-                logger.exception("Error while exiting previous ToolGuard runtime")
+        # Clean up all per-app runtimes
+        for app_name, runtime in self._runtimes_by_app.items():
+            if runtime is not None:
+                try:
+                    runtime.__exit__(None, None, None)
+                except Exception:
+                    logger.exception(f"Error while exiting ToolGuard runtime for app '{app_name}'")
         self.tool_to_guards = {}
-        self._runtime = None
-        self._runtime_domain = None
+        self._runtimes_by_app = {}
+        self._runtime_domains_by_app = {}
 
     def _build_tool_to_guards_mapping(self, policies: Sequence[ToolGuide]) -> None:
         """
@@ -128,12 +126,23 @@ class ToolGuardRuntime:
                 )
                 continue
 
+            # Validate that policy_code contains at least one async def guard_* function
+            guard_func_name = self._extract_guard_function_name(tool_guard.policy_code)
+            if not guard_func_name:
+                logger.error(
+                    f"Tool guard for '{tool_name}' in policy '{policy.name}' "
+                    f"has policy_code but no valid 'async def guard_*' function found. "
+                    f"Skipping registration to prevent marking tool as guarded without enforcement."
+                )
+                continue
+
             if tool_name not in self.tool_to_guards:
                 self.tool_to_guards[tool_name] = []
 
             self.tool_to_guards[tool_name].append(policy)
             logger.debug(
-                f"Registered guard for tool '{tool_name}' from policy '{policy.name}'"
+                f"Registered guard for tool '{tool_name}' from policy '{policy.name}' "
+                f"with guard function '{guard_func_name}'"
             )
 
     def _log_initialization_summary(self) -> None:
@@ -148,19 +157,42 @@ class ToolGuardRuntime:
                 f"({', '.join(g.name for g in guards)})"
             )
 
-    def _build_runtime(self):
-        """Build an in-memory ToolGuard runtime from registered guard policies."""
-        if self._runtime_domain is None:
-            raise RuntimeError("ToolGuard runtime domain is not loaded")
+    def _build_runtime(self, app_name: str):
+        """
+        Build an in-memory ToolGuard runtime from registered guard policies for a specific app.
+        
+        Args:
+            app_name: Name of the application to build runtime for
+            
+        Returns:
+            Runtime instance for the specified app
+        """
+        runtime_domain = self._runtime_domains_by_app.get(app_name)
+        if runtime_domain is None:
+            raise RuntimeError(f"ToolGuard runtime domain not loaded for app '{app_name}'")
 
         file_twins: List[FileTwin] = [
-            self._runtime_domain.app_types,
-            self._runtime_domain.app_api,
-            self._runtime_domain.app_api_impl,
+            runtime_domain.app_types,
+            runtime_domain.app_api,
+            runtime_domain.app_api_impl,
         ]
         tools: Dict[str, ToolGuardCodeResult] = {}
 
-        for tool_name, guards in self.tool_to_guards.items():
+        for tool_name, all_guards in self.tool_to_guards.items():
+            # Filter guards to only those applicable to this app
+            guards = [
+                guard for guard in all_guards
+                if guard.target_apps is None or not guard.target_apps or app_name in guard.target_apps
+            ]
+            
+            # Skip this tool if no guards apply to this app
+            if not guards:
+                logger.debug(
+                    f"Skipping tool '{tool_name}' for app '{app_name}' - "
+                    f"no applicable guards (out of {len(all_guards)} total)"
+                )
+                continue
+            
             module_name = self._module_name_for_tool(tool_name)
             guard_fn_name = self._guard_function_name_for_tool(tool_name)
             guard_module_path = Path(*module_name.split(".")).with_suffix(".py")
@@ -196,7 +228,7 @@ class ToolGuardRuntime:
 
         result = ToolGuardsCodeGenerationResult(
             out_dir=Path("."),
-            domain=self._runtime_domain,
+            domain=runtime_domain,
             tools=tools,
         )
 
@@ -204,12 +236,15 @@ class ToolGuardRuntime:
         runtime.__enter__()
         return runtime
 
-    def _load_runtime_domain(self) -> RuntimeDomain:
+    def _load_runtime_domain(self, app_name: str) -> RuntimeDomain:
         """
-        Load RuntimeDomain files saved by ToolGuardManager.
+        Load RuntimeDomain files saved by ToolGuardManager for a specific app.
+
+        Args:
+            app_name: Name of the application to load domain for
 
         Returns:
-            RuntimeDomain with loaded domain files
+            RuntimeDomain with loaded domain files for the specified app
 
         Raises:
             RuntimeError: If domain directory or files are not found
@@ -217,12 +252,18 @@ class ToolGuardRuntime:
         domain_dir = Path.cwd() / ".cuga" / "toolguard" / "domain"
         self._validate_domain_directory(domain_dir)
 
-        app_dirs = self._get_sorted_app_directories(domain_dir)
-        selected_domain = self._find_complete_domain(domain_dir, app_dirs)
+        # Look for the specific app's domain
+        app_dir = domain_dir / app_name
+        if not app_dir.exists():
+            raise RuntimeError(
+                f"ToolGuard domain directory not found for app '{app_name}': {app_dir}"
+            )
+
+        selected_domain = self._find_complete_domain_for_app(domain_dir, app_name)
 
         if selected_domain is None:
             raise RuntimeError(
-                f"No complete ToolGuard domain found under {domain_dir}"
+                f"No complete ToolGuard domain found for app '{app_name}' under {domain_dir}"
             )
 
         return self._create_runtime_domain(domain_dir, selected_domain)
@@ -293,6 +334,33 @@ class ToolGuardRuntime:
             ]
             if all(path.exists() for path in candidate_paths):
                 return (app_name, app_types_rel, app_api_rel, app_api_impl_rel)
+
+        return None
+
+    def _find_complete_domain_for_app(
+        self, domain_dir: Path, app_name: str
+    ) -> Optional[Tuple[str, Path, Path, Path]]:
+        """
+        Find complete domain files for a specific app.
+
+        Args:
+            domain_dir: Path to domain directory
+            app_name: Name of the app to find domain for
+
+        Returns:
+            Tuple of (app_name, types_path, api_path, impl_path) or None
+        """
+        app_types_rel = Path(app_name) / f"{app_name}_types.py"
+        app_api_rel = Path(app_name) / f"i_{app_name}.py"
+        app_api_impl_rel = Path(app_name) / f"{app_name}_impl.py"
+
+        candidate_paths = [
+            domain_dir / app_types_rel,
+            domain_dir / app_api_rel,
+            domain_dir / app_api_impl_rel,
+        ]
+        if all(path.exists() for path in candidate_paths):
+            return (app_name, app_types_rel, app_api_rel, app_api_impl_rel)
 
         return None
 
@@ -535,6 +603,41 @@ class ToolGuardRuntime:
         
         return f"{base}_{name_hash}"
 
+    async def _get_or_create_runtime_for_app(self, app_name: str):
+        """
+        Get or lazily create a runtime for the specified app.
+        
+        Args:
+            app_name: Name of the application
+            
+        Returns:
+            Runtime instance for the app, or None if it cannot be created
+        """
+        # Return cached runtime if available
+        if app_name in self._runtimes_by_app:
+            return self._runtimes_by_app[app_name]
+        
+        # Try to load and build runtime for this app
+        try:
+            logger.info(f"Loading runtime domain for app '{app_name}'...")
+            runtime_domain = self._load_runtime_domain(app_name)
+            self._runtime_domains_by_app[app_name] = runtime_domain
+            
+            logger.info(f"Building runtime for app '{app_name}'...")
+            runtime = self._build_runtime(app_name)
+            self._runtimes_by_app[app_name] = runtime
+            
+            logger.info(f"✅ Runtime initialized for app '{app_name}'")
+            return runtime
+        except Exception as e:
+            logger.error(
+                f"Failed to initialize runtime for app '{app_name}': {e}",
+                exc_info=True
+            )
+            # Cache None to avoid repeated failed attempts
+            self._runtimes_by_app[app_name] = None
+            return None
+
     async def guard_tool_call(
         self,
         app_name: str,
@@ -564,22 +667,37 @@ class ToolGuardRuntime:
             logger.debug(f"No guards registered for tool '{function_name}'")
             return None
 
-        if self._runtime is None:
+        # Filter guards to only those applicable to this app
+        all_guards = self.tool_to_guards[function_name]
+        guards = [
+            guard for guard in all_guards
+            if guard.target_apps is None or not guard.target_apps or app_name in guard.target_apps
+        ]
+        
+        if not guards:
+            logger.debug(
+                f"No guards applicable for tool '{function_name}' on app '{app_name}' "
+                f"(found {len(all_guards)} guard(s) but none match this app)"
+            )
+            return None
+
+        # Get or create app-specific runtime
+        runtime = await self._get_or_create_runtime_for_app(app_name)
+        if runtime is None:
             logger.warning(
-                f"ToolGuard runtime unavailable for guarded tool '{function_name}', "
+                f"ToolGuard runtime unavailable for app '{app_name}' and tool '{function_name}', "
                 "skipping validation"
             )
             return None
 
-        guards = self.tool_to_guards[function_name]
         logger.debug(
-            f"Validating tool call '{function_name}' against "
-            f"{len(guards)} guard(s) using umbrella runtime"
+            f"Validating tool call '{function_name}' for app '{app_name}' against "
+            f"{len(guards)} applicable guard(s) (out of {len(all_guards)} total) using umbrella runtime"
         )
 
         try:
             args_obj = SimpleNamespace(**arguments)
-            await self._runtime.guard_toolcall(
+            await runtime.guard_toolcall(
                 tool_name=function_name,
                 args=arguments | {"args": args_obj},
                 delegate=self.invoker,
@@ -587,12 +705,12 @@ class ToolGuardRuntime:
         except PolicyViolationException as e:
             error = str(e)
             logger.warning(
-                f"Tool guard blocked call to '{function_name}': {error}"
+                f"Tool guard blocked call to '{function_name}' for app '{app_name}': {error}"
             )
             return error
         except Exception as e:
             logger.error(
-                f"Error executing umbrella guard for tool '{function_name}': {e}",
+                f"Error executing umbrella guard for tool '{function_name}' in app '{app_name}': {e}",
                 exc_info=True
             )
             # Fail closed: treat internal guard errors as a violation so a buggy
@@ -602,7 +720,7 @@ class ToolGuardRuntime:
                 "Tool call blocked as a safety precaution."
             )
 
-        logger.debug(f"Tool call '{function_name}' passed all guards")
+        logger.debug(f"Tool call '{function_name}' for app '{app_name}' passed all guards")
         return None
 
     @property
@@ -633,11 +751,14 @@ class ToolGuardRuntime:
 
     async def shutdown(self) -> None:
         """Release in-memory ToolGuard runtime resources."""
-        if self._runtime is not None:
-            try:
-                self._runtime.__exit__(None, None, None)
-            except Exception:
-                logger.exception("Error while shutting down ToolGuard runtime")
-            self._runtime = None
+        # Clean up all per-app runtimes
+        for app_name, runtime in self._runtimes_by_app.items():
+            if runtime is not None:
+                try:
+                    runtime.__exit__(None, None, None)
+                except Exception:
+                    logger.exception(f"Error while shutting down ToolGuard runtime for app '{app_name}'")
+        self._runtimes_by_app = {}
+        self._runtime_domains_by_app = {}
         self._initialized = False
         logger.debug("ToolGuardRuntime shutdown complete")
