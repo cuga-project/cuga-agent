@@ -267,7 +267,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 
    ```env
    # WatsonX Configuration
-   WATSONX_APIKEY=your-watsonx-api-key
+   WATSONX_API_KEY=your-watsonx-api-key
    WATSONX_PROJECT_ID=your-project-id
    # WATSONX_SPACE_ID=your-space-id  # Alternative to WATSONX_PROJECT_ID
    WATSONX_URL=https://us-south.ml.cloud.ibm.com  # or your region
