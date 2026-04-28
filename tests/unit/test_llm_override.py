@@ -312,5 +312,3 @@ class TestLLMOverrideMechanism:
         assert "url" not in kwargs
         assert kwargs["deployment_id"] == "deployment-123"
         assert "model_id" not in kwargs
-
-
