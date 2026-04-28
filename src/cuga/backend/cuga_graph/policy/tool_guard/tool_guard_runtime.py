@@ -7,7 +7,7 @@ ToolGuide policies with policy_code.
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-
+from types import SimpleNamespace
 from loguru import logger
 
 from toolguard.runtime.data_types import (
@@ -568,7 +568,7 @@ class ToolGuardRuntime:
         )
 
         try:
-            args_obj = type("ToolGuardArgs", (), arguments)()
+            args_obj = SimpleNamespace(**arguments)
             await self._runtime.guard_toolcall(
                 tool_name=function_name,
                 args=arguments | {"args": args_obj},

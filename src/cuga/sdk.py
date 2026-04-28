@@ -1408,7 +1408,6 @@ class PoliciesManager:
         )
         
         return guard_code
-        return violating_examples, compliance_examples
 
 
 class CugaAgent:

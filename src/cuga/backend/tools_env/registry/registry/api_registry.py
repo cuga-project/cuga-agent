@@ -255,9 +255,17 @@ class ApiRegistry:
                 else:
                     logger.debug(f"✅ Tool guard validation passed for '{function_name}'")
             except Exception as e:
-                # Log guard execution error but don't block the tool call
-                # This ensures a broken guard doesn't break the entire system
-                logger.error(f"Error executing tool guard for '{function_name}': {e}", exc_info=True)
+                # Fail-closed: treat exceptions from guard_tool_call as policy violations
+                # to honor ToolGuardRuntime's fail-closed contract
+                error_msg = f"Exception during tool guard execution for '{function_name}': {e}"
+                logger.error(error_msg, exc_info=True)
+                return {
+                    "status": "exception",
+                    "status_code": 403,
+                    "message": f"Tool guard policy violation: {error_msg}",
+                    "error_type": "ToolGuardViolation",
+                    "function_name": function_name,
+                }
         
         if app_name == "web" and function_name == "search_web" and self._is_web_search_enabled():
             query = unwrapped_args.get('query') if isinstance(unwrapped_args, dict) else str(unwrapped_args)

@@ -193,7 +193,12 @@ async def lifespan(app: FastAPI):
                 await policy_storage.connect()
                 logger.info("✅ Connected policy storage for ToolGuardRuntime")
             except Exception as e:
-                logger.warning(f"Failed to connect policy storage: {e}")
+                logger.error(f"Failed to connect policy storage: {e}")
+                # Fail closed: if policy enforcement is enabled but storage fails,
+                # don't boot the registry unguarded
+                raise RuntimeError(
+                    f"Policy system is enabled but PolicyStorage.connect() failed: {e}"
+                ) from e
         
         registry = ApiRegistry(client=mcp_manager, policy_storage=policy_storage)
         await registry.start_servers()
@@ -571,7 +576,12 @@ async def reload_config(
                     await policy_storage.connect()
                     logger.info("✅ Connected policy storage for ToolGuardRuntime")
                 except Exception as e:
-                    logger.warning(f"Failed to connect policy storage: {e}")
+                    logger.error(f"Failed to connect policy storage: {e}")
+                    # Fail closed: if policy enforcement is enabled but storage fails,
+                    # don't reload the registry unguarded
+                    raise RuntimeError(
+                        f"Policy system is enabled but PolicyStorage.connect() failed: {e}"
+                    ) from e
             
             new_registry = ApiRegistry(client=new_manager, policy_storage=policy_storage)
             await new_registry.start_servers()
