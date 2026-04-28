@@ -588,6 +588,16 @@ class PoliciesManager:
         # Merge with existing tool_guards to preserve guards for other tools
         tool_guards_obj = dict(existing_policy.tool_guards or {})
         
+        # Validate that tool_guards keys are in target_tools
+        target_tools_set = set(existing_policy.target_tools or [])
+        invalid_tools = set(tool_guards.keys()) - target_tools_set
+        
+        if invalid_tools:
+            raise ValueError(
+                f"Invalid tool names in tool_guards: {', '.join(sorted(invalid_tools))}. "
+                f"Must be one of: {', '.join(sorted(target_tools_set))}"
+            )
+        
         # Convert and update only the incoming tool_guards
         for tool_name, guard_data in tool_guards.items():
             tool_guards_obj[tool_name] = ToolGuard(
@@ -1206,11 +1216,11 @@ class PoliciesManager:
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping sync")
-            return {"loaded": 0, "removed": 0, "errors": ["Policy system is disabled"]}
+            return {"loaded": 0, "removed": 0, "errors": ["Policy system is disabled"], "files": []}
 
         if not self._fs_sync:
             logger.warning("Filesystem sync not initialized - skipping")
-            return {"loaded": 0, "removed": 0, "errors": ["Filesystem sync not initialized"]}
+            return {"loaded": 0, "removed": 0, "errors": ["Filesystem sync not initialized"], "files": []}
 
         try:
             # Load policies from filesystem
@@ -1358,9 +1368,12 @@ class PoliciesManager:
             # Update policy with examples
             await agent.policies.update_tool_guard(
                 policy_id=policy_id,
-                target_tool="delete_file",
-                violating_examples=violating,
-                compliance_examples=compliance
+                tool_guards={
+                    "delete_file": {
+                        "violating_examples": violating,
+                        "compliance_examples": compliance
+                    }
+                }
             )
             
             # Generate guard code

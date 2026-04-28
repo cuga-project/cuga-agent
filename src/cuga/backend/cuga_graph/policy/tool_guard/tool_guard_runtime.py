@@ -512,18 +512,28 @@ class ToolGuardRuntime:
 
     def _normalize_name(self, name: str) -> str:
         """
-        Normalize a name to be a valid Python identifier.
+        Normalize a name to be a valid Python identifier with disambiguation.
 
         Args:
             name: Name to normalize
 
         Returns:
-            Normalized name safe for use as Python identifier
+            Normalized name safe for use as Python identifier with hash suffix
         """
+        import hashlib
+        
+        # Create readable normalized portion
         normalized = "".join(
             ch if ch.isalnum() else "_" for ch in name.lower()
         ).strip("_")
-        return normalized if normalized else "tool"
+        
+        # Use "tool" as base if normalization results in empty string
+        base = normalized if normalized else "tool"
+        
+        # Add short hash suffix for disambiguation
+        name_hash = hashlib.sha256(name.encode()).hexdigest()[:8]
+        
+        return f"{base}_{name_hash}"
 
     async def guard_tool_call(
         self,

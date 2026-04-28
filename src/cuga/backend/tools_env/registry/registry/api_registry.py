@@ -105,9 +105,12 @@ class ApiRegistry:
                 logger.debug(f"   Guarded tools: {', '.join(guarded_tools)}")
             
         except Exception as e:
-            logger.warning(f"Failed to initialize ToolGuardRuntime: {e}")
-            logger.debug("ToolGuardRuntime initialization error details:", exc_info=True)
-            self.tool_guard_runtime = None
+            logger.error(f"Failed to initialize ToolGuardRuntime: {e}", exc_info=True)
+            # Fail closed: if policy enforcement is enabled but ToolGuardRuntime fails,
+            # don't allow the service to start without policy validation
+            raise RuntimeError(
+                f"ToolGuardRuntime failed to initialize. Policy enforcement cannot be bypassed. Error: {e}"
+            ) from e
 
     async def show_applications(self) -> List[AppDefinition]:
         """Lists application names and their descriptions."""
@@ -228,8 +231,10 @@ class ApiRegistry:
     ) -> Dict[str, Any]:
         """Calls a function via the mcp_client."""
         
-        # Normalize argument shape so guards and the tool see the same payload
-        unwrapped_args = arguments.get('params', arguments) if isinstance(arguments, dict) and 'params' in arguments else arguments
+        # Use arguments as-is - do not unwrap 'params' unconditionally
+        # Transport-layer wrappers should be normalized at the request boundary,
+        # not here where it affects both guards and tools
+        unwrapped_args = arguments
         
         # Validate tool call against ToolGuard policies
         if self.tool_guard_runtime and self.tool_guard_runtime.is_initialized:

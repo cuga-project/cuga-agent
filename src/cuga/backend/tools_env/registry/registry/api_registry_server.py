@@ -158,7 +158,16 @@ async def _get_or_create_registry(
             ) from e
     
     reg = ApiRegistry(client=manager, policy_storage=policy_storage)
-    await reg.start_servers()
+    try:
+        await reg.start_servers()
+    except Exception:
+        # Clean up policy_storage if start_servers fails
+        if policy_storage is not None:
+            try:
+                await policy_storage.disconnect()
+            except Exception as cleanup_error:
+                logger.warning(f"Error disconnecting policy storage during cleanup: {cleanup_error}")
+        raise
 
     agent_registries[agent_id] = (manager, reg)
     return manager, reg
@@ -201,7 +210,16 @@ async def lifespan(app: FastAPI):
                 ) from e
         
         registry = ApiRegistry(client=mcp_manager, policy_storage=policy_storage)
-        await registry.start_servers()
+        try:
+            await registry.start_servers()
+        except Exception:
+            # Clean up policy_storage if start_servers fails
+            if policy_storage is not None:
+                try:
+                    await policy_storage.disconnect()
+                except Exception as cleanup_error:
+                    logger.warning(f"Error disconnecting policy storage during cleanup: {cleanup_error}")
+            raise
 
     yield
 
@@ -215,8 +233,15 @@ async def lifespan(app: FastAPI):
                 await reg.policy_storage.disconnect()
             except Exception as e:
                 logger.warning(f"Error disconnecting policy storage for agent {agent_id}: {e}")
-    if not database_mode and 'mcp_manager' in globals():
-        await mcp_manager.shutdown()
+    if not database_mode:
+        # In YAML mode, also clean up the global registry's policy storage
+        if 'registry' in globals() and registry is not None and registry.policy_storage is not None:
+            try:
+                await registry.policy_storage.disconnect()
+            except Exception as e:
+                logger.warning(f"Error disconnecting global registry policy storage: {e}")
+        if 'mcp_manager' in globals():
+            await mcp_manager.shutdown()
 
 
 # --- FastAPI Server Setup ---
@@ -584,7 +609,24 @@ async def reload_config(
                     ) from e
             
             new_registry = ApiRegistry(client=new_manager, policy_storage=policy_storage)
-            await new_registry.start_servers()
+            try:
+                await new_registry.start_servers()
+            except Exception:
+                # Clean up new policy_storage if start_servers fails
+                if policy_storage is not None:
+                    try:
+                        await policy_storage.disconnect()
+                    except Exception as cleanup_error:
+                        logger.warning(f"Error disconnecting policy storage during cleanup: {cleanup_error}")
+                raise
+            
+            # Clean up old registry's policy storage before replacing
+            if 'registry' in globals() and registry is not None and registry.policy_storage is not None:
+                try:
+                    await registry.policy_storage.disconnect()
+                except Exception as e:
+                    logger.warning(f"Error disconnecting old registry policy storage: {e}")
+            
             if 'mcp_manager' in globals():
                 await mcp_manager.shutdown()
             mcp_manager = new_manager
