@@ -213,7 +213,7 @@ class TestLLMOverrideMechanism:
     def test_watsonx_uses_default_endpoint_when_url_unset(self):
         """When WATSONX_URL is absent, ChatWatsonx should rely on its default endpoint."""
         env = {
-            "WATSONX_APIKEY": "wx-api-key",
+            "WATSONX_API_KEY": "wx-api-key",
             "WATSONX_PROJECT_ID": "project-123",
         }
 
@@ -239,7 +239,7 @@ class TestLLMOverrideMechanism:
     def test_watsonx_ignores_env_url_and_uses_only_model_settings_url(self):
         """WatsonX url should come from model settings, not WATSONX_URL."""
         env = {
-            "WATSONX_APIKEY": "wx-api-key",
+            "WATSONX_API_KEY": "wx-api-key",
             "WATSONX_URL": "https://env.watsonx.ai",
             "WATSONX_PROJECT_ID": "project-123",
         }
@@ -264,7 +264,7 @@ class TestLLMOverrideMechanism:
     def test_watsonx_uses_model_settings_url_when_set(self):
         """When url is provided in model settings, it should be forwarded to ChatWatsonx."""
         env = {
-            "WATSONX_APIKEY": "wx-api-key",
+            "WATSONX_API_KEY": "wx-api-key",
             "WATSONX_URL": "https://env.watsonx.ai",
             "WATSONX_PROJECT_ID": "project-123",
         }
@@ -290,7 +290,7 @@ class TestLLMOverrideMechanism:
     def test_watsonx_uses_model_settings_deployment_id_over_model_id(self):
         """deployment_id should come from model settings and replace model_id when provided."""
         env = {
-            "WATSONX_APIKEY": "wx-api-key",
+            "WATSONX_API_KEY": "wx-api-key",
             "WATSONX_URL": "https://example.watsonx.ai",
             "WATSONX_PROJECT_ID": "project-123",
         }
