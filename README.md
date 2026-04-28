@@ -277,10 +277,6 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
    MODEL_NAME=meta-llama/llama-4-maverick-17b-128e-instruct-fp8  # Override model for all agents
    ```
 
-**Notes:**
-- Use either [`WATSONX_PROJECT_ID`](README.md:271) or [`WATSONX_SPACE_ID`](README.md:272) depending on how your WatsonX assets are organized.
-- [`WATSONX_SPACE_ID`](README.md:272) is supported as an alternative to [`WATSONX_PROJECT_ID`](README.md:271) in CUGA.
-
 **Default Values:**
 
 - Model: `meta-llama/llama-4-maverick-17b-128e-instruct-fp8`
