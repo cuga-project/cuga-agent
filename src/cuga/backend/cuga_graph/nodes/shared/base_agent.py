@@ -32,14 +32,33 @@ from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import PydanticOutputParser
 
-from loguru import logger
-
 from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import (
     APIPlannerOutput,
     APIPlannerOutputLite,
     APIPlannerOutputLiteNoHITL,
     APIPlannerOutputWX,
 )
+
+
+def _structured_output_missing_parsed_field(exc: BaseException) -> bool:
+    """Detect langchain_openai json_schema parser failure (no parsed/refusal on AIMessage).
+
+    Uses keyword anchors instead of matching the full message string so minor LC copy edits
+    still trigger fallback. See ``langchain_openai.chat_models.base._oai_structured_outputs_parser``.
+    """
+    if isinstance(exc, ValidationError):
+        return False
+    if not isinstance(exc, ValueError):
+        return False
+    msg = str(exc)
+    if "Structured Output response does not have" in msg:
+        return True
+    return (
+        "does not have" in msg
+        and "'parsed'" in msg
+        and "refusal" in msg.lower()
+        and "Received message:" in msg
+    )
 
 
 def create_partial(func, **kwargs):
@@ -95,14 +114,12 @@ class BaseAgent(ABC):
         parser = PydanticOutputParser(pydantic_object=schema)
         json_mode_chain = prompt_template | llm | parser
 
-        _STRUCTURED_OUTPUT_PARSE_ERROR = "does not have a 'parsed' field nor a 'refusal' field"
-
         async def _invoke_with_fallback(inputs):
             try:
                 output = await json_schema_chain.ainvoke(inputs)
                 return BaseAgent.validate_and_retry_output(output, schema)
-            except (ValueError, Exception) as exc:
-                if _STRUCTURED_OUTPUT_PARSE_ERROR in str(exc):
+            except Exception as exc:
+                if _structured_output_missing_parsed_field(exc):
                     logger.warning(
                         "json_schema structured output not supported by this model endpoint "
                         "(parsed=None, refusal=None); falling back to json_mode parser"

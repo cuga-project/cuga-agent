@@ -118,6 +118,13 @@ llm_manager = LLMManager()
 BACKTICK_PATTERN = r'```python(.*?)```'
 
 
+def _tool_call_kwarg_literal(value: Any) -> str:
+    """Python expression for values reconstructed from JSON tool-call arguments."""
+    if isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    return repr(value)
+
+
 def _extract_code_from_response_tool_calls(response: object) -> str | None:
     """Recover fenced Python from AIMessage.tool_calls when content is empty (proxy/native FC)."""
     tool_calls: list | None = getattr(response, "tool_calls", None)
@@ -141,7 +148,9 @@ def _extract_code_from_response_tool_calls(response: object) -> str | None:
     if not name:
         return None
 
-    args_str = ", ".join(f"{k}={v!r}" for k, v in (args if isinstance(args, dict) else {}).items())
+    args_str = ", ".join(
+        f"{k}={_tool_call_kwarg_literal(v)}" for k, v in (args if isinstance(args, dict) else {}).items()
+    )
     logger.debug("Recovered tool call '%s' from tool_calls field", name)
     return f"```python\nresult = await {name}({args_str})\nprint(result)\n```"
 
@@ -904,7 +913,7 @@ def create_cuga_lite_graph(
             (``total_tool_count > shortlisting_tool_threshold``, see settings configurable).
 
             Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
-            or ``cuga_lite_enable_few_shots`` in configurable (skips prompt block and prefix chat turns).
+            or ``cuga_lite_enable_few_shots`` in configurable (skips prefix chat few-shots).
             """
             configurable = config.get("configurable", {}) if config else {}
             enable_todos = (

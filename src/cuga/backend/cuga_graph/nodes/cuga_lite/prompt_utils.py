@@ -468,17 +468,6 @@ def normalize_mcp_few_shot_examples(raw: Any) -> List[Dict[str, str]]:
     return out
 
 
-def format_few_shot_examples_block(examples: List[Dict[str, str]]) -> str:
-    """Render normalized few-shot pairs as markdown for the system prompt (no Jinja in content)."""
-    if not examples:
-        return ""
-    parts = []
-    for ex in examples:
-        r = (ex.get("role") or "user").upper()
-        parts.append(f"**{r}:**\n\n{ex.get('content', '')}")
-    return "\n\n---\n\n".join(parts)
-
-
 def create_mcp_prompt(
     tools,
     base_prompt=None,
@@ -511,9 +500,8 @@ def create_mcp_prompt(
         prompt_template: Jinja2 template for the prompt
         enable_find_tools: If True, includes find_tools instructions in the prompt
         enable_todos: If True, includes create_update_todos instructions in the prompt
-        few_shot_examples: Optional illustrative turns (role + content strings) appended to the template.
-        few_shots_enabled: If False, ``few_shot_examples_block`` is empty. If None, uses
-            ``advanced_features.cuga_lite_enable_few_shots`` from settings.
+        few_shot_examples: Unused (few-shots are chat-prefix only in ``cuga_lite_graph``).
+        few_shots_enabled: Unused (reserved for API compatibility).
     """
     processed_tools = []
     if special_instructions is None:
@@ -537,8 +525,6 @@ def create_mcp_prompt(
         )
 
     processed_apps = format_apps_for_prompt(apps)
-    _few_on = few_shots_enabled if few_shots_enabled is not None else few_shots_enabled_from_settings()
-    few_shot_examples_block = format_few_shot_examples_block(few_shot_examples or []) if _few_on else ""
 
     prompt = prompt_template.invoke(
         {
@@ -554,7 +540,6 @@ def create_mcp_prompt(
             "enable_todos": enable_todos,
             "special_instructions": special_instructions,
             "has_knowledge": has_knowledge,
-            "few_shot_examples_block": few_shot_examples_block,
         }
     ).to_string()
     return prompt
