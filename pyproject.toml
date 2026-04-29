@@ -10,7 +10,8 @@ dependencies = [
     "langchain-ibm>=0.3.9",
     "langchain-openai",
     "langchain-core>=1.2.22",
-    "aiohttp>=3.13.5",
+    # litellm 1.83.14 pins aiohttp==3.13.4; keep floor aligned so uv/pip can resolve with litellm+fastmcp.
+    "aiohttp>=3.13.4",
     "httpx",
     "docker",
     "langgraph",
@@ -33,7 +34,8 @@ dependencies = [
     "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
-    "litellm>=1.83.7",
+    # 1.83.7–1.83.13 conflict with fastmcp>=3.2 per resolver; 1.83.14 is current stable on PyPI.
+    "litellm>=1.83.14",
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
