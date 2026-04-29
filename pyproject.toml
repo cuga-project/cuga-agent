@@ -33,7 +33,7 @@ dependencies = [
     "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
-    "litellm>=1.83.0",
+    "litellm>=1.83.7",
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
