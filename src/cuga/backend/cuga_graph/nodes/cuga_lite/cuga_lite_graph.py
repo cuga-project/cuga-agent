@@ -55,6 +55,10 @@ import re
 import json
 import asyncio
 import inspect
+from dataclasses import asdict, is_dataclass
+from datetime import datetime
+from enum import Enum
+from pathlib import Path
 from typing import Any, Optional, Sequence, Dict, List, Tuple, Set
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -101,7 +105,6 @@ from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
-from pathlib import Path
 
 try:
     from langfuse.langchain import CallbackHandler as LangfuseCallbackHandler
@@ -320,6 +323,253 @@ def _clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str
     m = {**(meta or {})}
     m.pop("_empty_response_correction", None)
     return m
+
+
+def _normalize_checkpoint_value(value: Any) -> Any:
+    """Normalize msgpack-unsafe runtime values while preserving LangChain messages."""
+    if isinstance(value, BaseMessage):
+        return value
+
+    value_module = getattr(value.__class__, "__module__", "")
+    if value_module.startswith("numpy"):
+        if hasattr(value, "item") and callable(value.item):
+            try:
+                return _normalize_checkpoint_value(value.item())
+            except Exception:
+                pass
+        if hasattr(value, "tolist") and callable(value.tolist):
+            try:
+                return _normalize_checkpoint_value(value.tolist())
+            except Exception:
+                pass
+
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+
+    if isinstance(value, datetime):
+        return value.isoformat()
+
+    if isinstance(value, Enum):
+        return _normalize_checkpoint_value(value.value)
+
+    if isinstance(value, Path):
+        return str(value)
+
+    if isinstance(value, bytes):
+        try:
+            return value.decode("utf-8")
+        except UnicodeDecodeError:
+            return value.hex()
+
+    if hasattr(value, "model_dump") and callable(value.model_dump):
+        try:
+            return _normalize_checkpoint_value(value.model_dump())
+        except Exception:
+            pass
+
+    if hasattr(value, "dict") and callable(value.dict):
+        try:
+            return _normalize_checkpoint_value(value.dict())
+        except Exception:
+            pass
+
+    if is_dataclass(value) and not isinstance(value, type):
+        return _normalize_checkpoint_value(asdict(value))
+
+    if isinstance(value, dict):
+        return {
+            _normalize_checkpoint_value(key): _normalize_checkpoint_value(item) for key, item in value.items()
+        }
+
+    if isinstance(value, list):
+        return [_normalize_checkpoint_value(item) for item in value]
+
+    if isinstance(value, tuple):
+        return tuple(_normalize_checkpoint_value(item) for item in value)
+
+    if isinstance(value, set):
+        return [_normalize_checkpoint_value(item) for item in value]
+
+    return value
+
+
+def _sanitize_cuga_lite_update(update: Dict[str, Any]) -> Dict[str, Any]:
+    """Sanitize the mutable parts of CugaLite graph state before checkpoint writes."""
+    sanitized = dict(update)
+    for key in (
+        "variables_storage",
+        "cuga_lite_metadata",
+        "tool_calls",
+        "metrics",
+        "last_summarization_metrics",
+    ):
+        if key in sanitized:
+            sanitized[key] = _normalize_checkpoint_value(sanitized[key])
+    return sanitized
+
+
+def _get_first_human_message_content(messages: Sequence[BaseMessage] | None) -> str:
+    if not messages:
+        return ""
+
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            content = getattr(msg, "content", "") or ""
+            if isinstance(content, str) and content:
+                return content
+    return ""
+
+
+def _get_latest_memory_query(messages: Sequence[BaseMessage] | None) -> str:
+    if not messages:
+        return ""
+
+    for msg in reversed(messages):
+        if not isinstance(msg, HumanMessage):
+            continue
+        content = getattr(msg, "content", "") or ""
+        if not isinstance(content, str):
+            content = str(content)
+        if content.startswith("Execution output:"):
+            continue
+        if content:
+            return content
+    return ""
+
+
+def _format_evolve_user_preference(categories: dict[str, list[dict[str, Any]]] | None) -> str:
+    if not categories:
+        return ""
+
+    lines = [
+        "Use this as durable user preference/profile context when it is relevant to the answer or decision-making.",
+        "If any remembered preference conflicts with the latest user message, follow the latest user message.",
+        "",
+    ]
+
+    for category, facts in categories.items():
+        if not facts:
+            continue
+        category_title = str(category or "misc").replace("_", " ").title()
+        lines.append(f"{category_title}:")
+        for fact in facts:
+            content = str((fact or {}).get("content") or "").strip()
+            key = str((fact or {}).get("key") or "").strip()
+            value = str((fact or {}).get("value") or "").strip()
+
+            if content:
+                lines.append(f"- {content}")
+            elif key and value:
+                lines.append(f"- {key}: {value}")
+            elif key:
+                lines.append(f"- {key}")
+            elif value:
+                lines.append(f"- {value}")
+        lines.append("")
+
+    while lines and not lines[-1]:
+        lines.pop()
+
+    if len(lines) <= 2:
+        return ""
+
+    return "\n".join(lines)
+
+
+def _build_evolve_user_preference_section(
+    categories: dict[str, list[dict[str, Any]]] | None,
+) -> str:
+    preference_text = _format_evolve_user_preference(categories)
+    if not preference_text:
+        return ""
+    return f"\n\n## Evolve User Preference\n{preference_text}"
+
+
+def _parse_evolve_guideline_items(raw_guidelines: str) -> list[str]:
+    if not raw_guidelines or not raw_guidelines.strip():
+        return []
+
+    guideline_items: list[str] = []
+    current_item: list[str] = []
+    fallback_lines: list[str] = []
+
+    def flush_current_item() -> None:
+        if current_item:
+            combined = " ".join(part.strip() for part in current_item if part.strip()).strip()
+            if combined:
+                guideline_items.append(combined)
+            current_item.clear()
+
+    for raw_line in raw_guidelines.replace("\r\n", "\n").split("\n"):
+        line = raw_line.strip()
+        if not line:
+            flush_current_item()
+            continue
+
+        if line.startswith("#"):
+            continue
+
+        numbered_or_bullet = re.match(r"^(?:[-*]|\d+[.)])\s+(.*)$", line)
+        if numbered_or_bullet:
+            flush_current_item()
+            current_item.append(numbered_or_bullet.group(1).strip())
+            continue
+
+        if current_item:
+            current_item.append(line)
+        else:
+            fallback_lines.append(line)
+
+    flush_current_item()
+
+    if guideline_items:
+        return guideline_items
+
+    fallback_text = "\n".join(fallback_lines).strip()
+    if not fallback_text:
+        return []
+
+    fallback_text = re.sub(r"^Guidelines\s+for:\s*.+$", "", fallback_text, flags=re.IGNORECASE | re.MULTILINE)
+    fallback_text = fallback_text.strip()
+    if not fallback_text:
+        return []
+
+    paragraphs = [paragraph.strip() for paragraph in re.split(r"\n\s*\n", fallback_text) if paragraph.strip()]
+    if paragraphs:
+        return paragraphs
+
+    return [fallback_text]
+
+
+def _format_evolve_guidelines(raw_guidelines: str) -> str:
+    guideline_items = _parse_evolve_guideline_items(raw_guidelines)
+    if not guideline_items:
+        return ""
+
+    formatted_items = "\n".join(
+        f"{index}. {guideline}" for index, guideline in enumerate(guideline_items, start=1)
+    )
+
+    return (
+        "Here are some useful guidelines derived from past experiences where similar tasks "
+        "resulted in overall failure or success. Each guideline is a concrete "
+        "recommendation to apply in the current task.\n\n"
+        "```text\n"
+        "guideline: <Recommendation that should be applied to avoid repeated mistakes>\n"
+        "```\n\n"
+        f"{formatted_items}\n\n"
+        "**Guideline Usage:** These guidelines are hard earned experience from previous similar tasks. "
+        "**Do not ignore them.** It is very important that you use them to adjust your "
+        "reasoning or code generation process so similar issues are avoided in the current task.\n"
+        "These guidelines are as important as the instructions and as important as few-shot examples."
+    )
+
+
+def _build_evolve_guidelines_section(raw_guidelines: str) -> str:
+    formatted_guidelines = _format_evolve_guidelines(raw_guidelines)
+    if not formatted_guidelines:
+        return ""
+    return f"\n\n## Evolve Guidelines\n{formatted_guidelines}"
 
 
 def _get_knowledge_tool_scope_context(
@@ -603,7 +853,7 @@ def create_error_command(
     if additional_updates:
         updates.update(additional_updates)
 
-    return Command(goto=END, update=updates)
+    return Command(goto=END, update=_sanitize_cuga_lite_update(updates))
 
 
 class Todo(BaseModel):
@@ -956,7 +1206,7 @@ def create_cuga_lite_graph(
 
                 # If policy returned metadata (e.g., playbook guidance), store it
                 if metadata:
-                    state.cuga_lite_metadata = metadata
+                    state.cuga_lite_metadata = _normalize_checkpoint_value(metadata)
             elif not settings.policy.enabled:
                 logger.debug("Policy system disabled - skipping policy checks")
             else:
@@ -1151,23 +1401,55 @@ def create_cuga_lite_graph(
 
             special_instructions_final = base_special_instructions
             if EvolveIntegration.is_enabled():
-                task_description = ""
-                if state.sub_task:
-                    task_description = state.sub_task
-                elif state.chat_messages:
-                    for msg in state.chat_messages:
-                        if isinstance(msg, HumanMessage):
-                            task_description = msg.content
-                            break
+                task_description = state.sub_task or _get_first_human_message_content(state.chat_messages)
                 if task_description:
                     evolve_guidelines = await EvolveIntegration.get_guidelines(task_description)
-                    if evolve_guidelines:
-                        evolve_section = f"\n\n## Evolve Guidelines\n{evolve_guidelines}"
+                    evolve_section = _build_evolve_guidelines_section(
+                        str(evolve_guidelines) if evolve_guidelines else ""
+                    )
+                    if evolve_section:
                         special_instructions_final = (special_instructions_final or "") + evolve_section
                         logger.info("Evolve: Injected guidelines into system prompt")
                         logger.debug(
                             f"Evolve: Full special_instructions with guidelines:\n{special_instructions_final}"
                         )
+
+                memory_query = state.sub_task or _get_latest_memory_query(state.chat_messages)
+                current_user_id = str(getattr(state, "user_id", "") or "").strip()
+                if current_user_id and memory_query:
+                    current_agent_id = str(configurable.get("agent_id") or "").strip()
+                    if not current_agent_id:
+                        try:
+                            from cuga.backend.server.main import app as _app
+
+                            _app_state = getattr(_app.state, "app_state", None)
+                            current_agent_id = str(getattr(_app_state, "agent_id", "") or "").strip()
+                        except Exception:
+                            current_agent_id = ""
+
+                    thread_id_for_memory = str(configurable.get("thread_id") or state.thread_id or "").strip()
+                    await EvolveIntegration.store_user_facts(
+                        current_user_id,
+                        memory_query,
+                        metadata={
+                            "thread_id": thread_id_for_memory,
+                            "agent_id": current_agent_id,
+                            "source": "cuga-lite",
+                        },
+                    )
+                    retrieved_preferences = await EvolveIntegration.retrieve_user_facts(
+                        current_user_id,
+                        memory_query,
+                    )
+                    categories = (
+                        retrieved_preferences.get("categories")
+                        if isinstance(retrieved_preferences, dict)
+                        else None
+                    )
+                    preference_section = _build_evolve_user_preference_section(categories)
+                    if preference_section:
+                        special_instructions_final = (special_instructions_final or "") + preference_section
+                        logger.info("Evolve: Injected user preference context into system prompt")
 
             cfg = config.get("configurable", {}) if config else {}
             _thread_id = cfg.get("thread_id") or ""
@@ -1404,15 +1686,17 @@ def create_cuga_lite_graph(
 
             return Command(
                 goto="call_model",
-                update={
-                    "tools_prepared": True,
-                    "prepared_prompt": dynamic_prompt,
-                    "step_count": 0,
-                    "cuga_lite_metadata": state.cuga_lite_metadata,
-                    "reflection_apps": reflection_apps_snapshot,
-                    "reflection_enable_find_tools": enable_find_tools,
-                    "mcp_few_shot_messages": few_shot_examples,
-                },
+                update=_sanitize_cuga_lite_update(
+                    {
+                        "tools_prepared": True,
+                        "prepared_prompt": dynamic_prompt,
+                        "step_count": 0,
+                        "cuga_lite_metadata": state.cuga_lite_metadata,
+                        "reflection_apps": reflection_apps_snapshot,
+                        "reflection_enable_find_tools": enable_find_tools,
+                        "mcp_few_shot_messages": few_shot_examples,
+                    }
+                ),
             )
 
         return prepare_tools_and_apps
@@ -1736,12 +2020,14 @@ def create_cuga_lite_graph(
 
                 return Command(
                     goto="sandbox",
-                    update={
-                        "chat_messages": updated_messages,
-                        "script": code,
-                        "step_count": new_step_count,
-                        "cuga_lite_metadata": updated_metadata,
-                    },
+                    update=_sanitize_cuga_lite_update(
+                        {
+                            "chat_messages": updated_messages,
+                            "script": code,
+                            "step_count": new_step_count,
+                            "cuga_lite_metadata": updated_metadata,
+                        }
+                    ),
                 )
             else:
                 tracker.collect_step(step=Step(name="Assistant_nl", data=content))
@@ -1801,14 +2087,16 @@ def create_cuga_lite_graph(
 
                 return Command(
                     goto=END,
-                    update={
-                        "chat_messages": updated_messages,
-                        "script": None,
-                        "final_answer": planning_response,
-                        "execution_complete": True,
-                        "step_count": new_step_count,
-                        "cuga_lite_metadata": updated_metadata,
-                    },
+                    update=_sanitize_cuga_lite_update(
+                        {
+                            "chat_messages": updated_messages,
+                            "script": None,
+                            "final_answer": planning_response,
+                            "execution_complete": True,
+                            "step_count": new_step_count,
+                            "cuga_lite_metadata": updated_metadata,
+                        }
+                    ),
                 )
 
         return call_model
@@ -1975,7 +2263,7 @@ def create_cuga_lite_graph(
                 }
                 if todo_state_update is not None:
                     base_update["task_todos"] = todo_state_update
-                return base_update
+                return _sanitize_cuga_lite_update(base_update)
             except Exception as e:
                 # Collect tool calls even on error
                 execution_tool_calls = ToolCallTracker.stop_tracking()
@@ -1991,13 +2279,15 @@ def create_cuga_lite_graph(
                 if limit_error_message:
                     return create_error_command(updated_messages, limit_error_message, state.step_count)
 
-                return {
-                    "chat_messages": updated_messages,
-                    "error": error_msg,
-                    "execution_complete": True,
-                    "step_count": state.step_count + 1,
-                    "tool_calls": accumulated_tool_calls,
-                }
+                return _sanitize_cuga_lite_update(
+                    {
+                        "chat_messages": updated_messages,
+                        "error": error_msg,
+                        "execution_complete": True,
+                        "step_count": state.step_count + 1,
+                        "tool_calls": accumulated_tool_calls,
+                    }
+                )
 
         return sandbox
 
