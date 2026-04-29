@@ -705,6 +705,7 @@ class CugaLiteState(BaseModel):
     # Shared keys (compatible with AgentState)
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
+    user_id: Optional[str] = "default_user"
     thread_id: Optional[str] = None
     service_scope: Optional[Dict[str, str]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""}
@@ -1428,15 +1429,25 @@ def create_cuga_lite_graph(
                             current_agent_id = ""
 
                     thread_id_for_memory = str(configurable.get("thread_id") or state.thread_id or "").strip()
-                    await EvolveIntegration.store_user_facts(
-                        current_user_id,
-                        memory_query,
-                        metadata={
-                            "thread_id": thread_id_for_memory,
-                            "agent_id": current_agent_id,
-                            "source": "cuga-lite",
-                        },
+
+                    def _log_store_error(task: asyncio.Task) -> None:
+                        exc = task.exception() if not task.cancelled() else None
+                        if exc:
+                            logger.warning("Evolve: store_user_facts failed (non-blocking): %s", exc)
+
+                    _store_task = asyncio.create_task(
+                        EvolveIntegration.store_user_facts(
+                            current_user_id,
+                            memory_query,
+                            metadata={
+                                "thread_id": thread_id_for_memory,
+                                "agent_id": current_agent_id,
+                                "source": "cuga-lite",
+                            },
+                        )
                     )
+                    _store_task.add_done_callback(_log_store_error)
+
                     retrieved_preferences = await EvolveIntegration.retrieve_user_facts(
                         current_user_id,
                         memory_query,
@@ -1450,6 +1461,9 @@ def create_cuga_lite_graph(
                     if preference_section:
                         special_instructions_final = (special_instructions_final or "") + preference_section
                         logger.info("Evolve: Injected user preference context into system prompt")
+                        logger.debug(
+                            f"Evolve: Full special_instructions with preferences:\n{special_instructions_final}"
+                        )
 
             cfg = config.get("configurable", {}) if config else {}
             _thread_id = cfg.get("thread_id") or ""

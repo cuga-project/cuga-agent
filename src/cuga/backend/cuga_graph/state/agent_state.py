@@ -921,7 +921,7 @@ class AnalyzeTaskAppsOutput(BaseModel):
 class AgentState(BaseModel):
     # pages: Annotated[Sequence[str], operator.add]  # List of pages traversed
     # page: Page  # The Playwright web page lets us interact with the web environment
-    user_id: Optional[str] = "default"  # TODO: this should be updated in multi user scenario
+    user_id: Optional[str] = "default_user"  # TODO: this should be updated in multi user scenario
     thread_id: Optional[str] = None  # Thread ID for multi-user isolation
     service_scope: Optional[Dict[str, str]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""},
