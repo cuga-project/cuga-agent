@@ -32,6 +32,15 @@ The following applications are available for you, you can view their tools and p
 {% endfor %}
 
 {% endif %}
+{% if few_shot_examples_block %}
+
+## Few-shot examples
+
+Illustrative message turns (examples only; not your live chat):
+
+{{ few_shot_examples_block }}
+
+{% endif %}
 ## What You Have Access To
 - **Current Available Tools**: The list of Python functions that interact with the connected applications above
 - **Variables**: Intermediate results from your previous code executions that you can reuse

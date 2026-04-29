@@ -76,6 +76,11 @@ class BaseAgent(ABC):
         """
         Create a chain with structured output, validation, and retry logic for OpenAI/Groq LLMs.
 
+        Uses ``json_schema`` structured output by default. If the model returns a response where
+        neither ``parsed`` nor ``refusal`` is set (common with OSS proxy endpoints that don't
+        implement the OpenAI structured-output spec, e.g. ``gpt-oss-*``), falls back transparently
+        to ``json_mode`` + ``PydanticOutputParser``.
+
         Args:
             llm: The language model (ChatOpenAI or ChatGroq)
             schema: Pydantic schema for structured output
@@ -86,19 +91,27 @@ class BaseAgent(ABC):
         """
         logger.debug("Creating validated structured output chain for OpenAI/Groq interface")
 
-        # Create the base chain with structured output
-        base_chain = prompt_template | llm.with_structured_output(schema, method="json_schema")
+        json_schema_chain = prompt_template | llm.with_structured_output(schema, method="json_schema")
+        parser = PydanticOutputParser(pydantic_object=schema)
+        json_mode_chain = prompt_template | llm | parser
 
-        # Add validation
-        validated_chain = base_chain | RunnableLambda(
-            lambda output: BaseAgent.validate_and_retry_output(output, schema)
-        )
+        _STRUCTURED_OUTPUT_PARSE_ERROR = "does not have a 'parsed' field nor a 'refusal' field"
 
-        # Add retry logic to the entire validated chain
-        # When validation fails, the whole chain will retry (including the LLM call)
-        validated_chain = validated_chain.with_retry(stop_after_attempt=4)
+        async def _invoke_with_fallback(inputs):
+            try:
+                output = await json_schema_chain.ainvoke(inputs)
+                return BaseAgent.validate_and_retry_output(output, schema)
+            except (ValueError, Exception) as exc:
+                if _STRUCTURED_OUTPUT_PARSE_ERROR in str(exc):
+                    logger.warning(
+                        "json_schema structured output not supported by this model endpoint "
+                        "(parsed=None, refusal=None); falling back to json_mode parser"
+                    )
+                    output = await json_mode_chain.ainvoke(inputs)
+                    return BaseAgent.validate_and_retry_output(output, schema)
+                raise
 
-        return validated_chain
+        return RunnableLambda(_invoke_with_fallback).with_retry(stop_after_attempt=3)
 
     @staticmethod
     def get_format_instructions(parser: PydanticOutputParser) -> str:
