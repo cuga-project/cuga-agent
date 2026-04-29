@@ -3,14 +3,16 @@ from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
-    _build_evolve_guidelines_section,
-    _build_evolve_user_preference_section,
-    _format_evolve_guidelines,
-    _format_evolve_user_preference,
-    _get_first_human_message_content,
-    _get_latest_memory_query,
-    _parse_evolve_guideline_items,
     _sanitize_cuga_lite_update,
+)
+from cuga.backend.evolve.formatting import (
+    build_evolve_guidelines_section,
+    build_evolve_user_preference_section,
+    format_evolve_guidelines,
+    format_evolve_user_preference,
+    get_first_human_message_content,
+    get_latest_memory_query,
+    parse_evolve_guideline_items,
 )
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 
@@ -22,7 +24,7 @@ def test_get_first_human_message_content_uses_first_user_message():
         HumanMessage(content="latest user message"),
     ]
 
-    assert _get_first_human_message_content(messages) == "first user message"
+    assert get_first_human_message_content(messages) == "first user message"
 
 
 def test_get_latest_memory_query_skips_internal_execution_output():
@@ -31,11 +33,11 @@ def test_get_latest_memory_query_skips_internal_execution_output():
         HumanMessage(content="Execution output: internal loop"),
     ]
 
-    assert _get_latest_memory_query(messages) == "user preference"
+    assert get_latest_memory_query(messages) == "user preference"
 
 
 def test_format_evolve_user_preference_keeps_preference_section_separate():
-    formatted = _format_evolve_user_preference(
+    formatted = format_evolve_user_preference(
         {
             "style": [
                 {
@@ -54,11 +56,11 @@ def test_format_evolve_user_preference_keeps_preference_section_separate():
 
 
 def test_format_evolve_user_preference_returns_empty_for_no_facts():
-    assert _format_evolve_user_preference({}) == ""
+    assert format_evolve_user_preference({}) == ""
 
 
 def test_build_evolve_user_preference_section_includes_header():
-    section = _build_evolve_user_preference_section({"style": [{"content": "Prefers concise answers"}]})
+    section = build_evolve_user_preference_section({"style": [{"content": "Prefers concise answers"}]})
 
     assert section.startswith("\n\n## Evolve User Preference\n")
     assert "Prefers concise answers" in section
@@ -71,14 +73,14 @@ def test_parse_evolve_guideline_items_strips_header_and_keeps_numbered_items():
         "2. Reuse IDs from prior responses instead of guessing them.\n"
     )
 
-    assert _parse_evolve_guideline_items(raw_guidelines) == [
+    assert parse_evolve_guideline_items(raw_guidelines) == [
         "Check pagination before assuming the first page is complete.",
         "Reuse IDs from prior responses instead of guessing them.",
     ]
 
 
 def test_format_evolve_guidelines_uses_legacy_memory_tip_framing():
-    formatted = _format_evolve_guidelines(
+    formatted = format_evolve_guidelines(
         "# Guidelines for: fetch all users\n\n"
         "1. Check pagination before assuming the first page is complete.\n"
         "2. Reuse IDs from prior responses instead of guessing them.\n"
@@ -92,7 +94,7 @@ def test_format_evolve_guidelines_uses_legacy_memory_tip_framing():
 
 
 def test_build_evolve_guidelines_section_includes_header_and_formatted_content():
-    section = _build_evolve_guidelines_section(
+    section = build_evolve_guidelines_section(
         "# Guidelines for: fetch all users\n\n"
         "1. Check pagination before assuming the first page is complete.\n"
     )
@@ -103,8 +105,8 @@ def test_build_evolve_guidelines_section_includes_header_and_formatted_content()
 
 
 def test_format_evolve_guidelines_returns_empty_for_blank_input():
-    assert _format_evolve_guidelines("") == ""
-    assert _build_evolve_guidelines_section("   ") == ""
+    assert format_evolve_guidelines("") == ""
+    assert build_evolve_guidelines_section("   ") == ""
 
 
 def test_memory_helpers_do_not_mutate_chat_messages():
@@ -115,10 +117,10 @@ def test_memory_helpers_do_not_mutate_chat_messages():
     )
     before = list(state.chat_messages)
 
-    _ = _get_first_human_message_content(state.chat_messages)
-    _ = _get_latest_memory_query(state.chat_messages)
-    _ = _format_evolve_user_preference({"style": [{"content": "Prefers concise answers"}]})
-    _ = _format_evolve_guidelines("1. Prefer concise answers.")
+    _ = get_first_human_message_content(state.chat_messages)
+    _ = get_latest_memory_query(state.chat_messages)
+    _ = format_evolve_user_preference({"style": [{"content": "Prefers concise answers"}]})
+    _ = format_evolve_guidelines("1. Prefer concise answers.")
 
     assert state.chat_messages == before
 
