@@ -519,10 +519,9 @@ async def lifespan(app: FastAPI):
 
         async def _knowledge_warmup_then_maybe_oobe_pdf():
             await _warm()
-            if getattr(app_state, "_knowledge_mcp_started", False):
-                from cuga.backend.server import demo_manage_setup as dms
+            from cuga.backend.server import demo_manage_setup as dms
 
-                await dms.seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state)
+            await dms.seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state)
 
         app_state.background_tasks.append(asyncio.create_task(_knowledge_warmup_then_maybe_oobe_pdf()))
 

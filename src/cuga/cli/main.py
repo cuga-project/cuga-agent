@@ -816,7 +816,7 @@ def start(
     Available services:
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
-      - demo_knowledge: Same as demo but with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
+      - demo_knowledge: Starts registry + demo with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
       - demo_health: Starts cuga-oak-health OpenAPI, registry, and demo (insurance member APIs + OAK playbooks; add --filesystem for workspace MCP)
@@ -963,7 +963,9 @@ def start(
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, app_docs, app_oak_health))
+            ports_to_clean.extend(
+                app_mgr.ports_for_apps(False, app_filesystem, False, app_docs, app_oak_health)
+            )
             kill_processes_by_port(ports_to_clean)
 
             os.environ["CUGA_HOST"] = host
@@ -1050,7 +1052,8 @@ def start(
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
             app_mgr.prepare_workspace(workspace_path)
-            app_mgr.start_filesystem(workspace_path)
+            if app_filesystem:
+                app_mgr.start_filesystem(workspace_path)
 
             registry_process = app_mgr.start_registry(host)
             if registry_process is None or registry_process.poll() is not None:
@@ -1068,7 +1071,8 @@ def start(
                 table = Table(show_header=False, box=None, padding=(0, 1))
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
-                table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                if app_filesystem:
+                    table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
 
@@ -1403,7 +1407,7 @@ def stop(
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Stops docs MCP, registry, and demo
       - demo_health: Stops oak-health API, registry, and demo (and filesystem MCP if started with --filesystem)
-      - demo_knowledge: Stops filesystem MCP, registry, and demo (knowledge engine)
+      - demo_knowledge: Stops registry and demo (and filesystem MCP if started with --filesystem)
       - demo_supervisor: Same as demo_crm
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)

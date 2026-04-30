@@ -7,6 +7,8 @@ import os
 from pathlib import Path
 from typing import Any
 
+from loguru import logger as loguru_logger
+
 from cuga.config import settings
 
 logger = logging.getLogger("cuga.demo")
@@ -344,7 +346,7 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "email": False,
             "digital_sales": False,
             "docs": False,
-            "filesystem": True,
+            "filesystem": False,
             "oak_health": False,
             "knowledge": True,  # Always enabled for demo_knowledge
         }
@@ -657,16 +659,18 @@ async def seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state: Any) -> N
     from cuga.backend.knowledge.engine import DocumentExistsError
 
     mode = os.environ.get("CUGA_DEMO_MODE", "").strip().lower()
+    loguru_logger.info("OOBE PDF seed check started (mode={!r})", mode)
     if mode not in ("knowledge", "demo_knowledge"):
+        loguru_logger.info("OOBE PDF seed skipped: unsupported CUGA_DEMO_MODE={!r}", mode)
         return
 
     st = app_state.get_subsystem_status("knowledge")
     if st["state"] != "ready":
         if st["state"] == "failed":
-            logger.warning("Knowledge subsystem failed; skip OOBE PDF seed")
+            loguru_logger.warning("Knowledge subsystem failed; skip OOBE PDF seed")
         else:
-            logger.warning(
-                "OOBE PDF seed skipped — knowledge subsystem not ready yet (state=%s)",
+            loguru_logger.warning(
+                "OOBE PDF seed skipped: knowledge subsystem not ready yet (state={})",
                 st["state"],
             )
         return
@@ -675,15 +679,16 @@ async def seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state: Any) -> N
     if pdf_path is None:
         from cuga.config import DEMO_TOOLS_ROOT
 
-        logger.warning(
-            "OOBE knowledge PDF not found (tried %s and cuga_workspace/); skipping seed",
+        loguru_logger.warning(
+            "OOBE knowledge PDF not found (tried {} and cuga_workspace/); skipping seed",
             DEMO_TOOLS_ROOT / "huggingface" / DEMO_KNOWLEDGE_OOBE_PDF_NAME,
         )
         return
+    loguru_logger.info("OOBE knowledge PDF resolved to {}", pdf_path)
 
     engine = getattr(app_state, "knowledge_engine", None)
     if engine is None:
-        logger.warning("Knowledge engine missing; skip OOBE PDF seed")
+        loguru_logger.warning("Knowledge engine missing; skip OOBE PDF seed")
         return
 
     if not getattr(app_state, "knowledge_config_hash", None):
@@ -695,15 +700,20 @@ async def seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state: Any) -> N
         "CUGA_AGENT_ID", getattr(app_state, "agent_id", "cuga-default") or "cuga-default"
     )
     collection = resolve_agent_collection(agent_id, app_state)
+    loguru_logger.info(
+        "OOBE PDF seed targeting collection {} for agent_id={}",
+        collection,
+        agent_id,
+    )
 
     try:
         docs = await engine.list_documents(collection)
         if any(d.filename == DEMO_KNOWLEDGE_OOBE_PDF_NAME for d in docs):
-            logger.info("OOBE knowledge PDF already indexed; skip ingest")
+            loguru_logger.info("OOBE knowledge PDF already indexed; skip ingest")
             return
         await engine.ingest(collection, pdf_path, True, DEMO_KNOWLEDGE_OOBE_PDF_NAME)
-        logger.info("Ingested OOBE knowledge PDF %s", DEMO_KNOWLEDGE_OOBE_PDF_NAME)
+        loguru_logger.info("Ingested OOBE knowledge PDF {}", DEMO_KNOWLEDGE_OOBE_PDF_NAME)
     except DocumentExistsError:
-        logger.info("OOBE knowledge PDF already present; skip ingest")
+        loguru_logger.info("OOBE knowledge PDF already present; skip ingest")
     except Exception as e:
-        logger.warning("OOBE PDF seed failed: %s", e)
+        loguru_logger.warning("OOBE PDF seed failed: {}", e)
