@@ -30,6 +30,7 @@ lite_mode = true  # Enable CugaLite for simple API tasks (faster execution)
 lite_mode_tool_threshold = 70  # Route to CugaLite if app has fewer than this many tools
 force_lite_mode_apps = ["knowledge"]  # List of app names to force into lite mode (e.g., ["app1", "app2"])
 shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools exceeds this threshold
+cuga_lite_enable_few_shots = true  # MCP few-shots: prompt block + few-shot chat prefix (set false to disable)
 enable_todos = false  # Enable todos feature for complex multi-step task management
 reflection_enabled = false
 save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
@@ -47,7 +48,13 @@ max_input_length = 5000  # Maximum characters allowed in user input (prevents ab
 sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
-cuga_lite_nl_auto_continue = true  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
+# bind_tools: generic default is none; resolved model ``gpt-oss-20b`` uses model_runtime_profile.py
+# mode: none | find_tools | all | apps | tools (tools = bind only names in cuga_lite_bind_tools_tool_names)
+cuga_lite_bind_tools_mode = "none"
+cuga_lite_bind_tools_apps = []  # App names when mode=apps (e.g. ["crm", "slack"])
+cuga_lite_bind_tools_tool_names = ['load_skill', 'find_tools', 'create_update_todos']  # StructuredTool names when mode=tools (e.g. ["load_skill"])
+cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongside all/apps/tools
+cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
@@ -157,6 +164,8 @@ registry = 8001
 # registry_host = "http://localhost:8001"  # Optional: Full registry URL. Falls back to "http://localhost:{registry}"
 function_call_host = ""  # Optional: URL for E2B to call functions. Falls back to registry_host, then "http://localhost:8001"
 demo = 7860
+# CLI `cuga start` waits for the demo Uvicorn process: max ≈ this × 0.5s between polls (default 360 → ~3 min).
+demo_server_startup_max_retries = 420
 apis_url = 9000
 crm_api = 8007
 saved_flows = 8003
@@ -184,6 +193,10 @@ trigger_fraction = 0.75  # Trigger at 75% of context window (recommended for pro
 
 # Optional custom summary prompt (uses LangChain default if not set):
 # custom_summary_prompt = "Provide a concise summary of the conversation: {messages}"
+
+[connections]
+inference_ca_cert = ""  # Path to a CA certificate for LLM inference HTTP clients (e.g. "vault-root-ca.crt"). Applied to OpenAI and LiteLLM. Env: CUGA_INFERENCE_CA_CERT
+inference_disable_ssl = false  # Disable SSL verification for all inference connections (overrides inference_ca_cert). Env: CUGA_DISABLE_SSL
 
 [observability]
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]

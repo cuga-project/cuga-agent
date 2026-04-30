@@ -7,12 +7,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+from loguru import logger as loguru_logger
+
 from cuga.config import settings
 
 logger = logging.getLogger("cuga.demo")
 
 _OAK_POLICIES_PATH = Path(__file__).resolve().parent / "demo_setup_utils" / "oak_policies.json"
-
 
 DIGITAL_SALES_OPENAPI_URL = (
     "https://digitalsales.19pc1vtv090u.us-east.codeengine.appdomain.cloud/openapi.json"
@@ -343,9 +344,9 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
         return {
             "crm": False,
             "email": False,
-            "digital_sales": True,
+            "digital_sales": False,
             "docs": False,
-            "filesystem": True,
+            "filesystem": False,
             "oak_health": False,
             "knowledge": True,  # Always enabled for demo_knowledge
         }
@@ -367,6 +368,7 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "docs": False,
             "filesystem": False,
             "oak_health": False,
+            "knowledge": knowledge,
         }
     return {
         "crm": False,
@@ -415,8 +417,7 @@ def setup_demo_manage_config(
         "account's revenue percentile across all accounts. Finally, draft an email based on email_template.md "
         "template summarizing the result and show it to me",
         "from contacts.txt show me which users belong to the crm system",
-        "./cuga_workspace/cuga_playbook.md",
-        "What is CUGA?",
+        "What can you do?",
     ]
     DEMO_DOCS_STARTERS = [
         "What was the latest watsonx orchestrate release?",
@@ -436,6 +437,12 @@ def setup_demo_manage_config(
         "List what agent skills are available and summarize what each is for",
         "Use the pptx skill to outline a short deck about our product",
         "What is in my workspace .cuga skills folder?",
+    ]
+    # Aligns with OOBE doc sovereign_core_overview.pdf (ingested on first demo_knowledge start).
+    DEMO_KNOWLEDGE_STARTERS = [
+        "What is Sovereign Core, and what problem does it solve?",
+        "Summarize the main themes from the Sovereign Core overview in my knowledge base.",
+        "What capabilities does the platform highlight on-premises use?",
     ]
     reset_config_db()
 
@@ -549,6 +556,15 @@ def setup_demo_manage_config(
             "greeting": "Try agent skills (SKILL.md under .cuga) and OpenSandbox shell tools.",
             "starters": DEMO_SKILLS_STARTERS,
         }
+    elif use_knowledge:
+        homescreen = {
+            "isOn": True,
+            "greeting": (
+                "Sovereign Core puts this agent and your data under your control. "
+                "The overview (sovereign_core_overview.pdf) is in your knowledge base—ask anything about it."
+            ),
+            "starters": DEMO_KNOWLEDGE_STARTERS,
+        }
     else:
         homescreen = DEFAULT_HOMESCREEN
     llm_api_key_ref = ""
@@ -573,7 +589,12 @@ def setup_demo_manage_config(
         knowledge_cfg["_vector_config_hash"] = _kc.vector_config_hash()
     except Exception:
         pass
-    if use_crm_starters:
+    if demo_type == "manager":
+        agent_meta = {
+            "name": "Default",
+            "description": "Configurable agent for manage mode (filesystem and optional integrations)",
+        }
+    elif use_crm_starters:
         agent_meta = {
             "name": "CRM Agent",
             "description": "CRM-enabled agent with email and filesystem for managing contacts and accounts",
@@ -594,12 +615,20 @@ def setup_demo_manage_config(
     elif use_knowledge:
         agent_meta = {
             "name": "Knowledge Agent",
-            "description": "Agent with knowledge base, digital sales API, and filesystem for document-grounded workflows",
+            "description": (
+                "Document-grounded assistant; includes the Sovereign Core overview (sovereign_core_overview.pdf) "
+                "for onboarding Q&A, plus your workspace files."
+            ),
         }
-    else:
+    elif tools and any(t.get("name") == "digital_sales" for t in tools):
         agent_meta = {
             "name": "Digital Sales Agent",
             "description": "Agent with Digital Sales API and filesystem for sales workflows",
+        }
+    else:
+        agent_meta = {
+            "name": "Default",
+            "description": "Agent with workspace filesystem and optional tools",
         }
     policies: list[dict[str, Any]] = []
     if tools and any(t.get("name") == "oak_health" for t in tools):
@@ -625,3 +654,91 @@ def setup_demo_manage_config(
         await save_config(config, agent_id)
 
     asyncio.run(_setup())
+
+
+# Packaged with cuga at src/cuga/demo_tools/huggingface/; copied to workspace by prepare_workspace.
+DEMO_KNOWLEDGE_OOBE_PDF_NAME = "sovereign_core_overview.pdf"
+
+
+def _resolve_oobe_knowledge_pdf_path() -> Path | None:
+    """Package data path first; then cuga_workspace/ (e.g. Docker OOTB copy)."""
+    from cuga.config import DEMO_TOOLS_ROOT
+
+    primary = DEMO_TOOLS_ROOT / "huggingface" / DEMO_KNOWLEDGE_OOBE_PDF_NAME
+    if primary.is_file():
+        return primary
+    fallback = Path.cwd() / "cuga_workspace" / DEMO_KNOWLEDGE_OOBE_PDF_NAME
+    if fallback.is_file():
+        return fallback
+    return None
+
+
+async def seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state: Any) -> None:
+    """Ingest packaged OOBE PDF into agent KB in-process.
+
+    Intended to run immediately after KnowledgeEngine.warmup() succeeds on the demo server
+    (`mcp_transport == http`). Requires CUGA_DEMO_MODE knowledge / demo_knowledge.
+    Caller must invoke only while knowledge subsystem is ``ready``.
+    """
+    from cuga.backend.knowledge.auth import resolve_agent_collection
+    from cuga.backend.knowledge.engine import DocumentExistsError
+
+    mode = os.environ.get("CUGA_DEMO_MODE", "").strip().lower()
+    loguru_logger.info("OOBE PDF seed check started (mode={!r})", mode)
+    if mode not in ("knowledge", "demo_knowledge"):
+        loguru_logger.info("OOBE PDF seed skipped: unsupported CUGA_DEMO_MODE={!r}", mode)
+        return
+
+    st = app_state.get_subsystem_status("knowledge")
+    if st["state"] != "ready":
+        if st["state"] == "failed":
+            loguru_logger.warning("Knowledge subsystem failed; skip OOBE PDF seed")
+        else:
+            loguru_logger.warning(
+                "OOBE PDF seed skipped: knowledge subsystem not ready yet (state={})",
+                st["state"],
+            )
+        return
+
+    pdf_path = _resolve_oobe_knowledge_pdf_path()
+    if pdf_path is None:
+        from cuga.config import DEMO_TOOLS_ROOT
+
+        loguru_logger.warning(
+            "OOBE knowledge PDF not found (tried {} and cuga_workspace/); skipping seed",
+            DEMO_TOOLS_ROOT / "huggingface" / DEMO_KNOWLEDGE_OOBE_PDF_NAME,
+        )
+        return
+    loguru_logger.info("OOBE knowledge PDF resolved to {}", pdf_path)
+
+    engine = getattr(app_state, "knowledge_engine", None)
+    if engine is None:
+        loguru_logger.warning("Knowledge engine missing; skip OOBE PDF seed")
+        return
+
+    if not getattr(app_state, "knowledge_config_hash", None):
+        cfg = getattr(engine, "_config", None)
+        if cfg is not None:
+            app_state.knowledge_config_hash = cfg.vector_config_hash()
+
+    agent_id = os.environ.get(
+        "CUGA_AGENT_ID", getattr(app_state, "agent_id", "cuga-default") or "cuga-default"
+    )
+    collection = resolve_agent_collection(agent_id, app_state)
+    loguru_logger.info(
+        "OOBE PDF seed targeting collection {} for agent_id={}",
+        collection,
+        agent_id,
+    )
+
+    try:
+        docs = await engine.list_documents(collection)
+        if any(d.filename == DEMO_KNOWLEDGE_OOBE_PDF_NAME for d in docs):
+            loguru_logger.info("OOBE knowledge PDF already indexed; skip ingest")
+            return
+        await engine.ingest(collection, pdf_path, True, DEMO_KNOWLEDGE_OOBE_PDF_NAME)
+        loguru_logger.info("Ingested OOBE knowledge PDF {}", DEMO_KNOWLEDGE_OOBE_PDF_NAME)
+    except DocumentExistsError:
+        loguru_logger.info("OOBE knowledge PDF already present; skip ingest")
+    except Exception as e:
+        loguru_logger.warning("OOBE PDF seed failed: {}", e)

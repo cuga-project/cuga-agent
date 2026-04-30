@@ -54,14 +54,18 @@ def _demo_port() -> int:
 
 
 def _make_app_manager() -> AppManager:
+    sp = settings.server_ports
     return AppManager(
         process_registry=direct_processes,
         run_service=lambda n, c, e: run_direct_service(n, c, env_vars=e),
         kill_ports=kill_processes_by_port,
         kill_process=kill_process_tree,
         wait_tcp=lambda p, lbl, r, i: wait_for_tcp_port(p, lbl, max_retries=r, retry_interval=i),
-        wait_http=lambda p, name: wait_for_server(
-            p, name, max_retries=240, https=_demo_uses_ssl() and p == _demo_port()
+        wait_http=lambda p, n: wait_for_server(
+            p,
+            n,
+            max_retries=int(sp.demo_server_startup_max_retries) if p == _demo_port() else 240,
+            https=_demo_uses_ssl() and p == _demo_port(),
         ),
     )
 
@@ -520,6 +524,11 @@ def run_direct_service(
         env = os.environ.copy()
         env['FORCE_COLOR'] = '1'
 
+        # Ensure airgapped/container mode is fast by skipping syncs and setting paths
+        env['UV_OFFLINE'] = '1'
+        # Use PACKAGE_ROOT to find the src directory consistently across installations
+        src_root = os.path.abspath(os.path.join(PACKAGE_ROOT, ".."))
+        env['PYTHONPATH'] = os.path.pathsep.join([src_root, env.get('PYTHONPATH', '')]).strip(os.path.pathsep)
         # On Windows, set UTF-8 encoding to handle Unicode characters in subprocess output
         if IS_WINDOWS:
             env['PYTHONIOENCODING'] = 'utf-8'
@@ -871,7 +880,7 @@ def start(
     digital_sales: bool = typer.Option(
         False,
         "--digital-sales",
-        help="Enable Digital Sales app (demo preset includes it by default)",
+        help="Enable Digital Sales OpenAPI tool (opt-in; off by default for demo / demo_knowledge)",
     ),
     filesystem: bool = typer.Option(
         False,
@@ -909,7 +918,7 @@ def start(
       - demo: Starts both registry and demo agent directly (registry on port 8001, demo on port 7860)
       - demo_skills: Like demo but sets skills + OpenSandbox shell tools via env; requires OpenSandbox TCP
       - demo_crm: Starts CRM demo with email MCP, mail sink, and CRM API servers
-      - demo_knowledge: Same as demo but with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
+      - demo_knowledge: Starts registry + demo with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
       - demo_health: Starts cuga-oak-health OpenAPI, registry, and demo (insurance member APIs + OAK playbooks; add --filesystem for workspace MCP)
@@ -918,14 +927,14 @@ def start(
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
     App flags (--crm, --email, --digital-sales, --docs, --filesystem) add apps to the preset:
       - demo: default = digital_sales + filesystem
-      - demo_skills: default = digital_sales only (OpenSandbox shell tools; no classic filesystem MCP)
+      - demo_skills: default = digital_sales + skills/OpenSandbox shell tools (no classic filesystem MCP)
       - demo_crm: default = crm + filesystem + email
       - manager: default = filesystem only
       - demo_health: default = oak_health only
 
     Examples:
-      cuga start demo                     # digital_sales + filesystem
-      cuga start demo_skills              # skills + shell tools; aborts if OpenSandbox is down
+      cuga start demo                     # registry + demo; digital_sales + filesystem MCP
+      cuga start demo_skills              # skills + OpenSandbox shell tools; aborts if unreachable
       cuga start demo --crm               # add CRM to demo
       cuga start demo_crm                 # crm + filesystem + email
       cuga start demo_crm --no-email      # crm + filesystem only
@@ -1066,8 +1075,8 @@ def start(
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            # demo: always clear + start classic filesystem MCP; demo_skills: OpenSandbox tools only (no filesystem MCP)
-            fs_for_demo = service != "demo_skills"
+            # demo_skills never runs the classic filesystem MCP; plain demo respects resolved app filesystem flag
+            fs_for_demo = False if service == "demo_skills" else app_filesystem
             ports_to_clean.extend(app_mgr.ports_for_apps(False, fs_for_demo, False, app_docs, app_oak_health))
             kill_processes_by_port(ports_to_clean)
 
@@ -1139,6 +1148,7 @@ def start(
         return
 
     if service == "demo_knowledge":
+        os.environ["CUGA_DEMO_MODE"] = "knowledge"
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
@@ -1165,7 +1175,8 @@ def start(
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
             app_mgr.prepare_workspace(workspace_path)
-            app_mgr.start_filesystem(workspace_path)
+            if app_filesystem:
+                app_mgr.start_filesystem(workspace_path)
 
             registry_process = app_mgr.start_registry(host)
             if registry_process is None or registry_process.poll() is not None:
@@ -1183,7 +1194,8 @@ def start(
                 table = Table(show_header=False, box=None, padding=(0, 1))
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
-                table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                if app_filesystem:
+                    table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
 
@@ -1521,7 +1533,7 @@ def stop(
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Stops docs MCP, registry, and demo
       - demo_health: Stops oak-health API, registry, and demo (and filesystem MCP if started with --filesystem)
-      - demo_knowledge: Stops filesystem MCP, registry, and demo (knowledge engine)
+      - demo_knowledge: Stops registry and demo (and filesystem MCP if started with --filesystem)
       - demo_supervisor: Same as demo_crm
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)
@@ -1549,7 +1561,7 @@ def viz():
     try:
         trajectory_data_path = TRAJECTORY_DATA_DIR
         subprocess.run(
-            ["uv", "run", "--group", "dev", "cuga-viz", "run", trajectory_data_path],
+            ["uv", "run", "--no-sync", "--group", "dev", "cuga-viz", "run", trajectory_data_path],
             capture_output=False,
             text=False,
         )
@@ -1759,6 +1771,9 @@ def evaluate(
         run_direct_service(
             "registry",
             [
+                "uv",
+                "run",
+                "--no-sync",
                 "uvicorn",
                 "cuga.backend.tools_env.registry.registry.api_registry_server:app",
                 "--host",
@@ -1788,6 +1803,7 @@ def evaluate(
                 [
                     "uv",
                     "run",
+                    "--no-sync",
                     "--group",
                     "dev",
                     os.path.join(PACKAGE_ROOT, "evaluation/evaluate_cuga.py"),

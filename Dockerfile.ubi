@@ -16,10 +16,28 @@ COPY src/ ./src/
 COPY docs/ ./docs/
 
 # Default deps omit openlit (optional `observability` extra; keeps pip/uvx core resolvable with litellm 1.83.x).
-RUN rm -rf src/*.egg-info && uv sync --no-editable --no-dev --extra observability
+RUN find src -name "*.egg-info" -o -name "build" -exec rm -rf {} + && uv sync --no-editable --no-dev --extra observability
+
+# Slim down torch: remove test suite and C++ headers (not needed at runtime) ~143MB
+# NOTE: torch/bin must be kept — contains torch_shm_manager required at import time
+RUN rm -rf /app/.venv/lib/python3.12/site-packages/torch/test \
+           /app/.venv/lib/python3.12/site-packages/torch/include
+
+# Strip debug symbols from native .so files (saves 100-300MB, pure size optimization)
+RUN find /app/.venv -type f \( -name "*.so" -o -name "*.so.*" \) -exec strip --strip-unneeded {} \; 2>/dev/null || true
 
 # Download only the headless_shell binary (no full Chromium, no ffmpeg) — ~3x smaller than default.
 RUN PLAYWRIGHT_BROWSERS_PATH=/app/.playwright uv run playwright install --only-shell chromium
+
+# Bake ML model weights into the image for airgapped operation.
+# Pinned to /app/.cache so paths survive the multi-stage copy and match runtime ENV below.
+ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
+    DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
+    HF_HOME=/app/.cache/huggingface
+RUN uv run --no-sync python src/scripts/preload_models.py
+
+# Remove Python bytecode cache — regenerated on first run, adds nothing at build time
+RUN find /app/.venv -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
 
 # Runtime stage - slimmer base, copy only built artifacts
 FROM ${BASE_IMAGE}
@@ -63,6 +81,8 @@ ENV PATH="/usr/local/bin:$PATH"
 
 WORKDIR /app
 
+COPY pyproject.toml uv.lock README.md ./
+
 # 1001:0 matches USER 1001; g+rwX lets OpenShift's arbitrary UID run with GID 0 (typical restricted SCC).
 RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs && \
     chown -R 1001:0 /data /app/.cuga && \
@@ -70,9 +90,16 @@ RUN mkdir -p /app/cuga_workspace /app/crm_tmp /app/.cuga/knowledge /data/dbs && 
 
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/.venv /app/.venv
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/.playwright /app/.playwright
+COPY --from=builder --chown=1001:0 --chmod=0775 /app/.cache /app/.cache
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/src /app/src
 COPY --from=builder --chown=1001:0 --chmod=0775 /app/docs /app/docs
-COPY --chown=1001:0 --chmod=0775 src/cuga/demo_tools/huggingface/contacts.txt src/cuga/demo_tools/huggingface/cuga_knowledge.md src/cuga/demo_tools/huggingface/cuga_playbook.md src/cuga/demo_tools/huggingface/email_template.md /app/cuga_workspace/
+COPY --chown=1001:0 --chmod=0775 \
+  src/cuga/demo_tools/huggingface/contacts.txt \
+  src/cuga/demo_tools/huggingface/cuga_knowledge.md \
+  src/cuga/demo_tools/huggingface/cuga_playbook.md \
+  src/cuga/demo_tools/huggingface/email_template.md \
+  src/cuga/demo_tools/huggingface/sovereign_core_overview.pdf \
+  /app/cuga_workspace/
 COPY --chown=1001:0 --chmod=0775 scripts/docker-entrypoint.sh /app/scripts/docker-entrypoint.sh
 
 USER 1001
@@ -91,6 +118,10 @@ ENV CUGA_LOGGING_DIR=/tmp/cuga-logging
 ENV CUGA_DBS_DIR=/data/dbs
 ENV DYNACONF_CRM_DB_PATH=/tmp/crm_tmp/crm_db_default
 ENV PLAYWRIGHT_BROWSERS_PATH=/app/.playwright
+ENV FASTEMBED_CACHE_PATH=/app/.cache/fastembed \
+    DOCLING_ARTIFACTS_PATH=/app/.cache/docling \
+    HF_HOME=/app/.cache/huggingface \
+    HF_HUB_OFFLINE=1
 
 ENTRYPOINT ["/bin/sh", "/app/scripts/docker-entrypoint.sh"]
 CMD []

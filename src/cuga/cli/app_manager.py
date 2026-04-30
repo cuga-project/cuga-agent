@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 from loguru import logger
 
-from cuga.config import DEMO_TOOLS_ROOT, PACKAGE_ROOT, REPO_ROOT, settings
+from cuga.config import DEMO_TOOLS_ROOT, PACKAGE_ROOT, settings
 
 
 def _demo_app_path(*parts: str) -> str:
@@ -99,15 +99,18 @@ class AppManager:
 
     def start_email(self, use_cache: bool = True) -> tuple[int, int]:
         """Start email sink and MCP server. Returns (sink_port, mcp_port)."""
-        cmd = ["uvx"] + ([] if use_cache else ["--no-cache"])
-        cmd.extend(["--from", _demo_app_path("email_mcp", "mail_sink"), "email_sink"])
-        self._run("email-sink", cmd, {"DYNACONF_SERVER_PORTS__EMAIL_SINK": str(self.email_sink_port)})
+        sink_script = str(DEMO_TOOLS_ROOT / "email_mcp" / "mail_sink" / "server.py")
+        self._run(
+            "email-sink",
+            [sys.executable, sink_script],
+            {"DYNACONF_SERVER_PORTS__EMAIL_SINK": str(self.email_sink_port)},
+        )
         logger.info("Email sink started, waiting for it to be ready...")
         self._wait_tcp(self.email_sink_port, "Email sink", 60, 0.5)
         time.sleep(1)
 
-        cmd = ["uvx"] + ([] if use_cache else ["--no-cache"])
-        cmd.extend(["--from", _demo_app_path("email_mcp", "mcp_server"), "email_mcp"])
+        mcp_script = str(DEMO_TOOLS_ROOT / "email_mcp" / "mcp_server" / "server.py")
+        cmd = [sys.executable, mcp_script]
         self._run(
             "email-mcp",
             cmd,
@@ -116,8 +119,8 @@ class AppManager:
                 "DYNACONF_SERVER_PORTS__EMAIL_MCP": str(self.email_mcp_port),
             },
         )
-        logger.info("Email MCP server started")
-        time.sleep(2)
+        logger.info("Email MCP server started, waiting for it to be ready...")
+        self._wait_http(self.email_mcp_port, "Email MCP server")
         return self.email_sink_port, self.email_mcp_port
 
     def start_filesystem(
@@ -127,8 +130,8 @@ class AppManager:
         use_cache: bool = True,
     ) -> int:
         """Start filesystem MCP server. Returns fs_port."""
-        cmd = ["uvx"] + ([] if use_cache else ["--no-cache"])
-        cmd.extend(["--from", _demo_app_path("file_system"), "filesystem-server"])
+        fs_script = str(DEMO_TOOLS_ROOT / "file_system" / "main.py")
+        cmd = [sys.executable, fs_script]
         if read_only:
             cmd.append("--read-only")
         cmd.append(workspace_path)
@@ -144,16 +147,15 @@ class AppManager:
         docs_script = DEMO_TOOLS_ROOT / "docs_mcp" / "docs_mcp_server.py"
         cmd = [sys.executable, str(docs_script)]
         self._run("docs-mcp", cmd, {"DYNACONF_SERVER_PORTS__DOCS_MCP": str(port)})
-        logger.info("Docs MCP server started")
-        time.sleep(2)
+        logger.info("Docs MCP server started, waiting for it to be ready...")
+        self._wait_http(port, "Docs MCP server")
         return port
 
     def start_crm(self, crm_db_path: str, use_cache: bool = True) -> int:
         """Start CRM API server. Returns crm_port."""
         port = settings.server_ports.crm_api
         logger.info(f"Starting CRM server on port {port}")
-        cmd = ["uvx"] + ([] if use_cache else ["--no-cache"])
-        cmd.extend(["--from", _demo_app_path("crm"), "crm-server", "--port", str(port)])
+        cmd = [sys.executable, "-m", "cuga.demo_tools.crm.crm_api.main", "--port", str(port)]
         self._run(
             "crm-server",
             cmd,
@@ -164,10 +166,10 @@ class AppManager:
         return port
 
     def start_oak_health(self, use_cache: bool = True) -> int:
-        """Start cuga-oak-health OpenAPI server via uvx (bind port 8090 in current release)."""
+        """Start cuga-oak-health OpenAPI server (pre-installed). Returns port."""
         port = self.oak_health_port
-        logger.info("Starting cuga-oak-health OpenAPI server via uvx")
-        cmd = ["uvx"] + ([] if use_cache else ["--no-cache"]) + ["cuga-oak-health"]
+        logger.info("Starting cuga-oak-health OpenAPI server")
+        cmd = ["uv", "run", "--no-sync", "cuga-oak-health"]
         self._run(
             "oak-health",
             cmd,
@@ -179,6 +181,8 @@ class AppManager:
     def start_registry(self, host: str = "0.0.0.0"):
         """Start registry server. Returns process."""
         cmd = [
+            sys.executable,
+            "-m",
             "uvicorn",
             "cuga.backend.tools_env.registry.registry.api_registry_server:app",
             "--host",
@@ -198,8 +202,7 @@ class AppManager:
         use_ssl = bool(ssl_keyfile and ssl_certfile)
 
         app_import = "cuga.backend.server.main:app"
-        uvicorn_base = [
-            "uvicorn",
+        uvicorn_args = [
             app_import,
             "--host",
             host,
@@ -207,24 +210,25 @@ class AppManager:
             str(self.demo_port),
         ]
         if use_ssl:
-            uvicorn_base += ["--ssl-keyfile", ssl_keyfile, "--ssl-certfile", ssl_certfile]
+            uvicorn_args += ["--ssl-keyfile", ssl_keyfile, "--ssl-certfile", ssl_certfile]
+
+        # Use PACKAGE_ROOT to find the root directory consistently
+        project_root = os.path.abspath(os.path.join(PACKAGE_ROOT, "..", ".."))
 
         if sandbox:
-            cmd = ["uv", "run", "--directory", str(REPO_ROOT), "--group", "sandbox"] + uvicorn_base
-        elif use_ssl:
-            cmd = uvicorn_base
-        else:
-            server_path = os.path.join(PACKAGE_ROOT, "backend", "server", "main.py")
+            # Sandbox needs uv run for group isolation
             cmd = [
-                "fastapi",
-                "dev",
-                server_path,
-                "--host",
-                host,
-                "--no-reload",
-                "--port",
-                str(self.demo_port),
-            ]
+                "uv",
+                "run",
+                "--no-sync",
+                "--directory",
+                project_root,
+                "--group",
+                "sandbox",
+                "uvicorn",
+            ] + uvicorn_args
+        else:
+            cmd = [sys.executable, "-m", "uvicorn"] + uvicorn_args
 
         proc = self._run("demo", cmd, None)
         if proc:
@@ -310,7 +314,13 @@ class AppManager:
         if not copy_examples:
             return []
         source = DEMO_TOOLS_ROOT / "huggingface"
-        examples = ["contacts.txt", "cuga_knowledge.md", "cuga_playbook.md", "email_template.md"]
+        examples = [
+            "contacts.txt",
+            "cuga_knowledge.md",
+            "cuga_playbook.md",
+            "email_template.md",
+            "sovereign_core_overview.pdf",
+        ]
         copied: list[str] = []
         for name in examples:
             src = source / name

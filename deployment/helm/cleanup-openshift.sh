@@ -85,10 +85,10 @@ else
 fi
 
 # ---------------------------------------------------------------------------
-# 2. Delete secrets
+# 2. Delete secrets and NetworkPolicies
 # ---------------------------------------------------------------------------
 
-echo "[2/4] Deleting secrets for instance: ${INSTANCE_ID}"
+echo "[2/4] Deleting secrets and policies for instance: ${INSTANCE_ID}"
 
 for secret in "${PULL_SECRET_NAME}" "${ENV_SECRET_NAME}"; do
   if kubectl get secret "${secret}" --namespace "${NAMESPACE}" --request-timeout="${KUBECTL_TIMEOUT}" &>/dev/null; then
@@ -98,6 +98,11 @@ for secret in "${PULL_SECRET_NAME}" "${ENV_SECRET_NAME}"; do
     echo "      Secret ${secret} not found, skipping."
   fi
 done
+
+if kubectl get networkpolicy "${INSTANCE_ID}-airgap-egress" --namespace "${NAMESPACE}" --request-timeout="${KUBECTL_TIMEOUT}" &>/dev/null; then
+  kubectl delete networkpolicy "${INSTANCE_ID}-airgap-egress" --namespace "${NAMESPACE}" --request-timeout="${KUBECTL_TIMEOUT}"
+  echo "      Deleted NetworkPolicy: ${INSTANCE_ID}-airgap-egress"
+fi
 
 # ---------------------------------------------------------------------------
 # 3. Optionally remove postgres (shared per namespace)

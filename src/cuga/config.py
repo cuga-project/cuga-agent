@@ -139,6 +139,7 @@ validators = [
     Validator("features.chat", default=True),
     Validator("playwright_args", default=[]),
     Validator("server_ports.registry_host", default=None),
+    Validator("server_ports.demo_server_startup_max_retries", default=360),
     Validator("storage.mode", default="local"),
     Validator("storage.local_db_path", default=""),
     Validator("storage.postgres_url", default=""),
@@ -178,6 +179,7 @@ validators = [
     Validator("auth.role_token_source", default="auto"),
     Validator("skills.enabled", default=False),
     Validator("advanced_features.builtin_tools", default=["knowledge"]),
+    Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),

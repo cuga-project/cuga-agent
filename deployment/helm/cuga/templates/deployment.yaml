@@ -69,6 +69,10 @@ spec:
             periodSeconds: 10
             failureThreshold: 18
             timeoutSeconds: 10
+          {{- with .Values.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if .Values.persistence.dbs.enabled }}
           volumeMounts:
             - name: dbs
