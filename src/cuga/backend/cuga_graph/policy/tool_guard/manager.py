@@ -8,17 +8,25 @@ for tool usage policies.
 
 import shutil
 from contextlib import contextmanager
-from typing import List, Tuple, Dict, Any, Iterator, Optional
 from pathlib import Path
+from typing import Any, Dict, Iterator, List, Optional, Tuple
+
+from langchain_core.tools import StructuredTool
 from loguru import logger
-
-from cuga.backend.cuga_graph.policy.models import ToolGuide, PolicyType
-from cuga.backend.cuga_graph.policy.tool_guard.cuga_llm_adapter import CugaLLMAdapter
-
-from cuga.sdk import CugaAgent
-from toolguard.buildtime.buildtime import ToolGuardSpec, generate_guard_examples, generate_guards_code
+from toolguard.buildtime.buildtime import (
+    ToolGuardSpec,
+    generate_guard_examples,
+    generate_guards_code,
+)
+from toolguard.buildtime.llm import LangchainModelWrapper
 from toolguard.extra.langchain_to_oas import langchain_tools_to_openapi
-from toolguard.runtime.data_types import ToolGuardSpecItem, ToolGuardsCodeGenerationResult
+from toolguard.runtime.data_types import (
+    ToolGuardsCodeGenerationResult,
+    ToolGuardSpecItem,
+)
+
+from cuga.backend.cuga_graph.policy.models import PolicyType, ToolGuide
+from cuga.sdk import CugaAgent
 
 
 class ToolGuardManager:
@@ -27,7 +35,7 @@ class ToolGuardManager:
         self,
         agent: CugaAgent,
     ):
-        self.langchain_tools: List[Any] = []  # Store LangChain tools
+        self.langchain_tools: List[StructuredTool] = []  # Store LangChain tools
         self.tools_dict: Dict[str, Any] = {}  # Store OpenAPI dict for ToolGuard
         self._initialized = False
 
@@ -40,8 +48,8 @@ class ToolGuardManager:
                 "before creating ToolGuardManager."
             )
 
-        self.llm = CugaLLMAdapter(agent._model)
-        logger.info(f"Initialized ToolGuardManager with {type(agent._model).__name__} via CugaLLMAdapter")
+        self.llm = LangchainModelWrapper(agent._model)
+        logger.info(f"Initialized ToolGuardManager with {type(agent._model).__name__} via LangchainModelWrapper")
         # Use Path to properly handle path concatenation and ensure directory exists
         work_dir_path = Path(agent.cuga_folder) / "toolguard"
         work_dir_path.mkdir(parents=True, exist_ok=True)
@@ -343,17 +351,5 @@ class ToolGuardManager:
         """Check if the manager has been initialized."""
         return self._initialized
 
-    def get_available_tools(self) -> List[str]:
-        """
-        Get list of available tool names.
-
-        Returns:
-            List of tool names that can be used in policies
-
-        Raises:
-            RuntimeError: If manager not initialized
-        """
-        self._ensure_initialized()
-        return [tool.name for tool in self.langchain_tools]
 
 

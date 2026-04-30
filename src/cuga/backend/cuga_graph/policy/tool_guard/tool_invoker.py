@@ -8,7 +8,7 @@ and CUGA's tool provider system.
 from typing import Any, Dict, Optional, Type, TypeVar
 from loguru import logger
 
-from toolguard.runtime.data_types import IToolInvoker
+from toolguard.runtime import IToolInvoker
 
 T = TypeVar('T')
 

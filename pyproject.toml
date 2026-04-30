@@ -52,7 +52,7 @@ dependencies = [
     "langchain-text-splitters>=1.0,<2.0",
     "beautifulsoup4>=4.12",
     "psycopg[binary]>=3.2",
-    "toolguard>=0.2.16",
+    "toolguard>=0.2.17",
     "cuga-oak-health; python_version>='3.12'",
     "aiosmtpd",
 ]
