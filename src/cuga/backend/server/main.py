@@ -476,7 +476,12 @@ async def lifespan(app: FastAPI):
             token_path.chmod(0o600)
             os.environ["CUGA_INTERNAL_TOKEN_FILE"] = str(token_path)
             if not os.environ.get("CUGA_BACKEND_URL"):
-                os.environ["CUGA_BACKEND_URL"] = f"http://localhost:{os.environ.get('PORT', '7860')}"
+                auth = getattr(settings, "auth", None)
+                ssl_enabled = bool(
+                    os.environ.get("SSL_KEYFILE", "").strip() and os.environ.get("SSL_CERTFILE", "").strip()
+                )
+                scheme = "https" if ssl_enabled or getattr(auth, "require_https", False) else "http"
+                os.environ["CUGA_BACKEND_URL"] = f"{scheme}://localhost:{os.environ.get('PORT', '7860')}"
 
         logger.info("Knowledge engine started at %s", kb_config.persist_dir)
         app_state.set_subsystem_status(

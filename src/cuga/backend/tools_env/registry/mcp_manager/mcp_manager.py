@@ -684,8 +684,12 @@ class MCPManager:
             return True, "No readiness probe configured"
 
         timeout = config.readiness_timeout_seconds or 2.0
+        parsed_url = urlparse(config.readiness_url)
+        verify_ssl = not (
+            parsed_url.scheme == "https" and parsed_url.hostname in ("127.0.0.1", "localhost", "::1")
+        )
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, verify=verify_ssl) as client:
                 response = await client.get(config.readiness_url)
             response.raise_for_status()
 

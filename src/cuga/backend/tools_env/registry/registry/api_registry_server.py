@@ -27,6 +27,14 @@ database_mode = False
 default_agent_id = "cuga-default"
 
 
+def _internal_demo_scheme() -> str:
+    auth = getattr(settings, "auth", None)
+    ssl_enabled = bool(
+        os.environ.get("SSL_KEYFILE", "").strip() and os.environ.get("SSL_CERTFILE", "").strip()
+    )
+    return "https" if ssl_enabled or getattr(auth, "require_https", False) else "http"
+
+
 # --- Pydantic Models ---
 class FunctionCallRequest(BaseModel):
     """Request body model for calling a function."""
@@ -127,8 +135,10 @@ async def _get_or_create_registry(
                 svc.url = f"http://127.0.0.1:{kb_config.mcp_port}/mcp"
                 svc.command = None
                 svc.args = None
+                demo_scheme = _internal_demo_scheme()
                 svc.readiness_url = (
-                    f"http://127.0.0.1:{settings.server_ports.demo}/health/readiness?subsystem=knowledge"
+                    f"{demo_scheme}://127.0.0.1:{settings.server_ports.demo}"
+                    "/health/readiness?subsystem=knowledge"
                 )
                 svc.readiness_path = "status"
                 svc.ready_values = ["ready"]
