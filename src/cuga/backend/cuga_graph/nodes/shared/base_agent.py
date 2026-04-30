@@ -32,14 +32,33 @@ from langchain_openai import ChatOpenAI
 from langchain_core.language_models import BaseChatModel
 from langchain_core.output_parsers import PydanticOutputParser
 
-from loguru import logger
-
 from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import (
     APIPlannerOutput,
     APIPlannerOutputLite,
     APIPlannerOutputLiteNoHITL,
     APIPlannerOutputWX,
 )
+
+
+def _structured_output_missing_parsed_field(exc: BaseException) -> bool:
+    """Detect langchain_openai json_schema parser failure (no parsed/refusal on AIMessage).
+
+    Uses keyword anchors instead of matching the full message string so minor LC copy edits
+    still trigger fallback. See ``langchain_openai.chat_models.base._oai_structured_outputs_parser``.
+    """
+    if isinstance(exc, ValidationError):
+        return False
+    if not isinstance(exc, ValueError):
+        return False
+    msg = str(exc)
+    if "Structured Output response does not have" in msg:
+        return True
+    return (
+        "does not have" in msg
+        and "'parsed'" in msg
+        and "refusal" in msg.lower()
+        and "Received message:" in msg
+    )
 
 
 def create_partial(func, **kwargs):
@@ -76,6 +95,11 @@ class BaseAgent(ABC):
         """
         Create a chain with structured output, validation, and retry logic for OpenAI/Groq LLMs.
 
+        Uses ``json_schema`` structured output by default. If the model returns a response where
+        neither ``parsed`` nor ``refusal`` is set (common with OSS proxy endpoints that don't
+        implement the OpenAI structured-output spec, e.g. ``gpt-oss-*``), falls back transparently
+        to ``json_mode`` + ``PydanticOutputParser``.
+
         Args:
             llm: The language model (ChatOpenAI or ChatGroq)
             schema: Pydantic schema for structured output
@@ -86,19 +110,25 @@ class BaseAgent(ABC):
         """
         logger.debug("Creating validated structured output chain for OpenAI/Groq interface")
 
-        # Create the base chain with structured output
-        base_chain = prompt_template | llm.with_structured_output(schema, method="json_schema")
+        json_schema_chain = prompt_template | llm.with_structured_output(schema, method="json_schema")
+        parser = PydanticOutputParser(pydantic_object=schema)
+        json_mode_chain = prompt_template | llm | parser
 
-        # Add validation
-        validated_chain = base_chain | RunnableLambda(
-            lambda output: BaseAgent.validate_and_retry_output(output, schema)
-        )
+        async def _invoke_with_fallback(inputs):
+            try:
+                output = await json_schema_chain.ainvoke(inputs)
+                return BaseAgent.validate_and_retry_output(output, schema)
+            except Exception as exc:
+                if _structured_output_missing_parsed_field(exc):
+                    logger.warning(
+                        "json_schema structured output not supported by this model endpoint "
+                        "(parsed=None, refusal=None); falling back to json_mode parser"
+                    )
+                    output = await json_mode_chain.ainvoke(inputs)
+                    return BaseAgent.validate_and_retry_output(output, schema)
+                raise
 
-        # Add retry logic to the entire validated chain
-        # When validation fails, the whole chain will retry (including the LLM call)
-        validated_chain = validated_chain.with_retry(stop_after_attempt=4)
-
-        return validated_chain
+        return RunnableLambda(_invoke_with_fallback).with_retry(stop_after_attempt=3)
 
     @staticmethod
     def get_format_instructions(parser: PydanticOutputParser) -> str:
@@ -155,6 +185,23 @@ JSON schema:
                 schema = APIPlannerOutputWX
             parser = PydanticOutputParser(pydantic_object=schema)
             if wx_json_mode == "response_format":
+                # vLLM's xgrammar guided decoding fails to compile an FSM for
+                # schemas with $defs/$ref (vllm#21148), returning empty content
+                # (completion_tokens~=2, finish_reason=stop). Only apply the
+                # prompt-based fallback when the schema actually has that shape;
+                # flat schemas (e.g. PlanControllerOutput, NextAgentPlan) keep
+                # working under guided decoding and are left on the existing
+                # with_structured_output path.
+                if "$defs" in schema.model_json_schema():
+                    logger.debug(
+                        "Schema has $defs/$ref; trying guided decoding first, "
+                        "falling back to prompt-based parsing on failure"
+                    )
+                    guided_chain = BaseAgent.create_validated_structured_output_chain(
+                        llm, schema, prompt_template
+                    )
+                    fallback_chain = (prompt_template | llm | parser).with_retry(stop_after_attempt=3)
+                    return guided_chain.with_fallbacks([fallback_chain])
                 return BaseAgent.create_validated_structured_output_chain(llm, schema, prompt_template)
             elif wx_json_mode == "function_calling" or wx_json_mode == "json_mode":
                 chain = prompt_template | llm.with_structured_output(schema, method=wx_json_mode)

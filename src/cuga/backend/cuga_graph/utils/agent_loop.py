@@ -336,7 +336,7 @@ class AgentLoop:
                         }
                         return StreamEvent(name="CodeAgent", data=json.dumps(output))
                     else:
-                        # Text/reasoning output - show as CodeAgent_Reasoning
+                        # Text/reasoning output - only when last chat turn is a non-empty assistant message
                         logger.info("call_model generated text response (no code)")
                         messages = state_data.get("chat_messages", [])
                         if messages:

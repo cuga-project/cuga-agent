@@ -4,13 +4,48 @@ Prompt utilities for CugaLite - handles prompt creation and tool discovery.
 
 import functools
 import json
-from typing import Any, List, Optional
+import os
+from typing import Any, Dict, List, Optional
+
+from cuga.config import settings
 from loguru import logger
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import AppDefinition
 from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
-import os
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
+
+
+def _coerce_bool_setting(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.strip().lower() in ("true", "1", "yes", "on")
+    return bool(val)
+
+
+def few_shots_enabled_from_settings() -> bool:
+    """Whether MCP few-shots are enabled (prompt block + prefix messages); default True."""
+    try:
+        v = getattr(settings.advanced_features, "cuga_lite_enable_few_shots", True)
+    except Exception:
+        return True
+    return _coerce_bool_setting(v)
+
+
+def resolve_cuga_lite_few_shots_enabled(
+    configurable: Optional[Dict[str, Any]] = None,
+    *,
+    model_name: Optional[str] = None,
+) -> bool:
+    """Few-shot toggle: configurable overrides profile (gpt-oss-20b) overrides TOML."""
+    cfg = configurable or {}
+    if "cuga_lite_enable_few_shots" in cfg:
+        return _coerce_bool_setting(cfg["cuga_lite_enable_few_shots"])
+    prof = runtime_defaults_for_model(model_name or "")
+    if "cuga_lite_enable_few_shots" in prof:
+        return _coerce_bool_setting(prof["cuga_lite_enable_few_shots"])
+    return few_shots_enabled_from_settings()
 
 
 class Tool(BaseModel):
@@ -243,7 +278,6 @@ class PromptUtils:
 
         apps_as_dict = {app.name: app.model_dump() for app in all_apps}
         from cuga.backend.llm.models import LLMManager
-        from cuga.config import settings
         from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
             ShortListerOutputLite,
         )
@@ -407,6 +441,33 @@ def format_apps_for_prompt(apps) -> list:
     return processed_apps
 
 
+def normalize_mcp_few_shot_examples(raw: Any) -> List[Dict[str, str]]:
+    """Parse configurable few-shot payloads: JSON string or list of role/content dicts."""
+    if raw is None:
+        return []
+    if isinstance(raw, str):
+        raw_stripped = raw.strip()
+        if not raw_stripped:
+            return []
+        try:
+            raw = json.loads(raw_stripped)
+        except json.JSONDecodeError:
+            logger.debug("mcp_few_shot_examples: invalid JSON string, ignoring")
+            return []
+    if not isinstance(raw, list):
+        return []
+    out: List[Dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        role = item.get("role")
+        content = item.get("content")
+        if role is None or content is None:
+            continue
+        out.append({"role": str(role).strip(), "content": str(content)})
+    return out
+
+
 def create_mcp_prompt(
     tools,
     base_prompt=None,
@@ -421,6 +482,8 @@ def create_mcp_prompt(
     enable_todos=False,
     special_instructions=None,
     has_knowledge=False,
+    few_shot_examples: Optional[List[Dict[str, str]]] = None,
+    few_shots_enabled: Optional[bool] = None,
 ):
     """Create a prompt for CodeAct agent that works with MCP tools.
 
@@ -437,6 +500,8 @@ def create_mcp_prompt(
         prompt_template: Jinja2 template for the prompt
         enable_find_tools: If True, includes find_tools instructions in the prompt
         enable_todos: If True, includes create_update_todos instructions in the prompt
+        few_shot_examples: Unused (few-shots are chat-prefix only in ``cuga_lite_graph``).
+        few_shots_enabled: Unused (reserved for API compatibility).
     """
     processed_tools = []
     if special_instructions is None:
@@ -461,18 +526,20 @@ def create_mcp_prompt(
 
     processed_apps = format_apps_for_prompt(apps)
 
-    prompt = prompt_template.format(
-        base_prompt=base_prompt,
-        apps=processed_apps,
-        allow_user_clarification=allow_user_clarification,
-        return_to_user_cases=return_to_user_cases,
-        instructions=instructions,
-        tools=processed_tools,
-        task_loaded_from_file=task_loaded_from_file,
-        is_autonomous_subtask=is_autonomous_subtask,
-        enable_find_tools=enable_find_tools,
-        enable_todos=enable_todos,
-        special_instructions=special_instructions,
-        has_knowledge=has_knowledge,
-    )
+    prompt = prompt_template.invoke(
+        {
+            "base_prompt": base_prompt,
+            "apps": processed_apps,
+            "allow_user_clarification": allow_user_clarification,
+            "return_to_user_cases": return_to_user_cases,
+            "instructions": instructions,
+            "tools": processed_tools,
+            "task_loaded_from_file": task_loaded_from_file,
+            "is_autonomous_subtask": is_autonomous_subtask,
+            "enable_find_tools": enable_find_tools,
+            "enable_todos": enable_todos,
+            "special_instructions": special_instructions,
+            "has_knowledge": has_knowledge,
+        }
+    ).to_string()
     return prompt
