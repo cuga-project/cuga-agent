@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 from loguru import logger
-
+from types import SimpleNamespace
 from toolguard.runtime.data_types import (
     FileTwin,
     PolicyViolationException,
@@ -568,7 +568,7 @@ class ToolGuardRuntime:
         )
 
         try:
-            args_obj = type("ToolGuardArgs", (), arguments)()
+            args_obj = SimpleNamespace(**arguments)
             await self._runtime.guard_toolcall(
                 tool_name=function_name,
                 args=arguments | {"args": args_obj},
