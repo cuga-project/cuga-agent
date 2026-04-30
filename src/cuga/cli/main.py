@@ -23,7 +23,6 @@ from cuga.backend.cuga_graph.policy.cli import app as policy_app
 from cuga.backend.server.demo_manage_setup import (
     build_tools_from_apps,
     get_default_apps_for_preset,
-    seed_demo_knowledge_oobe_pdf_if_needed,
     setup_demo_manage_config,
 )
 from cuga.backend.server.managed_mcp import ensure_managed_mcp_file_exists, get_managed_mcp_path
@@ -1024,6 +1023,7 @@ def start(
         return
 
     if service == "demo_knowledge":
+        os.environ["CUGA_DEMO_MODE"] = "knowledge"
         os.environ["CUGA_DEMO_ADVANCED"] = "true"
         os.environ["CUGA_MANAGER_MODE"] = "true"
         os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
@@ -1063,8 +1063,6 @@ def start(
                 logger.error("Demo service failed to start. Exiting.")
                 stop_direct_processes()
                 raise typer.Exit(1)
-
-            seed_demo_knowledge_oobe_pdf_if_needed(settings.server_ports.demo)
 
             if direct_processes:
                 table = Table(show_header=False, box=None, padding=(0, 1))

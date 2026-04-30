@@ -185,17 +185,16 @@ def resolve_collection(identity: KnowledgeIdentity, scope: str, request: Request
 
         return f"kb_sess_{_sanitize(identity.thread_id)}"
     elif scope == "agent":
-        base = f"kb_agent_{_sanitize(identity.agent_id)}"
-        # Append vector-config hash when available so each distinct embedding /
-        # chunking configuration gets its own isolated collection.
-        if request:
-            _as = getattr(request.app.state, "app_state", None)
-            config_hash = getattr(_as, "knowledge_config_hash", None) if _as else None
-            if config_hash:
-                return f"{base}_{config_hash}"
-        return base
+        _as = getattr(request.app.state, "app_state", None) if request else None
+        return resolve_agent_collection(identity.agent_id, _as)
     else:
         raise HTTPException(status_code=400, detail="scope must be 'agent' or 'session'")
+
+
+def resolve_agent_collection(agent_id: str, app_state=None) -> str:
+    base = f"kb_agent_{_sanitize(agent_id)}"
+    config_hash = getattr(app_state, "knowledge_config_hash", None) if app_state else None
+    return f"{base}_{config_hash}" if config_hash else base
 
 
 def _sanitize(value: str) -> str:
