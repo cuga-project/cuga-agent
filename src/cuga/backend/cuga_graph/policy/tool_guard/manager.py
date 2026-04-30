@@ -6,6 +6,8 @@ example generation capabilities to create violating and compliance examples
 for tool usage policies.
 """
 
+import asyncio
+import re
 import shutil
 from contextlib import contextmanager
 from typing import List, Tuple, Dict, Any, Iterator, Optional
@@ -30,6 +32,20 @@ class ToolGuardManager:
         self.langchain_tools: List[Any] = []  # Store LangChain tools
         self.tools_dict: Dict[str, Any] = {}  # Store OpenAPI dict for ToolGuard
         self._initialized = False
+
+        # Validate tool_provider upfront
+        if agent.tool_provider is None:
+            raise ValueError(
+                "Agent tool_provider is not initialized. Ensure the CugaAgent has a valid "
+                "tool_provider before creating ToolGuardManager."
+            )
+        
+        # Validate cuga_folder upfront
+        if not agent.cuga_folder:
+            raise ValueError(
+                "Agent cuga_folder is not set. Ensure the CugaAgent has a valid "
+                "cuga_folder path before creating ToolGuardManager."
+            )
 
         self.tool_provider = agent.tool_provider
 
@@ -89,6 +105,39 @@ class ToolGuardManager:
                 f"Tool '{target_tool}' not found in available tools. "
                 f"Available tools: {tool_names}"
             )
+
+    def _validate_app_name(self, app_name: str) -> str:
+        """
+        Validate and sanitize app_name to prevent path traversal attacks.
+        
+        Args:
+            app_name: Application name to validate
+            
+        Returns:
+            The validated app_name
+            
+        Raises:
+            ValueError: If app_name contains unsafe characters or patterns
+        """
+        # Check for path separators and traversal segments
+        if '/' in app_name or '\\' in app_name:
+            raise ValueError(
+                f"Invalid app_name '{app_name}': path separators ('/', '\\') are not allowed"
+            )
+        
+        if '..' in app_name:
+            raise ValueError(
+                f"Invalid app_name '{app_name}': path traversal segments ('..') are not allowed"
+            )
+        
+        # Validate against safe whitelist: alphanumeric, underscore, and hyphen only
+        if not re.match(r'^[A-Za-z0-9_-]+$', app_name):
+            raise ValueError(
+                f"Invalid app_name '{app_name}': only alphanumeric characters, "
+                f"underscores, and hyphens are allowed (pattern: /^[A-Za-z0-9_-]+$/)"
+            )
+        
+        return app_name
 
     def _build_description(self, policy: ToolGuide) -> str:
         """Build description from policy, concatenating guide_content if present."""
@@ -213,6 +262,8 @@ class ToolGuardManager:
                     logger.warning(f"No results returned for tool '{target_tool}'")
                     return [], []
 
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(
                     f"❌ Failed to generate examples for tool '{target_tool}': {e}"
@@ -243,10 +294,14 @@ class ToolGuardManager:
         Raises:
             RuntimeError: If manager not initialized
             ValueError: If policy is not a ToolGuide, target_tool not in policy.target_tools,
-                       or if the policy doesn't have examples for the target tool
+                       if the policy doesn't have examples for the target tool,
+                       or if app_name contains unsafe characters
         """
         self._ensure_initialized()
         self._validate_policy_and_tool(policy, target_tool)
+        
+        # Validate app_name to prevent path traversal attacks
+        app_name = self._validate_app_name(app_name)
 
         logger.info(f"Generating guard code for tool '{target_tool}'...")
 
@@ -332,6 +387,8 @@ class ToolGuardManager:
                         f"Available tools: {list(result.tools.keys())}"
                     )
 
+            except asyncio.CancelledError:
+                raise
             except Exception as e:
                 logger.error(
                     f"❌ Failed to generate guard code for tool '{target_tool}': {e}"
