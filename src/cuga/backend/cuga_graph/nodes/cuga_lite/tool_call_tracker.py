@@ -84,9 +84,21 @@ def _normalize_tool_payload(value: Any) -> Any:
         return _normalize_tool_payload(asdict(value))
 
     if isinstance(value, dict):
-        return {_normalize_tool_payload(key): _normalize_tool_payload(item) for key, item in value.items()}
+        normalized: dict[Any, Any] = {}
+        for key, item in value.items():
+            normalized_key = _normalize_tool_payload(key)
+            if not isinstance(normalized_key, (str, int, float, bool, type(None))):
+                normalized_key = str(normalized_key)
+            normalized[normalized_key] = _normalize_tool_payload(item)
+        return normalized
 
-    if isinstance(value, (list, tuple, set, frozenset)):
+    if isinstance(value, list):
+        return [_normalize_tool_payload(item) for item in value]
+
+    if isinstance(value, tuple):
+        return tuple(_normalize_tool_payload(item) for item in value)
+
+    if isinstance(value, (set, frozenset)):
         return [_normalize_tool_payload(item) for item in value]
 
     if hasattr(value, "__dict__"):

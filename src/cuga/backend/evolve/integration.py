@@ -76,7 +76,8 @@ class EvolveIntegration:
             result = await cls._call_tool("store_user_facts", payload)
             if isinstance(result, dict):
                 logger.info(
-                    f"Evolve: Stored user facts for {user_id} ({result.get('stored_count', 0)} updates)"
+                    "Evolve: Stored user facts (stored_count=%s)",
+                    result.get("stored_count", 0),
                 )
         except Exception as e:
             logger.warning(f"Evolve store_user_facts failed (non-fatal): {e}")

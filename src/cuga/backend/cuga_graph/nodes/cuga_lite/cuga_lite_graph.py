@@ -390,7 +390,13 @@ def _normalize_checkpoint_value(value: Any) -> Any:
     if isinstance(value, set):
         return [_normalize_checkpoint_value(item) for item in value]
 
-    return value
+    if hasattr(value, "__dict__"):
+        try:
+            return _normalize_checkpoint_value(vars(value))
+        except Exception:
+            pass
+
+    return str(value)
 
 
 def _sanitize_cuga_lite_update(update: Dict[str, Any]) -> Dict[str, Any]:
@@ -541,7 +547,7 @@ class CugaLiteState(BaseModel):
     # Shared keys (compatible with AgentState)
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
-    user_id: Optional[str] = "default_user"
+    user_id: Optional[str] = None
     thread_id: Optional[str] = None
     service_scope: Optional[Dict[str, str]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""}
@@ -1253,9 +1259,7 @@ def create_cuga_lite_graph(
                     if evolve_section:
                         special_instructions_final = (special_instructions_final or "") + evolve_section
                         logger.info("Evolve: Injected guidelines into system prompt")
-                        logger.debug(
-                            f"Evolve: Full special_instructions with guidelines:\n{special_instructions_final}"
-                        )
+                        logger.debug("Evolve: Injected guidelines section (%d chars)", len(evolve_section))
 
                 memory_query = state.sub_task or get_latest_memory_query(state.chat_messages)
                 current_user_id = str(getattr(state, "user_id", "") or "").strip()
@@ -1271,6 +1275,11 @@ def create_cuga_lite_graph(
                             current_agent_id = ""
 
                     thread_id_for_memory = str(configurable.get("thread_id") or state.thread_id or "").strip()
+
+                    retrieved_preferences = await EvolveIntegration.retrieve_user_facts(
+                        current_user_id,
+                        memory_query,
+                    )
 
                     def _log_store_error(task: asyncio.Task) -> None:
                         exc = task.exception() if not task.cancelled() else None
@@ -1289,11 +1298,6 @@ def create_cuga_lite_graph(
                         )
                     )
                     _store_task.add_done_callback(_log_store_error)
-
-                    retrieved_preferences = await EvolveIntegration.retrieve_user_facts(
-                        current_user_id,
-                        memory_query,
-                    )
                     categories = (
                         retrieved_preferences.get("categories")
                         if isinstance(retrieved_preferences, dict)
@@ -1304,7 +1308,7 @@ def create_cuga_lite_graph(
                         special_instructions_final = (special_instructions_final or "") + preference_section
                         logger.info("Evolve: Injected user preference context into system prompt")
                         logger.debug(
-                            f"Evolve: Full special_instructions with preferences:\n{special_instructions_final}"
+                            "Evolve: Injected user preference section (%d chars)", len(preference_section)
                         )
 
             cfg = config.get("configurable", {}) if config else {}

@@ -1,3 +1,4 @@
+import copy
 import numpy as np
 from langchain_core.messages import HumanMessage, AIMessage
 from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
@@ -115,7 +116,7 @@ def test_memory_helpers_do_not_mutate_chat_messages():
         url="https://example.com",
         chat_messages=[HumanMessage(content="I prefer concise answers")],
     )
-    before = list(state.chat_messages)
+    before = copy.deepcopy(state.chat_messages)
 
     _ = get_first_human_message_content(state.chat_messages)
     _ = get_latest_memory_query(state.chat_messages)
