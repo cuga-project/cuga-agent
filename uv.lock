@@ -249,24 +249,21 @@ wheels = [
 
 [[package]]
 name = "altk-evolve"
-version = "1.0.6"
+version = "1.1.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "arize-phoenix", marker = "python_full_version >= '3.12'" },
     { name = "fastmcp", marker = "python_full_version >= '3.12'" },
     { name = "jinja2", marker = "python_full_version >= '3.12'" },
     { name = "litellm", marker = "python_full_version >= '3.12'" },
-    { name = "milvus-lite", marker = "python_full_version >= '3.12' and platform_machine != 'aarch64'" },
     { name = "pydantic", marker = "python_full_version >= '3.12'" },
-    { name = "pymilvus", marker = "python_full_version >= '3.12'" },
-    { name = "pymilvus", extra = ["milvus-lite"], marker = "python_full_version >= '3.12' and platform_machine != 'aarch64'" },
     { name = "sentence-transformers", marker = "python_full_version >= '3.12'" },
     { name = "typer", marker = "python_full_version >= '3.12'" },
     { name = "uvicorn", marker = "python_full_version >= '3.12'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a4/9c/1771eff0bff70920cf1ac65c3e905ab2d222b26aea2cbbab9a4b854df193/altk_evolve-1.0.6.tar.gz", hash = "sha256:7ac74637ee5dd6ca1795343354fdeaa6713bc636d08df406e19e0326b3187389", size = 240766, upload-time = "2026-04-03T19:11:25.476Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/61/bf/f922d54f8174621f256fad0e8bf737a0b58174f5022a87186e3a1858b658/altk_evolve-1.1.0.tar.gz", hash = "sha256:afdd7010dfb90e72b6c311eb06eef720b9f542063d1ae4fbfbf89ac35fcd4cfe", size = 260021, upload-time = "2026-05-01T13:23:21.809Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/2d/33/729c2048ac2c352bbcf795732b1e8c356778bad250609bcd58fbd52fd1a4/altk_evolve-1.0.6-py3-none-any.whl", hash = "sha256:d20b661d4ab738444d62752a446bf6805755e45834d670aa59b901d0e718b7e5", size = 253920, upload-time = "2026-04-03T19:11:23.79Z" },
+    { url = "https://files.pythonhosted.org/packages/7a/fc/e0e074ab51b17919b6d2b2d6b7147591526289c3f9437c1c2b0d9d0a01f5/altk_evolve-1.1.0-py3-none-any.whl", hash = "sha256:fd448398d76a803e50cf429ac8020f86f51e90f2eecc71f4c5695c17c9c96dbe", size = 275712, upload-time = "2026-05-01T13:23:19.679Z" },
 ]
 
 [[package]]
@@ -1042,7 +1039,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], specifier = ">=0.3.22" },
     { name = "aiohttp", specifier = ">=3.13.4" },
     { name = "aiosmtpd" },
-    { name = "altk-evolve", marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.0.6" },
+    { name = "altk-evolve", marker = "python_full_version >= '3.12' and extra == 'evolve'", specifier = ">=1.1.0" },
     { name = "asyncpg", specifier = ">=0.30" },
     { name = "beautifulsoup4", specifier = ">=4.12" },
     { name = "boto3", specifier = ">=1.34.0" },
@@ -3407,7 +3404,7 @@ name = "milvus-lite"
 version = "2.5.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "tqdm", marker = "python_full_version < '3.12' or platform_machine != 'aarch64' or sys_platform != 'win32'" },
+    { name = "tqdm", marker = "python_full_version < '3.12' or sys_platform != 'win32'" },
 ]
 wheels = [
     { url = "https://files.pythonhosted.org/packages/a9/b2/acc5024c8e8b6a0b034670b8e8af306ebd633ede777dcbf557eac4785937/milvus_lite-2.5.1-py3-none-macosx_10_9_x86_64.whl", hash = "sha256:6b014453200ba977be37ba660cb2d021030375fa6a35bc53c2e1d92980a0c512", size = 27934713, upload-time = "2025-06-30T04:23:37.028Z" },
