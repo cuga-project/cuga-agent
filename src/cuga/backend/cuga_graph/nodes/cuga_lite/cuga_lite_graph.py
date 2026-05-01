@@ -406,6 +406,7 @@ def _sanitize_cuga_lite_update(update: Dict[str, Any]) -> Dict[str, Any]:
         "variables_storage",
         "cuga_lite_metadata",
         "tool_calls",
+        "task_todos",
         "metrics",
         "last_summarization_metrics",
     ):
@@ -1252,7 +1253,16 @@ def create_cuga_lite_graph(
             if EvolveIntegration.is_enabled():
                 task_description = state.sub_task or get_first_human_message_content(state.chat_messages)
                 if task_description:
-                    evolve_guidelines = await EvolveIntegration.get_guidelines(task_description)
+                    try:
+                        evolve_guidelines = await asyncio.wait_for(
+                            EvolveIntegration.get_guidelines(task_description),
+                            timeout=settings.evolve.timeout,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Evolve: get_guidelines timed out or failed; continuing without guidelines"
+                        )
+                        evolve_guidelines = None
                     evolve_section = build_evolve_guidelines_section(
                         str(evolve_guidelines) if evolve_guidelines else ""
                     )
@@ -1276,10 +1286,19 @@ def create_cuga_lite_graph(
 
                     thread_id_for_memory = str(configurable.get("thread_id") or state.thread_id or "").strip()
 
-                    retrieved_preferences = await EvolveIntegration.retrieve_user_facts(
-                        current_user_id,
-                        memory_query,
-                    )
+                    try:
+                        retrieved_preferences = await asyncio.wait_for(
+                            EvolveIntegration.retrieve_user_facts(
+                                current_user_id,
+                                memory_query,
+                            ),
+                            timeout=settings.evolve.timeout,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Evolve: retrieve_user_facts timed out or failed; continuing without preferences"
+                        )
+                        retrieved_preferences = None
 
                     def _log_store_error(task: asyncio.Task) -> None:
                         exc = task.exception() if not task.cancelled() else None

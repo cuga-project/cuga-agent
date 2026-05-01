@@ -81,7 +81,10 @@ def _normalize_tool_payload(value: Any) -> Any:
             pass
 
     if is_dataclass(value) and not isinstance(value, type):
-        return _normalize_tool_payload(asdict(value))
+        try:
+            return _normalize_tool_payload(asdict(value))
+        except Exception:
+            return str(value)
 
     if isinstance(value, dict):
         normalized: dict[Any, Any] = {}
