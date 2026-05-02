@@ -846,26 +846,13 @@ export function ChatLanding() {
                 {node.name}
               </span>
             ) : (
-              <span
-                className="chat-landing-workspace-tree-row"
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.25rem",
-                  flex: 1,
-                  minWidth: 0,
-                  fontSize: "0.8125rem",
-                  color: "var(--cds-text-primary)",
-                }}
-              >
+              <span className="chat-landing-workspace-tree-row">
                 <span
+                  className="chat-landing-workspace-tree-filename"
                   style={{
-                    flex: 1,
-                    minWidth: 0,
                     cursor: "pointer",
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
+                    fontSize: "0.8125rem",
+                    color: "var(--cds-text-primary)",
                   }}
                   role="button"
                   onClick={(e) => {

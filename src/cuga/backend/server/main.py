@@ -3063,7 +3063,7 @@ async def get_workspace_tree(
         hdr_tid = (request.headers.get("x-thread-id") or "").strip() or None
         q_tid = (thread_id or "").strip() or None
         sandbox_mode = workspace_tree_is_sandbox_backed()
-        logger.info(
+        logger.debug(
             "GET /api/workspace/tree: sandbox_backed={} thread_id_resolved={!r} "
             "query_thread_id={!r} header_x_thread_id={!r}",
             sandbox_mode,
@@ -3073,7 +3073,7 @@ async def get_workspace_tree(
         )
         if sandbox_mode:
             if not tid:
-                logger.info(
+                logger.debug(
                     "GET /api/workspace/tree: empty tree (sandbox mode requires thread_id query param or X-Thread-ID)"
                 )
                 return JSONResponse({"tree": []})
@@ -3082,14 +3082,14 @@ async def get_workspace_tree(
             except Exception as e:
                 logger.warning(f"Sandbox workspace tree failed: {e}")
                 raise HTTPException(status_code=503, detail="Sandbox workspace unavailable") from e
-            logger.info("GET /api/workspace/tree: sandbox tree built, top_level_nodes={}", len(tree))
+            logger.debug("GET /api/workspace/tree: sandbox tree built, top_level_nodes={}", len(tree))
             return JSONResponse({"tree": tree})
 
         workspace_path = Path(os.getcwd()) / "cuga_workspace"
 
         if not workspace_path.exists():
             workspace_path.mkdir(parents=True, exist_ok=True)
-            logger.info(
+            logger.debug(
                 "GET /api/workspace/tree: empty tree (created local dir {})",
                 workspace_path,
             )
@@ -3118,7 +3118,7 @@ async def get_workspace_tree(
             for item in sorted(workspace_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
             if not item.name.startswith('.')
         ]
-        logger.info(
+        logger.debug(
             "GET /api/workspace/tree: local mode cwd={} workspace_path={} visible_entries={}",
             os.getcwd(),
             workspace_path.resolve(),
@@ -3226,7 +3226,7 @@ async def download_workspace_file(
             except Exception as e:
                 if "not found" in str(e).lower() or "no such file" in str(e).lower():
                     raise HTTPException(status_code=404, detail="File not found") from e
-                logger.warning(f"Sandbox workspace download failed: {e}")
+                logger.debug(f"Sandbox workspace download failed: {e}")
                 raise HTTPException(status_code=500, detail="Failed to download file") from e
             return Response(
                 content=data,

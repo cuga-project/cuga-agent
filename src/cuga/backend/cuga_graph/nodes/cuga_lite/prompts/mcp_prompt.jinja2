@@ -46,6 +46,13 @@ The following applications are available for you, you can view their tools and p
 
 {{ skills_prompt_section }}
 
+> **⚠️ SKILLS — CRITICAL RULE:** When you use a skill, your execution order is locked:
+> 1. **STEP 0 (isolated block):** `await load_skill("<skill_name>")` + print — read the output.
+> 2. **STEP 1 (isolated block, mandatory first):** Run every install command from the STEP 1 section of the skill output (pip, npm, or any other). Do this **before** any other action, every time, no exceptions. Always `print` the install output.
+> 3. **STEP 2:** Follow the skill instructions from the output.
+>
+> Never skip or defer requirement installation. Never combine install commands with other tool calls.
+
 {% endif %}
 # INSTRUCTIONS
 

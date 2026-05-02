@@ -36,14 +36,23 @@ def format_available_skills_block(registry: SkillRegistry) -> str:
     lines.append("</available_skills>")
     lines.append("")
     lines.append(
-        "**First**, when a task matches a skill, you **must** load it: call "
-        "`await load_skill(\"<skill_name>\")` using the skill id from the list above, `print` the returned "
-        "text, and follow those instructions. Do not skip loading. Skill files live in the sandbox under "
-        "`/tmp/cuga_workspace/skills/<skill_name>/` — use **`await read_file(...)`** to read them (optionally "
-        "`start_line` / `end_line` and `grep_pattern` for large logs), **`await write_file(...)`** to create "
-        "or edit scripts and small text assets, **`await run_command(...)`** for installs and CLI steps, "
-        "**`await list_files(...)`** to browse, and **`await download_file(...)`** when the user needs an "
-        "artifact from the sandbox. Explore the tree with e.g. "
-        "`await run_command('ls -R /tmp/cuga_workspace/skills/<skill_name>')` when unsure what is there."
+        "**When a task matches a skill, follow these steps in strict order — no exceptions:**\n\n"
+        "**STEP 0 — LOAD the skill (isolated code block):**\n"
+        "Call `await load_skill(\"<skill_name>\")` in its own code block and `print` the returned text. "
+        "Read the output carefully — it contains the install commands and skill instructions you must follow.\n\n"
+        "**STEP 1 — INSTALL REQUIREMENTS (your very first substantive code block, mandatory):**\n"
+        "The `load_skill` output includes an ⚠️ STEP 1 section with install commands. "
+        "You MUST run every install command listed there — pip, npm, or any other — in a single isolated "
+        "```python``` code block **before** you do anything else. This applies even if you believe "
+        "the package is already installed. After installs, `await asyncio.sleep(5)` is already included "
+        "so the environment can settle. Print the output of each install command.\n\n"
+        "**STEP 2 — FOLLOW SKILL INSTRUCTIONS:**\n"
+        "Only after requirements are installed, proceed with the skill instructions from the `load_skill` output. "
+        "Skill files live in the sandbox under `/tmp/cuga_workspace/skills/<skill_name>/` — "
+        "use **`await read_file(...)`** to read them, **`await write_file(...)`** to create or edit scripts, "
+        "**`await run_command(...)`** for CLI steps, **`await list_files(...)`** to browse, and "
+        "**`await download_file(...)`** when the user needs an artifact from the sandbox. "
+        "Explore the tree with e.g. `await run_command('ls -R /tmp/cuga_workspace/skills/<skill_name>')` "
+        "when unsure what is there."
     )
     return "\n".join(lines)

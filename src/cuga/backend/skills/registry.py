@@ -36,13 +36,21 @@ class SkillRegistry:
             setup_lines: list[str] = []
             if pip_pkgs:
                 setup_lines.append(f"await run_command('pip3 install --quiet {' '.join(pip_pkgs)}')")
+                setup_lines.append("await asyncio.sleep(5)")
             if npm_pkgs:
                 # Install locally in the working dir so require() resolves correctly
                 setup_lines.append(
                     f"await run_command('cd /tmp/cuga_workspace && npm install {' '.join(npm_pkgs)}')"
                 )
+                setup_lines.append("await asyncio.sleep(5)")
             setup_script = "\n".join(setup_lines)
-            parts.append(f"STEP 1 — SETUP (run first, in a ```python``` code block):\n{setup_script}")
+            parts.append(
+                "⚠️ STEP 1 — INSTALL REQUIREMENTS (MANDATORY — your very first code block, no exceptions):\n"
+                "Before reading any skill files, before any other action, run the following installs "
+                "in a single isolated ```python``` code block and print the output. "
+                "Do NOT skip or defer this step even if you think the package might already be present.\n\n"
+                f"{setup_script}"
+            )
             parts.append("")
 
         skill_dir = f"/tmp/cuga_workspace/skills/{entry.name}"

@@ -152,11 +152,14 @@ def _check_opensandbox_reachable() -> bool:
             Panel(
                 f"Could not open a TCP connection to OpenSandbox at [cyan]{host}:{port}[/cyan]. "
                 "Shell tools (run_command, write_file, …) need a running OpenSandbox server.\n\n"
-                "Typical local setup (see README at https://github.com/alibaba/OpenSandbox):\n"
-                "  • [dim]uv pip install opensandbox-server[/dim]\n"
-                "  • [dim]opensandbox-server init-config ~/.sandbox.toml --example docker[/dim]\n"
-                "  • [dim]opensandbox-server[/dim]\n\n"
-                "Override the address with [cyan]OPEN_SANDBOX_DOMAIN[/cyan] or "
+                "Open a [bold]new terminal[/bold], [cyan]cd[/cyan] into your [cyan]cuga-agent[/cyan] clone, "
+                "then copy and run each line (README: [link=https://github.com/alibaba/OpenSandbox]https://github.com/alibaba/OpenSandbox[/link]):\n\n"
+                "[cyan]uv venv[/cyan]\n"
+                "[cyan]source .venv/bin/activate[/cyan]  [dim]# Windows: .venv\\Scripts\\activate[/dim]\n"
+                "[cyan]uv pip install opensandbox-server[/cyan]\n"
+                "[cyan]opensandbox-server init-config ~/.sandbox.toml --example docker[/cyan]\n"
+                "[cyan]opensandbox-server[/cyan]\n\n"
+                "Then retry this command. Override the server address with [cyan]OPEN_SANDBOX_DOMAIN[/cyan] or "
                 "[cyan]DYNACONF_SKILLS__OPENSANDBOX_DOMAIN[/cyan] if needed.",
                 title="[yellow]OpenSandbox not reachable[/yellow]",
                 border_style="yellow",

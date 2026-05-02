@@ -130,7 +130,7 @@ async def _find_paths(commands: Any, type_flag: str) -> list[str]:
         _execution_debug_blob(ex),
     )
     if not lines and type_flag == "d":
-        logger.info(
+        logger.debug(
             "sandbox find returned no directories for {}; if unexpected, check OpenSandbox find output: {}",
             SANDBOX_WORKSPACE_ROOT,
             _execution_debug_blob(ex),
@@ -146,7 +146,7 @@ async def fetch_sandbox_workspace_tree(thread_id: Optional[str]) -> list[dict[st
     sandbox = interpreter.sandbox
     sandbox_id = getattr(sandbox, "id", None)
     commands = sandbox.commands
-    logger.info(
+    logger.debug(
         "sandbox workspace tree: thread_id={!r} sandbox_id={!r} root={}",
         thread_id,
         sandbox_id,
@@ -155,7 +155,7 @@ async def fetch_sandbox_workspace_tree(thread_id: Optional[str]) -> list[dict[st
     dir_lines = await _find_paths(commands, "d")
     file_lines = await _find_paths(commands, "f")
     tree = sandbox_paths_to_tree(dir_lines, file_lines)
-    logger.info(
+    logger.debug(
         "sandbox workspace tree: thread_id={!r} sandbox_id={!r} find_dirs={} find_files={} top_level_nodes={} "
         "sample_dir_lines={}",
         thread_id,
