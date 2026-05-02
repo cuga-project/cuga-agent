@@ -49,11 +49,11 @@ sub_task_keep_last_n = 5  # Number of most recent generated variables to keep wh
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
 # bind_tools: generic default is none; resolved model ``gpt-oss-20b`` uses model_runtime_profile.py
-# mode: none | find_tools | all | apps | tools (tools = bind only names in cuga_lite_bind_tools_tool_names)
-cuga_lite_bind_tools_mode = "none"
-cuga_lite_bind_tools_apps = []  # App names when mode=apps (e.g. ["crm", "slack"])
-cuga_lite_bind_tools_tool_names = ['load_skill', 'find_tools', 'create_update_todos']  # StructuredTool names when mode=tools (e.g. ["load_skill"])
-cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongside all/apps/tools
+# mode: none | find_tools | all | apps | tools | apps_and_tools  (apps_and_tools = union of app tools + listed names)
+cuga_lite_bind_tools_mode = "apps_and_tools"
+cuga_lite_bind_tools_apps = ['filesystem']  # mode=apps or apps_and_tools
+cuga_lite_bind_tools_tool_names = ['load_skill', 'find_tools', 'create_update_todos', 'run_command']  # mode=tools or apps_and_tools (StructuredTool.name)
+cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongside all/apps/tools/apps_and_tools
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false

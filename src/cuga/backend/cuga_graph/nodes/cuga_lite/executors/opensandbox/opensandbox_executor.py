@@ -164,6 +164,10 @@ class OpenSandboxExecutor(RemoteExecutor):
         logger.info(f"[OpenSandboxExecutor] Created interpreter for thread={key}")
         return interpreter
 
+    async def get_interpreter_for_thread(self, thread_id: Optional[str] = None) -> Any:
+        """Return the CodeInterpreter for thread_id, creating the sandbox if needed (workspace API, tools)."""
+        return await self._get_or_create_interpreter(thread_id)
+
     async def _upload_skills_to_sandbox(self, interpreter: Any) -> None:
         """Upload local skill folders into /tmp/cuga_workspace/skills/ in the sandbox.
 

@@ -23,6 +23,48 @@
   background: transparent;
 }
 
+/* ─── Workspace file tree (Carbon TreeView label layout) ─────────────────── */
+
+.chat-landing-workspace-tree .cds--tree-node__label,
+.chat-landing-workspace-tree .bx--tree-node__label {
+  min-width: 0;
+}
+
+.chat-landing-workspace-tree .cds--tree-node__label__details,
+.chat-landing-workspace-tree .bx--tree-node__label__details {
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.chat-landing-workspace-tree .cds--tree-node__label__text,
+.chat-landing-workspace-tree .bx--tree-node__label__text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  overflow: visible;
+  white-space: normal;
+}
+
+.chat-landing-workspace-tree-name {
+  display: block;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-landing-workspace-tree-download {
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 70ms cubic-bezier(0, 0, 0.38, 0.9);
+}
+
+.chat-landing-workspace-tree-row:hover .chat-landing-workspace-tree-download,
+.chat-landing-workspace-tree-download:focus-visible {
+  opacity: 1;
+}
+
 /* ─── Conversation thread rows (hover handled inline for dynamic isActive) ── */
 
 .conversation-history-panel button:focus-visible {

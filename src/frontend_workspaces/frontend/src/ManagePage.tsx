@@ -228,6 +228,7 @@ export function ManagePage() {
     agent_id: string;
     config_version: number | null;
     skills_enabled?: boolean;
+    workspace_filesystem_root?: string;
     knowledge_enabled?: boolean;
     agent_level_knowledge_enabled?: boolean;
     session_level_knowledge_enabled?: boolean;
@@ -283,6 +284,10 @@ export function ManagePage() {
             agent_id: data.agent_id ?? "cuga-default",
             config_version: data.config_version ?? null,
             skills_enabled: Boolean(data.skills_enabled),
+            workspace_filesystem_root:
+              typeof data.workspace_filesystem_root === "string"
+                ? data.workspace_filesystem_root
+                : undefined,
             knowledge_enabled: Boolean(data.knowledge_enabled),
             agent_level_knowledge_enabled: Boolean(data.agent_level_knowledge_enabled),
             session_level_knowledge_enabled: Boolean(data.session_level_knowledge_enabled),

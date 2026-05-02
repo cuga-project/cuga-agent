@@ -13,6 +13,7 @@ import { useTour } from "./useTour";
 import { AdvancedTourButton } from "./AdvancedTourButton";
 import { HelpCircle } from "lucide-react";
 import * as api from "../../frontend/src/api";
+import { randomUUID } from "./uuid";
 import "./AppLayout.css";
 import "./mockApi";
 import "./workspaceThrottle"; // Enforce 3-second minimum interval between workspace API calls
@@ -79,8 +80,9 @@ export function App() {
   const [activeTab, setActiveTab] = useState<"conversations" | "variables" | "savedflows">("conversations");
   const [previousVariablesCount, setPreviousVariablesCount] = useState(0);
   const [previousHistoryLength, setPreviousHistoryLength] = useState(0);
-  const [threadId, setThreadId] = useState<string>("");
+  const [threadId, setThreadId] = useState(() => randomUUID());
   const [selectedThreadId, setSelectedThreadId] = useState<string | undefined>(undefined);
+  const [workspaceFilesystemRoot, setWorkspaceFilesystemRoot] = useState("cuga_workspace");
   const leftSidebarRef = useRef<{ addConversation: (title: string) => void } | null>(null);
   // Initialize hasStartedChat from URL query parameter immediately
   const [hasStartedChat, setHasStartedChat] = useState(() => {
@@ -109,6 +111,10 @@ export function App() {
           setAgentKnowledgeEnabled(data.agent_level_knowledge_enabled ?? false);
           setSessionKnowledgeEnabled(data.session_level_knowledge_enabled ?? false);
           api.setKnowledgeAgentId(agentId);
+          const wfr = data.workspace_filesystem_root;
+          if (typeof wfr === "string" && wfr.trim()) {
+            setWorkspaceFilesystemRoot(wfr.trim());
+          }
         } else {
           setKnowledgeEnabled(false);
           setAgentKnowledgeEnabled(false);
@@ -266,9 +272,11 @@ export function App() {
               initialChatStarted={hasStartedChat}
               onThreadIdChange={setThreadId}
               externalThreadId={selectedThreadId}
+              initialThreadId={threadId}
               sessionDocsVersion={sessionDocsVersion}
               onSessionDocsChanged={() => setSessionDocsVersion((v) => v + 1)}
               knowledgeEnabled={sessionKnowledgeEnabled}
+              workspaceFilesystemRoot={workspaceFilesystemRoot}
             />
           </div>
           {hasStartedChat && (
@@ -277,6 +285,8 @@ export function App() {
                 isOpen={workspacePanelOpen}
                 onToggle={() => setWorkspacePanelOpen(!workspacePanelOpen)}
                 highlightedFile={highlightedFile}
+                threadId={threadId}
+                workspaceFilesystemRoot={workspaceFilesystemRoot}
               />
               <KnowledgeSidePanel
                 isOpen={knowledgePanelOpen}
@@ -299,6 +309,7 @@ export function App() {
           onAutocompleteOpen={() => setWorkspacePanelOpen(true)}
           onFileHover={setHighlightedFile}
           disabled={false}
+          threadId={threadId}
         />
         
         {/* Tour help button - welcome screen - DISABLED */}
