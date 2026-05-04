@@ -83,6 +83,22 @@ def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Op
     return tid or None
 
 
+def _resolve_path_under_cuga_workspace(user_path: str) -> Path:
+    """Resolve user_path to an absolute path; must stay under cuga_workspace."""
+    workspace_path = (Path(os.getcwd()) / "cuga_workspace").resolve()
+    ws = os.fspath(workspace_path)
+    if os.path.isabs(user_path):
+        resolved = os.path.abspath(user_path)
+    else:
+        resolved = os.path.abspath(os.path.join(ws, user_path))
+    candidate = Path(resolved)
+    try:
+        candidate.relative_to(workspace_path)
+    except (ValueError, RuntimeError) as e:
+        raise ValueError("Path outside workspace") from e
+    return candidate
+
+
 def _session_knowledge_collection(thread_id: str) -> str:
     return f"kb_sess_{re.sub(r'[^a-zA-Z0-9_]', '_', thread_id)}"
 
@@ -3164,14 +3180,9 @@ async def get_workspace_file(
                 raise HTTPException(status_code=415, detail="File is not a text file")
             return JSONResponse({"content": content, "path": str(path)})
 
-        file_path = Path(path)
-
-        # Security check: ensure the path is within cuga_workspace
         try:
-            file_path = file_path.resolve()
-            workspace_path = (Path(os.getcwd()) / "cuga_workspace").resolve()
-            file_path.relative_to(workspace_path)
-        except (ValueError, RuntimeError):
+            file_path = _resolve_path_under_cuga_workspace(path)
+        except ValueError:
             raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
 
         if not file_path.exists():
@@ -3234,17 +3245,9 @@ async def download_workspace_file(
                 headers={"Content-Disposition": f'attachment; filename="{dl_name}"'},
             )
 
-        workspace_path = (Path(os.getcwd()) / "cuga_workspace").resolve()
-        file_path = Path(path)
-        if not file_path.is_absolute():
-            file_path = (Path(os.getcwd()) / path).resolve()
-        else:
-            file_path = file_path.resolve()
-
-        # Security check: ensure the path is within cuga_workspace
         try:
-            file_path.relative_to(workspace_path)
-        except (ValueError, RuntimeError):
+            file_path = _resolve_path_under_cuga_workspace(path)
+        except ValueError:
             raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
 
         if not file_path.exists():
