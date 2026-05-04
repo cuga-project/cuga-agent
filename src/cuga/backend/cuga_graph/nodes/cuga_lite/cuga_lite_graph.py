@@ -55,9 +55,6 @@ import re
 import json
 import asyncio
 import inspect
-from dataclasses import asdict, is_dataclass
-from datetime import datetime
-from enum import Enum
 from pathlib import Path
 from typing import Any, Optional, Sequence, Dict, List, Tuple, Set
 from loguru import logger
@@ -99,6 +96,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
     normalize_assistant_text,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
+from cuga.backend.cuga_graph.nodes.cuga_lite.checkpoint_sanitizer import (
+    normalize_checkpoint_value as _normalize_checkpoint_value,
+    sanitize_cuga_lite_update as _sanitize_cuga_lite_update,
+)
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 from cuga.config import settings
@@ -323,96 +324,6 @@ def _clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str
     m = {**(meta or {})}
     m.pop("_empty_response_correction", None)
     return m
-
-
-def _normalize_checkpoint_value(value: Any) -> Any:
-    """Normalize msgpack-unsafe runtime values while preserving LangChain messages."""
-    if isinstance(value, BaseMessage):
-        return value
-
-    value_module = getattr(value.__class__, "__module__", "")
-    if value_module.startswith("numpy"):
-        if hasattr(value, "item") and callable(value.item):
-            try:
-                return _normalize_checkpoint_value(value.item())
-            except Exception:
-                pass
-        if hasattr(value, "tolist") and callable(value.tolist):
-            try:
-                return _normalize_checkpoint_value(value.tolist())
-            except Exception:
-                pass
-
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-
-    if isinstance(value, datetime):
-        return value.isoformat()
-
-    if isinstance(value, Enum):
-        return _normalize_checkpoint_value(value.value)
-
-    if isinstance(value, Path):
-        return str(value)
-
-    if isinstance(value, bytes):
-        try:
-            return value.decode("utf-8")
-        except UnicodeDecodeError:
-            return value.hex()
-
-    if hasattr(value, "model_dump") and callable(value.model_dump):
-        try:
-            return _normalize_checkpoint_value(value.model_dump())
-        except Exception:
-            pass
-
-    if hasattr(value, "dict") and callable(value.dict):
-        try:
-            return _normalize_checkpoint_value(value.dict())
-        except Exception:
-            pass
-
-    if is_dataclass(value) and not isinstance(value, type):
-        return _normalize_checkpoint_value(asdict(value))
-
-    if isinstance(value, dict):
-        return {
-            _normalize_checkpoint_value(key): _normalize_checkpoint_value(item) for key, item in value.items()
-        }
-
-    if isinstance(value, list):
-        return [_normalize_checkpoint_value(item) for item in value]
-
-    if isinstance(value, tuple):
-        return tuple(_normalize_checkpoint_value(item) for item in value)
-
-    if isinstance(value, set):
-        return [_normalize_checkpoint_value(item) for item in value]
-
-    if hasattr(value, "__dict__"):
-        try:
-            return _normalize_checkpoint_value(vars(value))
-        except Exception:
-            pass
-
-    return str(value)
-
-
-def _sanitize_cuga_lite_update(update: Dict[str, Any]) -> Dict[str, Any]:
-    """Sanitize the mutable parts of CugaLite graph state before checkpoint writes."""
-    sanitized = dict(update)
-    for key in (
-        "variables_storage",
-        "cuga_lite_metadata",
-        "tool_calls",
-        "task_todos",
-        "metrics",
-        "last_summarization_metrics",
-    ):
-        if key in sanitized:
-            sanitized[key] = _normalize_checkpoint_value(sanitized[key])
-    return sanitized
 
 
 def _get_knowledge_tool_scope_context(
