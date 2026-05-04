@@ -43,7 +43,7 @@ e2b_sandbox_max_age = 86400  # Max age for "single" mode in seconds (24h, 0 = di
 e2b_sandbox_ttl_buffer = 60  # Safety buffer in seconds before E2B timeout (default: 60s)
 e2b_cleanup_on_create = true  # Run periodic cleanup when creating new sandboxes
 e2b_cleanup_frequency = 0  # Check all sandboxes every N get_or_create calls (0 = only on create)
-message_window_limit = 100  # Maximum number of messages to keep in history (sliding window)
+message_window_limit = 500  # Maximum number of messages to keep in history (sliding window)
 max_input_length = 5000  # Maximum characters allowed in user input (prevents abuse)
 sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.

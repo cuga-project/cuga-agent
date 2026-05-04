@@ -83,8 +83,19 @@ def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Op
     return tid or None
 
 
+def _strip_redundant_cuga_workspace_prefix(user_path: str) -> str:
+    """Older tree API used paths like ``cuga_workspace/foo``; normalize to ``foo``."""
+    p = (user_path or "").strip().replace("\\", "/")
+    while p.startswith("cuga_workspace/"):
+        p = p[len("cuga_workspace/") :]
+    if p == "cuga_workspace":
+        p = ""
+    return p.strip() or "."
+
+
 def _resolve_path_under_cuga_workspace(user_path: str) -> Path:
     """Resolve user_path to an absolute path; must stay under cuga_workspace."""
+    user_path = _strip_redundant_cuga_workspace_prefix(user_path)
     workspace_path = (Path(os.getcwd()) / "cuga_workspace").resolve()
     ws = os.fspath(workspace_path)
     if os.path.isabs(user_path):
@@ -3076,44 +3087,30 @@ async def get_workspace_tree(
     """Endpoint to retrieve the workspace folder tree."""
     try:
         tid = _workspace_thread_id(request, thread_id)
-        hdr_tid = (request.headers.get("x-thread-id") or "").strip() or None
-        q_tid = (thread_id or "").strip() or None
         sandbox_mode = workspace_tree_is_sandbox_backed()
-        logger.debug(
-            "GET /api/workspace/tree: sandbox_backed={} thread_id_resolved={!r} "
-            "query_thread_id={!r} header_x_thread_id={!r}",
-            sandbox_mode,
-            tid,
-            q_tid,
-            hdr_tid,
-        )
         if sandbox_mode:
             if not tid:
-                logger.debug(
-                    "GET /api/workspace/tree: empty tree (sandbox mode requires thread_id query param or X-Thread-ID)"
-                )
                 return JSONResponse({"tree": []})
             try:
                 tree = await fetch_sandbox_workspace_tree(tid)
             except Exception as e:
                 logger.warning(f"Sandbox workspace tree failed: {e}")
                 raise HTTPException(status_code=503, detail="Sandbox workspace unavailable") from e
-            logger.debug("GET /api/workspace/tree: sandbox tree built, top_level_nodes={}", len(tree))
             return JSONResponse({"tree": tree})
 
         workspace_path = Path(os.getcwd()) / "cuga_workspace"
 
         if not workspace_path.exists():
             workspace_path.mkdir(parents=True, exist_ok=True)
-            logger.debug(
-                "GET /api/workspace/tree: empty tree (created local dir {})",
-                workspace_path,
-            )
             return JSONResponse({"tree": []})
 
         def build_tree(path: Path, base_path: Path) -> dict:
-            """Recursively build file tree."""
-            relative_path = str(path.relative_to(base_path.parent))
+            """Recursively build file tree.
+
+            Paths must be relative to ``cuga_workspace`` (not include a ``cuga_workspace/``
+            prefix) so ``_resolve_path_under_cuga_workspace`` matches the file on disk.
+            """
+            relative_path = str(path.relative_to(base_path))
 
             if path.is_file():
                 return {"name": path.name, "path": relative_path, "type": "file"}
@@ -3134,12 +3131,6 @@ async def get_workspace_tree(
             for item in sorted(workspace_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
             if not item.name.startswith('.')
         ]
-        logger.debug(
-            "GET /api/workspace/tree: local mode cwd={} workspace_path={} visible_entries={}",
-            os.getcwd(),
-            workspace_path.resolve(),
-            len(visible),
-        )
         for item in visible:
             tree.append(build_tree(item, workspace_path))
 
