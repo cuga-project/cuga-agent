@@ -40,6 +40,7 @@ class ToolGuardManager:
         self.langchain_tools: List[StructuredTool] = []  # Store LangChain tools
         self.tools_dict: Dict[str, Any] = {}  # Store OpenAPI dict for ToolGuard
         self._initialized = False
+        self._init_lock = asyncio.Lock()
 
         # Validate tool_provider upfront
         if agent.tool_provider is None:
@@ -75,16 +76,21 @@ class ToolGuardManager:
     async def initialize(
         self,
     ) -> None:
-        logger.info("Initializing ToolGuardManager...")
+        async with self._init_lock:
+            if self._initialized:
+                logger.debug("ToolGuardManager already initialized, skipping")
+                return
+            
+            logger.info("Initializing ToolGuardManager...")
 
-        # Get all LangChain tools from the tool provider
-        self.langchain_tools = await self.tool_provider.get_all_tools()
+            # Get all LangChain tools from the tool provider
+            self.langchain_tools = await self.tool_provider.get_all_tools()
 
-        # Convert LangChain tools to OpenAPI dict using ToolGuard's utility
-        self.tools_dict = langchain_tools_to_openapi(self.langchain_tools)
+            # Convert LangChain tools to OpenAPI dict using ToolGuard's utility
+            self.tools_dict = langchain_tools_to_openapi(self.langchain_tools)
 
-        self._initialized = True
-        logger.info(f"✅ ToolGuardManager initialized with {len(self.langchain_tools)} tools")
+            self._initialized = True
+            logger.info(f"✅ ToolGuardManager initialized with {len(self.langchain_tools)} tools")
 
     def _ensure_initialized(self) -> None:
         """Ensure manager is initialized, raise RuntimeError if not."""
