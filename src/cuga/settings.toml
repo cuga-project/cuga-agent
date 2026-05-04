@@ -30,6 +30,7 @@ lite_mode = true  # Enable CugaLite for simple API tasks (faster execution)
 lite_mode_tool_threshold = 70  # Route to CugaLite if app has fewer than this many tools
 force_lite_mode_apps = ["knowledge"]  # List of app names to force into lite mode (e.g., ["app1", "app2"])
 shortlisting_tool_threshold = 35  # Enable find_tools if total number of tools exceeds this threshold
+cuga_lite_enable_few_shots = true  # MCP few-shots: prompt block + few-shot chat prefix (set false to disable)
 enable_todos = false  # Enable todos feature for complex multi-step task management
 reflection_enabled = false
 save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
@@ -46,6 +47,10 @@ max_input_length = 5000  # Maximum characters allowed in user input (prevents ab
 sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
+# bind_tools: generic default is none; resolved model ``gpt-oss-20b`` uses model_runtime_profile.py
+cuga_lite_bind_tools_mode = "none"
+cuga_lite_bind_tools_apps = []  # App names when mode=apps (e.g. ["crm", "slack"])
+cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools StructuredTool alongside all/apps
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false

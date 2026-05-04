@@ -6,18 +6,18 @@ ToolGuide policies with policy_code.
 """
 
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Sequence, Tuple
 from types import SimpleNamespace
-from loguru import logger
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
+from loguru import logger
 from toolguard.runtime.data_types import (
     FileTwin,
     PolicyViolationException,
     RuntimeDomain,
     ToolGuardCodeResult,
+    ToolGuardsCodeGenerationResult,
     ToolGuardSpec,
     ToolGuardSpecItem,
-    ToolGuardsCodeGenerationResult,
 )
 from toolguard.runtime.runtime import load_toolguards_from_memory
 
@@ -589,7 +589,7 @@ class ToolGuardRuntime:
             Normalized name safe for use as Python identifier with hash suffix
         """
         import hashlib
-        
+
         # Create readable normalized portion
         normalized = "".join(
             ch if ch.isalnum() else "_" for ch in name.lower()
@@ -697,7 +697,7 @@ class ToolGuardRuntime:
 
         try:
             args_obj = SimpleNamespace(**arguments)
-            await runtime.guard_toolcall(
+            await self._runtime.guard_toolcall(
                 tool_name=function_name,
                 args=arguments | {"args": args_obj},
                 delegate=self.invoker,

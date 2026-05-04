@@ -5,6 +5,7 @@ This module provides integration between toolguard's runtime validation
 and CUGA's tool provider system.
 """
 
+import asyncio
 from typing import Any, Dict, Optional, Type, TypeVar
 from loguru import logger
 
@@ -44,10 +45,25 @@ class ToolGuardInvoker(IToolInvoker):
         
         Returns:
             Dictionary mapping tool names to tool instances
+            
+        Raises:
+            ValueError: If duplicate tool names are detected
         """
         if self._tools_cache is None:
             tools_list = await self.tool_provider.get_all_tools()
-            self._tools_cache = {tool.name: tool for tool in tools_list}
+            
+            # Check for duplicate tool names before building cache
+            tools_map: Dict[str, Any] = {}
+            for tool in tools_list:
+                if tool.name in tools_map:
+                    raise ValueError(
+                        f"Duplicate tool name detected: '{tool.name}'. "
+                        f"Tool names must be unique across all providers to ensure "
+                        f"correct routing of guards to tools."
+                    )
+                tools_map[tool.name] = tool
+            
+            self._tools_cache = tools_map
             logger.debug(f"Cached {len(self._tools_cache)} tools")
         return self._tools_cache
     
@@ -106,6 +122,9 @@ class ToolGuardInvoker(IToolInvoker):
             # Re-raise ValueError as-is (tool not found)
             raise
         except Exception as e:
+            # Re-raise CancelledError immediately to preserve cancellation
+            if isinstance(e, asyncio.CancelledError):
+                raise
             logger.error(f"Failed to invoke tool '{toolname}': {e}")
             raise RuntimeError(
                 f"Tool invocation failed for '{toolname}': {str(e)}"
