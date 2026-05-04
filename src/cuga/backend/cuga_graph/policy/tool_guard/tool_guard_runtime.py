@@ -697,7 +697,7 @@ class ToolGuardRuntime:
 
         try:
             args_obj = SimpleNamespace(**arguments)
-            await self._runtime.guard_toolcall(
+            await runtime.guard_toolcall(
                 tool_name=function_name,
                 args=arguments | {"args": args_obj},
                 delegate=self.invoker,
