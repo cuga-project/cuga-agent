@@ -75,6 +75,7 @@ def _apply_demo_skills_env() -> None:
     os.environ["DYNACONF_SKILLS__ENABLED"] = "true"
     os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] = "true"
     os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "true"
+    os.environ["DYNACONF_ADVANCED_FEATURES__REFLECTION_ENABLED"] = "true"
 
 
 def _apply_local_demo_workspace_env() -> None:

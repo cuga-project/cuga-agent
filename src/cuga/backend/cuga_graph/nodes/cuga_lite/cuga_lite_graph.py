@@ -1100,6 +1100,7 @@ def create_cuga_lite_graph(
         tools_context_dict,
         base_special_instructions,
         task_todos_ref: List[Dict[str, str]],
+        lc_bind_tools_meta: Dict[str, Any] = None,
     ):
         """Factory to create prepare node with closure over tool provider and config."""
 
@@ -1267,7 +1268,8 @@ def create_cuga_lite_graph(
                     else find_tool.func
                 )
                 tools_context_dict['find_tools'] = make_tool_awaitable(find_tool_func)
-                tools_context_dict["_lc_bind_tools_find_tools"] = find_tool
+                if lc_bind_tools_meta is not None:
+                    lc_bind_tools_meta["_lc_bind_tools_find_tools"] = find_tool
                 logger.info(
                     "Exposing only find_tools in prompt (all tools + find_tools available in execution context)"
                 )
@@ -1626,9 +1628,10 @@ def create_cuga_lite_graph(
                             logger.info(f"Knowledge awareness injected: {len(knowledge_block)} chars")
                 except Exception as e:
                     logger.debug(f"Knowledge awareness injection skipped: {e}")
-            tools_context_dict["_lc_bind_tools_overlay_structured_tools"] = [
-                t for t in (tools_for_prompt or []) if getattr(t, "name", None)
-            ]
+            if lc_bind_tools_meta is not None:
+                lc_bind_tools_meta["_lc_bind_tools_overlay_structured_tools"] = [
+                    t for t in (tools_for_prompt or []) if getattr(t, "name", None)
+                ]
 
             # Create prompt dynamically
             dynamic_prompt = prompt
@@ -2282,8 +2285,11 @@ def create_cuga_lite_graph(
     # Mutable list shared by prepare (create_update_todos) and call_model (system prompt section).
     task_todos_ref: List[Dict[str, str]] = []
 
-    # Create mutable tools context that will be populated by prepare_node
+    # Execution context: callable tools for the sandbox. Populated by prepare_node.
     tools_context = {}
+    # LangChain bind-tools metadata: _lc_bind_tools_* entries for resolve_model_with_bind_tools.
+    # Kept separate so it never leaks into context_locals used by the code executor.
+    lc_bind_tools_meta: Dict[str, Any] = {}
 
     # Create node instances using factories
     prepare_node = create_prepare_node(
@@ -2293,13 +2299,14 @@ def create_cuga_lite_graph(
         tools_context,
         special_instructions,
         task_todos_ref,
+        lc_bind_tools_meta=lc_bind_tools_meta,
     )
     call_model_node = create_call_model_node(
         model,
         callbacks,
         task_todos_ref,
         model_settings=model_settings,
-        tools_context_ref=tools_context,
+        tools_context_ref=lc_bind_tools_meta,
         base_tool_provider=tool_provider,
     )
     sandbox_node = create_sandbox_node(tools_context, thread_id, apps_list)
