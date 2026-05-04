@@ -97,45 +97,12 @@ def sandbox_paths_to_tree(dir_lines: list[str], file_lines: list[str]) -> list[d
     return _children_nodes(tuple(), dir_rels, file_rels)
 
 
-def _execution_debug_blob(ex: Any) -> str:
-    parts: list[str] = []
-    exit_code = getattr(ex, "exit_code", None)
-    if exit_code is not None:
-        parts.append(f"exit_code={exit_code}")
-    err = getattr(ex, "error", None)
-    if err is not None:
-        parts.append(f"error={err!r}")
-    logs = getattr(ex, "logs", None)
-    if logs is not None and getattr(logs, "stderr", None):
-        stderr = "".join(getattr(m, "text", "") for m in logs.stderr)
-        if stderr.strip():
-            parts.append(f"stderr={stderr.strip()[:400]!r}")
-    stdout_preview = (ex.text if hasattr(ex, "text") else "")[:300].replace("\n", "\\n")
-    if stdout_preview.strip():
-        parts.append(f"stdout_preview={stdout_preview!r}")
-    return " ".join(parts) if parts else "(no execution details)"
-
-
 async def _find_paths(commands: Any, type_flag: str) -> list[str]:
     q = shlex.quote(SANDBOX_WORKSPACE_ROOT)
     cmd = f"find {q} -type {type_flag} 2>/dev/null | sort"
     ex = await commands.run(cmd)
     text = ex.text if hasattr(ex, "text") else ""
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    logger.debug(
-        "sandbox find: type={} cmd={} lines={} {}",
-        type_flag,
-        cmd,
-        len(lines),
-        _execution_debug_blob(ex),
-    )
-    if not lines and type_flag == "d":
-        logger.debug(
-            "sandbox find returned no directories for {}; if unexpected, check OpenSandbox find output: {}",
-            SANDBOX_WORKSPACE_ROOT,
-            _execution_debug_blob(ex),
-        )
-    return lines
+    return [ln.strip() for ln in text.splitlines() if ln.strip()]
 
 
 async def fetch_sandbox_workspace_tree(thread_id: Optional[str]) -> list[dict[str, Any]]:
@@ -144,27 +111,10 @@ async def fetch_sandbox_workspace_tree(thread_id: Optional[str]) -> list[dict[st
     executor = CodeExecutor._get_opensandbox_executor()
     interpreter = await executor.get_interpreter_for_thread(thread_id)
     sandbox = interpreter.sandbox
-    sandbox_id = getattr(sandbox, "id", None)
     commands = sandbox.commands
-    logger.debug(
-        "sandbox workspace tree: thread_id={!r} sandbox_id={!r} root={}",
-        thread_id,
-        sandbox_id,
-        SANDBOX_WORKSPACE_ROOT,
-    )
     dir_lines = await _find_paths(commands, "d")
     file_lines = await _find_paths(commands, "f")
     tree = sandbox_paths_to_tree(dir_lines, file_lines)
-    logger.debug(
-        "sandbox workspace tree: thread_id={!r} sandbox_id={!r} find_dirs={} find_files={} top_level_nodes={} "
-        "sample_dir_lines={}",
-        thread_id,
-        sandbox_id,
-        len(dir_lines),
-        len(file_lines),
-        len(tree),
-        dir_lines[:5],
-    )
     if not tree and (dir_lines or file_lines):
         logger.warning(
             "sandbox workspace tree: find returned paths but tree is empty — sample file_lines={} dir_lines={}",

@@ -46,7 +46,7 @@ class SkillRegistry:
             setup_script = "\n".join(setup_lines)
             parts.append(
                 "⚠️ STEP 1 — INSTALL REQUIREMENTS (MANDATORY — your very first code block, no exceptions):\n"
-                "Before reading any skill files, before any other action, run the following installs "
+                "Before opening companion files, before any other action, run the following installs "
                 "in a single isolated ```python``` code block and print the output. "
                 "Do NOT skip or defer this step even if you think the package might already be present.\n\n"
                 f"{setup_script}"
@@ -55,10 +55,18 @@ class SkillRegistry:
 
         skill_dir = f"/tmp/cuga_workspace/skills/{entry.name}"
         parts.append(
-            f"SKILL FILES are available inside the sandbox at `{skill_dir}/` "
-            f"(scripts, companion docs, etc.). Use `await read_file('<path>')` to read files; "
-            f"`await write_file('<path>', content)` for scripts or small generated text; "
+            "The full skill instructions are already included below from `load_skill`; "
+            "do NOT re-read `SKILL.md`. Companion files are available inside the sandbox at "
+            f"`{skill_dir}/` (scripts, templates, docs, etc.). Use `await read_file('<path>')` only for "
+            "those companion files when the instructions require them; use "
             f"`await run_command('ls {skill_dir}')` or `await list_files('{skill_dir}')` to explore."
+        )
+        parts.append("")
+        parts.append(
+            "What this loaded skill content may contain: trigger/usage rules, quick references, "
+            "task workflows, companion scripts or docs, design or implementation guidance, QA/verification "
+            "steps, export/conversion instructions, and dependency requirements. Treat those sections as the "
+            "playbook to follow."
         )
         parts.append("")
         parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{entry.body}")

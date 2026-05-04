@@ -620,6 +620,8 @@ class CugaLiteState(BaseModel):
     - prepared_prompt: str (dynamically generated prompt)
     - reflection_apps: list of dicts (name, type, description) for reflection prompt
     - reflection_enable_find_tools: whether find_tools shortlisting was enabled
+    - reflection_skills_enabled: whether skills were available to the executor
+    - reflection_skills_prompt_section: rendered skills registry block for reflection
     - mcp_few_shot_messages: normalized role/content few-shot messages injected before live chat
     - task_todos: latest todo list from create_update_todos (injected as Current Plan on the system prompt)
     """
@@ -648,6 +650,8 @@ class CugaLiteState(BaseModel):
     prepared_prompt: Optional[str] = None
     reflection_apps: List[Dict[str, Any]] = Field(default_factory=list)
     reflection_enable_find_tools: bool = False
+    reflection_skills_enabled: bool = False
+    reflection_skills_prompt_section: str = ""
     mcp_few_shot_messages: List[Dict[str, str]] = Field(default_factory=list)
     task_todos: Optional[List[Dict[str, Any]]] = Field(default=None)
     script: Optional[str] = None
@@ -861,6 +865,19 @@ def _compose_find_tools_shortlister_query(query: str, initial_user_message: Opti
     if not init:
         return q
     return f"Query: {q}\nTask context (initial user message): {init}"
+
+
+def _web_search_enabled() -> bool:
+    return bool(getattr(settings.advanced_features, "enable_web_search", False))
+
+
+def _ensure_web_app(apps: List[Any], all_apps: List[Any]) -> List[Any]:
+    if not _web_search_enabled() or any(getattr(app, "name", None) == "web" for app in apps):
+        return apps
+    web_app = next((app for app in all_apps if getattr(app, "name", None) == "web"), None)
+    if web_app:
+        return [*apps, web_app]
+    return apps
 
 
 async def create_find_tools_tool(
@@ -1191,12 +1208,15 @@ def create_cuga_lite_graph(
                 force_lite_apps = getattr(settings.advanced_features, 'force_lite_mode_apps', [])
                 if force_lite_apps:
                     allowed_apps_names = list(set([state.sub_task_app] + force_lite_apps))
+                    if _web_search_enabled():
+                        allowed_apps_names.append("web")
                     # call authenticate_apps for the allowed apps
                     if settings.advanced_features.benchmark == "appworld":
                         await TaskAnalyzer.call_authenticate_apps(force_lite_apps)
                     apps_for_prompt = [app for app in all_apps if app.name in allowed_apps_names]
                 else:
                     apps_for_prompt = [app for app in all_apps if app.name == state.sub_task_app]
+                    apps_for_prompt = _ensure_web_app(apps_for_prompt, all_apps)
                 # Get only tools for this specific app
                 tools_for_execution = []
                 for app in apps_for_prompt:
@@ -1215,6 +1235,7 @@ def create_cuga_lite_graph(
                     for app in state.api_intent_relevant_apps
                     if hasattr(app, 'type') and app.type == 'api'
                 ]
+                apps_for_prompt = _ensure_web_app(apps_for_prompt, all_apps)
                 # Get tools only for the identified apps
                 tools_for_execution = []
                 for app in apps_for_prompt:
@@ -1234,7 +1255,7 @@ def create_cuga_lite_graph(
                     app_tools = await base_tool_provider.get_tools(app.name)
                     app_to_tools_map[app.name] = app_tools
 
-            enable_find_tools = total_tool_count > shortlisting_threshold
+            enable_find_tools = total_tool_count > shortlisting_threshold or _web_search_enabled()
 
             if enable_find_tools:
                 logger.info(
@@ -1684,6 +1705,8 @@ def create_cuga_lite_graph(
                     "cuga_lite_metadata": state.cuga_lite_metadata,
                     "reflection_apps": reflection_apps_snapshot,
                     "reflection_enable_find_tools": enable_find_tools,
+                    "reflection_skills_enabled": skills_enabled,
+                    "reflection_skills_prompt_section": skills_prompt_section,
                     "mcp_few_shot_messages": few_shot_examples,
                 },
             )
@@ -2200,6 +2223,8 @@ def create_cuga_lite_graph(
                                 "coder_agent_output": output,
                                 "apps": state.reflection_apps or [],
                                 "enable_find_tools": state.reflection_enable_find_tools,
+                                "skills_enabled": state.reflection_skills_enabled,
+                                "skills_prompt_section": state.reflection_skills_prompt_section,
                                 "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
                             }
                         )

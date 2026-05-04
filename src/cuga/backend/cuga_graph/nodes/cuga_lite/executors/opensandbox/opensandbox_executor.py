@@ -132,7 +132,6 @@ class OpenSandboxExecutor(RemoteExecutor):
         if existing is not None:
             try:
                 await existing.sandbox.commands.run("true")
-                logger.debug(f"[OpenSandboxExecutor] Reusing interpreter for thread={key}")
                 return existing
             except Exception:
                 logger.debug(f"[OpenSandboxExecutor] Interpreter for thread={key} is dead, recreating")
