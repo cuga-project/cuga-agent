@@ -689,6 +689,12 @@ export const streamViaBackground = async (
           bgResp.message || "Background error"
         );
         window.aiSystemInterface?.setProcessingComplete?.(true);
+        try {
+          (completionResolver as any)?.();
+        } catch (e) {
+          // noop
+        }
+        (window as any).chrome.runtime.onMessage.removeListener(listener);
       }
     })
     .catch((err: any) => {
@@ -699,6 +705,13 @@ export const streamViaBackground = async (
           `An error occurred: ${err.message || "Failed to dispatch query"}`
         );
         window.aiSystemInterface.setProcessingComplete?.(true);
+      }
+      try {
+        (completionResolver as any)?.();
+      } catch (e) {
+        // noop
+      }
+      (window as any).chrome.runtime.onMessage.removeListener(listener);
       }
     });
   // Wait until the background signals completion via the listener
