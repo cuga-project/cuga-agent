@@ -31,22 +31,30 @@ class ToolGuardRuntime:
     Runtime system for executing tool guards during tool invocation.
 
     This class:
-    1. Initializes a ToolGuardInvoker for tool execution
-    2. Loads all ToolGuide policies with policy_code
-    3. Creates a mapping: tool_name -> List[ToolGuide with code]
-    4. Prebuilds umbrella guard modules per tool
-    5. Executes guard validation through toolguard runtime
+    1. Manages policy storage lifecycle (connect/disconnect)
+    2. Initializes a ToolGuardInvoker for tool execution
+    3. Loads all ToolGuide policies with policy_code
+    4. Creates a mapping: tool_name -> List[ToolGuide with code]
+    5. Prebuilds umbrella guard modules per tool
+    6. Executes guard validation through toolguard runtime
     """
 
-    def __init__(self, tool_provider, policy_storage: PolicyStorage) -> None:
+    def __init__(
+        self,
+        tool_provider,
+        enable_policies: bool = False,
+        policy_storage: Optional[PolicyStorage] = None
+    ) -> None:
         """
         Initialize the ToolGuardRuntime.
 
         Args:
             tool_provider: CUGA's tool provider instance
-            policy_storage: PolicyStorage instance to load policies from
+            enable_policies: Whether to enable policy enforcement
+            policy_storage: Optional PolicyStorage instance (will be created if None and enable_policies=True)
         """
         self.tool_provider = tool_provider
+        self.enable_policies = enable_policies
         self.policy_storage = policy_storage
         self.invoker = ToolGuardInvoker(tool_provider)
         self.tool_to_guards: Dict[str, List[ToolGuide]] = {}
@@ -54,32 +62,89 @@ class ToolGuardRuntime:
         self._runtimes_by_app: Dict[str, Any] = {}
         self._runtime_domains_by_app: Dict[str, RuntimeDomain] = {}
         self._initialized = False
-        logger.debug("Created ToolGuardRuntime instance")
+        self._policy_storage_owned = False  # Track if we created the storage
+        logger.debug(f"Created ToolGuardRuntime instance (enable_policies={enable_policies})")
 
     async def initialize(self) -> None:
         """
-        Initialize the runtime by loading all ToolGuide policies with code.
+        Initialize the runtime by connecting to policy storage and loading policies.
 
         This method:
-        1. Fetches all ToolGuide policies from storage
-        2. Filters for policies that have tool_guards with policy_code
-        3. Builds the tool_to_guards mapping
-        4. Per-app runtimes will be lazily loaded on first use
+        1. Connects to policy storage if policies are enabled
+        2. Fetches all ToolGuide policies from storage
+        3. Filters for policies that have tool_guards with policy_code
+        4. Builds the tool_to_guards mapping
+        5. Per-app runtimes will be lazily loaded on first use
+        
+        Raises:
+            RuntimeError: If policy system is enabled but storage connection fails (fail-closed)
         """
         logger.info("Initializing ToolGuardRuntime...")
         self._reset_state()
 
-        policies = await self.policy_storage.list_policies(
-            policy_type=PolicyType.TOOL_GUIDE, enabled_only=True
-        )
-        logger.debug(f"Found {len(policies)} ToolGuide policies")
+        # Connect to policy storage if policies are enabled
+        if self.enable_policies:
+            if self.policy_storage is None:
+                # Create policy storage if not provided
+                from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+                self.policy_storage = PolicyStorage()
+                self._policy_storage_owned = True
+                logger.debug("Created PolicyStorage instance")
+            
+            # Validate policy_storage has required interface
+            self._validate_policy_storage()
+            
+            try:
+                await self.policy_storage.connect()
+                logger.info("✅ Connected policy storage for ToolGuardRuntime")
+            except Exception as e:
+                logger.error(f"Failed to connect policy storage: {e}")
+                # Fail closed: if policy enforcement is enabled but storage fails,
+                # don't allow the service to start without policy validation
+                raise RuntimeError(
+                    f"Policy system is enabled but PolicyStorage.connect() failed: {e}"
+                ) from e
+        
+        # Load policies if storage is available
+        if self.policy_storage is not None:
+            policies = await self.policy_storage.list_policies(
+                policy_type=PolicyType.TOOL_GUIDE, enabled_only=True
+            )
+            logger.debug(f"Found {len(policies)} ToolGuide policies")
 
-        # Filter to ensure we only have ToolGuide instances
-        tool_guide_policies = [p for p in policies if isinstance(p, ToolGuide)]
-        self._build_tool_to_guards_mapping(tool_guide_policies)
+            # Filter to ensure we only have ToolGuide instances
+            tool_guide_policies = [p for p in policies if isinstance(p, ToolGuide)]
+            self._build_tool_to_guards_mapping(tool_guide_policies)
+        else:
+            logger.debug("No policy storage available, skipping policy loading")
 
         self._initialized = True
         self._log_initialization_summary()
+    
+    def _validate_policy_storage(self) -> None:
+        """
+        Validate that policy_storage has the required interface.
+        
+        Raises:
+            ValueError: If policy_storage doesn't implement required methods
+        """
+        if self.policy_storage is None:
+            return
+        
+        required_methods = ['connect', 'disconnect', 'list_policies', 'get_policy']
+        missing_methods = []
+        
+        for method in required_methods:
+            if not hasattr(self.policy_storage, method):
+                missing_methods.append(method)
+        
+        if missing_methods:
+            raise ValueError(
+                f"policy_storage must implement the following methods: {', '.join(missing_methods)}. "
+                f"Provided object type: {type(self.policy_storage).__name__}"
+            )
+        
+        logger.debug("✅ Policy storage interface validation passed")
 
     def _reset_state(self) -> None:
         """Reset internal state for reinitialization."""
@@ -750,7 +815,7 @@ class ToolGuardRuntime:
         return self.tool_to_guards.get(tool_name, [])
 
     async def shutdown(self) -> None:
-        """Release in-memory ToolGuard runtime resources."""
+        """Release in-memory ToolGuard runtime resources and disconnect policy storage."""
         # Clean up all per-app runtimes
         for app_name, runtime in self._runtimes_by_app.items():
             if runtime is not None:
@@ -760,5 +825,15 @@ class ToolGuardRuntime:
                     logger.exception(f"Error while shutting down ToolGuard runtime for app '{app_name}'")
         self._runtimes_by_app = {}
         self._runtime_domains_by_app = {}
+        
+        # Disconnect policy storage if we own it
+        if self.policy_storage is not None and self._policy_storage_owned:
+            try:
+                await self.policy_storage.disconnect()
+                logger.debug("Disconnected policy storage")
+            except Exception as e:
+                logger.warning(f"Error disconnecting policy storage during shutdown: {e}")
+            self.policy_storage = None
+        
         self._initialized = False
         logger.debug("ToolGuardRuntime shutdown complete")

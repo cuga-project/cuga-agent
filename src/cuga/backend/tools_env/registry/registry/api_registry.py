@@ -29,7 +29,14 @@ class ApiRegistry:
     interacting with the mcp manager
     """
 
-    def __init__(self, client: MCPManager, policy_storage=None):
+    def __init__(self, client: MCPManager, enable_policies: bool = False):
+        """
+        Initialize ApiRegistry.
+        
+        Args:
+            client: MCPManager instance for tool management
+            enable_policies: Whether to enable policy-based tool validation
+        """
         logger.info("ApiRegistry: Initializing.")
         self.mcp_client = client
         self.auth_manager = None
@@ -37,9 +44,10 @@ class ApiRegistry:
         self._init_tavily_if_enabled()
         
         # ToolGuardRuntime support for policy-based tool validation
-        self.policy_storage = policy_storage
+        # ToolGuardRuntime now manages its own policy storage lifecycle
         self.tool_guard_runtime = None
         self._tool_guard_initialized = False
+        self._enable_policies = enable_policies
 
     def _init_tavily_if_enabled(self):
         """Initialize Tavily client if web search is enabled."""
@@ -74,25 +82,25 @@ class ApiRegistry:
         Initialize ToolGuardRuntime after tools are loaded.
         
         This is called after load_tools() to ensure both tools and policies are available.
+        ToolGuardRuntime now manages its own policy storage lifecycle.
         """
         if self._tool_guard_initialized:
             return
         
         self._tool_guard_initialized = True
         
-        if self.policy_storage is None:
-            logger.debug("ToolGuardRuntime: No policy storage provided, skipping initialization")
+        if not self._enable_policies:
+            logger.debug("ToolGuardRuntime: Policy enforcement disabled, skipping initialization")
             return
         
         try:
             from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
             
-            # Note: tool_provider is only needed if guards invoke tools via the invoker
-            # For most guards that just validate arguments, it's not used
-            # We pass self.mcp_client which can be wrapped if needed
+            # ToolGuardRuntime now manages policy storage internally
+            # We just pass enable_policies flag and it handles the rest
             self.tool_guard_runtime = ToolGuardRuntime(
                 tool_provider=self.mcp_client,
-                policy_storage=self.policy_storage
+                enable_policies=self._enable_policies
             )
             
             await self.tool_guard_runtime.initialize()
@@ -111,6 +119,16 @@ class ApiRegistry:
             raise RuntimeError(
                 f"ToolGuardRuntime failed to initialize. Policy enforcement cannot be bypassed. Error: {e}"
             ) from e
+    
+    async def cleanup(self):
+        """Cleanup resources including ToolGuardRuntime."""
+        if self.tool_guard_runtime is not None:
+            try:
+                await self.tool_guard_runtime.shutdown()
+                logger.debug("ToolGuardRuntime shutdown complete")
+            except Exception as e:
+                logger.warning(f"Error shutting down ToolGuardRuntime: {e}")
+            self.tool_guard_runtime = None
 
     async def show_applications(self) -> List[AppDefinition]:
         """Lists application names and their descriptions."""

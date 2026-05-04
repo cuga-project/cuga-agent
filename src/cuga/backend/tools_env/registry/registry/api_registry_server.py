@@ -141,23 +141,8 @@ async def _get_or_create_registry(
 
     manager = MCPManager(config=services)
     
-    # Get policy storage if policy system is enabled
-    policy_storage = None
-    if settings.policy.enabled:
-        from cuga.backend.cuga_graph.policy.storage import PolicyStorage
-        policy_storage = PolicyStorage()
-        try:
-            await policy_storage.connect()
-            logger.info("✅ Connected policy storage for ToolGuardRuntime")
-        except Exception as e:
-            logger.error(f"Failed to connect policy storage: {e}")
-            # Fail closed: if policy enforcement is enabled but storage fails,
-            # don't boot the registry unguarded
-            raise RuntimeError(
-                f"Policy system is enabled but PolicyStorage.connect() failed: {e}"
-            ) from e
-    
-    reg = ApiRegistry(client=manager, policy_storage=policy_storage)
+    # ApiRegistry now manages policy storage lifecycle through ToolGuardRuntime
+    reg = ApiRegistry(client=manager, enable_policies=settings.policy.enabled)
     try:
         await reg.start_servers()
     except Exception:
@@ -167,12 +152,11 @@ async def _get_or_create_registry(
         except Exception as cleanup_error:
             logger.warning(f"Error shutting down manager during cleanup: {cleanup_error}")
         
-        # Clean up policy_storage if start_servers fails
-        if policy_storage is not None:
-            try:
-                await policy_storage.disconnect()
-            except Exception as cleanup_error:
-                logger.warning(f"Error disconnecting policy storage during cleanup: {cleanup_error}")
+        # Clean up registry resources (including ToolGuardRuntime/policy storage)
+        try:
+            await reg.cleanup()
+        except Exception as cleanup_error:
+            logger.warning(f"Error cleaning up registry during cleanup: {cleanup_error}")
         raise
 
     agent_registries[agent_id] = (manager, reg)
@@ -199,23 +183,8 @@ async def lifespan(app: FastAPI):
         services = load_service_configs(str(config_file))
         mcp_manager = MCPManager(config=services)
         
-        # Get policy storage if policy system is enabled
-        policy_storage = None
-        if settings.policy.enabled:
-            try:
-                from cuga.backend.cuga_graph.policy.storage import PolicyStorage
-                policy_storage = PolicyStorage()
-                await policy_storage.connect()
-                logger.info("✅ Connected policy storage for ToolGuardRuntime")
-            except Exception as e:
-                logger.error(f"Failed to connect policy storage: {e}")
-                # Fail closed: if policy enforcement is enabled but storage fails,
-                # don't boot the registry unguarded
-                raise RuntimeError(
-                    f"Policy system is enabled but PolicyStorage.connect() failed: {e}"
-                ) from e
-        
-        registry = ApiRegistry(client=mcp_manager, policy_storage=policy_storage)
+        # ApiRegistry now manages policy storage lifecycle through ToolGuardRuntime
+        registry = ApiRegistry(client=mcp_manager, enable_policies=settings.policy.enabled)
         try:
             await registry.start_servers()
         except Exception:
@@ -225,12 +194,11 @@ async def lifespan(app: FastAPI):
             except Exception as cleanup_error:
                 logger.warning(f"Error shutting down mcp_manager during cleanup: {cleanup_error}")
             
-            # Clean up policy_storage if start_servers fails
-            if policy_storage is not None:
-                try:
-                    await policy_storage.disconnect()
-                except Exception as cleanup_error:
-                    logger.warning(f"Error disconnecting policy storage during cleanup: {cleanup_error}")
+            # Clean up registry resources (including ToolGuardRuntime/policy storage)
+            try:
+                await registry.cleanup()
+            except Exception as cleanup_error:
+                logger.warning(f"Error cleaning up registry during cleanup: {cleanup_error}")
             raise
 
     yield
@@ -239,19 +207,18 @@ async def lifespan(app: FastAPI):
     for agent_id, (mgr, reg) in agent_registries.items():
         logger.info(f"Cleaning up registry for agent: {agent_id}")
         await mgr.shutdown()
-        # Disconnect policy storage if present
-        if reg.policy_storage is not None:
-            try:
-                await reg.policy_storage.disconnect()
-            except Exception as e:
-                logger.warning(f"Error disconnecting policy storage for agent {agent_id}: {e}")
+        # Cleanup registry resources (including ToolGuardRuntime/policy storage)
+        try:
+            await reg.cleanup()
+        except Exception as e:
+            logger.warning(f"Error cleaning up registry for agent {agent_id}: {e}")
     if not database_mode:
-        # In YAML mode, also clean up the global registry's policy storage
-        if 'registry' in globals() and registry is not None and registry.policy_storage is not None:
+        # In YAML mode, also clean up the global registry
+        if 'registry' in globals() and registry is not None:
             try:
-                await registry.policy_storage.disconnect()
+                await registry.cleanup()
             except Exception as e:
-                logger.warning(f"Error disconnecting global registry policy storage: {e}")
+                logger.warning(f"Error cleaning up global registry: {e}")
         if 'mcp_manager' in globals():
             await mcp_manager.shutdown()
 
@@ -552,11 +519,10 @@ async def reload_config(
                 if agent_id in agent_registries:
                     old_mgr, old_reg = agent_registries.pop(agent_id)
                     await old_mgr.shutdown()
-                    if old_reg.policy_storage is not None:
-                        try:
-                            await old_reg.policy_storage.disconnect()
-                        except Exception as e:
-                            logger.warning(f"Error disconnecting policy storage: {e}")
+                    try:
+                        await old_reg.cleanup()
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up old registry: {e}")
                 # Recreate registry for this agent with retry on empty
                 await _get_or_create_registry(agent_id, retry_on_empty=True)
                 # If this is the default agent, update global registry
@@ -583,11 +549,10 @@ async def reload_config(
                 agent_ids = list(agent_registries.keys())
                 for old_mgr, old_reg in agent_registries.values():
                     await old_mgr.shutdown()
-                    if old_reg.policy_storage is not None:
-                        try:
-                            await old_reg.policy_storage.disconnect()
-                        except Exception as e:
-                            logger.warning(f"Error disconnecting policy storage: {e}")
+                    try:
+                        await old_reg.cleanup()
+                    except Exception as e:
+                        logger.warning(f"Error cleaning up old registry: {e}")
                 agent_registries.clear()
                 # Recreate default agent
                 mcp_manager, registry = await _get_or_create_registry(default_agent_id)
@@ -604,23 +569,8 @@ async def reload_config(
             services = load_service_configs(config_path)
             new_manager = MCPManager(config=services)
             
-            # Get policy storage if policy system is enabled
-            policy_storage = None
-            if settings.policy.enabled:
-                try:
-                    from cuga.backend.cuga_graph.policy.storage import PolicyStorage
-                    policy_storage = PolicyStorage()
-                    await policy_storage.connect()
-                    logger.info("✅ Connected policy storage for ToolGuardRuntime")
-                except Exception as e:
-                    logger.error(f"Failed to connect policy storage: {e}")
-                    # Fail closed: if policy enforcement is enabled but storage fails,
-                    # don't reload the registry unguarded
-                    raise RuntimeError(
-                        f"Policy system is enabled but PolicyStorage.connect() failed: {e}"
-                    ) from e
-            
-            new_registry = ApiRegistry(client=new_manager, policy_storage=policy_storage)
+            # ApiRegistry now manages policy storage lifecycle through ToolGuardRuntime
+            new_registry = ApiRegistry(client=new_manager, enable_policies=settings.policy.enabled)
             try:
                 await new_registry.start_servers()
             except Exception:
@@ -630,20 +580,19 @@ async def reload_config(
                 except Exception as cleanup_error:
                     logger.warning(f"Error shutting down new_manager during cleanup: {cleanup_error}")
                 
-                # Clean up new policy_storage if start_servers fails
-                if policy_storage is not None:
-                    try:
-                        await policy_storage.disconnect()
-                    except Exception as cleanup_error:
-                        logger.warning(f"Error disconnecting policy storage during cleanup: {cleanup_error}")
+                # Clean up new registry resources
+                try:
+                    await new_registry.cleanup()
+                except Exception as cleanup_error:
+                    logger.warning(f"Error cleaning up new registry during cleanup: {cleanup_error}")
                 raise
             
-            # Clean up old registry's policy storage before replacing
-            if 'registry' in globals() and registry is not None and registry.policy_storage is not None:
+            # Clean up old registry before replacing
+            if 'registry' in globals() and registry is not None:
                 try:
-                    await registry.policy_storage.disconnect()
+                    await registry.cleanup()
                 except Exception as e:
-                    logger.warning(f"Error disconnecting old registry policy storage: {e}")
+                    logger.warning(f"Error cleaning up old registry: {e}")
             
             if 'mcp_manager' in globals():
                 await mcp_manager.shutdown()
@@ -673,11 +622,10 @@ async def clear_agent_cache(
             if agent_id in agent_registries:
                 mgr, reg = agent_registries.pop(agent_id)
                 await mgr.shutdown()
-                if reg.policy_storage is not None:
-                    try:
-                        await reg.policy_storage.disconnect()
-                    except Exception as e:
-                        logger.warning(f"Error disconnecting policy storage: {e}")
+                try:
+                    await reg.cleanup()
+                except Exception as e:
+                    logger.warning(f"Error cleaning up registry: {e}")
                 logger.info(f"Cleared cache for agent: {agent_id}")
                 return {"status": "ok", "message": f"Cache cleared for agent: {agent_id}"}
             else:
@@ -686,11 +634,10 @@ async def clear_agent_cache(
             count = len(agent_registries)
             for mgr, reg in agent_registries.values():
                 await mgr.shutdown()
-                if reg.policy_storage is not None:
-                    try:
-                        await reg.policy_storage.disconnect()
-                    except Exception as e:
-                        logger.warning(f"Error disconnecting policy storage: {e}")
+                try:
+                    await reg.cleanup()
+                except Exception as e:
+                    logger.warning(f"Error cleaning up registry: {e}")
             agent_registries.clear()
             logger.info(f"Cleared cache for {count} agents")
             return {"status": "ok", "message": f"Cache cleared for {count} agents"}
