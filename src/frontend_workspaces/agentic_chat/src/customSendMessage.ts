@@ -1,5 +1,6 @@
 import { ChatInstance, CustomSendMessageOptions, GenericItem, MessageRequest, StreamChunk } from "@carbon/ai-chat";
 import { fetchStreamingData, streamViaBackground } from "./StreamingWorkflow";
+import { streamStateManager } from "./StreamManager";
 import { setCardManagerState, resetCardManagerState } from "./renderUserDefinedResponse";
 import { randomUUID } from "./uuid";
 import { RESPONSE_USER_PROFILE } from "./constants";
@@ -135,10 +136,15 @@ async function customStreamMessage(
       },
     });
   } else {
-    switch (request.input.text) {
-      default:
-        await streamViaBackground(instance, request.input.text || "");
-        break;
+    try {
+      streamStateManager.setTurnInFlight(true);
+      switch (request.input.text) {
+        default:
+          await streamViaBackground(instance, request.input.text || "");
+          break;
+      }
+    } finally {
+      streamStateManager.setTurnInFlight(false);
     }
   }
 }
@@ -195,10 +201,15 @@ async function customSendMessage(
     });
     console.log("CardManager host message created");
 
-    switch (request.input.text) {
-      default:
-        await fetchStreamingData(instance, request.input.text || "");
-        break;
+    try {
+      streamStateManager.setTurnInFlight(true);
+      switch (request.input.text) {
+        default:
+          await fetchStreamingData(instance, request.input.text || "");
+          break;
+      }
+    } finally {
+      streamStateManager.setTurnInFlight(false);
     }
   }
 }

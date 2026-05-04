@@ -503,6 +503,12 @@ export const streamViaBackground = async (
     return;
   }
 
+  // Mark a turn as in-flight as soon as the user submits the query so
+  // the UI can show a processing indicator before any tokens stream in.
+  streamStateManager.setTurnInFlight(true);
+
+  try {
+
   // -------------------------------------------------------------
   // Replicate the original workflow UI behaviour (same as in
   // fetchStreamingData) so that incoming agent responses are
@@ -579,6 +585,11 @@ export const streamViaBackground = async (
   // -------------------------------------------------------------
   // Listener for streaming responses coming back from the background
   // -------------------------------------------------------------
+  // Promise used to signal when the background processing completes
+  let completionResolver: (() => void) | null = null;
+  const completionPromise = new Promise<void>((resolve) => {
+    completionResolver = resolve;
+  });
   const listener = (message: any) => {
     if (!message || message.source !== "background") return;
 
@@ -622,7 +633,12 @@ export const streamViaBackground = async (
         if (window.aiSystemInterface && !isStopped) {
           window.aiSystemInterface.setProcessingComplete?.(true);
         }
-
+        // Resolve completion promise so caller can proceed
+        try {
+          (completionResolver as any)?.();
+        } catch (e) {
+          // noop
+        }
         (window as any).chrome.runtime.onMessage.removeListener(listener);
         break;
       }
@@ -634,6 +650,11 @@ export const streamViaBackground = async (
         );
         if (window.aiSystemInterface && !isStopped) {
           window.aiSystemInterface.setProcessingComplete?.(true);
+        }
+        try {
+          (completionResolver as any)?.();
+        } catch (e) {
+          // noop
         }
         (window as any).chrome.runtime.onMessage.removeListener(listener);
         break;
@@ -680,6 +701,12 @@ export const streamViaBackground = async (
         window.aiSystemInterface.setProcessingComplete?.(true);
       }
     });
+  // Wait until the background signals completion via the listener
+  await completionPromise;
+  } finally {
+    // Ensure we clear the in-flight flag when this function completes.
+    streamStateManager.setTurnInFlight(false);
+  }
 };
 
 export { fetchStreamingData, USE_FAKE_STREAM, FAKE_STREAM_FILE, FAKE_STREAM_DELAY };

@@ -7,10 +7,10 @@ interface StopButtonProps {
 }
 
 export const StopButton: React.FC<StopButtonProps> = ({ location = "sidebar" }) => {
-  const [isStreaming, setIsStreaming] = useState(() => streamStateManager.getIsStreaming());
+  const [isProcessing, setIsProcessing] = useState(() => streamStateManager.getIsProcessing());
 
   useEffect(() => {
-    const unsubscribe = streamStateManager.subscribe(setIsStreaming);
+    const unsubscribe = streamStateManager.subscribe(setIsProcessing);
     return unsubscribe;
   }, []);
 
@@ -26,7 +26,7 @@ export const StopButton: React.FC<StopButtonProps> = ({ location = "sidebar" }) 
     }
   };
 
-  if (!isStreaming) {
+  if (!isProcessing) {
     return null;
   }
 
