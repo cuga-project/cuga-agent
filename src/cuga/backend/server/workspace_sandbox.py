@@ -9,8 +9,10 @@ from loguru import logger
 
 from cuga.config import settings
 
-SANDBOX_WORKSPACE_ROOT = "/tmp/cuga_workspace"
-DISPLAY_ROOT = "cuga_workspace"
+SANDBOX_WORKSPACE_ROOT = "/tmp"
+DISPLAY_ROOT = "tmp"
+LEGACY_DISPLAY_ROOT = "cuga_workspace"
+LEGACY_SANDBOX_WORKSPACE_ROOT = "/tmp/cuga_workspace"
 
 
 def workspace_tree_is_sandbox_backed() -> bool:
@@ -81,9 +83,7 @@ def _children_nodes(
     items: list[dict[str, Any]] = []
     for name in sorted(names.keys(), key=lambda n: (names[n] == "file", n.lower())):
         path_parts = parent + (name,)
-        pub_path = (
-            f"{SANDBOX_WORKSPACE_ROOT}/{'/'.join(path_parts)}" if path_parts else SANDBOX_WORKSPACE_ROOT
-        )
+        pub_path = f"{DISPLAY_ROOT}/{'/'.join(path_parts)}" if path_parts else DISPLAY_ROOT
         if names[name] == "file":
             items.append({"name": name, "path": pub_path, "type": "file"})
         else:
@@ -125,14 +125,21 @@ async def fetch_sandbox_workspace_tree(thread_id: Optional[str]) -> list[dict[st
 
 
 def public_path_to_sandbox_abs(path: str) -> str:
-    """Map API path to absolute sandbox path under /tmp/cuga_workspace.
+    """Map API path to absolute sandbox path under /tmp.
 
-    Accepts ``/tmp/cuga_workspace/...`` (sandbox UI paths) or legacy ``cuga_workspace/...``.
+    Accepts ``/tmp/...`` and UI paths like ``tmp/...``. Legacy
+    ``/tmp/cuga_workspace/...`` and ``cuga_workspace/...`` inputs are also accepted.
     """
     raw = (path or "").strip().replace("\\", "/")
     if not raw:
         raise ValueError("empty path")
     norm = raw.rstrip("/")
+    if norm == LEGACY_SANDBOX_WORKSPACE_ROOT or norm.startswith(LEGACY_SANDBOX_WORKSPACE_ROOT + "/"):
+        tail = norm[len(LEGACY_SANDBOX_WORKSPACE_ROOT) :].lstrip("/")
+        parts = tail.split("/") if tail else []
+        if any(p in ("", ".", "..") or p.startswith(".") for p in parts):
+            raise ValueError("invalid path segment")
+        return SANDBOX_WORKSPACE_ROOT if not tail else f"{SANDBOX_WORKSPACE_ROOT}/{tail}"
     if norm == SANDBOX_WORKSPACE_ROOT or norm.startswith(SANDBOX_WORKSPACE_ROOT + "/"):
         tail = norm[len(SANDBOX_WORKSPACE_ROOT) :].lstrip("/")
         parts = tail.split("/") if tail else []
@@ -141,9 +148,12 @@ def public_path_to_sandbox_abs(path: str) -> str:
         return norm if tail else SANDBOX_WORKSPACE_ROOT
     raw_rel = raw.lstrip("/")
     parts = raw_rel.split("/")
-    if parts[0] != DISPLAY_ROOT:
+    if parts[0] == DISPLAY_ROOT:
+        tail = parts[1:]
+    elif parts[0] == LEGACY_DISPLAY_ROOT:
+        tail = parts[1:]
+    else:
         raise ValueError("path must be under workspace root")
-    tail = parts[1:]
     if any(p in ("", ".", "..") or p.startswith(".") for p in tail):
         raise ValueError("invalid path segment")
     suffix = "/".join(tail)

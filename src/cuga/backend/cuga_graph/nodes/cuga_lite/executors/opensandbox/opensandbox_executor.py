@@ -153,8 +153,13 @@ class OpenSandboxExecutor(RemoteExecutor):
         )
         interpreter = await CodeInterpreter.create(sandbox)
 
-        # Pre-create the standard working directory
-        await interpreter.sandbox.commands.run("mkdir -p /tmp/cuga_workspace")
+        # Ensure the standard sandbox working directory and Python venv exist.
+        # Agents install Python packages with uv into /tmp/.venv and run scripts via uv from /tmp.
+        await interpreter.sandbox.commands.run(
+            "mkdir -p /tmp && cd /tmp && "
+            "(command -v uv >/dev/null 2>&1 || python -m pip install --quiet uv) && "
+            "uv venv /tmp/.venv"
+        )
 
         if getattr(_cfg(), "enabled", False):
             await self._upload_skills_to_sandbox(interpreter)
@@ -168,7 +173,7 @@ class OpenSandboxExecutor(RemoteExecutor):
         return await self._get_or_create_interpreter(thread_id)
 
     async def _upload_skills_to_sandbox(self, interpreter: Any) -> None:
-        """Upload discovered skill folders into /tmp/cuga_workspace/skills/ in the sandbox.
+        """Upload discovered skill folders into /tmp/skills/ in the sandbox.
 
         Mirrors ``cuga.backend.skills.loader.discover_skills`` precedence:
         global legacy ``~/.config/cuga/skills`` → global ``~/.config/agents/skills`` →
@@ -194,7 +199,7 @@ class OpenSandboxExecutor(RemoteExecutor):
                 if suffix in {".xsd", ".pyc"}:
                     continue
                 rel = local_path.relative_to(upload_root)
-                sandbox_path = f"/tmp/cuga_workspace/skills/{rel}"
+                sandbox_path = f"/tmp/skills/{rel}"
                 try:
                     data = local_path.read_bytes()
                     entries_by_path[sandbox_path] = WriteEntry(path=sandbox_path, data=data)
@@ -204,9 +209,7 @@ class OpenSandboxExecutor(RemoteExecutor):
         if entries_by_path:
             entries = list(entries_by_path.values())
             await interpreter.sandbox.files.write_files(entries)
-            logger.info(
-                f"[OpenSandboxExecutor] Uploaded {len(entries)} skill files to /tmp/cuga_workspace/skills/"
-            )
+            logger.info(f"[OpenSandboxExecutor] Uploaded {len(entries)} skill files to /tmp/skills/")
 
     async def release_sandbox(self, thread_id: Optional[str] = None) -> None:
         """Kill and remove the cached interpreter/sandbox for a thread."""
@@ -230,13 +233,14 @@ class OpenSandboxExecutor(RemoteExecutor):
             """Run a shell command inside the sandbox and return its output.
 
             Args:
-                cmd: Shell command (e.g. "pip install python-pptx", "node script.js")
+                cmd: Shell command (e.g. "uv pip install python-pptx", "node script.js")
             """
             try:
                 from code_interpreter import SupportedLanguage  # type: ignore[import]
 
                 interpreter = await executor._get_or_create_interpreter(thread_id)
-                result = await interpreter.codes.run(cmd, language=SupportedLanguage.BASH)
+                sandbox_cmd = f"cd /tmp && source /tmp/.venv/bin/activate && {cmd}"
+                result = await interpreter.codes.run(sandbox_cmd, language=SupportedLanguage.BASH)
                 stdout = "".join(line.text for line in result.logs.stdout)
                 stderr = "".join(line.text for line in result.logs.stderr)
                 output = stdout
@@ -434,7 +438,7 @@ class OpenSandboxExecutor(RemoteExecutor):
             are created automatically.
 
             Args:
-                sandbox_path: Destination path inside the sandbox (e.g. "/tmp/cuga_workspace/script.js").
+                sandbox_path: Destination path inside the sandbox (e.g. "/tmp/script.js").
                 content: Text content to write.
 
             Returns:
@@ -469,8 +473,10 @@ class OpenSandboxExecutor(RemoteExecutor):
                 name="run_command",
                 description=(
                     "Run a shell command inside the sandbox and return its output. "
-                    "Use for package installs (pip install, npm install), CLI tools, "
-                    "running scripts (node script.js, python file.py), and any shell operation."
+                    "Commands run from /tmp with /tmp/.venv activated. "
+                    "Use uv only for Python package installs and inspection (`uv pip install ...`, `uv pip list`, `uv pip show ...`). "
+                    "Never run `python -m ...` directly; use `uv run python -m ...`. Python scripts should run as `uv run /tmp/file.py`. "
+                    "Use plain npm commands for Node packages (never `uv npm`), CLI tools, and any shell operation."
                 ),
             ),
             StructuredTool.from_function(
