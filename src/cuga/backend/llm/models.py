@@ -563,7 +563,7 @@ class LLMManager:
         """
         if not model_name:
             return False
-        reasoning_prefixes = ('o1', 'o3', 'gpt-5')
+        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5')
         return model_name.startswith(reasoning_prefixes)
 
     def _create_llm_instance(self, model_settings: Dict[str, Any]):

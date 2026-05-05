@@ -6,6 +6,7 @@ cuga_workspace/
 .idea
 node_modules
 .pnpm-store/
+.agents
 *.log
 /frontend/dist/
 src/frontend_workspaces/frontend/dist/
@@ -64,6 +65,7 @@ src/cuga/demo_tools/email_mcp/mail_sink/build
 src/cuga/demo_tools/email_mcp/mcp_server/build
 src/cuga/demo_tools/file_system/build
 src/cuga/demo_tools/**/*.egg-info/
+skills-lock.json
 
 # Local dependencies
 vendor/

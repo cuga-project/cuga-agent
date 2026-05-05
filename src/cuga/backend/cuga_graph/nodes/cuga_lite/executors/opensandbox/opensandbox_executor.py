@@ -168,26 +168,24 @@ class OpenSandboxExecutor(RemoteExecutor):
         return await self._get_or_create_interpreter(thread_id)
 
     async def _upload_skills_to_sandbox(self, interpreter: Any) -> None:
-        """Upload local skill folders into /tmp/cuga_workspace/skills/ in the sandbox.
+        """Upload discovered skill folders into /tmp/cuga_workspace/skills/ in the sandbox.
 
-        Uses the same CUGA root as discover_skills/load_skill: ``CUGA_FOLDER`` or
-        ``settings.policy.cuga_folder``, then ``skills/`` and ``.skills/`` under that path
-        (see ``cuga.backend.skills.loader.discover_skills``).
+        Mirrors ``cuga.backend.skills.loader.discover_skills`` precedence:
+        global legacy ``~/.config/cuga/skills`` → global ``~/.config/agents/skills`` →
+        project legacy ``.cuga/skills`` / ``.cuga/.skills`` → project ``.agents/skills``.
         """
         from opensandbox.models import WriteEntry  # type: ignore[import]
+        from cuga.backend.skills.loader import discover_skills
 
-        raw = (os.getenv("CUGA_FOLDER") or "").strip() or (settings.policy.cuga_folder or "").strip()
-        if not raw:
-            return
-        cuga_folder = Path(raw).expanduser()
-        if not cuga_folder.is_absolute():
-            cuga_folder = Path(os.getcwd()) / cuga_folder
-        skill_roots = [cuga_folder / "skills", cuga_folder / ".skills"]
+        cuga_folder = (os.getenv("CUGA_FOLDER") or "").strip() or (settings.policy.cuga_folder or "").strip()
+        skill_entries = discover_skills(cuga_folder or None)
 
-        entries: list[WriteEntry] = []
-        for root in skill_roots:
+        entries_by_path: dict[str, WriteEntry] = {}
+        for skill_entry in skill_entries:
+            root = Path(skill_entry.source).parent
             if not root.is_dir():
                 continue
+            upload_root = root.parent
             for local_path in sorted(root.rglob("*")):
                 if not local_path.is_file():
                     continue
@@ -195,15 +193,16 @@ class OpenSandboxExecutor(RemoteExecutor):
                 suffix = local_path.suffix.lower()
                 if suffix in {".xsd", ".pyc"}:
                     continue
-                rel = local_path.relative_to(root)
+                rel = local_path.relative_to(upload_root)
                 sandbox_path = f"/tmp/cuga_workspace/skills/{rel}"
                 try:
                     data = local_path.read_bytes()
-                    entries.append(WriteEntry(path=sandbox_path, data=data))
+                    entries_by_path[sandbox_path] = WriteEntry(path=sandbox_path, data=data)
                 except Exception as exc:
                     logger.warning(f"[OpenSandbox] Skipping skill file {local_path}: {exc}")
 
-        if entries:
+        if entries_by_path:
+            entries = list(entries_by_path.values())
             await interpreter.sandbox.files.write_files(entries)
             logger.info(
                 f"[OpenSandboxExecutor] Uploaded {len(entries)} skill files to /tmp/cuga_workspace/skills/"

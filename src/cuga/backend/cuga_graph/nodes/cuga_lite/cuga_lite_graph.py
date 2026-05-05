@@ -1372,8 +1372,9 @@ def create_cuga_lite_graph(
                     skills_prompt_section = format_available_skills_block(skill_registry)
                     skills_enabled = True
                     logger.info(
-                        f"Loaded {len(skill_entries)} agent skill(s) under {cuga_folder_for_skills}/skills "
-                        "and ~/.config/cuga/skills"
+                        f"Loaded {len(skill_entries)} agent skill(s) from .agents/skills and "
+                        f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
+                        "~/.config/cuga/skills fallbacks"
                     )
 
             # Update tools context with all execution tools
