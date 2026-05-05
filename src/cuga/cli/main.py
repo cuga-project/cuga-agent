@@ -1079,8 +1079,13 @@ def start(
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            # demo_skills never runs the classic filesystem MCP; plain demo respects resolved app filesystem flag
-            fs_for_demo = False if service == "demo_skills" else app_filesystem
+            resolved_tool_names = {str(tool.get("name", "")) for tool in resolved_tools}
+            fs_for_demo = "filesystem" in resolved_tool_names
+            if service == "demo_skills" and not fs_for_demo:
+                logger.info(
+                    "demo_skills: skipping filesystem MCP — agent uses OpenSandbox shell tools "
+                    "(run_command, write_file, …)"
+                )
             ports_to_clean.extend(app_mgr.ports_for_apps(False, fs_for_demo, False, app_docs, app_oak_health))
             kill_processes_by_port(ports_to_clean)
 
@@ -1092,10 +1097,6 @@ def start(
             app_mgr.prepare_workspace(workspace_path)
             if fs_for_demo:
                 app_mgr.start_filesystem(workspace_path)
-            else:
-                logger.info(
-                    "demo_skills: skipping filesystem MCP — agent uses OpenSandbox shell tools (run_command, write_file, …)"
-                )
             if app_docs:
                 app_mgr.start_docs()
             if app_oak_health:

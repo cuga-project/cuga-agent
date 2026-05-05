@@ -120,22 +120,14 @@ class CodeExecutor:
             mode = 'local'
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
-        # Security checks apply for local mode only when skills are enabled (E2B unchanged)
-        if _skills_enabled():
-            if mode == 'local':
-                SecurityValidator.validate_imports(code)
-        else:
-            SecurityValidator.validate_imports(code)
+        # Security checks must run for every execution mode, including E2B turns.
+        SecurityValidator.validate_imports(code)
 
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
         wrapped_code = CodeWrapper.wrap_code(code, fake_datetime=fake_datetime)
 
-        if _skills_enabled():
-            if mode == 'local':
-                SecurityValidator.validate_wrapped_code(wrapped_code)
-        else:
-            SecurityValidator.validate_wrapped_code(wrapped_code)
+        SecurityValidator.validate_wrapped_code(wrapped_code)
 
         try:
             if mode == 'e2b':

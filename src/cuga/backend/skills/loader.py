@@ -33,17 +33,12 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
     if not name or not description:
         logger.warning(f"Skill {path} missing name or description in frontmatter")
         return None
-    raw_reqs = frontmatter.get("requirements", [])
-    if isinstance(raw_reqs, str):
-        raw_reqs = [r.strip() for r in raw_reqs.split(",") if r.strip()]
-    requirements = tuple(str(r).strip() for r in raw_reqs if r)
 
     return SkillEntry(
         name=str(name).strip(),
         description=str(description).strip(),
         body=body.strip(),
         source=str(path),
-        requirements=requirements,
     )
 
 
