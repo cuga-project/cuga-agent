@@ -335,8 +335,12 @@ class TestSaveTrajectory:
         mock_settings.evolve.save_on_failure = True
         messages = [HumanMessage(content="Hello"), AIMessage(content="Hi")]
         await EvolveIntegration.save_trajectory(
-            messages, "task_1", success=True,
-            user_id="user-1", namespace_id="tenant-a", session_id="thread-99",
+            messages,
+            "task_1",
+            success=True,
+            user_id="user-1",
+            namespace_id="tenant-a",
+            session_id="thread-99",
         )
         mock_call_tool.assert_called_once()
         call_args = mock_call_tool.call_args[0]

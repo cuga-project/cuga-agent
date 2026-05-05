@@ -401,7 +401,9 @@ class CugaLiteNode(BaseNode):
             if settings.evolve.async_save:
                 task = _asyncio.create_task(
                     EvolveIntegration.save_trajectory(
-                        messages_snapshot, task_id, success,
+                        messages_snapshot,
+                        task_id,
+                        success,
                         user_id=_evolve_user_id,
                         namespace_id=_evolve_namespace_id,
                         session_id=_evolve_session_id,
@@ -411,7 +413,9 @@ class CugaLiteNode(BaseNode):
                 task.add_done_callback(self._background_tasks.discard)
             else:
                 await EvolveIntegration.save_trajectory(
-                    messages_snapshot, task_id, success,
+                    messages_snapshot,
+                    task_id,
+                    success,
                     user_id=_evolve_user_id,
                     namespace_id=_evolve_namespace_id,
                     session_id=_evolve_session_id,
