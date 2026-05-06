@@ -69,8 +69,9 @@ def format_available_skills_block(registry: SkillRegistry) -> str:
         "When executing commands from skill docs, normalize only Python examples: `python -m ...` must become "
         "`uv run python -m ...`, Python scripts must run with `uv run /tmp/script.py`, Python package commands must use "
         "`uv pip install ...`, and Python package inspection must use `uv pip list` / `uv pip show` / `uv pip freeze` "
-        "instead of `pip list` / `pip show` / `pip freeze`. Never prefix npm with uv: npm commands must remain plain "
-        "`npm ...` commands, installed locally as `cd /tmp && npm install <package>`. "
+        "instead of `pip list` / `pip show` / `pip freeze`. Never prefix Node/npm with uv: Node commands must start "
+        "with plain `node ...`, npm commands must start with plain `npm ...`, and packages must be installed locally "
+        "as `cd /tmp && npm install <package>`. Do not use `uv npm`, `uv run node`, or `uv run npm`. "
         "If a loaded skill contains QA, verification, validation, export, or conversion steps, run them before the final response unless technically impossible."
     )
     return "\n".join(lines)

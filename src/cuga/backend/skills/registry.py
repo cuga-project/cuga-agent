@@ -79,8 +79,9 @@ class SkillRegistry:
             "`python /tmp/script.py` or `python script.py` → `uv run /tmp/script.py`; "
             "`python -c '...'` → `uv run python -c '...'`; `pip install ...` or `python -m pip install ...` "
             "→ `uv pip install ...`; and `pip list` / `pip show` / `pip freeze` → `uv pip list` / "
-            "`uv pip show` / `uv pip freeze`. Never prefix npm with uv: use plain `npm ...` commands, "
-            "with packages installed locally as `cd /tmp && npm install <package>`."
+            "`uv pip show` / `uv pip freeze`. Never prefix Node/npm with uv: Node commands must start with plain "
+            "`node ...`, npm commands must start with plain `npm ...`, and packages must be installed locally as "
+            "`cd /tmp && npm install <package>`. Do not use `uv npm`, `uv run node`, or `uv run npm`."
         )
         parts.append("")
         parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{entry.body}")

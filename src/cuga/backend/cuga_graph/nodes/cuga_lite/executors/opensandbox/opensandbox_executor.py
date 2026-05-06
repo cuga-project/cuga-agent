@@ -476,7 +476,8 @@ class OpenSandboxExecutor(RemoteExecutor):
                     "Commands run from /tmp with /tmp/.venv activated. "
                     "Use uv only for Python package installs and inspection (`uv pip install ...`, `uv pip list`, `uv pip show ...`). "
                     "Never run `python -m ...` directly; use `uv run python -m ...`. Python scripts should run as `uv run /tmp/file.py`. "
-                    "Use plain npm commands for Node packages (never `uv npm`), CLI tools, and any shell operation."
+                    "Node commands must start with plain `node ...`; npm commands must start with plain `npm ...`. "
+                    "Never use `uv npm`, `uv run node`, or `uv run npm`."
                 ),
             ),
             StructuredTool.from_function(

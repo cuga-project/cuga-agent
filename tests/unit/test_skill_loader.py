@@ -85,3 +85,4 @@ def test_skill_registry_load_skill_emits_install_steps_for_requirements() -> Non
     assert "`python -m <module> ...` → `uv run python -m <module> ...`" in loaded
     assert "`pip list` / `pip show` / `pip freeze` → `uv pip list`" in loaded
     assert "must never be rewritten as `uv npm`" in loaded
+    assert "Do not use `uv npm`, `uv run node`, or `uv run npm`" in loaded
