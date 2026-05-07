@@ -620,10 +620,18 @@ class LLMManager:
                 # model id is not used when using a deployment id
                 watsonx_params["model_id"] = model_name
 
-            if os.getenv("WATSONX_SPACE_ID"):
-                watsonx_params["space_id"] = os.environ["WATSONX_SPACE_ID"]
-            elif os.getenv("WATSONX_PROJECT_ID"):
-                watsonx_params["project_id"] = os.environ["WATSONX_PROJECT_ID"]
+            space_id = os.getenv("WATSONX_SPACE_ID")
+            project_id = os.getenv("WATSONX_PROJECT_ID")
+
+            if space_id:
+                watsonx_params["space_id"] = space_id
+            elif project_id:
+                watsonx_params["project_id"] = project_id
+            elif not deployment_id:
+                raise ValueError(
+                    "WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID "
+                    "to be set when not using a deployment_id."
+                )
 
             llm = ChatWatsonx(**watsonx_params)
         elif platform == "rits":
