@@ -71,11 +71,17 @@ def _make_app_manager() -> AppManager:
 
 
 def _apply_demo_skills_env() -> None:
-    """Turn on skills + OpenSandbox shell tools for spawned demo/registry (Dynaconf-style env)."""
+    """Turn on skills + shell tools for spawned demo/registry (Dynaconf-style env)."""
     os.environ["DYNACONF_SKILLS__ENABLED"] = "true"
     os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] = "true"
-    os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "true"
     os.environ["DYNACONF_ADVANCED_FEATURES__REFLECTION_ENABLED"] = "true"
+
+    sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+    if sandbox_mode in ("native", "local"):
+        os.environ["DYNACONF_ADVANCED_FEATURES__SANDBOX_MODE"] = sandbox_mode
+        os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "false"
+    else:
+        os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "true"
 
 
 def _apply_local_demo_workspace_env() -> None:
@@ -1060,9 +1066,10 @@ def start(
     if service in ("demo", "demo_skills"):
         if service == "demo_skills":
             _apply_demo_skills_env()
-            _uv_sync_opensandbox_extra()
-            if not _check_opensandbox_reachable():
-                raise typer.Exit(1)
+            if getattr(settings.advanced_features, "sandbox_mode", "opensandbox") == "opensandbox":
+                _uv_sync_opensandbox_extra()
+                if not _check_opensandbox_reachable():
+                    raise typer.Exit(1)
         else:
             _apply_local_demo_workspace_env()
         demo_preset = "demo_skills" if service == "demo_skills" else "demo"

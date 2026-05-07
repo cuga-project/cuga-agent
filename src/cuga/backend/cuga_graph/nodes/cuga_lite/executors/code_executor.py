@@ -7,10 +7,11 @@ from loguru import logger
 
 from .common import SecurityValidator, CodeWrapper, VariableUtils, CallApiHelper
 from .common.benchmark_mode import is_benchmark_mode
-from .local import LocalExecutor
+from .local import LocalExecutor, LocalSandboxExecutor
 from .e2b import E2BExecutor
 from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
+from .native import NativeSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
 
 
@@ -55,15 +56,23 @@ class CodeExecutor:
     """Unified interface for executing Python code with tools in different modes."""
 
     _local_executor: BaseExecutor = None
+    _local_sandbox_executor: LocalSandboxExecutor = None
     _e2b_executor: RemoteExecutor = None
     _docker_executor: RemoteExecutor = None
     _opensandbox_executor: RemoteExecutor = None
+    _native_executor: NativeSandboxExecutor = None
 
     @classmethod
     def _get_local_executor(cls) -> BaseExecutor:
         if cls._local_executor is None:
             cls._local_executor = LocalExecutor()
         return cls._local_executor
+
+    @classmethod
+    def _get_local_sandbox_executor(cls) -> LocalSandboxExecutor:
+        if cls._local_sandbox_executor is None:
+            cls._local_sandbox_executor = LocalSandboxExecutor()
+        return cls._local_sandbox_executor
 
     @classmethod
     def _get_e2b_executor(cls) -> RemoteExecutor:
@@ -82,6 +91,12 @@ class CodeExecutor:
         if cls._opensandbox_executor is None:
             cls._opensandbox_executor = OpenSandboxExecutor()
         return cls._opensandbox_executor
+
+    @classmethod
+    def _get_native_executor(cls) -> NativeSandboxExecutor:
+        if cls._native_executor is None:
+            cls._native_executor = NativeSandboxExecutor()
+        return cls._native_executor
 
     @classmethod
     async def eval_with_tools_async(

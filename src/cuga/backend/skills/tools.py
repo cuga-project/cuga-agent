@@ -58,7 +58,7 @@ def format_available_skills_block(registry: SkillRegistry) -> str:
         "**STEP 2 — FOLLOW SKILL INSTRUCTIONS:**\n"
         "Only after requirements are installed, proceed with the skill instructions from the `load_skill` output. "
         "Do **not** re-read `SKILL.md`; `load_skill` already returned its full contents and those instructions "
-        "are authoritative. Companion files live in the sandbox under `/tmp/skills/<skill_name>/` — "
+        "are authoritative. Companion files live in the sandbox under `/workspace/skills/<skill_name>/` — "
         "if the loaded `SKILL.md` contains relative markdown links or says to read a companion file, treat those "
         "links as workflow routing instructions and read the relevant companion file(s) for the situation before "
         "implementing. Use **`await read_file(...)`** for companion files the loaded instructions require, "
@@ -67,11 +67,11 @@ def format_available_skills_block(registry: SkillRegistry) -> str:
         "**`await download_file(...)`** when the user needs an artifact from the sandbox. "
         "Explore the tree only when you need a helper script, template, or companion asset. "
         "When executing commands from skill docs, normalize only Python examples: `python -m ...` must become "
-        "`uv run python -m ...`, Python scripts must run with `uv run /tmp/script.py`, Python package commands must use "
+        "`uv run python -m ...`, Python scripts must run with `uv run /workspace/script.py`, Python package commands must use "
         "`uv pip install ...`, and Python package inspection must use `uv pip list` / `uv pip show` / `uv pip freeze` "
         "instead of `pip list` / `pip show` / `pip freeze`. Never prefix Node/npm with uv: Node commands must start "
         "with plain `node ...`, npm commands must start with plain `npm ...`, and packages must be installed locally "
-        "as `cd /tmp && npm install <package>`. Do not use `uv npm`, `uv run node`, or `uv run npm`. "
+        "as `npm install <package>` in `/workspace`. Do not use `uv npm`, `uv run node`, or `uv run npm`. "
         "If a loaded skill contains QA, verification, validation, export, or conversion steps, run them before the final response unless technically impossible."
     )
     return "\n".join(lines)

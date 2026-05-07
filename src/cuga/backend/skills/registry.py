@@ -39,7 +39,7 @@ class SkillRegistry:
                 setup_lines.append("await asyncio.sleep(5)")
             if npm_pkgs:
                 # Install locally in the working dir so require() resolves correctly
-                setup_lines.append(f"await run_command('cd /tmp && npm install {' '.join(npm_pkgs)}')")
+                setup_lines.append(f"await run_command('npm install {' '.join(npm_pkgs)}')")
                 setup_lines.append("await asyncio.sleep(5)")
             setup_script = "\n".join(setup_lines)
             parts.append(
@@ -52,7 +52,7 @@ class SkillRegistry:
             )
             parts.append("")
 
-        skill_dir = f"/tmp/skills/{entry.name}"
+        skill_dir = f"/workspace/skills/{entry.name}"
         parts.append(
             "The full skill instructions are already included below from `load_skill`; "
             "do NOT re-read `SKILL.md`. Companion files are available inside the sandbox at "
@@ -76,12 +76,13 @@ class SkillRegistry:
             "Command normalization override for sandbox execution: skill docs may contain legacy Python commands. "
             "Do not execute `python ...`, `python -m ...`, `python -m pip ...`, `pip ...`, or `pip list` directly. "
             "Translate only Python commands at execution time: `python -m <module> ...` → `uv run python -m <module> ...`; "
-            "`python /tmp/script.py` or `python script.py` → `uv run /tmp/script.py`; "
+            "`python /workspace/script.py` or `python script.py` → `uv run /workspace/script.py`; "
             "`python -c '...'` → `uv run python -c '...'`; `pip install ...` or `python -m pip install ...` "
             "→ `uv pip install ...`; and `pip list` / `pip show` / `pip freeze` → `uv pip list` / "
             "`uv pip show` / `uv pip freeze`. Never prefix Node/npm with uv: Node commands must start with plain "
-            "`node ...`, npm commands must start with plain `npm ...`, and packages must be installed locally as "
-            "`cd /tmp && npm install <package>`. Do not use `uv npm`, `uv run node`, or `uv run npm`."
+            "`node ...`, npm commands must start with plain `node ...`, npm commands must start with plain `npm ...`, "
+            "and packages must be installed locally as `npm install <package>` in `/workspace`. "
+            "Do not use `uv npm`, `uv run node`, or `uv run npm`."
         )
         parts.append("")
         parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{entry.body}")

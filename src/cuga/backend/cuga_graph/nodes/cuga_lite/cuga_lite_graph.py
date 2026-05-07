@@ -1410,10 +1410,16 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
 
-            # Inject sandbox tools when OpenSandbox is enabled and shell tools are allowed
-            if getattr(settings.advanced_features, 'opensandbox_sandbox', False) and getattr(
-                settings.advanced_features, "enable_shell_tool", False
-            ):
+            # Inject sandbox tools when shell tools are enabled
+            _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+            _shell_tool_on = getattr(settings.advanced_features, "enable_shell_tool", False)
+            _opensandbox_on = getattr(settings.advanced_features, "opensandbox_sandbox", False)
+            _use_sandbox = _shell_tool_on and (
+                (_sandbox_mode == "native")
+                or (_sandbox_mode == "opensandbox" and _opensandbox_on)
+                or (_sandbox_mode == "local")
+            )
+            if _use_sandbox:
                 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 
                 cfg = config.get("configurable", {}) if config else {}
@@ -1422,16 +1428,24 @@ def create_cuga_lite_graph(
                 else:
                     runtime_thread_id = state.thread_id or thread_id
 
-                opensandbox_executor = CodeExecutor._get_opensandbox_executor()
-                sandbox_tools = opensandbox_executor.create_sandbox_tools(thread_id=runtime_thread_id)
+                if _sandbox_mode == "native":
+                    sandbox_executor = CodeExecutor._get_native_executor()
+                    sandbox_label = "NativeSandbox"
+                elif _sandbox_mode == "local":
+                    sandbox_executor = CodeExecutor._get_local_sandbox_executor()
+                    sandbox_label = "LocalSandbox"
+                else:
+                    sandbox_executor = CodeExecutor._get_opensandbox_executor()
+                    sandbox_label = "OpenSandbox"
+
+                sandbox_tools = sandbox_executor.create_sandbox_tools(thread_id=runtime_thread_id)
                 for st in sandbox_tools:
-                    # Prefer coroutine for async execution context
                     fn = st.coroutine or st.func
                     if fn:
                         tools_context_dict[st.name] = fn
                 tools_for_prompt.extend(sandbox_tools)
                 logger.info(
-                    f"[OpenSandbox] Injected sandbox tools (thread_id={runtime_thread_id!r}) into execution context and prompt: {[t.name for t in sandbox_tools]}"
+                    f"[{sandbox_label}] Injected sandbox tools (thread_id={runtime_thread_id!r}) into execution context and prompt: {[t.name for t in sandbox_tools]}"
                 )
 
             from cuga.backend.evolve.integration import EvolveIntegration
@@ -1675,6 +1689,7 @@ def create_cuga_lite_graph(
                     skills_enabled=skills_enabled,
                     skills_prompt_section=skills_prompt_section,
                     enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
+                    sandbox_workspace="." if _sandbox_mode in ("native", "local") else "/workspace",
                     has_knowledge=has_knowledge_tools,
                     few_shot_examples=few_shot_examples,
                     few_shots_enabled=few_shots_enabled,

@@ -306,6 +306,26 @@ Replace `<search term>` with a descriptive phrase, using `+` to separate words. 
 }
 
 
+# Require approval for run_command when using the skills / shell-tools demo preset with
+# sandbox_mode = "local" only (native/opensandbox/e2b are not seeded with this policy here).
+# Stable id for run_command approval in skills demo / local shell workflows (Manage or preset config).
+DEMO_SKILLS_SHELL_TOOL_APPROVAL: dict[str, Any] = {
+    "id": "tool_approval_run_command_local",
+    "name": "Shell command approval (skills demo)",
+    "description": (
+        "Require approval before run_command when using Cuga Lite injected shell tools "
+        "(run_command is not an MCP/OpenAPI tool; it is listed under app cuga_lite_shell in Manage)."
+    ),
+    "policy_type": "tool_approval",
+    "type": "tool_approval",
+    "enabled": True,
+    "required_tools": ["run_command"],
+    "approval_message": ("About to run a shell command in the agent workspace. Approve to continue?"),
+    "show_code_preview": True,
+    "priority": 10,
+}
+
+
 def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
     """Return default app flags for a given preset (demo, demo_crm, demo_docs, demo_health, demo_knowledge, manager).
     Knowledge is disabled by default; only demo_knowledge hardcodes it to True."""
@@ -636,6 +656,10 @@ def setup_demo_manage_config(
     if tools and any(t.get("name") == "docs" for t in tools):
         policies.append(DOCS_PLAYBOOK)
         policies.append(DOCS_OUTPUT_FORMATTER)
+    if demo_type == "demo_skills":
+        _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+        if _sandbox_mode == "local":
+            policies.append(DEMO_SKILLS_SHELL_TOOL_APPROVAL)
     policies_struct: dict[str, Any] = {"enablePolicies": True, "policies": policies}
     config: dict[str, Any] = {
         "agent": agent_meta,
@@ -648,6 +672,9 @@ def setup_demo_manage_config(
     if tools and (any(t.get("name") == "docs" for t in tools) or demo_type in ("demo", "demo_skills")):
         config["feature_flags"] = config.get("feature_flags") or {}
         config["feature_flags"]["enable_todos"] = True
+
+    if demo_type == "demo_skills":
+        config.setdefault("advanced_features", {})["enable_shell_tool"] = True
 
     async def _setup():
         await save_draft(config, agent_id)

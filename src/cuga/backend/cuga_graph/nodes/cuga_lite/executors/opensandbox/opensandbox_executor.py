@@ -43,8 +43,28 @@ from cuga.config import settings
 from ..base_executor import RemoteExecutor
 
 
+VIRTUAL_WORKSPACE_ROOT = "/workspace"
+LEGACY_SANDBOX_ROOT = "/tmp"
+VENV_PATH = "/tmp/.venv"
+
+
 def _cfg():
     return settings.skills
+
+
+def _normalize_sandbox_path(path: str) -> str:
+    """Map legacy /tmp paths to the agent-facing /workspace root."""
+    raw = (path or "").strip().replace("\\", "/")
+    if not raw:
+        raise ValueError("empty sandbox path")
+    if raw == VIRTUAL_WORKSPACE_ROOT or raw.startswith(VIRTUAL_WORKSPACE_ROOT + "/"):
+        return raw
+    if raw == LEGACY_SANDBOX_ROOT or raw.startswith(LEGACY_SANDBOX_ROOT + "/"):
+        suffix = raw[len(LEGACY_SANDBOX_ROOT) :].lstrip("/")
+        return VIRTUAL_WORKSPACE_ROOT if not suffix else f"{VIRTUAL_WORKSPACE_ROOT}/{suffix}"
+    if raw.startswith("/"):
+        raise ValueError("sandbox path must be under /workspace")
+    return f"{VIRTUAL_WORKSPACE_ROOT}/{raw.lstrip('/')}"
 
 
 def _workspace_dir() -> Path:
@@ -153,12 +173,12 @@ class OpenSandboxExecutor(RemoteExecutor):
         )
         interpreter = await CodeInterpreter.create(sandbox)
 
-        # Ensure the standard sandbox working directory and Python venv exist.
-        # Agents install Python packages with uv into /tmp/.venv and run scripts via uv from /tmp.
+        # Ensure the agent-facing workspace and shared Python venv exist.
+        # Agents see /workspace; /tmp/.venv remains an internal implementation detail.
         await interpreter.sandbox.commands.run(
-            "mkdir -p /tmp && cd /tmp && "
+            f"mkdir -p {VIRTUAL_WORKSPACE_ROOT} && cd {VIRTUAL_WORKSPACE_ROOT} && "
             "(command -v uv >/dev/null 2>&1 || python -m pip install --quiet uv) && "
-            "uv venv /tmp/.venv"
+            f"uv venv {VENV_PATH}"
         )
 
         if getattr(_cfg(), "enabled", False):
@@ -173,7 +193,7 @@ class OpenSandboxExecutor(RemoteExecutor):
         return await self._get_or_create_interpreter(thread_id)
 
     async def _upload_skills_to_sandbox(self, interpreter: Any) -> None:
-        """Upload discovered skill folders into /tmp/skills/ in the sandbox.
+        """Upload discovered skill folders into /workspace/skills/ in the sandbox.
 
         Mirrors ``cuga.backend.skills.loader.discover_skills`` precedence:
         global legacy ``~/.config/cuga/skills`` → global ``~/.config/agents/skills`` →
@@ -199,7 +219,7 @@ class OpenSandboxExecutor(RemoteExecutor):
                 if suffix in {".xsd", ".pyc"}:
                     continue
                 rel = local_path.relative_to(upload_root)
-                sandbox_path = f"/tmp/skills/{rel}"
+                sandbox_path = f"{VIRTUAL_WORKSPACE_ROOT}/skills/{rel}"
                 try:
                     data = local_path.read_bytes()
                     entries_by_path[sandbox_path] = WriteEntry(path=sandbox_path, data=data)
@@ -209,7 +229,10 @@ class OpenSandboxExecutor(RemoteExecutor):
         if entries_by_path:
             entries = list(entries_by_path.values())
             await interpreter.sandbox.files.write_files(entries)
-            logger.info(f"[OpenSandboxExecutor] Uploaded {len(entries)} skill files to /tmp/skills/")
+            logger.info(
+                f"[OpenSandboxExecutor] Uploaded {len(entries)} skill files to "
+                f"{VIRTUAL_WORKSPACE_ROOT}/skills/"
+            )
 
     async def release_sandbox(self, thread_id: Optional[str] = None) -> None:
         """Kill and remove the cached interpreter/sandbox for a thread."""
@@ -239,7 +262,7 @@ class OpenSandboxExecutor(RemoteExecutor):
                 from code_interpreter import SupportedLanguage  # type: ignore[import]
 
                 interpreter = await executor._get_or_create_interpreter(thread_id)
-                sandbox_cmd = f"cd /tmp && source /tmp/.venv/bin/activate && {cmd}"
+                sandbox_cmd = f"cd {VIRTUAL_WORKSPACE_ROOT} && source {VENV_PATH}/bin/activate && {cmd}"
                 result = await interpreter.codes.run(sandbox_cmd, language=SupportedLanguage.BASH)
                 stdout = "".join(line.text for line in result.logs.stdout)
                 stderr = "".join(line.text for line in result.logs.stderr)
@@ -262,7 +285,7 @@ class OpenSandboxExecutor(RemoteExecutor):
             running: await run_command("ls -la <sandbox_path>")
 
             Args:
-                sandbox_path: Absolute path of the file inside the sandbox (e.g. "/tmp/output.pptx")
+                sandbox_path: Absolute path of the file inside the sandbox (e.g. "/workspace/output.pptx")
                 filename: Optional override for the saved filename. Defaults to the basename of sandbox_path.
 
             Returns:
@@ -271,12 +294,13 @@ class OpenSandboxExecutor(RemoteExecutor):
             try:
                 interpreter = await executor._get_or_create_interpreter(thread_id)
 
+                sandbox_path = _normalize_sandbox_path(sandbox_path)
                 # Verify the file exists first to give a clear error
                 check = await interpreter.sandbox.files.get_file_info([sandbox_path])
                 if not check or sandbox_path not in check:
                     return (
                         f"[download_file error] File not found in sandbox: {sandbox_path}\n"
-                        "Tip: use run_command('ls /tmp') to list available files."
+                        "Tip: use run_command('ls /workspace') to list available files."
                     )
 
                 data: bytes = await interpreter.sandbox.files.read_bytes(sandbox_path)
@@ -293,7 +317,7 @@ class OpenSandboxExecutor(RemoteExecutor):
             except Exception as exc:
                 return (
                     f"[download_file error] {exc}\n"
-                    "Tip: verify the file was created with run_command('ls -la /tmp/')."
+                    "Tip: verify the file was created with run_command('ls -la /workspace/')."
                 )
 
         return download_file
@@ -306,7 +330,7 @@ class OpenSandboxExecutor(RemoteExecutor):
 
             Args:
                 local_path: Path to the local file (absolute, or relative to cuga_workspace).
-                sandbox_path: Destination path inside the sandbox (e.g. "/tmp/data.csv").
+                sandbox_path: Destination path inside the sandbox (e.g. "/workspace/data.csv").
 
             Returns:
                 Confirmation message or error description.
@@ -320,6 +344,7 @@ class OpenSandboxExecutor(RemoteExecutor):
                 if not p.exists():
                     return f"[upload_file error] Local file not found: {p}"
                 data = p.read_bytes()
+                sandbox_path = _normalize_sandbox_path(sandbox_path)
                 interpreter = await executor._get_or_create_interpreter(thread_id)
                 await interpreter.sandbox.files.write_files([WriteEntry(path=sandbox_path, data=data)])
                 logger.info(f"[OpenSandbox] Uploaded {p} → {sandbox_path}")
@@ -333,11 +358,11 @@ class OpenSandboxExecutor(RemoteExecutor):
     def create_list_files_tool(self, thread_id: Optional[str] = None) -> Callable:
         executor = self
 
-        async def list_files(sandbox_path: str = "/tmp", pattern: str = "*") -> str:
+        async def list_files(sandbox_path: str = VIRTUAL_WORKSPACE_ROOT, pattern: str = "*") -> str:
             """List files and directories at a path inside the sandbox.
 
             Args:
-                sandbox_path: Directory path inside the sandbox (default: /tmp).
+                sandbox_path: Directory path inside the sandbox (default: /workspace).
                 pattern: Glob pattern to filter results (default: "*" = all files).
 
             Returns:
@@ -346,6 +371,7 @@ class OpenSandboxExecutor(RemoteExecutor):
             try:
                 from opensandbox.models.filesystem import SearchEntry  # type: ignore[import]
 
+                sandbox_path = _normalize_sandbox_path(sandbox_path)
                 interpreter = await executor._get_or_create_interpreter(thread_id)
                 entries_raw = await interpreter.sandbox.files.search(
                     SearchEntry(path=sandbox_path, pattern=pattern)
@@ -387,6 +413,7 @@ class OpenSandboxExecutor(RemoteExecutor):
                 File contents as a string, or an error message if not found.
             """
             try:
+                sandbox_path = _normalize_sandbox_path(sandbox_path)
                 interpreter = await executor._get_or_create_interpreter(thread_id)
                 content = await interpreter.sandbox.files.read_file(sandbox_path)
             except Exception as exc:
@@ -438,13 +465,14 @@ class OpenSandboxExecutor(RemoteExecutor):
             are created automatically.
 
             Args:
-                sandbox_path: Destination path inside the sandbox (e.g. "/tmp/script.js").
+                sandbox_path: Destination path inside the sandbox (e.g. "/workspace/script.js").
                 content: Text content to write.
 
             Returns:
                 Confirmation message or error description.
             """
             try:
+                sandbox_path = _normalize_sandbox_path(sandbox_path)
                 interpreter = await executor._get_or_create_interpreter(thread_id)
                 parent = str(Path(sandbox_path).parent)
                 await interpreter.sandbox.commands.run(f"mkdir -p {parent}")
@@ -473,9 +501,9 @@ class OpenSandboxExecutor(RemoteExecutor):
                 name="run_command",
                 description=(
                     "Run a shell command inside the sandbox and return its output. "
-                    "Commands run from /tmp with /tmp/.venv activated. "
+                    "Commands run from /workspace with the sandbox virtual environment activated. "
                     "Use uv only for Python package installs and inspection (`uv pip install ...`, `uv pip list`, `uv pip show ...`). "
-                    "Never run `python -m ...` directly; use `uv run python -m ...`. Python scripts should run as `uv run /tmp/file.py`. "
+                    "Never run `python -m ...` directly; use `uv run python -m ...`. Python scripts should run as `uv run /workspace/file.py`. "
                     "Node commands must start with plain `node ...`; npm commands must start with plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`."
                 ),
@@ -508,7 +536,7 @@ class OpenSandboxExecutor(RemoteExecutor):
             StructuredTool.from_function(
                 coroutine=list_files,
                 name="list_files",
-                description="List files and directories at a path inside the sandbox.",
+                description="List files and directories at a path inside the sandbox (/workspace by default).",
             ),
             StructuredTool.from_function(
                 coroutine=read_file,

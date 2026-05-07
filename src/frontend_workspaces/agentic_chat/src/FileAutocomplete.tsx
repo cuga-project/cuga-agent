@@ -140,7 +140,8 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
     const searchTerm = textAfterAt.split(/\s/)[0];
     const textAfterSearchTerm = currentValue.substring(lastAtIndex + 1 + searchTerm.length);
     
-    const newValue = currentValue.substring(0, lastAtIndex) + `./${file.path}` + textAfterSearchTerm;
+    const insertedPath = file.path.startsWith("/") ? file.path : `./${file.path}`;
+    const newValue = currentValue.substring(0, lastAtIndex) + insertedPath + textAfterSearchTerm;
 
     const nativeTextareaSetter = Object.getOwnPropertyDescriptor(
       window.HTMLTextAreaElement.prototype,
