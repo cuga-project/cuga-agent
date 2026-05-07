@@ -18,6 +18,7 @@ dependencies = [
     "markdownify",
     "uvicorn",
     "fastapi[standard]",
+    "apscheduler>=3.10",
     "langfuse",
     "dynaconf>=3.2.13",
     "playwright>=1.49.0",

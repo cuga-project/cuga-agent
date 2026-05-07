@@ -148,6 +148,7 @@ def create_error_command(
 def create_cuga_supervisor_graph(
     supervisor_model: BaseChatModel,
     agents: Dict[str, Union[CugaAgent, Dict[str, Any]]],
+    enable_loops: bool = False,
 ) -> StateGraph:
     """
     Create supervisor subgraph that orchestrates multiple CugaAgent instances.
@@ -155,16 +156,20 @@ def create_cuga_supervisor_graph(
     Args:
         supervisor_model: The language model for the supervisor
         agents: Dict mapping agent names to CugaAgent instances (internal) or A2A config (external)
+        enable_loops: If True, inject CUGA loops tools (schedule_recurring etc.)
+            into the supervisor's execution sandbox so the planner can schedule
+            itself directly without needing a `loop_scheduler` specialist.
 
     Returns:
         StateGraph implementing the CugaSupervisor architecture
     """
-    return _create_supervisor_conversational_graph(supervisor_model, agents)
+    return _create_supervisor_conversational_graph(supervisor_model, agents, enable_loops)
 
 
 def _create_supervisor_conversational_graph(
     supervisor_model: BaseChatModel,
     agents: Dict[str, Union[CugaAgent, Dict[str, Any]]],
+    enable_loops: bool = False,
 ) -> StateGraph:
     """
     Create supervisor conversational mode graph - supervisor acts as a single agent with delegation tools.
@@ -361,6 +366,44 @@ def _create_supervisor_conversational_graph(
                     "response_doc": "Returns the current list of todos with their status.",
                 }
             )
+
+            # Inject CUGA loops tools into supervisor's execution sandbox so
+            # the planner can schedule itself directly. The supervisor's
+            # `_set_loops_context()` (called from invoke()) sets context vars
+            # that the tools read to attribute new loops to this supervisor +
+            # thread, so loop fires re-invoke this supervisor.
+            if enable_loops:
+                try:
+                    from cuga.backend.loops.tools import get_loops_tools as _get_loops_tools
+
+                    for _t in _get_loops_tools():
+                        agent_tools_context[_t.name] = make_tool_awaitable(_t.coroutine or _t.func)
+                        # Pull params off the tool's pydantic args schema for the prompt.
+                        try:
+                            _schema = _t.args_schema.model_json_schema()
+                            _props = _schema.get("properties", {}) or {}
+                            _required = set(_schema.get("required", []))
+                            _params_str = ", ".join(
+                                f"{n}: {p.get('type', 'Any')}" + ("" if n in _required else " = None")
+                                for n, p in _props.items()
+                            )
+                            _params_doc = "\n".join(
+                                f"- {n} ({p.get('type', 'Any')}): {p.get('description', '')}"
+                                for n, p in _props.items()
+                            )
+                        except Exception:
+                            _params_str = ""
+                            _params_doc = ""
+                        agent_tools_for_prompt.append({
+                            "name": _t.name,
+                            "description": _t.description,
+                            "params_str": _params_str,
+                            "params_doc": _params_doc,
+                            "response_doc": "Returns a confirmation string.",
+                        })
+                    logger.info("supervisor: injected CUGA loops tools into execution sandbox")
+                except Exception as _loops_err:
+                    logger.warning(f"supervisor loops injection skipped: {_loops_err}")
 
             # Create prompt using template (similar to create_mcp_prompt)
             is_autonomous_subtask = state.sub_task is not None and state.sub_task.strip() != ""

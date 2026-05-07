@@ -213,3 +213,11 @@ save_on_success = true       # Save trajectory on successful task completion
 save_on_failure = true       # Save trajectory on failed task completion
 async_save = true            # Fire-and-forget trajectory saving (non-blocking)
 timeout = 30.0               # Timeout in seconds for Evolve MCP calls
+
+[loops]
+enabled = false           # Master toggle for CUGA loops (agent self-scheduling).
+                          # When false, the schedule_recurring / schedule_wakeup tools
+                          # are not injected and the scheduler is not started, even if
+                          # an agent passes enable_loops=True (the explicit per-agent
+                          # flag overrides this default).
+default_expires_days = 7  # Default expiry for scheduled loops if the agent does not specify.

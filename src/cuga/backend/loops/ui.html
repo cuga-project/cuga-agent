@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<title>CUGA Loops</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<style>
+  :root {
+    --bg: #0d1117; --panel: #161b22; --border: #30363d;
+    --text: #e6edf3; --muted: #8b949e; --accent: #58a6ff;
+    --ok: #3fb950; --warn: #d29922; --err: #f85149;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    font-size: 14px;
+  }
+  header {
+    padding: 16px 24px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between; gap: 16px;
+  }
+  header h1 { margin: 0; font-size: 18px; font-weight: 600; }
+  header .meta { color: var(--muted); font-size: 12px; }
+  .controls {
+    padding: 12px 24px; border-bottom: 1px solid var(--border);
+    display: flex; gap: 12px; align-items: center; flex-wrap: wrap;
+  }
+  select, button, input {
+    background: var(--panel); color: var(--text); border: 1px solid var(--border);
+    padding: 6px 10px; border-radius: 4px; font: inherit;
+  }
+  button { cursor: pointer; }
+  button:hover { border-color: var(--accent); }
+  button.danger:hover { border-color: var(--err); color: var(--err); }
+  table { width: 100%; border-collapse: collapse; }
+  th, td {
+    text-align: left; padding: 10px 16px; border-bottom: 1px solid var(--border);
+    vertical-align: top;
+  }
+  th { background: var(--panel); font-weight: 600; font-size: 12px; color: var(--muted); text-transform: uppercase; }
+  tr.loop-row { cursor: pointer; }
+  tr.loop-row:hover { background: rgba(88,166,255,0.05); }
+  .badge {
+    display: inline-block; padding: 2px 8px; border-radius: 10px;
+    font-size: 11px; font-weight: 500;
+  }
+  .b-active   { background: rgba(63,185,80,0.15); color: var(--ok); }
+  .b-paused   { background: rgba(210,153,34,0.15); color: var(--warn); }
+  .b-cancelled, .b-expired, .b-orphaned { background: rgba(139,148,158,0.15); color: var(--muted); }
+  .prompt { color: var(--muted); font-size: 12px; max-width: 460px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .actions { display: flex; gap: 6px; }
+  .actions button { padding: 4px 8px; font-size: 12px; }
+  .empty { padding: 64px; text-align: center; color: var(--muted); }
+  .detail-pane {
+    position: fixed; top: 0; right: 0; bottom: 0; width: 540px;
+    background: var(--panel); border-left: 1px solid var(--border);
+    overflow-y: auto; padding: 20px; transform: translateX(100%);
+    transition: transform 0.2s ease-out; z-index: 10;
+  }
+  .detail-pane.open { transform: translateX(0); }
+  .detail-pane h2 { margin: 0 0 8px; font-size: 16px; }
+  .detail-pane .close { float: right; }
+  .kv { display: grid; grid-template-columns: 140px 1fr; gap: 4px 16px; margin-top: 12px; font-size: 12px; }
+  .kv .k { color: var(--muted); }
+  .kv .v { font-family: ui-monospace, monospace; word-break: break-all; }
+  .runs { margin-top: 20px; }
+  .runs h3 { font-size: 13px; color: var(--muted); margin: 0 0 8px; text-transform: uppercase; }
+  .run {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 4px;
+    padding: 8px 10px; margin-bottom: 6px; font-size: 12px;
+  }
+  .run .when { color: var(--muted); }
+  .run .summary { margin-top: 4px; white-space: pre-wrap; word-break: break-word; }
+  .run.ok { border-left: 2px solid var(--ok); }
+  .run.error { border-left: 2px solid var(--err); }
+  .run.error .summary { color: var(--err); }
+  .stale { color: var(--muted); font-style: italic; font-size: 11px; }
+  code { background: var(--bg); padding: 1px 5px; border-radius: 3px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>CUGA Loops</h1>
+  <div class="meta">
+    <span id="current-app">…</span> · <span id="loop-count">0 loops</span>
+    · auto-refresh every 10s
+  </div>
+</header>
+
+<div class="controls">
+  <label>App: <select id="app-filter"><option value="">all</option></select></label>
+  <label>Status: <select id="status-filter">
+    <option value="">all</option>
+    <option value="active">active</option>
+    <option value="paused">paused</option>
+    <option value="cancelled">cancelled</option>
+    <option value="expired">expired</option>
+    <option value="orphaned">orphaned</option>
+  </select></label>
+  <button onclick="refresh()">Refresh</button>
+</div>
+
+<table id="loops-table">
+  <thead>
+    <tr>
+      <th>Status</th><th>App</th><th>Agent</th><th>Cadence</th><th>Prompt</th>
+      <th>Created</th><th>Next fire</th><th>Last fire</th><th>Fires</th><th>Actions</th>
+    </tr>
+  </thead>
+  <tbody id="rows"></tbody>
+</table>
+<div id="empty" class="empty" style="display:none">
+  No loops yet. Have an agent call <code>schedule_recurring</code> or <code>schedule_wakeup</code>.
+</div>
+
+<div id="detail" class="detail-pane">
+  <button class="close" onclick="closeDetail()">×</button>
+  <h2 id="d-id">—</h2>
+  <div id="d-body"></div>
+</div>
+
+<script>
+const fmt = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "—";
+const fmtRel = (ts) => {
+  if (!ts) return "—";
+  const d = ts * 1000 - Date.now();
+  const abs = Math.abs(d);
+  const s = Math.floor(abs / 1000);
+  if (s < 60) return d > 0 ? `in ${s}s` : `${s}s ago`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return d > 0 ? `in ${m}m` : `${m}m ago`;
+  const h = Math.floor(m / 60);
+  if (h < 48) return d > 0 ? `in ${h}h` : `${h}h ago`;
+  const day = Math.floor(h / 24);
+  return d > 0 ? `in ${day}d` : `${day}d ago`;
+};
+
+let allLoops = [];
+
+async function refresh() {
+  const r = await fetch("/cuga/loops/api/list");
+  const data = await r.json();
+  document.getElementById("current-app").textContent = "this process: " + data.current_app;
+  allLoops = data.loops;
+
+  // Populate app filter
+  const apps = [...new Set(allLoops.map(l => l.app_name))].sort();
+  const af = document.getElementById("app-filter");
+  const cur = af.value;
+  af.innerHTML = '<option value="">all</option>' +
+    apps.map(a => `<option value="${a}">${a}</option>`).join("");
+  af.value = cur;
+
+  render();
+}
+
+function render() {
+  const appF = document.getElementById("app-filter").value;
+  const statusF = document.getElementById("status-filter").value;
+  const filtered = allLoops.filter(l =>
+    (!appF || l.app_name === appF) &&
+    (!statusF || l.status === statusF)
+  );
+  document.getElementById("loop-count").textContent = `${filtered.length} loop${filtered.length === 1 ? "" : "s"}`;
+  const tbody = document.getElementById("rows");
+  tbody.innerHTML = "";
+  document.getElementById("empty").style.display = filtered.length === 0 ? "block" : "none";
+
+  for (const l of filtered) {
+    const tr = document.createElement("tr");
+    tr.className = "loop-row";
+    tr.onclick = (e) => {
+      if (e.target.tagName === "BUTTON") return;
+      openDetail(l.id);
+    };
+    const tsCell = (ts) =>
+      ts ? `<span title="${fmt(ts)}">${fmtRel(ts)}</span>` : `<span class="stale">—</span>`;
+    tr.innerHTML = `
+      <td><span class="badge b-${l.status}">${l.status}</span></td>
+      <td>${l.app_name}</td>
+      <td>${l.agent_name}</td>
+      <td><code>${l.trigger_spec}</code></td>
+      <td><div class="prompt" title="${escapeHtml(l.prompt)}">${escapeHtml(l.prompt)}</div></td>
+      <td>${tsCell(l.created_at)}</td>
+      <td>${tsCell(l.next_fire_at)}</td>
+      <td>${tsCell(l.last_fire_at)}</td>
+      <td>${l.fire_count}${l.error_count ? ` <span style="color:var(--err)">(${l.error_count} err)</span>` : ""}</td>
+      <td class="actions">
+        ${l.status === "active" ?
+          `<button onclick="act('${l.id}', 'pause')">Pause</button>` :
+          l.status === "paused" ?
+          `<button onclick="act('${l.id}', 'resume')">Resume</button>` : ""}
+        <button onclick="act('${l.id}', 'run')">Run now</button>
+        <button class="danger" onclick="del('${l.id}')">Delete</button>
+      </td>`;
+    tbody.appendChild(tr);
+  }
+}
+
+function escapeHtml(s) {
+  return (s || "").replace(/[&<>"']/g, c =>
+    ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"})[c]);
+}
+
+async function act(id, action) {
+  const r = await fetch(`/cuga/loops/api/${id}/${action}`, { method: "POST" });
+  if (!r.ok) alert(await r.text());
+  refresh();
+}
+async function del(id) {
+  if (!confirm(`Delete loop ${id}?`)) return;
+  const r = await fetch(`/cuga/loops/api/${id}`, { method: "DELETE" });
+  if (!r.ok) alert(await r.text());
+  closeDetail();
+  refresh();
+}
+
+async function openDetail(id) {
+  const r = await fetch(`/cuga/loops/api/${id}`);
+  if (!r.ok) { alert("not found"); return; }
+  const { loop, runs, agent_registered_here } = await r.json();
+  document.getElementById("d-id").textContent = loop.id;
+  const body = document.getElementById("d-body");
+  body.innerHTML = `
+    <div class="kv">
+      <span class="k">Status</span><span class="v"><span class="badge b-${loop.status}">${loop.status}</span></span>
+      <span class="k">App</span><span class="v">${loop.app_name}${agent_registered_here ? "" : " <span class='stale'>(agent not in this process)</span>"}</span>
+      <span class="k">Agent</span><span class="v">${loop.agent_name}</span>
+      <span class="k">Thread</span><span class="v">${loop.thread_id}</span>
+      <span class="k">Cadence</span><span class="v">${loop.trigger_spec}</span>
+      <span class="k">Trigger kind</span><span class="v">${loop.trigger_kind}</span>
+      <span class="k">Created</span><span class="v">${fmt(loop.created_at)}</span>
+      <span class="k">Expires</span><span class="v">${fmt(loop.expires_at)}</span>
+      <span class="k">Next fire</span><span class="v">${fmt(loop.next_fire_at)} (${fmtRel(loop.next_fire_at)})</span>
+      <span class="k">Last fire</span><span class="v">${fmt(loop.last_fire_at)}</span>
+      <span class="k">Fires</span><span class="v">${loop.fire_count} (${loop.error_count} errors)</span>
+      <span class="k">Last error</span><span class="v">${loop.last_error || "—"}</span>
+      <span class="k">Prompt</span><span class="v" style="white-space:pre-wrap">${escapeHtml(loop.prompt)}</span>
+      ${loop.metadata_json ? `<span class="k">Metadata</span><span class="v" style="white-space:pre-wrap">${escapeHtml(loop.metadata_json)}</span>` : ""}
+    </div>
+    <div class="runs">
+      <h3>Recent runs (${runs.length})</h3>
+      ${runs.length === 0 ? '<div class="stale">No runs yet.</div>' :
+        runs.map(r => `
+          <div class="run ${r.outcome === "ok" ? "ok" : "error"}">
+            <div class="when">${fmt(r.started_at)} · ${r.outcome}${r.finished_at ? ` · ${(r.finished_at - r.started_at).toFixed(1)}s` : ""}</div>
+            <div class="summary">${escapeHtml(r.error || r.summary || "(no output)")}</div>
+          </div>
+        `).join("")}
+    </div>
+  `;
+  document.getElementById("detail").classList.add("open");
+}
+function closeDetail() { document.getElementById("detail").classList.remove("open"); }
+
+document.getElementById("app-filter").onchange = render;
+document.getElementById("status-filter").onchange = render;
+
+refresh();
+setInterval(refresh, 10000);
+</script>
+</body>
+</html>

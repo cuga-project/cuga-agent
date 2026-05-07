@@ -1221,6 +1221,8 @@ class CugaAgent:
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
         enable_knowledge: Optional[bool] = None,
+        enable_loops: Optional[bool] = None,
+        loops_agent_name: Optional[str] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1282,6 +1284,12 @@ class CugaAgent:
 
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
+
+        # Loops configuration
+        self._enable_loops = enable_loops  # None = auto from settings
+        self._loops_agent_name = loops_agent_name  # default set in _ensure_initialized
+        self._loops_auto_injected = False
+        self._loops_registered = False
 
         # Setup tool provider
         if tool_provider:
@@ -1372,10 +1380,76 @@ class CugaAgent:
                 # Don't set flag — retry on next call
                 logger.warning(f"Knowledge auto-injection failed (will retry): {e}")
 
+        # Auto-inject loops tools + register with loops service (lazy, once)
+        if not self._loops_auto_injected:
+            try:
+                from cuga.config import settings as _cuga_settings
+                if self._enable_loops is not None:
+                    loops_enabled = self._enable_loops
+                else:
+                    loops_enabled = bool(
+                        getattr(getattr(_cuga_settings, "loops", None), "enabled", False)
+                    )
+
+                if loops_enabled and isinstance(self.tool_provider, DirectLangChainToolsProvider):
+                    from cuga.backend.loops.tools import get_loops_tools
+                    from cuga.backend.loops.service import get_loops_service
+
+                    existing_names = {t.name for t in self.tool_provider.tools}
+                    loop_tools = [t for t in get_loops_tools() if t.name not in existing_names]
+                    if loop_tools:
+                        self.tool_provider.add_tools(loop_tools)
+                        logger.info(f"Auto-injected {len(loop_tools)} loops tools into SDK agent")
+
+                    # Register this agent with the loops service so the runner
+                    # can dispatch fires back to it.
+                    if not self._loops_registered:
+                        if not self._loops_agent_name:
+                            self._loops_agent_name = (
+                                f"cuga_agent_{id(self):x}"
+                            )
+                        svc = get_loops_service()
+
+                        async def _invoke_for_loops(prompt: str, thread_id: str) -> str:
+                            result = await self.invoke(prompt, thread_id=thread_id)
+                            return result.answer or ""
+
+                        # Only register if the app hasn't already provided a
+                        # custom callback for this name — apps win.
+                        if svc.get_agent(self._loops_agent_name) is None:
+                            svc.register_agent(self._loops_agent_name, _invoke_for_loops)
+                        else:
+                            logger.info(
+                                f"loops: '{self._loops_agent_name}' already has a callback — keeping app's"
+                            )
+                        try:
+                            await svc.start()
+                        except Exception as start_err:
+                            logger.warning(f"loops scheduler start failed: {start_err}")
+                        self._loops_registered = True
+
+                self._loops_auto_injected = True
+            except Exception as e:
+                logger.warning(f"Loops auto-injection failed (will retry): {e}")
+
     def _inject_knowledge_to_config(self, run_config: dict) -> None:
         """Add knowledge engine to configurable for awareness injection."""
         if self._knowledge_client is not None:
             run_config["configurable"]["knowledge_engine"] = self._knowledge_client._engine
+
+    def _set_loops_context(self, thread_id: str) -> None:
+        """Set context vars used by loop tools to bind new loops to this agent+thread."""
+        if not self._loops_registered:
+            return
+        try:
+            from cuga.backend.loops.service import (
+                current_agent_name, current_app_name, current_thread_id, get_loops_service,
+            )
+            current_agent_name.set(self._loops_agent_name or "cuga_agent")
+            current_thread_id.set(thread_id)
+            current_app_name.set(get_loops_service().app_name)
+        except Exception as e:
+            logger.debug(f"could not set loops context: {e}")
 
     def _create_graph(self, thread_id: Optional[str] = None):
         """Create the LangGraph graph with HITL support."""
@@ -1759,6 +1833,7 @@ class CugaAgent:
 
             # Set session.id for OpenLit observability (if enabled)
             set_session_attribute(thread_id)
+            self._set_loops_context(thread_id)
 
             # Add policy system to config if available
             if self._policy_system:
@@ -1893,6 +1968,7 @@ class CugaAgent:
 
         # Set session.id for OpenLit observability (if enabled)
         set_session_attribute(thread_id)
+        self._set_loops_context(thread_id)
 
         # Add policy system to config if available
         if self._policy_system:
@@ -2226,6 +2302,8 @@ class CugaSupervisor:
         description: Optional[str] = None,
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
+        enable_loops: Optional[bool] = None,
+        loops_agent_name: Optional[str] = None,
     ):
         """
         Initialize supervisor.
@@ -2249,6 +2327,11 @@ class CugaSupervisor:
         self._compiled_graph = None
         self._supervisor_state = None
 
+        # Loops configuration
+        self._enable_loops = enable_loops
+        self._loops_agent_name = loops_agent_name
+        self._loops_initialized = False
+
         # Initialize model from settings if not provided
         if not self._model:
             from cuga.config import settings
@@ -2256,6 +2339,79 @@ class CugaSupervisor:
             llm_manager = LLMManager()
             self._model = llm_manager.get_model(settings.agent.code.model)
             logger.info(f"Using default model: {self._model.__class__.__name__}")
+
+    async def _ensure_loops_initialized(self) -> None:
+        """Inject loops tools into internal CugaAgent specialists and register
+        the supervisor (not the specialists) with the loops service. Loops
+        created via tools are then attributed to the supervisor, so when a
+        loop fires the supervisor is re-invoked (re-runs its planner)."""
+        if self._loops_initialized:
+            return
+        try:
+            from cuga.config import settings as _cuga_settings
+            if self._enable_loops is not None:
+                loops_enabled = self._enable_loops
+            else:
+                loops_enabled = bool(
+                    getattr(getattr(_cuga_settings, "loops", None), "enabled", False)
+                )
+            if not loops_enabled:
+                self._loops_initialized = True
+                return
+
+            from cuga.backend.loops.service import get_loops_service
+
+            # NOTE: We deliberately do NOT inject loop tools into the
+            # specialists. The supervisor itself gets the loop tools as
+            # first-class callables in its execution sandbox (see
+            # `create_cuga_supervisor_graph(enable_loops=True)`), so
+            # specialists stay clean and the planner is the single
+            # decision-maker for scheduling.
+            # We still mark each specialist as "loops considered" so they
+            # don't re-attempt their own auto-inject on first invoke.
+            for _name, _ag in self._agents.items():
+                if isinstance(_ag, CugaAgent):
+                    _ag._loops_auto_injected = True
+                    _ag._loops_registered = False
+
+            # Register the supervisor with the loops service
+            if not self._loops_agent_name:
+                self._loops_agent_name = f"cuga_supervisor_{id(self):x}"
+            svc = get_loops_service()
+
+            async def _invoke_for_loops(prompt: str, thread_id: str) -> str:
+                result = await self.invoke(prompt, thread_id=thread_id)
+                return getattr(result, "answer", "") or ""
+
+            # Only register if the app hasn't already provided its own
+            # callback for this name. Apps that pre-register a custom
+            # handler (e.g. to save runs in their own format) win.
+            if svc.get_agent(self._loops_agent_name) is None:
+                svc.register_agent(self._loops_agent_name, _invoke_for_loops)
+            else:
+                logger.info(
+                    f"loops: '{self._loops_agent_name}' already has a callback — keeping app's"
+                )
+            try:
+                await svc.start()
+            except Exception as start_err:
+                logger.warning(f"loops scheduler start failed: {start_err}")
+            self._loops_initialized = True
+        except Exception as e:
+            logger.warning(f"supervisor loops initialization failed: {e}")
+
+    def _set_loops_context(self, thread_id: str) -> None:
+        if not self._loops_initialized or not self._enable_loops:
+            return
+        try:
+            from cuga.backend.loops.service import (
+                current_agent_name, current_app_name, current_thread_id, get_loops_service,
+            )
+            current_agent_name.set(self._loops_agent_name or "cuga_supervisor")
+            current_thread_id.set(thread_id)
+            current_app_name.set(get_loops_service().app_name)
+        except Exception as e:
+            logger.debug(f"could not set loops context on supervisor: {e}")
 
     @classmethod
     async def from_yaml(cls, yaml_path: str) -> "CugaSupervisor":
@@ -2298,6 +2454,7 @@ class CugaSupervisor:
             supervisor_subgraph = create_cuga_supervisor_graph(
                 supervisor_model=self._model,
                 agents=self._agents,
+                enable_loops=bool(self._enable_loops),
             )
 
             # Compile with checkpointer
@@ -2327,6 +2484,9 @@ class CugaSupervisor:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
+        # Initialize loops support if requested (lazy, once)
+        await self._ensure_loops_initialized()
+
         import uuid
         from langchain_core.messages import HumanMessage
 
@@ -2338,6 +2498,10 @@ class CugaSupervisor:
         config = {"configurable": {"thread_id": thread_id}}
         if self._callbacks:
             config["callbacks"] = self._callbacks
+
+        # Bind loops context vars so any sub-agent's loop tools attribute
+        # the loop to this supervisor + thread.
+        self._set_loops_context(thread_id)
 
         # Handle resume case
         if message is None or action_response is not None:

@@ -836,8 +836,24 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
+    # Start CUGA loops scheduler if enabled
+    try:
+        if getattr(getattr(settings, "loops", None), "enabled", False):
+            from cuga.backend.loops.service import get_loops_service
+            await get_loops_service().start()
+            logger.info("✅ CUGA loops scheduler started")
+    except Exception as _loops_err:
+        logger.warning(f"loops scheduler did not start: {_loops_err}")
+
     yield
     logger.info("Application is shutting down...")
+
+    try:
+        from cuga.backend.loops.service import get_loops_service
+        await get_loops_service().shutdown()
+    except Exception as _loops_err:
+        logger.debug(f"loops shutdown skipped: {_loops_err}")
 
     # Terminate the save_reuse server process if it's running
     if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
@@ -1609,6 +1625,14 @@ app.add_middleware(
 
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
+
+try:
+    from cuga.backend.loops.api import router as _loops_router
+
+    app.include_router(_loops_router)
+    logger.info("mounted CUGA loops router at /cuga/loops")
+except Exception as _loops_err:  # pragma: no cover - import guard
+    logger.debug(f"loops router not mounted: {_loops_err}")
 
 
 @app.get("/health")
