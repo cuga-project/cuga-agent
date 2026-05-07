@@ -603,7 +603,7 @@ class LLMManager:
             watsonx_params: Dict[str, Any] = {
                 "params": {
                     "temperature": temperature,
-                    "max_tokens": max_tokens,
+                    "max_completion_tokens": max_tokens,
                 },
             }
 
