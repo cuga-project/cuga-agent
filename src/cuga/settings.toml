@@ -66,7 +66,7 @@ enable_shell_tool = false
 #   "native"      — macOS sandbox-exec (no Docker; macOS only; auto-falls back to "local" on Windows/Linux)
 #   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
 #   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
-sandbox_mode = "local"
+sandbox_mode = "native"
 
 [skills]
 # When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.

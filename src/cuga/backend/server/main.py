@@ -742,6 +742,7 @@ async def lifespan(app: FastAPI):
         reflection_enabled=_prod_overrides.get("reflection_enabled"),
         shortlisting_tool_threshold=_prod_overrides.get("shortlisting_tool_threshold"),
         cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
+        special_instructions=(_startup_config or {}).get("special_instructions") or None,
     )
     await app_state.agent.build_graph()
 
@@ -827,6 +828,7 @@ async def lifespan(app: FastAPI):
         shortlisting_tool_threshold=draft_overrides.get("shortlisting_tool_threshold"),
         cuga_lite_max_steps=draft_overrides.get("cuga_lite_max_steps"),
         llm_config=_draft_llm_cfg or None,
+        special_instructions=(draft_config or {}).get("special_instructions") or None,
     )
     await draft_app_state.agent.build_graph()
 
@@ -1331,6 +1333,7 @@ async def event_stream(
         cuga_lite_max_steps=getattr(run_agent, "cuga_lite_max_steps", None),
         current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
         knowledge_context=_knowledge_ctx or None,
+        special_instructions=getattr(run_agent, "special_instructions", None),
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 

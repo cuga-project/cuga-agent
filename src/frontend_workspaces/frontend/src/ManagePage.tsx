@@ -85,6 +85,7 @@ export interface AgentConfig {
     shortlisting_tool_threshold?: number;
     builtin_tools?: string[];
   };
+  special_instructions?: string;
   policies?: { enablePolicies: boolean; policies: unknown[] };
   homescreen?: HomescreenConfig;
   knowledge?: {
@@ -235,6 +236,7 @@ export function ManagePage() {
   } | null>(null);
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
+  const [specialInstructions, setSpecialInstructions] = useState("");
   const [secretsModalOpen, setSecretsModalOpen] = useState(false);
   const [skills, setSkills] = useState<Array<{ name: string; description: string; requirements: string[]; source: string }>>([]);
   const [skillsLoading, setSkillsLoading] = useState(false);
@@ -271,6 +273,7 @@ export function ManagePage() {
   const draftSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolsSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const llmBlurSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const specialInstructionsSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const llmConfigRef = useRef(llmConfig);
   llmConfigRef.current = llmConfig;
 
@@ -553,6 +556,7 @@ export function ManagePage() {
       setToolsState(Array.isArray(out.tools) ? out.tools : []);
       setFeatureFlags(out.feature_flags ?? DEFAULT_CONFIG.feature_flags!);
       setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
+      setSpecialInstructions(out.special_instructions ?? "");
       setPolicies(out.policies ?? { enablePolicies: true, policies: [] });
       if (out.knowledge) {
         setKnowledgeConfig({ ...DEFAULT_KNOWLEDGE_CONFIG, ...out.knowledge });
@@ -739,12 +743,13 @@ export function ManagePage() {
         tools: tools,
         feature_flags: featureFlags,
         homescreen,
+        special_instructions: specialInstructions || undefined,
         policies,
         knowledge: knowledgeConfig,
       };
       return overrides ? { ...c, ...overrides } : c;
     },
-    [agentName, agentDescription, llmConfig, tools, featureFlags, homescreen, policies, knowledgeConfig]
+    [agentName, agentDescription, llmConfig, tools, featureFlags, homescreen, specialInstructions, policies, knowledgeConfig]
   );
 
   const performDraftSave = useCallback(
@@ -813,6 +818,39 @@ export function ManagePage() {
       saveLlmDraft();
     }, 100);
   }, [saveLlmDraft]);
+
+  const saveSpecialInstructionsDraft = useCallback(
+    async (value: string, showToast = false) => {
+      if (showToast) setDraftSaving(true);
+      try {
+        const res = await api.patchManageConfigDraftSpecialInstructions(value, effectiveAgentId);
+        if (showToast) setDraftSaving(false);
+        if (res.ok) {
+          setCurrentVersion("draft");
+          if (showToast) addToast("success", "Draft saved", "Special instructions saved to draft");
+        } else if (showToast) {
+          addToast("error", "Draft Save Failed", `Failed to save (${res.status} ${res.statusText})`);
+        }
+      } catch (err) {
+        if (showToast) {
+          setDraftSaving(false);
+          addToast("error", "Draft Save Failed", err instanceof Error ? err.message : "Network error");
+        }
+      }
+    },
+    [effectiveAgentId, addToast]
+  );
+
+  const scheduleSpecialInstructionsDraftSave = useCallback(
+    (value: string) => {
+      if (specialInstructionsSaveRef.current) clearTimeout(specialInstructionsSaveRef.current);
+      specialInstructionsSaveRef.current = setTimeout(() => {
+        specialInstructionsSaveRef.current = null;
+        void saveSpecialInstructionsDraft(value);
+      }, 800);
+    },
+    [saveSpecialInstructionsDraft]
+  );
 
   const saveAgentDraft = useCallback(async () => {
     setDraftSaving(true);
@@ -1254,6 +1292,35 @@ export function ManagePage() {
                       rows={3}
                     />
                   </FormGroup>
+                </VStack>
+              </AccordionItem>
+              <AccordionItem title="Special Instructions">
+                <VStack gap={4}>
+                  <p style={{ fontSize: "0.875rem", color: "var(--cds-text-secondary)" }}>
+                    Text injected directly into the agent&apos;s system prompt before every conversation. Use this to give the agent a persona, domain context, or standing rules.
+                  </p>
+                  <TextArea
+                    id="special-instructions"
+                    labelText=""
+                    value={specialInstructions}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setSpecialInstructions(v);
+                      if (!skipDraftSaveRef.current) scheduleSpecialInstructionsDraftSave(v);
+                    }}
+                    placeholder="e.g. You are a helpful sales assistant for Acme Corp. Always respond formally and focus on enterprise software solutions."
+                    rows={6}
+                  />
+                  <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                    <Button
+                      kind="secondary"
+                      size="sm"
+                      renderIcon={Save}
+                      onClick={() => saveSpecialInstructionsDraft(specialInstructions, true)}
+                    >
+                      Save draft
+                    </Button>
+                  </div>
                 </VStack>
               </AccordionItem>
               <AccordionItem title="LLM Configuration" open>

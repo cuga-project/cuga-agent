@@ -13,6 +13,9 @@
     "agentic_chat",
     "frontend"
   ],
+  "scripts": {
+    "desktop": "pnpm --filter ./frontend desktop"
+  },
   "devDependencies": {
     "@types/jest-image-snapshot": "^6.4.0",
     "jest-image-snapshot": "^6.4.0",
@@ -23,6 +26,14 @@
     "lodash.debounce": "^4.0.8"
   },
   "pnpm": {
+    "onlyBuiltDependencies": [
+      "@carbon/ai-chat-components",
+      "@carbon/ai-chat",
+      "@carbon/web-components",
+      "@swc/core",
+      "canvas",
+      "electron"
+    ],
     "overrides": {
       "tar-fs": "^3.1.1",
       "node-forge": ">=1.4.0",
@@ -37,7 +48,6 @@
       "immutable": ">=5.1.5",
       "flatted": ">=3.4.2",
       "@tootallnate/once": ">=3.0.1",
-      "ajv": ">=8.18.0",
       "swiper": ">=12.1.2",
       "axios@<=1.13.4": ">=1.15.0",
       "rollup": ">=4.59.0",

@@ -224,6 +224,18 @@ export async function postManageConfig(config: unknown, agentId?: string): Promi
   });
 }
 
+export async function patchManageConfigDraftSpecialInstructions(
+  specialInstructions: string,
+  agentId?: string
+): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/config/draft/special_instructions${q}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ special_instructions: specialInstructions }),
+  });
+}
+
 export async function patchManageConfigDraftKnowledge(
   knowledge: unknown,
   agentId?: string

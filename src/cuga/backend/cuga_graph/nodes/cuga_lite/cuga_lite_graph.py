@@ -1360,7 +1360,10 @@ def create_cuga_lite_graph(
             skill_tools = []
             skills_prompt_section = ""
             skills_enabled = False
-            effective_special = base_special_instructions or ""
+            configurable_special = (
+                (config or {}).get("configurable", {}).get("special_instructions") if config else None
+            )
+            effective_special = base_special_instructions or configurable_special or ""
             skills_cfg_on = getattr(settings.skills, "enabled", False)
             cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
             if skills_cfg_on:

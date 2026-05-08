@@ -167,6 +167,11 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
                 os.environ["CUGA_DISABLE_SSL"] = "true"
             else:
                 os.environ.pop("CUGA_DISABLE_SSL", None)
+    special_instructions = (config or {}).get("special_instructions") or None
+    agent = getattr(app_state, "agent", None)
+    if agent is not None:
+        agent.special_instructions = special_instructions
+
     raw_policies = (config or {}).get("policies")
     policies_list = (
         raw_policies.get("policies", [])
@@ -937,6 +942,25 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         raise
     except Exception as e:
         logger.error(f"Failed to patch draft knowledge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/config/draft/special_instructions")
+async def patch_draft_special_instructions(request: Request, agent_id: Optional[str] = None):
+    """Persist special_instructions to draft config."""
+    if agent_id is None:
+        agent_id = "cuga-default"
+    try:
+        body = await request.json()
+        value = body.get("special_instructions", "") or ""
+        await _load_and_patch_draft(agent_id, "special_instructions", value)
+        draft_state = getattr(request.app.state, "draft_app_state", None)
+        draft_agent = getattr(draft_state, "agent", None) if draft_state is not None else None
+        if draft_agent is not None:
+            draft_agent.special_instructions = value or None
+        return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except Exception as e:
+        logger.error(f"Failed to patch draft special_instructions: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 

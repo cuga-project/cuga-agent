@@ -4,6 +4,7 @@ import asyncio
 import json
 import logging
 import os
+import platform
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,15 @@ DIGITAL_SALES_DESCRIPTION = (
     "and synchronize contacts between Zoominfo and Salesloft—streamlining the process of "
     "managing customer relationships and sales data across multiple platforms."
 )
+
+
+def _normalize_demo_sandbox_mode() -> None:
+    """Native sandbox uses macOS sandbox-exec; demo falls back to local elsewhere."""
+    sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+    if sandbox_mode == "native" and platform.system().lower() != "darwin":
+        os.environ["DYNACONF_ADVANCED_FEATURES__SANDBOX_MODE"] = "local"
+        settings.reload()
+        logger.info("Demo sandbox_mode='native' is only supported on macOS; using 'local' instead.")
 
 
 def _get_filesystem_tool() -> dict[str, Any]:
@@ -414,6 +424,8 @@ def setup_demo_manage_config(
     If tools is provided, uses it; otherwise builds from demo_type and no_email.
     When reset_knowledge is True, wipes all knowledge data (vector DB, metadata, files).
     """
+    _normalize_demo_sandbox_mode()
+
     from cuga.backend.server.config_store import (
         reset_config_db,
         save_config,
