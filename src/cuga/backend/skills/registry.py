@@ -37,11 +37,19 @@ def _sandbox_active() -> bool:
 def _resolve_skill_dir(entry: SkillEntry) -> str:
     """Path the agent should reference for this skill's companion files.
 
-    Sandboxed modes upload files to ``/tmp/skills/<name>/``. Local mode points at
-    the actual source folder so the agent reads files where they live, matching
-    Anthropic's agent-skills convention.
+    Resolution order:
+      1. ``/tmp/skills/<name>/`` if it exists on disk — this is the convention
+         used by both OpenSandbox uploads and the cuga-skills-ui marketplace's
+         host-side ``run_command``. When present, point at it so the agent's
+         load_skill instructions match what its shell tool actually mounts.
+      2. Sandboxed modes (``opensandbox_sandbox`` / ``e2b_sandbox``) report
+         ``/tmp/skills/<name>/`` even before upload — the upload happens at
+         sandbox startup and the path will exist by the time it runs.
+      3. Otherwise the actual source folder — Anthropic-style local mode where
+         files stay where they live.
     """
-    if _sandbox_active():
+    sandbox_path = Path("/tmp/skills") / entry.name
+    if sandbox_path.is_dir() or _sandbox_active():
         return f"/tmp/skills/{entry.name}"
     source_parent = Path(entry.source).parent
     if source_parent.is_dir() and source_parent.name == entry.name:

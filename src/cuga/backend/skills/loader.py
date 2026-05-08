@@ -80,12 +80,21 @@ def get_skill_search_roots(
 
 
 def _iter_skill_files(root: Path) -> List[Path]:
+    """Find every SKILL.md under ``root``, following directory symlinks.
+
+    Users often check skills into one repo and symlink them into another's
+    ``.cuga/skills/<name>``; ``Path.rglob`` skips symlinked directories so
+    those skills would be invisible to the marketplace. ``os.walk`` with
+    ``followlinks=True`` traverses them.
+    """
     if not root.is_dir():
         return []
     out: List[Path] = []
-    for p in root.rglob("SKILL.md"):
-        if p.is_file():
-            out.append(p)
+    for dirpath, _dirnames, filenames in os.walk(root, followlinks=True):
+        if "SKILL.md" in filenames:
+            candidate = Path(dirpath) / "SKILL.md"
+            if candidate.is_file():
+                out.append(candidate)
     return sorted(out)
 
 
