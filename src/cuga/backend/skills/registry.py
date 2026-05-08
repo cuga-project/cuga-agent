@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List
 
 
@@ -13,6 +14,67 @@ class SkillEntry:
     body: str
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
+
+
+def _sandbox_active() -> bool:
+    """True when the agent will execute via a remote sandbox (opensandbox or e2b).
+
+    Used to decide whether companion files live at the cuga-specific upload
+    location ``/tmp/skills/<name>/`` or at the skill's actual on-disk folder.
+    """
+    try:
+        from cuga.config import settings  # local import keeps this module lightweight
+    except Exception:
+        return False
+    adv = getattr(settings, "advanced_features", None)
+    if adv is None:
+        return False
+    return bool(
+        getattr(adv, "opensandbox_sandbox", False) or getattr(adv, "e2b_sandbox", False)
+    )
+
+
+def _resolve_skill_dir(entry: SkillEntry) -> str:
+    """Path the agent should reference for this skill's companion files.
+
+    Sandboxed modes upload files to ``/tmp/skills/<name>/``. Local mode points at
+    the actual source folder so the agent reads files where they live, matching
+    Anthropic's agent-skills convention.
+    """
+    if _sandbox_active():
+        return f"/tmp/skills/{entry.name}"
+    source_parent = Path(entry.source).parent
+    if source_parent.is_dir() and source_parent.name == entry.name:
+        return str(source_parent)
+    return f"/tmp/skills/{entry.name}"
+
+
+def _list_companion_files(entry: SkillEntry, limit: int = 40) -> list[str]:
+    """Return relative paths of companion files alongside SKILL.md.
+
+    Showing real filenames in the load_skill output keeps weaker models from
+    inventing scripts that don't exist (e.g. ``hike_finder.py`` when the file
+    is actually ``hike_tools.py``).
+    """
+    source_root = Path(entry.source).parent
+    if not source_root.is_dir():
+        return []
+    skipped_suffixes = {".pyc", ".xsd"}
+    skipped_dirs = {"__pycache__", ".git"}
+    files: list[str] = []
+    for path in sorted(source_root.rglob("*")):
+        if not path.is_file():
+            continue
+        if path.name == "SKILL.md":
+            continue
+        if path.suffix.lower() in skipped_suffixes:
+            continue
+        if any(part in skipped_dirs for part in path.relative_to(source_root).parts):
+            continue
+        files.append(str(path.relative_to(source_root)))
+        if len(files) >= limit:
+            break
+    return files
 
 
 class SkillRegistry:
@@ -52,10 +114,10 @@ class SkillRegistry:
             )
             parts.append("")
 
-        skill_dir = f"/tmp/skills/{entry.name}"
+        skill_dir = _resolve_skill_dir(entry)
         parts.append(
             "The full skill instructions are already included below from `load_skill`; "
-            "do NOT re-read `SKILL.md`. Companion files are available inside the sandbox at "
+            "do NOT re-read `SKILL.md`. Companion files for this skill are at "
             f"`{skill_dir}/` (scripts, templates, docs, etc.). If these loaded instructions contain "
             "relative markdown links or say to read a companion file, treat those references as workflow "
             "routing instructions: choose the relevant companion file(s) based on the situation and read them "
@@ -64,6 +126,15 @@ class SkillRegistry:
             f"`await run_command('ls {skill_dir}')` or `await list_files('{skill_dir}')` to explore."
         )
         parts.append("")
+
+        companion_files = _list_companion_files(entry)
+        if companion_files:
+            listing = "\n".join(f"  - {skill_dir}/{rel}" for rel in companion_files)
+            parts.append(
+                "Companion files present in this skill (use these exact paths — do not invent filenames):\n"
+                f"{listing}"
+            )
+            parts.append("")
         parts.append(
             "What this loaded skill content may contain: trigger/usage rules, quick references, "
             "task workflows, companion scripts or docs, design or implementation guidance, QA/verification "

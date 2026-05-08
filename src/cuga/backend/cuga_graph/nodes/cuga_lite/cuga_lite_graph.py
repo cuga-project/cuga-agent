@@ -1376,6 +1376,12 @@ def create_cuga_lite_graph(
                         f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
                         "~/.config/cuga/skills fallbacks"
                     )
+                    if not getattr(settings.advanced_features, "opensandbox_sandbox", False):
+                        logger.warning(
+                            "[skills] skills.enabled=true but advanced_features.opensandbox_sandbox=false — "
+                            "skill scripts cannot run because run_command/read_file/list_files are only "
+                            "provided by the OpenSandbox executor. Enable opensandbox_sandbox or disable skills."
+                        )
 
             # Update tools context with all execution tools
             # Wrap to make awaitable (agent always uses await)
@@ -1410,10 +1416,14 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
 
-            # Inject sandbox tools when OpenSandbox is enabled and shell tools are allowed
-            if getattr(settings.advanced_features, 'opensandbox_sandbox', False) and getattr(
-                settings.advanced_features, "enable_shell_tool", False
-            ):
+            # Inject sandbox tools when OpenSandbox is enabled and shell tools are allowed.
+            # Skills require run_command/read_file/list_files to function — when skills are
+            # enabled we treat shell tools as implicitly required.
+            shell_tools_required = (
+                getattr(settings.advanced_features, "enable_shell_tool", False)
+                or skills_enabled
+            )
+            if getattr(settings.advanced_features, 'opensandbox_sandbox', False) and shell_tools_required:
                 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 
                 cfg = config.get("configurable", {}) if config else {}
@@ -1674,7 +1684,10 @@ def create_cuga_lite_graph(
                     special_instructions=special_instructions_final,
                     skills_enabled=skills_enabled,
                     skills_prompt_section=skills_prompt_section,
-                    enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
+                    enable_shell_tool=(
+                        getattr(settings.advanced_features, "enable_shell_tool", False)
+                        or skills_enabled
+                    ),
                     has_knowledge=has_knowledge_tools,
                     few_shot_examples=few_shot_examples,
                     few_shots_enabled=few_shots_enabled,
