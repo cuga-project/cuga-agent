@@ -133,7 +133,9 @@ validators = [
     Validator("advanced_features.e2b_cleanup_on_create", default=True),
     Validator("advanced_features.e2b_cleanup_frequency", default=0),
     Validator("advanced_features.enable_web_search", default=False),
-    Validator("advanced_features.execution_output_max_length", default=3500),
+    Validator("advanced_features.execution_output_max_length", default=35000),
+    Validator("advanced_features.enable_shell_tool", default=False),
+    Validator("advanced_features.sandbox_mode", default="opensandbox"),
     Validator("advanced_features.cuga_lite_nl_auto_continue", default=True),
     Validator("features.chat", default=True),
     Validator("playwright_args", default=[]),
@@ -176,7 +178,9 @@ validators = [
     Validator("auth.iam_proxy_skip_verify", default=False),
     Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
+    Validator("skills.enabled", default=False),
     Validator("advanced_features.builtin_tools", default=["knowledge"]),
+    Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),
@@ -205,6 +209,19 @@ if base_settings.advanced_features.tracker_enabled:
     logger.info("✅ tracker enabled - logs and trajectory data will be saved")
 else:
     logger.warning("tracker disabled - logs and trajectory data will not be saved")
+
+# Auto-override sandbox_mode: "native" requires macOS (sandbox-exec); fall back to "local" elsewhere.
+# Does not override if the user has already explicitly set a non-"native" mode via env var.
+_configured_sandbox_mode = getattr(
+    getattr(base_settings, "advanced_features", None), "sandbox_mode", "opensandbox"
+)
+if _configured_sandbox_mode == "native" and platform != "darwin":
+    logger.info(
+        f"sandbox_mode='native' requires macOS; current platform is {platform!r}. "
+        "Falling back to sandbox_mode='local'."
+    )
+    os.environ["DYNACONF_ADVANCED_FEATURES__SANDBOX_MODE"] = "local"
+
 # Read and sanitize the model settings filename (Windows users sometimes include quotes)
 default_llm = os.environ.get("AGENT_SETTING_CONFIG", "settings.openai.toml")
 # Remove inline comments (everything after #) and strip quotes/whitespace

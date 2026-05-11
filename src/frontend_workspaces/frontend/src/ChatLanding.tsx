@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import * as api from "./api";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
@@ -73,6 +73,20 @@ interface FileNode {
   path: string;
   type: "file" | "directory";
   children?: FileNode[];
+}
+
+function collectDirectoryPaths(nodes: FileNode[]): Set<string> {
+  const out = new Set<string>();
+  const walk = (list: FileNode[]) => {
+    for (const n of list) {
+      if (n.type === "directory") {
+        out.add(n.path);
+        if (n.children?.length) walk(n.children);
+      }
+    }
+  };
+  walk(nodes);
+  return out;
 }
 
 interface AgentConfig {
@@ -319,6 +333,8 @@ export function ChatLanding() {
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
   const [expandedApps, setExpandedApps] = useState<Set<string>>(new Set());
   const [workspaceTree, setWorkspaceTree] = useState<FileNode[]>([]);
+  const [workspaceExpandedDirs, setWorkspaceExpandedDirs] = useState<Set<string>>(() => new Set());
+  const workspaceTreeDirPathsPrevRef = useRef<Set<string>>(new Set());
   const [workspaceTreeLoading, setWorkspaceTreeLoading] = useState(true);
   const [fileModal, setFileModal] = useState<{ path: string; content: string; name: string } | null>(null);
   const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<KnowledgePreviewModalState | null>(null);
@@ -365,6 +381,8 @@ export function ChatLanding() {
   }, []);
 
   const currentChatThreadId = activeThreadId;
+  /** Same resolver as `threadId` on `CarbonChat` — stream, sandbox workspace, and session knowledge must match. */
+  const effectiveChatThreadId = selectedThreadId ?? currentChatThreadId;
 
   const refreshKnowledgeDocCount = useCallback(
     async (threadId: string) => {
@@ -408,8 +426,8 @@ export function ChatLanding() {
   }, [draftThread.threadId, selectedThreadId]);
 
   useEffect(() => {
-    void refreshKnowledgeDocCount(currentChatThreadId);
-  }, [currentChatThreadId, refreshKnowledgeDocCount, sessionDocsVersion]);
+    void refreshKnowledgeDocCount(effectiveChatThreadId);
+  }, [effectiveChatThreadId, refreshKnowledgeDocCount, sessionDocsVersion]);
 
   const handleSessionDocsChanged = useCallback(() => {
     setSessionDocsVersion((version) => version + 1);
@@ -648,7 +666,7 @@ export function ChatLanding() {
 
   const fetchWorkspaceTree = useCallback(async () => {
     try {
-      const res = await api.getWorkspaceTree();
+      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined);
       if (res.ok) {
         const data = await res.json();
         setWorkspaceTree(data.tree || []);
@@ -658,13 +676,54 @@ export function ChatLanding() {
     } finally {
       setWorkspaceTreeLoading(false);
     }
-  }, []);
+  }, [effectiveChatThreadId]);
 
   useEffect(() => {
     fetchWorkspaceTree();
     const interval = setInterval(fetchWorkspaceTree, 2500);
     return () => clearInterval(interval);
   }, [fetchWorkspaceTree]);
+
+  useEffect(() => {
+    workspaceTreeDirPathsPrevRef.current = new Set();
+    setWorkspaceExpandedDirs(new Set());
+    setWorkspaceTree([]);
+    setWorkspaceTreeLoading(true);
+  }, [effectiveChatThreadId]);
+
+  useEffect(() => {
+    const valid = collectDirectoryPaths(workspaceTree);
+    const prevValid = workspaceTreeDirPathsPrevRef.current;
+    setWorkspaceExpandedDirs((expanded) => {
+      const next = new Set<string>();
+      for (const p of expanded) {
+        if (valid.has(p)) next.add(p);
+      }
+      for (const p of valid) {
+        if (!prevValid.has(p)) next.add(p);
+      }
+      return next;
+    });
+    workspaceTreeDirPathsPrevRef.current = valid;
+  }, [workspaceTree]);
+
+  const handleWorkspaceDirToggle = useCallback((path: string, ...args: unknown[]) => {
+    const first = args[0];
+    const second = args[1];
+    let nextExpanded: boolean | undefined;
+    if (typeof first === "boolean") {
+      nextExpanded = first;
+    } else if (second && typeof second === "object" && second !== null && "isExpanded" in second) {
+      nextExpanded = Boolean((second as { isExpanded?: boolean }).isExpanded);
+    }
+    if (typeof nextExpanded !== "boolean") return;
+    setWorkspaceExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (nextExpanded) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }, []);
 
   const totalTools = agentConfig.apps.reduce((s, a) => s + a.tools.length, 0);
 
@@ -676,7 +735,7 @@ export function ChatLanding() {
       return;
     }
     try {
-      const res = await api.getWorkspaceFile(node.path);
+      const res = await api.getWorkspaceFile(node.path, effectiveChatThreadId || undefined);
       if (res.ok) {
         const data = await res.json();
         setFileModal({ path: node.path, content: data.content, name: node.name });
@@ -686,7 +745,30 @@ export function ChatLanding() {
     } catch (err) {
       addToast("error", "Error loading file", err instanceof Error ? err.message : "Unknown error");
     }
-  }, [addToast]);
+  }, [addToast, effectiveChatThreadId]);
+
+  const handleWorkspaceFileDownload = useCallback(
+    async (node: FileNode) => {
+      if (node.type !== "file") return;
+      try {
+        const res = await api.getWorkspaceDownload(node.path, effectiveChatThreadId || undefined);
+        if (!res.ok) {
+          addToast("error", "Download failed", res.statusText || `HTTP ${res.status}`);
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = node.name;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        addToast("error", "Download failed", err instanceof Error ? err.message : "Unknown error");
+      }
+    },
+    [addToast, effectiveChatThreadId],
+  );
 
   const closeKnowledgePreviewModal = useCallback(() => {
     setKnowledgePreviewModal((current) => {
@@ -702,7 +784,7 @@ export function ChatLanding() {
       const response = await api.getKnowledgeDocumentFile(
         attachment.scope,
         attachment.knowledge_filename,
-        attachment.scope === "session" ? currentChatThreadId : undefined,
+        attachment.scope === "session" ? effectiveChatThreadId : undefined,
       );
       if (!response.ok) {
         addToast("error", "Preview unavailable", response.statusText || "Failed to load attachment.");
@@ -742,36 +824,68 @@ export function ChatLanding() {
     } catch (error) {
       addToast("error", "Preview unavailable", error instanceof Error ? error.message : "Unknown error");
     }
-  }, [addToast, currentChatThreadId]);
+  }, [addToast, effectiveChatThreadId]);
 
   const renderFileNode = useCallback(
-    (node: FileNode) => (
-      <TreeNode
-        key={node.path}
-        id={node.path}
-        label={
-          <span
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.5rem",
-              fontSize: "0.8125rem",
-              color: "var(--cds-text-primary)",
-              cursor: node.type === "file" ? "pointer" : "default",
-            }}
-            role={node.type === "file" ? "button" : undefined}
-            onClick={node.type === "file" ? (e) => { e.stopPropagation(); handleFileClick(node); } : undefined}
-          >
-            {node.name}
-          </span>
-        }
-        renderIcon={node.type === "directory" ? FolderOpen : DocumentBlank}
-        isExpanded={node.type === "directory"}
-      >
-        {node.type === "directory" && node.children?.map((child) => renderFileNode(child))}
-      </TreeNode>
-    ),
-    [handleFileClick],
+    (node: FileNode) => {
+      const isDir = node.type === "directory";
+      const dirOpen = isDir && workspaceExpandedDirs.has(node.path);
+      return (
+        <TreeNode
+          key={node.path}
+          id={node.path}
+          label={
+            isDir ? (
+              <span
+                className="chat-landing-workspace-tree-name"
+                style={{
+                  fontSize: "0.8125rem",
+                  color: "var(--cds-text-primary)",
+                }}
+              >
+                {node.name}
+              </span>
+            ) : (
+              <span className="chat-landing-workspace-tree-row">
+                <span
+                  className="chat-landing-workspace-tree-filename"
+                  style={{
+                    cursor: "pointer",
+                    fontSize: "0.8125rem",
+                    color: "var(--cds-text-primary)",
+                  }}
+                  role="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleFileClick(node);
+                  }}
+                >
+                  {node.name}
+                </span>
+                <IconButton
+                  className="chat-landing-workspace-tree-download"
+                  label={`Download ${node.name}`}
+                  kind="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleWorkspaceFileDownload(node);
+                  }}
+                >
+                  <Download size={14} />
+                </IconButton>
+              </span>
+            )
+          }
+          renderIcon={isDir ? (dirOpen ? FolderOpen : Folder) : DocumentBlank}
+          isExpanded={isDir ? dirOpen : false}
+          onToggle={isDir ? (first: unknown, second?: unknown) => handleWorkspaceDirToggle(node.path, first, second) : undefined}
+        >
+          {isDir && node.children?.map((child) => renderFileNode(child))}
+        </TreeNode>
+      );
+    },
+    [handleFileClick, handleWorkspaceDirToggle, handleWorkspaceFileDownload, workspaceExpandedDirs],
   );
 
   const handleToggleLeft = () => canShowLeft && setLeftOpen((v) => !v);
@@ -790,7 +904,7 @@ export function ChatLanding() {
     setRightSection("configuration");
     setRightOpen(true);
   };
-  const activeKnowledgeThreadId = currentChatThreadId;
+  const activeKnowledgeThreadId = effectiveChatThreadId;
   const sectionCounts: Record<RightPanelSection, number> = {
     configuration: totalTools,
     workspace: workspaceTree.length,
@@ -812,7 +926,7 @@ export function ChatLanding() {
       <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
         <CarbonChat
           contained={true}
-          threadId={selectedThreadId ?? currentChatThreadId}
+          threadId={effectiveChatThreadId}
           attachmentScope="session"
           knowledgeEnabled={knowledgeEnabled}
           sessionKnowledgeEnabled={sessionKnowledgeEnabled}
@@ -875,11 +989,11 @@ export function ChatLanding() {
               </div>
             </div>
 
-            {currentChatThreadId && (
+            {effectiveChatThreadId && (
               <div style={{ marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.375rem" }}>
                 <Time size={12} style={{ color: "var(--cds-text-secondary)" }} />
                 <code style={{ fontSize: "0.6rem", color: "var(--cds-text-secondary)", fontFamily: "monospace" }}>
-                  {currentChatThreadId}
+                  {effectiveChatThreadId}
                 </code>
               </div>
             )}
@@ -1184,7 +1298,7 @@ export function ChatLanding() {
                     No workspace files.
                   </div>
                 ) : (
-                  <TreeView label="Workspace" hideLabel>
+                  <TreeView label="Workspace" hideLabel className="chat-landing-workspace-tree">
                     {workspaceTree.map((node) => renderFileNode(node))}
                   </TreeView>
                 )}
@@ -1292,7 +1406,7 @@ export function ChatLanding() {
               renderIcon={Download}
               onClick={async () => {
                 try {
-                  const res = await api.getWorkspaceDownload(fileModal.path);
+                  const res = await api.getWorkspaceDownload(fileModal.path, effectiveChatThreadId || undefined);
                   if (res.ok) {
                     const blob = await res.blob();
                     const url = URL.createObjectURL(blob);

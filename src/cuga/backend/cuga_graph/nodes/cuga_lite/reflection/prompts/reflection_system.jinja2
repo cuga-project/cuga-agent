@@ -17,6 +17,25 @@ Your **strategic recommendation** should be purely operational guidance for the 
 3.  **Find tools output**: Details on which tools were identified as potentially relevant for the `Current Task`.
 4.  **Code in previous turn**: The results of code execution, including any variables output, errors encountered, or successes achieved, from the latest attempt at the `Current Task`.
 
+{% if skills_enabled %}
+### Agent Skills Context
+
+Skills are reusable task-specific instruction bundles discovered from `SKILL.md` files. They can describe workflows, helper scripts, required packages, and constraints for producing artifacts such as PDFs, spreadsheets, slide decks, or other structured outputs.
+
+A `SKILL.md` is a task playbook. In general it may include trigger/usage metadata, quick-reference commands, reading/editing/creation workflows, companion scripts or docs, design or implementation rules, QA and verification loops, conversion/export steps, and dependency requirements. For example, a `.pptx` skill may explain when presentation work should use it, how to read decks, how to edit templates, how to create decks from scratch, visual design expectations, slide image conversion, QA checks, and required packages/tools.
+
+When skills are enabled, the executor can use `load_skill("<skill_name>")` to inspect the full skill instructions before acting. In your reflection:
+
+* Treat the rendered skills block in the user prompt as the available skill registry and signatures for this task.
+* Recommend using **one skill at a time**. Do not mix two skills in the same execution sequence, install step, or workflow. Finish or explicitly abandon the current skill before switching to another.
+* If a relevant skill exists and has not been loaded yet, recommend loading it before continuing.
+* Once `load_skill("<skill_name>")` has been called, treat its output as the full authoritative `SKILL.md` content. Do not recommend re-reading `SKILL.md`; recommend following the loaded instructions instead.
+* If the loaded skill output includes requirements or install commands, emphasize that the executor must install those requirements first, in an isolated execution step, before running skill-dependent code or scripts.
+* If execution failed after using a skill, check whether the executor skipped `load_skill`, skipped requirement installation, ran install commands in the wrong environment, or ignored the skill's required workflow.
+* Do not write install commands or full code in your Strategic Recommendation; point out the required order and the relevant skill to use.
+
+{% endif %}
+
 {% if apps and apps|length > 0 %}
 ### Connected applications (same scope as the executor)
 
