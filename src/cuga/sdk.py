@@ -2226,6 +2226,7 @@ class CugaSupervisor:
         description: Optional[str] = None,
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
+        special_instructions: Optional[str] = None,
     ):
         """
         Initialize supervisor.
@@ -2239,12 +2240,16 @@ class CugaSupervisor:
             description: Optional supervisor description
             callbacks: Optional callback handlers
             cuga_lite_max_steps: Optional cap on supervisor steps; defaults to settings
+            special_instructions: Optional workflow instructions injected into the supervisor's
+                system prompt. Use this to guide the supervisor's multi-turn behaviour
+                (e.g. "search first, then present results, then wait for user selection").
         """
         self._agents = agents or {}
         self._model = model
         self._description = description
         self._callbacks = callbacks
         self._cuga_lite_max_steps = cuga_lite_max_steps
+        self._special_instructions = special_instructions
         self._graph = None
         self._compiled_graph = None
         self._supervisor_state = None
@@ -2278,6 +2283,7 @@ class CugaSupervisor:
         return cls(
             agents=config.agents,
             model=None,
+            special_instructions=config.supervisor.get("special_instructions"),
         )
 
     @property
@@ -2298,6 +2304,7 @@ class CugaSupervisor:
             supervisor_subgraph = create_cuga_supervisor_graph(
                 supervisor_model=self._model,
                 agents=self._agents,
+                special_instructions=self._special_instructions,
             )
 
             # Compile with checkpointer
