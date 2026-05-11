@@ -6,6 +6,7 @@ import subprocess
 import sys
 import threading
 import time
+from pathlib import Path
 from typing import List, Optional
 
 import httpx
@@ -1238,8 +1239,18 @@ def start(
         try:
             # Enable supervisor mode with travel agent configuration
             os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
-            supervisor_config_path = os.path.join(
-                os.getcwd(), "docs", "examples", "travel_agent", "config", "supervisor_travel_agent.yaml"
+            _cli_dir = Path(__file__).resolve().parent
+            supervisor_config_path = str(
+                _cli_dir.joinpath(
+                    "..",
+                    "..",
+                    "..",
+                    "docs",
+                    "examples",
+                    "travel_agent",
+                    "config",
+                    "supervisor_travel_agent.yaml",
+                ).resolve()
             )
 
             if not os.path.exists(supervisor_config_path):
@@ -1256,7 +1267,9 @@ def start(
             # each value explicitly in os.environ so the subprocess inherits them.
             from dotenv import dotenv_values
 
-            travel_agent_env_path = os.path.join(os.getcwd(), "docs", "examples", "travel_agent", ".env")
+            travel_agent_env_path = str(
+                _cli_dir.joinpath("..", "..", "..", "docs", "examples", "travel_agent", ".env").resolve()
+            )
             if os.path.exists(travel_agent_env_path):
                 travel_agent_env = dotenv_values(travel_agent_env_path)
                 for key, value in travel_agent_env.items():
@@ -1426,7 +1439,7 @@ def manage_service(action: str, service: str):
     validate_service(service)
 
     if action == "stop":
-        if service in ("demo", "manager"):
+        if service in ("demo", "manager", "travel_agent"):
             stopped_any = False
             for service_name in ["oak-health", "docs-mcp", "filesystem-server", "registry", "demo"]:
                 if service_name in direct_processes:
@@ -1437,7 +1450,8 @@ def manage_service(action: str, service: str):
                         stopped_any = True
                     del direct_processes[service_name]
             if not stopped_any:
-                logger.info("Demo/manager services are not running")
+                service_label = "Travel Agent" if service == "travel_agent" else "Demo/manager"
+                logger.info(f"{service_label} services are not running")
         elif service in ("demo_crm", "demo_supervisor"):
             # Stop all CRM/supervisor demo services
             stopped_any = False
@@ -1530,7 +1544,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, registry, or appworld",
+        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, registry, or appworld",
     ),
 ):
     """
@@ -1543,6 +1557,7 @@ def stop(
       - demo_health: Stops oak-health API, registry, and demo (and filesystem MCP if started with --filesystem)
       - demo_knowledge: Stops registry and demo (and filesystem MCP if started with --filesystem)
       - demo_supervisor: Same as demo_crm
+      - travel_agent: Stops Travel Agent demo services (registry, demo)
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)
     Examples:
@@ -1550,6 +1565,7 @@ def stop(
       cuga stop demo_crm         # Stop all CRM demo services
       cuga stop demo_knowledge   # Stop knowledge demo services
       cuga stop demo_supervisor  # Stop all supervisor demo services
+      cuga stop travel_agent     # Stop Travel Agent demo services
       cuga stop registry         # Stop only the registry service
       cuga stop appworld         # Stop AppWorld servers
     """
@@ -1585,7 +1601,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, registry, appworld, or all",
+        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, travel_agent, registry, appworld, or all",
     ),
 ):
     """
@@ -1597,6 +1613,7 @@ def status(
       - demo_docs: Shows docs MCP, registry, and demo
       - demo_health: Shows oak-health API, registry, and demo (and filesystem MCP if used)
       - demo_supervisor: Same as demo_crm
+      - travel_agent: Shows status of Travel Agent demo services (registry, demo)
       - registry: Shows status of registry service only (direct process)
       - appworld: Shows status of both AppWorld environment and API servers (direct processes)
       - all: Shows status of all services (default)
@@ -1605,10 +1622,11 @@ def status(
       cuga status              # Show status of all services
       cuga status demo         # Show status of demo services (registry + demo)
       cuga status demo_crm     # Show status of CRM demo services
+      cuga status travel_agent # Show status of Travel Agent demo services
       cuga status registry     # Show status of registry only
       cuga status appworld     # Show status of AppWorld servers
     """
-    if service in ("demo", "manager"):
+    if service in ("demo", "manager", "travel_agent"):
         for service_name in ["registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]
@@ -1618,6 +1636,8 @@ def status(
                     logger.info(f"{service_name.capitalize()} service: Terminated")
             else:
                 logger.info(f"{service_name.capitalize()} service: Not running")
+        if service == "travel_agent":
+            logger.info("Travel Agent uses registry + demo services")
         return
 
     elif service == "demo_docs":
