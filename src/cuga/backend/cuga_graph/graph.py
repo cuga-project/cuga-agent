@@ -360,9 +360,15 @@ class DynamicAgentGraph:
             supervisor_model = llm_manager.get_model(supervisor_model_config)
 
             # Create supervisor subgraph
+            # Pass special_instructions from YAML config if available
+            supervisor_special_instructions = None
+            if supervisor_config is not None:
+                supervisor_special_instructions = supervisor_config.supervisor.get("special_instructions")
+
             supervisor_subgraph = create_cuga_supervisor_graph(
                 supervisor_model=supervisor_model,
                 agents=agents,
+                special_instructions=supervisor_special_instructions,
             )
 
             # Compile and add as subgraph node
