@@ -514,6 +514,7 @@ def callback(
     - demo: Both registry and demo agent (runs directly)
     - demo_crm: CRM demo with email MCP, mail sink, and CRM API (runs directly)
     - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination
+    - travel_agent: Corporate travel planning demo with multi-agent supervisor
     - demo_health: Healthcare insurance demo (cuga-oak-health OpenAPI + manage UI)
     - registry: The MCP registry service only (runs directly)
     - appworld: AppWorld environment and API servers (runs directly)
@@ -521,6 +522,7 @@ def callback(
       cuga start demo           # Start both registry and demo agent directly
       cuga start demo_crm       # Start CRM demo with all required services
       cuga start demo_supervisor # Start CRM demo with supervisor multi-agent mode
+      cuga start travel_agent   # Start Travel Agent demo (flights, hotels, compliance, approval)
       cuga start registry       # Start registry only
       cuga start appworld       # Start AppWorld servers
     """
@@ -702,6 +704,7 @@ def validate_service(service: str):
         "demo_health",
         "demo_knowledge",
         "demo_supervisor",
+        "travel_agent",
         "manager",
         "registry",
         "appworld",
@@ -1229,6 +1232,137 @@ def start(
             tools=resolved_tools,
             cuga_workspace=cuga_workspace,
         )
+        return
+
+    elif service == "travel_agent":
+        try:
+            # Enable supervisor mode with travel agent configuration
+            os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
+            supervisor_config_path = os.path.join(
+                os.getcwd(), "docs", "examples", "travel_agent", "config", "supervisor_travel_agent.yaml"
+            )
+
+            if not os.path.exists(supervisor_config_path):
+                logger.error(f"Travel Agent config not found: {supervisor_config_path}")
+                logger.error(
+                    "Please ensure docs/examples/travel_agent/config/supervisor_travel_agent.yaml exists"
+                )
+                raise typer.Exit(1)
+
+            os.environ["DYNACONF_SUPERVISOR__CONFIG_PATH"] = supervisor_config_path
+
+            # Load the travel agent's own .env file (SERPAPI_API_KEY, SLACK_BOT_TOKEN, etc.)
+            # Use dotenv_values to read without affecting the current process, then set
+            # each value explicitly in os.environ so the subprocess inherits them.
+            from dotenv import dotenv_values
+
+            travel_agent_env_path = os.path.join(os.getcwd(), "docs", "examples", "travel_agent", ".env")
+            if os.path.exists(travel_agent_env_path):
+                travel_agent_env = dotenv_values(travel_agent_env_path)
+                for key, value in travel_agent_env.items():
+                    if value is not None:
+                        os.environ[key] = value
+                logger.info(f"✅ Loaded travel agent env from {travel_agent_env_path}")
+            else:
+                logger.warning(
+                    f"Travel agent .env not found at {travel_agent_env_path}. "
+                    "Copy .env.example to .env and fill in SERPAPI_API_KEY etc."
+                )
+
+            # CRITICAL: Reload settings after setting supervisor environment variables
+            # so the backend server picks up the new DYNACONF_SUPERVISOR__* values.
+            settings.reload()
+            logger.info(f"✈️  Travel Agent supervisor enabled with config: {supervisor_config_path}")
+            logger.info(f"   Supervisor enabled: {settings.supervisor.enabled}")
+            logger.info(f"   Supervisor config path: {settings.supervisor.config_path}")
+
+            # Reset config database and set Travel Agent configuration
+            os.environ["CUGA_MANAGER_MODE"] = "true"
+            os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+            os.environ["MCP_SERVERS_FILE"] = "none"
+
+            # Set agent name BEFORE setup so it gets saved to database
+            os.environ["CUGA_AGENT_NAME"] = "Travel Agent"
+            os.environ["CUGA_AGENT_DESCRIPTION"] = "AI-powered corporate travel planning system"
+
+            from cuga.backend.server.config_store import reset_config_db, save_draft
+            import asyncio
+
+            ensure_managed_mcp_file_exists(get_managed_mcp_path())
+            logger.info("🧹 Resetting config db for Travel Agent...")
+
+            reset_config_db()
+
+            # Build LLM config from environment (same as setup_demo_manage_config does)
+            llm_api_key_ref = ""
+            try:
+                from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+
+                llm_api_key_ref = resolve_llm_api_key_ref()
+            except Exception:
+                pass
+
+            llm_cfg = {"model": os.environ.get("MODEL_NAME", "")}
+            if llm_api_key_ref:
+                llm_cfg["api_key"] = llm_api_key_ref
+
+            travel_agent_config = {
+                "agent": {
+                    "name": "Travel Agent",
+                    "description": "AI-powered corporate travel planning system",
+                },
+                "tools": [],
+                "llm": llm_cfg,
+            }
+            asyncio.run(save_draft(travel_agent_config, "cuga-default"))
+            logger.info(
+                "✅ Travel Agent configuration saved (model: %s)", llm_cfg.get("model") or "(default)"
+            )
+
+            app_mgr = _make_app_manager()
+            logger.info("🧹 Checking for existing processes on required ports...")
+            kill_processes_by_port([app_mgr.registry_port, settings.server_ports.demo])
+
+            os.environ["CUGA_HOST"] = host
+            if sandbox:
+                logger.info("Starting Travel Agent with remote sandbox mode enabled")
+                os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
+
+            registry_process = app_mgr.start_registry(host)
+            if registry_process is None or registry_process.poll() is not None:
+                logger.error("Registry service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            demo_process = app_mgr.start_demo(host, sandbox=sandbox)
+            if demo_process is None or demo_process.poll() is not None:
+                logger.error("Demo service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            if direct_processes:
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Service", style="bold white")
+                table.add_column("URL", style="cyan")
+                table.add_row("Registry:", f"http://localhost:{app_mgr.registry_port}")
+                table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
+
+                console.print()
+                console.print(
+                    Panel(
+                        table,
+                        title="[bold yellow]✅ Travel Agent is running. Press Ctrl+C to stop[/bold yellow]",
+                        border_style="cyan",
+                        padding=(1, 2),
+                        expand=False,
+                    )
+                )
+                wait_for_direct_processes()
+
+        except Exception as e:
+            logger.error(f"Error starting Travel Agent: {e}")
+            stop_direct_processes()
+            raise typer.Exit(1)
         return
 
     elif service == "registry":
