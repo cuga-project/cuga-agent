@@ -116,9 +116,7 @@ def send_slack_approval(
     # --- Simulated send (no Slack credentials) ---
     import logging
 
-    logging.getLogger(__name__).info(
-        "[SIMULATED SLACK] Approval request simulated (details omitted)."
-    )
+    logging.getLogger(__name__).info("[SIMULATED SLACK] Approval request simulated (details omitted).")
     return json.dumps(
         {
             "success": True,
