@@ -206,6 +206,47 @@ class PromptUtils:
         return params_doc, response_doc
 
     @staticmethod
+    def _build_shortlister_payload(
+        all_tools: List[StructuredTool],
+        all_apps: List[AppDefinition],
+    ) -> tuple[Dict[str, Any], Dict[str, Any]]:
+        """Serialize ``all_tools`` and ``all_apps`` for the shortlister LLM prompt.
+
+        Shared by :meth:`find_tools` (runtime tool discovery) and
+        :meth:`shortlist_tool_names` (bind-time cap reduction). Per coderabbit on
+        cuga-agent#203, keeping a single payload builder prevents the two callers
+        from drifting — both must include ``args_schema``, ``_response_schemas``,
+        and ``_param_constraints`` for the LLM to rank tools consistently.
+        """
+        tools_as_dict: Dict[str, Any] = {}
+        for tool in all_tools:
+            tool_dict = tool.model_dump()
+            if hasattr(tool, 'args_schema') and tool.args_schema:
+                try:
+                    if hasattr(tool.args_schema, 'schema'):
+                        tool_dict['args_schema'] = tool.args_schema.schema()
+                    elif hasattr(tool.args_schema, 'model_json_schema'):
+                        tool_dict['args_schema'] = tool.args_schema.model_json_schema()
+                    else:
+                        tool_dict['args_schema'] = {}
+                except Exception as e:
+                    logger.debug(f"Failed to serialize args_schema for tool {tool.name}: {e}")
+                    tool_dict['args_schema'] = {}
+            else:
+                tool_dict['args_schema'] = {}
+
+            if hasattr(tool, 'func'):
+                if hasattr(tool.func, '_response_schemas'):
+                    tool_dict['_response_schemas'] = tool.func._response_schemas
+                if hasattr(tool.func, '_param_constraints'):
+                    tool_dict['_param_constraints'] = tool.func._param_constraints
+
+            tools_as_dict[tool.name] = tool_dict
+
+        apps_as_dict = {app.name: app.model_dump() for app in all_apps}
+        return tools_as_dict, apps_as_dict
+
+    @staticmethod
     async def find_tools(
         query: str,
         all_tools: List[StructuredTool],
@@ -246,37 +287,7 @@ class PromptUtils:
                 ('human', '{input}'),
             ],
         )
-        # Serialize tools properly, converting args_schema class to dict
-        tools_as_dict = {}
-        for tool in all_tools:
-            tool_dict = tool.model_dump()
-            # Extract and convert args_schema from the tool object (it's an attribute, not in model_dump)
-            if hasattr(tool, 'args_schema') and tool.args_schema:
-                try:
-                    # Try schema() method (Pydantic v1)
-                    if hasattr(tool.args_schema, 'schema'):
-                        tool_dict['args_schema'] = tool.args_schema.schema()
-                    # Try model_json_schema() method (Pydantic v2)
-                    elif hasattr(tool.args_schema, 'model_json_schema'):
-                        tool_dict['args_schema'] = tool.args_schema.model_json_schema()
-                    else:
-                        tool_dict['args_schema'] = {}
-                except Exception as e:
-                    logger.debug(f"Failed to serialize args_schema for tool {tool.name}: {e}")
-                    tool_dict['args_schema'] = {}
-            else:
-                tool_dict['args_schema'] = {}
-
-            # Also ensure response_schemas and param_constraints are included if they exist
-            if hasattr(tool, 'func'):
-                if hasattr(tool.func, '_response_schemas'):
-                    tool_dict['_response_schemas'] = tool.func._response_schemas
-                if hasattr(tool.func, '_param_constraints'):
-                    tool_dict['_param_constraints'] = tool.func._param_constraints
-
-            tools_as_dict[tool.name] = tool_dict
-
-        apps_as_dict = {app.name: app.model_dump() for app in all_apps}
+        tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
         from cuga.backend.llm.models import LLMManager
         from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
             ShortListerOutputLite,
@@ -445,24 +456,7 @@ class PromptUtils:
                 ('human', '{input}'),
             ],
         )
-        tools_as_dict: Dict[str, Any] = {}
-        for tool in all_tools:
-            tool_dict = tool.model_dump()
-            if hasattr(tool, 'args_schema') and tool.args_schema:
-                try:
-                    if hasattr(tool.args_schema, 'schema'):
-                        tool_dict['args_schema'] = tool.args_schema.schema()
-                    elif hasattr(tool.args_schema, 'model_json_schema'):
-                        tool_dict['args_schema'] = tool.args_schema.model_json_schema()
-                    else:
-                        tool_dict['args_schema'] = {}
-                except Exception:
-                    tool_dict['args_schema'] = {}
-            else:
-                tool_dict['args_schema'] = {}
-            tools_as_dict[tool.name] = tool_dict
-
-        apps_as_dict = {app.name: app.model_dump() for app in all_apps}
+        tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
 
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
