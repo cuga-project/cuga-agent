@@ -117,7 +117,7 @@ def send_slack_approval(
     import logging
 
     logging.getLogger(__name__).info(
-        "[SIMULATED SLACK] Approval request for %s:\n%s", employee_name, message_text
+        "[SIMULATED SLACK] Approval request simulated (details omitted)."
     )
     return json.dumps(
         {
