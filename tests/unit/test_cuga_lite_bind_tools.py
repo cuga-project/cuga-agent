@@ -314,6 +314,99 @@ async def test_bind_tools_cap_pads_when_opt_in():
 
 
 @pytest.mark.asyncio
+async def test_bind_tools_cap_not_violated_when_at_boundary_with_find_tools():
+    """Boundary case from coderabbit: len(bound) == max_count and include_find_tools=True.
+
+    Without the effective-count check, the under-cap fast path would append find_tools and
+    return max_count+1 tools — provider rejects.
+    """
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(5)]
+    find_tools_tool = _stub_tool("find_tools")
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    captured_top_k = {}
+
+    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        captured_top_k["value"] = top_k
+        return [t.name for t in all_tools[:top_k]]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=5,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=fake_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={
+                "cuga_lite_bind_tools_mode": "all",
+                "cuga_lite_bind_tools_include_find_tools": True,
+            },
+            tools_context_ref={"_lc_bind_tools_find_tools": find_tools_tool},
+            tool_provider=provider,
+            query="hockey",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert len(bound) == 5, f"cap violated: bound has {len(bound)} tools (max=5)"
+    assert captured_top_k["value"] == 4, "expected 1 slot reserved for find_tools"
+    assert bound[-1].name == "find_tools"
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_cap_does_not_double_count_find_tools_in_bound():
+    """find_tools is already in `bound` via the overlay path — don't reserve a second slot."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(5)]
+    find_tools_tool = _stub_tool("find_tools")
+    provider = AsyncMock()
+    # Overlay path puts find_tools into bound directly.
+    provider.get_all_tools = AsyncMock(return_value=tools + [find_tools_tool])
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    captured_top_k = {}
+
+    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        captured_top_k["value"] = top_k
+        return [t.name for t in all_tools[:top_k]]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=4,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=fake_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={
+                "cuga_lite_bind_tools_mode": "all",
+                "cuga_lite_bind_tools_include_find_tools": True,
+            },
+            tools_context_ref={"_lc_bind_tools_find_tools": find_tools_tool},
+            tool_provider=provider,
+            query="hockey",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert len(bound) <= 4
+    # find_tools was already in bound; no slot reservation should happen, so top_k == cap.
+    assert captured_top_k["value"] == 4
+
+
+@pytest.mark.asyncio
 async def test_bind_tools_cap_reserves_slot_for_find_tools():
     """When include_find_tools is on, the cap reserves 1 slot for find_tools."""
     tools = [_stub_tool(f"tool_{i:03d}") for i in range(10)]

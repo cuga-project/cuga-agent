@@ -353,18 +353,25 @@ async def _apply_bind_tools_cap_and_merge(
         if candidate is not None:
             find_tools_tool = candidate
 
+    # The overlay path (`_indexed_tools_for_native_bind`) can place ``find_tools`` directly
+    # into ``bound``. If it's already there, treat it as in-band so we don't double-count
+    # it in the cap or reserve an extra slot we don't need.
+    find_tools_name = getattr(find_tools_tool, "name", "") or ""
+    find_tools_already_in_bound = bool(find_tools_name) and any(
+        getattr(t, "name", "") == find_tools_name for t in bound
+    )
+    need_to_append_find_tools = find_tools_tool is not None and not find_tools_already_in_bound
+
     def _append_find_tools(tools: List[StructuredTool]) -> List[StructuredTool]:
-        if find_tools_tool is None:
+        if not need_to_append_find_tools:
             return tools
-        ft_name = getattr(find_tools_tool, "name", None) or ""
-        if not ft_name:
-            return tools
-        if ft_name in {getattr(t, "name", "") for t in tools}:
+        if find_tools_name in {getattr(t, "name", "") for t in tools}:
             return tools
         return [*tools, find_tools_tool]
 
     cap_disabled = max_count <= 0
-    if cap_disabled or len(bound) <= max_count:
+    effective_count = len(bound) + (1 if need_to_append_find_tools else 0)
+    if cap_disabled or effective_count <= max_count:
         return _append_find_tools(bound)
 
     query_text = (query or "").strip()
@@ -379,7 +386,7 @@ async def _apply_bind_tools_cap_and_merge(
             f"(c) set the cap to 0 to disable (Groq/OpenAI will reject)."
         )
 
-    reserve = 1 if find_tools_tool is not None else 0
+    reserve = 1 if need_to_append_find_tools else 0
     target_k = max_count - reserve
     if target_k <= 0:
         raise RuntimeError(
