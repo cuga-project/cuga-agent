@@ -232,6 +232,88 @@ async def test_bind_tools_mode_all_disabled_cap_binds_everything():
 
 
 @pytest.mark.asyncio
+async def test_bind_tools_cap_does_not_pad_by_default():
+    """By default, only the shortlister's ranked tools are bound — cuga_lite is a code-agent
+    and binding many native tools regresses code-emission (see commit context)."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(10)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    async def stingy_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        return ["tool_007"]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=5,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_pad_to_cap_from_settings",
+            return_value=False,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=stingy_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={"cuga_lite_bind_tools_mode": "all"},
+            tools_context_ref={},
+            tool_provider=provider,
+            query="anything",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert [t.name for t in bound] == ["tool_007"]
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_cap_pads_when_opt_in():
+    """When pad_to_cap=True, the shortlist is filled with the remaining tools up to target_k."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(10)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    async def stingy_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        return ["tool_007"]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=5,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_pad_to_cap_from_settings",
+            return_value=True,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=stingy_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={"cuga_lite_bind_tools_mode": "all"},
+            tools_context_ref={},
+            tool_provider=provider,
+            query="anything",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    names = [t.name for t in bound]
+    assert len(names) == 5
+    assert names[0] == "tool_007"
+    assert names[1:] == ["tool_000", "tool_001", "tool_002", "tool_003"]
+
+
+@pytest.mark.asyncio
 async def test_bind_tools_cap_reserves_slot_for_find_tools():
     """When include_find_tools is on, the cap reserves 1 slot for find_tools."""
     tools = [_stub_tool(f"tool_{i:03d}") for i in range(10)]

@@ -182,6 +182,29 @@ def _bind_tools_max_count_from_settings() -> int:
         return 128
 
 
+def _bind_tools_pad_to_cap_from_settings() -> bool:
+    """Whether to pad the shortlister output with the remaining tools to fill the cap.
+
+    Default ``False`` — bind only the tools the shortlister deemed relevant (often 1-4
+    on the existing system prompt). cuga_lite is a code-execution agent and exhibits
+    measurable regressions in code-emission when many tools are bound natively (the
+    model tends to switch to native ``tool_calls`` mode, which the code-mode flow
+    doesn't fully exercise).
+
+    Set ``True`` for research scenarios where the user explicitly wants ``mode=all``
+    to bind as many tools as the provider will accept.
+    """
+    try:
+        raw = getattr(settings.advanced_features, "cuga_lite_bind_tools_pad_to_cap", False)
+    except Exception:
+        return False
+    if isinstance(raw, bool):
+        return raw
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1", "yes", "on")
+    return bool(raw)
+
+
 def _bind_tools_mode_from_settings() -> str:
     try:
         m = getattr(settings.advanced_features, "cuga_lite_bind_tools_mode", None)
@@ -372,8 +395,8 @@ async def _apply_bind_tools_cap_and_merge(
             logger.warning("bind_tools cap: tool_provider.get_apps() failed: %s", e)
 
     logger.info(
-        "bind_tools cap exceeded: mode=%s candidates=%d cap=%d → LLM shortlister to top %d "
-        "(reserve=%d for find_tools)",
+        "bind_tools cap exceeded: mode={} candidates={} cap={} → LLM shortlister to top {} "
+        "(reserve={} for find_tools)",
         mode,
         len(bound),
         max_count,
@@ -403,17 +426,40 @@ async def _apply_bind_tools_cap_and_merge(
 
     by_name = {getattr(t, "name", ""): t for t in bound}
     shortlisted: List[StructuredTool] = []
+    seen_short: Set[str] = set()
     for n in ranked_names:
         t = by_name.get(n)
-        if t is not None:
+        if t is not None and n not in seen_short:
+            seen_short.add(n)
             shortlisted.append(t)
+
+    # Pad-to-cap is opt-in (off by default) because cuga_lite is a code-execution agent
+    # and binding many tools natively pushes the model toward `tool_calls` mode, which the
+    # code-mode flow doesn't fully exercise (measured: 0 tool calls vs 5-7 without padding
+    # on the m3 hockey benchmark). Users explicitly chasing "true mode=all" can opt in.
+    padded_count = 0
+    if _bind_tools_pad_to_cap_from_settings() and len(shortlisted) < target_k:
+        for t in bound:
+            name = getattr(t, "name", "") or ""
+            if not name or name in seen_short:
+                continue
+            seen_short.add(name)
+            shortlisted.append(t)
+            padded_count += 1
+            if len(shortlisted) >= target_k:
+                break
 
     shortlisted = _append_find_tools(shortlisted)
     logger.info(
-        "bind_tools cap: shortlisted to %d tools (mode=%s, cap=%d)",
+        "bind_tools cap: shortlisted to {} tools (mode={}, cap={}, ranked={}, padded={}, "
+        "include_find_tools={}, top_ranked={})",
         len(shortlisted),
         mode,
         max_count,
+        len(ranked_names),
+        padded_count,
+        find_tools_tool is not None,
+        ranked_names[:5],
     )
     return shortlisted
 
