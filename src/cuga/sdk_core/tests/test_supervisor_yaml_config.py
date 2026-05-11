@@ -274,7 +274,7 @@ agents:
             temp_path = f.name
 
         try:
-            with pytest.raises(Exception):
+            with pytest.raises(ModuleNotFoundError):
                 await load_supervisor_config(temp_path)
         finally:
             os.unlink(temp_path)
