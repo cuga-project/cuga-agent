@@ -18,6 +18,7 @@ class WorkspaceService {
   private static instance: WorkspaceService;
   private lastFetchTime: number = 0;
   private cachedData: WorkspaceData | null = null;
+  private cachedForThreadId: string | undefined = undefined;
   private pendingRequest: Promise<WorkspaceData> | null = null;
   private readonly MIN_INTERVAL_MS = 3000; // 3 seconds minimum between requests
   private listeners: Set<(data: WorkspaceData) => void> = new Set();
@@ -63,7 +64,14 @@ class WorkspaceService {
    * Fetch workspace tree with enforced throttling
    * Returns cached data if called too soon after last fetch
    */
-  async getWorkspaceTree(forceRefresh: boolean = false): Promise<WorkspaceData> {
+  async getWorkspaceTree(forceRefresh: boolean = false, threadId?: string): Promise<WorkspaceData> {
+    const tidKey = threadId ?? '';
+    if (this.cachedForThreadId !== tidKey) {
+      this.cachedData = null;
+      this.cachedForThreadId = tidKey;
+      this.lastFetchTime = 0;
+    }
+
     const now = Date.now();
     const timeSinceLastFetch = now - this.lastFetchTime;
 
@@ -84,7 +92,7 @@ class WorkspaceService {
     }
 
     // Make the actual request
-    this.pendingRequest = this.fetchWorkspaceData();
+    this.pendingRequest = this.fetchWorkspaceData(threadId);
     
     try {
       const data = await this.pendingRequest;
@@ -100,9 +108,10 @@ class WorkspaceService {
   /**
    * Internal method to actually fetch data from the API
    */
-  private async fetchWorkspaceData(): Promise<WorkspaceData> {
+  private async fetchWorkspaceData(threadId?: string): Promise<WorkspaceData> {
     try {
-      const response = await apiFetch('/api/workspace/tree');
+      const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : '';
+      const response = await apiFetch(`/api/workspace/tree${q}`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -133,6 +142,7 @@ class WorkspaceService {
    */
   clearCache(): void {
     this.cachedData = null;
+    this.cachedForThreadId = undefined;
     this.lastFetchTime = 0;
   }
 }

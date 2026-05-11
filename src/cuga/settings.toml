@@ -35,27 +35,57 @@ enable_todos = false  # Enable todos feature for complex multi-step task managem
 reflection_enabled = false
 save_reuse_generate_html = false  # Generate HTML visualization for saved flows (disabled by default for performance)
 decomposition_strategy = "flexible"  # "exact" = one subtask per app, "flexible" = allows multiple subtasks per app
-e2b_sandbox = false # use e2b for sandbox:
+e2b_sandbox = false           # use E2B cloud sandbox for code execution
+opensandbox_sandbox = true    # use OpenSandbox (Docker) for code execution; requires Docker + opensandbox SDK
 e2b_sandbox_mode = "per-session"  # E2B sandbox lifecycle: "per-session" = cache per thread_id (default), "single" = shared sandbox for all threads, "per-call" = new sandbox each call
 e2b_sandbox_idle_ttl = 600  # Idle timeout in seconds (default: 10 min) - sandbox expires after this much idle time
 e2b_sandbox_max_age = 86400  # Max age for "single" mode in seconds (24h, 0 = disabled) - prevents week-old sandboxes
 e2b_sandbox_ttl_buffer = 60  # Safety buffer in seconds before E2B timeout (default: 60s)
 e2b_cleanup_on_create = true  # Run periodic cleanup when creating new sandboxes
 e2b_cleanup_frequency = 0  # Check all sandboxes every N get_or_create calls (0 = only on create)
-message_window_limit = 100  # Maximum number of messages to keep in history (sliding window)
+message_window_limit = 500  # Maximum number of messages to keep in history (sliding window)
 max_input_length = 5000  # Maximum characters allowed in user input (prevents abuse)
 sub_task_keep_last_n = 5  # Number of most recent generated variables to keep when executing sub-tasks
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
 # bind_tools: generic default is none; resolved model ``gpt-oss-20b`` uses model_runtime_profile.py
+# mode: none | find_tools | all | apps | tools | apps_and_tools  (apps_and_tools = union of app tools + listed names)
 cuga_lite_bind_tools_mode = "none"
-cuga_lite_bind_tools_apps = []  # App names when mode=apps (e.g. ["crm", "slack"])
-cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools StructuredTool alongside all/apps
+cuga_lite_bind_tools_apps = []  # mode=apps or apps_and_tools
+cuga_lite_bind_tools_tool_names = []  # mode=tools or apps_and_tools (StructuredTool.name)
+cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongside all/apps/tools/apps_and_tools
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
 tool_call_timeout = 30  # Timeout in seconds for tool/API calls (sandbox operations). If exceeded, raises TimeoutError
 execution_output_max_length = 70000  # Maximum characters to show in execution output (prevents token overflow)
+# OpenSandbox shell tools (run_command, write_file, …) and matching prompt guidance. Opt-in: set true when using OpenSandbox shell tools.
+enable_shell_tool = false
+# Sandbox backend for shell tool execution. Options:
+#   "opensandbox" — Docker-based OpenSandbox (default; requires Docker + opensandbox_sandbox = true)
+#   "native"      — macOS sandbox-exec (no Docker; macOS only; auto-falls back to "local" on Windows/Linux)
+#   "e2b"         — E2B cloud sandbox (requires e2b_sandbox = true)
+#   "local"       — no sandbox (runs directly on host; always pairs with run_command tool approval)
+sandbox_mode = "native"
+
+[skills]
+# When false, agent skills (SKILL.md, load_skill, sandbox upload, /api/skills) are disabled.
+enabled = false
+
+# Docker image for sandboxed execution (advanced_features.opensandbox_sandbox = true).
+opensandbox_image = "opensandbox/code-interpreter:v1.0.2"
+
+# Entrypoint script inside the code-interpreter image.
+opensandbox_entrypoint = "/opt/opensandbox/code-interpreter.sh"
+
+# Python version injected via env into the code-interpreter image.
+opensandbox_python_version = "3.11"
+
+# OpenSandbox server address. Override with OPEN_SANDBOX_DOMAIN env var.
+opensandbox_domain = "localhost:8080"
+
+# Sandbox lifetime in seconds.
+opensandbox_timeout_seconds = 600
 
 [supervisor]
 enabled = false  # Enable CugaSupervisor for multi-agent coordination

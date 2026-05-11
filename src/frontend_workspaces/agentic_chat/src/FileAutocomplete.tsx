@@ -15,9 +15,10 @@ interface FileAutocompleteProps {
   onAutocompleteOpen?: () => void;
   onFileHover?: (filePath: string | null) => void;
   disabled?: boolean;
+  threadId?: string;
 }
 
-export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover, disabled = false }: FileAutocompleteProps) {
+export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover, disabled = false, threadId }: FileAutocompleteProps) {
   const [allFiles, setAllFiles] = useState<Array<{ name: string; path: string }>>([]);
   const [suggestions, setSuggestions] = useState<Array<{ name: string; path: string }>>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -139,7 +140,8 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
     const searchTerm = textAfterAt.split(/\s/)[0];
     const textAfterSearchTerm = currentValue.substring(lastAtIndex + 1 + searchTerm.length);
     
-    const newValue = currentValue.substring(0, lastAtIndex) + `./${file.path}` + textAfterSearchTerm;
+    const insertedPath = file.path.startsWith("/") ? file.path : `./${file.path}`;
+    const newValue = currentValue.substring(0, lastAtIndex) + insertedPath + textAfterSearchTerm;
 
     const nativeTextareaSetter = Object.getOwnPropertyDescriptor(
       window.HTMLTextAreaElement.prototype,
@@ -305,7 +307,7 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
     return () => {
       clearInterval(fileInterval);
     };
-  }, [disabled]);
+  }, [disabled, threadId]);
   
 
   useEffect(() => {
@@ -379,7 +381,8 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
   const loadWorkspaceFiles = async () => {
     try {
       const { workspaceService } = await import('./workspaceService');
-      const data = await workspaceService.getWorkspaceTree();
+      const tid = threadId?.trim() || undefined;
+      const data = await workspaceService.getWorkspaceTree(false, tid);
       const files = extractFiles(data.tree || []);
       setAllFiles(files);
     } catch (error) {
@@ -454,7 +457,7 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
                 <FileText size={16} className="file-icon" />
                 <div className="file-info">
                   <span className="file-name">{file.name}</span>
-                  <span className="file-path">./{file.path}</span>
+                  <span className="file-path">{file.path.startsWith("/") ? file.path : `./${file.path}`}</span>
                 </div>
               </div>
             ))}
