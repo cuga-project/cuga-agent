@@ -181,6 +181,7 @@ validators = [
     Validator("skills.enabled", default=False),
     Validator("advanced_features.builtin_tools", default=["knowledge"]),
     Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
+    Validator("advanced_features.cuga_lite_bind_tools_max_count", default=128),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),

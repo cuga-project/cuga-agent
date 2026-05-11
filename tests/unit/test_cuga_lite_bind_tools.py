@@ -1,6 +1,6 @@
 """CugaLite native bind_tools resolution (mode=tools by tool name)."""
 
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from langchain_core.tools import StructuredTool
@@ -109,3 +109,166 @@ async def test_bind_tools_overlay_includes_shell_tools_not_on_registry():
     model.bind_tools.assert_called_once()
     (bound,), _kwargs = model.bind_tools.call_args
     assert [t.name for t in bound] == ["run_command"]
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_mode_all_shortlists_when_over_cap():
+    """When mode=all candidate count > max_count, run the LLM shortlister and bind top-K."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(10)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        return [t.name for t in all_tools[: min(top_k, 3)]]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=3,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=fake_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={"cuga_lite_bind_tools_mode": "all"},
+            tools_context_ref={},
+            tool_provider=provider,
+            query="find me a hockey scorer",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert [t.name for t in bound] == ["tool_000", "tool_001", "tool_002"]
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_mode_all_raises_when_over_cap_without_query():
+    """Failing loudly is required to avoid silently corrupting benchmark results."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(10)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+        return_value=3,
+    ):
+        with pytest.raises(RuntimeError, match="provider-safe cap"):
+            await resolve_model_with_bind_tools(
+                model,
+                configurable={"cuga_lite_bind_tools_mode": "all"},
+                tools_context_ref={},
+                tool_provider=provider,
+                query=None,
+            )
+    model.bind_tools.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_mode_all_no_cap_when_under_threshold():
+    """Under the cap, no shortlister is invoked and all candidates are bound."""
+    tools = [_stub_tool(f"tool_{i}") for i in range(3)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    shortlist_calls = MagicMock()
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=128,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=shortlist_calls,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={"cuga_lite_bind_tools_mode": "all"},
+            tools_context_ref={},
+            tool_provider=provider,
+            query="anything",
+        )
+
+    shortlist_calls.assert_not_called()
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert sorted(t.name for t in bound) == ["tool_0", "tool_1", "tool_2"]
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_mode_all_disabled_cap_binds_everything():
+    """max_count <= 0 disables the cap entirely (WatsonX/permissive backends)."""
+    tools = [_stub_tool(f"tool_{i}") for i in range(50)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+        return_value=0,
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={"cuga_lite_bind_tools_mode": "all"},
+            tools_context_ref={},
+            tool_provider=provider,
+            query=None,
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert len(bound) == 50
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_cap_reserves_slot_for_find_tools():
+    """When include_find_tools is on, the cap reserves 1 slot for find_tools."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(10)]
+    find_tools_tool = _stub_tool("find_tools")
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    captured_top_k = {}
+
+    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        captured_top_k["value"] = top_k
+        return [t.name for t in all_tools[:top_k]]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=4,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=fake_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={
+                "cuga_lite_bind_tools_mode": "all",
+                "cuga_lite_bind_tools_include_find_tools": True,
+            },
+            tools_context_ref={"_lc_bind_tools_find_tools": find_tools_tool},
+            tool_provider=provider,
+            query="hockey",
+        )
+
+    assert captured_top_k["value"] == 3
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert [t.name for t in bound] == ["tool_000", "tool_001", "tool_002", "find_tools"]

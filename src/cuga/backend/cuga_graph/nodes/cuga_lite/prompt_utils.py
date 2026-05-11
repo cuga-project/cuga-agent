@@ -398,6 +398,98 @@ class PromptUtils:
         return "\n".join(markdown_lines)
 
     @staticmethod
+    async def shortlist_tool_names(
+        query: str,
+        all_tools: List[StructuredTool],
+        all_apps: List[AppDefinition],
+        llm: Optional[Any] = None,
+        top_k: int = 4,
+        instructions: Optional[str] = None,
+    ) -> List[str]:
+        """Rank tools by relevance to ``query`` and return up to ``top_k`` names (best-first).
+
+        Wraps the same shortlister LLM chain as :meth:`find_tools` but exposes the
+        ranked ``APIDetails.name`` list directly. Used by bind-time shortlisting in
+        ``resolve_model_with_bind_tools`` when the candidate tool count exceeds the
+        configured provider cap.
+        """
+        if top_k <= 0 or not all_tools:
+            return []
+
+        from cuga.backend.llm.models import LLMManager
+        from cuga.backend.cuga_graph.nodes.api.shortlister_agent.prompts.load_prompt import (
+            ShortListerOutputLite,
+        )
+        from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+
+        effective_instructions = (
+            instructions
+            if instructions is not None
+            else (
+                f"Return the {top_k} most relevant tools (or fewer if not enough are relevant), "
+                "ordered best-first by relevance. Do not exceed this count."
+            )
+        )
+
+        prompt = create_chat_prompt_from_templates(
+            system_path='./prompts/shortlister/system.jinja2',
+            message_templates=[
+                (
+                    'human',
+                    """
+                Current Apps: {all_apps}
+                Current Available Tools: {all_tools}
+                """,
+                ),
+                ('ai', 'Sure, now give me the intent'),
+                ('human', '{input}'),
+            ],
+        )
+        tools_as_dict: Dict[str, Any] = {}
+        for tool in all_tools:
+            tool_dict = tool.model_dump()
+            if hasattr(tool, 'args_schema') and tool.args_schema:
+                try:
+                    if hasattr(tool.args_schema, 'schema'):
+                        tool_dict['args_schema'] = tool.args_schema.schema()
+                    elif hasattr(tool.args_schema, 'model_json_schema'):
+                        tool_dict['args_schema'] = tool.args_schema.model_json_schema()
+                    else:
+                        tool_dict['args_schema'] = {}
+                except Exception:
+                    tool_dict['args_schema'] = {}
+            else:
+                tool_dict['args_schema'] = {}
+            tools_as_dict[tool.name] = tool_dict
+
+        apps_as_dict = {app.name: app.model_dump() for app in all_apps}
+
+        llm_manager = LLMManager()
+        model = llm or llm_manager.get_model(settings.agent.code.model)
+        chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
+        response = await chain.ainvoke(
+            {
+                "input": query,
+                "all_apps": apps_as_dict,
+                "all_tools": tools_as_dict,
+                "instructions": effective_instructions,
+            }
+        )
+
+        valid_names = {t.name for t in all_tools}
+        ranked: List[str] = []
+        seen: set = set()
+        for api_detail in getattr(response, "result", None) or []:
+            name = getattr(api_detail, "name", None)
+            if not name or name in seen or name not in valid_names:
+                continue
+            seen.add(name)
+            ranked.append(name)
+            if len(ranked) >= top_k:
+                break
+        return ranked
+
+    @staticmethod
     def create_find_tools_bound(all_tools: List[StructuredTool], all_apps: List[AppDefinition]):
         """Create a bound version of find_tools with all_tools and all_apps pre-bound.
 
