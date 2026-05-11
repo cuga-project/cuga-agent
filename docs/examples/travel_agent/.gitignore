@@ -1,0 +1,8 @@
+# Un-ignore only the committed Tool Guide policy files for this example.
+# The root .gitignore has a bare `.cuga` rule intended for runtime folders;
+# these overrides ensure the example's policy files are tracked by git.
+!.cuga/
+!.cuga/tool_guides/
+!.cuga/tool_guides/policy_employee.md
+!.cuga/tool_guides/policy_manager.md
+!.cuga/tool_guides/policy_executive.md
