@@ -22,7 +22,7 @@ search for flights → search for hotels → check policy compliance → send ma
 
 ## Architecture
 
-```
+```text
 tools/flights.py          ← search_flights (SerpAPI Google Flights)
 tools/hotels.py           ← search_hotels  (SerpAPI Google Hotels)
 tools/compliance.py       ← analyze_travel_compliance (structures data for policy evaluation)
@@ -62,7 +62,7 @@ changes the policy without touching any Python code.
 
 ## E2E Workflow
 
-```
+```text
 User: "Plan a trip from NY to Boston, Mon–Fri next week"
   → Supervisor delegates to flight_agent  (search_flights via SerpAPI)
   → Supervisor delegates to hotel_agent   (search_hotels via SerpAPI)
@@ -168,7 +168,7 @@ loading is needed.
 
 The compliance agent uses the **CUGA Tool Guide** policy mechanism — not hardcoded Python logic.
 
-```
+```text
 .cuga/tool_guides/policy_employee.md
         ↓  loaded at module import time by
 compliance_agent.py  →  agent.policies.add_tool_guide(target_tools=["analyze_travel_compliance"])
@@ -220,14 +220,15 @@ globs `policy_*.md` and loads every matching file at startup.
 
 ## File Structure
 
-```
+```text
 travel_agent/
 ├── main.py                              # SDK entry point (terminal, no UI)
 ├── .env.example                         # Environment variable template
 ├── .env                                 # Your keys (git-ignored, copy from .env.example)
 ├── .cuga/
 │   └── tool_guides/
-│       └── policy_employee.md           # Corporate travel policy (Tool Guide, YAML frontmatter)
+│       ├── policy_employee.md           # Employee travel policy (Tool Guide, YAML frontmatter)
+│       └── policy_manager.md            # Manager travel policy (Tool Guide, YAML frontmatter)
 ├── tools/
 │   ├── flights.py                       # search_flights (SerpAPI Google Flights)
 │   ├── hotels.py                        # search_hotels (SerpAPI Google Hotels)

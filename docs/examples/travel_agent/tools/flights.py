@@ -87,11 +87,12 @@ def search_flights(
     flights = []
     for section in ("best_flights", "other_flights"):
         for raw in results.get(section, []):
-            legs = raw.get("flights", [{}])
+            legs = raw.get("flights", [])
+            first_leg = legs[0] if legs else {}
             flights.append(
                 {
-                    "airline": legs[0].get("airline", "Unknown"),
-                    "flight_number": legs[0].get("flight_number", "N/A"),
+                    "airline": first_leg.get("airline", "Unknown"),
+                    "flight_number": first_leg.get("flight_number", "N/A"),
                     "stops": max(len(legs) - 1, 0),
                     "price": raw.get("price", 0),
                     "travel_class": travel_class,

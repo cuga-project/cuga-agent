@@ -6,12 +6,15 @@ and returns a prompt for the LLM to reason about. The actual policy
 enforcement is done by the LLM, guided by the Tool Guide policy injected
 into this tool's context by the CUGA policy system.
 
-The Tool Guide (`.cuga/tool_guides/travel_policy.md`) injects role-based
+The Tool Guide (`.cuga/tool_guides/policy_*.md`) injects role-based
 policy constraints (max prices, allowed classes, budget limits) directly
 into this tool's description when the compliance agent calls it.
 """
 
 from langchain_core.tools import tool
+
+# Allowed roles for travel compliance analysis
+ALLOWED_ROLES = ["employee", "manager", "executive"]
 
 
 @tool
@@ -45,6 +48,10 @@ def analyze_travel_compliance(
         The Tool Guide injects role-specific policy constraints (max prices,
         allowed classes, budget limits) directly into this tool's context.
     """
+    # Validate role against allowlist
+    if role not in ALLOWED_ROLES:
+        raise ValueError(f"Invalid role '{role}'. Supported roles are: {', '.join(ALLOWED_ROLES)}")
+
     # This is a placeholder — the actual filtering is done by the LLM
     # with policy guidance injected by the Tool Guide system.
     return (

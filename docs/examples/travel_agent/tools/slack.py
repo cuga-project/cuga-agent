@@ -15,7 +15,7 @@ from langchain_core.tools import tool
 
 try:
     from slack_sdk import WebClient
-    from slack_sdk.errors import SlackApiError
+    from slack_sdk.errors import SlackApiError, SlackClientError, SlackRequestError
 
     _SLACK_SDK_AVAILABLE = True
 except ImportError:
@@ -92,7 +92,17 @@ def send_slack_approval(
                 },
                 indent=2,
             )
-        except SlackApiError as exc:
+        except (SlackApiError, SlackClientError, SlackRequestError) as exc:
+            return json.dumps(
+                {
+                    "success": False,
+                    "mode": "slack",
+                    "error": str(exc),
+                    "timestamp": timestamp,
+                },
+                indent=2,
+            )
+        except Exception as exc:
             return json.dumps(
                 {
                     "success": False,

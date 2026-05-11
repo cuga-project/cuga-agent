@@ -93,7 +93,11 @@ async def _build_compliance_agent() -> CugaAgent:
 # means no global state is touched.
 try:
     compliance_agent = asyncio.run(_build_compliance_agent())
-except RuntimeError:
+except RuntimeError as e:
+    # Only catch the "already running event loop" case; re-raise other RuntimeErrors
+    # so failures from _build_compliance_agent() (e.g., policy errors) are not hidden.
+    if "cannot be called from a running event loop" not in str(e):
+        raise
     # Already inside a running event loop (e.g. pytest-asyncio, Jupyter, cuga start).
     # Create the agent without policies; they will be added on first invoke
     # if needed, or the caller can await _build_compliance_agent() explicitly.
