@@ -630,7 +630,7 @@ class LLMManager:
             else:
                 raise ValueError(
                     "WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID "
-                    "to be set when not using a deployment_id."
+                    "to be set."
                 )
 
             llm = ChatWatsonx(**watsonx_params)
