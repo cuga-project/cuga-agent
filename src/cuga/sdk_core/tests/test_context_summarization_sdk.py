@@ -96,10 +96,20 @@ class TestSDKContextSummarization:
         import os
         from cuga.config import settings
 
-        # Save original settings
+        # Save original settings and check if env vars existed
         original_enabled = settings.context_summarization.enabled
         original_fraction = settings.context_summarization.trigger_fraction
         original_keep = settings.context_summarization.keep_last_n_messages
+        
+        # Track whether env vars were originally set
+        env_enabled_existed = "DYNACONF_CONTEXT_SUMMARIZATION__ENABLED" in os.environ
+        env_fraction_existed = "DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION" in os.environ
+        env_keep_existed = "DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES" in os.environ
+        
+        # Save original env var values if they existed
+        original_env_enabled = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED")
+        original_env_fraction = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION")
+        original_env_keep = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES")
 
         try:
             # Configure for aggressive summarization using trigger_fraction
@@ -137,10 +147,22 @@ class TestSDKContextSummarization:
             )
 
         finally:
-            # Restore original settings
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            # Restore original settings - remove env vars if they didn't exist, otherwise restore values
+            if env_enabled_existed and original_env_enabled is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = original_env_enabled
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED", None)
+            
+            if env_fraction_existed and original_env_fraction is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = original_env_fraction
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION", None)
+            
+            if env_keep_existed and original_env_keep is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = original_env_keep
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES", None)
+            
             settings.reload()
 
     @pytest.mark.asyncio
@@ -163,6 +185,16 @@ class TestSDKContextSummarization:
         original_enabled = settings.context_summarization.enabled
         original_fraction = settings.context_summarization.trigger_fraction
         original_keep = settings.context_summarization.keep_last_n_messages
+        
+        # Track whether env vars were originally set
+        env_enabled_existed = "DYNACONF_CONTEXT_SUMMARIZATION__ENABLED" in os.environ
+        env_fraction_existed = "DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION" in os.environ
+        env_keep_existed = "DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES" in os.environ
+        
+        # Save original env var values if they existed
+        original_env_enabled = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED")
+        original_env_fraction = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION")
+        original_env_keep = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES")
 
         try:
             # Configure for aggressive summarization
@@ -199,10 +231,22 @@ class TestSDKContextSummarization:
             # as that's non-deterministic and causes flaky tests
 
         finally:
-            # Restore original settings
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            # Restore original settings - remove env vars if they didn't exist, otherwise restore values
+            if env_enabled_existed and original_env_enabled is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = original_env_enabled
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED", None)
+            
+            if env_fraction_existed and original_env_fraction is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = original_env_fraction
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION", None)
+            
+            if env_keep_existed and original_env_keep is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = original_env_keep
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES", None)
+            
             settings.reload()
 
     def _generate_large_context_history(self):
@@ -329,6 +373,16 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         original_enabled = settings.context_summarization.enabled
         original_fraction = settings.context_summarization.trigger_fraction
         original_keep = settings.context_summarization.keep_last_n_messages
+        
+        # Track whether env vars were originally set
+        env_enabled_existed = "DYNACONF_CONTEXT_SUMMARIZATION__ENABLED" in os.environ
+        env_fraction_existed = "DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION" in os.environ
+        env_keep_existed = "DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES" in os.environ
+        
+        # Save original env var values if they existed
+        original_env_enabled = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED")
+        original_env_fraction = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION")
+        original_env_keep = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES")
 
         try:
             # Configure for 75% threshold summarization
@@ -524,10 +578,22 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
                 print(f"\nLangfuse trace: {langfuse_handler.get_trace_url()}")
 
         finally:
-            # Restore original settings
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            # Restore original settings - remove env vars if they didn't exist, otherwise restore values
+            if env_enabled_existed and original_env_enabled is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = original_env_enabled
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED", None)
+            
+            if env_fraction_existed and original_env_fraction is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = original_env_fraction
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION", None)
+            
+            if env_keep_existed and original_env_keep is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = original_env_keep
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES", None)
+            
             settings.reload()
 
     @pytest.mark.asyncio
@@ -549,6 +615,16 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         original_enabled = settings.context_summarization.enabled
         original_fraction = settings.context_summarization.trigger_fraction
         original_keep = settings.context_summarization.keep_last_n_messages
+        
+        # Track whether env vars were originally set
+        env_enabled_existed = "DYNACONF_CONTEXT_SUMMARIZATION__ENABLED" in os.environ
+        env_fraction_existed = "DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION" in os.environ
+        env_keep_existed = "DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES" in os.environ
+        
+        # Save original env var values if they existed
+        original_env_enabled = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED")
+        original_env_fraction = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION")
+        original_env_keep = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES")
 
         try:
             # Configure for moderate summarization (50% threshold)
@@ -692,10 +768,22 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             # It's okay if it says it doesn't know or doesn't have that information
 
         finally:
-            # Restore original settings
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            # Restore original settings - remove env vars if they didn't exist, otherwise restore values
+            if env_enabled_existed and original_env_enabled is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = original_env_enabled
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED", None)
+            
+            if env_fraction_existed and original_env_fraction is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = original_env_fraction
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION", None)
+            
+            if env_keep_existed and original_env_keep is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = original_env_keep
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES", None)
+            
             settings.reload()
 
     @pytest.mark.asyncio
@@ -711,6 +799,12 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         from cuga.config import settings
 
         original_enabled = settings.context_summarization.enabled
+        
+        # Track whether env var was originally set
+        env_enabled_existed = "DYNACONF_CONTEXT_SUMMARIZATION__ENABLED" in os.environ
+        
+        # Save original env var value if it existed
+        original_env_enabled = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED")
 
         try:
             # Enable context summarization
@@ -734,8 +828,12 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             )
 
         finally:
-            # Restore original settings
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
+            # Restore original settings - remove env var if it didn't exist, otherwise restore value
+            if env_enabled_existed and original_env_enabled is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = original_env_enabled
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED", None)
+            
             settings.reload()
 
     @pytest.mark.asyncio
@@ -757,6 +855,16 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         original_enabled = settings.context_summarization.enabled
         original_fraction = settings.context_summarization.trigger_fraction
         original_keep = settings.context_summarization.keep_last_n_messages
+        
+        # Track whether env vars were originally set
+        env_enabled_existed = "DYNACONF_CONTEXT_SUMMARIZATION__ENABLED" in os.environ
+        env_fraction_existed = "DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION" in os.environ
+        env_keep_existed = "DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES" in os.environ
+        
+        # Save original env var values if they existed
+        original_env_enabled = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED")
+        original_env_fraction = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION")
+        original_env_keep = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES")
 
         try:
             # Configure for 75% threshold summarization (same as test_invoke_with_large_context_triggers_summarization)
@@ -867,10 +975,22 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
                 print(f"\nLangfuse trace: {langfuse_handler.get_trace_url()}")
 
         finally:
-            # Restore original settings
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            # Restore original settings - remove env vars if they didn't exist, otherwise restore values
+            if env_enabled_existed and original_env_enabled is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = original_env_enabled
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED", None)
+            
+            if env_fraction_existed and original_env_fraction is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = original_env_fraction
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION", None)
+            
+            if env_keep_existed and original_env_keep is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = original_env_keep
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES", None)
+            
             settings.reload()
 
     @pytest.mark.asyncio
@@ -889,6 +1009,16 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         original_fraction = settings.context_summarization.trigger_fraction
         original_keep = settings.context_summarization.keep_last_n_messages
         original_enabled = settings.context_summarization.enabled
+        
+        # Track whether env vars were originally set
+        env_enabled_existed = "DYNACONF_CONTEXT_SUMMARIZATION__ENABLED" in os.environ
+        env_fraction_existed = "DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION" in os.environ
+        env_keep_existed = "DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES" in os.environ
+        
+        # Save original env var values if they existed
+        original_env_enabled = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED")
+        original_env_fraction = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION")
+        original_env_keep = os.environ.get("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES")
 
         try:
             # Configure moderate summarization settings
@@ -993,10 +1123,22 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
             print(f"   - Summary preview: {summary_content[:200]}...")
 
         finally:
-            # Restore original settings
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled)
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
-            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            # Restore original settings - remove env vars if they didn't exist, otherwise restore values
+            if env_enabled_existed and original_env_enabled is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = original_env_enabled
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__ENABLED", None)
+            
+            if env_fraction_existed and original_env_fraction is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = original_env_fraction
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION", None)
+            
+            if env_keep_existed and original_env_keep is not None:
+                os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = original_env_keep
+            else:
+                os.environ.pop("DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES", None)
+            
             settings.reload()
 
     @pytest.mark.asyncio
