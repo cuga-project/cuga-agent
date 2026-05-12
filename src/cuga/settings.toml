@@ -187,7 +187,7 @@ trm_url = 8080
 oak_health_api = 8090  # cuga-oak-health OpenAPI (demo_health)
 
 [context_summarization]
-enabled = false  # Enable intelligent context summarization
+enabled = true  # Enable intelligent context summarization
 keep_last_n_messages = 10  # Number of recent messages to preserve unsummarized
 trim_tokens_to_summarize = 500  # Target token count for generated summaries
 summarization_model = "gpt-4o-mini"  # Model to use for generating summaries (fast and cost-effective)
