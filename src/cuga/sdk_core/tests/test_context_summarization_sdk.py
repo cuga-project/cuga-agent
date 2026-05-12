@@ -6,6 +6,7 @@ with CugaAgent.invoke() and CugaAgent.stream().
 """
 
 import json
+import os
 from pathlib import Path
 
 import uuid
@@ -994,6 +995,73 @@ ENTITY_2000: risk 0.67 -> 0.95 (escalation required)""",
         finally:
             # Restore original settings
             os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
+            settings.reload()
+
+    @pytest.mark.asyncio
+    @pytest.mark.skipif(
+        not os.environ.get("WATSONX_PROJECT_ID"),
+        reason="WatsonX credentials not configured (WATSONX_PROJECT_ID not set)",
+    )
+    async def test_invoke_with_large_context_triggers_summarization_watsonx(self):
+        """
+        WatsonX-specific regression test for issue #189.
+
+        Verifies that a large conversation (~96k tokens) against a WatsonX model:
+        1. Completes without HTTP 400 (the reported failure mode)
+        2. Triggers context summarization (message count is reduced)
+
+        Uses _generate_large_context_history() — same helper as the OpenAI variant.
+        Skips if WATSONX_PROJECT_ID is not set.
+        """
+        import os
+        from cuga.config import settings
+
+        original_config = os.environ.get("AGENT_SETTING_CONFIG")
+        original_enabled = settings.context_summarization.enabled
+        original_fraction = settings.context_summarization.trigger_fraction
+        original_keep = settings.context_summarization.keep_last_n_messages
+
+        try:
+            os.environ["AGENT_SETTING_CONFIG"] = "settings.watsonx.toml"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = "true"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = "0.75"
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = "5"
+            settings.reload()
+
+            agent = CugaAgent(tools=[])
+            thread_id = str(uuid.uuid4())
+
+            large_history = self._generate_large_context_history()
+            print(f"\n=== WatsonX: Loading {len(large_history)} messages (~96k tokens) ===")
+
+            # Must complete without HTTP 400 (regression for issue #189)
+            result = await agent.invoke(large_history, thread_id=thread_id)
+            assert result is not None
+            assert result.error is None, f"Expected no error, got: {result.error}"
+            print("✓ No HTTP 400 error")
+
+            # Verify summarization fired (message count reduced)
+            config = {"configurable": {"thread_id": thread_id}}
+            checkpoint = agent.graph.checkpointer.get(config)
+            assert checkpoint is not None, "Failed to get checkpoint"
+            state_dict = checkpoint.get("channel_values", {})
+            message_count = len(state_dict.get("chat_messages", []))
+
+            max_expected = max(35, len(large_history) // 3)
+            assert message_count < max_expected, (
+                f"Summarization should have reduced message count. "
+                f"Input: {len(large_history)}, After: {message_count}, Max expected: {max_expected}"
+            )
+            print(f"✓ Summarization fired: {len(large_history)} → {message_count} messages")
+
+        finally:
+            if original_config:
+                os.environ["AGENT_SETTING_CONFIG"] = original_config
+            elif "AGENT_SETTING_CONFIG" in os.environ:
+                del os.environ["AGENT_SETTING_CONFIG"]
+            os.environ["DYNACONF_CONTEXT_SUMMARIZATION__ENABLED"] = str(original_enabled).lower()
             os.environ["DYNACONF_CONTEXT_SUMMARIZATION__TRIGGER_FRACTION"] = str(original_fraction)
             os.environ["DYNACONF_CONTEXT_SUMMARIZATION__KEEP_LAST_N_MESSAGES"] = str(original_keep)
             settings.reload()
