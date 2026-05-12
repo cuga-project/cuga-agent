@@ -1091,7 +1091,7 @@ requires-dist = [
     { name = "opensandbox", marker = "extra == 'opensandbox'" },
     { name = "opensandbox-code-interpreter", marker = "extra == 'opensandbox'" },
     { name = "pgvector", specifier = ">=0.4.2" },
-    { name = "playwright", specifier = ">=1.49.0" },
+    { name = "playwright", specifier = ">=1.59.0" },
     { name = "psutil", specifier = ">=7.0.0" },
     { name = "psycopg", extras = ["binary"], specifier = ">=3.2" },
     { name = "pyjwt", extras = ["crypto"], specifier = ">=2.12.0" },
