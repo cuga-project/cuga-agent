@@ -234,7 +234,7 @@ class TestLLMOverrideMechanism:
         assert kwargs["model_id"] == "configured-model-name"
         assert kwargs["project_id"] == "project-123"
         assert kwargs["params"]["temperature"] == BASE_MODEL_SETTINGS["temperature"]
-        assert kwargs["params"]["max_tokens"] == BASE_MODEL_SETTINGS["max_tokens"]
+        assert kwargs["params"]["max_completion_tokens"] == BASE_MODEL_SETTINGS["max_tokens"]
 
     def test_watsonx_ignores_env_url_and_uses_only_model_settings_url(self):
         """WatsonX url should come from model settings, not WATSONX_URL."""

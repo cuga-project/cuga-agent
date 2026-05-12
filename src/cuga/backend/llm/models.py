@@ -613,7 +613,7 @@ class LLMManager:
 
             deployment_id = model_settings.get("deployment_id")
             if deployment_id:
-                # Deployment id is model-specific configuration representating
+                # Deployment id is model-specific configuration representing
                 # the id of a deployed model in production
                 watsonx_params["deployment_id"] = deployment_id
             else:
@@ -627,7 +627,7 @@ class LLMManager:
                 watsonx_params["space_id"] = space_id
             elif project_id:
                 watsonx_params["project_id"] = project_id
-            elif not deployment_id:
+            else:
                 raise ValueError(
                     "WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID "
                     "to be set when not using a deployment_id."
