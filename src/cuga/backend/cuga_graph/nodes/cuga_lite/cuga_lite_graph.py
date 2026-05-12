@@ -347,21 +347,30 @@ async def _apply_bind_tools_cap_and_merge(
     Failing loudly is intentional: silent truncation would corrupt research/benchmark
     results that compare native tool-calling against text-mode.
     """
+    # Resolve the find_tools candidate *unconditionally* — the overlay path
+    # (``_indexed_tools_for_native_bind``) can inject it into ``bound`` independently of
+    # ``include_find_tools``, so we have to detect it either way to honor an explicit
+    # opt-out. (Coderabbit on #203.)
     find_tools_tool = None
-    if include_find_tools and tools_context_ref:
+    if tools_context_ref:
         candidate = tools_context_ref.get("_lc_bind_tools_find_tools")
         if candidate is not None:
             find_tools_tool = candidate
 
-    # ``find_tools`` may arrive via the overlay (already inside ``bound``) or out-of-band
-    # (only in ``tools_context_ref``). Either way, when ``include_find_tools=True`` we must
-    # *guarantee* it survives shortlisting — the LLM ranker is free to drop any tool from
-    # the ranking pool, so the only safe move is to pull find_tools OUT of the pool, reserve
-    # a cap slot for it, and append it back at the end. (Per coderabbit on #203.)
     find_tools_name = getattr(find_tools_tool, "name", "") or ""
     find_tools_already_in_bound = bool(find_tools_name) and any(
         getattr(t, "name", "") == find_tools_name for t in bound
     )
+    # If the user disabled find_tools but the overlay injected it anyway, strip it from
+    # ``bound`` so it can't consume a capped slot or sneak into the shortlister's input.
+    if not include_find_tools and find_tools_already_in_bound:
+        bound = [t for t in bound if getattr(t, "name", "") != find_tools_name]
+        find_tools_already_in_bound = False
+
+    # When ``include_find_tools=True`` we must *guarantee* find_tools survives shortlisting
+    # — the LLM ranker is free to drop any tool from the ranking pool, so the only safe move
+    # is to pull find_tools OUT of the pool, reserve a cap slot for it, and append it back
+    # at the end.
     keep_find_tools = include_find_tools and find_tools_tool is not None
     # Tools the shortlister actually ranks — strip find_tools out so the ranker can't evict it.
     ranking_pool: List[StructuredTool] = (
@@ -445,6 +454,19 @@ async def _apply_bind_tools_cap_and_merge(
         if t is not None and n not in seen_short:
             seen_short.add(n)
             shortlisted.append(t)
+
+    # The empty-``ranked_names`` case is caught above. This catches the LLM-hallucinated-names
+    # case: ranked_names is non-empty but none match a tool in ranking_pool. Without this
+    # raise, we'd silently pad (or return just find_tools), recreating the silent degradation
+    # the cap path is meant to prevent. (Coderabbit on #203.)
+    if not shortlisted:
+        raise RuntimeError(
+            f"cuga_lite_bind_tools shortlister returned {len(ranked_names)} names but none "
+            f"matched the {len(ranking_pool)} candidates (cap={max_count}, "
+            f"query={query_text!r}, sample_ranked={ranked_names[:5]}). Shortlister LLM "
+            f"hallucinated tool names — raise the cap, fix the shortlister prompt, or "
+            f"refine the query."
+        )
 
     # Pad-to-cap is opt-in (off by default) because cuga_lite is a code-execution agent
     # and binding many tools natively pushes the model toward `tool_calls` mode, which the

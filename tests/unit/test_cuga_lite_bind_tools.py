@@ -418,6 +418,93 @@ async def test_bind_tools_cap_guarantees_find_tools_when_in_overlay_bound():
 
 
 @pytest.mark.asyncio
+async def test_bind_tools_include_find_tools_false_strips_overlay_find_tools():
+    """Overlay can inject `find_tools` into `bound` regardless of `include_find_tools`.
+
+    When the user sets `include_find_tools=False`, the overlay-injected tool must be stripped
+    so it can't consume a cap slot or be ranked. Regression test for coderabbit on #203.
+    """
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(5)]
+    find_tools_tool = _stub_tool("find_tools")
+    provider = AsyncMock()
+    # Overlay path puts find_tools into bound directly.
+    provider.get_all_tools = AsyncMock(return_value=tools + [find_tools_tool])
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    captured = {}
+
+    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        captured["pool_names"] = [t.name for t in all_tools]
+        return [t.name for t in all_tools[:top_k]]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=3,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=fake_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={
+                "cuga_lite_bind_tools_mode": "all",
+                # NB: include_find_tools is False (default in configurable here)
+            },
+            tools_context_ref={"_lc_bind_tools_find_tools": find_tools_tool},
+            tool_provider=provider,
+            query="hockey",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    bound_names = {t.name for t in bound}
+    assert "find_tools" not in bound_names, (
+        f"find_tools leaked through overlay despite include_find_tools=False: {bound_names}"
+    )
+    # The shortlister must not have seen find_tools either.
+    assert "find_tools" not in captured["pool_names"]
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_cap_raises_when_shortlist_names_dont_match_pool():
+    """LLM-hallucinated shortlist names (non-empty list, zero matches in pool) must fail
+    loudly. Without the guard we'd silently pad or bind just find_tools, recreating the
+    silent degradation the cap path exists to prevent. Coderabbit on #203."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(10)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    async def hallucinating_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        return ["nonexistent_tool_a", "nonexistent_tool_b"]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=3,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=hallucinating_shortlist,
+        ),
+    ):
+        with pytest.raises(RuntimeError, match="hallucinated"):
+            await resolve_model_with_bind_tools(
+                model,
+                configurable={"cuga_lite_bind_tools_mode": "all"},
+                tools_context_ref={},
+                tool_provider=provider,
+                query="hockey",
+            )
+    model.bind_tools.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_bind_tools_cap_binds_only_find_tools_when_max_count_is_one():
     """`max_count=1` + `include_find_tools=True` should still succeed by binding only
     find_tools, instead of raising as "cap too small to fit even find_tools"."""
