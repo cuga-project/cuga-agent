@@ -353,26 +353,34 @@ async def _apply_bind_tools_cap_and_merge(
         if candidate is not None:
             find_tools_tool = candidate
 
-    # The overlay path (`_indexed_tools_for_native_bind`) can place ``find_tools`` directly
-    # into ``bound``. If it's already there, treat it as in-band so we don't double-count
-    # it in the cap or reserve an extra slot we don't need.
+    # ``find_tools`` may arrive via the overlay (already inside ``bound``) or out-of-band
+    # (only in ``tools_context_ref``). Either way, when ``include_find_tools=True`` we must
+    # *guarantee* it survives shortlisting — the LLM ranker is free to drop any tool from
+    # the ranking pool, so the only safe move is to pull find_tools OUT of the pool, reserve
+    # a cap slot for it, and append it back at the end. (Per coderabbit on #203.)
     find_tools_name = getattr(find_tools_tool, "name", "") or ""
     find_tools_already_in_bound = bool(find_tools_name) and any(
         getattr(t, "name", "") == find_tools_name for t in bound
     )
-    need_to_append_find_tools = find_tools_tool is not None and not find_tools_already_in_bound
+    keep_find_tools = include_find_tools and find_tools_tool is not None
+    # Tools the shortlister actually ranks — strip find_tools out so the ranker can't evict it.
+    ranking_pool: List[StructuredTool] = (
+        [t for t in bound if getattr(t, "name", "") != find_tools_name]
+        if keep_find_tools and find_tools_already_in_bound
+        else bound
+    )
 
     def _append_find_tools(tools: List[StructuredTool]) -> List[StructuredTool]:
-        if not need_to_append_find_tools:
+        if not keep_find_tools or find_tools_tool is None:
             return tools
         if find_tools_name in {getattr(t, "name", "") for t in tools}:
             return tools
         return [*tools, find_tools_tool]
 
     cap_disabled = max_count <= 0
-    effective_count = len(bound) + (1 if need_to_append_find_tools else 0)
+    effective_count = len(ranking_pool) + (1 if keep_find_tools else 0)
     if cap_disabled or effective_count <= max_count:
-        return _append_find_tools(bound)
+        return _append_find_tools(ranking_pool)
 
     query_text = (query or "").strip()
     if not query_text:
@@ -386,26 +394,24 @@ async def _apply_bind_tools_cap_and_merge(
             f"(c) set the cap to 0 to disable (Groq/OpenAI will reject)."
         )
 
-    reserve = 1 if need_to_append_find_tools else 0
+    reserve = 1 if keep_find_tools else 0
     target_k = max_count - reserve
     if target_k <= 0:
-        raise RuntimeError(
-            f"cuga_lite_bind_tools_max_count={max_count} is too small to fit even find_tools "
-            f"(reserve={reserve}). Raise the cap."
-        )
+        # ``max_count=1`` with ``include_find_tools=True``: bind only find_tools.
+        return _append_find_tools([])
 
     all_apps: List[Any] = []
     if tool_provider is not None:
         try:
             all_apps = await tool_provider.get_apps()
         except Exception as e:
-            logger.warning("bind_tools cap: tool_provider.get_apps() failed: %s", e)
+            logger.warning("bind_tools cap: tool_provider.get_apps() failed: {}", e)
 
     logger.info(
         "bind_tools cap exceeded: mode={} candidates={} cap={} → LLM shortlister to top {} "
         "(reserve={} for find_tools)",
         mode,
-        len(bound),
+        len(ranking_pool),
         max_count,
         target_k,
         reserve,
@@ -413,25 +419,25 @@ async def _apply_bind_tools_cap_and_merge(
     try:
         ranked_names = await PromptUtils.shortlist_tool_names(
             query=query_text,
-            all_tools=bound,
+            all_tools=ranking_pool,
             all_apps=all_apps,
             llm=llm,
             top_k=target_k,
         )
     except Exception as e:
         raise RuntimeError(
-            f"cuga_lite_bind_tools shortlister failed reducing {len(bound)} tools to top "
-            f"{target_k} (cap={max_count}): {e!r}. Raise the cap or fix the shortlister LLM."
+            f"cuga_lite_bind_tools shortlister failed reducing {len(ranking_pool)} tools to "
+            f"top {target_k} (cap={max_count}): {e!r}. Raise the cap or fix the shortlister LLM."
         ) from e
 
     if not ranked_names:
         raise RuntimeError(
-            f"cuga_lite_bind_tools shortlister returned 0 tools for {len(bound)} candidates "
-            f"(cap={max_count}, query={query_text!r}). Cannot proceed safely; raise the cap "
-            f"or refine the query."
+            f"cuga_lite_bind_tools shortlister returned 0 tools for {len(ranking_pool)} "
+            f"candidates (cap={max_count}, query={query_text!r}). Cannot proceed safely; "
+            f"raise the cap or refine the query."
         )
 
-    by_name = {getattr(t, "name", ""): t for t in bound}
+    by_name = {getattr(t, "name", ""): t for t in ranking_pool}
     shortlisted: List[StructuredTool] = []
     seen_short: Set[str] = set()
     for n in ranked_names:
@@ -446,7 +452,7 @@ async def _apply_bind_tools_cap_and_merge(
     # on the m3 hockey benchmark). Users explicitly chasing "true mode=all" can opt in.
     padded_count = 0
     if _bind_tools_pad_to_cap_from_settings() and len(shortlisted) < target_k:
-        for t in bound:
+        for t in ranking_pool:
             name = getattr(t, "name", "") or ""
             if not name or name in seen_short:
                 continue

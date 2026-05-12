@@ -362,20 +362,26 @@ async def test_bind_tools_cap_not_violated_when_at_boundary_with_find_tools():
 
 
 @pytest.mark.asyncio
-async def test_bind_tools_cap_does_not_double_count_find_tools_in_bound():
-    """find_tools is already in `bound` via the overlay path — don't reserve a second slot."""
+async def test_bind_tools_cap_guarantees_find_tools_when_in_overlay_bound():
+    """If `find_tools` is in `bound` via the overlay and `include_find_tools=True`, it must
+    survive shortlisting — the LLM ranker is allowed to drop any tool from its ranking input,
+    so we pull find_tools out of the ranking pool and reserve a cap slot for it.
+
+    Regression test for coderabbit comment on #203 (`include_find_tools` contract).
+    """
     tools = [_stub_tool(f"tool_{i:03d}") for i in range(5)]
     find_tools_tool = _stub_tool("find_tools")
     provider = AsyncMock()
-    # Overlay path puts find_tools into bound directly.
     provider.get_all_tools = AsyncMock(return_value=tools + [find_tools_tool])
     provider.get_apps = AsyncMock(return_value=[])
     model = MagicMock()
 
-    captured_top_k = {}
+    captured = {}
 
     async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
-        captured_top_k["value"] = top_k
+        captured["top_k"] = top_k
+        captured["pool_names"] = [t.name for t in all_tools]
+        # Adversarial: rank find_tools out if it appears in the input. With the fix it shouldn't.
         return [t.name for t in all_tools[:top_k]]
 
     with (
@@ -401,9 +407,45 @@ async def test_bind_tools_cap_does_not_double_count_find_tools_in_bound():
 
     model.bind_tools.assert_called_once()
     (bound,), _kwargs = model.bind_tools.call_args
-    assert len(bound) <= 4
-    # find_tools was already in bound; no slot reservation should happen, so top_k == cap.
-    assert captured_top_k["value"] == 4
+    assert len(bound) == 4, f"cap violated: bound has {len(bound)} (cap=4)"
+    # Reserve 1 slot for find_tools, so the shortlister sees top_k = cap - 1.
+    assert captured["top_k"] == 3
+    # find_tools must not be exposed to the ranker (it can't be evicted that way).
+    assert "find_tools" not in captured["pool_names"]
+    # find_tools must end up bound regardless of how the ranker votes.
+    assert "find_tools" in {t.name for t in bound}
+    assert bound[-1].name == "find_tools"
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_cap_binds_only_find_tools_when_max_count_is_one():
+    """`max_count=1` + `include_find_tools=True` should still succeed by binding only
+    find_tools, instead of raising as "cap too small to fit even find_tools"."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(5)]
+    find_tools_tool = _stub_tool("find_tools")
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+        return_value=1,
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={
+                "cuga_lite_bind_tools_mode": "all",
+                "cuga_lite_bind_tools_include_find_tools": True,
+            },
+            tools_context_ref={"_lc_bind_tools_find_tools": find_tools_tool},
+            tool_provider=provider,
+            query="hockey",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert [t.name for t in bound] == ["find_tools"]
 
 
 @pytest.mark.asyncio

@@ -229,7 +229,9 @@ class PromptUtils:
                         tool_dict['args_schema'] = tool.args_schema.model_json_schema()
                     else:
                         tool_dict['args_schema'] = {}
-                except Exception as e:
+                except (AttributeError, TypeError, ValueError) as e:
+                    # Narrow to expected serialization failures so unexpected bugs propagate
+                    # instead of silently stripping schema (coderabbit on #203).
                     logger.debug(f"Failed to serialize args_schema for tool {tool.name}: {e}")
                     tool_dict['args_schema'] = {}
             else:
@@ -425,6 +427,10 @@ class PromptUtils:
         configured provider cap.
         """
         if top_k <= 0 or not all_tools:
+            return []
+        # A whitespace-only query would otherwise invoke the LLM and produce arbitrary
+        # rankings, defeating the "no query" failure path in the caller (coderabbit on #203).
+        if not query or not query.strip():
             return []
 
         from cuga.backend.llm.models import LLMManager
