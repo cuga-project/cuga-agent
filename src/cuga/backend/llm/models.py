@@ -628,10 +628,7 @@ class LLMManager:
             elif project_id:
                 watsonx_params["project_id"] = project_id
             else:
-                raise ValueError(
-                    "WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID "
-                    "to be set."
-                )
+                raise ValueError("WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID to be set.")
 
             llm = ChatWatsonx(**watsonx_params)
         elif platform == "rits":
