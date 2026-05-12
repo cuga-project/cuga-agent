@@ -454,6 +454,13 @@ async def _apply_bind_tools_cap_and_merge(
         if t is not None and n not in seen_short:
             seen_short.add(n)
             shortlisted.append(t)
+            # Defense-in-depth: enforce the cap at the call site too, in case the
+            # shortlister returns more names than ``top_k`` (custom shortlister, future
+            # refactor, or a mocked path). Without this clamp the bound list could exceed
+            # ``max_count`` and re-trigger the provider 400 the cap exists to prevent.
+            # (Coderabbit on #203.)
+            if len(shortlisted) >= target_k:
+                break
 
     # The empty-``ranked_names`` case is caught above. This catches the LLM-hallucinated-names
     # case: ranked_names is non-empty but none match a tool in ranking_pool. Without this

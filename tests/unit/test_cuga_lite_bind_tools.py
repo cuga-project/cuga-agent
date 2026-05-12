@@ -505,6 +505,88 @@ async def test_bind_tools_cap_raises_when_shortlist_names_dont_match_pool():
 
 
 @pytest.mark.asyncio
+async def test_bind_tools_cap_clamps_shortlist_when_llm_returns_too_many():
+    """If the shortlister (e.g. a non-compliant custom impl or future refactor) returns more
+    valid names than ``top_k``, the call site must still enforce ``target_k`` so the bound
+    list never exceeds the provider-safe cap. Regression test for coderabbit on #203."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(20)]
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    async def overlong_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        # Deliberately ignore top_k — return every pool name.
+        return [t.name for t in all_tools]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=4,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=overlong_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={"cuga_lite_bind_tools_mode": "all"},
+            tools_context_ref={},
+            tool_provider=provider,
+            query="hockey",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert len(bound) == 4, f"cap violated: bound has {len(bound)} (max=4)"
+    # First four ranked names — earlier names win via the in-order break.
+    assert [t.name for t in bound] == ["tool_000", "tool_001", "tool_002", "tool_003"]
+
+
+@pytest.mark.asyncio
+async def test_bind_tools_cap_clamps_shortlist_with_find_tools_slot():
+    """Same clamp must hold when ``include_find_tools=True`` reserves a slot:
+    ``target_k = max_count - 1`` is the upper bound on shortlisted entries."""
+    tools = [_stub_tool(f"tool_{i:03d}") for i in range(20)]
+    find_tools_tool = _stub_tool("find_tools")
+    provider = AsyncMock()
+    provider.get_all_tools = AsyncMock(return_value=tools)
+    provider.get_apps = AsyncMock(return_value=[])
+    model = MagicMock()
+
+    async def overlong_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+        return [t.name for t in all_tools]
+
+    with (
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph._bind_tools_max_count_from_settings",
+            return_value=4,
+        ),
+        patch(
+            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            side_effect=overlong_shortlist,
+        ),
+    ):
+        await resolve_model_with_bind_tools(
+            model,
+            configurable={
+                "cuga_lite_bind_tools_mode": "all",
+                "cuga_lite_bind_tools_include_find_tools": True,
+            },
+            tools_context_ref={"_lc_bind_tools_find_tools": find_tools_tool},
+            tool_provider=provider,
+            query="hockey",
+        )
+
+    model.bind_tools.assert_called_once()
+    (bound,), _kwargs = model.bind_tools.call_args
+    assert len(bound) == 4, f"cap violated: bound has {len(bound)} (max=4)"
+    # 3 shortlisted + 1 find_tools at the end.
+    assert [t.name for t in bound] == ["tool_000", "tool_001", "tool_002", "find_tools"]
+
+
+@pytest.mark.asyncio
 async def test_bind_tools_cap_binds_only_find_tools_when_max_count_is_one():
     """`max_count=1` + `include_find_tools=True` should still succeed by binding only
     find_tools, instead of raising as "cap too small to fit even find_tools"."""
