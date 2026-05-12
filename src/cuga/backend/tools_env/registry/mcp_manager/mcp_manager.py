@@ -22,7 +22,10 @@ except ImportError:
 from cuga.backend.tools_env.registry.config.config_loader import Auth
 from cuga.backend.tools_env.registry.config.config_loader import ServiceConfig, Service
 from cuga.backend.tools_env.registry.mcp_manager.openapi_parser import SimpleOpenAPIParser
-from cuga.backend.tools_env.registry.mcp_manager.adapter import new_mcp_from_custom_parser, apply_authentication
+from cuga.backend.tools_env.registry.mcp_manager.adapter import (
+    new_mcp_from_custom_parser,
+    apply_authentication,
+)
 import threading
 from collections import defaultdict
 from urllib.parse import urlparse
