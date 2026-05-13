@@ -65,7 +65,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
 from langchain_core.runnables import RunnableConfig
 from langchain_core.callbacks import BaseCallbackHandler
-from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
+from langchain_core.messages import BaseMessage, AIMessage, HumanMessage, ToolMessage
 
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command
@@ -1905,7 +1905,42 @@ def create_cuga_lite_graph(
                     messages_for_model.append({"role": "user", "content": content})
                 elif isinstance(msg, AIMessage):
                     modified_chat_messages.append(msg)
-                    messages_for_model.append({"role": "assistant", "content": msg.content})
+                    ai_tool_calls = getattr(msg, "tool_calls", None) or []
+                    if ai_tool_calls:
+                        # Slash dispatch (slice #17) and the planner both emit AIMessages
+                        # with tool_calls. Convert to OpenAI Chat Completions tool_calls
+                        # shape so the model sees the prior call.
+                        messages_for_model.append(
+                            {
+                                "role": "assistant",
+                                "content": msg.content or "",
+                                "tool_calls": [
+                                    {
+                                        "id": tc.get("id"),
+                                        "type": "function",
+                                        "function": {
+                                            "name": tc.get("name"),
+                                            "arguments": json.dumps(tc.get("args") or {}),
+                                        },
+                                    }
+                                    for tc in ai_tool_calls
+                                ],
+                            }
+                        )
+                    else:
+                        messages_for_model.append({"role": "assistant", "content": msg.content})
+                elif isinstance(msg, ToolMessage):
+                    # Slash skill invocation (slice #17) injects a ToolMessage carrying
+                    # the wrapped skill body. Surface it to the model as a role=tool
+                    # entry paired with the AIMessage above by tool_call_id.
+                    modified_chat_messages.append(msg)
+                    messages_for_model.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": getattr(msg, "tool_call_id", "") or "",
+                            "content": msg.content,
+                        }
+                    )
                 else:
                     # Handle generic BaseMessage by checking the 'type' attribute
                     if msg_role == 'human' or msg_role == 'user':
