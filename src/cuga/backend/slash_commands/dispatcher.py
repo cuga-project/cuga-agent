@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Callable, Optional
 from loguru import logger
 
 from cuga.backend.slash_commands.builtins import discover_builtins
+from cuga.backend.slash_commands.message_synthesis import synthesize_skill_invocation
 from cuga.backend.slash_commands.parser import parse
 from cuga.backend.slash_commands.registry import SlashRegistry
 from cuga.backend.slash_commands.types import DispatchContext, DispatchResult
@@ -77,10 +78,38 @@ async def parse_and_dispatch(
         return result
 
     if slash_registry.has_skill(parsed.name):
-        # Slice #17 fills in injected_messages. Slice #14 returns the placeholder
-        # so callers can detect the skill kind today.
+        assert skill_registry is not None  # has_skill is False without a registry
+        try:
+            wrapped_body = skill_registry.load_skill(parsed.name)
+        except Exception as e:
+            logger.exception(f"Failed to load skill '/{parsed.name}'")
+            return DispatchResult(
+                kind="unknown",
+                text=f"Failed to load skill /{parsed.name}: {e}",
+                resolved_name=parsed.name,
+                raw_input=parsed.raw_input,
+                raw_args=parsed.raw_args,
+            )
+        # Slice #17: args are appended verbatim to the wrapped body. Slice #19
+        # replaces this with proper ``$ARGUMENTS``-style substitution that runs
+        # on the raw SKILL.md body *before* the install/sandbox wrapping.
+        if parsed.raw_args:
+            wrapped_body = f"{wrapped_body}\n\nARGUMENTS: {parsed.raw_args}"
+        injected = synthesize_skill_invocation(
+            raw_input=parsed.raw_input,
+            raw_args=parsed.raw_args,
+            resolved_name=parsed.name,
+            wrapped_body=wrapped_body,
+        )
+        logger.info(
+            "slash_command dispatch: kind=skill name={} raw_input={!r} args={!r}",
+            parsed.name,
+            parsed.raw_input,
+            parsed.raw_args,
+        )
         return DispatchResult(
             kind="skill",
+            injected_messages=injected,
             resolved_name=parsed.name,
             raw_input=parsed.raw_input,
             raw_args=parsed.raw_args,

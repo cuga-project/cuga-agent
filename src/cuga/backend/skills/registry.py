@@ -22,6 +22,9 @@ class SkillRegistry:
     def summaries(self) -> List[dict[str, str]]:
         return [{"name": e.name, "description": e.description} for e in self._by_name.values()]
 
+    def entries(self) -> List[SkillEntry]:
+        return list(self._by_name.values())
+
     def load_skill(self, name: str) -> str:
         entry = self._by_name.get(name.strip())
         if not entry:

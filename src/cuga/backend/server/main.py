@@ -1326,6 +1326,7 @@ async def event_stream(
         )
         event_sequence += 1
 
+    slash_result = None
     if isinstance(query, str):
         slash_result = await _dispatch_slash_for_stream(query, thread_id)
         if slash_result is not None and slash_result.kind in ("builtin", "unknown"):
@@ -1355,10 +1356,31 @@ async def event_stream(
                         events=stream_events_buffer.copy(),
                         user_attachments=user_attachments,
                     )
+            if slash_result.new_thread_id:
+                yield StreamEvent(
+                    name="ThreadIdChanged",
+                    data=json.dumps({"thread_id": slash_result.new_thread_id}),
+                ).format(app_state.output_format, thread_id=thread_id)
             yield StreamEvent(name="Answer", data=answer_text).format(
                 app_state.output_format, thread_id=thread_id
             )
             return
+
+    if (
+        slash_result is not None
+        and slash_result.kind == "skill"
+        and slash_result.injected_messages
+        and local_state is not None
+    ):
+        # Slice #17: prepend the synthesized HumanMessage/AIMessage/ToolMessage[/HumanMessage]
+        # sequence so the planner sees the skill as already loaded. ``input`` is the
+        # trailing arg block (or the bare slash invocation when there are no args) so
+        # the planner has a current-turn prompt to act on.
+        existing = list(local_state.chat_messages or [])
+        local_state.chat_messages = list(slash_result.injected_messages) + existing
+        local_state.input = (
+            slash_result.raw_args if slash_result.raw_args else slash_result.raw_input or query
+        )
 
     langfuse_handler = (
         CallbackHandler()

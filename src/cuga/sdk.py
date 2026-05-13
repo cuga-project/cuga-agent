@@ -1762,15 +1762,17 @@ class CugaAgent:
         init_openlit()
 
         # Slash command dispatch (slice #14): a `/<name>` message short-circuits
-        # the graph for built-in handlers and unknown commands. Skill-kind dispatch
-        # is wired in by slice #17; for now it falls through to the planner.
+        # the graph for built-in handlers and unknown commands. Slice #17 also
+        # synthesizes a 4-message ``load_skill`` pair for skill-kind results,
+        # which gets injected below in place of the bare HumanMessage.
+        slash_result = None
         if isinstance(message, str):
             slash_result = await self._dispatch_slash(message, thread_id)
             if slash_result is not None and slash_result.kind in ("builtin", "unknown"):
                 return InvokeResult(
                     answer=slash_result.text or "",
                     tool_calls=[],
-                    thread_id=thread_id or "",
+                    thread_id=slash_result.new_thread_id or thread_id or "",
                     error=None,
                 )
 
@@ -1858,7 +1860,17 @@ class CugaAgent:
         # Normal invocation case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
-            new_messages = [HumanMessage(content=message)]
+            # Slice #17: if dispatch resolved a skill, replace the bare user
+            # message with the synthesized 4-message load_skill pair so the
+            # planner sees the skill as already loaded.
+            if (
+                slash_result is not None
+                and slash_result.kind == "skill"
+                and slash_result.injected_messages
+            ):
+                new_messages = list(slash_result.injected_messages)
+            else:
+                new_messages = [HumanMessage(content=message)]
         else:
             new_messages = message
 
