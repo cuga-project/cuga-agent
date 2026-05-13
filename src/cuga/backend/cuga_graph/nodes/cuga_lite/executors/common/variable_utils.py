@@ -1,7 +1,7 @@
 import types
 from typing import Any, Optional, Set
-from loguru import logger
 
+from loguru import logger
 
 _TODO_CONFIRMATION_VALUES = frozenset({"Todos updated", "Todos have been updated"})
 
@@ -28,6 +28,77 @@ class VariableUtils:
         if "find_tools" not in code:
             return new_vars
         return {k: v for k, v in new_vars.items() if k != "tools_output"}
+
+    @staticmethod
+    def _sanitize_numpy_scalars(obj: Any) -> Any:
+        """Recursively convert numpy scalars inside dicts and lists to Python natives."""
+        try:
+            import numpy as np  # type: ignore[import-untyped]
+
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                return float(obj)
+            if isinstance(obj, np.bool_):
+                return bool(obj)
+            if isinstance(obj, np.ndarray):
+                return obj.tolist()
+        except ImportError:
+            return obj
+
+        if isinstance(obj, dict):
+            return {k: VariableUtils._sanitize_numpy_scalars(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [VariableUtils._sanitize_numpy_scalars(v) for v in obj]
+        return obj
+
+    @staticmethod
+    def sanitize_value(value: Any) -> Any:
+        """Convert non-JSON-serializable types to serializable equivalents.
+
+        - pd.DataFrame → dict with records (numpy scalars in cells are converted)
+        - pd.Series    → list (numpy scalars converted)
+        - numpy scalars / arrays → Python native types
+
+        All other values are returned unchanged.
+        """
+        try:
+            import numpy as np  # type: ignore[import-untyped]
+
+            if isinstance(value, np.integer):
+                return int(value)
+            if isinstance(value, np.floating):
+                return float(value)
+            if isinstance(value, np.bool_):
+                return bool(value)
+            if isinstance(value, np.ndarray):
+                return value.tolist()
+        except ImportError:
+            pass
+
+        try:
+            import pandas as pd
+
+            if isinstance(value, pd.DataFrame):
+                records = VariableUtils._sanitize_numpy_scalars(value.to_dict("records"))
+                return {
+                    "__pandas_type__": "DataFrame",
+                    "records": records,
+                    "columns": list(value.columns),
+                    "reconstruct": "pd.DataFrame(value['records'])",
+                }
+            if isinstance(value, pd.Series):
+                return {
+                    "__pandas_type__": "Series",
+                    "data": VariableUtils._sanitize_numpy_scalars(value.tolist()),
+                    "name": value.name,
+                    "reconstruct": "pd.Series(value['data'], name=value['name'])",
+                }
+        except ImportError:
+            pass
+
+        return value
+
 
     @staticmethod
     def is_serializable(value: Any) -> bool:
@@ -59,8 +130,11 @@ class VariableUtils:
         try:
             import pandas as pd
 
-            if isinstance(value, (pd.DataFrame, pd.Series)):
-                return True
+            if isinstance(value, pd.DataFrame):
+                return False  
+            if isinstance(value, pd.Series):
+                return False
+
         except ImportError:
             pass
 
@@ -102,7 +176,7 @@ class VariableUtils:
             if key.startswith('_'):
                 continue
 
-            value = all_locals[key]
+            value = VariableUtils.sanitize_value(all_locals[key])
             if VariableUtils.is_serializable(value):
                 new_vars[key] = value
             else:
