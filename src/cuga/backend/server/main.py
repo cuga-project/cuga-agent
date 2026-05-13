@@ -1005,6 +1005,52 @@ async def _save_conversation_and_events_async(
         logger.error(f"Error in async save: {e}")
 
 
+def _build_slash_skill_registry():
+    """Discover skills for the current request, or return ``None`` when skills are off."""
+    if not _skills_effective_enabled():
+        return None
+    try:
+        from cuga.backend.skills import SkillRegistry, discover_skills
+
+        cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        return SkillRegistry(discover_skills(cuga_folder))
+    except Exception:
+        logger.exception("Failed to discover skills for slash dispatch")
+        return None
+
+
+async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
+    """Run ``parse_and_dispatch`` for the streaming HTTP handler.
+
+    Returns ``None`` if anything goes wrong (so the caller falls back to the
+    planner) or a :class:`DispatchResult` for the caller to act on.
+    """
+    try:
+        from cuga.backend.slash_commands import build_slash_registry, parse_and_dispatch
+    except Exception:
+        logger.exception("Failed to import slash_commands package")
+        return None
+
+    skill_registry = _build_slash_skill_registry()
+    slash_registry = build_slash_registry(skill_registry)
+
+    def _clear_stop_event(tid: str) -> None:
+        if tid in app_state.stop_events:
+            app_state.stop_events[tid].clear()
+
+    try:
+        return await parse_and_dispatch(
+            query,
+            slash_registry=slash_registry,
+            skill_registry=skill_registry,
+            thread_id=thread_id,
+            clear_stop_event=_clear_stop_event,
+        )
+    except Exception:
+        logger.exception(f"Slash dispatch failed for input {query!r}")
+        return None
+
+
 async def save_conversation_to_db(
     agent_id: str,
     thread_id: str,
@@ -1279,6 +1325,40 @@ async def event_stream(
             }
         )
         event_sequence += 1
+
+    if isinstance(query, str):
+        slash_result = await _dispatch_slash_for_stream(query, thread_id)
+        if slash_result is not None and slash_result.kind in ("builtin", "unknown"):
+            answer_text = slash_result.text or ""
+            if thread_id:
+                stream_events_buffer.append(
+                    {
+                        "event_name": "Answer",
+                        "event_data": answer_text,
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
+                        "sequence": event_sequence,
+                    }
+                )
+                event_sequence += 1
+                if not disable_history:
+                    slash_state = AgentState(
+                        chat_messages=[HumanMessage(content=query), AIMessage(content=answer_text)],
+                        thread_id=thread_id,
+                        input=query,
+                        url="",
+                    )
+                    await _save_conversation_and_events_async(
+                        agent_id=app_state.agent_id,
+                        thread_id=thread_id,
+                        user_id=user_id,
+                        state=slash_state,
+                        events=stream_events_buffer.copy(),
+                        user_attachments=user_attachments,
+                    )
+            yield StreamEvent(name="Answer", data=answer_text).format(
+                app_state.output_format, thread_id=thread_id
+            )
+            return
 
     langfuse_handler = (
         CallbackHandler()
@@ -3111,6 +3191,36 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
             "session_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "session"),
         }
     )
+
+
+@app.get("/api/commands")
+async def get_commands(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    """Return the merged registry of slash commands (built-ins + skills).
+
+    The registry is rebuilt on each request so newly added SKILL.md files
+    appear without a server restart. Each entry carries a ``kind`` discriminator
+    (``'builtin'`` or ``'skill'``) so the autocomplete UI (slice #18) can style
+    or group entries by source.
+    """
+    try:
+        from cuga.backend.slash_commands import build_slash_registry
+
+        skill_registry = _build_slash_skill_registry()
+        slash_registry = build_slash_registry(skill_registry)
+        return {
+            "commands": [
+                {
+                    "name": c.name,
+                    "kind": c.kind,
+                    "description": c.description,
+                    "argument_hint": c.argument_hint,
+                }
+                for c in slash_registry.list_commands()
+            ]
+        }
+    except Exception:
+        logger.exception("Failed to build slash command registry")
+        raise HTTPException(status_code=500, detail="Failed to build slash command registry")
 
 
 @app.get("/api/skills")

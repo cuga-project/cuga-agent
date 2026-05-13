@@ -1657,6 +1657,38 @@ class CugaAgent:
 
         return self._compiled_graph
 
+    async def _dispatch_slash(self, message: str, thread_id: Optional[str]):
+        """Run the shared slash parser/dispatcher.
+
+        Returns ``None`` on any failure so callers fall back to the planner.
+        Skill-kind results are also returned so slice #17 can wire injection
+        into the SDK without changing this seam.
+        """
+        try:
+            from cuga.backend.skills import SkillRegistry, discover_skills
+            from cuga.backend.slash_commands import build_slash_registry, parse_and_dispatch
+        except Exception:
+            logger.exception("Failed to import slash_commands package")
+            return None
+
+        skill_registry = None
+        try:
+            skill_registry = SkillRegistry(discover_skills(self.cuga_folder))
+        except Exception:
+            logger.exception("Failed to discover skills for slash dispatch")
+
+        slash_registry = build_slash_registry(skill_registry)
+        try:
+            return await parse_and_dispatch(
+                message,
+                slash_registry=slash_registry,
+                skill_registry=skill_registry,
+                thread_id=thread_id,
+            )
+        except Exception:
+            logger.exception(f"Slash dispatch failed for input {message!r}")
+            return None
+
     async def invoke(
         self,
         message: Union[str, List[BaseMessage], None] = None,
@@ -1728,6 +1760,19 @@ class CugaAgent:
         """
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
+
+        # Slash command dispatch (slice #14): a `/<name>` message short-circuits
+        # the graph for built-in handlers and unknown commands. Skill-kind dispatch
+        # is wired in by slice #17; for now it falls through to the planner.
+        if isinstance(message, str):
+            slash_result = await self._dispatch_slash(message, thread_id)
+            if slash_result is not None and slash_result.kind in ("builtin", "unknown"):
+                return InvokeResult(
+                    answer=slash_result.text or "",
+                    tool_calls=[],
+                    thread_id=thread_id or "",
+                    error=None,
+                )
 
         await self._ensure_initialized()
 
