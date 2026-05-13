@@ -26,6 +26,7 @@ import {
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
 import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
+import { SlashCommandDropdown } from './SlashCommandDropdown';
 import './CarbonChat.css';
 
 // Reset thread ID when conversation restarts
@@ -239,6 +240,8 @@ const CarbonChat = ({
   const chatInstanceRef = useRef<ChatInstance | null>(null);
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [chatElement, setChatElement] = useState<HTMLElement | null>(null);
   const skipNextHistoryLoadRef = useRef<string | null>(null);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
@@ -506,6 +509,9 @@ const CarbonChat = ({
     console.log('[CarbonChat] handleChatReady called, setting up event listeners');
     chatInstanceRef.current = instance;
     setChatRenderTick((tick) => tick + 1);
+    if (chatElementRef.current) {
+      setChatElement(chatElementRef.current);
+    }
     
     instance.on({
       type: BusEventType.RESTART_CONVERSATION,
@@ -675,6 +681,7 @@ const CarbonChat = ({
       )}
 
       <div
+        ref={wrapperRef}
         className={`cuga-carbon-chat-wrapper${isDragOver ? ' cuga-carbon-composer--dragover' : ''}`}
         onDragEnter={(e) => {
           if (!attachmentsEnabled) return;
@@ -791,6 +798,10 @@ const CarbonChat = ({
             }
             event.target.value = "";
           }}
+        />
+        <SlashCommandDropdown
+          chatElement={chatElement}
+          portalContainer={wrapperRef.current}
         />
       </div>
     </>

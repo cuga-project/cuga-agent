@@ -279,6 +279,28 @@ export async function getSkills(): Promise<Response> {
   return apiFetch("/api/skills");
 }
 
+export interface SlashCommandInfo {
+  name: string;
+  kind: "builtin" | "skill";
+  description: string;
+  argument_hint: string | null;
+}
+
+export async function getCommands(): Promise<SlashCommandInfo[]> {
+  const response = await apiFetch("/api/commands");
+  if (!response.ok) {
+    throw new Error(`Failed to load slash commands: HTTP ${response.status}`);
+  }
+  const data = await response.json().catch(() => ({ commands: [] }));
+  const commands = Array.isArray(data?.commands) ? data.commands : [];
+  return commands.map((c: any) => ({
+    name: String(c?.name ?? ""),
+    kind: c?.kind === "skill" ? "skill" : "builtin",
+    description: typeof c?.description === "string" ? c.description : "",
+    argument_hint: typeof c?.argument_hint === "string" ? c.argument_hint : null,
+  }));
+}
+
 export async function getWorkspaceTree(threadId?: string): Promise<Response> {
   const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
   return apiFetch(`/api/workspace/tree${q}`);
