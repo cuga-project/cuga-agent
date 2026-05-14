@@ -71,6 +71,8 @@ echo "Running unit tests (registry + variables manager + local sandbox + E2B lit
 run_pytest ./src/cuga/backend/tools_env/registry/tests/
 run_pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
 run_pytest_with_e2b ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
+echo "Running memory tests..."
+run_pytest ./src/cuga/backend/cuga_graph/nodes/cuga_lite/tests/memory/
 echo "Running knowledge tests..."
 run_pytest \
     tests/unit/test_knowledge_engine.py \

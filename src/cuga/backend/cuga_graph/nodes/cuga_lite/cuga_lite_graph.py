@@ -1452,85 +1452,16 @@ def create_cuga_lite_graph(
                     f"[{sandbox_label}] Injected sandbox tools (thread_id={runtime_thread_id!r}) into execution context and prompt: {[t.name for t in sandbox_tools]}"
                 )
 
-            from cuga.backend.evolve.integration import EvolveIntegration
-            from cuga.backend.evolve.formatting import (
-                get_first_human_message_content,
-                get_latest_memory_query,
-                build_evolve_guidelines_section,
-                build_evolve_user_preference_section,
-            )
+            from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
             special_instructions_final = effective_special or ""
-            if EvolveIntegration.is_enabled():
-                task_description = state.sub_task or get_first_human_message_content(state.chat_messages)
-                if task_description:
-                    try:
-                        evolve_guidelines = await asyncio.wait_for(
-                            EvolveIntegration.get_guidelines(task_description),
-                            timeout=settings.evolve.timeout,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Evolve: get_guidelines timed out or failed; continuing without guidelines"
-                        )
-                        evolve_guidelines = None
-                    evolve_section = build_evolve_guidelines_section(
-                        str(evolve_guidelines) if evolve_guidelines else ""
-                    )
-                    if evolve_section:
-                        special_instructions_final = (special_instructions_final or "") + evolve_section
-                        logger.info("Evolve: Injected guidelines into system prompt")
-                        logger.debug("Evolve: Injected guidelines section (%d chars)", len(evolve_section))
-
-                memory_query = state.sub_task or get_latest_memory_query(state.chat_messages)
-                current_user_id = str(getattr(state, "user_id", "") or "").strip()
-                if current_user_id and memory_query:
-                    current_agent_id = str(configurable.get("agent_id") or "").strip()
-                    thread_id_for_memory = str(configurable.get("thread_id") or state.thread_id or "").strip()
-
-                    try:
-                        retrieved_preferences = await asyncio.wait_for(
-                            EvolveIntegration.retrieve_user_facts(
-                                current_user_id,
-                                memory_query,
-                            ),
-                            timeout=settings.evolve.timeout,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Evolve: retrieve_user_facts timed out or failed; continuing without preferences"
-                        )
-                        retrieved_preferences = None
-
-                    def _log_store_error(task: asyncio.Task) -> None:
-                        exc = task.exception() if not task.cancelled() else None
-                        if exc:
-                            logger.warning("Evolve: store_user_facts failed (non-blocking): %s", exc)
-
-                    _store_task = asyncio.create_task(
-                        EvolveIntegration.store_user_facts(
-                            current_user_id,
-                            memory_query,
-                            metadata={
-                                "thread_id": thread_id_for_memory,
-                                "agent_id": current_agent_id,
-                                "source": "cuga-lite",
-                            },
-                        )
-                    )
-                    _store_task.add_done_callback(_log_store_error)
-                    categories = (
-                        retrieved_preferences.get("categories")
-                        if isinstance(retrieved_preferences, dict)
-                        else None
-                    )
-                    preference_section = build_evolve_user_preference_section(categories)
-                    if preference_section:
-                        special_instructions_final = (special_instructions_final or "") + preference_section
-                        logger.info("Evolve: Injected user preference context into system prompt")
-                        logger.debug(
-                            "Evolve: Injected user preference section (%d chars)", len(preference_section)
-                        )
+            evolve_extension = await build_evolve_special_instructions_extension(
+                state=state,
+                configurable=configurable,
+                timeout=settings.evolve.timeout,
+            )
+            if evolve_extension:
+                special_instructions_final = (special_instructions_final or "") + evolve_extension
 
             cfg = config.get("configurable", {}) if config else {}
             _thread_id = cfg.get("thread_id") or ""
