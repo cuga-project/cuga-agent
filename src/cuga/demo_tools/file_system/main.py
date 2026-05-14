@@ -622,6 +622,20 @@ def main():
     # Set allowed directories
     set_allowed_directories(dirs)
 
+    # Anchor the server's CWD at the first allowed directory so relative
+    # paths sent by the agent (e.g. `contacts.txt`) resolve INSIDE the
+    # allowed root. Without this chdir, `Path("contacts.txt").resolve()`
+    # in `validate_path` resolves against whatever the launcher's CWD
+    # happened to be (typically the cuga server's CWD = repo root), and
+    # every relative-path read/write hits "Access denied: ... outside
+    # allowed directories" — exactly the regression seen in
+    # test_show_users_in_crm_system.
+    try:
+        os.chdir(dirs[0])
+        print(f"Server CWD set to {dirs[0]}", file=sys.stderr)
+    except OSError as e:
+        print(f"Warning: could not chdir to {dirs[0]}: {e}", file=sys.stderr)
+
     print("Secure MCP Filesystem Server running", file=sys.stderr)
     print(f"Allowed directories: {dirs}", file=sys.stderr)
     if read_only_mode:
