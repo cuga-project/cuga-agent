@@ -213,10 +213,55 @@ If you are working in an AI-assisted IDE or using an AI agent (Cursor, Claude, B
 | `cuga-commit` | Stages and commits changes using Conventional Commits with scoped messages and bullet-point descriptions |
 | `cuga-create-pr` | Validates local state, picks the right PR template, fills it out from current changes, and opens the PR via `gh` |
 | `cuga-report-bug` | Creates a GitHub issue using the `bug_report.yml` template with context from the current code |
-| `cuga-new-feature` | Creates a GitHub issue using the `feature_request.yml` template |
+| `cuga-new-feature` | Creates a GitHub issue using the `feature_request.yml` template — **requires Epic association** (see below) |
+| `cuga-move-issue` | Moves an issue to `status: todo` or `status: in-progress`, enforcing Epic-in-progress rules |
 | `cuga-ruff-check` | Runs `uv run ruff check --fix` and `uv run ruff format` on the project |
 
 These commands follow all repo conventions (Conventional Commits, `gh` CLI, no promotional footers). To invoke them, use the slash-command syntax of your tool (e.g. `/cuga-commit` in Cursor).
+
+## Issue Workflow Rules
+
+The following rules are enforced both by the `enforce-issue-epic` GitHub Actions workflow and by the agent commands above.
+
+### Rule 1 — Every non-Bug issue must reference an Epic
+
+Every issue whose title does **not** start with `[Bug]` or `[Epic]` must include the following line somewhere in the issue body:
+
+```
+Epic: #<epic-issue-number>
+```
+
+This is checked automatically when an issue is opened or edited. The CI job will post a comment and fail if the line is missing.
+
+To list open Epics:
+
+```bash
+gh issue list --label "type: epic" --state open
+```
+
+### Rule 2 — An issue cannot move to Todo or In Progress unless its Epic is In Progress
+
+Before applying the `status: todo` or `status: in-progress` label to an issue, the referenced Epic must already carry the `status: in-progress` label. The `enforce-issue-epic` workflow will remove the label and post a comment if this requirement is not met.
+
+To mark an Epic as in-progress:
+
+```bash
+gh issue edit <epic-number> --add-label "status: in-progress"
+```
+
+### Status labels
+
+| Label | Meaning |
+|---|---|
+| `status: todo` | Issue is ready to be worked on |
+| `status: in-progress` | Issue (or Epic) is actively being worked on |
+
+These labels must exist in the repository. Create them once if they are missing:
+
+```bash
+gh label create "status: todo"       --color "#e2e8f0" --description "Ready to be worked on"
+gh label create "status: in-progress" --color "#3b82f6" --description "Actively being worked on"
+```
 
 ## IDE Setup Quick Links
 

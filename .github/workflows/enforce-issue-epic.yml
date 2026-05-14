@@ -1,0 +1,110 @@
+name: Enforce Epic Association
+
+on:
+  issues:
+    types: [opened, edited, labeled]
+
+jobs:
+  enforce-epic:
+    name: Validate Epic rules
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+
+    steps:
+      - name: Check Epic association and in-progress status
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { owner, repo } = context.repo;
+            const issue = context.payload.issue;
+            const title  = issue.title  || '';
+            const body   = issue.body   || '';
+            const labels = issue.labels.map(l => l.name);
+            const action = context.payload.action;
+            const addedLabel = context.payload.label?.name ?? '';
+
+            const isBug  = /^\[Bug\]/i.test(title.trimStart());
+            const isEpic = /^\[Epic\]/i.test(title.trimStart());
+
+            // Epics and Bugs are exempt from the "must reference an Epic" rule.
+            if (isBug || isEpic) {
+              console.log(`Skipping epic checks for issue type (isBug=${isBug}, isEpic=${isEpic})`);
+              return;
+            }
+
+            // ── Rule 1: every non-Bug, non-Epic issue must reference a parent Epic ──
+            // Triggered on open or edit so stale issues are caught when edited.
+            if (action === 'opened' || action === 'edited') {
+              const epicRef = body.match(/^Epic:\s*#(\d+)/im);
+              if (!epicRef) {
+                await github.rest.issues.createComment({
+                  owner, repo,
+                  issue_number: issue.number,
+                  body: [
+                    '## ❌ Epic association required',
+                    '',
+                    'Every non-Bug issue must reference its parent Epic. Add this line anywhere in the issue body:',
+                    '',
+                    '```',
+                    'Epic: #<epic-issue-number>',
+                    '```',
+                    '',
+                    'If no Epic exists yet, create one first (use the `[Epic]` issue type).',
+                  ].join('\n'),
+                });
+                core.setFailed('Issue is missing `Epic: #<number>` in the body.');
+                return;
+              }
+            }
+
+            // ── Rule 2: Epic must be in-progress before an issue can be moved to Todo / In-Progress ──
+            const STATUS_LABELS = ['status: todo', 'status: in-progress'];
+            if (action === 'labeled' && STATUS_LABELS.includes(addedLabel)) {
+              const epicRef = body.match(/^Epic:\s*#(\d+)/im);
+              if (!epicRef) {
+                // Rule 1 should have caught this earlier, but guard here too.
+                core.setFailed('Cannot apply status label: issue has no `Epic: #<number>` reference.');
+                return;
+              }
+
+              const epicNumber = parseInt(epicRef[1], 10);
+              let epicIssue;
+              try {
+                epicIssue = await github.rest.issues.get({ owner, repo, issue_number: epicNumber });
+              } catch (err) {
+                core.setFailed(`Could not fetch Epic #${epicNumber}: ${err.message}`);
+                return;
+              }
+
+              const epicLabels = epicIssue.data.labels.map(l => l.name);
+              if (!epicLabels.includes('status: in-progress')) {
+                await github.rest.issues.createComment({
+                  owner, repo,
+                  issue_number: issue.number,
+                  body: [
+                    `## ❌ Epic #${epicNumber} is not in progress`,
+                    '',
+                    `The associated Epic (#${epicNumber}) must be labeled \`status: in-progress\` before this issue can move to **${addedLabel}**.`,
+                    '',
+                    'Mark the Epic as in-progress first:',
+                    '```bash',
+                    `gh issue edit ${epicNumber} --add-label "status: in-progress"`,
+                    '```',
+                  ].join('\n'),
+                });
+
+                // Remove the prematurely applied label so the issue stays in its prior state.
+                try {
+                  await github.rest.issues.removeLabel({
+                    owner, repo,
+                    issue_number: issue.number,
+                    name: addedLabel,
+                  });
+                } catch (_) {
+                  // Label may already be gone; ignore.
+                }
+
+                core.setFailed(`Epic #${epicNumber} must have label "status: in-progress" first.`);
+              }
+            }

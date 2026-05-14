@@ -18,5 +18,15 @@
    | `[Epic]` | Large body of work grouping multiple issues |
    | `[Question]` | Clarification needed, not a task |
 
-5. Write the body using the same sections as `.github/ISSUE_TEMPLATE/feature_request.yml`: What you want and why, How it could work, Links or extra context (if any). Incorporate the user's message and any selected editor/context so the issue is concrete and complete.
-6. Do not add "Made with Cursor" or similar promotional footers to the issue.
+5. **Epic association (mandatory for every non-`[Epic]` issue):**
+   - Ask the user which Epic this issue belongs to if they have not already specified one.
+   - Run `gh issue list --label "type: epic" --state open` to show available open Epics.
+   - If no suitable Epic exists, offer to create one first using the `[Epic]` prefix.
+   - Add the following line verbatim at the **top** of the issue body (before any other content):
+     ```
+     Epic: #<epic-issue-number>
+     ```
+   - Do **not** skip this step. A missing `Epic:` line will cause the GitHub Actions check to fail.
+
+6. Write the body using the same sections as `.github/ISSUE_TEMPLATE/feature_request.yml`: What you want and why, How it could work, Links or extra context (if any). Incorporate the user's message and any selected editor/context so the issue is concrete and complete.
+7. Do not add "Made with Cursor" or similar promotional footers to the issue.
