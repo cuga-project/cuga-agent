@@ -142,7 +142,9 @@ class CodeExecutor:
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
 
         # For local/native sandbox modes, inject the workspace root as the working directory
-        # so Python code runs in the same directory context as run_command (which also cds there)
+        # so Python code runs in the same directory context as run_command (which also cds there).
+        # The directory is created here (mirroring LocalSandboxExecutor's behavior for shell flows)
+        # so LocalExecutor paths and unit tests with thread_id=None don't crash on os.chdir.
         workspace_root_for_wrap = None
         if mode == 'local':
             try:
@@ -153,15 +155,20 @@ class CodeExecutor:
                         native_thread_workspace_root,
                     )
 
-                    workspace_root_for_wrap = str(native_thread_workspace_root(thread_id).resolve())
+                    _ws_path = native_thread_workspace_root(thread_id).resolve()
                 else:  # local or other modes
                     from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
                         local_thread_workspace_root,
                     )
 
-                    workspace_root_for_wrap = str(local_thread_workspace_root(thread_id).resolve())
+                    _ws_path = local_thread_workspace_root(thread_id).resolve()
+
+                _ws_path.mkdir(parents=True, exist_ok=True)
+                workspace_root_for_wrap = str(_ws_path)
             except Exception:
-                pass  # If workspace root cannot be determined, continue without chdir
+                # If workspace root cannot be determined or created, continue without chdir.
+                # The wrapped code will then run with the current process CWD as before.
+                workspace_root_for_wrap = None
 
         wrapped_code = CodeWrapper.wrap_code(
             code, fake_datetime=fake_datetime, workspace_root=workspace_root_for_wrap
