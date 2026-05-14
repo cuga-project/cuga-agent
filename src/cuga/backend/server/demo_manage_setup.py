@@ -161,6 +161,10 @@ def load_cuga_policy_entries_for_demo(cuga_folder: str | None = None) -> list[di
 
     root = Path(cuga_folder or os.getenv("CUGA_FOLDER", settings.policy.cuga_folder))
     if not root.exists():
+        logger.warning(
+            "Demo policy preload: .cuga folder not found at %s; skipping local policy import",
+            root,
+        )
         return []
 
     subfolders = {
