@@ -97,10 +97,6 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import 
     normalize_assistant_text,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
-from cuga.backend.cuga_graph.nodes.cuga_lite.checkpoint_sanitizer import (
-    normalize_checkpoint_value as _normalize_checkpoint_value,
-    sanitize_cuga_lite_update as _sanitize_cuga_lite_update,
-)
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 from cuga.config import settings
@@ -798,7 +794,7 @@ def create_error_command(
     if additional_updates:
         updates.update(additional_updates)
 
-    return Command(goto=END, update=_sanitize_cuga_lite_update(updates))
+    return Command(goto=END, update=updates)
 
 
 class Todo(BaseModel):
@@ -1188,7 +1184,7 @@ def create_cuga_lite_graph(
 
                 # If policy returned metadata (e.g., playbook guidance), store it
                 if metadata:
-                    state.cuga_lite_metadata = _normalize_checkpoint_value(metadata)
+                    state.cuga_lite_metadata = metadata
             elif not settings.policy.enabled:
                 logger.debug("Policy system disabled - skipping policy checks")
             else:
@@ -1490,15 +1486,6 @@ def create_cuga_lite_graph(
                 current_user_id = str(getattr(state, "user_id", "") or "").strip()
                 if current_user_id and memory_query:
                     current_agent_id = str(configurable.get("agent_id") or "").strip()
-                    if not current_agent_id:
-                        try:
-                            from cuga.backend.server.main import app as _app
-
-                            _app_state = getattr(_app.state, "app_state", None)
-                            current_agent_id = str(getattr(_app_state, "agent_id", "") or "").strip()
-                        except Exception:
-                            current_agent_id = ""
-
                     thread_id_for_memory = str(configurable.get("thread_id") or state.thread_id or "").strip()
 
                     try:
@@ -1789,19 +1776,17 @@ def create_cuga_lite_graph(
 
             return Command(
                 goto="call_model",
-                update=_sanitize_cuga_lite_update(
-                    {
-                        "tools_prepared": True,
-                        "prepared_prompt": dynamic_prompt,
-                        "step_count": 0,
-                        "cuga_lite_metadata": state.cuga_lite_metadata,
-                        "reflection_apps": reflection_apps_snapshot,
-                        "reflection_enable_find_tools": enable_find_tools,
-                        "reflection_skills_enabled": skills_enabled,
-                        "reflection_skills_prompt_section": skills_prompt_section,
-                        "mcp_few_shot_messages": few_shot_examples,
-                    }
-                ),
+                update={
+                    "tools_prepared": True,
+                    "prepared_prompt": dynamic_prompt,
+                    "step_count": 0,
+                    "cuga_lite_metadata": state.cuga_lite_metadata,
+                    "reflection_apps": reflection_apps_snapshot,
+                    "reflection_enable_find_tools": enable_find_tools,
+                    "reflection_skills_enabled": skills_enabled,
+                    "reflection_skills_prompt_section": skills_prompt_section,
+                    "mcp_few_shot_messages": few_shot_examples,
+                },
             )
 
         return prepare_tools_and_apps
@@ -2130,14 +2115,12 @@ def create_cuga_lite_graph(
 
                 return Command(
                     goto="sandbox",
-                    update=_sanitize_cuga_lite_update(
-                        {
-                            "chat_messages": updated_messages,
-                            "script": code,
-                            "step_count": new_step_count,
-                            "cuga_lite_metadata": updated_metadata,
-                        }
-                    ),
+                    update={
+                        "chat_messages": updated_messages,
+                        "script": code,
+                        "step_count": new_step_count,
+                        "cuga_lite_metadata": updated_metadata,
+                    },
                 )
             else:
                 tracker.collect_step(step=Step(name="Assistant_nl", data=content))
@@ -2197,16 +2180,14 @@ def create_cuga_lite_graph(
 
                 return Command(
                     goto=END,
-                    update=_sanitize_cuga_lite_update(
-                        {
-                            "chat_messages": updated_messages,
-                            "script": None,
-                            "final_answer": planning_response,
-                            "execution_complete": True,
-                            "step_count": new_step_count,
-                            "cuga_lite_metadata": updated_metadata,
-                        }
-                    ),
+                    update={
+                        "chat_messages": updated_messages,
+                        "script": None,
+                        "final_answer": planning_response,
+                        "execution_complete": True,
+                        "step_count": new_step_count,
+                        "cuga_lite_metadata": updated_metadata,
+                    },
                 )
 
         return call_model
@@ -2378,7 +2359,7 @@ def create_cuga_lite_graph(
                 }
                 if todo_state_update is not None:
                     base_update["task_todos"] = todo_state_update
-                return _sanitize_cuga_lite_update(base_update)
+                return base_update
             except Exception as e:
                 # Collect tool calls even on error
                 execution_tool_calls = ToolCallTracker.stop_tracking()
@@ -2394,15 +2375,13 @@ def create_cuga_lite_graph(
                 if limit_error_message:
                     return create_error_command(updated_messages, limit_error_message, state.step_count)
 
-                return _sanitize_cuga_lite_update(
-                    {
-                        "chat_messages": updated_messages,
-                        "error": error_msg,
-                        "execution_complete": True,
-                        "step_count": state.step_count + 1,
-                        "tool_calls": accumulated_tool_calls,
-                    }
-                )
+                return {
+                    "chat_messages": updated_messages,
+                    "error": error_msg,
+                    "execution_complete": True,
+                    "step_count": state.step_count + 1,
+                    "tool_calls": accumulated_tool_calls,
+                }
 
         return sandbox
 

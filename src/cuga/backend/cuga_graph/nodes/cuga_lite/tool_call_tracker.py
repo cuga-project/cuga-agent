@@ -36,7 +36,12 @@ F = TypeVar('F', bound=Callable[..., Any])
 
 
 def _normalize_tool_payload(value: Any) -> Any:
-    """Convert tool arguments/results into msgpack-safe builtin Python types."""
+    """Convert tool arguments/results into JSON-friendly Python builtins.
+
+    Producer-side normalization at the boundary where tool calls are recorded:
+    msgpack-unsafe types (numpy scalars/arrays, datetime, Path, Pydantic, dataclasses)
+    are flattened so that ``tool_calls`` is checkpoint-safe without any downstream pass.
+    """
     value_module = getattr(value.__class__, "__module__", "")
     if value_module.startswith("numpy"):
         if hasattr(value, "item") and callable(value.item):
@@ -84,10 +89,10 @@ def _normalize_tool_payload(value: Any) -> Any:
         try:
             return _normalize_tool_payload(asdict(value))
         except Exception:
-            return str(value)
+            pass
 
     if isinstance(value, dict):
-        normalized: dict[Any, Any] = {}
+        normalized: Dict[Any, Any] = {}
         for key, item in value.items():
             normalized_key = _normalize_tool_payload(key)
             if not isinstance(normalized_key, (str, int, float, bool, type(None))):

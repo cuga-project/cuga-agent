@@ -1,11 +1,6 @@
 import copy
-import numpy as np
 from langchain_core.messages import HumanMessage, AIMessage
-from langgraph.checkpoint.serde.jsonplus import JsonPlusSerializer
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
-    _sanitize_cuga_lite_update,
-)
 from cuga.backend.evolve.formatting import (
     build_evolve_guidelines_section,
     build_evolve_user_preference_section,
@@ -124,43 +119,3 @@ def test_memory_helpers_do_not_mutate_chat_messages():
     _ = format_evolve_guidelines("1. Prefer concise answers.")
 
     assert state.chat_messages == before
-
-
-def test_sanitize_cuga_lite_update_converts_nested_numpy_scalars_for_checkpointing():
-    update = _sanitize_cuga_lite_update(
-        {
-            "chat_messages": [HumanMessage(content="find matching contacts")],
-            "variables_storage": {
-                "account_summary": {
-                    "value": {
-                        "score": np.float64(0.91),
-                        "totals": {"revenue": np.float64(1250.5)},
-                    },
-                    "description": "Created during code execution",
-                    "type": "dict",
-                    "created_at": "2026-04-15T12:00:00",
-                    "count_items": 2,
-                }
-            },
-            "cuga_lite_metadata": {
-                "policy_confidence": np.float64(0.82),
-                "trigger_details": {"trigger_0": {"confidence": np.float64(0.77)}},
-            },
-            "tool_calls": [
-                {
-                    "name": "find_tools",
-                    "result": {"output": {"value": "# Found 2 Matching Tool(s)", "score": np.float64(0.66)}},
-                }
-            ],
-        }
-    )
-
-    assert isinstance(update["chat_messages"][0], HumanMessage)
-    assert update["variables_storage"]["account_summary"]["value"]["score"] == 0.91
-    assert isinstance(update["variables_storage"]["account_summary"]["value"]["score"], float)
-    assert update["cuga_lite_metadata"]["policy_confidence"] == 0.82
-    assert isinstance(update["cuga_lite_metadata"]["policy_confidence"], float)
-    assert update["tool_calls"][0]["result"]["output"]["score"] == 0.66
-    assert isinstance(update["tool_calls"][0]["result"]["output"]["score"], float)
-
-    JsonPlusSerializer().dumps_typed(update)
