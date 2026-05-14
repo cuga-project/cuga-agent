@@ -16,10 +16,7 @@ For custom tool providers, use the `tracked_tool` decorator:
 import contextvars
 import functools
 import time
-from dataclasses import asdict, is_dataclass
 from datetime import datetime
-from enum import Enum
-from pathlib import Path
 from typing import List, Dict, Any, Optional, Callable, TypeVar
 from loguru import logger
 
@@ -33,89 +30,6 @@ _tracking_enabled_context: contextvars.ContextVar[bool] = contextvars.ContextVar
 )
 
 F = TypeVar('F', bound=Callable[..., Any])
-
-
-def _normalize_tool_payload(value: Any) -> Any:
-    """Convert tool arguments/results into JSON-friendly Python builtins.
-
-    Producer-side normalization at the boundary where tool calls are recorded:
-    msgpack-unsafe types (numpy scalars/arrays, datetime, Path, Pydantic, dataclasses)
-    are flattened so that ``tool_calls`` is checkpoint-safe without any downstream pass.
-    """
-    value_module = getattr(value.__class__, "__module__", "")
-    if value_module.startswith("numpy"):
-        if hasattr(value, "item") and callable(value.item):
-            try:
-                return _normalize_tool_payload(value.item())
-            except Exception:
-                pass
-        if hasattr(value, "tolist") and callable(value.tolist):
-            try:
-                return _normalize_tool_payload(value.tolist())
-            except Exception:
-                pass
-
-    if value is None or isinstance(value, (str, int, float, bool)):
-        return value
-
-    if isinstance(value, datetime):
-        return value.isoformat()
-
-    if isinstance(value, Enum):
-        return _normalize_tool_payload(value.value)
-
-    if isinstance(value, Path):
-        return str(value)
-
-    if isinstance(value, bytes):
-        try:
-            return value.decode("utf-8")
-        except UnicodeDecodeError:
-            return value.hex()
-
-    if hasattr(value, "model_dump") and callable(value.model_dump):
-        try:
-            return _normalize_tool_payload(value.model_dump())
-        except Exception:
-            pass
-
-    if hasattr(value, "dict") and callable(value.dict):
-        try:
-            return _normalize_tool_payload(value.dict())
-        except Exception:
-            pass
-
-    if is_dataclass(value) and not isinstance(value, type):
-        try:
-            return _normalize_tool_payload(asdict(value))
-        except Exception:
-            pass
-
-    if isinstance(value, dict):
-        normalized: Dict[Any, Any] = {}
-        for key, item in value.items():
-            normalized_key = _normalize_tool_payload(key)
-            if not isinstance(normalized_key, (str, int, float, bool, type(None))):
-                normalized_key = str(normalized_key)
-            normalized[normalized_key] = _normalize_tool_payload(item)
-        return normalized
-
-    if isinstance(value, list):
-        return [_normalize_tool_payload(item) for item in value]
-
-    if isinstance(value, tuple):
-        return tuple(_normalize_tool_payload(item) for item in value)
-
-    if isinstance(value, (set, frozenset)):
-        return [_normalize_tool_payload(item) for item in value]
-
-    if hasattr(value, "__dict__"):
-        try:
-            return _normalize_tool_payload(vars(value))
-        except Exception:
-            pass
-
-    return str(value)
 
 
 class ToolCallTracker:
@@ -180,8 +94,8 @@ class ToolCallTracker:
 
         record = {
             "name": tool_name,
-            "arguments": _normalize_tool_payload(arguments),
-            "result": _normalize_tool_payload(result),
+            "arguments": arguments,
+            "result": result,
             "app_name": app_name,
             "operation_id": operation_id,
             "timestamp": datetime.now().isoformat(),
