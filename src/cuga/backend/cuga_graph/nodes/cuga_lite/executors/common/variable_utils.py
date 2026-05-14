@@ -30,75 +30,120 @@ class VariableUtils:
         return {k: v for k, v in new_vars.items() if k != "tools_output"}
 
     @staticmethod
-    def _sanitize_numpy_scalars(obj: Any) -> Any:
-        """Recursively convert numpy scalars inside dicts and lists to Python natives."""
+    def _sanitize_recursive(obj: Any) -> Any:
+        """Recursively convert non-JSON-serializable scalars and containers.
+
+        Handles:
+        - numpy: integer, floating, complexfloating, bool_, ndarray
+        - pandas scalars: NaT → None, Timestamp → ISO string, Timedelta → seconds
+        - Python datetime: datetime/date/time → ISO string, timedelta → seconds
+        - bytes: UTF-8 string if decodable, else base64-encoded ASCII string
+        - complex: {"real": float, "imag": float}
+        - dict / list: recursive traversal
+
+        DataFrame and Series are intentionally excluded; sanitize_value wraps
+        those with metadata before delegating cell content here.
+        """
+        import base64
+        import datetime as dt
+
+        if obj is None:
+            return obj
+
+        # --- numpy ---
         try:
             import numpy as np  # type: ignore[import-untyped]
 
             if isinstance(obj, np.integer):
                 return int(obj)
             if isinstance(obj, np.floating):
-                return float(obj)
+                # nan and inf are not valid JSON — map to None
+                v = float(obj)
+                return None if (v != v or v == float("inf") or v == float("-inf")) else v
+            if isinstance(obj, np.complexfloating):
+                return {"real": float(obj.real), "imag": float(obj.imag)}
             if isinstance(obj, np.bool_):
                 return bool(obj)
             if isinstance(obj, np.ndarray):
-                return obj.tolist()
+                # tolist() converts simple dtypes to Python natives; recurse to
+                # catch object-dtype arrays that may still contain exotic types.
+                return VariableUtils._sanitize_recursive(obj.tolist())
         except ImportError:
-            return obj
+            pass
 
+        # --- pandas scalars ---
+        try:
+            import pandas as pd  # type: ignore[import-untyped]
+
+            if obj is pd.NaT or obj is pd.NA:
+                return None
+            if isinstance(obj, pd.Timestamp):
+                return obj.isoformat()
+            if isinstance(obj, pd.Timedelta):
+                return obj.total_seconds()
+        except ImportError:
+            pass
+
+        # --- Python stdlib datetime (datetime before date: it's a subclass) ---
+        if isinstance(obj, dt.datetime):
+            return obj.isoformat()
+        if isinstance(obj, dt.date):
+            return obj.isoformat()
+        if isinstance(obj, dt.time):
+            return obj.isoformat()
+        if isinstance(obj, dt.timedelta):
+            return obj.total_seconds()
+
+        # --- bytes ---
+        if isinstance(obj, bytes):
+            try:
+                return obj.decode("utf-8")
+            except UnicodeDecodeError:
+                return base64.b64encode(obj).decode("ascii")
+
+        # --- complex ---
+        if isinstance(obj, complex):
+            return {"real": obj.real, "imag": obj.imag}
+
+        # --- containers ---
         if isinstance(obj, dict):
-            return {k: VariableUtils._sanitize_numpy_scalars(v) for k, v in obj.items()}
+            return {k: VariableUtils._sanitize_recursive(v) for k, v in obj.items()}
         if isinstance(obj, list):
-            return [VariableUtils._sanitize_numpy_scalars(v) for v in obj]
+            return [VariableUtils._sanitize_recursive(v) for v in obj]
+
         return obj
 
     @staticmethod
     def sanitize_value(value: Any) -> Any:
         """Convert non-JSON-serializable types to serializable equivalents.
 
-        - pd.DataFrame → dict with records (numpy scalars in cells are converted)
-        - pd.Series    → list (numpy scalars converted)
-        - numpy scalars / arrays → Python native types
+        - pd.DataFrame → dict with records (cells recursively sanitized)
+        - pd.Series    → dict with data list (values recursively sanitized)
+        - All other types → delegated to _sanitize_recursive
 
         All other values are returned unchanged.
         """
         try:
-            import numpy as np  # type: ignore[import-untyped]
-
-            if isinstance(value, np.integer):
-                return int(value)
-            if isinstance(value, np.floating):
-                return float(value)
-            if isinstance(value, np.bool_):
-                return bool(value)
-            if isinstance(value, np.ndarray):
-                return value.tolist()
-        except ImportError:
-            pass
-
-        try:
-            import pandas as pd
+            import pandas as pd  # type: ignore[import-untyped]
 
             if isinstance(value, pd.DataFrame):
-                records = VariableUtils._sanitize_numpy_scalars(value.to_dict("records"))
                 return {
                     "__pandas_type__": "DataFrame",
-                    "records": records,
+                    "records": VariableUtils._sanitize_recursive(value.to_dict("records")),
                     "columns": list(value.columns),
                     "reconstruct": "pd.DataFrame(value['records'])",
                 }
             if isinstance(value, pd.Series):
                 return {
                     "__pandas_type__": "Series",
-                    "data": VariableUtils._sanitize_numpy_scalars(value.tolist()),
+                    "data": VariableUtils._sanitize_recursive(value.tolist()),
                     "name": value.name,
                     "reconstruct": "pd.Series(value['data'], name=value['name'])",
                 }
         except ImportError:
             pass
 
-        return value
-
+        return VariableUtils._sanitize_recursive(value)
 
     @staticmethod
     def is_serializable(value: Any) -> bool:
@@ -131,7 +176,7 @@ class VariableUtils:
             import pandas as pd
 
             if isinstance(value, pd.DataFrame):
-                return False  
+                return False
             if isinstance(value, pd.Series):
                 return False
 
