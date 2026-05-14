@@ -73,9 +73,6 @@ class ApiRegistry:
         """Start servers and load tools"""
         await self.mcp_client.load_tools()
         logger.info("ApiRegistry: Servers started successfully.")
-        
-        # Initialize ToolGuardRuntime after tools are loaded
-        await self._initialize_tool_guard_runtime()
     
     async def _initialize_tool_guard_runtime(self):
         """
@@ -248,6 +245,10 @@ class ApiRegistry:
         self, app_name: str, function_name: str, arguments: Dict[str, Any], auth_config=None
     ) -> Dict[str, Any]:
         """Calls a function via the mcp_client."""
+        
+        # Lazy initialization: Initialize ToolGuardRuntime on first tool call if not already initialized
+        if not self._tool_guard_initialized:
+            await self._initialize_tool_guard_runtime()
         
         # Use arguments as-is - do not unwrap 'params' unconditionally
         # Transport-layer wrappers should be normalized at the request boundary,
