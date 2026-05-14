@@ -239,29 +239,22 @@ To list open Epics:
 gh issue list --label "type: epic" --state open
 ```
 
-### Rule 2 — An issue cannot move to Todo or In Progress unless its Epic is In Progress
+### Rule 2 — An issue cannot move to Todo or In Progress unless its Epic is In Progress on the board
 
-Before applying the `status: todo` or `status: in-progress` label to an issue, the referenced Epic must already carry the `status: in-progress` label. The `enforce-issue-epic` workflow will remove the label and post a comment if this requirement is not met.
+Status is tracked via the **GitHub Projects Status field**, not labels. The `enforce-issue-epic` workflow listens for `projects_v2_item.edited` events: whenever an issue's Status changes to **Todo** or **In Progress**, it checks whether the referenced Epic already has Status **In Progress** on the same board. If not, it clears the Status back and posts a comment.
 
-To mark an Epic as in-progress:
-
-```bash
-gh issue edit <epic-number> --add-label "status: in-progress"
-```
-
-### Status labels
-
-| Label | Meaning |
-|---|---|
-| `status: todo` | Issue is ready to be worked on |
-| `status: in-progress` | Issue (or Epic) is actively being worked on |
-
-These labels must exist in the repository. Create them once if they are missing:
+To check an Epic's current board status:
 
 ```bash
-gh label create "status: todo"       --color "#e2e8f0" --description "Ready to be worked on"
-gh label create "status: in-progress" --color "#3b82f6" --description "Actively being worked on"
+gh issue view <epic-number> --json projectItems \
+  --jq '[.projectItems.nodes[].fieldValues.nodes[]
+         | select(.field.name == "Status") | .name] | first'
 ```
+
+> **Token requirement:** the `check-epic-status` job uses GraphQL to read project data and
+> revert the Status field. Add a PAT with `read:project` + `repo` scopes as a repository
+> secret named `PROJECT_TOKEN`. Without it the job falls back to `GITHUB_TOKEN`, which may
+> lack project read access depending on your organisation settings.
 
 ## IDE Setup Quick Links
 

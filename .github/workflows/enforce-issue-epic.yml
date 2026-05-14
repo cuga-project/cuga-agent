@@ -2,109 +2,207 @@ name: Enforce Epic Association
 
 on:
   issues:
-    types: [opened, edited, labeled]
+    types: [opened, edited]
+  projects_v2_item:
+    types: [edited]
+
+# ── Rule 1: every non-Bug/non-Epic issue must have `Epic: #<n>` in the body ──
+# Triggered on issues.opened / issues.edited.
+#
+# ── Rule 2: an issue's project Status cannot be set to Todo or In Progress
+#    unless the referenced Epic already has Status = In Progress on the board ──
+# Triggered on projects_v2_item.edited (Status field change).
 
 jobs:
-  enforce-epic:
-    name: Validate Epic rules
+  check-epic-ref:
+    name: Epic reference required
+    if: github.event_name == 'issues'
     runs-on: ubuntu-latest
     permissions:
       issues: write
 
     steps:
-      - name: Check Epic association and in-progress status
-        uses: actions/github-script@v7
+      - uses: actions/github-script@v7
         with:
           script: |
-            const { owner, repo } = context.repo;
             const issue = context.payload.issue;
-            const title  = issue.title  || '';
-            const body   = issue.body   || '';
-            const labels = issue.labels.map(l => l.name);
-            const action = context.payload.action;
-            const addedLabel = context.payload.label?.name ?? '';
+            const title = issue.title || '';
+            const body  = issue.body  || '';
 
             const isBug  = /^\[Bug\]/i.test(title.trimStart());
             const isEpic = /^\[Epic\]/i.test(title.trimStart());
+            if (isBug || isEpic) return;
 
-            // Epics and Bugs are exempt from the "must reference an Epic" rule.
-            if (isBug || isEpic) {
-              console.log(`Skipping epic checks for issue type (isBug=${isBug}, isEpic=${isEpic})`);
+            if (!/^Epic:\s*#\d+/im.test(body)) {
+              await github.rest.issues.createComment({
+                ...context.repo,
+                issue_number: issue.number,
+                body: [
+                  '## ❌ Epic association required',
+                  '',
+                  'Every non-Bug issue must reference its parent Epic. Add this line to the issue body:',
+                  '',
+                  '```',
+                  'Epic: #<epic-issue-number>',
+                  '```',
+                  '',
+                  'If no Epic exists yet, create one first (use the `[Epic]` title prefix).',
+                ].join('\n'),
+              });
+              core.setFailed('Issue is missing `Epic: #<number>` in the body.');
+            }
+
+  check-epic-status:
+    name: Epic must be In Progress on the board
+    if: github.event_name == 'projects_v2_item' && github.event.action == 'edited'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+      repository-projects: write
+
+    steps:
+      - uses: actions/github-script@v7
+        with:
+          # Requires a PAT with `read:project` + `repo` stored as PROJECT_TOKEN.
+          # Falls back to GITHUB_TOKEN if PROJECT_TOKEN is not set (read:project
+          # scope must then be granted via a GitHub App or org-level token).
+          github-token: ${{ secrets.PROJECT_TOKEN || secrets.GITHUB_TOKEN }}
+          script: |
+            const { owner, repo } = context.repo;
+            const changes = context.payload.changes ?? {};
+
+            // Only act when the Status field changed.
+            if (!changes.field_value) return;
+
+            const item           = context.payload.projects_v2_item;
+            const itemNodeId     = item.node_id;
+            const projectNodeId  = item.project_node_id;
+
+            if (item.content_type !== 'Issue') return;
+
+            // ── 1. Fetch item details: issue content + current Status ──
+            const itemData = await github.graphql(`
+              query($itemId: ID!) {
+                node(id: $itemId) {
+                  ... on ProjectV2Item {
+                    content {
+                      ... on Issue { number title body }
+                    }
+                    fieldValues(first: 30) {
+                      nodes {
+                        ... on ProjectV2ItemFieldSingleSelectValue {
+                          name
+                          field {
+                            ... on ProjectV2SingleSelectField {
+                              id
+                              name
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            `, { itemId: itemNodeId });
+
+            const node = itemData?.node;
+            if (!node?.content) return;
+
+            const { number: issueNumber, title = '', body = '' } = node.content;
+
+            const isBug  = /^\[Bug\]/i.test(title.trimStart());
+            const isEpic = /^\[Epic\]/i.test(title.trimStart());
+            if (isBug || isEpic) return;
+
+            const statusEntry = node.fieldValues.nodes.find(
+              fv => fv?.field?.name?.toLowerCase() === 'status'
+            );
+            if (!statusEntry) return;
+
+            const newStatus = (statusEntry.name || '').toLowerCase();
+            const BLOCKED_STATUSES = ['todo', 'in progress'];
+            if (!BLOCKED_STATUSES.includes(newStatus)) return;
+
+            // ── 2. Ensure the issue references an Epic ──
+            const epicMatch = body.match(/^Epic:\s*#(\d+)/im);
+            if (!epicMatch) {
+              await revert(statusEntry.field.id, projectNodeId, itemNodeId);
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: [
+                  `## ❌ Cannot move to **${statusEntry.name}**`,
+                  '',
+                  'This issue has no Epic association. Add `Epic: #<number>` to the issue body first.',
+                ].join('\n'),
+              });
+              core.setFailed('Issue has no Epic association.');
               return;
             }
 
-            // ── Rule 1: every non-Bug, non-Epic issue must reference a parent Epic ──
-            // Triggered on open or edit so stale issues are caught when edited.
-            if (action === 'opened' || action === 'edited') {
-              const epicRef = body.match(/^Epic:\s*#(\d+)/im);
-              if (!epicRef) {
-                await github.rest.issues.createComment({
-                  owner, repo,
-                  issue_number: issue.number,
-                  body: [
-                    '## ❌ Epic association required',
-                    '',
-                    'Every non-Bug issue must reference its parent Epic. Add this line anywhere in the issue body:',
-                    '',
-                    '```',
-                    'Epic: #<epic-issue-number>',
-                    '```',
-                    '',
-                    'If no Epic exists yet, create one first (use the `[Epic]` issue type).',
-                  ].join('\n'),
-                });
-                core.setFailed('Issue is missing `Epic: #<number>` in the body.');
-                return;
+            const epicNumber = parseInt(epicMatch[1], 10);
+
+            // ── 3. Fetch Epic's Status from the project board ──
+            const epicData = await github.graphql(`
+              query($owner: String!, $repo: String!, $number: Int!) {
+                repository(owner: $owner, name: $repo) {
+                  issue(number: $number) {
+                    title
+                    projectItems(first: 10) {
+                      nodes {
+                        fieldValues(first: 30) {
+                          nodes {
+                            ... on ProjectV2ItemFieldSingleSelectValue {
+                              name
+                              field {
+                                ... on ProjectV2SingleSelectField { name }
+                              }
+                            }
+                          }
+                        }
+                      }
+                    }
+                  }
+                }
               }
+            `, { owner, repo, number: epicNumber });
+
+            const epicIssue = epicData?.repository?.issue;
+            if (!epicIssue) {
+              core.setFailed(`Could not fetch Epic #${epicNumber}.`);
+              return;
             }
 
-            // ── Rule 2: Epic must be in-progress before an issue can be moved to Todo / In-Progress ──
-            const STATUS_LABELS = ['status: todo', 'status: in-progress'];
-            if (action === 'labeled' && STATUS_LABELS.includes(addedLabel)) {
-              const epicRef = body.match(/^Epic:\s*#(\d+)/im);
-              if (!epicRef) {
-                // Rule 1 should have caught this earlier, but guard here too.
-                core.setFailed('Cannot apply status label: issue has no `Epic: #<number>` reference.');
-                return;
-              }
+            const epicStatus = epicIssue.projectItems.nodes
+              .flatMap(pi => pi.fieldValues.nodes)
+              .find(fv => fv?.field?.name?.toLowerCase() === 'status')
+              ?.name ?? '';
 
-              const epicNumber = parseInt(epicRef[1], 10);
-              let epicIssue;
+            if (epicStatus.toLowerCase() !== 'in progress') {
+              await revert(statusEntry.field.id, projectNodeId, itemNodeId);
+              await github.rest.issues.createComment({
+                owner, repo, issue_number: issueNumber,
+                body: [
+                  `## ❌ Epic #${epicNumber} is not In Progress`,
+                  '',
+                  `Cannot move this issue to **${statusEntry.name}** because the associated Epic (#${epicNumber} — *${epicIssue.title}*) has Status **${epicStatus || 'No Status'}** on the project board.`,
+                  '',
+                  'Move the Epic to **In Progress** on the board first.',
+                ].join('\n'),
+              });
+              core.setFailed(`Epic #${epicNumber} must be In Progress first.`);
+            }
+
+            async function revert(fieldId, projectId, itemId) {
               try {
-                epicIssue = await github.rest.issues.get({ owner, repo, issue_number: epicNumber });
-              } catch (err) {
-                core.setFailed(`Could not fetch Epic #${epicNumber}: ${err.message}`);
-                return;
-              }
-
-              const epicLabels = epicIssue.data.labels.map(l => l.name);
-              if (!epicLabels.includes('status: in-progress')) {
-                await github.rest.issues.createComment({
-                  owner, repo,
-                  issue_number: issue.number,
-                  body: [
-                    `## ❌ Epic #${epicNumber} is not in progress`,
-                    '',
-                    `The associated Epic (#${epicNumber}) must be labeled \`status: in-progress\` before this issue can move to **${addedLabel}**.`,
-                    '',
-                    'Mark the Epic as in-progress first:',
-                    '```bash',
-                    `gh issue edit ${epicNumber} --add-label "status: in-progress"`,
-                    '```',
-                  ].join('\n'),
-                });
-
-                // Remove the prematurely applied label so the issue stays in its prior state.
-                try {
-                  await github.rest.issues.removeLabel({
-                    owner, repo,
-                    issue_number: issue.number,
-                    name: addedLabel,
-                  });
-                } catch (_) {
-                  // Label may already be gone; ignore.
-                }
-
-                core.setFailed(`Epic #${epicNumber} must have label "status: in-progress" first.`);
+                await github.graphql(`
+                  mutation($projectId: ID!, $itemId: ID!, $fieldId: ID!) {
+                    clearProjectV2ItemFieldValue(input: {
+                      projectId: $projectId, itemId: $itemId, fieldId: $fieldId
+                    }) { projectV2Item { id } }
+                  }
+                `, { projectId, itemId, fieldId });
+              } catch (e) {
+                console.warn(`Could not revert Status field: ${e.message}`);
               }
             }
