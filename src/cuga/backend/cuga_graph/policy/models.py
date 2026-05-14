@@ -178,7 +178,7 @@ class ToolGuard(BaseModel):
         default="",
         description=(
             "Python code that validates tool usage compliance. "
-            "WARNING: This code is executed in a sandboxed environment using the toolguard library.  "
+            "This code is executed in a sandboxed environment using the toolguard library. "
             "Only trusted administrators with manage access should be allowed to modify policy code. "
             "While sandboxed, policy code should still be reviewed for correctness and performance."
         )

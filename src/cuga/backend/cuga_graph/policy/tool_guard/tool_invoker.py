@@ -121,10 +121,9 @@ class ToolGuardInvoker(IToolInvoker):
         except ValueError:
             # Re-raise ValueError as-is (tool not found)
             raise
+        except asyncio.CancelledError:
+            raise
         except Exception as e:
-            # Re-raise CancelledError immediately to preserve cancellation
-            if isinstance(e, asyncio.CancelledError):
-                raise
             logger.error(f"Failed to invoke tool '{toolname}': {e}")
             raise RuntimeError(
                 f"Tool invocation failed for '{toolname}': {str(e)}"
