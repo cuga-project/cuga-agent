@@ -73,50 +73,6 @@ def local_thread_workspace_root(thread_id: Optional[str]) -> Path:
     return base
 
 
-def seed_thread_workspace_if_needed(thread_root: Path) -> None:
-    """First-use seed: copy every top-level file from the parent
-    ``cuga_workspace`` directory into a freshly-created per-thread
-    workspace, so seeded fixtures (e.g. ``contacts.txt`` from CI) are
-    reachable from any new thread.
-
-    Idempotent via a ``.cuga_seeded`` sentinel inside the thread dir.
-    Skipped entirely when ``thread_root`` IS the parent (skills disabled
-    → shared workspace, no copying needed). Subdirectories of the parent
-    are NOT copied; those are other thread workspaces.
-
-    Best-effort: any I/O failure is swallowed so it can never break
-    execution. The cost is one ``stat`` per call after first use.
-    """
-    sentinel = thread_root / ".cuga_seeded"
-    if sentinel.exists():
-        return
-    try:
-        parent = thread_root.parent
-        if thread_root.resolve() == parent.resolve():
-            return  # skills disabled — no per-thread subdir to seed
-        if not parent.exists():
-            return
-        thread_root.mkdir(parents=True, exist_ok=True)
-        for entry in parent.iterdir():
-            if entry.is_dir():
-                continue
-            if entry.name.startswith("."):
-                continue
-            dest = thread_root / entry.name
-            if dest.exists():
-                continue
-            try:
-                shutil.copy2(entry, dest)
-            except OSError:
-                continue
-        try:
-            sentinel.write_text("seeded")
-        except OSError:
-            pass
-    except OSError:
-        pass
-
-
 def _resolve_workspace_path(
     sandbox_path: str,
     *,
@@ -277,7 +233,6 @@ class LocalSandboxExecutor:
     ) -> tuple[str, str]:
         workspace_root = local_thread_workspace_root(thread_id)
         workspace_root.mkdir(parents=True, exist_ok=True)
-        seed_thread_workspace_if_needed(workspace_root)
         venv = await self._ensure_workspace_venv(workspace_root)
         env = self._command_env(workspace_root, venv)
 
@@ -415,7 +370,6 @@ class LocalSandboxExecutor:
                 p = _resolve_workspace_path(sandbox_path, thread_id=thread_id, operation="list_files")
                 if p == local_thread_workspace_root(thread_id).resolve():
                     p.mkdir(parents=True, exist_ok=True)
-                    seed_thread_workspace_if_needed(p)
                 if not p.exists():
                     return f"[list_files error] Path not found: {sandbox_path}"
                 entries = []

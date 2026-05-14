@@ -143,13 +143,19 @@ class CodeExecutor:
 
         wrapped_code = CodeWrapper.wrap_code(code, fake_datetime=fake_datetime)
 
-        # `re` is convenient for tool helpers and not in DANGEROUS_MODULE_NAMES.
-        # `os` is deliberately NOT injected: keeping it out of the user namespace
-        # means SecurityValidator.validate_imports() remains the sole gate on
-        # what imports the wrapped user code can reach.
-        import re
+        # Skill flows often parse responses with regex helpers, so when skills
+        # are enabled we expose `re` via `_internal_re`. We deliberately do
+        # NOT inject it otherwise — it would push `context_locals` past the
+        # `if not context_locals: return` short-circuit in
+        # `SecurityValidator.validate_context_usage` and break plain unit
+        # tests whose code has no other tool to reference. `os`/`sys`/
+        # `subprocess` stay out of the namespace entirely (blocked by
+        # `DANGEROUS_MODULE_NAMES`); `re` is not on that list and is in the
+        # agent's allowed-imports prompt allowlist anyway.
+        if _skills_enabled():
+            import re
 
-        _locals['_internal_re'] = re
+            _locals['_internal_re'] = re
 
         SecurityValidator.validate_wrapped_code(wrapped_code)
 
@@ -185,6 +191,8 @@ class CodeExecutor:
             _locals, original_keys, always_include_keys=always_include_keys
         )
 
+        # Strip the skills-only injection so it never surfaces in the agent's
+        # variables summary (skill flows reference it but it isn't user data).
         new_vars.pop('_internal_re', None)
 
         if _skills_enabled():

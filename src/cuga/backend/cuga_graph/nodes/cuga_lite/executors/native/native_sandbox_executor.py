@@ -73,42 +73,6 @@ def native_thread_workspace_root(thread_id: Optional[str]) -> Path:
     return base
 
 
-def seed_thread_workspace_if_needed(thread_root: Path) -> None:
-    """Copy top-level files from the parent ``cuga_workspace`` directory
-    into a freshly-created per-thread workspace. Idempotent via a
-    ``.cuga_seeded`` sentinel. No-op when ``thread_root`` IS the parent
-    (skills disabled). Best-effort; any I/O failure is swallowed.
-    """
-    sentinel = thread_root / ".cuga_seeded"
-    if sentinel.exists():
-        return
-    try:
-        parent = thread_root.parent
-        if thread_root.resolve() == parent.resolve():
-            return
-        if not parent.exists():
-            return
-        thread_root.mkdir(parents=True, exist_ok=True)
-        for entry in parent.iterdir():
-            if entry.is_dir():
-                continue
-            if entry.name.startswith("."):
-                continue
-            dest = thread_root / entry.name
-            if dest.exists():
-                continue
-            try:
-                shutil.copy2(entry, dest)
-            except OSError:
-                continue
-        try:
-            sentinel.write_text("seeded")
-        except OSError:
-            pass
-    except OSError:
-        pass
-
-
 def _resolve_workspace_path(
     sandbox_path: str,
     *,
@@ -315,7 +279,6 @@ class NativeSandboxExecutor:
         await self._ensure_venv()
         workspace_root = native_thread_workspace_root(thread_id)
         workspace_root.mkdir(parents=True, exist_ok=True)
-        seed_thread_workspace_if_needed(workspace_root)
         # /tmp is a symlink to /private/tmp on macOS; cd to the physical per-thread workspace so
         # relative paths like `./script.js` resolve correctly inside sandbox-exec.
         # npm under nvm stages installs in the global prefix (~/.nvm/...); redirect prefix here
@@ -469,7 +432,6 @@ class NativeSandboxExecutor:
                 p = _resolve_workspace_path(sandbox_path, thread_id=thread_id, operation="list_files")
                 if p == native_thread_workspace_root(thread_id).resolve():
                     p.mkdir(parents=True, exist_ok=True)
-                    seed_thread_workspace_if_needed(p)
                 if not p.exists():
                     return f"[list_files error] Path not found: {sandbox_path}"
                 entries = []

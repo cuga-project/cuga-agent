@@ -1009,11 +1009,16 @@ Provide:
                 logger.info(f"Policy matched: '{best_match.name}' (confidence: {best_confidence:.2f})")
                 action = await self._create_policy_action(best_match, best_confidence, best_reasoning)
 
+                # Clamp confidence to PolicyMatch's [0.0, 1.0] bound. When both
+                # keyword and NL triggers fire on the same policy, the combined
+                # score can land at 1.0000000000000002 (float rounding); without
+                # the clamp PolicyMatch validation raises and the whole match
+                # is silently lost inside the `except` below.
                 return PolicyMatch(
                     matched=True,
                     policy=best_match,
                     action=action,
-                    confidence=best_confidence,
+                    confidence=min(1.0, max(0.0, best_confidence)),
                     reasoning=best_reasoning,
                     trigger_details=best_trigger_details,
                 )

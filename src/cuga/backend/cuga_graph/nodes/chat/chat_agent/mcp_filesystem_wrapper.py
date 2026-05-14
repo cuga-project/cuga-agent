@@ -124,8 +124,8 @@ def wrap_filesystem_tool_func(
         return tool_func
 
     # Per-thread workspace must exist before the agent's first filesystem
-    # call; seed top-level fixtures from the shared parent on first use.
-    _ensure_thread_workspace_seeded(thread_id)
+    # call so MCP writes don't fail with "no such file or directory".
+    _ensure_thread_workspace_exists(thread_id)
 
     prefix = _safe_thread_id(thread_id)
     import inspect
@@ -153,23 +153,17 @@ def wrap_filesystem_tool_func(
     return _sync_wrapped
 
 
-def _ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
-    """Materialize the per-thread workspace dir and seed it on first use.
-
-    Called from the chat-agent wrapper so a thread that opens with a
-    filesystem MCP call (no shell/sandbox call first) still finds the
-    parent-level seed fixtures inside its own subdir. No-op when skills
-    are disabled — the workspace IS the parent and no seeding is needed.
+def _ensure_thread_workspace_exists(thread_id: Optional[str]) -> None:
+    """Materialize the per-thread workspace dir so MCP filesystem writes
+    don't fail with ``No such file or directory``. No-op when skills are
+    disabled — the workspace IS the parent and is already present.
     """
     try:
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
             local_thread_workspace_root,
-            seed_thread_workspace_if_needed,
         )
 
-        thread_root = local_thread_workspace_root(thread_id)
-        thread_root.mkdir(parents=True, exist_ok=True)
-        seed_thread_workspace_if_needed(thread_root)
+        local_thread_workspace_root(thread_id).mkdir(parents=True, exist_ok=True)
     except Exception:
         # Best-effort: any failure falls through to natural MCP behavior.
         pass
@@ -192,9 +186,9 @@ def wrap_mcp_filesystem_tools(
     if not _skills_enabled():
         return tools
 
-    # First time this thread reaches the wrapper, materialize+seed its
-    # workspace so MCP read/write calls hit the right files immediately.
-    _ensure_thread_workspace_seeded(thread_id)
+    # Materialize the per-thread workspace dir so the first MCP filesystem
+    # call doesn't fail with "no such file or directory".
+    _ensure_thread_workspace_exists(thread_id)
 
     prefix = _safe_thread_id(thread_id)
     wrapped: List[BaseTool] = []

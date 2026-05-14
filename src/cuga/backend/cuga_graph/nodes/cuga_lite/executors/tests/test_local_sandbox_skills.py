@@ -59,11 +59,11 @@ def test_local_sandbox_relative_paths_land_in_per_thread_cuga_workspace(
     monkeypatch.chdir(tmp_path)
     _enable_skills(monkeypatch)
 
-    # CI-style seed: pre-populate the shared parent dir with a fixture so
-    # we can also verify the seed-on-first-use copies it into the thread.
     parent = tmp_path / "cuga_workspace"
     parent.mkdir(parents=True, exist_ok=True)
-    (parent / "contacts.txt").write_text("seed-fixture\n")
+    # A sibling top-level file must NOT be copied into the thread dir —
+    # per-thread workspaces are isolated, not inheritance buckets.
+    (parent / "sibling.txt").write_text("sibling\n")
 
     safe = _lse._safe_thread_id("thread-A")
     thread_root = parent / safe
@@ -80,16 +80,13 @@ def test_local_sandbox_relative_paths_land_in_per_thread_cuga_workspace(
 
     # Relative shell output landed in the per-thread workspace
     out_file = expected / "out.txt"
-    assert out_file.exists(), (
-        f"out.txt should be under {expected}, but {expected.iterdir().__name__} did not include it. stdout={stdout!r} stderr={stderr!r}"
-    )
+    assert out_file.exists(), f"out.txt should be under {expected}; stdout={stdout!r} stderr={stderr!r}"
     assert out_file.read_text().strip() == "hello"
 
-    # Seed-on-first-use copied the parent fixture into the thread dir
-    seeded = expected / "contacts.txt"
-    assert seeded.exists(), "contacts.txt should have been seeded from the parent cuga_workspace"
-    assert seeded.read_text() == "seed-fixture\n"
-    assert (expected / ".cuga_seeded").exists(), "seed sentinel should be written"
+    # Parent-level file MUST NOT auto-propagate into the per-thread dir.
+    assert not (expected / "sibling.txt").exists(), (
+        "per-thread workspaces must stay isolated — no auto-copy from parent"
+    )
 
     # Nothing leaked into /tmp/cuga (the legacy location)
     assert not (Path("/tmp") / "cuga").exists() or not any(Path("/tmp/cuga").iterdir()), (
@@ -106,7 +103,6 @@ def test_local_sandbox_two_threads_are_isolated(tmp_path: Path, monkeypatch: pyt
 
     parent = tmp_path / "cuga_workspace"
     parent.mkdir(parents=True, exist_ok=True)
-    (parent / "shared.txt").write_text("shared\n")
 
     for tid in ("thread-A", "thread-B"):
         _fake_venv_python(parent / _lse._safe_thread_id(tid))
@@ -120,42 +116,8 @@ def test_local_sandbox_two_threads_are_isolated(tmp_path: Path, monkeypatch: pyt
 
     assert (a_dir / "out.txt").read_text().strip() == "from-A"
     assert (b_dir / "out.txt").read_text().strip() == "from-B"
-    # Both seeded independently from the shared parent
-    assert (a_dir / "shared.txt").read_text() == "shared\n"
-    assert (b_dir / "shared.txt").read_text() == "shared\n"
     # The shared parent fixture must NOT be polluted by thread-level writes
     assert not (parent / "out.txt").exists()
-
-
-@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell idioms")
-def test_local_sandbox_seed_skips_other_thread_dirs(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    """Seed-on-first-use must copy only top-level FILES — never
-    subdirectories (those are other thread workspaces)."""
-    monkeypatch.chdir(tmp_path)
-    _enable_skills(monkeypatch)
-
-    parent = tmp_path / "cuga_workspace"
-    parent.mkdir(parents=True, exist_ok=True)
-    (parent / "fixture.txt").write_text("ok\n")
-    # Pre-existing sibling thread workspace with private data
-    sibling = parent / "other-thread"
-    sibling.mkdir()
-    (sibling / "private.txt").write_text("private\n")
-    # Dotfile that should be skipped
-    (parent / ".hidden").write_text("hidden\n")
-
-    safe = _lse._safe_thread_id("thread-C")
-    thread_root = parent / safe
-    _fake_venv_python(thread_root)
-
-    executor = _lse.LocalSandboxExecutor()
-    asyncio.run(_run(executor, "true", "thread-C"))
-
-    assert (thread_root / "fixture.txt").exists(), "top-level files should be seeded"
-    assert not (thread_root / "other-thread").exists(), "sibling thread dir must NOT be copied"
-    assert not (thread_root / ".hidden").exists(), "dotfiles must be skipped"
-    # Sibling's data is untouched
-    assert (sibling / "private.txt").read_text() == "private\n"
 
 
 def test_local_thread_workspace_root_is_shared_when_skills_off(
@@ -216,17 +178,18 @@ def test_sandbox_write_read_round_trip_uses_per_thread_workspace(
     assert content == "hello world"
 
 
-def test_sandbox_list_files_surfaces_relative_writes_and_seeded_fixtures(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """A fresh thread's `list_files` must show both the agent's own writes
-    AND the seeded top-level fixtures from the shared parent dir."""
+def test_sandbox_list_files_surfaces_relative_writes(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """A fresh thread's `list_files` must show the agent's own writes
+    inside its per-thread workspace — and NOT parent-level files (those
+    belong to other threads or the shared workspace, not this one)."""
     monkeypatch.chdir(tmp_path)
     _enable_skills(monkeypatch)
 
     parent = tmp_path / "cuga_workspace"
     parent.mkdir(parents=True, exist_ok=True)
-    (parent / "contacts.txt").write_text("fixture\n")
+    # A parent-level file should NOT show up in this thread's listing —
+    # per-thread workspaces are isolated.
+    (parent / "sibling.txt").write_text("not mine\n")
 
     executor = _lse.LocalSandboxExecutor()
     write = executor.create_write_file_tool(thread_id="thread-A")
@@ -236,7 +199,7 @@ def test_sandbox_list_files_surfaces_relative_writes_and_seeded_fixtures(
     listing = asyncio.run(list_files("."))
 
     assert "agent_output.txt" in listing, listing
-    assert "contacts.txt" in listing, "seed fixture should be visible after list_files"
+    assert "sibling.txt" not in listing, "parent-level files must not bleed into per-thread listings"
 
 
 def test_sandbox_filesystem_tools_reject_paths_outside_workspace(
