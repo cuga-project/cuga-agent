@@ -179,7 +179,6 @@ class TestFilesystemSyncBasics:
             guide_content="## Guidelines\n- Be careful",
             tool_guards={
                 "test_tool": ToolGuard(
-                    description="Only allow safe usage",
                     violating_examples=["Deleting all records without confirmation"],
                     compliance_examples=["Delete one record after explicit confirmation"],
                     policy_code="def validate(call):\n    return True",
@@ -415,7 +414,6 @@ class TestAutoLoadPolicies:
             guide_content="## Test",
             tool_guards={
                 "test_tool": ToolGuard(
-                    description="Guard loaded from filesystem",
                     violating_examples=["bad_example()"],
                     compliance_examples=["good_example()"],
                     policy_code="def validate(call):\n    return True",
@@ -450,7 +448,7 @@ class TestAutoLoadPolicies:
         assert loaded_guide is not None
         assert loaded_guide["policy"].tool_guards is not None
         assert "test_tool" in loaded_guide["policy"].tool_guards
-        assert loaded_guide["policy"].tool_guards["test_tool"].description == "Guard loaded from filesystem"
+        # ToolGuard no longer has description field - it's derived from ToolGuide
 
     @pytest.mark.asyncio
     async def test_auto_load_disabled(self, temp_cuga_folder):

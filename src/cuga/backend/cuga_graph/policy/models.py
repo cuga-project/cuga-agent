@@ -168,7 +168,6 @@ class IntentGuardResponse(BaseModel):
 class ToolGuard(BaseModel):
     """Guard configuration for a specific tool with compliance rules."""
 
-    description: str = Field(..., description="Description of the guard rules for this tool")
     violating_examples: List[str] = Field(
         default_factory=list, description="Examples of violating usage patterns"
     )

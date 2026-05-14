@@ -546,7 +546,7 @@ class PoliciesManager:
 
         Args:
             policy_id: ID of the existing Tool Guide policy to update
-            tool_guards: Dict of tool guards (key: tool_name, value: dict with 'description', 'violating_examples', 'compliance_examples', 'policy_code')
+            tool_guards: Dict of tool guards (key: tool_name, value: dict with 'violating_examples', 'compliance_examples', 'policy_code')
 
         Returns:
             Policy ID
@@ -601,7 +601,6 @@ class PoliciesManager:
         # Convert and update only the incoming tool_guards
         for tool_name, guard_data in tool_guards.items():
             tool_guards_obj[tool_name] = ToolGuard(
-                description=guard_data.get("description", ""),
                 violating_examples=guard_data.get("violating_examples", []),
                 compliance_examples=guard_data.get("compliance_examples", []),
                 policy_code=guard_data.get("policy_code", ""),
