@@ -266,7 +266,15 @@ class ChatAgent(BaseAgent):
         except Exception as exc:
             logger.debug(f"Chat knowledge context unavailable: {exc}")
 
-        runtime_tools = self._dedupe_tools([*self.base_tools, *knowledge_tools])
+        # When skills are enabled, filesystem MCP tools need per-thread path
+        # prefixing so each chat thread sees its own subdir of cuga_workspace.
+        # When skills are disabled this is a no-op pass-through.
+        from cuga.backend.cuga_graph.nodes.chat.chat_agent.mcp_filesystem_wrapper import (
+            wrap_mcp_filesystem_tools,
+        )
+
+        thread_scoped_base = wrap_mcp_filesystem_tools(self.base_tools, state.thread_id)
+        runtime_tools = self._dedupe_tools([*thread_scoped_base, *knowledge_tools])
         tools_list = "\n".join(
             [f"- {tool.name}: {tool.description or 'No description'}" for tool in runtime_tools]
         )

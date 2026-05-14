@@ -141,46 +141,12 @@ class CodeExecutor:
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
 
-        # For local/native sandbox modes, inject the workspace root as the working directory
-        # so Python code runs in the same directory context as run_command (which also cds there).
-        # The directory is created here (mirroring LocalSandboxExecutor's behavior for shell flows)
-        # so LocalExecutor paths and unit tests with thread_id=None don't crash on os.chdir.
-        workspace_root_for_wrap = None
-        if mode == 'local':
-            try:
-                _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+        wrapped_code = CodeWrapper.wrap_code(code, fake_datetime=fake_datetime)
 
-                if _sandbox_mode == 'native':
-                    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.native.native_sandbox_executor import (
-                        native_thread_workspace_root,
-                    )
-
-                    _ws_path = native_thread_workspace_root(thread_id).resolve()
-                else:  # local or other modes
-                    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
-                        local_thread_workspace_root,
-                    )
-
-                    _ws_path = local_thread_workspace_root(thread_id).resolve()
-
-                _ws_path.mkdir(parents=True, exist_ok=True)
-                workspace_root_for_wrap = str(_ws_path)
-            except Exception:
-                # If workspace root cannot be determined or created, continue without chdir.
-                # The wrapped code will then run with the current process CWD as before.
-                workspace_root_for_wrap = None
-
-        wrapped_code = CodeWrapper.wrap_code(
-            code, fake_datetime=fake_datetime, workspace_root=workspace_root_for_wrap
-        )
-
-        # Inject modules for internal use (won't trigger security violation)
-        # Only inject os if we're actually using chdir for workspace
-        if workspace_root_for_wrap:
-            import os
-
-            _locals['_internal_os'] = os
-        # Always inject re as it's useful for tools and not dangerous
+        # `re` is convenient for tool helpers and not in DANGEROUS_MODULE_NAMES.
+        # `os` is deliberately NOT injected: keeping it out of the user namespace
+        # means SecurityValidator.validate_imports() remains the sole gate on
+        # what imports the wrapped user code can reach.
         import re
 
         _locals['_internal_re'] = re
@@ -219,7 +185,6 @@ class CodeExecutor:
             _locals, original_keys, always_include_keys=always_include_keys
         )
 
-        new_vars.pop('_internal_os', None)
         new_vars.pop('_internal_re', None)
 
         if _skills_enabled():

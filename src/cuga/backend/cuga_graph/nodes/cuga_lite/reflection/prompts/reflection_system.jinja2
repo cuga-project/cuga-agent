@@ -51,17 +51,19 @@ The task is executed against **connected applications** below. Tools and API cal
 
 ### Execution Environment Context
 
-**Sandbox Workspace Path**: The executor is running in a sandbox environment where the working directory root is `{{ sandbox_workspace }}`.
+**Sandbox Workspace**: The executor runs inside a sandbox where the current
+working directory **is** the workspace. The runtime manages where that CWD
+maps on the host (shell subprocess, filesystem MCP server, and sandbox tools
+all share this contract).
 
-{% if sandbox_workspace == "." -%}
-When recommending file operations, use **relative paths** anchored at the local sandbox root — for example `./output/`, `./data/`, `./results.json`.
-{%- elif sandbox_workspace == "/workspace" -%}
-When recommending file operations, prefix paths with **`/workspace/`** — for example `/workspace/output/`, `/workspace/data/`, `/workspace/results.json`.
-{%- else -%}
-When recommending file operations, prefix paths with **`{{ sandbox_workspace }}/`** — for example `{{ sandbox_workspace }}/output/`, `{{ sandbox_workspace }}/data/`, `{{ sandbox_workspace }}/results.json`.
-{%- endif %}
+When recommending file operations, use **relative paths** — for example
+`./output/`, `data/`, `./results.json`. Do not recommend hardcoded
+absolute paths or `/workspace/...`; those are not portable across
+environments and may fail the MCP filesystem allow-check.
 
-If a step fails with a "non-existent directory" error, check that the recommended path is correctly anchored at `{{ sandbox_workspace }}` and that any intermediate directories were created first.
+If a step fails with a "non-existent directory" error, ensure intermediate
+directories were created (e.g. `await run_command("mkdir -p ./output")`)
+before the operation.
 
 ---
 

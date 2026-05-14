@@ -1380,6 +1380,14 @@ def create_cuga_lite_graph(
                         "~/.config/cuga/skills fallbacks"
                     )
 
+            # Resolve thread_id early so we can per-thread-prefix filesystem
+            # MCP tools when skills are enabled (no-op when skills are off).
+            _cfg_for_thread = config.get("configurable", {}) if config else {}
+            _runtime_thread_id_for_fs = _cfg_for_thread.get("thread_id") or state.thread_id or thread_id
+            from cuga.backend.cuga_graph.nodes.chat.chat_agent.mcp_filesystem_wrapper import (
+                wrap_filesystem_tool_func,
+            )
+
             # Update tools context with all execution tools
             # Wrap to make awaitable (agent always uses await)
             for tool in tools_for_execution:
@@ -1396,6 +1404,7 @@ def create_cuga_lite_graph(
                     tool_func = getattr(tool, '_run', None)
 
                 if tool_func:
+                    tool_func = wrap_filesystem_tool_func(tool.name, tool_func, _runtime_thread_id_for_fs)
                     tools_context_dict[tool.name] = make_tool_awaitable(tool_func)
                 else:
                     logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
@@ -1409,6 +1418,7 @@ def create_cuga_lite_graph(
                 else:
                     tool_func = getattr(tool, "_run", None)
                 if tool_func:
+                    tool_func = wrap_filesystem_tool_func(tool.name, tool_func, _runtime_thread_id_for_fs)
                     tools_context_dict[tool.name] = make_tool_awaitable(tool_func)
                 else:
                     logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
@@ -1692,7 +1702,6 @@ def create_cuga_lite_graph(
                     skills_enabled=skills_enabled,
                     skills_prompt_section=skills_prompt_section,
                     enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
-                    sandbox_workspace="." if _sandbox_mode in ("native", "local") else "/workspace",
                     has_knowledge=has_knowledge_tools,
                     few_shot_examples=few_shot_examples,
                     few_shots_enabled=few_shots_enabled,
@@ -2218,11 +2227,6 @@ def create_cuga_lite_graph(
                             settings.agent.planner.model
                         )
                         reflection_agent = reflection_task(llm=active_model)
-                        # Calculate sandbox_workspace using same logic as prepare_tools_and_apps
-                        _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
-                        reflection_sandbox_workspace = (
-                            "." if _sandbox_mode in ("native", "local") else "/workspace"
-                        )
                         # Format chat messages as history string
                         agent_history_parts = []
                         for msg in state.chat_messages:
@@ -2250,7 +2254,6 @@ def create_cuga_lite_graph(
                                 "skills_enabled": state.reflection_skills_enabled,
                                 "skills_prompt_section": state.reflection_skills_prompt_section,
                                 "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
-                                "sandbox_workspace": reflection_sandbox_workspace,
                             }
                         )
                         reflection_output = reflection_result.content

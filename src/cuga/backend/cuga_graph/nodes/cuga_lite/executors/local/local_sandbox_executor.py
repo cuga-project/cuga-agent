@@ -25,7 +25,6 @@ import re
 import shlex
 import shutil
 import sys
-import tempfile
 from pathlib import Path
 from typing import Callable, Optional
 
@@ -39,10 +38,13 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.opensandbox_e
 )
 
 VIRTUAL_WORKSPACE_ROOT = "/workspace"
+CUGA_WORKSPACE_DIRNAME = "cuga_workspace"
 
 
 def _local_base_dir() -> Path:
-    return Path(tempfile.gettempdir()) / "cuga"
+    """Workspace parent: <cwd>/cuga_workspace. Matches the demo CLI and the
+    filesystem MCP server's allowed root (managed_mcp.py)."""
+    return Path(os.getcwd()) / CUGA_WORKSPACE_DIRNAME
 
 
 def _safe_thread_id(thread_id: Optional[str]) -> str:
@@ -50,8 +52,69 @@ def _safe_thread_id(thread_id: Optional[str]) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
 
 
+def _skills_enabled() -> bool:
+    from cuga.config import settings
+
+    return bool(getattr(getattr(settings, "skills", None), "enabled", False))
+
+
 def local_thread_workspace_root(thread_id: Optional[str]) -> Path:
-    return _local_base_dir() / _safe_thread_id(thread_id) / "workspace"
+    """Per-thread when skills are enabled, otherwise the shared workspace.
+
+    Skills enabled  → <cwd>/cuga_workspace/<safe_thread_id>/
+    Skills disabled → <cwd>/cuga_workspace/
+
+    Both live under the filesystem MCP server's allowed root, so MCP serves
+    every thread without a per-thread restart.
+    """
+    base = _local_base_dir()
+    if _skills_enabled():
+        return base / _safe_thread_id(thread_id)
+    return base
+
+
+def seed_thread_workspace_if_needed(thread_root: Path) -> None:
+    """First-use seed: copy every top-level file from the parent
+    ``cuga_workspace`` directory into a freshly-created per-thread
+    workspace, so seeded fixtures (e.g. ``contacts.txt`` from CI) are
+    reachable from any new thread.
+
+    Idempotent via a ``.cuga_seeded`` sentinel inside the thread dir.
+    Skipped entirely when ``thread_root`` IS the parent (skills disabled
+    → shared workspace, no copying needed). Subdirectories of the parent
+    are NOT copied; those are other thread workspaces.
+
+    Best-effort: any I/O failure is swallowed so it can never break
+    execution. The cost is one ``stat`` per call after first use.
+    """
+    sentinel = thread_root / ".cuga_seeded"
+    if sentinel.exists():
+        return
+    try:
+        parent = thread_root.parent
+        if thread_root.resolve() == parent.resolve():
+            return  # skills disabled — no per-thread subdir to seed
+        if not parent.exists():
+            return
+        thread_root.mkdir(parents=True, exist_ok=True)
+        for entry in parent.iterdir():
+            if entry.is_dir():
+                continue
+            if entry.name.startswith("."):
+                continue
+            dest = thread_root / entry.name
+            if dest.exists():
+                continue
+            try:
+                shutil.copy2(entry, dest)
+            except OSError:
+                continue
+        try:
+            sentinel.write_text("seeded")
+        except OSError:
+            pass
+    except OSError:
+        pass
 
 
 def _resolve_workspace_path(
@@ -214,6 +277,7 @@ class LocalSandboxExecutor:
     ) -> tuple[str, str]:
         workspace_root = local_thread_workspace_root(thread_id)
         workspace_root.mkdir(parents=True, exist_ok=True)
+        seed_thread_workspace_if_needed(workspace_root)
         venv = await self._ensure_workspace_venv(workspace_root)
         env = self._command_env(workspace_root, venv)
 
@@ -351,6 +415,7 @@ class LocalSandboxExecutor:
                 p = _resolve_workspace_path(sandbox_path, thread_id=thread_id, operation="list_files")
                 if p == local_thread_workspace_root(thread_id).resolve():
                     p.mkdir(parents=True, exist_ok=True)
+                    seed_thread_workspace_if_needed(p)
                 if not p.exists():
                     return f"[list_files error] Path not found: {sandbox_path}"
                 entries = []

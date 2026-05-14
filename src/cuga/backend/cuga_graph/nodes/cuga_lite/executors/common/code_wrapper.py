@@ -78,34 +78,33 @@ datetime.datetime = _fake_dt
 """
 
     @staticmethod
-    def wrap_code(
-        code: str, fake_datetime: Optional[str] = None, workspace_root: Optional[str] = None
-    ) -> str:
+    def wrap_code(code: str, fake_datetime: Optional[str] = None) -> str:
         """Wrap user code in an async function for execution.
 
         Args:
             code: User's Python code
             fake_datetime: Optional ISO format date string to fake datetime.now()
-            workspace_root: Optional workspace root path; if provided, code will chdir to it
 
         Returns:
             Wrapped code ready for execution
+
+        Note:
+            Workspace CWD is managed externally (shell subprocess `cwd=`,
+            filesystem MCP server `cwd=`, sandbox-tool path resolution) — not
+            injected into the wrapped user code. Keeping `os` out of the user
+            namespace means SecurityValidator.validate_imports() remains the
+            sole gate on what imports the wrapped code can reach.
         """
         indented_code = '\n'.join('    ' + line for line in code.split('\n'))
         lines = [line.strip() for line in code.split('\n') if line.strip()]
 
         if not lines:
             datetime_mock = CodeWrapper.create_datetime_mock(fake_datetime)
-            chdir_line = ""
-            if workspace_root:
-                chdir_line = (
-                    f"    _internal_os.chdir({repr(workspace_root)}) if {repr(workspace_root)} else None\n"
-                )
             wrapped_code = f"""
 import asyncio
 {datetime_mock}
 async def _async_main():
-{chdir_line}{indented_code}
+{indented_code}
     return locals()
 
 # Execute the wrapped function
@@ -157,17 +156,12 @@ async def _async_main():
             indented_code += f"\n    print({last_line})"
 
         datetime_mock = CodeWrapper.create_datetime_mock(fake_datetime)
-        chdir_line = ""
-        if workspace_root:
-            chdir_line = (
-                f"    _internal_os.chdir({repr(workspace_root)}) if {repr(workspace_root)} else None\n"
-            )
 
         wrapped_code = f"""
 import asyncio
 {datetime_mock}
 async def _async_main():
-{chdir_line}{indented_code}
+{indented_code}
     return locals()
 
 # Execute the wrapped function

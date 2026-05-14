@@ -52,6 +52,7 @@ class ServiceConfig(BaseModel):
     command: Optional[str] = None
     args: Optional[List[str]] = None
     env: Optional[Dict[str, str]] = None  # Environment variables for STDIO transport
+    cwd: Optional[str] = None  # Working directory for STDIO transport subprocess
     type: str = ServiceType.OPENAPI  # type of the service
     transport: Optional[str] = None  # Transport type: 'stdio', 'sse', 'http', or None (auto-detect)
     name: Optional[str] = None

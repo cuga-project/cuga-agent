@@ -1,9 +1,12 @@
 """Native macOS sandbox-exec executor — no Docker required.
 
 Uses Apple's Seatbelt (sandbox-exec) to run shell commands in a restricted
-environment with write access confined to /private/tmp. Agent-facing filesystem
-tools expose a clean /workspace root, mapped internally to a per-thread
-/private/tmp/<thread_id>/workspace directory.
+environment with write access confined to /private/tmp (Seatbelt-internal venv,
+caches, etc.). The agent-facing workspace lives at ``<cwd>/cuga_workspace/``
+— shared across threads when ``settings.skills.enabled`` is false, per-thread
+``<cwd>/cuga_workspace/<safe_thread_id>/`` when true. This co-locates the
+workspace with the filesystem MCP server's allowed root so MCP serves every
+thread without a per-thread restart.
 
 Enable via settings:
     [advanced_features]
@@ -38,6 +41,7 @@ PRIVATE_TMP = "/private/tmp"
 VIRTUAL_WORKSPACE_ROOT = "/workspace"
 VENV_PATH = "/tmp/.venv"
 POLICY_PATH = "/tmp/.cuga_sandbox.sb"
+CUGA_WORKSPACE_DIRNAME = "cuga_workspace"
 
 
 def _safe_thread_id(thread_id: Optional[str]) -> str:
@@ -46,13 +50,63 @@ def _safe_thread_id(thread_id: Optional[str]) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
 
 
+def _skills_enabled() -> bool:
+    from cuga.config import settings
+
+    return bool(getattr(getattr(settings, "skills", None), "enabled", False))
+
+
 def native_thread_workspace_root(thread_id: Optional[str]) -> Path:
     """Physical host root for a native conversation workspace.
 
-    The agent-facing root is always ``/workspace``. Internally it maps to
-    ``/tmp/<thread_id>/workspace`` (``/private/tmp/<thread_id>/workspace`` on macOS).
+    Skills enabled  → ``<cwd>/cuga_workspace/<safe_thread_id>/``
+    Skills disabled → ``<cwd>/cuga_workspace/`` (shared across threads)
+
+    Co-located with the filesystem MCP server's allowed root so MCP can serve
+    every thread's files without a per-thread restart. The seatbelt sandbox
+    still uses ``/private/tmp`` for its internal venv/caches; that's
+    independent of where the user-facing workspace lives.
     """
-    return Path(PRIVATE_TMP) / _safe_thread_id(thread_id) / "workspace"
+    base = Path(os.getcwd()) / CUGA_WORKSPACE_DIRNAME
+    if _skills_enabled():
+        return base / _safe_thread_id(thread_id)
+    return base
+
+
+def seed_thread_workspace_if_needed(thread_root: Path) -> None:
+    """Copy top-level files from the parent ``cuga_workspace`` directory
+    into a freshly-created per-thread workspace. Idempotent via a
+    ``.cuga_seeded`` sentinel. No-op when ``thread_root`` IS the parent
+    (skills disabled). Best-effort; any I/O failure is swallowed.
+    """
+    sentinel = thread_root / ".cuga_seeded"
+    if sentinel.exists():
+        return
+    try:
+        parent = thread_root.parent
+        if thread_root.resolve() == parent.resolve():
+            return
+        if not parent.exists():
+            return
+        thread_root.mkdir(parents=True, exist_ok=True)
+        for entry in parent.iterdir():
+            if entry.is_dir():
+                continue
+            if entry.name.startswith("."):
+                continue
+            dest = thread_root / entry.name
+            if dest.exists():
+                continue
+            try:
+                shutil.copy2(entry, dest)
+            except OSError:
+                continue
+        try:
+            sentinel.write_text("seeded")
+        except OSError:
+            pass
+    except OSError:
+        pass
 
 
 def _resolve_workspace_path(
@@ -103,8 +157,11 @@ def _public_workspace_path(host_path: Path, *, thread_id: Optional[str]) -> str:
 
 
 def _build_policy() -> str:
-    """Generate a Seatbelt policy that allows reads broadly but writes only to /private/tmp."""
-    return """(version 1)
+    """Generate a Seatbelt policy that allows reads broadly but writes only to
+    /private/tmp (internal venv/caches) and <cwd>/cuga_workspace (the
+    user-facing per-thread workspace tree)."""
+    workspace_parent = (Path(os.getcwd()) / CUGA_WORKSPACE_DIRNAME).resolve()
+    return f"""(version 1)
 (deny default)
 (allow signal (target self))
 (allow process*)
@@ -115,6 +172,7 @@ def _build_policy() -> str:
 (allow file-read*)
 (allow file-write*
     (subpath "/private/tmp")
+    (subpath "{workspace_parent}")
     (literal "/dev/null")
 )
 (allow network-outbound)
@@ -141,11 +199,31 @@ class NativeSandboxExecutor:
             self._policy_written = True
 
     async def _ensure_venv(self) -> None:
+        """Create /tmp/.venv if missing OR invalid, then mark ready.
+
+        The shell template prepended to every sandboxed command sources
+        ``/tmp/.venv/bin/activate`` — so the readiness flag must reflect
+        the activate script's actual presence on disk, not just the dir.
+
+        Failure modes this guards against:
+          1. A stale ``/tmp/.venv/`` directory from a prior crashed run
+             that has no ``bin/activate`` inside.
+          2. ``uv venv`` and ``python -m venv`` both failing silently and
+             the readiness flag being flipped True anyway, freezing the
+             executor into a broken state for the rest of the process.
+        """
         if self._venv_ready:
             return
-        if Path(VENV_PATH).exists():
+        activate = Path(VENV_PATH) / "bin" / "activate"
+        if activate.is_file():
             self._venv_ready = True
             return
+
+        # Stale directory without an activate script — wipe and recreate.
+        if Path(VENV_PATH).exists():
+            logger.warning("[NativeSandbox] /tmp/.venv exists but is missing bin/activate; recreating")
+            shutil.rmtree(VENV_PATH, ignore_errors=True)
+
         proc = await asyncio.create_subprocess_exec(
             "uv",
             "venv",
@@ -166,9 +244,23 @@ class NativeSandboxExecutor:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
             )
-            await proc2.communicate()
-        self._venv_ready = True
-        logger.info("[NativeSandbox] /tmp/.venv ready")
+            _, stderr2 = await proc2.communicate()
+            if proc2.returncode != 0:
+                logger.error(
+                    f"[NativeSandbox] python -m venv ALSO failed: {stderr2.decode()!r}. "
+                    "run_command will fail until /tmp/.venv is fixed."
+                )
+
+        # Only flip the flag once we've verified the file we actually
+        # source in the sandbox prelude is present.
+        if activate.is_file():
+            self._venv_ready = True
+            logger.info("[NativeSandbox] /tmp/.venv ready")
+        else:
+            logger.error(
+                "[NativeSandbox] /tmp/.venv/bin/activate not found after creation; "
+                "subsequent run_command calls will report `activate: No such file or directory`"
+            )
 
     def _copy_skills_to_workspace(self, thread_id: Optional[str] = None) -> None:
         """Copy discovered skill folders into the hidden per-thread /workspace/skills directory."""
@@ -223,6 +315,7 @@ class NativeSandboxExecutor:
         await self._ensure_venv()
         workspace_root = native_thread_workspace_root(thread_id)
         workspace_root.mkdir(parents=True, exist_ok=True)
+        seed_thread_workspace_if_needed(workspace_root)
         # /tmp is a symlink to /private/tmp on macOS; cd to the physical per-thread workspace so
         # relative paths like `./script.js` resolve correctly inside sandbox-exec.
         # npm under nvm stages installs in the global prefix (~/.nvm/...); redirect prefix here
@@ -376,6 +469,7 @@ class NativeSandboxExecutor:
                 p = _resolve_workspace_path(sandbox_path, thread_id=thread_id, operation="list_files")
                 if p == native_thread_workspace_root(thread_id).resolve():
                     p.mkdir(parents=True, exist_ok=True)
+                    seed_thread_workspace_if_needed(p)
                 if not p.exists():
                     return f"[list_files error] Path not found: {sandbox_path}"
                 entries = []
