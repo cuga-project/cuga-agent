@@ -49,6 +49,44 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
                 "config": agent_config,
             }
             logger.info(f"Registered external agent: {agent_name}")
+
+        elif "import_from" in agent_config:
+            # Import a pre-configured CugaAgent instance from a Python module.
+            # This lets you define agents fully in Python (with tools, policies, etc.)
+            # and reference them from YAML without any duplication.
+            #
+            # YAML usage:
+            #   - name: my_agent
+            #     import_from: my_package.agents.my_agent.my_agent_instance
+            #
+            # The last dotted segment is the attribute name; everything before it is
+            # the module path.  Example:
+            #   import_from: docs.examples.travel_agent.agents.flight_agent.flight_agent
+            #   → importlib.import_module("docs.examples.travel_agent.agents.flight_agent")
+            #   → getattr(module, "flight_agent")
+            import_path = agent_config["import_from"]
+            logger.info(f"Importing pre-configured agent '{agent_name}' from {import_path}")
+            try:
+                import importlib
+
+                module_path, agent_var = import_path.rsplit(".", 1)
+                module = importlib.import_module(module_path)
+                agent = getattr(module, agent_var)
+
+                # Use class-name check to avoid issues when the same class is imported
+                # from different paths (which would break isinstance()).
+                if not (hasattr(agent, "__class__") and agent.__class__.__name__ == "CugaAgent"):
+                    raise TypeError(
+                        f"Imported object '{agent_var}' from '{module_path}' is not a "
+                        f"CugaAgent instance (got {type(agent).__name__})"
+                    )
+
+                agents[agent_name] = agent
+                logger.info(f"✅ Imported agent '{agent_name}' from {import_path}")
+            except Exception as e:
+                logger.error(f"Failed to import agent '{agent_name}' from '{import_path}': {e}")
+                raise
+
         else:
             # Internal agent - create CugaAgent instance
             logger.info(f"Creating internal agent: {agent_name}")

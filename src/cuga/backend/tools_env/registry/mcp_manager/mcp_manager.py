@@ -22,7 +22,10 @@ except ImportError:
 from cuga.backend.tools_env.registry.config.config_loader import Auth
 from cuga.backend.tools_env.registry.config.config_loader import ServiceConfig, Service
 from cuga.backend.tools_env.registry.mcp_manager.openapi_parser import SimpleOpenAPIParser
-from cuga.backend.tools_env.registry.mcp_manager.adapter import new_mcp_from_custom_parser
+from cuga.backend.tools_env.registry.mcp_manager.adapter import (
+    new_mcp_from_custom_parser,
+    apply_authentication,
+)
 import threading
 from collections import defaultdict
 from urllib.parse import urlparse
@@ -684,8 +687,12 @@ class MCPManager:
             return True, "No readiness probe configured"
 
         timeout = config.readiness_timeout_seconds or 2.0
+        parsed_url = urlparse(config.readiness_url)
+        verify_ssl = not (
+            parsed_url.scheme == "https" and parsed_url.hostname in ("127.0.0.1", "localhost", "::1")
+        )
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, verify=verify_ssl) as client:
                 response = await client.get(config.readiness_url)
             response.raise_for_status()
 
@@ -924,7 +931,14 @@ class MCPManager:
                 raise Exception(f"SSE transport requires 'url' for {name}")
 
             print(f"Connecting to MCP server '{name}' via SSE at {config.url}")
-            return SSETransport(url=config.url)
+
+            # Build headers from auth config if available
+            headers = {}
+            if config.auth:
+                query_params = {}
+                apply_authentication(config.auth, headers, query_params)
+
+            return SSETransport(url=config.url, headers=headers if headers else None)
 
         elif transport_type == 'http':
             if not StreamableHttpTransport:
@@ -939,8 +953,6 @@ class MCPManager:
             # Build headers from auth config if available
             headers = {}
             if config.auth:
-                from cuga.backend.tools_env.registry.mcp_manager.adapter import apply_authentication
-
                 query_params = {}
                 apply_authentication(config.auth, headers, query_params)
 

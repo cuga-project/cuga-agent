@@ -73,6 +73,7 @@ class DynamicAgentGraph:
         shortlisting_tool_threshold: Optional[int] = None,
         cuga_lite_max_steps: Optional[int] = None,
         llm_config: Optional[dict] = None,
+        special_instructions: Optional[str] = None,
     ):
         self.task_decomposition_agent = TaskDecompositionNode(TaskDecompositionAgent.create())
         self.plan_controller_agent = PlanControllerNode(PlanControllerAgent.create())
@@ -106,6 +107,7 @@ class DynamicAgentGraph:
         self.shortlisting_tool_threshold = shortlisting_tool_threshold
         self.cuga_lite_max_steps = cuga_lite_max_steps
         self.llm_config: Optional[dict] = llm_config
+        self.special_instructions: Optional[str] = special_instructions
         self.graph = None
 
     async def build_graph(self):
@@ -137,6 +139,8 @@ class DynamicAgentGraph:
             config["configurable"] = {}
 
         config["configurable"]["policy_system"] = self.policy_system
+        if self.special_instructions:
+            config["configurable"]["special_instructions"] = self.special_instructions
         return config
 
     async def add_nodes(self, graph):
@@ -360,9 +364,15 @@ class DynamicAgentGraph:
             supervisor_model = llm_manager.get_model(supervisor_model_config)
 
             # Create supervisor subgraph
+            # Pass special_instructions from YAML config if available
+            supervisor_special_instructions = None
+            if supervisor_config is not None:
+                supervisor_special_instructions = supervisor_config.supervisor.get("special_instructions")
+
             supervisor_subgraph = create_cuga_supervisor_graph(
                 supervisor_model=supervisor_model,
                 agents=agents,
+                special_instructions=supervisor_special_instructions,
             )
 
             # Compile and add as subgraph node

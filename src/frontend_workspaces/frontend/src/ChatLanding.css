@@ -23,6 +23,83 @@
   background: transparent;
 }
 
+/* ─── Workspace file tree (Carbon TreeView label layout) ─────────────────── */
+
+.chat-landing-workspace-tree.cds--tree,
+.chat-landing-workspace-tree.bx--tree {
+  min-width: 0;
+  max-width: 100%;
+  overflow: auto;
+}
+
+.chat-landing-workspace-tree .cds--tree-node,
+.chat-landing-workspace-tree .bx--tree-node,
+.chat-landing-workspace-tree .cds--tree-node__children,
+.chat-landing-workspace-tree .bx--tree-node__children,
+.chat-landing-workspace-tree .cds--tree-leaf-node,
+.chat-landing-workspace-tree .bx--tree-leaf-node,
+.chat-landing-workspace-tree .cds--tree-node__label,
+.chat-landing-workspace-tree .bx--tree-node__label {
+  min-width: 0;
+}
+
+.chat-landing-workspace-tree .cds--tree-node__label__details,
+.chat-landing-workspace-tree .bx--tree-node__label__details {
+  min-width: 0;
+  flex: 1 1 0;
+}
+
+.chat-landing-workspace-tree .cds--tree-node__label__text,
+.chat-landing-workspace-tree .bx--tree-node__label__text {
+  display: grid;
+  align-items: center;
+  column-gap: 0.25rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-width: 0;
+  min-inline-size: 0;
+  flex: 1 1 0;
+  overflow: hidden;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.chat-landing-workspace-tree .cds--tree-parent-node > .cds--tree-node__label,
+.chat-landing-workspace-tree .bx--tree-parent-node > .bx--tree-node__label {
+  max-inline-size: 100%;
+}
+
+.chat-landing-workspace-tree-name {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-landing-workspace-tree-filename {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chat-landing-workspace-tree-row {
+  display: contents;
+}
+
+.chat-landing-workspace-tree-download {
+  justify-self: end;
+  flex-shrink: 0;
+  opacity: 0;
+  transition: opacity 70ms cubic-bezier(0, 0, 0.38, 0.9);
+}
+
+.chat-landing-workspace-tree .cds--tree-node__label:hover .chat-landing-workspace-tree-download,
+.chat-landing-workspace-tree .bx--tree-node__label:hover .chat-landing-workspace-tree-download,
+.chat-landing-workspace-tree .chat-landing-workspace-tree-download:focus-visible {
+  opacity: 1;
+}
+
 /* ─── Conversation thread rows (hover handled inline for dynamic isActive) ── */
 
 .conversation-history-panel button:focus-visible {
