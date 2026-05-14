@@ -91,6 +91,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     resolved_runtime_model_name,
     resolve_bind_tools_fields,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools import (
+    apply_bind_tools_cap_and_merge,
+    bind_tools_max_count_from_settings,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     classify_nl_auto_continue,
     normalize_assistant_text,
@@ -162,47 +166,6 @@ def _extract_code_from_response_tool_calls(response: object) -> str | None:
     )
     logger.debug("Recovered tool call '%s' from tool_calls field", name)
     return f"```python\nresult = await {name}({args_str})\nprint(result)\n```"
-
-
-def _bind_tools_max_count_from_settings() -> int:
-    """Provider-safe cap on the number of tools passed to ``LLM.bind_tools``.
-
-    Default 128 matches the strictest common provider limit (Groq, OpenAI). Set
-    ``DYNACONF_ADVANCED_FEATURES__CUGA_LITE_BIND_TOOLS_MAX_COUNT=0`` (or negative)
-    to disable the cap entirely — useful for permissive backends like WatsonX or
-    LiteLLM routing to Anthropic.
-    """
-    try:
-        raw = getattr(settings.advanced_features, "cuga_lite_bind_tools_max_count", 128)
-    except Exception:
-        return 128
-    try:
-        return int(raw)
-    except (TypeError, ValueError):
-        return 128
-
-
-def _bind_tools_pad_to_cap_from_settings() -> bool:
-    """Whether to pad the shortlister output with the remaining tools to fill the cap.
-
-    Default ``False`` — bind only the tools the shortlister deemed relevant (often 1-4
-    on the existing system prompt). cuga_lite is a code-execution agent and exhibits
-    measurable regressions in code-emission when many tools are bound natively (the
-    model tends to switch to native ``tool_calls`` mode, which the code-mode flow
-    doesn't fully exercise).
-
-    Set ``True`` for research scenarios where the user explicitly wants ``mode=all``
-    to bind as many tools as the provider will accept.
-    """
-    try:
-        raw = getattr(settings.advanced_features, "cuga_lite_bind_tools_pad_to_cap", False)
-    except Exception:
-        return False
-    if isinstance(raw, bool):
-        return raw
-    if isinstance(raw, str):
-        return raw.strip().lower() in ("true", "1", "yes", "on")
-    return bool(raw)
 
 
 def _bind_tools_mode_from_settings() -> str:
@@ -324,188 +287,6 @@ async def _indexed_tools_for_native_bind(
     return by_name
 
 
-async def _apply_bind_tools_cap_and_merge(
-    bound: List[StructuredTool],
-    *,
-    query: Optional[str],
-    tool_provider: Optional[ToolProviderInterface],
-    llm: Optional[BaseChatModel],
-    max_count: int,
-    include_find_tools: bool,
-    tools_context_ref: Optional[Dict[str, Any]],
-    mode: str,
-) -> List[StructuredTool]:
-    """Enforce the provider-safe ``max_count`` and optionally merge ``find_tools``.
-
-    Under cap → merge ``find_tools`` (when ``include_find_tools``) and return. Over cap →
-    run the existing LLM shortlister (see :meth:`PromptUtils.shortlist_tool_names`) against
-    ``query``, take top-K (reserving 1 slot for ``find_tools`` when applicable), and return
-    the ranked subset.
-
-    Raises ``RuntimeError`` with an actionable message when the cap is exceeded but
-    shortlisting is impossible — no user query, shortlister failure, or empty ranking.
-    Failing loudly is intentional: silent truncation would corrupt research/benchmark
-    results that compare native tool-calling against text-mode.
-    """
-    # Resolve the find_tools candidate *unconditionally* — the overlay path
-    # (``_indexed_tools_for_native_bind``) can inject it into ``bound`` independently of
-    # ``include_find_tools``, so we have to detect it either way to honor an explicit
-    # opt-out. (Coderabbit on #203.)
-    find_tools_tool = None
-    if tools_context_ref:
-        candidate = tools_context_ref.get("_lc_bind_tools_find_tools")
-        if candidate is not None:
-            find_tools_tool = candidate
-
-    find_tools_name = getattr(find_tools_tool, "name", "") or ""
-    find_tools_already_in_bound = bool(find_tools_name) and any(
-        getattr(t, "name", "") == find_tools_name for t in bound
-    )
-    # If the user disabled find_tools but the overlay injected it anyway, strip it from
-    # ``bound`` so it can't consume a capped slot or sneak into the shortlister's input.
-    if not include_find_tools and find_tools_already_in_bound:
-        bound = [t for t in bound if getattr(t, "name", "") != find_tools_name]
-        find_tools_already_in_bound = False
-
-    # When ``include_find_tools=True`` we must *guarantee* find_tools survives shortlisting
-    # — the LLM ranker is free to drop any tool from the ranking pool, so the only safe move
-    # is to pull find_tools OUT of the pool, reserve a cap slot for it, and append it back
-    # at the end.
-    keep_find_tools = include_find_tools and find_tools_tool is not None
-    # Tools the shortlister actually ranks — strip find_tools out so the ranker can't evict it.
-    ranking_pool: List[StructuredTool] = (
-        [t for t in bound if getattr(t, "name", "") != find_tools_name]
-        if keep_find_tools and find_tools_already_in_bound
-        else bound
-    )
-
-    def _append_find_tools(tools: List[StructuredTool]) -> List[StructuredTool]:
-        if not keep_find_tools or find_tools_tool is None:
-            return tools
-        if find_tools_name in {getattr(t, "name", "") for t in tools}:
-            return tools
-        return [*tools, find_tools_tool]
-
-    cap_disabled = max_count <= 0
-    effective_count = len(ranking_pool) + (1 if keep_find_tools else 0)
-    if cap_disabled or effective_count <= max_count:
-        return _append_find_tools(ranking_pool)
-
-    query_text = (query or "").strip()
-    if not query_text:
-        raise RuntimeError(
-            f"cuga_lite_bind_tools_mode={mode!r} produced {len(bound)} tools but the "
-            f"provider-safe cap (cuga_lite_bind_tools_max_count) is {max_count}. "
-            f"Shortlisting requires a non-empty user query, but none was provided. Options: "
-            f"(a) ensure the first user message is non-empty so the shortlister can run, "
-            f"(b) raise the cap via DYNACONF_ADVANCED_FEATURES__CUGA_LITE_BIND_TOOLS_MAX_COUNT "
-            f"for permissive backends (WatsonX, Anthropic via LiteLLM), or "
-            f"(c) set the cap to 0 to disable (Groq/OpenAI will reject)."
-        )
-
-    reserve = 1 if keep_find_tools else 0
-    target_k = max_count - reserve
-    if target_k <= 0:
-        # ``max_count=1`` with ``include_find_tools=True``: bind only find_tools.
-        return _append_find_tools([])
-
-    all_apps: List[Any] = []
-    if tool_provider is not None:
-        try:
-            all_apps = await tool_provider.get_apps()
-        except Exception as e:
-            logger.warning("bind_tools cap: tool_provider.get_apps() failed: {}", e)
-
-    logger.info(
-        "bind_tools cap exceeded: mode={} candidates={} cap={} → LLM shortlister to top {} "
-        "(reserve={} for find_tools)",
-        mode,
-        len(ranking_pool),
-        max_count,
-        target_k,
-        reserve,
-    )
-    try:
-        ranked_names = await PromptUtils.shortlist_tool_names(
-            query=query_text,
-            all_tools=ranking_pool,
-            all_apps=all_apps,
-            llm=llm,
-            top_k=target_k,
-        )
-    except Exception as e:
-        raise RuntimeError(
-            f"cuga_lite_bind_tools shortlister failed reducing {len(ranking_pool)} tools to "
-            f"top {target_k} (cap={max_count}): {e!r}. Raise the cap or fix the shortlister LLM."
-        ) from e
-
-    if not ranked_names:
-        raise RuntimeError(
-            f"cuga_lite_bind_tools shortlister returned 0 tools for {len(ranking_pool)} "
-            f"candidates (cap={max_count}, query={query_text!r}). Cannot proceed safely; "
-            f"raise the cap or refine the query."
-        )
-
-    by_name = {getattr(t, "name", ""): t for t in ranking_pool}
-    shortlisted: List[StructuredTool] = []
-    seen_short: Set[str] = set()
-    for n in ranked_names:
-        t = by_name.get(n)
-        if t is not None and n not in seen_short:
-            seen_short.add(n)
-            shortlisted.append(t)
-            # Defense-in-depth: enforce the cap at the call site too, in case the
-            # shortlister returns more names than ``top_k`` (custom shortlister, future
-            # refactor, or a mocked path). Without this clamp the bound list could exceed
-            # ``max_count`` and re-trigger the provider 400 the cap exists to prevent.
-            # (Coderabbit on #203.)
-            if len(shortlisted) >= target_k:
-                break
-
-    # The empty-``ranked_names`` case is caught above. This catches the LLM-hallucinated-names
-    # case: ranked_names is non-empty but none match a tool in ranking_pool. Without this
-    # raise, we'd silently pad (or return just find_tools), recreating the silent degradation
-    # the cap path is meant to prevent. (Coderabbit on #203.)
-    if not shortlisted:
-        raise RuntimeError(
-            f"cuga_lite_bind_tools shortlister returned {len(ranked_names)} names but none "
-            f"matched the {len(ranking_pool)} candidates (cap={max_count}, "
-            f"query={query_text!r}, sample_ranked={ranked_names[:5]}). Shortlister LLM "
-            f"hallucinated tool names — raise the cap, fix the shortlister prompt, or "
-            f"refine the query."
-        )
-
-    # Pad-to-cap is opt-in (off by default) because cuga_lite is a code-execution agent
-    # and binding many tools natively pushes the model toward `tool_calls` mode, which the
-    # code-mode flow doesn't fully exercise (measured: 0 tool calls vs 5-7 without padding
-    # on the m3 hockey benchmark). Users explicitly chasing "true mode=all" can opt in.
-    padded_count = 0
-    if _bind_tools_pad_to_cap_from_settings() and len(shortlisted) < target_k:
-        for t in ranking_pool:
-            name = getattr(t, "name", "") or ""
-            if not name or name in seen_short:
-                continue
-            seen_short.add(name)
-            shortlisted.append(t)
-            padded_count += 1
-            if len(shortlisted) >= target_k:
-                break
-
-    shortlisted = _append_find_tools(shortlisted)
-    logger.info(
-        "bind_tools cap: shortlisted to {} tools (mode={}, cap={}, ranked={}, padded={}, "
-        "include_find_tools={}, top_ranked={})",
-        len(shortlisted),
-        mode,
-        max_count,
-        len(ranked_names),
-        padded_count,
-        find_tools_tool is not None,
-        ranked_names[:5],
-    )
-    return shortlisted
-
-
 async def resolve_model_with_bind_tools(
     active_model: BaseChatModel,
     *,
@@ -527,6 +308,19 @@ async def resolve_model_with_bind_tools(
       ``bind_tools``. Default 128 (matches Groq/OpenAI). Set 0 to disable. When the
       candidate list exceeds the cap, the LLM shortlister picks the top-K most relevant
       tools for ``query`` (typically the first user message).
+    - ``cuga_lite_bind_tools_pad_to_cap``: opt-in padding (default ``False``). When the
+      shortlister returns fewer than the cap allows, pad with remaining candidates to fill
+      the cap. Off by default because padding pushes the model toward native ``tool_calls``
+      mode, which the code-mode flow doesn't fully exercise (measured: 0 tool calls vs 5-7
+      without padding on the m3 hockey benchmark).
+
+    Operational cost: when the cap is exceeded, applying it incurs **one extra LLM
+    round-trip** (the shortlister) per ``call_model`` invocation. Permissive backends
+    (WatsonX, Anthropic via LiteLLM) can avoid this round-trip entirely by setting
+    ``cuga_lite_bind_tools_max_count=0``. Silent truncation is **not** an option — when
+    shortlisting cannot run safely (no user query, shortlister failure, or hallucinated
+    names that don't match any candidate), a ``RuntimeError`` is raised so research/
+    benchmark runs comparing native tool-calling vs text-mode don't silently degrade.
 
     Profile ``gpt-oss-20b``: see ``model_runtime_profile.GPT_OSS_20B_RUNTIME_DEFAULTS``.
     """
@@ -545,7 +339,21 @@ async def resolve_model_with_bind_tools(
         settings_tool_names_fn=_bind_tools_tool_names_from_settings,
         settings_include_fn=lambda: _bind_include_find_tools_from_config({}),
     )
-    max_count = _bind_tools_max_count_from_settings()
+    max_count = bind_tools_max_count_from_settings()
+
+    async def _cap_merge_bound(bound: List[StructuredTool]) -> List[StructuredTool]:
+        # Closes over query, tool_provider, llm, max_count, include_find_tools,
+        # tools_context_ref, mode — the four mode branches all pass the same kwargs.
+        return await apply_bind_tools_cap_and_merge(
+            bound,
+            query=query,
+            tool_provider=tool_provider,
+            llm=active_model,
+            max_count=max_count,
+            include_find_tools=include_find_tools,
+            tools_context_ref=tools_context_ref,
+            mode=mode,
+        )
 
     if mode in ("", "none", "false", "0", "off"):
         if include_find_tools:
@@ -570,17 +378,7 @@ async def resolve_model_with_bind_tools(
                 logger.warning("cuga_lite_bind_tools_mode=all but tool_provider is missing")
                 return active_model
             by_name = await _indexed_tools_for_native_bind(tool_provider, tools_context_ref)
-            bound = list(by_name.values())
-            bound = await _apply_bind_tools_cap_and_merge(
-                bound,
-                query=query,
-                tool_provider=tool_provider,
-                llm=active_model,
-                max_count=max_count,
-                include_find_tools=include_find_tools,
-                tools_context_ref=tools_context_ref,
-                mode=mode,
-            )
+            bound = await _cap_merge_bound(list(by_name.values()))
             if not bound:
                 return active_model
             return active_model.bind_tools(bound)
@@ -634,16 +432,7 @@ async def resolve_model_with_bind_tools(
                         missing,
                     )
 
-            bound = await _apply_bind_tools_cap_and_merge(
-                bound,
-                query=query,
-                tool_provider=tool_provider,
-                llm=active_model,
-                max_count=max_count,
-                include_find_tools=include_find_tools,
-                tools_context_ref=tools_context_ref,
-                mode=mode,
-            )
+            bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
             return active_model.bind_tools(bound)
@@ -674,16 +463,7 @@ async def resolve_model_with_bind_tools(
                             bound.append(t)
                 except Exception as e:
                     logger.warning("bind_tools apps: get_tools(%s) failed: %s", app_name, e)
-            bound = await _apply_bind_tools_cap_and_merge(
-                bound,
-                query=query,
-                tool_provider=tool_provider,
-                llm=active_model,
-                max_count=max_count,
-                include_find_tools=include_find_tools,
-                tools_context_ref=tools_context_ref,
-                mode=mode,
-            )
+            bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
             return active_model.bind_tools(bound)
@@ -721,16 +501,7 @@ async def resolve_model_with_bind_tools(
                     "cuga_lite_bind_tools_tool_names not found among provider tools (skipped): %s",
                     missing,
                 )
-            bound = await _apply_bind_tools_cap_and_merge(
-                bound,
-                query=query,
-                tool_provider=tool_provider,
-                llm=active_model,
-                max_count=max_count,
-                include_find_tools=include_find_tools,
-                tools_context_ref=tools_context_ref,
-                mode=mode,
-            )
+            bound = await _cap_merge_bound(bound)
             if not bound:
                 return active_model
             return active_model.bind_tools(bound)
@@ -740,7 +511,7 @@ async def resolve_model_with_bind_tools(
             mode,
         )
     except RuntimeError:
-        # Actionable cap/shortlist errors from _apply_bind_tools_cap_and_merge are intentional —
+        # Actionable cap/shortlist errors from apply_bind_tools_cap_and_merge are intentional —
         # surfacing them is required so research/benchmark runs don't silently degrade.
         raise
     except Exception as e:

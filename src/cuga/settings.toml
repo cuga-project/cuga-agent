@@ -54,6 +54,20 @@ cuga_lite_bind_tools_mode = "none"
 cuga_lite_bind_tools_apps = []  # mode=apps or apps_and_tools
 cuga_lite_bind_tools_tool_names = []  # mode=tools or apps_and_tools (StructuredTool.name)
 cuga_lite_bind_tools_include_find_tools = false  # Also bind find_tools alongside all/apps/tools/apps_and_tools
+# Provider-safe cap on the number of tools sent to LLM.bind_tools. Default 128 matches the strictest common
+# provider limit (Groq, OpenAI). When the candidate list exceeds the cap, the LLM shortlister picks the top-K
+# most relevant tools for the first user message — costs one extra LLM round-trip per call_model invocation.
+# When shortlisting can't run safely (no user query, shortlister failure, hallucinated names) a RuntimeError
+# is raised rather than silently truncating — silent truncation would corrupt benchmark/research results.
+# Set 0 (or negative) to disable the cap entirely on permissive backends (WatsonX, Anthropic via LiteLLM).
+# Env override: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_BIND_TOOLS_MAX_COUNT.
+cuga_lite_bind_tools_max_count = 128
+# Whether to pad the shortlister output with additional candidates to fill the cap. Default false because
+# cuga_lite is a code-execution agent and padding pushes the model toward native tool_calls mode, which the
+# code-mode flow doesn't fully exercise (measured: 0 tool calls vs 5-7 without padding on m3 hockey).
+# Set true for research scenarios that explicitly want mode=all to bind as many tools as the provider accepts.
+# Env override: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_BIND_TOOLS_PAD_TO_CAP.
+cuga_lite_bind_tools_pad_to_cap = false
 cuga_lite_nl_auto_continue = false  # When model returns NL with no code, LLM-classify interim vs final; if interim, simulate user "continue" and re-call model
 path_segment_index = 1  # Which path segment to use for operation naming (1 = first, 2 = second, 3 = third)
 force_autonomous_mode = false
