@@ -140,7 +140,43 @@ class CodeExecutor:
 
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
-        wrapped_code = CodeWrapper.wrap_code(code, fake_datetime=fake_datetime)
+
+        # For local/native sandbox modes, inject the workspace root as the working directory
+        # so Python code runs in the same directory context as run_command (which also cds there)
+        workspace_root_for_wrap = None
+        if mode == 'local':
+            try:
+                _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+
+                if _sandbox_mode == 'native':
+                    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.native.native_sandbox_executor import (
+                        native_thread_workspace_root,
+                    )
+
+                    workspace_root_for_wrap = str(native_thread_workspace_root(thread_id).resolve())
+                else:  # local or other modes
+                    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
+                        local_thread_workspace_root,
+                    )
+
+                    workspace_root_for_wrap = str(local_thread_workspace_root(thread_id).resolve())
+            except Exception:
+                pass  # If workspace root cannot be determined, continue without chdir
+
+        wrapped_code = CodeWrapper.wrap_code(
+            code, fake_datetime=fake_datetime, workspace_root=workspace_root_for_wrap
+        )
+
+        # Inject modules for internal use (won't trigger security violation)
+        # Only inject os if we're actually using chdir for workspace
+        if workspace_root_for_wrap:
+            import os
+
+            _locals['_internal_os'] = os
+        # Always inject re as it's useful for tools and not dangerous
+        import re
+
+        _locals['_internal_re'] = re
 
         SecurityValidator.validate_wrapped_code(wrapped_code)
 
@@ -175,6 +211,9 @@ class CodeExecutor:
         new_vars = VariableUtils.filter_new_variables(
             _locals, original_keys, always_include_keys=always_include_keys
         )
+
+        new_vars.pop('_internal_os', None)
+        new_vars.pop('_internal_re', None)
 
         if _skills_enabled():
             new_vars = VariableUtils.strip_todo_confirmation_only_vars(new_vars)

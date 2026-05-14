@@ -2218,6 +2218,11 @@ def create_cuga_lite_graph(
                             settings.agent.planner.model
                         )
                         reflection_agent = reflection_task(llm=active_model)
+                        # Calculate sandbox_workspace using same logic as prepare_tools_and_apps
+                        _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+                        reflection_sandbox_workspace = (
+                            "." if _sandbox_mode in ("native", "local") else "/workspace"
+                        )
                         # Format chat messages as history string
                         agent_history_parts = []
                         for msg in state.chat_messages:
@@ -2245,6 +2250,7 @@ def create_cuga_lite_graph(
                                 "skills_enabled": state.reflection_skills_enabled,
                                 "skills_prompt_section": state.reflection_skills_prompt_section,
                                 "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
+                                "sandbox_workspace": reflection_sandbox_workspace,
                             }
                         )
                         reflection_output = reflection_result.content

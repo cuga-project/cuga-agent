@@ -48,6 +48,21 @@ The task is executed against **connected applications** below. Tools and API cal
 {% endfor %}
 
 {% endif %}
+
+### Execution Environment Context
+
+**Sandbox Workspace Path**: The executor is running in a sandbox environment where the working directory root is `{{ sandbox_workspace }}`.
+
+{% if sandbox_workspace == "." -%}
+When recommending file operations, use **relative paths** anchored at the local sandbox root — for example `./output/`, `./data/`, `./results.json`.
+{%- elif sandbox_workspace == "/workspace" -%}
+When recommending file operations, prefix paths with **`/workspace/`** — for example `/workspace/output/`, `/workspace/data/`, `/workspace/results.json`.
+{%- else -%}
+When recommending file operations, prefix paths with **`{{ sandbox_workspace }}/`** — for example `{{ sandbox_workspace }}/output/`, `{{ sandbox_workspace }}/data/`, `{{ sandbox_workspace }}/results.json`.
+{%- endif %}
+
+If a step fails with a "non-existent directory" error, check that the recommended path is correctly anchored at `{{ sandbox_workspace }}` and that any intermediate directories were created first.
+
 ---
 
 ### Strategic recommendation style

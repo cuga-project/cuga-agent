@@ -148,6 +148,9 @@ export default {
     open: true,
     hot: true,
     historyApiFallback: true,
+    setupMiddlewares: (middlewares, devServer) => {
+      return middlewares;
+    },
     proxy: [
       {
         context: ['/api', '/auth', '/stream', '/stop', '/reset', '/health', '/functions'],

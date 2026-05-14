@@ -31,6 +31,7 @@ import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowled
 // Import thread ID management from CarbonChat
 import { getOrCreateThreadId, generateUUID } from './CarbonChat';
 
+
 export async function stopCugaAgent(threadId: string) {
   try {
     console.log(`Calling /stop for thread: ${threadId}`);
@@ -149,28 +150,34 @@ export async function customSendMessage(
   });
 
   const baseUrl = api.getApiBaseUrl();
+
   try {
     console.log(`Connecting to CUGA backend at: ${baseUrl}/stream`);
     console.log(`Thread ID: ${threadId}`);
     console.log(`User message: ${userMessage}`);
     console.log(`Use Draft: ${useDraft}`);
-    
+
+    const collectedSteps: ReasoningStep[] = [];
+    let accumulatedText = "";
+    let currentStepTitle = "";
+    let currentStepContent = "";
+
     // Build headers
     const headers: Record<string, string> = {
       "Content-Type": "application/json",
       "X-Thread-ID": threadId,
     };
-    
+
     // Add draft header if needed
     if (useDraft) {
       headers["X-Use-Draft"] = "true";
     }
-    
+
     // Add disable history header if needed
     if (disableHistory) {
       headers["X-Disable-History"] = "true";
     }
-    
+
     const response = await api.postStream(
       actionResponse || {
         query: userMessage,
@@ -187,17 +194,12 @@ export async function customSendMessage(
     );
 
     console.log(`Response status: ${response.status}`);
-    
+
     if (!response.ok) {
       const errorText = await response.text();
       console.error(`HTTP error response:`, errorText);
       throw new Error(`HTTP error! status: ${response.status}, message: ${errorText}`);
     }
-
-    const collectedSteps: ReasoningStep[] = [];
-    let accumulatedText = "";
-    let currentStepTitle = "";
-    let currentStepContent = "";
 
     // Process the stream
     for await (const event of parseCugaStream(response)) {
@@ -219,12 +221,12 @@ export async function customSendMessage(
           currentStepContent = codeAgentResult.content;
 
           console.log(`Code Agent step, content: ${currentStepContent}`);
-          
+
           if (currentStepContent) {
             instance.messaging.addMessageChunk({
               partial_item: {
                 response_type: MessageResponseTypes.TEXT,
-                text: "",
+                text: " ",
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
@@ -249,14 +251,14 @@ export async function customSendMessage(
           );
           currentStepTitle = reasoningResult.title;
           currentStepContent = reasoningResult.content;
-          
+
           console.log(`Reasoning step: ${currentStepTitle}, content: ${currentStepContent}`);
-          
+
           if (currentStepContent) {
             instance.messaging.addMessageChunk({
               partial_item: {
                 response_type: MessageResponseTypes.TEXT,
-                text: "",
+                text: " ",
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
@@ -273,11 +275,11 @@ export async function customSendMessage(
           collectedSteps.push(
             createReasoningStep(event.name, `\`\`\`json\n${toolData}\n\`\`\``)
           );
-          
+
           instance.messaging.addMessageChunk({
             partial_item: {
               response_type: MessageResponseTypes.TEXT,
-              text: "",
+              text: " ",
               streaming_metadata: { id: "text-stream", cancellable: true },
             },
             partial_response: {
@@ -534,11 +536,11 @@ export async function customSendMessage(
             collectedSteps.push(
               createReasoningStep(event.name, stepContent)
             );
-            
+
             instance.messaging.addMessageChunk({
               partial_item: {
                 response_type: MessageResponseTypes.TEXT,
-                text: "",
+                text: " ",
                 streaming_metadata: { id: "text-stream", cancellable: true },
               },
               partial_response: {
