@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence
+from typing import Any, Iterable, List, Optional, Sequence
 
 from loguru import logger
 
@@ -128,8 +128,16 @@ def _normalize_arg_names(value: Any) -> tuple[str, ...]:
     return tuple(s for s in (str(item).strip() for item in names) if s)
 
 
-def _normalize_allowed_tools(value: Any) -> tuple[str, ...]:
-    """Parse the ``allowed-tools`` frontmatter key (string or YAML list)."""
+def _normalize_allowed_tools(value: Any) -> Optional[tuple[str, ...]]:
+    """Parse the ``allowed-tools`` frontmatter key (string or YAML list).
+
+    Returns ``None`` when the key is absent in frontmatter (no restriction).
+    Returns an empty tuple ``()`` when the key is present but empty
+    (``allowed-tools: []``) — "allow nothing, every tool requires approval".
+    Slice #21 enforcement keys off this distinction.
+    """
+    if value is None:
+        return None
     return tuple(s for s in (str(item).strip() for item in _as_list(value)) if s)
 
 

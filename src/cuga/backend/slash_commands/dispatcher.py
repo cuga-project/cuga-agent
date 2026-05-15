@@ -204,12 +204,19 @@ async def _dispatch_parsed(
             resolved_name=parsed.name,
             wrapped_body=wrapped_body,
         )
+        # Slice #21: propagate the skill's ``allowed-tools`` whitelist so the
+        # caller can stash it on the graph's RunnableConfig for the duration of
+        # this turn. ``None`` (key absent) means no restriction; ``()`` (key
+        # present but empty) means allow nothing.
+        entry = skill_registry.entry(parsed.name)
+        allowed_tools = entry.allowed_tools if entry is not None else None
         return DispatchResult(
             kind="skill",
             injected_messages=injected,
             resolved_name=parsed.name,
             raw_input=parsed.raw_input,
             raw_args=parsed.raw_args,
+            allowed_tools=allowed_tools,
         )
 
     return await _resolve_unknown(parsed, slash_registry, command_resolver_factory)

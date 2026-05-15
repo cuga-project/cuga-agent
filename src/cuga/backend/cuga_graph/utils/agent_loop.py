@@ -281,6 +281,7 @@ class AgentLoop:
         current_llm: Optional[Any] = None,
         knowledge_context: Optional[dict[str, Any]] = None,
         special_instructions: Optional[str] = None,
+        skill_allowed_tools: Optional[tuple[str, ...]] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
@@ -296,6 +297,10 @@ class AgentLoop:
         self.current_llm = current_llm
         self.knowledge_context = knowledge_context
         self.special_instructions = special_instructions
+        # Slice #21: skill's allowed-tools whitelist for this turn only. ``None``
+        # means no restriction. Threaded into RunnableConfig.configurable so
+        # the cuga_lite tool-approval gate can check generated code against it.
+        self.skill_allowed_tools = skill_allowed_tools
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -511,6 +516,8 @@ class AgentLoop:
                 config["configurable"]["agent_knowledge"] = self.knowledge_context["agent_knowledge"]
             if "session_knowledge" in self.knowledge_context:
                 config["configurable"]["session_knowledge"] = self.knowledge_context["session_knowledge"]
+        if self.skill_allowed_tools is not None:
+            config["configurable"]["skill_allowed_tools"] = self.skill_allowed_tools
 
         return self.graph.astream(
             state if state else Command(resume=resume.model_dump()) if not both_none else None,

@@ -1506,6 +1506,13 @@ async def event_stream(
                 "filenames": _session_kb.filenames,
             }
 
+    # Slice #21: when this turn is a slash-invoked skill, propagate its
+    # ``allowed-tools`` whitelist (if declared) so the cuga_lite tool-approval
+    # gate enforces it. ``None`` = no restriction; ``()`` = allow nothing.
+    _skill_allowed_tools = (
+        slash_result.allowed_tools if slash_result is not None and slash_result.kind == "skill" else None
+    )
+
     agent_loop_obj = AgentLoop(
         graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
@@ -1519,6 +1526,7 @@ async def event_stream(
         current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
         knowledge_context=_knowledge_ctx or None,
         special_instructions=getattr(run_agent, "special_instructions", None),
+        skill_allowed_tools=_skill_allowed_tools,
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 

@@ -159,8 +159,21 @@ class ToolApprovalHandler:
         """
         Check if code requires approval and create interrupt if needed.
 
-        This method checks ToolApproval policies directly against the generated code,
-        independent of the initial policy matching phase.
+        Two independent gates run here:
+
+          1. Slice #21 ``allowed-tools`` whitelist — when the current turn was
+             dispatched by a slash command for a skill that declared
+             ``allowed-tools`` in its frontmatter, the whitelist is threaded in
+             via ``config['configurable']['skill_allowed_tools']``. Any bare
+             function call in the generated code that falls outside it (and
+             isn't a Python builtin) is routed through the same HITL approval
+             flow used by ToolApproval policies, so the user can still
+             override on a case-by-case basis.
+          2. ToolApproval policies — checked against the generated code,
+             independent of the initial policy matching phase.
+
+        The whitelist runs first. If both fire on the same code, the skill
+        whitelist takes precedence (it's the tighter, skill-scoped contract).
 
         Args:
             state: Current CugaLiteState
@@ -172,6 +185,20 @@ class ToolApprovalHandler:
             Command to interrupt for approval, or None if no approval needed
         """
         from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
+
+        # Slice #21: skill ``allowed-tools`` enforcement runs even when no
+        # ToolApproval policy is configured and even when policy gating is off.
+        whitelist_interrupt = ToolApprovalHandler._check_skill_allowed_tools(state, code, content, config)
+        if whitelist_interrupt is not None:
+            return whitelist_interrupt
+
+        # Policy-based ToolApproval check is gated on settings.policy.enabled so
+        # users who turn off the policy system still get the slice #21 whitelist
+        # but not the broader policy check.
+        from cuga.config import settings
+
+        if not settings.policy.enabled:
+            return None
 
         try:
             logger.debug(f"Checking if code requires tool approval (code length: {len(code)} chars)")
@@ -220,6 +247,72 @@ class ToolApprovalHandler:
         except Exception as e:
             logger.error(f"Error checking tool approval policies: {e}", exc_info=True)
             return None
+
+    @staticmethod
+    def _check_skill_allowed_tools(
+        state: "CugaLiteState",
+        code: str,
+        content: str,
+        config: Optional[dict],
+    ) -> Optional[Command]:
+        """Slice #21: enforce a slash-skill's ``allowed-tools`` whitelist.
+
+        Reads the whitelist from ``config['configurable']['skill_allowed_tools']``
+        (set by the server / SDK caller from ``DispatchResult.allowed_tools``),
+        scans the generated code for bare function calls outside it, and
+        routes through the existing HITL approval flow when any are found.
+
+        Returns ``None`` when there is no whitelist (no slash skill, or the
+        skill didn't declare ``allowed-tools``), or when the code stays within
+        the whitelist.
+        """
+        configurable: dict = config.get("configurable", {}) if isinstance(config, dict) else {}
+        skill_allowed_tools = configurable.get("skill_allowed_tools")
+        if skill_allowed_tools is None:
+            return None
+
+        try:
+            from cuga.backend.slash_commands.allowed_tools_enforcement import (
+                find_disallowed_calls,
+            )
+
+            disallowed = find_disallowed_calls(code, skill_allowed_tools)
+        except Exception:
+            # Whitelist enforcement is best-effort: a bug here must not break
+            # dispatch. The user still has the per-tool approval flow below.
+            logger.exception("skill allowed-tools enforcement failed; skipping whitelist check")
+            return None
+
+        if not disallowed:
+            return None
+
+        logger.warning(
+            "Skill allowed-tools whitelist tripped: disallowed={} allowed={}",
+            disallowed,
+            list(skill_allowed_tools),
+        )
+
+        policy_name = "Skill allowed-tools whitelist"
+        approval_msg = (
+            "The current skill declared an `allowed-tools` whitelist. The model "
+            "wants to call tools that aren't on it — approve to override the "
+            "whitelist for this step, or deny to halt."
+        )
+
+        approval_metadata = {
+            **(state.cuga_lite_metadata or {}),
+            "policy_type": "skill_allowed_tools",
+            "policy_id": "slash-skill-allowed-tools",
+            "policy_name": policy_name,
+            "required_tools": disallowed,
+            "required_apps": [],
+            "approval_message": approval_msg,
+            "show_code_preview": True,
+        }
+        state.cuga_lite_metadata = approval_metadata
+
+        preview_lines = code.split("\n")
+        return ToolApprovalHandler._create_approval_interrupt(state, code, content, preview_lines)
 
     @staticmethod
     def _create_approval_interrupt(

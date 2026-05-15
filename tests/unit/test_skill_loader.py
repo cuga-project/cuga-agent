@@ -112,6 +112,25 @@ def test_loader_parses_arguments_and_allowed_tools_frontmatter(tmp_path: Path, m
     assert by_name["review"].allowed_tools == ("read_file", "run_command")
 
 
+def test_loader_distinguishes_missing_from_empty_allowed_tools(tmp_path: Path, monkeypatch) -> None:
+    """Slice #21 enforcement relies on the loader returning `None` for an
+    absent ``allowed-tools`` key (no restriction) vs ``()`` for an explicit
+    empty list (allow nothing)."""
+    monkeypatch.chdir(tmp_path)
+    _write_skill(tmp_path / ".agents" / "skills", "no_key", "No allowed-tools key", extra_frontmatter="")
+    _write_skill(
+        tmp_path / ".agents" / "skills",
+        "empty_list",
+        "Explicit empty allowed-tools",
+        extra_frontmatter="allowed-tools: []",
+    )
+
+    by_name = {e.name: e for e in discover_skills(None)}
+
+    assert by_name["no_key"].allowed_tools is None
+    assert by_name["empty_list"].allowed_tools == ()
+
+
 def test_loader_rejects_skill_with_numeric_argument_name(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     _write_skill(

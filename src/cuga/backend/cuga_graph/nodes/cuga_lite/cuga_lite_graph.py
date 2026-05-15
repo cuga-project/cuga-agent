@@ -2055,14 +2055,15 @@ def create_cuga_lite_graph(
                     f"\n{'=' * 50} ASSISTANT CODE {'=' * 50}\n{code}\n{'=' * 50} END ASSISTANT CODE {'=' * 50}"
                 )
 
-                # Check if code requires approval and create interrupt if needed
-                # Only check if policies are enabled
-                if settings.policy.enabled:
-                    approval_command = await ToolApprovalHandler.check_and_create_approval_interrupt(
-                        state, code, content, config
-                    )
-                    if approval_command:
-                        return approval_command
+                # Check if code requires approval and create interrupt if
+                # needed. The policy-based gate is internally guarded by
+                # ``settings.policy.enabled``; the slice #21 ``allowed-tools``
+                # whitelist always runs (when a slash skill set one).
+                approval_command = await ToolApprovalHandler.check_and_create_approval_interrupt(
+                    state, code, content, config
+                )
+                if approval_command:
+                    return approval_command
 
                 # Build updated messages from modified_chat_messages + new AI response
                 updated_messages = modified_chat_messages + [AIMessage(content=content)]

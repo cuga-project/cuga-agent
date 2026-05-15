@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -14,7 +14,11 @@ class SkillEntry:
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
     arguments: tuple[str, ...] = ()  # named args declared in the `arguments` frontmatter key
-    allowed_tools: tuple[str, ...] = ()  # tool whitelist declared in `allowed-tools` (enforcement: slice #21)
+    # `allowed-tools` whitelist semantics (slice #21 enforcement):
+    #   None  — key absent in frontmatter; no restriction (status quo)
+    #   ()    — key present but empty (`allowed-tools: []`); allow nothing, everything triggers approval
+    #   (..)  — explicit whitelist
+    allowed_tools: Optional[tuple[str, ...]] = None
 
 
 class SkillRegistry:
@@ -26,6 +30,9 @@ class SkillRegistry:
 
     def entries(self) -> List[SkillEntry]:
         return list(self._by_name.values())
+
+    def entry(self, name: str) -> Optional[SkillEntry]:
+        return self._by_name.get(name.strip())
 
     def load_skill(self, name: str, args: str = "") -> str:
         entry = self._by_name.get(name.strip())

@@ -137,3 +137,44 @@ def test_dispatcher_skill_without_args_omits_trailing_human_message():
     result = asyncio.run(parse_and_dispatch("/deck", slash_registry=reg, skill_registry=skills))
     assert result.kind == "skill"
     assert len(result.injected_messages) == 3
+
+
+def test_dispatcher_propagates_allowed_tools_from_skill_entry():
+    """Slice #21: a skill's frontmatter ``allowed-tools`` list reaches
+    ``DispatchResult.allowed_tools`` so the caller can thread it into the
+    graph's RunnableConfig."""
+    skills = SkillRegistry(
+        [
+            SkillEntry(
+                name="locked",
+                description="d",
+                body="BODY",
+                source="/p",
+                allowed_tools=("read_file", "list_files"),
+            )
+        ]
+    )
+    reg = build_slash_registry(skill_registry=skills)
+    result = asyncio.run(parse_and_dispatch("/locked", slash_registry=reg, skill_registry=skills))
+    assert result.kind == "skill"
+    assert result.allowed_tools == ("read_file", "list_files")
+
+
+def test_dispatcher_allowed_tools_is_none_when_skill_omits_key():
+    skills = SkillRegistry([SkillEntry(name="open", description="d", body="BODY", source="/p")])
+    reg = build_slash_registry(skill_registry=skills)
+    result = asyncio.run(parse_and_dispatch("/open", slash_registry=reg, skill_registry=skills))
+    assert result.kind == "skill"
+    assert result.allowed_tools is None
+
+
+def test_dispatcher_allowed_tools_empty_tuple_when_skill_declares_empty_list():
+    """`allowed-tools: []` in frontmatter means allow nothing — every tool
+    call triggers approval. The dispatcher must preserve the empty tuple."""
+    skills = SkillRegistry(
+        [SkillEntry(name="closed", description="d", body="BODY", source="/p", allowed_tools=())]
+    )
+    reg = build_slash_registry(skill_registry=skills)
+    result = asyncio.run(parse_and_dispatch("/closed", slash_registry=reg, skill_registry=skills))
+    assert result.kind == "skill"
+    assert result.allowed_tools == ()

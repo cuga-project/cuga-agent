@@ -1956,6 +1956,16 @@ class CugaAgent:
         if self._policy_system:
             run_config["configurable"]["policy_system"] = self._policy_system
 
+        # Slice #21: when this turn invokes a slash-skill with a declared
+        # ``allowed-tools`` list, propagate the whitelist so the tool-approval
+        # gate enforces it for the duration of this turn only.
+        if (
+            slash_result is not None
+            and slash_result.kind == "skill"
+            and slash_result.allowed_tools is not None
+        ):
+            run_config["configurable"]["skill_allowed_tools"] = slash_result.allowed_tools
+
         # Add callbacks to config (both top-level and configurable for nodes)
         if self._callbacks:
             run_config["callbacks"] = self._callbacks
