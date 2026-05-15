@@ -518,46 +518,20 @@
   line-height: 1.4;
 }
 
+/* CUGA does not currently have an app-wide dark mode. The slash-dropdown
+   dark-mode rules previously living here were no-op'd to avoid the visual
+   inconsistency of dark chips inside an otherwise light UI. Restore them
+   (selectors: .cuga-slash-dropdown, .cuga-slash-dropdown__status,
+   .cuga-slash-option*) if/when a dark mode is introduced. */
 @media (prefers-color-scheme: dark) {
-  .cuga-slash-dropdown {
-    background: #1f2328;
-    border-color: #30363d;
-    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.45);
-  }
-  .cuga-slash-dropdown__status {
-    color: #8b949e;
-  }
-  .cuga-slash-dropdown__status--error {
-    color: #ff7b72;
-  }
-  .cuga-slash-option--active,
-  .cuga-slash-option:hover {
-    background: #21262d;
-    border-left-color: #58a6ff;
-  }
-  .cuga-slash-option__name {
-    color: #e6edf3;
-  }
-  .cuga-slash-option__hint {
-    color: #8b949e;
-  }
-  .cuga-slash-option__description {
-    color: #8b949e;
-  }
-  .cuga-slash-option__kind--builtin {
-    background: rgba(56, 139, 253, 0.15);
-    color: #58a6ff;
-  }
-  .cuga-slash-option__kind--skill {
-    background: rgba(187, 128, 9, 0.2);
-    color: #d29922;
-  }
 }
 
 /* ---------------------------------------------------------------------------
  * Slash-command chips rendered inline in the chat transcript.
- *   - .cuga-slash-skill-chip     — slice #22, collapsed "⚡ /skill" chip
- *   - .cuga-slash-suggestions    — slice #23, clickable suggestion chips
+ *   - .cuga-slash-skill-chip     — collapsed "⚡ /skill" chip for a resolved
+ *                                  slash skill invocation
+ *   - .cuga-slash-suggestions    — clickable suggestion chips for an unknown
+ *                                  slash command
  * ------------------------------------------------------------------------- */
 
 .cuga-slash-skill-chip {
@@ -700,56 +674,10 @@
   color: #9a6700;
 }
 
+/* CUGA does not currently have an app-wide dark mode. The slash-chip
+   dark-mode rules previously living here were no-op'd to avoid the visual
+   inconsistency of dark chips inside an otherwise light UI. Restore them
+   (selectors: .cuga-slash-skill-chip*, .cuga-slash-suggestions*,
+   .cuga-slash-suggestion*) if/when a dark mode is introduced. */
 @media (prefers-color-scheme: dark) {
-  .cuga-slash-skill-chip__summary {
-    background: #21262d;
-    border-color: #30363d;
-    color: #e6edf3;
-  }
-  .cuga-slash-skill-chip__summary:hover {
-    background: #2d333b;
-    border-color: #444c56;
-  }
-  .cuga-slash-skill-chip__bolt {
-    color: #d29922;
-  }
-  .cuga-slash-skill-chip__caret {
-    color: #8b949e;
-  }
-  .cuga-slash-skill-chip__details {
-    background: #1f2328;
-    border-color: #30363d;
-  }
-  .cuga-slash-skill-chip__details dt {
-    color: #8b949e;
-  }
-  .cuga-slash-skill-chip__details code {
-    color: #e6edf3;
-  }
-  .cuga-slash-suggestions__lead {
-    color: #8b949e;
-  }
-  .cuga-slash-suggestions__lead code {
-    color: #ff7b72;
-  }
-  .cuga-slash-suggestion {
-    background: #1f2328;
-    border-color: #30363d;
-    color: #e6edf3;
-  }
-  .cuga-slash-suggestion:hover {
-    background: #21262d;
-    border-color: #58a6ff;
-  }
-  .cuga-slash-suggestion__description {
-    color: #8b949e;
-  }
-  .cuga-slash-suggestion__kind--builtin {
-    background: rgba(56, 139, 253, 0.15);
-    color: #58a6ff;
-  }
-  .cuga-slash-suggestion__kind--skill {
-    background: rgba(187, 128, 9, 0.2);
-    color: #d29922;
-  }
 }
