@@ -1,35 +1,33 @@
-"""Regression guard for the slice #17 tool_calls / ToolMessage round-trip bug.
+"""Contract tests for ``ChatHistoryMessage`` — the message type used in
+CUGA's persisted chat-history fields (``AgentState.chat_messages`` and
+friends, ``CugaLiteState.chat_messages``).
 
-The setup that broke:
-
-  1. Slice #17's ``synthesize_skill_invocation`` puts an AIMessage with
-     ``tool_calls=[load_skill(...)]`` and a paired ToolMessage with
-     ``tool_call_id`` into ``AgentState.chat_messages``.
-  2. ``AgentState.chat_messages`` was annotated ``Optional[List[BaseMessage]]``.
-  3. Pydantic v2 serialized each item by the *declared* type (BaseMessage),
-     which doesn't expose ``tool_calls`` or ``tool_call_id`` — those fields
-     silently disappeared from ``model_dump()`` output (and therefore from
-     LangGraph's checkpoint blob).
-  4. On rehydration, Pydantic created plain ``BaseMessage`` instances rather
-     than ``AIMessage``/``ToolMessage`` subclasses, so the cuga_lite reader's
-     ``isinstance`` checks failed and silently dropped the ToolMessage.
-  5. Net effect: a slash-dispatched skill's load_skill stanza vanished on
-     the next turn — the model would say "I have not called any tools yet"
-     when asked about the prior skill.
-
-The fix combines ``SerializeAsAny[BaseMessage]`` on the field annotation
-(forces runtime-subclass serialization) with a ``mode="before"`` field
-validator that rebuilds the proper subclasses on rehydration.
+Verifies that the LangGraph checkpoint cycle (Pydantic dump → dict →
+rehydrate) preserves ``AIMessage.tool_calls`` and ``ToolMessage.tool_call_id``,
+that dict inputs route to the right subclass via the ``type`` discriminator,
+and that streaming ``*Chunk`` variants are rejected at construction.
 """
 
 from __future__ import annotations
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
+import pytest
+from pydantic import ValidationError
 
-from cuga.backend.cuga_graph.state.agent_state import AgentState, rehydrate_messages
+from langchain_core.messages import (
+    AIMessage,
+    AIMessageChunk,
+    HumanMessage,
+    HumanMessageChunk,
+    ToolMessage,
+    ToolMessageChunk,
+)
+
+from cuga.backend.cuga_graph.state.agent_state import AgentState
 
 
-def _make_slash_messages():
+def _make_tool_call_messages():
+    """A realistic Human → AI(tool_calls) → Tool sequence, the shape that
+    requires subclass fields to survive the checkpoint round-trip."""
     return [
         HumanMessage(content="/kwargs-check"),
         AIMessage(
@@ -48,11 +46,8 @@ def _make_slash_messages():
     ]
 
 
-# --- model_dump (write-side) preserves subclass-specific fields --------------
-
-
 def test_model_dump_preserves_ai_tool_calls():
-    state = AgentState(input="x", url="", chat_messages=_make_slash_messages())
+    state = AgentState(input="x", url="", chat_messages=_make_tool_call_messages())
     dumped = state.model_dump()["chat_messages"]
     assert dumped[1]["tool_calls"] == [
         {"id": "abc123", "name": "load_skill", "args": {"name": "kwargs-check"}, "type": "tool_call"}
@@ -60,70 +55,70 @@ def test_model_dump_preserves_ai_tool_calls():
 
 
 def test_model_dump_preserves_tool_message_id():
-    state = AgentState(input="x", url="", chat_messages=_make_slash_messages())
+    state = AgentState(input="x", url="", chat_messages=_make_tool_call_messages())
     dumped = state.model_dump()["chat_messages"]
     assert dumped[2]["tool_call_id"] == "abc123"
 
 
-# --- field_validator (read-side) restores proper subclasses ------------------
+def test_model_dump_emits_discriminator_type_literals():
+    """Each variant must dump with its non-chunk ``type`` literal so the
+    discriminator can pick the right class on the next read."""
+    state = AgentState(input="x", url="", chat_messages=_make_tool_call_messages())
+    dumped = state.model_dump()["chat_messages"]
+    assert [m["type"] for m in dumped] == ["human", "ai", "tool"]
 
 
 def test_round_trip_restores_subclasses_and_fields():
-    state = AgentState(input="x", url="", chat_messages=_make_slash_messages())
-    dumped = state.model_dump()
-
-    restored = AgentState(**dumped)
+    state = AgentState(input="x", url="", chat_messages=_make_tool_call_messages())
+    restored = AgentState(**state.model_dump())
     msgs = restored.chat_messages or []
-    assert len(msgs) == 3
-    assert isinstance(msgs[0], HumanMessage)
-    assert isinstance(msgs[1], AIMessage)
-    assert isinstance(msgs[2], ToolMessage)
-    # The whole point: tool_calls + tool_call_id survive the cycle.
+    assert [type(m) for m in msgs] == [HumanMessage, AIMessage, ToolMessage]
     assert msgs[1].tool_calls == [
         {"id": "abc123", "name": "load_skill", "args": {"name": "kwargs-check"}, "type": "tool_call"}
     ]
     assert msgs[2].tool_call_id == "abc123"
-    # additional_kwargs (slice #17 audit metadata) survives too.
     assert msgs[1].additional_kwargs["invoked_via"] == "slash"
 
 
-def test_rehydrate_messages_promotes_known_types():
-    """The helper itself is pure — verify each supported type promotes
-    correctly from dict form."""
-    promoted = rehydrate_messages(
-        [
+def test_validation_accepts_dict_inputs_via_discriminator():
+    """LangGraph hands back dicts on checkpoint reads; the discriminator must
+    pick each subclass from the dict's ``type`` field."""
+    state = AgentState(
+        input="x",
+        url="",
+        chat_messages=[
             {"type": "human", "content": "hi"},
-            {"type": "ai", "content": "", "tool_calls": []},
-            {"type": "tool", "content": "out", "tool_call_id": "id"},
-            {"type": "system", "content": "sys"},
-        ]
+            {
+                "type": "ai",
+                "content": "",
+                "tool_calls": [
+                    {"id": "1", "name": "f", "args": {}, "type": "tool_call"}
+                ],
+            },
+            {"type": "tool", "content": "out", "tool_call_id": "1"},
+        ],
     )
-    assert isinstance(promoted[0], HumanMessage)
-    assert isinstance(promoted[1], AIMessage)
-    assert isinstance(promoted[2], ToolMessage)
-    assert isinstance(promoted[3], SystemMessage)
+    msgs = state.chat_messages
+    assert [type(m) for m in msgs] == [HumanMessage, AIMessage, ToolMessage]
+    assert msgs[1].tool_calls[0]["id"] == "1"
+    assert msgs[2].tool_call_id == "1"
 
 
-def test_rehydrate_messages_passes_through_existing_subclasses():
-    """If the caller already gave us proper subclass instances (the normal
-    construction path), leave them alone."""
-    original = _make_slash_messages()
-    promoted = rehydrate_messages(original)
-    # Same objects, not copies.
-    assert promoted[0] is original[0]
-    assert promoted[1] is original[1]
-    assert promoted[2] is original[2]
+@pytest.mark.parametrize(
+    "chunk",
+    [
+        AIMessageChunk(content="x", tool_calls=[]),
+        HumanMessageChunk(content="x"),
+        ToolMessageChunk(content="x", tool_call_id="t1"),
+    ],
+)
+def test_chunks_rejected_at_construction(chunk):
+    """Chunks declare a distinct ``type`` literal that isn't in the union.
+    Loud rejection is the contract — see ``ChatHistoryMessage``."""
+    with pytest.raises(ValidationError):
+        AgentState(input="x", url="", chat_messages=[chunk])
 
 
-def test_rehydrate_messages_demotes_plain_base_messages():
-    """Pydantic's older ``List[BaseMessage]`` rehydration produced plain
-    ``BaseMessage`` instances. The validator must re-promote those, not
-    accept them as-is."""
-    raw = BaseMessage(type="ai", content="hi")
-    promoted = rehydrate_messages([raw])
-    assert isinstance(promoted[0], AIMessage)
-
-
-def test_rehydrate_messages_handles_none_and_empty():
-    assert rehydrate_messages(None) is None
-    assert rehydrate_messages([]) == []
+def test_none_and_empty_chat_messages():
+    assert AgentState(input="x", url="", chat_messages=None).chat_messages is None
+    assert AgentState(input="x", url="", chat_messages=[]).chat_messages == []
