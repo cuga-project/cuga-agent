@@ -71,7 +71,12 @@ async def test_cuga_lite_evolve_guidelines_are_injected_independently_of_legacy_
         result = await graph.ainvoke(state, config={"configurable": {}})
 
     assert result["final_answer"] == "done"
-    mock_get_guidelines.assert_awaited_once_with("fetch all users")
+    mock_get_guidelines.assert_awaited_once_with(
+        "fetch all users",
+        user_id=None,
+        namespace_id=None,
+        session_id=None,
+    )
 
     captured_messages = model.calls[0]["messages"]
     assert captured_messages[0]["role"] == "system"
