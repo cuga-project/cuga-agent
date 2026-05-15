@@ -10,6 +10,8 @@ node_modules
 *.log
 /frontend/dist/
 src/frontend_workspaces/frontend/dist/
+src/frontend_workspaces/frontend/test-results/
+src/frontend_workspaces/frontend/playwright-report/
 /frontend/node_modules/
 experiment_results_*
 output_graphs
