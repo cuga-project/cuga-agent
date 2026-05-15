@@ -54,8 +54,8 @@ export function getOrCreateThreadId(): string {
   return currentThreadId;
 }
 
-// Slice #15: the backend mints a new thread_id when ``/clear`` is dispatched
-// and surfaces it through a ``ThreadIdChanged`` SSE event. The customSendMessage
+// The backend mints a new thread_id when ``/clear`` is dispatched and
+// surfaces it through a ``ThreadIdChanged`` SSE event. The customSendMessage
 // stream handler calls this setter so the next outbound request carries the
 // new ``X-Thread-ID``. The wrapped customSendMessage in CarbonChat re-reads
 // ``currentThreadId`` after each turn and fires ``onThreadChange`` accordingly.
@@ -419,8 +419,45 @@ const CarbonChat = ({
       return;
     }
 
+    // Relabel Carbon's reasoning-panel toggle from "Show reasoning"/"Hide
+    // reasoning" to "Show details"/"Hide details". The reasoning panel now
+    // also hosts the slash-skill audit step (formerly its own chip), so the
+    // more neutral wording reads better. Carbon's `strings` prop accepts
+    // `reasoningSteps_mainLabelOpen` / `reasoningSteps_mainLabelClosed`, but
+    // the React parent commits the toggle attributes before our `useOnMount`
+    // strings dispatch reaches them, so the labels stay default. Patching
+    // the Lit element directly here is reliable and avoids forking Carbon.
+    const TOGGLE_TAGS = [
+      "cds-aichat-reasoning-steps-toggle",
+      "cds-custom-aichat-reasoning-steps-toggle",
+    ];
+    const applyReasoningToggleLabels = (root: ShadowRoot | Document) => {
+      for (const tag of TOGGLE_TAGS) {
+        const nodes = Array.from(root.querySelectorAll(tag)) as Array<
+          HTMLElement & { openLabelText?: string; closedLabelText?: string }
+        >;
+        for (const el of nodes) {
+          if (el.closedLabelText !== "Show details") {
+            el.closedLabelText = "Show details";
+          }
+          if (el.openLabelText !== "Hide details") {
+            el.openLabelText = "Hide details";
+          }
+          // Mirror the property change onto the attribute so the visible
+          // text inside the toggle's own shadow tree updates immediately.
+          if (el.getAttribute("closed-label-text") !== "Show details") {
+            el.setAttribute("closed-label-text", "Show details");
+          }
+          if (el.getAttribute("open-label-text") !== "Hide details") {
+            el.setAttribute("open-label-text", "Hide details");
+          }
+        }
+      }
+    };
+
     const applyMessageAttachmentDecorations = () => {
       roots.forEach((shadowRoot) => {
+        applyReasoningToggleLabels(shadowRoot);
         const requestNodes = Array.from(
           shadowRoot.querySelectorAll(".cds-custom-aichat--message--request"),
         ) as HTMLElement[];
