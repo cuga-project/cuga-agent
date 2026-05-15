@@ -28,7 +28,6 @@ import {
 } from "./carbonChatHelpers";
 import {
   CUGA_USER_DEFINED_KIND,
-  type SlashSkillChipData,
   type SlashSuggestionsChipData,
   type SlashSuggestion,
 } from "./SlashChips";
@@ -130,40 +129,30 @@ async function customLoadHistory(
           }
           break;
 
-        // Slice #22: replay a resolved slash-skill invocation as its own
-        // collapsed "⚡ /skill" chip (a USER_DEFINED item rendered by
-        // SlashChips.renderCugaUserDefinedResponse).
+        // Replay a resolved slash-skill invocation as a reasoning step
+        // attached to the assistant message being assembled (mirrors the live
+        // path in customSendMessage.ts). The step lands in the same "Show
+        // details" panel as the planner reasoning that follows.
         case "SlashSkillInvoked": {
           try {
             const parsed = JSON.parse(actualData);
-            const chipData: SlashSkillChipData = {
-              cuga_kind: CUGA_USER_DEFINED_KIND.SLASH_SKILL,
-              resolved_name: String(parsed?.resolved_name ?? ""),
-              raw_input: String(parsed?.raw_input ?? ""),
-              raw_args: String(parsed?.raw_args ?? ""),
-            };
-            history.push({
-              message: {
-                id: generateMessageId(event.timestamp, "assistant"),
-                output: {
-                  generic: [
-                    {
-                      response_type: MessageResponseTypes.USER_DEFINED,
-                      user_defined: chipData,
-                    },
-                  ],
-                },
-                message_options: { response_user_profile: RESPONSE_USER_PROFILE },
-              } as MessageResponse,
-              time: event.timestamp,
-            });
+            const resolvedName = String(parsed?.resolved_name ?? "");
+            const rawInput = String(parsed?.raw_input ?? "");
+            const rawArgs = String(parsed?.raw_args ?? "");
+            const stepTitle = `Skill invoked: /${resolvedName}`;
+            const stepContent = [
+              `**Input:** \`${rawInput}\``,
+              `**Resolved skill:** \`${resolvedName}\``,
+              `**Arguments:** \`${rawArgs || "(none)"}\``,
+            ].join("\n\n");
+            currentSteps.push(createReasoningStep(stepTitle, stepContent));
           } catch (e) {
             console.error("Error parsing SlashSkillInvoked history event:", e);
           }
           break;
         }
 
-        // Slice #23: replay unknown-command suggestion chips, and suppress the
+        // Replay unknown-command suggestion chips, and suppress the
         // redundant plain-text "Unknown command..." Answer that follows.
         case "SlashSuggestions": {
           try {
@@ -218,7 +207,7 @@ async function customLoadHistory(
 
         case "Answer":
         case "FinalAnswer": {
-          // Slice #23: skip the redundant plain-text fallback that follows a
+          // Skip the redundant plain-text fallback that follows a
           // SlashSuggestions event — the chips already convey it.
           if (suppressNextAnswer) {
             suppressNextAnswer = false;
