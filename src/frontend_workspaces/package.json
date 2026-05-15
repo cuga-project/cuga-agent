@@ -16,11 +16,7 @@
   "scripts": {
     "desktop": "pnpm --filter ./frontend desktop"
   },
-  "devDependencies": {
-    "@types/jest-image-snapshot": "^6.4.0",
-    "jest-image-snapshot": "^6.4.0",
-    "puppeteer": "^24.22.3"
-  },
+  "devDependencies": {},
   "dependencies": {
     "lodash-es": "^4.18.1",
     "lodash.debounce": "^4.0.8"

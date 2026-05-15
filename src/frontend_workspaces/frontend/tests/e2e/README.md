@@ -1,14 +1,17 @@
-# Playwright e2e tests (opt-in)
+# Playwright e2e tests
 
-Browser-driven verification for the slash-command chips (slices #22 + #23).
-Playwright is **not** a default dependency — install it on demand:
+Browser-driven verification for the slash-command chips (slices #22 + #23)
+and the slice #15 `ThreadIdChanged` round-trip.
+
+`@playwright/test` is in `devDependencies`, so `pnpm install` brings it in.
+The Chromium binary is **not** auto-downloaded — run the install step on
+first use, then build + test:
 
 ```bash
 cd src/frontend_workspaces/frontend
-pnpm add -D @playwright/test
-pnpm exec playwright install chromium
-pnpm run build              # produces dist/ which the test server serves
-pnpm run test:e2e           # runs ./playwright.config.ts -> tests/e2e/*.spec.ts
+pnpm exec playwright install chromium    # one-time per machine, ~150MB
+pnpm run build                           # produces dist/ which the test server serves
+pnpm run test:e2e                        # runs ./playwright.config.ts -> tests/e2e/*.spec.ts
 ```
 
 ## What it covers
@@ -38,9 +41,10 @@ pnpm run test:e2e           # runs ./playwright.config.ts -> tests/e2e/*.spec.ts
   handles both shapes; the spec reads back the composer value via a shadow-DOM
   walk so the assertion works regardless of which element shape Carbon uses.
 
-## Why opt-in
+## Why the Chromium download is separate
 
-Playwright pulls a ~150MB Chromium binary on install and isn't needed for the
-regular dev/build/typecheck loop. Keep it out of the default install so CI and
-new contributors don't pay the download tax. The spec + config remain in the
-repo as ready-to-run verification.
+`@playwright/test` is a small JS package that ships in `devDependencies`,
+but the browser binary itself is ~150MB and the regular dev/build/typecheck
+loop doesn't need it. Keeping `pnpm exec playwright install chromium` as a
+deliberate step means new contributors who never run e2e tests don't pay
+the download tax just from `pnpm install`.
