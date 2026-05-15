@@ -26,6 +26,12 @@ import {
   buildToolApprovalCard,
   createReasoningStep,
 } from "./carbonChatHelpers";
+import {
+  CUGA_USER_DEFINED_KIND,
+  type SlashSkillChipData,
+  type SlashSuggestionsChipData,
+  type SlashSuggestion,
+} from "./SlashChips";
 
 interface StreamEvent {
   event_name: string;
@@ -81,6 +87,10 @@ async function customLoadHistory(
     const history: HistoryItem[] = [];
     let currentSteps: ReasoningStep[] = [];
     let currentAnswerText = "";
+    // Set after a SlashSuggestions chip so the following redundant plain-text
+    // "Unknown command..." Answer event is skipped on reload (mirrors the
+    // live-turn suppression in customSendMessage.ts).
+    let suppressNextAnswer = false;
 
     for (const event of events) {
       console.log(`Processing event: ${event.event_name}`, event);
@@ -120,6 +130,79 @@ async function customLoadHistory(
           }
           break;
 
+        // Slice #22: replay a resolved slash-skill invocation as its own
+        // collapsed "⚡ /skill" chip (a USER_DEFINED item rendered by
+        // SlashChips.renderCugaUserDefinedResponse).
+        case "SlashSkillInvoked": {
+          try {
+            const parsed = JSON.parse(actualData);
+            const chipData: SlashSkillChipData = {
+              cuga_kind: CUGA_USER_DEFINED_KIND.SLASH_SKILL,
+              resolved_name: String(parsed?.resolved_name ?? ""),
+              raw_input: String(parsed?.raw_input ?? ""),
+              raw_args: String(parsed?.raw_args ?? ""),
+            };
+            history.push({
+              message: {
+                id: generateMessageId(event.timestamp, "assistant"),
+                output: {
+                  generic: [
+                    {
+                      response_type: MessageResponseTypes.USER_DEFINED,
+                      user_defined: chipData,
+                    },
+                  ],
+                },
+                message_options: { response_user_profile: RESPONSE_USER_PROFILE },
+              } as MessageResponse,
+              time: event.timestamp,
+            });
+          } catch (e) {
+            console.error("Error parsing SlashSkillInvoked history event:", e);
+          }
+          break;
+        }
+
+        // Slice #23: replay unknown-command suggestion chips, and suppress the
+        // redundant plain-text "Unknown command..." Answer that follows.
+        case "SlashSuggestions": {
+          try {
+            const parsed = JSON.parse(actualData);
+            const suggestions: SlashSuggestion[] = Array.isArray(parsed?.suggestions)
+              ? parsed.suggestions.map((s: any) => ({
+                  name: String(s?.name ?? ""),
+                  kind: s?.kind === "skill" ? "skill" : "builtin",
+                  description: typeof s?.description === "string" ? s.description : "",
+                  score: typeof s?.score === "number" ? s.score : 0,
+                }))
+              : [];
+            const chipData: SlashSuggestionsChipData = {
+              cuga_kind: CUGA_USER_DEFINED_KIND.SLASH_SUGGESTIONS,
+              raw_input: String(parsed?.raw_input ?? ""),
+              suggestions,
+            };
+            history.push({
+              message: {
+                id: generateMessageId(event.timestamp, "assistant"),
+                output: {
+                  generic: [
+                    {
+                      response_type: MessageResponseTypes.USER_DEFINED,
+                      user_defined: chipData,
+                    },
+                  ],
+                },
+                message_options: { response_user_profile: RESPONSE_USER_PROFILE },
+              } as MessageResponse,
+              time: event.timestamp,
+            });
+            suppressNextAnswer = true;
+          } catch (e) {
+            console.error("Error parsing SlashSuggestions history event:", e);
+          }
+          break;
+        }
+
         case "CodeAgent":
         case "CodeAgent_Reasoning":
         case "Thinking":
@@ -135,6 +218,15 @@ async function customLoadHistory(
 
         case "Answer":
         case "FinalAnswer": {
+          // Slice #23: skip the redundant plain-text fallback that follows a
+          // SlashSuggestions event — the chips already convey it.
+          if (suppressNextAnswer) {
+            suppressNextAnswer = false;
+            currentSteps = [];
+            currentAnswerText = "";
+            break;
+          }
+
           const parsed = parseAnswerEventData(actualData, currentAnswerText);
 
           if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData && threadId) {

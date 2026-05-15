@@ -27,6 +27,7 @@ import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './cus
 import { customLoadHistory } from './customLoadHistory';
 import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
 import { SlashCommandDropdown } from './SlashCommandDropdown';
+import { renderCugaUserDefinedResponse } from './SlashChips';
 import './CarbonChat.css';
 
 // Reset thread ID when conversation restarts
@@ -749,6 +750,7 @@ const CarbonChat = ({
           customSendMessage: handleCustomSendMessage,
           customLoadHistory: handleCustomLoadHistory,
         }}
+        renderUserDefinedResponse={renderCugaUserDefinedResponse}
         renderWriteableElements={{
           beforeInputElement: (
             <ComposerToolbar

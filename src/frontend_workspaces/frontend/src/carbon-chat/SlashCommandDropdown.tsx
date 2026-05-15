@@ -20,63 +20,7 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 import { getCommands, type SlashCommandInfo } from "../api";
-
-/** Find every shadow root that may contain the chat composer. */
-function findShadowRoots(anchor: HTMLElement | null): ShadowRoot[] {
-  const directCandidates = [
-    anchor,
-    document.querySelector("cds-custom-aichat-react"),
-    document.querySelector("cds-custom-aichat-custom-element"),
-    document.querySelector("cds-aichat-react"),
-    document.querySelector("cds-aichat-custom-element"),
-  ].filter(Boolean) as Array<HTMLElement & { shadowRoot?: ShadowRoot | null }>;
-
-  const roots: ShadowRoot[] = [];
-  for (const candidate of directCandidates) {
-    const candidateShadow = candidate.shadowRoot;
-    if (candidateShadow && !roots.includes(candidateShadow)) {
-      roots.push(candidateShadow);
-    }
-    if (candidateShadow) {
-      const nested = Array.from(
-        candidateShadow.querySelectorAll(
-          "cds-custom-aichat-container, cds-aichat-container",
-        ),
-      ) as Array<HTMLElement & { shadowRoot?: ShadowRoot | null }>;
-      for (const n of nested) {
-        if (n.shadowRoot && !roots.includes(n.shadowRoot)) {
-          roots.push(n.shadowRoot);
-        }
-      }
-    }
-  }
-  return roots;
-}
-
-/**
- * Walk every reachable shadow root recursively looking for the composer
- * textarea. Carbon's exact selector has evolved across versions, so we cast
- * a wide net: anything matching common composer textarea selectors.
- */
-function findComposerTextarea(anchor: HTMLElement | null): HTMLTextAreaElement | null {
-  const visited = new Set<ShadowRoot>();
-  const queue: ShadowRoot[] = findShadowRoots(anchor);
-  while (queue.length) {
-    const root = queue.shift()!;
-    if (visited.has(root)) continue;
-    visited.add(root);
-
-    const direct = root.querySelector("textarea") as HTMLTextAreaElement | null;
-    if (direct) return direct;
-
-    const nested = root.querySelectorAll("*");
-    nested.forEach((el) => {
-      const sr = (el as HTMLElement & { shadowRoot?: ShadowRoot | null }).shadowRoot;
-      if (sr && !visited.has(sr)) queue.push(sr);
-    });
-  }
-  return null;
-}
+import { findComposerTextarea, setComposerTextareaValue } from "./composerTextarea";
 
 /** Returns true when the slash is the first non-whitespace character. */
 function isSlashLeadingInput(value: string): boolean {
@@ -230,28 +174,12 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   }, [open, updatePosition]);
 
   // Replace the textarea value programmatically and fire an input event so
-  // the underlying Carbon framework picks the change up.
+  // the underlying Carbon framework picks the change up. The traversal +
+  // value-setting mechanism lives in ./composerTextarea so the unknown-command
+  // suggestion chips (slice #23) can reuse it.
   const setTextareaValue = useCallback(
     (value: string) => {
-      if (!textarea) return;
-      const setter = Object.getOwnPropertyDescriptor(
-        window.HTMLTextAreaElement.prototype,
-        "value",
-      )?.set;
-      if (setter) {
-        setter.call(textarea, value);
-      } else {
-        textarea.value = value;
-      }
-      textarea.dispatchEvent(new Event("input", { bubbles: true }));
-      textarea.dispatchEvent(new Event("change", { bubbles: true }));
-      // Move caret to end.
-      try {
-        textarea.setSelectionRange(value.length, value.length);
-      } catch {
-        /* noop for browsers that don't allow setSelectionRange here */
-      }
-      textarea.focus();
+      setComposerTextareaValue(textarea, value);
     },
     [textarea],
   );

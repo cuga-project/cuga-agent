@@ -27,6 +27,12 @@ import {
 
 import * as api from "../api";
 import type { KnowledgeAttachmentSnapshot } from "../knowledge/useSessionKnowledgeAttachments";
+import {
+  CUGA_USER_DEFINED_KIND,
+  type SlashSkillChipData,
+  type SlashSuggestionsChipData,
+  type SlashSuggestion,
+} from "./SlashChips";
 
 // Import thread ID management from CarbonChat
 import { getOrCreateThreadId, generateUUID } from './CarbonChat';
@@ -198,6 +204,10 @@ export async function customSendMessage(
     let accumulatedText = "";
     let currentStepTitle = "";
     let currentStepContent = "";
+    // Set once we render a SlashSuggestions chip so we can suppress the
+    // redundant plain-text "Unknown command..." Answer fallback the backend
+    // also emits (the chips carry the same information, clickably).
+    let slashSuggestionsRendered = false;
 
     // Process the stream
     for await (const event of parseCugaStream(response)) {
@@ -209,6 +219,75 @@ export async function customSendMessage(
       console.log("CUGA Event:", event);
 
       switch (event.name) {
+        // Slice #22: a slash command resolved to a skill. Render a collapsed
+        // "⚡ /skill" chip as its own message bubble (a USER_DEFINED item that
+        // SlashChips.renderCugaUserDefinedResponse renders). The normal
+        // planner reasoning/Answer events still follow this event as usual.
+        case "SlashSkillInvoked": {
+          try {
+            const parsed =
+              typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+            const chipData: SlashSkillChipData = {
+              cuga_kind: CUGA_USER_DEFINED_KIND.SLASH_SKILL,
+              resolved_name: String(parsed?.resolved_name ?? ""),
+              raw_input: String(parsed?.raw_input ?? ""),
+              raw_args: String(parsed?.raw_args ?? ""),
+            };
+            instance.messaging.addMessage({
+              output: {
+                generic: [
+                  {
+                    response_type: MessageResponseTypes.USER_DEFINED,
+                    user_defined: chipData,
+                  },
+                ],
+              },
+            });
+          } catch (e) {
+            console.error("Error parsing SlashSkillInvoked event:", e);
+          }
+          break;
+        }
+
+        // Slice #23: an unknown slash command produced semantic matches.
+        // Render clickable suggestion chips as their own message bubble. The
+        // backend also emits a plain-text "Unknown command..." Answer right
+        // after as a fallback for non-chip clients; we suppress that Answer
+        // here (see the Answer case) since the chips are strictly richer.
+        case "SlashSuggestions": {
+          try {
+            const parsed =
+              typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+            const suggestions: SlashSuggestion[] = Array.isArray(parsed?.suggestions)
+              ? parsed.suggestions.map((s: any) => ({
+                  name: String(s?.name ?? ""),
+                  kind: s?.kind === "skill" ? "skill" : "builtin",
+                  description: typeof s?.description === "string" ? s.description : "",
+                  score: typeof s?.score === "number" ? s.score : 0,
+                }))
+              : [];
+            const chipData: SlashSuggestionsChipData = {
+              cuga_kind: CUGA_USER_DEFINED_KIND.SLASH_SUGGESTIONS,
+              raw_input: String(parsed?.raw_input ?? ""),
+              suggestions,
+            };
+            instance.messaging.addMessage({
+              output: {
+                generic: [
+                  {
+                    response_type: MessageResponseTypes.USER_DEFINED,
+                    user_defined: chipData,
+                  },
+                ],
+              },
+            });
+            slashSuggestionsRendered = true;
+          } catch (e) {
+            console.error("Error parsing SlashSuggestions event:", e);
+          }
+          break;
+        }
+
         case "CodeAgent":
           if (currentStepTitle && currentStepContent) {
             collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
@@ -425,6 +504,30 @@ export async function customSendMessage(
         case "Answer":
         case "FinalAnswer":
           console.log("Received Answer event, finalizing message...");
+
+          // Slice #23: if we already rendered SlashSuggestions chips, the
+          // backend's "Unknown command... Did you mean..." Answer is a
+          // redundant plain-text fallback. Finalize the streaming shell with
+          // empty text (so it collapses away) and skip rendering the text.
+          if (slashSuggestionsRendered) {
+            const emptyItem = {
+              response_type: MessageResponseTypes.TEXT,
+              text: "",
+              streaming_metadata: { id: "text-stream" },
+            };
+            instance.messaging.addMessageChunk({
+              complete_item: emptyItem,
+              streaming_metadata: { response_id: responseID },
+            });
+            instance.messaging.addMessageChunk({
+              final_response: {
+                id: responseID,
+                output: { generic: [emptyItem] },
+                message_options: { response_user_profile: RESPONSE_USER_PROFILE },
+              },
+            });
+            return;
+          }
 
           let answerText = accumulatedText || "";
           if (typeof event.data === "string") {

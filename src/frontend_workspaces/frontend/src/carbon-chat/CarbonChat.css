@@ -553,3 +553,203 @@
     color: #d29922;
   }
 }
+
+/* ---------------------------------------------------------------------------
+ * Slash-command chips rendered inline in the chat transcript.
+ *   - .cuga-slash-skill-chip     — slice #22, collapsed "⚡ /skill" chip
+ *   - .cuga-slash-suggestions    — slice #23, clickable suggestion chips
+ * ------------------------------------------------------------------------- */
+
+.cuga-slash-skill-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.cuga-slash-skill-chip__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #f6f8fa;
+  color: #1f2328;
+  cursor: pointer;
+  font: inherit;
+}
+
+.cuga-slash-skill-chip__summary:hover {
+  background: #eef1f4;
+  border-color: #afb8c1;
+}
+
+.cuga-slash-skill-chip__bolt {
+  color: #9a6700;
+}
+
+.cuga-slash-skill-chip__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+
+.cuga-slash-skill-chip__caret {
+  color: #6e7781;
+  font-size: 11px;
+}
+
+.cuga-slash-skill-chip__details {
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #ffffff;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+}
+
+.cuga-slash-skill-chip__details dt {
+  color: #6e7781;
+  font-size: 12px;
+}
+
+.cuga-slash-skill-chip__details dd {
+  margin: 0;
+}
+
+.cuga-slash-skill-chip__details code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #1f2328;
+  word-break: break-word;
+}
+
+.cuga-slash-suggestions {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.cuga-slash-suggestions__lead {
+  color: #57606a;
+  margin-bottom: 6px;
+}
+
+.cuga-slash-suggestions__lead code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #cf222e;
+}
+
+.cuga-slash-suggestions__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cuga-slash-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1f2328;
+  cursor: pointer;
+  font: inherit;
+  max-width: 100%;
+}
+
+.cuga-slash-suggestion:hover {
+  background: #f6f8fa;
+  border-color: #0969da;
+}
+
+.cuga-slash-suggestion__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+
+.cuga-slash-suggestion__description {
+  color: #57606a;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.cuga-slash-suggestion__kind {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cuga-slash-suggestion__kind--builtin {
+  background: #ddf4ff;
+  color: #0969da;
+}
+
+.cuga-slash-suggestion__kind--skill {
+  background: #fff8c5;
+  color: #9a6700;
+}
+
+@media (prefers-color-scheme: dark) {
+  .cuga-slash-skill-chip__summary {
+    background: #21262d;
+    border-color: #30363d;
+    color: #e6edf3;
+  }
+  .cuga-slash-skill-chip__summary:hover {
+    background: #2d333b;
+    border-color: #444c56;
+  }
+  .cuga-slash-skill-chip__bolt {
+    color: #d29922;
+  }
+  .cuga-slash-skill-chip__caret {
+    color: #8b949e;
+  }
+  .cuga-slash-skill-chip__details {
+    background: #1f2328;
+    border-color: #30363d;
+  }
+  .cuga-slash-skill-chip__details dt {
+    color: #8b949e;
+  }
+  .cuga-slash-skill-chip__details code {
+    color: #e6edf3;
+  }
+  .cuga-slash-suggestions__lead {
+    color: #8b949e;
+  }
+  .cuga-slash-suggestions__lead code {
+    color: #ff7b72;
+  }
+  .cuga-slash-suggestion {
+    background: #1f2328;
+    border-color: #30363d;
+    color: #e6edf3;
+  }
+  .cuga-slash-suggestion:hover {
+    background: #21262d;
+    border-color: #58a6ff;
+  }
+  .cuga-slash-suggestion__description {
+    color: #8b949e;
+  }
+  .cuga-slash-suggestion__kind--builtin {
+    background: rgba(56, 139, 253, 0.15);
+    color: #58a6ff;
+  }
+  .cuga-slash-suggestion__kind--skill {
+    background: rgba(187, 128, 9, 0.2);
+    color: #d29922;
+  }
+}
