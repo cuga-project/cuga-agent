@@ -7,8 +7,8 @@ caller is responsible for interpreting the returned :class:`DispatchResult`:
 * ``passthrough`` — feed ``raw_input`` to the planner unchanged
 * ``builtin`` — surface ``text`` as the agent's answer; do not run the planner
 * ``unknown`` — surface ``text`` as an error; do not run the planner. When an
-  embedding resolver is wired in (slice #20), ``suggestions`` carries the
-  top semantic matches for the mistyped command.
+  embedding resolver is wired in, ``suggestions`` carries the top semantic
+  matches for the mistyped command.
 * ``skill`` — inject ``injected_messages`` into the graph state, then run the
   planner
 
@@ -185,9 +185,8 @@ async def _dispatch_parsed(
     if slash_registry.has_skill(parsed.name):
         assert skill_registry is not None  # has_skill is False without a registry
         try:
-            # Slice #19: raw_args run through four-pass ``$ARGUMENTS``-style
-            # substitution against the raw SKILL.md body inside load_skill,
-            # before the install/sandbox wrapping is layered on.
+            # raw_args are substituted into the SKILL.md body via
+            # ``$ARGUMENTS`` placeholders before install/sandbox wrapping.
             wrapped_body = skill_registry.load_skill(parsed.name, parsed.raw_args)
         except Exception as e:
             logger.exception(f"Failed to load skill '/{parsed.name}'")
@@ -204,10 +203,9 @@ async def _dispatch_parsed(
             resolved_name=parsed.name,
             wrapped_body=wrapped_body,
         )
-        # Slice #21: propagate the skill's ``allowed-tools`` whitelist so the
-        # caller can stash it on the graph's RunnableConfig for the duration of
-        # this turn. ``None`` (key absent) means no restriction; ``()`` (key
-        # present but empty) means allow nothing.
+        # Propagate the skill's ``allowed-tools`` whitelist for the caller to
+        # stash on the graph's RunnableConfig. ``None`` (key absent) means no
+        # restriction; ``()`` (key present but empty) means allow nothing.
         entry = skill_registry.entry(parsed.name)
         allowed_tools = entry.allowed_tools if entry is not None else None
         return DispatchResult(

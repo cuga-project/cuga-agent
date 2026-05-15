@@ -3,7 +3,7 @@
 When a user types ``/<skill> a b c`` the skill author's SKILL.md body may
 reference those args. This module implements Claude Code's four-pass
 substitution, applied to the *raw* SKILL.md body before the ``load_skill``
-wrapper layers on install/sandbox hints (PRD #13, slice #19).
+wrapper layers on install/sandbox hints.
 
 Four passes, in precedence order:
 

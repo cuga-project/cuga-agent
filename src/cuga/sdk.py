@@ -1661,8 +1661,8 @@ class CugaAgent:
         """Run the shared slash parser/dispatcher.
 
         Returns ``None`` on any failure so callers fall back to the planner.
-        Skill-kind results are also returned so slice #17 can wire injection
-        into the SDK without changing this seam.
+        Skill-kind results carry synthesized messages the caller injects in
+        place of the bare user message.
         """
         try:
             from cuga.backend.skills import SkillRegistry, discover_skills
@@ -1766,10 +1766,10 @@ class CugaAgent:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
-        # Slash command dispatch (slice #14): a `/<name>` message short-circuits
-        # the graph for built-in handlers and unknown commands. Slice #17 also
-        # synthesizes a 4-message ``load_skill`` pair for skill-kind results,
-        # which gets injected below in place of the bare HumanMessage.
+        # A `/<name>` message short-circuits the graph for built-in handlers
+        # and unknown commands. Skill-kind results carry a synthesized
+        # load_skill message quad that gets injected below in place of the
+        # bare HumanMessage.
         slash_result = None
         if isinstance(message, str):
             slash_result = await self._dispatch_slash(message, thread_id)
@@ -1865,9 +1865,8 @@ class CugaAgent:
         # Normal invocation case
         # Convert message to list of BaseMessage
         if isinstance(message, str):
-            # Slice #17: if dispatch resolved a skill, replace the bare user
-            # message with the synthesized 4-message load_skill pair so the
-            # planner sees the skill as already loaded.
+            # If dispatch resolved a skill, inject the synthesized load_skill
+            # message quad so the planner sees the skill as already loaded.
             if slash_result is not None and slash_result.kind == "skill" and slash_result.injected_messages:
                 new_messages = list(slash_result.injected_messages)
             else:
@@ -1956,9 +1955,9 @@ class CugaAgent:
         if self._policy_system:
             run_config["configurable"]["policy_system"] = self._policy_system
 
-        # Slice #21: when this turn invokes a slash-skill with a declared
-        # ``allowed-tools`` list, propagate the whitelist so the tool-approval
-        # gate enforces it for the duration of this turn only.
+        # When this turn invokes a slash-skill with a declared ``allowed-tools``
+        # list, propagate the whitelist so the tool-approval gate enforces it
+        # for the duration of this turn only.
         if (
             slash_result is not None
             and slash_result.kind == "skill"

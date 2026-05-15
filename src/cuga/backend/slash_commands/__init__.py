@@ -6,10 +6,6 @@ discovered skill, or passed through to the planner when the message is not a
 slash command. The same ``parse_and_dispatch`` entry point is used by both the
 ``POST /stream`` HTTP handler and the Python SDK's ``invoke()`` method so HTTP
 and SDK paths get identical semantics.
-
-Slice #14 lands the scaffold and ``/help``. Later slices add ``/clear`` (#15),
-``/skills`` (#16), skill invocation (#17), argument substitution (#19), and the
-unknown-command resolver (#20).
 """
 
 from cuga.backend.slash_commands.builtins import discover_builtins

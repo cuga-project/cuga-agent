@@ -12,13 +12,12 @@ conversation history before the planner runs:
     4. HumanMessage(raw_args)  *if any args* — "act on these args now"
 
 The AIMessage carries ``additional_kwargs={'invoked_via': 'slash', ...}`` so
-the frontend (slice #22) can detect the pair and render it as a collapsed chip,
-and so the persistence layer can distinguish user-initiated slash invocations
-from model-initiated ``load_skill`` calls in the same thread.
+the frontend can detect the pair and render it as a collapsed chip, and so the
+persistence layer can distinguish user-initiated slash invocations from
+model-initiated ``load_skill`` calls in the same thread.
 
 This module is a pure function with no graph, registry, or persistence
-dependencies — it is the deep module that gets unit-tested in isolation per
-PRD #13's testing-decisions section.
+dependencies, so the synthesis logic can be unit-tested in isolation.
 """
 
 from __future__ import annotations

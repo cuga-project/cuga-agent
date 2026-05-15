@@ -134,7 +134,7 @@ def _normalize_allowed_tools(value: Any) -> Optional[tuple[str, ...]]:
     Returns ``None`` when the key is absent in frontmatter (no restriction).
     Returns an empty tuple ``()`` when the key is present but empty
     (``allowed-tools: []``) — "allow nothing, every tool requires approval".
-    Slice #21 enforcement keys off this distinction.
+    The whitelist-enforcement gate keys off this absent-vs-empty distinction.
     """
     if value is None:
         return None

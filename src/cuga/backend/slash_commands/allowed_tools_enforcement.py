@@ -1,10 +1,10 @@
 """Detect tool calls in generated code that fall outside a skill's whitelist.
 
-Slice #21 enforcement helper. The dispatcher attaches a skill's
-``allowed-tools`` frontmatter list to ``RunnableConfig.configurable`` for the
-duration of the skill turn; the cuga_lite tool-approval gate calls
-:func:`find_disallowed_calls` on the generated code and, if any disallowed
-call is found, routes through the existing HITL approval interrupt.
+The dispatcher attaches a skill's ``allowed-tools`` frontmatter list to
+``RunnableConfig.configurable`` for the duration of the skill turn; the
+cuga_lite tool-approval gate calls :func:`find_disallowed_calls` on the
+generated code and, if any disallowed call is found, routes through the
+existing HITL approval interrupt.
 
 Why AST instead of regex
 ------------------------

@@ -65,11 +65,11 @@ class DispatchResult:
     resolved_name: Optional[str] = None
     raw_input: Optional[str] = None
     raw_args: Optional[str] = None
-    # Top semantic matches for an unknown command (slice #20); empty otherwise.
+    # Top semantic matches for an unknown command; empty otherwise.
     suggestions: List["CommandSuggestion"] = field(default_factory=list)
-    # Tool whitelist from the skill's ``allowed-tools`` frontmatter (slice #21).
-    # ``None`` = no restriction; ``()`` = allow nothing; ``(..)`` = whitelist.
-    # Only populated for ``kind == "skill"`` results.
+    # Tool whitelist from the skill's ``allowed-tools`` frontmatter. ``None`` =
+    # no restriction; ``()`` = allow nothing; ``(..)`` = whitelist. Only
+    # populated for ``kind == "skill"`` results.
     allowed_tools: Optional[tuple[str, ...]] = None
 
 

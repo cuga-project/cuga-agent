@@ -1,4 +1,4 @@
-"""Unknown slash-command resolver (PRD #13, slice #20).
+"""Unknown slash-command resolver.
 
 When a user types a slash command that does not match any registered
 command (e.g. ``/sumarize``), this module suggests the most likely intended

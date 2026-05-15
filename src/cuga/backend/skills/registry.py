@@ -14,7 +14,7 @@ class SkillEntry:
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
     arguments: tuple[str, ...] = ()  # named args declared in the `arguments` frontmatter key
-    # `allowed-tools` whitelist semantics (slice #21 enforcement):
+    # `allowed-tools` whitelist semantics:
     #   None  — key absent in frontmatter; no restriction (status quo)
     #   ()    — key present but empty (`allowed-tools: []`); allow nothing, everything triggers approval
     #   (..)  — explicit whitelist
@@ -40,9 +40,9 @@ class SkillRegistry:
             known = ", ".join(sorted(self._by_name.keys())) or "(none)"
             return f"Unknown skill: {name!r}. Known skills: {known}"
 
-        # Argument substitution (slice #19) runs on the raw SKILL.md body before
-        # the install/sandbox wrapping below. Model-initiated load_skill calls
-        # pass no args and the body is used verbatim, preserving prior behavior.
+        # Argument substitution runs on the raw SKILL.md body before the
+        # install/sandbox wrapping below. Model-initiated load_skill calls
+        # pass no args and the body is used verbatim.
         if args:
             from cuga.backend.slash_commands.arg_substitution import substitute
 

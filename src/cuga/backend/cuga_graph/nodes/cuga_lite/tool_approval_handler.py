@@ -161,7 +161,7 @@ class ToolApprovalHandler:
 
         Two independent gates run here:
 
-          1. Slice #21 ``allowed-tools`` whitelist — when the current turn was
+          1. Skill ``allowed-tools`` whitelist — when the current turn was
              dispatched by a slash command for a skill that declared
              ``allowed-tools`` in its frontmatter, the whitelist is threaded in
              via ``config['configurable']['skill_allowed_tools']``. Any bare
@@ -186,14 +186,14 @@ class ToolApprovalHandler:
         """
         from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
-        # Slice #21: skill ``allowed-tools`` enforcement runs even when no
-        # ToolApproval policy is configured and even when policy gating is off.
+        # Skill ``allowed-tools`` enforcement runs even when no ToolApproval
+        # policy is configured and even when policy gating is off.
         whitelist_interrupt = ToolApprovalHandler._check_skill_allowed_tools(state, code, content, config)
         if whitelist_interrupt is not None:
             return whitelist_interrupt
 
         # Policy-based ToolApproval check is gated on settings.policy.enabled so
-        # users who turn off the policy system still get the slice #21 whitelist
+        # users who turn off the policy system still get the skill whitelist
         # but not the broader policy check.
         from cuga.config import settings
 
@@ -255,7 +255,7 @@ class ToolApprovalHandler:
         content: str,
         config: Optional[dict],
     ) -> Optional[Command]:
-        """Slice #21: enforce a slash-skill's ``allowed-tools`` whitelist.
+        """Enforce a slash-skill's ``allowed-tools`` whitelist.
 
         Reads the whitelist from ``config['configurable']['skill_allowed_tools']``
         (set by the server / SDK caller from ``DispatchResult.allowed_tools``),
