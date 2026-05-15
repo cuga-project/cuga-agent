@@ -58,7 +58,7 @@ import asyncio
 import inspect
 from typing import Any, Optional, Sequence, Dict, List, Tuple, Set
 from loguru import logger
-from pydantic import BaseModel, Field, SerializeAsAny, field_validator
+from pydantic import BaseModel, Field
 
 
 from langchain_core.language_models import BaseChatModel
@@ -74,7 +74,7 @@ from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task impo
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
-from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.state.agent_state import AgentState, ChatHistoryMessage
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     create_mcp_prompt,
     format_apps_for_prompt,
@@ -599,7 +599,7 @@ class CugaLiteState(BaseModel):
     """State for CugaLite subgraph.
 
     Shared keys with AgentState:
-    - chat_messages: List[BaseMessage] (primary message history)
+    - chat_messages: List[ChatHistoryMessage] (primary message history)
     - final_answer: str (compatible with parent)
     - pi: str (personal information/user context injected with first message)
     - variables_storage: Dict[str, Dict[str, Any]] (shared variables)
@@ -626,9 +626,8 @@ class CugaLiteState(BaseModel):
     - task_todos: latest todo list from create_update_todos (injected as Current Plan on the system prompt)
     """
 
-    # Shared keys (compatible with AgentState). See AgentState for why
-    # ``SerializeAsAny`` is required around the BaseMessage annotation.
-    chat_messages: Optional[List[SerializeAsAny[BaseMessage]]] = Field(default_factory=list)
+    # Shared keys (compatible with AgentState).
+    chat_messages: Optional[List[ChatHistoryMessage]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
     thread_id: Optional[str] = None
     service_scope: Optional[Dict[str, str]] = Field(
@@ -663,14 +662,6 @@ class CugaLiteState(BaseModel):
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
-
-    # See ``agent_state.rehydrate_messages`` for why this is needed.
-    @field_validator("chat_messages", mode="before")
-    @classmethod
-    def _rehydrate_message_subclasses(cls, value):
-        from cuga.backend.cuga_graph.state.agent_state import rehydrate_messages
-
-        return rehydrate_messages(value)
 
     class Config:
         arbitrary_types_allowed = True
@@ -1916,9 +1907,8 @@ def create_cuga_lite_graph(
                     modified_chat_messages.append(msg)
                     ai_tool_calls = getattr(msg, "tool_calls", None) or []
                     if ai_tool_calls:
-                        # Slash dispatch (slice #17) and the planner both emit AIMessages
-                        # with tool_calls. Convert to OpenAI Chat Completions tool_calls
-                        # shape so the model sees the prior call.
+                        # Convert to OpenAI Chat Completions tool_calls shape so the
+                        # model sees the prior call alongside its ToolMessage result.
                         messages_for_model.append(
                             {
                                 "role": "assistant",
@@ -1939,9 +1929,7 @@ def create_cuga_lite_graph(
                     else:
                         messages_for_model.append({"role": "assistant", "content": msg.content})
                 elif isinstance(msg, ToolMessage):
-                    # Slash skill invocation (slice #17) injects a ToolMessage carrying
-                    # the wrapped skill body. Surface it to the model as a role=tool
-                    # entry paired with the AIMessage above by tool_call_id.
+                    # role=tool entry paired to the preceding AIMessage by tool_call_id.
                     modified_chat_messages.append(msg)
                     messages_for_model.append(
                         {
@@ -2064,10 +2052,9 @@ def create_cuga_lite_graph(
                     f"\n{'=' * 50} ASSISTANT CODE {'=' * 50}\n{code}\n{'=' * 50} END ASSISTANT CODE {'=' * 50}"
                 )
 
-                # Check if code requires approval and create interrupt if
-                # needed. The policy-based gate is internally guarded by
-                # ``settings.policy.enabled``; the slice #21 ``allowed-tools``
-                # whitelist always runs (when a slash skill set one).
+                # Two layers can require approval: the policy gate (guarded by
+                # ``settings.policy.enabled``) and the skill ``allowed-tools``
+                # whitelist (always active when a skill set one).
                 approval_command = await ToolApprovalHandler.check_and_create_approval_interrupt(
                     state, code, content, config
                 )
