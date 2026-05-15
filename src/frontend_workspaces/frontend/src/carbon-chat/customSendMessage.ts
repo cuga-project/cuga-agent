@@ -35,7 +35,7 @@ import {
 } from "./SlashChips";
 
 // Import thread ID management from CarbonChat
-import { getOrCreateThreadId, generateUUID } from './CarbonChat';
+import { getOrCreateThreadId, generateUUID, setThreadId } from './CarbonChat';
 
 export async function stopCugaAgent(threadId: string) {
   try {
@@ -219,6 +219,29 @@ export async function customSendMessage(
       console.log("CUGA Event:", event);
 
       switch (event.name) {
+        // Slice #15: ``/clear`` mints a new thread_id server-side. The
+        // ``ThreadIdChanged`` SSE event carries the new id; the frontend has
+        // to adopt it so the *next* outbound request's ``X-Thread-ID`` header
+        // points at the fresh conversation. The current turn keeps the
+        // pre-clear thread_id (already captured in ``threadId`` above) for
+        // its remaining stream events.
+        case "ThreadIdChanged": {
+          try {
+            const parsed =
+              typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+            const newThreadId = parsed?.thread_id;
+            if (typeof newThreadId === "string" && newThreadId.length > 0) {
+              setThreadId(newThreadId);
+              console.log(
+                `Thread id rotated by backend (likely /clear): ${threadId} → ${newThreadId}`,
+              );
+            }
+          } catch (e) {
+            console.error("Error parsing ThreadIdChanged event:", e);
+          }
+          break;
+        }
+
         // Slice #22: a slash command resolved to a skill. Render a collapsed
         // "⚡ /skill" chip as its own message bubble (a USER_DEFINED item that
         // SlashChips.renderCugaUserDefinedResponse renders). The normal

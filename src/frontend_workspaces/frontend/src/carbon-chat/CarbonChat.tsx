@@ -54,6 +54,15 @@ export function getOrCreateThreadId(): string {
   return currentThreadId;
 }
 
+// Slice #15: the backend mints a new thread_id when ``/clear`` is dispatched
+// and surfaces it through a ``ThreadIdChanged`` SSE event. The customSendMessage
+// stream handler calls this setter so the next outbound request carries the
+// new ``X-Thread-ID``. The wrapped customSendMessage in CarbonChat re-reads
+// ``currentThreadId`` after each turn and fires ``onThreadChange`` accordingly.
+export function setThreadId(newThreadId: string): void {
+  currentThreadId = newThreadId;
+}
+
 const DEFAULT_HOMESCREEN = {
   isOn: true,
   greeting: 'Hello, how can I help you today?',
