@@ -2,7 +2,7 @@
  *  Copyright IBM Corp. 2026
  *
  *  Slash-command autocomplete dropdown that overlays the Carbon AI Chat
- *  composer. Acceptance criteria are documented in issue #18.
+ *  composer.
  *
  *  The Carbon Chat input is rendered inside a shadow DOM, so this component
  *  reaches into the chat element's shadow tree to locate the textarea,
@@ -20,7 +20,12 @@ import React, {
 } from "react";
 import { createPortal } from "react-dom";
 import { getCommands, type SlashCommandInfo } from "../api";
-import { findComposerTextarea, setComposerTextareaValue } from "./composerTextarea";
+import {
+  findComposerTextarea,
+  getComposerInputValue,
+  isComposerStale,
+  setComposerTextareaValue,
+} from "./composerTextarea";
 
 /** Returns true when the slash is the first non-whitespace character. */
 function isSlashLeadingInput(value: string): boolean {
@@ -57,7 +62,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   chatElement,
   portalContainer,
 }) => {
-  const [textarea, setTextarea] = useState<HTMLTextAreaElement | null>(null);
+  const [textarea, setTextarea] = useState<HTMLElement | null>(null);
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
   const [commands, setCommands] = useState<SlashCommandInfo[]>([]);
@@ -74,29 +79,37 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     openRef.current = open;
   }, [open]);
 
-  // Discover the textarea once the chat element mounts; retry with a
-  // MutationObserver until it appears.
+  // Discover the composer input. ``chatElement`` is a convenience anchor — when
+  // it's available we observe its subtree directly. When it isn't (Carbon's
+  // ``handleChatReady`` may fire before the React ref is populated, leaving
+  // the prop ``null``), ``findComposerTextarea`` still resolves the composer
+  // by querying for the well-known Carbon host elements globally, so we just
+  // fall back to observing ``document.body``.
   useEffect(() => {
-    if (!chatElement) return;
     let cancelled = false;
+    const observeTarget: Node = chatElement ?? document.body;
 
     const tryFind = () => {
       if (cancelled) return;
       const found = findComposerTextarea(chatElement);
-      if (found) {
-        setTextarea(found);
-      }
+      // Only update state when the live composer actually changed identity —
+      // avoids needless re-renders + listener churn on every mutation tick.
+      if (found && found !== textarea) setTextarea(found);
     };
 
     tryFind();
 
     const observer = new MutationObserver(() => {
       if (cancelled) return;
-      if (!textarea || !document.contains(textarea)) {
+      // Carbon Chat sometimes replaces the composer node entirely after a
+      // submit while leaving the old (now zero-rect) one attached. We need
+      // to re-resolve whenever the current reference is stale by *either*
+      // criterion (detached OR no longer laid out).
+      if (isComposerStale(textarea)) {
         tryFind();
       }
     });
-    observer.observe(chatElement, { childList: true, subtree: true });
+    observer.observe(observeTarget, { childList: true, subtree: true });
     const interval = window.setInterval(tryFind, 500);
 
     return () => {
@@ -104,7 +117,6 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       observer.disconnect();
       window.clearInterval(interval);
     };
-    // Re-run if textarea is unmounted; we recapture below by checking document.contains.
   }, [chatElement, textarea]);
 
   const closeDropdown = useCallback(() => {
@@ -175,8 +187,8 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
 
   // Replace the textarea value programmatically and fire an input event so
   // the underlying Carbon framework picks the change up. The traversal +
-  // value-setting mechanism lives in ./composerTextarea so the unknown-command
-  // suggestion chips (slice #23) can reuse it.
+  // value-setting mechanism lives in ./composerTextarea and is shared with
+  // SlashChips' unknown-command suggestion chips.
   const setTextareaValue = useCallback(
     (value: string) => {
       setComposerTextareaValue(textarea, value);
@@ -207,7 +219,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     };
 
     const handleInput = () => {
-      const value = textarea.value;
+      const value = getComposerInputValue(textarea);
       if (!isSlashLeadingInput(value)) {
         if (openRef.current) closeDropdown();
         return;
@@ -243,6 +255,19 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       } else if (event.key === "Enter") {
         const list = filteredRef.current;
         if (list.length === 0) return;
+        // If the user already typed arguments after the command name
+        // (``/echo hello world``), Enter must submit the message — not
+        // overwrite the composer with ``/<name> `` and drop the args. We
+        // detect "already has args" by looking for whitespace after the
+        // leading ``/word`` in the live composer value.
+        const liveValue = getComposerInputValue(textarea);
+        const trimmed = liveValue.replace(/^\s+/, "");
+        const hasArgs = /^\/\S+\s/.test(trimmed);
+        if (hasArgs) {
+          // Close the dropdown but let Enter bubble to Carbon's submit path.
+          closeDropdown();
+          return;
+        }
         const idx = Math.min(highlightIndexRef.current, list.length - 1);
         event.preventDefault();
         event.stopPropagation();
