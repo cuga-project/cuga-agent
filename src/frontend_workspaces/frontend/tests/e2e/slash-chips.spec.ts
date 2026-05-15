@@ -283,6 +283,27 @@ test.describe("slash-command chips", () => {
     expect(secondThreadId).toBe(NEW_THREAD_ID);
   });
 
+  test("skill chip picks up dark-mode styles under prefers-color-scheme: dark (#22)", async ({ page }) => {
+    // The chip CSS has explicit ``@media (prefers-color-scheme: dark)`` rules
+    // overriding the light background (#f6f8fa → #21262d). The risk this
+    // test guards against is a future refactor that hardcodes a light value
+    // outside the media query and silently regresses dark-mode appearance.
+    await page.emulateMedia({ colorScheme: "dark" });
+    await stubBootEndpoints(page);
+    await stubStream(page, SKILL_SSE);
+
+    await page.goto("/chat");
+    await sendInComposer(page, "/deck make 3 slides");
+
+    const summary = page.locator(".cuga-slash-skill-chip__summary");
+    await expect(summary).toBeVisible();
+
+    // #21262d → rgb(33, 38, 45). Assert exact value rather than "not light"
+    // so a partial regression (e.g. accidentally dropping the dark rule)
+    // shows up as a meaningful failure, not a vague "looks wrong".
+    await expect(summary).toHaveCSS("background-color", "rgb(33, 38, 45)");
+  });
+
   test("chips replay from history on page load (#22 + #23)", async ({ page }) => {
     await stubBootEndpoints(page, HISTORY_PAYLOAD);
 
