@@ -850,9 +850,9 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
 
-    # Prefetch the embedding model so the first unknown slash command (slice
-    # #20) doesn't pay a cold ~120MB FastEmbed download mid-request. The model
-    # is process-cached, so this is a fast no-op if knowledge warmup already
+    # Prefetch the embedding model so the first unknown slash command doesn't
+    # pay a cold ~120MB FastEmbed download mid-request. The model is
+    # process-cached, so this is a fast no-op if knowledge warmup already
     # loaded it.
     try:
         from cuga.backend.storage.embedding import create_embedding_function
@@ -1352,10 +1352,10 @@ async def event_stream(
         slash_result = await _dispatch_slash_for_stream(query, thread_id)
         if slash_result is not None and slash_result.kind in ("builtin", "unknown"):
             answer_text = slash_result.text or ""
-            # Slice #23: when an unknown command has embedding-based suggestions,
-            # surface them as a discrete event so the frontend can render
-            # clickable correction chips. The plain Answer text is kept as a
-            # fallback for clients that don't render the chips.
+            # When an unknown command has embedding-based suggestions, surface
+            # them as a discrete event so the frontend can render clickable
+            # correction chips. The plain Answer text is kept as a fallback
+            # for clients that don't render the chips.
             slash_suggestions = getattr(slash_result, "suggestions", None) or []
             suggestions_event_data = (
                 json.dumps(
@@ -1430,18 +1430,18 @@ async def event_stream(
         and slash_result.injected_messages
         and local_state is not None
     ):
-        # Slice #17: prepend the synthesized HumanMessage/AIMessage/ToolMessage[/HumanMessage]
-        # sequence so the planner sees the skill as already loaded. ``input`` is the
-        # trailing arg block (or the bare slash invocation when there are no args) so
-        # the planner has a current-turn prompt to act on.
+        # Prepend the synthesized load_skill message quad so the planner sees
+        # the skill as already loaded. ``input`` is the trailing arg block (or
+        # the bare slash invocation when there are no args) so the planner has
+        # a current-turn prompt to act on.
         existing = list(local_state.chat_messages or [])
         local_state.chat_messages = list(slash_result.injected_messages) + existing
         local_state.input = (
             slash_result.raw_args if slash_result.raw_args else slash_result.raw_input or query
         )
 
-        # Slice #22: surface the slash skill invocation as a discrete event so
-        # the frontend can render the synthesized load_skill pair as a single
+        # Surface the slash skill invocation as a discrete event so the
+        # frontend can render the synthesized load_skill pair as a single
         # collapsed chip — both in the live turn and when the thread is later
         # reloaded from history (the event is buffered into the saved stream).
         slash_chip_event_data = json.dumps(
@@ -1506,9 +1506,9 @@ async def event_stream(
                 "filenames": _session_kb.filenames,
             }
 
-    # Slice #21: when this turn is a slash-invoked skill, propagate its
-    # ``allowed-tools`` whitelist (if declared) so the cuga_lite tool-approval
-    # gate enforces it. ``None`` = no restriction; ``()`` = allow nothing.
+    # When this turn is a slash-invoked skill, propagate its ``allowed-tools``
+    # whitelist (if declared) so the cuga_lite tool-approval gate enforces it.
+    # ``None`` = no restriction; ``()`` = allow nothing.
     _skill_allowed_tools = (
         slash_result.allowed_tools if slash_result is not None and slash_result.kind == "skill" else None
     )
@@ -1768,9 +1768,22 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                        yield StreamEvent(name=name, data=event).format(
-                            app_state.output_format, thread_id=thread_id
-                        )
+                        if app_state.output_format == OutputFormat.WXO:
+                            # WXO mode re-encodes each event as a Chat
+                            # Completions chunk; ``format_event`` partitions
+                            # on ``data: ``, so it actually expects the
+                            # already-formatted SSE block.
+                            yield StreamEvent(name=name, data=event).format(
+                                app_state.output_format, thread_id=thread_id
+                            )
+                        else:
+                            # ``event`` is already a fully-formed
+                            # ``event: <name>\ndata: <body>\n\n`` block from
+                            # ``agent_loop.run_stream``; emit verbatim so we
+                            # don't double-wrap (the wrapper added a second
+                            # outer envelope, leaking the inner block as the
+                            # streamed message body).
+                            yield event
     except Exception as e:
         logger.exception(e)
         logger.error(traceback.format_exc())
@@ -3312,8 +3325,8 @@ async def get_commands(current_user: Optional[UserInfo] = Depends(require_chat_a
 
     The registry is rebuilt on each request so newly added SKILL.md files
     appear without a server restart. Each entry carries a ``kind`` discriminator
-    (``'builtin'`` or ``'skill'``) so the autocomplete UI (slice #18) can style
-    or group entries by source.
+    (``'builtin'`` or ``'skill'``) so the autocomplete UI can style or group
+    entries by source.
     """
     try:
         from cuga.backend.slash_commands import build_slash_registry
