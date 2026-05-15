@@ -1,12 +1,12 @@
-from typing import Dict, List, Optional, Literal, Any
+from typing import Dict, List, Optional, Literal, Any, Annotated, Union
 import json
 import inspect
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
-from pydantic import BaseModel, Field, SerializeAsAny, field_validator
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
+from pydantic import BaseModel, Field
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.api.api_planner_agent.prompts.load_prompt import ApiDescription
@@ -905,62 +905,16 @@ def default_state(page, observation, goal, chat_messages=None):
     return state
 
 
-_MESSAGE_TYPE_MAP: Dict[str, type[BaseMessage]] = {
-    "human": HumanMessage,
-    "ai": AIMessage,
-    "tool": ToolMessage,
-    "system": SystemMessage,
-}
-
-
-def rehydrate_messages(value):
-    """Promote dict-shaped messages back to their proper ``BaseMessage`` subclass.
-
-    The LangGraph checkpointer serializes ``Optional[List[BaseMessage]]`` fields
-    as dicts. On rehydration via ``AgentState(**state.values)``, Pydantic
-    creates plain ``BaseMessage`` instances (the field's annotation) because
-    LangChain's message classes aren't set up as a discriminated union.
-
-    That loses ``AIMessage.tool_calls`` (and the ability to ``isinstance`` check
-    ``ToolMessage`` downstream — see ``cuga_lite_graph.call_model``'s message
-    processing). Slice #17's synthesized load_skill pair is the first
-    persisted chat_messages payload that requires those subclass details to
-    survive, which is how this dormant bug surfaced.
-
-    This helper, used as a ``mode="before"`` field validator, walks the value
-    and converts each dict to its proper subclass based on the ``type``
-    discriminator. ``BaseMessage`` instances and unknown types pass through
-    unchanged.
-    """
-    if not value:
-        return value
-    out = []
-    for item in value:
-        if isinstance(item, BaseMessage) and type(item) is not BaseMessage:
-            out.append(item)
-            continue
-        if isinstance(item, BaseMessage) and type(item) is BaseMessage:
-            # Already coerced to the wrong (parent) class — rebuild from its dict form.
-            payload = item.model_dump() if hasattr(item, "model_dump") else item.dict()
-            type_tag = payload.get("type")
-        elif isinstance(item, dict):
-            payload = item
-            type_tag = item.get("type")
-        else:
-            out.append(item)
-            continue
-        klass = _MESSAGE_TYPE_MAP.get(type_tag)
-        if klass is None:
-            out.append(item)
-            continue
-        # ``BaseMessage`` dicts include ``type`` themselves — Pydantic will
-        # reject it as an unknown kwarg, so drop it before constructing.
-        kwargs = {k: v for k, v in payload.items() if k != "type"}
-        try:
-            out.append(klass(**kwargs))
-        except Exception:
-            out.append(item)
-    return out
+# Message type for CUGA's chat-history fields, persisted via LangGraph's
+# checkpointer. The discriminator keeps subclass fields
+# (``AIMessage.tool_calls``, ``ToolMessage.tool_call_id``) intact across
+# Pydantic dump/rehydrate — a bare ``BaseMessage`` annotation would drop them.
+# Streaming ``*Chunk`` variants are excluded by design: CUGA never persists
+# chunks, so a loud discriminator rejection beats silent demotion.
+ChatHistoryMessage = Annotated[
+    Union[HumanMessage, AIMessage, ToolMessage],
+    Field(discriminator="type"),
+]
 
 
 class SubTaskHistory(BaseModel):
@@ -994,24 +948,11 @@ class AgentState(BaseModel):
     current_app_description: Optional[str] = None
     api_last_step: Optional[str] = None
     guidance: Optional[str] = None
-    # ``SerializeAsAny`` makes Pydantic serialize each message by its *runtime*
-    # subclass (AIMessage, ToolMessage, ...) instead of the declared
-    # ``BaseMessage`` type — otherwise ``AIMessage.tool_calls`` and
-    # ``ToolMessage.tool_call_id`` get silently dropped on ``model_dump()``,
-    # which is what the LangGraph checkpointer calls before persisting state.
-    chat_messages: Optional[List[SerializeAsAny[BaseMessage]]] = Field(default_factory=list)
-    chat_agent_messages: Optional[List[SerializeAsAny[BaseMessage]]] = Field(default_factory=list)
-    supervisor_chat_messages: Optional[List[SerializeAsAny[BaseMessage]]] = Field(
+    chat_messages: Optional[List[ChatHistoryMessage]] = Field(default_factory=list)
+    chat_agent_messages: Optional[List[ChatHistoryMessage]] = Field(default_factory=list)
+    supervisor_chat_messages: Optional[List[ChatHistoryMessage]] = Field(
         default_factory=list
     )  # Supervisor's conversation history
-
-    # Promote dict-shaped messages back to their proper BaseMessage subclass on
-    # rehydration so downstream isinstance checks + AIMessage.tool_calls /
-    # ToolMessage.tool_call_id remain intact across LangGraph checkpoints.
-    @field_validator("chat_messages", "chat_agent_messages", "supervisor_chat_messages", mode="before")
-    @classmethod
-    def _rehydrate_message_subclasses(cls, value):
-        return rehydrate_messages(value)
 
     api_intent_relevant_apps: Optional[List[AnalyzeTaskAppsOutput]] = None
     api_intent_relevant_apps_current: Optional[List[AnalyzeTaskAppsOutput]] = None
