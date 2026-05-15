@@ -1666,7 +1666,11 @@ class CugaAgent:
         """
         try:
             from cuga.backend.skills import SkillRegistry, discover_skills
-            from cuga.backend.slash_commands import build_slash_registry, parse_and_dispatch
+            from cuga.backend.slash_commands import (
+                build_command_resolver,
+                build_slash_registry,
+                parse_and_dispatch,
+            )
         except Exception:
             logger.exception("Failed to import slash_commands package")
             return None
@@ -1684,6 +1688,7 @@ class CugaAgent:
                 slash_registry=slash_registry,
                 skill_registry=skill_registry,
                 thread_id=thread_id,
+                command_resolver_factory=build_command_resolver,
             )
         except Exception:
             logger.exception(f"Slash dispatch failed for input {message!r}")
@@ -1863,11 +1868,7 @@ class CugaAgent:
             # Slice #17: if dispatch resolved a skill, replace the bare user
             # message with the synthesized 4-message load_skill pair so the
             # planner sees the skill as already loaded.
-            if (
-                slash_result is not None
-                and slash_result.kind == "skill"
-                and slash_result.injected_messages
-            ):
+            if slash_result is not None and slash_result.kind == "skill" and slash_result.injected_messages:
                 new_messages = list(slash_result.injected_messages)
             else:
                 new_messages = [HumanMessage(content=message)]

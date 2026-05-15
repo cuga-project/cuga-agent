@@ -13,6 +13,8 @@ class SkillEntry:
     body: str
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
+    arguments: tuple[str, ...] = ()  # named args declared in the `arguments` frontmatter key
+    allowed_tools: tuple[str, ...] = ()  # tool whitelist declared in `allowed-tools` (enforcement: slice #21)
 
 
 class SkillRegistry:
@@ -25,11 +27,21 @@ class SkillRegistry:
     def entries(self) -> List[SkillEntry]:
         return list(self._by_name.values())
 
-    def load_skill(self, name: str) -> str:
+    def load_skill(self, name: str, args: str = "") -> str:
         entry = self._by_name.get(name.strip())
         if not entry:
             known = ", ".join(sorted(self._by_name.keys())) or "(none)"
             return f"Unknown skill: {name!r}. Known skills: {known}"
+
+        # Argument substitution (slice #19) runs on the raw SKILL.md body before
+        # the install/sandbox wrapping below. Model-initiated load_skill calls
+        # pass no args and the body is used verbatim, preserving prior behavior.
+        if args:
+            from cuga.backend.slash_commands.arg_substitution import substitute
+
+            body = substitute(entry.body, args, entry.arguments)
+        else:
+            body = entry.body
 
         parts: list[str] = []
 
@@ -88,5 +100,5 @@ class SkillRegistry:
             "Do not use `uv npm`, `uv run node`, or `uv run npm`."
         )
         parts.append("")
-        parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{entry.body}")
+        parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{body}")
         return "\n".join(parts)

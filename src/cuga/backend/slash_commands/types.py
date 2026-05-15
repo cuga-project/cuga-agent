@@ -19,6 +19,7 @@ from cuga.backend.slash_commands.parser import ParsedSlash
 
 if TYPE_CHECKING:  # pragma: no cover
     from cuga.backend.skills.registry import SkillRegistry
+    from cuga.backend.slash_commands.command_resolver import CommandSuggestion
     from cuga.backend.slash_commands.registry import SlashRegistry
 
 
@@ -64,6 +65,8 @@ class DispatchResult:
     resolved_name: Optional[str] = None
     raw_input: Optional[str] = None
     raw_args: Optional[str] = None
+    # Top semantic matches for an unknown command (slice #20); empty otherwise.
+    suggestions: List["CommandSuggestion"] = field(default_factory=list)
 
 
 @runtime_checkable

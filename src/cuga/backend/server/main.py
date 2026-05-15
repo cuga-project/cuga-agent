@@ -849,6 +849,22 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
+    # Prefetch the embedding model so the first unknown slash command (slice
+    # #20) doesn't pay a cold ~120MB FastEmbed download mid-request. The model
+    # is process-cached, so this is a fast no-op if knowledge warmup already
+    # loaded it.
+    try:
+        from cuga.backend.storage.embedding import create_embedding_function
+
+        embed_fn, _embed_dim = await create_embedding_function()
+        if embed_fn is not None:
+            logger.info("Embedding model prefetched for slash command resolver")
+        else:
+            logger.info("No embedding backend available; slash resolver will degrade gracefully")
+    except Exception:
+        logger.warning("Embedding model prefetch skipped", exc_info=True)
+
     yield
     logger.info("Application is shutting down...")
 
@@ -1026,7 +1042,11 @@ async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
     planner) or a :class:`DispatchResult` for the caller to act on.
     """
     try:
-        from cuga.backend.slash_commands import build_slash_registry, parse_and_dispatch
+        from cuga.backend.slash_commands import (
+            build_command_resolver,
+            build_slash_registry,
+            parse_and_dispatch,
+        )
     except Exception:
         logger.exception("Failed to import slash_commands package")
         return None
@@ -1045,6 +1065,7 @@ async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
             skill_registry=skill_registry,
             thread_id=thread_id,
             clear_stop_event=_clear_stop_event,
+            command_resolver_factory=build_command_resolver,
         )
     except Exception:
         logger.exception(f"Slash dispatch failed for input {query!r}")
@@ -1331,7 +1352,40 @@ async def event_stream(
         slash_result = await _dispatch_slash_for_stream(query, thread_id)
         if slash_result is not None and slash_result.kind in ("builtin", "unknown"):
             answer_text = slash_result.text or ""
+            # Slice #23: when an unknown command has embedding-based suggestions,
+            # surface them as a discrete event so the frontend can render
+            # clickable correction chips. The plain Answer text is kept as a
+            # fallback for clients that don't render the chips.
+            slash_suggestions = getattr(slash_result, "suggestions", None) or []
+            suggestions_event_data = (
+                json.dumps(
+                    {
+                        "raw_input": slash_result.raw_input,
+                        "suggestions": [
+                            {
+                                "name": s.name,
+                                "kind": s.kind,
+                                "description": s.description,
+                                "score": round(s.score, 4),
+                            }
+                            for s in slash_suggestions
+                        ],
+                    }
+                )
+                if slash_suggestions
+                else None
+            )
             if thread_id:
+                if suggestions_event_data is not None:
+                    stream_events_buffer.append(
+                        {
+                            "event_name": "SlashSuggestions",
+                            "event_data": suggestions_event_data,
+                            "timestamp": datetime.datetime.utcnow().isoformat(),
+                            "sequence": event_sequence,
+                        }
+                    )
+                    event_sequence += 1
                 stream_events_buffer.append(
                     {
                         "event_name": "Answer",
@@ -1361,6 +1415,10 @@ async def event_stream(
                     name="ThreadIdChanged",
                     data=json.dumps({"thread_id": slash_result.new_thread_id}),
                 ).format(app_state.output_format, thread_id=thread_id)
+            if suggestions_event_data is not None:
+                yield StreamEvent(name="SlashSuggestions", data=suggestions_event_data).format(
+                    app_state.output_format, thread_id=thread_id
+                )
             yield StreamEvent(name="Answer", data=answer_text).format(
                 app_state.output_format, thread_id=thread_id
             )
@@ -1380,6 +1438,31 @@ async def event_stream(
         local_state.chat_messages = list(slash_result.injected_messages) + existing
         local_state.input = (
             slash_result.raw_args if slash_result.raw_args else slash_result.raw_input or query
+        )
+
+        # Slice #22: surface the slash skill invocation as a discrete event so
+        # the frontend can render the synthesized load_skill pair as a single
+        # collapsed chip — both in the live turn and when the thread is later
+        # reloaded from history (the event is buffered into the saved stream).
+        slash_chip_event_data = json.dumps(
+            {
+                "resolved_name": slash_result.resolved_name,
+                "raw_input": slash_result.raw_input,
+                "raw_args": slash_result.raw_args or "",
+            }
+        )
+        if thread_id:
+            stream_events_buffer.append(
+                {
+                    "event_name": "SlashSkillInvoked",
+                    "event_data": slash_chip_event_data,
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "sequence": event_sequence,
+                }
+            )
+            event_sequence += 1
+        yield StreamEvent(name="SlashSkillInvoked", data=slash_chip_event_data).format(
+            app_state.output_format, thread_id=thread_id
         )
 
     langfuse_handler = (

@@ -13,7 +13,12 @@ unknown-command resolver (#20).
 """
 
 from cuga.backend.slash_commands.builtins import discover_builtins
-from cuga.backend.slash_commands.dispatcher import build_slash_registry, parse_and_dispatch
+from cuga.backend.slash_commands.command_resolver import CommandResolver, CommandSuggestion
+from cuga.backend.slash_commands.dispatcher import (
+    build_command_resolver,
+    build_slash_registry,
+    parse_and_dispatch,
+)
 from cuga.backend.slash_commands.parser import ParsedSlash, parse
 from cuga.backend.slash_commands.registry import SlashRegistry
 from cuga.backend.slash_commands.types import (
@@ -27,11 +32,14 @@ from cuga.backend.slash_commands.types import (
 __all__ = [
     "BuiltinCommand",
     "CommandRef",
+    "CommandResolver",
+    "CommandSuggestion",
     "DispatchContext",
     "DispatchKind",
     "DispatchResult",
     "ParsedSlash",
     "SlashRegistry",
+    "build_command_resolver",
     "build_slash_registry",
     "discover_builtins",
     "parse",
