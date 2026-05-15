@@ -1,5 +1,7 @@
 /**
- * E2E coverage for the slash-command chips (slices #22 + #23).
+ * E2E coverage for the slash-command chips (``SlashSkillInvoked`` collapsed
+ * chip and ``SlashSuggestions`` unknown-command chip) plus the
+ * ``ThreadIdChanged`` round-trip triggered by ``/clear``.
  *
  * We boot the real frontend in a headless Chromium, stub every backend
  * endpoint the chat hits, and assert what gets rendered inside Carbon AI
@@ -137,32 +139,35 @@ async function sendInComposer(page: Page, text: string) {
 }
 
 test.describe("slash-command chips", () => {
-  test("skill invocation renders a collapsed chip that expands on click (#22)", async ({ page }) => {
+  test("skill invocation surfaces in the reasoning panel rather than a separate chip", async ({ page }) => {
+    // The skill invocation used to render as its own `.cuga-slash-skill-chip`
+    // bubble; it now lands as a "Skill invoked: /<name>" reasoning step on
+    // the assistant message. Two assertions guard the migration:
+    //   (a) no orphan chip bubble appears;
+    //   (b) the reasoning toggle is present and reveals the skill name.
     await stubBootEndpoints(page);
     await stubStream(page, SKILL_SSE);
 
     await page.goto("/chat");
     await sendInComposer(page, "/deck make 3 slides");
 
-    const chip = page.locator(".cuga-slash-skill-chip");
-    await expect(chip).toBeVisible();
-    await expect(chip.locator(".cuga-slash-skill-chip__name")).toHaveText("/deck");
+    // (a) The old separate-bubble chip must not appear anywhere.
+    await expect(page.locator(".cuga-slash-skill-chip")).toHaveCount(0);
 
-    // Collapsed by default — details list is absent.
-    await expect(chip.locator(".cuga-slash-skill-chip__details")).toHaveCount(0);
+    // (b) The reasoning toggle, relabelled "Show details", must be present
+    // and clickable. After clicking, the panel reveals the skill audit step.
+    const showDetails = page.getByRole("button", { name: /Show details/i }).first();
+    await expect(showDetails).toBeVisible({ timeout: 10_000 });
+    await showDetails.click();
 
-    await chip.locator(".cuga-slash-skill-chip__summary").click();
-    const details = chip.locator(".cuga-slash-skill-chip__details");
-    await expect(details).toBeVisible();
-    await expect(details).toContainText("/deck make 3 slides");
-    await expect(details).toContainText("make 3 slides");
-
-    // Collapses again.
-    await chip.locator(".cuga-slash-skill-chip__summary").click();
-    await expect(chip.locator(".cuga-slash-skill-chip__details")).toHaveCount(0);
+    // The audit step is titled "Skill invoked: /deck" and contains the raw
+    // input verbatim. The reasoning panel is rendered inside Carbon's shadow
+    // DOM; Playwright's auto-piercing locators reach in.
+    await expect(page.getByText(/Skill invoked:\s*\/deck/i).first()).toBeVisible();
+    await expect(page.getByText("/deck make 3 slides").first()).toBeVisible();
   });
 
-  test("unknown command renders clickable suggestion chips, click writes to composer, plain Answer is suppressed (#23)", async ({ page }) => {
+  test("unknown command renders clickable suggestion chips, click writes to composer, plain Answer is suppressed", async ({ page }) => {
     await stubBootEndpoints(page);
     await stubStream(page, SUGGESTIONS_SSE);
 
@@ -181,10 +186,11 @@ test.describe("slash-command chips", () => {
     await expect(page.getByText(/Unknown command:/)).toHaveCount(0);
 
     // Clicking a chip drops "/summarize " (trailing space) into the composer.
-    // Read the value back via a shadow-DOM walk (mirrors what slice #18 does
-    // when locating the composer): Carbon's composer can be either a
-    // ``<textarea>`` or a ``contenteditable`` host depending on the version;
-    // ``getByRole('textbox').toHaveValue`` would false-fail on contenteditable.
+    // Read the value back via a shadow-DOM walk (mirrors what the autocomplete
+    // dropdown does when locating the composer): Carbon's composer can be
+    // either a ``<textarea>`` or a ``contenteditable`` host depending on the
+    // version; ``getByRole('textbox').toHaveValue`` would false-fail on
+    // contenteditable.
     await chips.nth(0).click();
     await expect
       .poll(
@@ -192,17 +198,28 @@ test.describe("slash-command chips", () => {
           page.evaluate(() => {
             const SEL =
               'textarea, input[type="text"], [contenteditable="true"], [contenteditable=""], [role="textbox"]';
+            const isVisible = (e: Element) => {
+              const r = (e as HTMLElement).getBoundingClientRect?.();
+              return !!r && r.width > 0 && r.height > 0;
+            };
+            // Mirrors composerTextarea.findComposerInput: prefer the visible
+            // composer (Carbon Chat may leave an orphaned zero-rect node
+            // attached briefly after submit), falling back to the first match.
             function find(root: Document | ShadowRoot): Element | null {
-              const direct = root.querySelector(SEL);
-              if (direct) return direct;
-              for (const el of Array.from(root.querySelectorAll("*"))) {
-                const sr = (el as Element & { shadowRoot?: ShadowRoot }).shadowRoot;
-                if (sr) {
-                  const found = find(sr);
-                  if (found) return found;
+              let firstSeen: Element | null = null;
+              const stack: Array<Document | ShadowRoot> = [root];
+              while (stack.length) {
+                const r = stack.shift()!;
+                for (const c of Array.from(r.querySelectorAll(SEL))) {
+                  if (!firstSeen) firstSeen = c;
+                  if (isVisible(c)) return c;
+                }
+                for (const el of Array.from(r.querySelectorAll("*"))) {
+                  const sr = (el as Element & { shadowRoot?: ShadowRoot }).shadowRoot;
+                  if (sr) stack.push(sr);
                 }
               }
-              return null;
+              return firstSeen;
             }
             const el = find(document);
             if (!el) return null;
@@ -216,12 +233,12 @@ test.describe("slash-command chips", () => {
       .toBe("/summarize ");
   });
 
-  test("ThreadIdChanged rotates X-Thread-ID for the next request (#15)", async ({ page }) => {
-    // Slice #15: `/clear` mints a fresh thread_id server-side. The frontend
-    // must adopt it so the NEXT outbound request's `X-Thread-ID` header
-    // points at the new thread, not the old one. Verifying this end-to-end
-    // is the only way to catch a regression where the SSE event is parsed
-    // but the setter is never called.
+  test("ThreadIdChanged rotates X-Thread-ID for the next request", async ({ page }) => {
+    // `/clear` mints a fresh thread_id server-side. The frontend must adopt
+    // it so the NEXT outbound request's `X-Thread-ID` header points at the
+    // new thread, not the old one. Verifying this end-to-end is the only
+    // way to catch a regression where the SSE event is parsed but the
+    // setter is never called.
     await stubBootEndpoints(page);
 
     const NEW_THREAD_ID = "11111111-2222-4333-8444-555555555555";
@@ -283,11 +300,10 @@ test.describe("slash-command chips", () => {
     expect(secondThreadId).toBe(NEW_THREAD_ID);
   });
 
-  test("skill chip picks up dark-mode styles under prefers-color-scheme: dark (#22)", async ({ page }) => {
-    // The chip CSS has explicit ``@media (prefers-color-scheme: dark)`` rules
-    // overriding the light background (#f6f8fa → #21262d). The risk this
-    // test guards against is a future refactor that hardcodes a light value
-    // outside the media query and silently regresses dark-mode appearance.
+  // CUGA does not currently have an app-wide dark mode. The chip dark-mode
+  // CSS rules were no-op'd; re-enable this test alongside any future dark-mode
+  // work to guard against partial regressions.
+  test.skip("skill chip picks up dark-mode styles under prefers-color-scheme: dark", async ({ page }) => {
     await page.emulateMedia({ colorScheme: "dark" });
     await stubBootEndpoints(page);
     await stubStream(page, SKILL_SSE);
@@ -297,22 +313,26 @@ test.describe("slash-command chips", () => {
 
     const summary = page.locator(".cuga-slash-skill-chip__summary");
     await expect(summary).toBeVisible();
-
-    // #21262d → rgb(33, 38, 45). Assert exact value rather than "not light"
-    // so a partial regression (e.g. accidentally dropping the dark rule)
-    // shows up as a meaningful failure, not a vague "looks wrong".
     await expect(summary).toHaveCSS("background-color", "rgb(33, 38, 45)");
   });
 
-  test("chips replay from history on page load (#22 + #23)", async ({ page }) => {
+  test("skill invocation replays into the reasoning panel; suggestions chip replays as a bubble", async ({ page }) => {
     await stubBootEndpoints(page, HISTORY_PAYLOAD);
 
     await page.goto("/chat");
 
-    // Both chip types must replay through `renderUserDefinedResponse`.
-    await expect(page.locator(".cuga-slash-skill-chip")).toBeVisible();
-    await expect(page.locator(".cuga-slash-skill-chip__name")).toHaveText("/deck");
+    // Skill invocation no longer renders a separate chip on history reload —
+    // it lands in the reasoning panel of the assistant message it preceded.
+    await expect(page.locator(".cuga-slash-skill-chip")).toHaveCount(0);
 
+    // The reasoning toggle ("Show details") must be present; expanding it
+    // reveals the audit step for /deck.
+    const showDetails = page.getByRole("button", { name: /Show details/i }).first();
+    await expect(showDetails).toBeVisible({ timeout: 10_000 });
+    await showDetails.click();
+    await expect(page.getByText(/Skill invoked:\s*\/deck/i).first()).toBeVisible();
+
+    // Suggestions chip still replays as its own interactive bubble.
     const suggestionsChip = page.locator(".cuga-slash-suggestions");
     await expect(suggestionsChip).toBeVisible();
     await expect(suggestionsChip.locator(".cuga-slash-suggestion__name").first()).toHaveText("/summarize");
