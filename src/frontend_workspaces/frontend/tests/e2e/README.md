@@ -1,7 +1,8 @@
 # Playwright e2e tests
 
-Browser-driven verification for the slash-command chips (slices #22 + #23)
-and the slice #15 `ThreadIdChanged` round-trip.
+Browser-driven verification for the slash-command chips
+(`SlashSkillInvoked` collapsed chip and `SlashSuggestions` unknown-command
+chip) and the `ThreadIdChanged` round-trip triggered by `/clear`.
 
 `@playwright/test` is in `devDependencies`, so `pnpm install` brings it in.
 The Chromium binary is **not** auto-downloaded — run the install step on
@@ -18,15 +19,16 @@ pnpm run test:e2e                        # runs ./playwright.config.ts -> tests/
 
 - `slash-chips.spec.ts` boots the production build in headless Chromium, stubs
   every backend endpoint via `page.route` (no real backend needed), and asserts:
-  - **#22** — typing `/deck make 3 slides` renders a collapsed `⚡ /deck` chip;
-    clicking the chip expands an audit panel showing the raw input, resolved
-    skill, and args; clicking again collapses it.
-  - **#23** — typing `/sumarize` renders clickable suggestion chips
-    (`/summarize`, `/summary-report`); clicking a chip drops `/<name> ` into the
-    composer; the redundant plain-text "Unknown command:" fallback is
-    suppressed.
-  - Both chip types replay correctly on history reload via
-    `renderUserDefinedResponse`.
+  - **Skill invocation** — typing `/deck make 3 slides` no longer mounts a
+    separate chip bubble; the invocation surfaces as a `Skill invoked: /deck`
+    step inside the assistant message's reasoning panel (toggle labelled
+    "Show details").
+  - **Suggestion chips** — typing `/sumarize` renders clickable suggestion
+    chips (`/summarize`, `/summary-report`); clicking a chip drops `/<name> `
+    into the composer; the redundant plain-text "Unknown command:" fallback
+    is suppressed.
+  - History reload: skill invocations replay into the same reasoning panel,
+    suggestion chips replay as their own bubble.
 
 ## Architecture notes
 
