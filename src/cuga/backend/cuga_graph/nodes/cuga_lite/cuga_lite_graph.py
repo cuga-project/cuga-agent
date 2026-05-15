@@ -58,7 +58,7 @@ import asyncio
 import inspect
 from typing import Any, Optional, Sequence, Dict, List, Tuple, Set
 from loguru import logger
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializeAsAny, field_validator
 
 
 from langchain_core.language_models import BaseChatModel
@@ -626,8 +626,9 @@ class CugaLiteState(BaseModel):
     - task_todos: latest todo list from create_update_todos (injected as Current Plan on the system prompt)
     """
 
-    # Shared keys (compatible with AgentState)
-    chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
+    # Shared keys (compatible with AgentState). See AgentState for why
+    # ``SerializeAsAny`` is required around the BaseMessage annotation.
+    chat_messages: Optional[List[SerializeAsAny[BaseMessage]]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
     thread_id: Optional[str] = None
     service_scope: Optional[Dict[str, str]] = Field(
@@ -662,6 +663,14 @@ class CugaLiteState(BaseModel):
     tool_calls: List[Dict[str, Any]] = Field(
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
+
+    # See ``agent_state.rehydrate_messages`` for why this is needed.
+    @field_validator("chat_messages", mode="before")
+    @classmethod
+    def _rehydrate_message_subclasses(cls, value):
+        from cuga.backend.cuga_graph.state.agent_state import rehydrate_messages
+
+        return rehydrate_messages(value)
 
     class Config:
         arbitrary_types_allowed = True
