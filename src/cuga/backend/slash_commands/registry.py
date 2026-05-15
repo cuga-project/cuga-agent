@@ -26,9 +26,7 @@ class SlashRegistry:
         self._builtins: dict[str, BuiltinCommand] = {}
         for b in builtins:
             if b.name in self._builtins:
-                logger.warning(
-                    f"Duplicate built-in slash command '{b.name}'; keeping first occurrence"
-                )
+                logger.warning(f"Duplicate built-in slash command '{b.name}'; keeping first occurrence")
                 continue
             self._builtins[b.name] = b
         self._skill_registry = skill_registry

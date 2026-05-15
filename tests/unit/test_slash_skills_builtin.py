@@ -33,9 +33,7 @@ def test_skills_lists_entries():
         ]
     )
     reg = build_slash_registry(skill_registry=skills)
-    result = asyncio.run(
-        parse_and_dispatch("/skills", slash_registry=reg, skill_registry=skills)
-    )
+    result = asyncio.run(parse_and_dispatch("/skills", slash_registry=reg, skill_registry=skills))
     assert result.kind == "builtin"
     text = result.text or ""
     assert "deck" in text
@@ -48,9 +46,7 @@ def test_skills_lists_entries():
 def test_skills_handles_empty_registry():
     skills = _make_registry([])
     reg = build_slash_registry(skill_registry=skills)
-    result = asyncio.run(
-        parse_and_dispatch("/skills", slash_registry=reg, skill_registry=skills)
-    )
+    result = asyncio.run(parse_and_dispatch("/skills", slash_registry=reg, skill_registry=skills))
     assert result.kind == "builtin"
     assert "No skills installed" in (result.text or "")
 
@@ -63,11 +59,7 @@ def test_skills_handles_missing_registry():
 
 
 def test_skills_omits_requirements_line_when_empty():
-    skills = _make_registry(
-        [SkillEntry(name="lean", description="Lean skill", body="…", source="/p")]
-    )
+    skills = _make_registry([SkillEntry(name="lean", description="Lean skill", body="…", source="/p")])
     reg = build_slash_registry(skill_registry=skills)
-    result = asyncio.run(
-        parse_and_dispatch("/skills", slash_registry=reg, skill_registry=skills)
-    )
+    result = asyncio.run(parse_and_dispatch("/skills", slash_registry=reg, skill_registry=skills))
     assert "requirements" not in (result.text or "").lower()

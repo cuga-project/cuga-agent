@@ -132,12 +132,8 @@ def test_dispatcher_populates_injected_messages_for_known_skill():
 
 
 def test_dispatcher_skill_without_args_omits_trailing_human_message():
-    skills = SkillRegistry(
-        [SkillEntry(name="deck", description="d", body="BODY", source="/p")]
-    )
+    skills = SkillRegistry([SkillEntry(name="deck", description="d", body="BODY", source="/p")])
     reg = build_slash_registry(skill_registry=skills)
-    result = asyncio.run(
-        parse_and_dispatch("/deck", slash_registry=reg, skill_registry=skills)
-    )
+    result = asyncio.run(parse_and_dispatch("/deck", slash_registry=reg, skill_registry=skills))
     assert result.kind == "skill"
     assert len(result.injected_messages) == 3

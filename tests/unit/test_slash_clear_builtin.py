@@ -15,11 +15,7 @@ def test_clear_is_registered_as_builtin():
 
 def test_clear_returns_new_thread_id():
     reg = build_slash_registry()
-    result = asyncio.run(
-        parse_and_dispatch(
-            "/clear", slash_registry=reg, thread_id="thread-a"
-        )
-    )
+    result = asyncio.run(parse_and_dispatch("/clear", slash_registry=reg, thread_id="thread-a"))
     assert result.kind == "builtin"
     assert result.new_thread_id
     uuid.UUID(result.new_thread_id)  # raises if not a valid UUID
@@ -29,9 +25,7 @@ def test_clear_returns_new_thread_id():
 
 def test_clear_without_thread_id_still_mints_one():
     reg = build_slash_registry()
-    result = asyncio.run(
-        parse_and_dispatch("/clear", slash_registry=reg, thread_id=None)
-    )
+    result = asyncio.run(parse_and_dispatch("/clear", slash_registry=reg, thread_id=None))
     assert result.kind == "builtin"
     assert result.new_thread_id
 
