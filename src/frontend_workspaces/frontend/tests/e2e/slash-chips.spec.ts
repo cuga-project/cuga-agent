@@ -269,11 +269,13 @@ test.describe("slash-command chips", () => {
     await sendInComposer(page, "/clear");
     // Wait for the clear Answer to finish rendering so the SSE stream is
     // fully consumed (including the ThreadIdChanged event) before we send
-    // the next turn.
-    await expect(page.getByText("Conversation cleared.")).toBeVisible();
+    // the next turn. Carbon also pumps message text into an aria-live
+    // announcement region, so the message text resolves to multiple
+    // elements — `.last()` reliably targets the visible chat bubble.
+    await expect(page.getByText("Conversation cleared.").last()).toBeVisible();
 
     await sendInComposer(page, "hello again");
-    await expect(page.getByText("Hi.")).toBeVisible();
+    await expect(page.getByText("Hi.").last()).toBeVisible();
 
     expect(streamCallCount).toBe(2);
     expect(firstThreadId).not.toBe(NEW_THREAD_ID);
