@@ -216,6 +216,71 @@ test.describe("slash-command chips", () => {
       .toBe("/summarize ");
   });
 
+  test("ThreadIdChanged rotates X-Thread-ID for the next request (#15)", async ({ page }) => {
+    // Slice #15: `/clear` mints a fresh thread_id server-side. The frontend
+    // must adopt it so the NEXT outbound request's `X-Thread-ID` header
+    // points at the new thread, not the old one. Verifying this end-to-end
+    // is the only way to catch a regression where the SSE event is parsed
+    // but the setter is never called.
+    await stubBootEndpoints(page);
+
+    const NEW_THREAD_ID = "11111111-2222-4333-8444-555555555555";
+    let firstThreadId: string | null = null;
+    let secondThreadId: string | null = null;
+    let streamCallCount = 0;
+
+    await page.route("**/stream", (route: Route) => {
+      streamCallCount += 1;
+      const headers = route.request().headers();
+      if (streamCallCount === 1) {
+        firstThreadId = headers["x-thread-id"] ?? null;
+        // `/clear` server response: rotate the thread id, then a normal Answer.
+        const body =
+          [
+            "event: UserMessage\ndata: /clear",
+            `event: ThreadIdChanged\ndata: {"thread_id": "${NEW_THREAD_ID}"}`,
+            "event: Answer\ndata: Conversation cleared.",
+            "event: Complete\ndata: \n",
+          ].join("\n\n") + "\n\n";
+        return route.fulfill({
+          status: 200,
+          contentType: "text/event-stream",
+          body,
+          headers: { "Cache-Control": "no-cache" },
+        });
+      }
+      secondThreadId = headers["x-thread-id"] ?? null;
+      const body =
+        [
+          "event: UserMessage\ndata: hello again",
+          "event: Answer\ndata: Hi.",
+          "event: Complete\ndata: \n",
+        ].join("\n\n") + "\n\n";
+      return route.fulfill({
+        status: 200,
+        contentType: "text/event-stream",
+        body,
+        headers: { "Cache-Control": "no-cache" },
+      });
+    });
+
+    await page.goto("/chat");
+
+    await sendInComposer(page, "/clear");
+    // Wait for the clear Answer to finish rendering so the SSE stream is
+    // fully consumed (including the ThreadIdChanged event) before we send
+    // the next turn.
+    await expect(page.getByText("Conversation cleared.")).toBeVisible();
+
+    await sendInComposer(page, "hello again");
+    await expect(page.getByText("Hi.")).toBeVisible();
+
+    expect(streamCallCount).toBe(2);
+    expect(firstThreadId).not.toBe(NEW_THREAD_ID);
+    expect(firstThreadId).not.toBe(null);
+    expect(secondThreadId).toBe(NEW_THREAD_ID);
+  });
+
   test("chips replay from history on page load (#22 + #23)", async ({ page }) => {
     await stubBootEndpoints(page, HISTORY_PAYLOAD);
 
