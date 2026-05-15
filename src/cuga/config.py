@@ -135,6 +135,7 @@ validators = [
     Validator("advanced_features.enable_web_search", default=False),
     Validator("advanced_features.execution_output_max_length", default=35000),
     Validator("advanced_features.enable_shell_tool", default=False),
+    Validator("advanced_features.enable_filesystem_tools", default=False),
     Validator("advanced_features.sandbox_mode", default="opensandbox"),
     Validator("advanced_features.cuga_lite_nl_auto_continue", default=True),
     Validator("features.chat", default=True),

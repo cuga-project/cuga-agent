@@ -266,15 +266,21 @@ class ChatAgent(BaseAgent):
         except Exception as exc:
             logger.debug(f"Chat knowledge context unavailable: {exc}")
 
-        # When skills are enabled, filesystem MCP tools need per-thread path
-        # prefixing so each chat thread sees its own subdir of cuga_workspace.
-        # When skills are disabled this is a no-op pass-through.
-        from cuga.backend.cuga_graph.nodes.chat.chat_agent.mcp_filesystem_wrapper import (
-            wrap_mcp_filesystem_tools,
-        )
+        # Filesystem tools — only when enable_filesystem_tools is on.
+        # Any stale ``filesystem_*`` MCP tools from base_tools are always stripped.
+        base_without_mcp_fs = [
+            t for t in self.base_tools if not getattr(t, "name", "").startswith("filesystem_")
+        ]
+        _fs_on = getattr(settings.advanced_features, "enable_filesystem_tools", False)
+        if _fs_on:
+            from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
+                create_filesystem_tools,
+            )
 
-        thread_scoped_base = wrap_mcp_filesystem_tools(self.base_tools, state.thread_id)
-        runtime_tools = self._dedupe_tools([*thread_scoped_base, *knowledge_tools])
+            fs_tools = create_filesystem_tools(state.thread_id)
+        else:
+            fs_tools = []
+        runtime_tools = self._dedupe_tools([*base_without_mcp_fs, *fs_tools, *knowledge_tools])
         tools_list = "\n".join(
             [f"- {tool.name}: {tool.description or 'No description'}" for tool in runtime_tools]
         )

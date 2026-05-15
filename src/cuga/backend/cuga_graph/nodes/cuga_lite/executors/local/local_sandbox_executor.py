@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import asyncio
 import os
-import re
 import shlex
 import shutil
 import sys
@@ -31,82 +30,31 @@ from typing import Callable, Optional
 from langchain_core.tools import StructuredTool
 from loguru import logger
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.opensandbox_executor import (
-    FileEntry,
-    ListFilesResult,
-    ReadFileInput,
+# Canonical workspace path logic now lives in the consolidated filesystem
+# package. Re-exported here under the historical names for back-compat
+# (external imports of ``local_thread_workspace_root`` / ``_resolve_workspace_path``).
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    CUGA_WORKSPACE_DIRNAME,
+    VIRTUAL_WORKSPACE_ROOT,
+    local_base_dir as _local_base_dir,
+    public_workspace_path as _public_workspace_path,
+    resolve_workspace_path as _resolve_workspace_path,
+    safe_thread_id as _safe_thread_id,
+    skills_enabled as _skills_enabled,
+    thread_workspace_root as local_thread_workspace_root,
 )
 
-VIRTUAL_WORKSPACE_ROOT = "/workspace"
-CUGA_WORKSPACE_DIRNAME = "cuga_workspace"
-
-
-def _local_base_dir() -> Path:
-    """Workspace parent: <cwd>/cuga_workspace. Matches the demo CLI and the
-    filesystem MCP server's allowed root (managed_mcp.py)."""
-    return Path(os.getcwd()) / CUGA_WORKSPACE_DIRNAME
-
-
-def _safe_thread_id(thread_id: Optional[str]) -> str:
-    raw = (thread_id or "_default").strip() or "_default"
-    return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
-
-
-def _skills_enabled() -> bool:
-    from cuga.config import settings
-
-    return bool(getattr(getattr(settings, "skills", None), "enabled", False))
-
-
-def local_thread_workspace_root(thread_id: Optional[str]) -> Path:
-    """Per-thread when skills are enabled, otherwise the shared workspace.
-
-    Skills enabled  → <cwd>/cuga_workspace/<safe_thread_id>/
-    Skills disabled → <cwd>/cuga_workspace/
-
-    Both live under the filesystem MCP server's allowed root, so MCP serves
-    every thread without a per-thread restart.
-    """
-    base = _local_base_dir()
-    if _skills_enabled():
-        return base / _safe_thread_id(thread_id)
-    return base
-
-
-def _resolve_workspace_path(
-    sandbox_path: str,
-    *,
-    thread_id: Optional[str],
-    operation: str = "access",
-) -> Path:
-    raw = (sandbox_path or "").strip()
-    if not raw:
-        raise ValueError("empty sandbox_path")
-    normalized = os.path.normpath(raw.replace("\\", "/"))
-    workspace_root = local_thread_workspace_root(thread_id).resolve()
-    if normalized == VIRTUAL_WORKSPACE_ROOT:
-        dest = workspace_root
-    elif normalized.startswith(VIRTUAL_WORKSPACE_ROOT + "/"):
-        dest = workspace_root / normalized[len(VIRTUAL_WORKSPACE_ROOT) :].lstrip("/")
-    else:
-        dest = workspace_root / normalized.lstrip("/")
-    resolved = dest.resolve()
-    try:
-        resolved.relative_to(workspace_root)
-    except ValueError as e:
-        raise ValueError(f"{operation} path must stay under /workspace") from e
-    return resolved
-
-
-def _public_workspace_path(host_path: Path, *, thread_id: Optional[str]) -> str:
-    """Return a relative path for a host path inside the thread workspace (e.g. './script.js')."""
-    workspace_root = local_thread_workspace_root(thread_id).resolve()
-    try:
-        rel = host_path.resolve().relative_to(workspace_root)
-    except ValueError:
-        return str(host_path)
-    rel_str = str(rel)
-    return "." if rel_str == "." else f"./{rel_str}"
+__all__ = [
+    "LocalSandboxExecutor",
+    "local_thread_workspace_root",
+    "_resolve_workspace_path",
+    "_public_workspace_path",
+    "_safe_thread_id",
+    "_skills_enabled",
+    "_local_base_dir",
+    "CUGA_WORKSPACE_DIRNAME",
+    "VIRTUAL_WORKSPACE_ROOT",
+]
 
 
 def _venv_python_or_none(venv: Path) -> Optional[Path]:
@@ -288,108 +236,13 @@ class LocalSandboxExecutor:
 
         return run_command
 
-    def create_write_file_tool(self, thread_id: Optional[str] = None) -> Callable:
-        async def write_file(sandbox_path: str, content: str) -> str:
-            """Write text content into a file inside the workspace (/workspace).
-
-            Args:
-                sandbox_path: Destination path (e.g. "/workspace/script.js"). Must be under /workspace.
-                content: Text content to write.
-            """
-            try:
-                p = _resolve_workspace_path(sandbox_path, thread_id=thread_id, operation="write_file")
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(content, encoding="utf-8")
-                return (
-                    f"File written: {_public_workspace_path(p, thread_id=thread_id)} ({len(content)} chars)"
-                )
-            except Exception as exc:
-                return f"[write_file error] {exc}"
-
-        return write_file
-
-    def create_read_file_tool(self, thread_id: Optional[str] = None) -> Callable:
-        async def read_file(
-            sandbox_path: str,
-            start_line: Optional[int] = None,
-            end_line: Optional[int] = None,
-            grep_pattern: Optional[str] = None,
-        ) -> str:
-            """Read a text file from the workspace (/workspace).
-
-            Args:
-                sandbox_path: Absolute path of the file inside the workspace.
-                start_line: 1-based first line (inclusive); omit for line 1.
-                end_line: 1-based last line (inclusive); omit for end of file.
-                grep_pattern: Optional regex; only matching lines are returned.
-            """
-            try:
-                content = _resolve_workspace_path(
-                    sandbox_path, thread_id=thread_id, operation="read_file"
-                ).read_text(encoding="utf-8", errors="replace")
-            except Exception as exc:
-                return f"[read_file error] {exc}"
-
-            if start_line is None and end_line is None and grep_pattern is None:
-                return content
-
-            lines = content.splitlines()
-            n = len(lines)
-            if n == 0:
-                return "(empty file)"
-            s = 1 if start_line is None else max(1, start_line)
-            e = n if end_line is None else end_line
-            if s > n:
-                return f"[read_file] start_line {s} is past end of file ({n} lines)"
-            e = max(s, min(e, n))
-            try:
-                rx = re.compile(grep_pattern) if grep_pattern else None
-            except re.error as exc:
-                return f"[read_file error] invalid grep_pattern: {exc}"
-            out: list[str] = []
-            for i in range(s - 1, e):
-                line = lines[i]
-                if rx is not None and not rx.search(line):
-                    continue
-                out.append(f"{i + 1}|{line}" if rx is not None else line)
-            if rx is not None and not out:
-                return f"(no lines matched grep_pattern in lines {s}-{e})"
-            return "\n".join(out) if out else ""
-
-        return read_file
-
-    def create_list_files_tool(self, thread_id: Optional[str] = None) -> Callable:
-        async def list_files(sandbox_path: str = ".", pattern: str = "*") -> str:
-            """List files and directories inside the workspace.
-
-            Args:
-                sandbox_path: Directory path relative to the workspace (default: ".").
-                pattern: Glob pattern to filter results (default: "*").
-            """
-            try:
-                p = _resolve_workspace_path(sandbox_path, thread_id=thread_id, operation="list_files")
-                if p == local_thread_workspace_root(thread_id).resolve():
-                    p.mkdir(parents=True, exist_ok=True)
-                if not p.exists():
-                    return f"[list_files error] Path not found: {sandbox_path}"
-                entries = []
-                for child in sorted(p.glob(pattern)):
-                    entries.append(
-                        FileEntry(
-                            name=child.name,
-                            path=_public_workspace_path(child, thread_id=thread_id),
-                            is_dir=child.is_dir(),
-                            size_bytes=child.stat().st_size if child.is_file() else 0,
-                        )
-                    )
-                return ListFilesResult(sandbox_path=sandbox_path, entries=entries).model_dump_json()
-            except Exception as exc:
-                return f"[list_files error] {exc}"
-
-        return list_files
-
     def create_sandbox_tools(self, thread_id: Optional[str] = None) -> list[StructuredTool]:
-        """Return all sandbox StructuredTools for local (unsandboxed) execution."""
+        """Return the run_command StructuredTool for local (unsandboxed) execution.
+
+        Filesystem tools (read/write/list/edit/...) are no longer produced
+        here — they come from the consolidated ``filesystem`` package via
+        ``create_filesystem_tools`` (see ``cuga_lite_graph``).
+        """
         self._copy_skills_to_workspace(thread_id)
         return [
             StructuredTool.from_function(
@@ -406,34 +259,5 @@ class LocalSandboxExecutor:
                     "Never use `uv npm`, `uv run node`, or `uv run npm`. "
                     "Skills are available at `./skills/<skill_name>/`."
                 ),
-            ),
-            StructuredTool.from_function(
-                coroutine=self.create_write_file_tool(thread_id),
-                name="write_file",
-                description=(
-                    "Write text content into a file in the sandbox workspace. "
-                    "Use relative paths (e.g. `./script.js`, `./output/report.pptx`). "
-                    "Parent directories are created automatically."
-                ),
-            ),
-            StructuredTool.from_function(
-                coroutine=self.create_list_files_tool(thread_id),
-                name="list_files",
-                description=(
-                    "List files and directories in the sandbox workspace. "
-                    "Pass a relative path (default: `.` = workspace root)."
-                ),
-            ),
-            StructuredTool.from_function(
-                coroutine=self.create_read_file_tool(thread_id),
-                name="read_file",
-                description=(
-                    "Read a text file from the sandbox workspace. "
-                    "Pass a relative path (e.g. `./output.txt`). "
-                    "Optionally pass start_line and end_line (1-based, inclusive) to read a slice, "
-                    "and/or grep_pattern (Python regex per line) to filter lines. "
-                    "When grep_pattern is set, matching lines are prefixed with 'LINE|'."
-                ),
-                args_schema=ReadFileInput,
             ),
         ]

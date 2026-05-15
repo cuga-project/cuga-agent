@@ -129,15 +129,19 @@ class AppManager:
         read_only: bool = False,
         use_cache: bool = True,
     ) -> int:
-        """Start filesystem MCP server. Returns fs_port."""
-        fs_script = str(DEMO_TOOLS_ROOT / "file_system" / "main.py")
-        cmd = [sys.executable, fs_script]
-        if read_only:
-            cmd.append("--read-only")
-        cmd.append(workspace_path)
-        self._run("filesystem-server", cmd, {"DYNACONF_SERVER_PORTS__FILESYSTEM_MCP": str(self.fs_port)})
-        logger.info("Filesystem MCP subprocess started; waiting until port %s accepts HTTP…", self.fs_port)
-        self._wait_http(self.fs_port, "Filesystem MCP server")
+        """No-op: filesystem is no longer an MCP subprocess.
+
+        Filesystem operations are now provided by the consolidated runtime
+        filesystem tools (see the ``filesystem`` executor package), which
+        operate directly on ``<cwd>/cuga_workspace``. Kept as a no-op so
+        existing ``cuga start`` call sites and the ``--filesystem`` flag
+        remain valid without launching a server.
+        """
+        logger.info(
+            "Filesystem MCP server is deprecated; using consolidated runtime "
+            "filesystem tools instead (workspace=%s).",
+            workspace_path,
+        )
         return self.fs_port
 
     def start_docs(self, use_cache: bool = True) -> int:

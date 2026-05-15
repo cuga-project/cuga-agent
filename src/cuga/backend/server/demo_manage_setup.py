@@ -36,16 +36,6 @@ def _normalize_demo_sandbox_mode() -> None:
         logger.info("Demo sandbox_mode='native' is only supported on macOS; using 'local' instead.")
 
 
-def _get_filesystem_tool() -> dict[str, Any]:
-    fs_port = int(os.environ.get("DYNACONF_SERVER_PORTS__FILESYSTEM_MCP", "8112"))
-    return {
-        "name": "filesystem",
-        "url": f"http://localhost:{fs_port}/sse",
-        "transport": "sse",
-        "description": "Standard file system operations for workspace management",
-    }
-
-
 def _get_email_tool() -> dict[str, Any]:
     email_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_MCP", "8000"))
     return {
@@ -228,8 +218,9 @@ def build_tools_from_apps(
 ) -> list[dict[str, Any]]:
     """Build tools list from enabled app flags."""
     tools: list[dict[str, Any]] = []
-    if filesystem:
-        tools.append(_get_filesystem_tool())
+    # Filesystem is no longer an MCP server — it is provided by the
+    # consolidated runtime filesystem tools. The ``filesystem`` flag is
+    # kept for signature/CLI compatibility but adds no MCP tool.
     if email:
         tools.append(_get_email_tool())
     if crm:
@@ -450,7 +441,7 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "email": False,
             "digital_sales": True,
             "docs": False,
-            "filesystem": False,
+            "filesystem": True,
             "oak_health": False,
             "knowledge": knowledge,
         }
@@ -471,12 +462,14 @@ def setup_demo_manage_config(
     no_email: bool = False,
     tools: list[dict[str, Any]] | None = None,
     reset_knowledge: bool = False,
+    filesystem: bool = True,
 ) -> None:
     """
     Reset config db, then setup agent config (draft + v1) for demo or demo_crm.
-    Uses same SSE links as cli for filesystem, email, crm.
+    Uses same SSE links as cli for email, crm.
     If tools is provided, uses it; otherwise builds from demo_type and no_email.
     When reset_knowledge is True, wipes all knowledge data (vector DB, metadata, files).
+    When filesystem is True, enables runtime filesystem tools (enable_shell_tool=True).
     """
     _normalize_demo_sandbox_mode()
 
@@ -742,6 +735,8 @@ def setup_demo_manage_config(
 
     if demo_type == "demo_skills":
         config.setdefault("advanced_features", {})["enable_shell_tool"] = True
+    if filesystem:
+        config.setdefault("advanced_features", {})["enable_filesystem_tools"] = True
 
     async def _setup():
         await save_draft(config, agent_id)

@@ -81,6 +81,7 @@ export interface AgentConfig {
   feature_flags?: {
     enable_todos?: boolean;
     reflection?: boolean;
+    enable_filesystem_tools?: boolean;
     max_steps?: number;
     shortlisting_tool_threshold?: number;
     builtin_tools?: string[];
@@ -1126,7 +1127,7 @@ export function ManagePage() {
     setLlmConfig((c) => ({ ...(c ?? {}), temperature: value }));
   };
 
-  const updateFeatureFlag = (field: "enable_todos" | "reflection", value: boolean) => {
+  const updateFeatureFlag = (field: "enable_todos" | "reflection" | "enable_filesystem_tools", value: boolean) => {
     setFeatureFlags((c) => ({ ...(c ?? {}), [field]: value }));
   };
 
@@ -1728,6 +1729,19 @@ export function ManagePage() {
                           updateFeatureFlag("reflection", !!checked);
                         }}
                       />
+                    </FormGroup>
+                    <FormGroup legendText="">
+                      <Checkbox
+                        id="enable_filesystem_tools"
+                        labelText="Filesystem tools"
+                        checked={flags.enable_filesystem_tools ?? false}
+                        onChange={(_e, { checked }) => {
+                          updateFeatureFlag("enable_filesystem_tools", !!checked);
+                        }}
+                      />
+                      <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", marginTop: "0.25rem" }}>
+                        Gives the agent read, write, edit, list, and search access to the workspace filesystem.
+                      </p>
                     </FormGroup>
                     <FormGroup legendText="">
                       <NumberInput

@@ -14,33 +14,22 @@ def get_managed_mcp_path() -> str:
     return os.path.join(DBS_DIR, MANAGED_MCP_FILENAME)
 
 
+# Filesystem is no longer an MCP server — it is provided by the
+# consolidated runtime filesystem tools (no subprocess, no SSE/stdio
+# registration). The bootstrap therefore registers no MCP servers.
 BOOTSTRAP_YAML = {
     "services": [],
-    "mcpServers": {
-        "filesystem": {
-            "command": "npx",
-            # Allowed-dir is the subprocess's own CWD ("."). The CWD itself is
-            # set to ./cuga_workspace below, so the allowed root resolves to
-            # <cuga-server-cwd>/cuga_workspace/. With the MCP server's CWD
-            # equal to its allowed root, relative paths emitted by the agent
-            # (e.g. "contacts.txt") resolve naturally inside the workspace.
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", "."],
-            "cwd": "./cuga_workspace",
-            "transport": "stdio",
-            "description": "File system operations for workspace management",
-        }
-    },
+    "mcpServers": {},
 }
 
 
 def ensure_managed_mcp_file_exists(path: str | None = None) -> str:
     """Create managed MCP YAML with bootstrap content if missing. Return path.
 
-    Also migrates pre-existing YAMLs whose ``filesystem`` entry still points
-    at the legacy `["...", "./cuga_workspace"]` allowed-dir form and has no
-    ``cwd:`` key — those configs predate the relative-paths workspace model
-    and would leave MCP's CWD at the cuga server root, breaking relative
-    path resolution from the LLM.
+    Also strips any legacy ``filesystem`` MCP entry from pre-existing YAMLs —
+    the filesystem tools are now runtime (see the ``filesystem`` package), so
+    a stale MCP registration would only re-introduce duplicate, conflicting
+    ``filesystem_*`` tools.
     """
     p = path or get_managed_mcp_path()
     if not os.path.exists(p):
@@ -48,28 +37,15 @@ def ensure_managed_mcp_file_exists(path: str | None = None) -> str:
             yaml.dump(BOOTSTRAP_YAML, f, default_flow_style=False, sort_keys=False)
         return p
 
-    # Migration: ensure the filesystem entry has the new cwd/args shape.
+    # Migration: drop a legacy filesystem MCP entry if present.
     try:
         with open(p) as f:
             data = yaml.safe_load(f) or {}
     except Exception:
         return p
     mcp_servers = data.get("mcpServers") if isinstance(data, dict) else None
-    if not isinstance(mcp_servers, dict):
-        return p
-    fs_entry = mcp_servers.get("filesystem")
-    if not isinstance(fs_entry, dict) or fs_entry.get("command") != "npx":
-        return p
-    args = fs_entry.get("args") or []
-    has_legacy_args = (
-        isinstance(args, list)
-        and len(args) >= 3
-        and args[-1] == "./cuga_workspace"
-        and not fs_entry.get("cwd")
-    )
-    if has_legacy_args:
-        fs_entry["args"] = list(args[:-1]) + ["."]
-        fs_entry["cwd"] = "./cuga_workspace"
+    if isinstance(mcp_servers, dict) and "filesystem" in mcp_servers:
+        mcp_servers.pop("filesystem", None)
         try:
             with open(p, "w") as f:
                 yaml.dump(data, f, default_flow_style=False, sort_keys=False)
