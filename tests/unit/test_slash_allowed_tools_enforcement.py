@@ -1,4 +1,4 @@
-"""Unit tests for the slice #21 allowed-tools enforcement helper.
+"""Unit tests for the skill ``allowed-tools`` whitelist enforcement helper.
 
 Pure function tests on :mod:`cuga.backend.slash_commands.allowed_tools_enforcement`.
 The actual interrupt wiring is exercised indirectly via the dispatcher tests.

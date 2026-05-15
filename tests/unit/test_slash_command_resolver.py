@@ -1,4 +1,4 @@
-"""Unit tests for the unknown slash-command resolver (PRD #13, slice #20)."""
+"""Unit tests for the unknown-command embedding resolver that produces ranked semantic suggestions."""
 
 import asyncio
 from typing import Any, Dict, List, Optional

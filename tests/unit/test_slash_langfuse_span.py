@@ -8,7 +8,7 @@ covers:
     constructed when tracing is off, which avoids the "no public_key"
     warning that pollutes logs)
   * span name + shape (input/output/metadata) for every dispatch kind
-  * top-suggestion attribution for unknown-command resolutions (slice #20)
+  * top-suggestion attribution for unknown-command resolutions
   * graceful no-op when Langfuse import or client construction fails
 """
 
@@ -44,9 +44,9 @@ def _install_fake_langfuse(monkeypatch) -> MagicMock:
 
 
 def test_no_langfuse_call_when_tracing_disabled(monkeypatch):
-    """Slice #20 contract: when ``langfuse_tracing`` is off the dispatcher must
-    not even import the Langfuse client — that prevents the noisy
-    "client initialized without public_key" warning in production logs."""
+    """When ``langfuse_tracing`` is off the dispatcher must not even import the
+    Langfuse client — that prevents the noisy "client initialized without
+    public_key" warning in production logs."""
     _patch_settings(monkeypatch, langfuse_tracing=False)
     fake_client = _install_fake_langfuse(monkeypatch)
 
@@ -92,9 +92,9 @@ def test_emits_span_with_args_for_skill_dispatch(monkeypatch):
 
 
 def test_emits_span_for_unknown_with_suggestions(monkeypatch):
-    """Slice #20 telemetry: unknown commands must record the ranked suggestions
-    in ``output.top_suggestions`` so adoption can be mined for "skills users
-    wished existed" (PRD #13 story 34)."""
+    """Unknown commands must record the ranked suggestions in
+    ``output.top_suggestions`` so adoption can be mined for "skills users
+    wished existed"."""
     from cuga.backend.slash_commands.command_resolver import CommandResolver, CommandSuggestion
 
     _patch_settings(monkeypatch, langfuse_tracing=True)

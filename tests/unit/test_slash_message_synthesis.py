@@ -123,10 +123,10 @@ def test_dispatcher_populates_injected_messages_for_known_skill():
     assert len(result.injected_messages) == 4
     ai_msg = result.injected_messages[1]
     assert ai_msg.tool_calls[0]["args"] == {"name": "deck"}
-    # Slice #17: args appended verbatim to the wrapped body
     tool_msg = result.injected_messages[2]
+    # Raw args are appended verbatim to the wrapped skill body.
     assert "ARGUMENTS: two slides about caching" in tool_msg.content
-    # Slice #17: wrapped body comes from registry.load_skill (full wrapping)
+    # The wrapped body comes from registry.load_skill (full wrapping).
     assert "STEP 2 — SKILL INSTRUCTIONS" in tool_msg.content
     assert "MAKE SLIDES" in tool_msg.content
 
@@ -140,7 +140,7 @@ def test_dispatcher_skill_without_args_omits_trailing_human_message():
 
 
 def test_dispatcher_propagates_allowed_tools_from_skill_entry():
-    """Slice #21: a skill's frontmatter ``allowed-tools`` list reaches
+    """A skill's frontmatter ``allowed-tools`` list must reach
     ``DispatchResult.allowed_tools`` so the caller can thread it into the
     graph's RunnableConfig."""
     skills = SkillRegistry(

@@ -1,4 +1,4 @@
-"""Unit tests for the slash-command argument-substitution engine (PRD #13, slice #19)."""
+"""Unit tests for the slash-command ``$ARGUMENTS`` substitution engine."""
 
 import pytest
 

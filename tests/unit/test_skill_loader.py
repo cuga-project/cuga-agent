@@ -113,7 +113,7 @@ def test_loader_parses_arguments_and_allowed_tools_frontmatter(tmp_path: Path, m
 
 
 def test_loader_distinguishes_missing_from_empty_allowed_tools(tmp_path: Path, monkeypatch) -> None:
-    """Slice #21 enforcement relies on the loader returning `None` for an
+    """Allowed-tools enforcement relies on the loader returning ``None`` for an
     absent ``allowed-tools`` key (no restriction) vs ``()`` for an explicit
     empty list (allow nothing)."""
     monkeypatch.chdir(tmp_path)
