@@ -5,12 +5,9 @@
  *  input. The composer lives inside a (possibly nested) shadow DOM, and the
  *  underlying element varies across Carbon versions: older builds used a
  *  ``<textarea>``; ``@carbon/ai-chat@1.6.x`` uses a ``contenteditable`` host
- *  with ``role="textbox"``. This module treats both shapes uniformly.
- *
- *  Originally written for the slash-command autocomplete dropdown (slice #18)
- *  and factored out here so the unknown-command suggestion chips (slice #23)
- *  reuse the exact same traversal + value-setting mechanism rather than
- *  duplicating it.
+ *  with ``role="textbox"``. This module treats both shapes uniformly so
+ *  SlashCommandDropdown (autocomplete) and SlashChips (unknown-command
+ *  suggestions) share one traversal + value-setting path.
  */
 
 /** A composer input is either a textarea/input or a contenteditable host. */
@@ -52,34 +49,76 @@ const COMPOSER_SELECTOR =
   'textarea, input[type="text"], [contenteditable="true"], [contenteditable=""], [role="textbox"]';
 
 /**
+ * True if the element has a non-zero bounding rect — i.e. it's the *visible*
+ * composer, not one of Carbon Chat's orphaned/hidden duplicates. After a
+ * message is submitted Carbon may replace the composer DOM node entirely
+ * while leaving the previous (zero-rect) node attached for a beat; if we
+ * keep listening to that one the dropdown never reopens.
+ */
+function isVisibleComposer(el: Element): boolean {
+  const rect = (el as HTMLElement).getBoundingClientRect?.();
+  if (!rect) return false;
+  return rect.width > 0 && rect.height > 0;
+}
+
+/**
  * Walk every reachable shadow root looking for the composer input. Carbon's
  * exact element has evolved across versions (textarea -> contenteditable
- * div); we cast a wide net and return the first interactive candidate found.
+ * div); we cast a wide net and return the first *visible* candidate found.
+ * Falling back to the first match only when no visible candidate exists
+ * preserves behaviour on first paint (before the composer has been laid out).
  */
 export function findComposerInput(anchor: HTMLElement | null): ComposerInput | null {
   const visited = new Set<ShadowRoot>();
   const queue: ShadowRoot[] = findShadowRoots(anchor);
+  let firstSeen: ComposerInput | null = null;
   while (queue.length) {
     const root = queue.shift()!;
     if (visited.has(root)) continue;
     visited.add(root);
 
-    const direct = root.querySelector(COMPOSER_SELECTOR) as ComposerInput | null;
-    if (direct) return direct;
+    const candidates = Array.from(
+      root.querySelectorAll(COMPOSER_SELECTOR),
+    ) as ComposerInput[];
+    for (const candidate of candidates) {
+      if (!firstSeen) firstSeen = candidate;
+      if (isVisibleComposer(candidate)) return candidate;
+    }
 
     root.querySelectorAll("*").forEach((el) => {
       const sr = (el as HTMLElement & { shadowRoot?: ShadowRoot | null }).shadowRoot;
       if (sr && !visited.has(sr)) queue.push(sr);
     });
   }
-  return null;
+  return firstSeen;
 }
 
-/** Back-compat alias retained for slice #18's callsite. */
+/** Returns true when the element is no longer the live composer — either
+ *  detached from the document or laid out as zero-rect (Carbon's orphaned
+ *  duplicate after a submit). Used by the dropdown to decide whether to
+ *  re-resolve the composer reference. */
+export function isComposerStale(el: ComposerInput | null): boolean {
+  if (!el) return true;
+  if (!document.contains(el)) return true;
+  return !isVisibleComposer(el);
+}
+
+/** Alias used by SlashCommandDropdown and SlashChips. */
 export const findComposerTextarea = findComposerInput;
 
 function isFormField(el: ComposerInput): el is HTMLTextAreaElement | HTMLInputElement {
   return el instanceof HTMLTextAreaElement || el instanceof HTMLInputElement;
+}
+
+/**
+ * Read the composer's current text. Form fields expose ``value``;
+ * contenteditable hosts (Carbon AI Chat 1.6+) only expose ``textContent``.
+ * Returns an empty string when the element has no content.
+ */
+export function getComposerInputValue(el: ComposerInput | null): string {
+  if (!el) return "";
+  if (isFormField(el)) return el.value;
+  return el.textContent ?? "";
 }
 
 /**
@@ -129,5 +168,5 @@ export function setComposerInputValue(el: ComposerInput | null, value: string): 
   return true;
 }
 
-/** Back-compat alias retained for slice #18's callsite. */
+/** Alias used by SlashCommandDropdown and SlashChips. */
 export const setComposerTextareaValue = setComposerInputValue;
