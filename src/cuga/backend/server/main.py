@@ -1375,7 +1375,11 @@ async def event_stream(
                 if slash_suggestions
                 else None
             )
-            if thread_id:
+            # When a slash command (e.g. /clear) rotates to a fresh thread id,
+            # persist the user message and answer against the *new* thread so
+            # the rotated history actually replays on the next turn.
+            effective_thread_id = slash_result.new_thread_id or thread_id
+            if effective_thread_id:
                 if suggestions_event_data is not None:
                     stream_events_buffer.append(
                         {
@@ -1398,13 +1402,13 @@ async def event_stream(
                 if not disable_history:
                     slash_state = AgentState(
                         chat_messages=[HumanMessage(content=query), AIMessage(content=answer_text)],
-                        thread_id=thread_id,
+                        thread_id=effective_thread_id,
                         input=query,
                         url="",
                     )
                     await _save_conversation_and_events_async(
                         agent_id=app_state.agent_id,
-                        thread_id=thread_id,
+                        thread_id=effective_thread_id,
                         user_id=user_id,
                         state=slash_state,
                         events=stream_events_buffer.copy(),
@@ -1753,7 +1757,14 @@ async def event_stream(
                         ).values
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
-                    name = ((event.split("\n")[0]).split(":")[1]).strip()
+                    try:
+                        name = StreamEvent.parse(event).name
+                    except (ValueError, IndexError) as parse_err:
+                        # A malformed event block would otherwise crash the
+                        # stream mid-flight; log and skip so the rest of the
+                        # turn keeps flowing.
+                        logger.warning("Skipping malformed stream event: %s", parse_err)
+                        continue
                     logger.debug("Yield {}".format(event))
                     if name not in ["ChatAgent"]:
                         # Add stream event to buffer instead of immediate DB write
