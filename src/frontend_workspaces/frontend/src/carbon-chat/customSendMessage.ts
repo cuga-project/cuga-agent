@@ -261,11 +261,17 @@ export async function customSendMessage(
             const resolvedName = String(parsed?.resolved_name ?? "");
             const rawInput = String(parsed?.raw_input ?? "");
             const rawArgs = String(parsed?.raw_args ?? "");
-            const stepTitle = `Skill invoked: /${resolvedName}`;
+            // A literal backtick in the user's input would close the inline
+            // code span and break the rendered markdown — escape so the
+            // span stays intact regardless of user content. Mirrors the
+            // replay path in customLoadHistory.ts so live and reload render
+            // identically.
+            const escapeBackticks = (s: string) => s.replace(/`/g, "\\`");
+            const stepTitle = `Skill invoked: /${escapeBackticks(resolvedName)}`;
             const stepContent = [
-              `**Input:** \`${rawInput}\``,
-              `**Resolved skill:** \`${resolvedName}\``,
-              `**Arguments:** \`${rawArgs || "(none)"}\``,
+              `**Input:** \`${escapeBackticks(rawInput)}\``,
+              `**Resolved skill:** \`${escapeBackticks(resolvedName)}\``,
+              `**Arguments:** \`${rawArgs ? escapeBackticks(rawArgs) : "(none)"}\``,
             ].join("\n\n");
             collectedSteps.push(createReasoningStep(stepTitle, stepContent));
             instance.messaging.addMessageChunk({

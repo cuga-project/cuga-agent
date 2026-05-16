@@ -107,10 +107,19 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     });
     observer.observe(observeTarget, { childList: true, subtree: true });
     // Interval is a bootstrap fallback for composer-mounts-before-observer; clear it once the textarea is live.
+    // Cap with a wall-clock budget so embedded / shadow-rooted / content-
+    // blocked hosts where the textarea never resolves don't poll forever.
+    let attempts = 0;
+    const MAX_ATTEMPTS = 30; // ~15s at 500ms
     let interval: number | null = window.setInterval(() => {
       if (cancelled) return;
+      attempts += 1;
       tryFind();
       if (textarea && document.contains(textarea) && interval !== null) {
+        window.clearInterval(interval);
+        interval = null;
+      } else if (attempts >= MAX_ATTEMPTS && interval !== null) {
+        console.warn("[cuga] composer textarea never resolved; giving up");
         window.clearInterval(interval);
         interval = null;
       }
