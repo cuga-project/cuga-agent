@@ -170,3 +170,69 @@ export function setComposerInputValue(el: ComposerInput | null, value: string): 
 
 /** Alias used by SlashCommandDropdown and SlashChips. */
 export const setComposerTextareaValue = setComposerInputValue;
+
+/** Attributes the WAI-ARIA combobox pattern requires on the focused input. */
+export interface ComposerAriaAttributes {
+  /** ARIA role — typically ``"combobox"`` while the popup is open. */
+  role?: string;
+  /** ID of the listbox element controlled by the composer. */
+  controls?: string;
+  /** Whether the popup is currently expanded. */
+  expanded?: boolean;
+  /** ID of the currently highlighted option, or ``null`` to clear. */
+  activedescendant?: string | null;
+}
+
+/**
+ * Imperatively write the WAI-ARIA combobox attributes onto the composer
+ * input. Per the APG combobox pattern, ``role``, ``aria-controls``,
+ * ``aria-expanded`` and ``aria-activedescendant`` belong on the focused
+ * textbox — not on the listbox. The composer lives inside Carbon's shadow
+ * root and gets replaced on every submit, so React can't own these via
+ * JSX; this helper writes them directly so the dropdown can re-apply them
+ * whenever the composer identity changes.
+ *
+ * ``setAttribute`` on detached nodes is safe (a no-op as far as user-visible
+ * a11y is concerned), so callers need not guard. A ``null`` or empty
+ * ``activedescendant`` removes the attribute entirely (the APG pattern
+ * forbids stale ``aria-activedescendant`` values pointing at non-existent
+ * options).
+ */
+export function setComposerAriaAttributes(
+  el: HTMLElement,
+  attrs: ComposerAriaAttributes,
+): void {
+  if (attrs.role !== undefined) {
+    el.setAttribute("role", attrs.role);
+  }
+  if (attrs.controls !== undefined) {
+    el.setAttribute("aria-controls", attrs.controls);
+  }
+  if (attrs.expanded !== undefined) {
+    el.setAttribute("aria-expanded", attrs.expanded ? "true" : "false");
+  }
+  if (attrs.activedescendant !== undefined) {
+    if (attrs.activedescendant === null || attrs.activedescendant === "") {
+      el.removeAttribute("aria-activedescendant");
+    } else {
+      el.setAttribute("aria-activedescendant", attrs.activedescendant);
+    }
+  }
+}
+
+/**
+ * Remove every ARIA combobox attribute we own from the composer. Called when
+ * the dropdown unmounts or when the composer identity changes (so we don't
+ * leave stale ``aria-*`` on a detached node). ``removeAttribute`` on a
+ * detached node is a no-op — safe to call unconditionally.
+ *
+ * Note: ``role`` restoration is the caller's responsibility — this helper
+ * blindly removes the role attribute. The dropdown captures the original
+ * role on first run and restores it on close.
+ */
+export function clearComposerAriaAttributes(el: HTMLElement): void {
+  el.removeAttribute("role");
+  el.removeAttribute("aria-controls");
+  el.removeAttribute("aria-expanded");
+  el.removeAttribute("aria-activedescendant");
+}
