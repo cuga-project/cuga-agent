@@ -128,7 +128,7 @@ class InvokeResult(BaseModel):
         default_factory=list,
         description="List of tool calls made during execution (when track_tool_calls is enabled)",
     )
-    thread_id: str = Field(default="", description="Thread ID used for this invocation")
+    thread_id: Optional[str] = Field(default=None, description="Thread ID used for this invocation")
     error: Optional[str] = Field(default=None, description="Error message if execution failed")
 
     def __str__(self) -> str:
@@ -1777,7 +1777,7 @@ class CugaAgent:
                 return InvokeResult(
                     answer=slash_result.text or "",
                     tool_calls=[],
-                    thread_id=slash_result.new_thread_id or thread_id or "",
+                    thread_id=slash_result.new_thread_id or thread_id or None,
                     error=None,
                 )
 
@@ -1964,6 +1964,8 @@ class CugaAgent:
             and slash_result.allowed_tools is not None
         ):
             run_config["configurable"]["skill_allowed_tools"] = slash_result.allowed_tools
+        else:
+            run_config["configurable"].pop("skill_allowed_tools", None)
 
         # Add callbacks to config (both top-level and configurable for nodes)
         if self._callbacks:
