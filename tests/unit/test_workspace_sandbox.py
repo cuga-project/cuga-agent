@@ -13,8 +13,8 @@ from cuga.backend.server.workspace_sandbox import (
 )
 
 
-def test_sandbox_workspace_root_is_tmp_for_skills_mode() -> None:
-    assert SANDBOX_WORKSPACE_ROOT == "/tmp"
+def test_sandbox_workspace_root_is_workspace_for_skills_mode() -> None:
+    assert SANDBOX_WORKSPACE_ROOT == "/workspace"
 
 
 def test_native_workspace_root_is_virtual_workspace_for_native_mode() -> None:
@@ -25,13 +25,13 @@ def test_native_workspace_root_is_virtual_workspace_for_native_mode() -> None:
 @pytest.mark.parametrize(
     ("public_path", "expected"),
     [
-        ("tmp/foo.txt", "/tmp/foo.txt"),
-        ("/tmp/foo.txt", "/tmp/foo.txt"),
-        ("cuga_workspace/foo.txt", "/tmp/foo.txt"),
-        ("/tmp/cuga_workspace/foo.txt", "/tmp/foo.txt"),
-        ("tmp/nested/foo.txt", "/tmp/nested/foo.txt"),
-        ("/tmp", "/tmp"),
-        ("tmp", "/tmp"),
+        ("tmp/foo.txt", "/workspace/foo.txt"),
+        ("/tmp/foo.txt", "/workspace/foo.txt"),
+        ("cuga_workspace/foo.txt", "/workspace/foo.txt"),
+        ("/tmp/cuga_workspace/foo.txt", "/workspace/foo.txt"),
+        ("tmp/nested/foo.txt", "/workspace/nested/foo.txt"),
+        ("/tmp", "/workspace"),
+        ("tmp", "/workspace"),
     ],
 )
 def test_public_path_to_sandbox_abs_accepts_tmp_and_legacy_paths(public_path: str, expected: str) -> None:
@@ -55,28 +55,28 @@ def test_public_path_to_sandbox_abs_rejects_paths_outside_public_workspace(bad_p
         public_path_to_sandbox_abs(bad_path)
 
 
-def test_sandbox_paths_to_tree_uses_tmp_public_paths_and_hides_dotfiles() -> None:
+def test_sandbox_paths_to_tree_uses_workspace_public_paths_and_hides_dotfiles() -> None:
     tree = sandbox_paths_to_tree(
         [
-            "/tmp",
-            "/tmp/reports",
-            "/tmp/.venv",
+            "/workspace",
+            "/workspace/reports",
+            "/workspace/.venv",
         ],
         [
-            "/tmp/reports/deck.pptx",
-            "/tmp/notes.txt",
-            "/tmp/.venv/pyvenv.cfg",
+            "/workspace/reports/deck.pptx",
+            "/workspace/notes.txt",
+            "/workspace/.venv/pyvenv.cfg",
         ],
     )
 
     assert tree == [
         {
             "name": "reports",
-            "path": "tmp/reports",
+            "path": "workspace/reports",
             "type": "directory",
-            "children": [{"name": "deck.pptx", "path": "tmp/reports/deck.pptx", "type": "file"}],
+            "children": [{"name": "deck.pptx", "path": "workspace/reports/deck.pptx", "type": "file"}],
         },
-        {"name": "notes.txt", "path": "tmp/notes.txt", "type": "file"},
+        {"name": "notes.txt", "path": "workspace/notes.txt", "type": "file"},
     ]
 
 
