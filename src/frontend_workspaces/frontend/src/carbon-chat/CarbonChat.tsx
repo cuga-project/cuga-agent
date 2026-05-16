@@ -457,6 +457,10 @@ const CarbonChat = ({
 
     const applyMessageAttachmentDecorations = () => {
       roots.forEach((shadowRoot) => {
+        // Keep the reasoning-toggle relabel inside the per-root pass so it
+        // runs whenever decorations rebuild, but the observer callback also
+        // invokes it directly (without debounce) — relabeling is cheap and
+        // idempotent, and we don't want a queued rAF to delay the label fix.
         applyReasoningToggleLabels(shadowRoot);
         const requestNodes = Array.from(
           shadowRoot.querySelectorAll(".cds-custom-aichat--message--request"),
@@ -511,15 +515,40 @@ const CarbonChat = ({
     };
 
     applyMessageAttachmentDecorations();
+
+    // Debounce attachment-decoration rebuilds with requestAnimationFrame —
+    // during active streaming the observer fires on every DOM mutation,
+    // which would otherwise turn into a tight loop of full-subtree rebuilds.
+    // The reasoning-toggle relabel runs directly (no debounce) because it's
+    // cheap and we want the label to flip the moment the toggle mounts.
+    let scheduled = false;
+    let cancelled = false;
+    let rafHandle = 0;
+    const flush = () => {
+      scheduled = false;
+      if (cancelled) return;
+      applyMessageAttachmentDecorations();
+    };
+    const scheduleDecorations = () => {
+      if (scheduled) return;
+      scheduled = true;
+      rafHandle = window.requestAnimationFrame(flush);
+    };
+
     const observers = roots.map((shadowRoot) => {
       const observer = new MutationObserver(() => {
-        applyMessageAttachmentDecorations();
+        applyReasoningToggleLabels(shadowRoot);
+        scheduleDecorations();
       });
       observer.observe(shadowRoot, { childList: true, subtree: true });
       return observer;
     });
 
-    return () => observers.forEach((observer) => observer.disconnect());
+    return () => {
+      cancelled = true;
+      if (scheduled && rafHandle) window.cancelAnimationFrame(rafHandle);
+      observers.forEach((observer) => observer.disconnect());
+    };
   }, [chatRenderTick, messageAttachmentSnapshots, onPreviewKnowledgeAttachment, resolveChatDomRoots]);
 
   // Wrap the custom send message function to ensure it's properly bound
