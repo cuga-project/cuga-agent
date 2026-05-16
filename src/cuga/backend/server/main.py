@@ -850,10 +850,6 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
 
-    # Prefetch the embedding model so the first unknown slash command doesn't
-    # pay a cold ~120MB FastEmbed download mid-request. The model is
-    # process-cached, so this is a fast no-op if knowledge warmup already
-    # loaded it.
     from cuga.backend.storage.embedding import create_embedding_function
 
     embed_fn, _embed_dim = await create_embedding_function()
@@ -1019,7 +1015,6 @@ async def _save_conversation_and_events_async(
 
 
 def _build_slash_skill_registry():
-    """Discover skills for the current request, or return ``None`` when skills are off."""
     if not _skills_effective_enabled():
         return None
     try:
@@ -1439,10 +1434,7 @@ async def event_stream(
             slash_result.raw_args if slash_result.raw_args else slash_result.raw_input or query
         )
 
-        # Surface the slash skill invocation as a discrete event so the
-        # frontend can render the synthesized load_skill pair as a single
-        # collapsed chip — both in the live turn and when the thread is later
-        # reloaded from history (the event is buffered into the saved stream).
+        # Emit SlashSkillInvoked so the frontend renders the invocation inline (live + on history reload); event is buffered into the saved stream.
         slash_chip_event_data = json.dumps(
             {
                 "resolved_name": slash_result.resolved_name,
@@ -1505,9 +1497,7 @@ async def event_stream(
                 "filenames": _session_kb.filenames,
             }
 
-    # When this turn is a slash-invoked skill, propagate its ``allowed-tools``
-    # whitelist (if declared) so the cuga_lite tool-approval gate enforces it.
-    # ``None`` = no restriction; ``()`` = allow nothing.
+    # Propagate ``allowed-tools`` to the tool-approval gate.
     _skill_allowed_tools = (
         slash_result.allowed_tools if slash_result is not None and slash_result.kind == "skill" else None
     )

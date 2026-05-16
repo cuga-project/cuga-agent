@@ -40,12 +40,7 @@ CommandResolverFactory = Callable[[SlashRegistry], Awaitable[Optional[CommandRes
 
 
 def build_slash_registry(skill_registry: Optional["SkillRegistry"] = None) -> SlashRegistry:
-    """Discover built-ins and return a fresh SlashRegistry.
-
-    The registry is cheap to rebuild — both built-in discovery and the (already
-    cached) skill list are small. Callers rebuild on each request so newly
-    dropped SKILL.md files appear without restart.
-    """
+    """Return a fresh SlashRegistry (rebuilt per request so new SKILL.md files appear without restart)."""
     return SlashRegistry(builtins=discover_builtins(), skill_registry=skill_registry)
 
 
@@ -78,7 +73,6 @@ class _InMemoryEmbeddingStore:
         return list(self._rows.values())[:limit]
 
 
-# Cache keyed by registry contents — rebuild on registry change.
 _resolver_cache: Dict[int, CommandResolver] = {}
 # Serialize rebuilds so two concurrent first-time callers don't both
 # construct an embedding client and stomp on the size-1 cache.
@@ -102,8 +96,6 @@ async def build_command_resolver(slash_registry: SlashRegistry) -> Optional[Comm
         return cached
 
     async with _resolver_cache_lock:
-        # Re-check under the lock — another coroutine may have populated the
-        # cache while we were waiting.
         cached = _resolver_cache.get(key)
         if cached is not None:
             return cached
@@ -212,7 +204,6 @@ async def _dispatch_parsed(
             resolved_name=parsed.name,
             wrapped_body=wrapped_body,
         )
-        # See DispatchResult.allowed_tools for None vs () semantics.
         allowed_tools = skill_registry.entry(parsed.name).allowed_tools
         return DispatchResult(
             kind="skill",

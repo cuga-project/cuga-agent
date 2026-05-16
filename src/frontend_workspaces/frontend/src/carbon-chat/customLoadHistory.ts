@@ -156,8 +156,6 @@ async function customLoadHistory(
           break;
         }
 
-        // Replay unknown-command suggestion chips, and suppress the
-        // redundant plain-text "Unknown command..." Answer that follows.
         case "SlashSuggestions": {
           try {
             const parsed = JSON.parse(actualData);
@@ -211,8 +209,6 @@ async function customLoadHistory(
 
         case "Answer":
         case "FinalAnswer": {
-          // Skip the redundant plain-text fallback that follows a
-          // SlashSuggestions event — the chips already convey it.
           if (suppressNextAnswer) {
             suppressNextAnswer = false;
             currentSteps = [];

@@ -6,9 +6,6 @@ cuga_lite tool-approval gate calls :func:`find_disallowed_calls` on the
 generated code and, if any disallowed call is found, routes through the
 existing HITL approval interrupt.
 
-Uses ast.Call(func=Name(id=...)) so only bare function calls — not
-.method() chains or other callables — are gated.
-
 Python builtins are filtered via :data:`PYTHON_BUILTINS_SAFELIST` so the
 whitelist only needs to enumerate domain tools, not ``print``/``len``/etc.
 """
@@ -46,9 +43,7 @@ def _bare_call_names(code: str) -> Set[str]:
     try:
         tree = ast.parse(code)
     except SyntaxError:
-        # The cuga_lite gate runs before the sandbox executes anything, so
-        # unparseable code is the model's problem to fix on the next turn —
-        # we don't want to block on it via the whitelist.
+        # Unparseable code: return empty set; the caller decides what to do.
         return set()
 
     names: Set[str] = set()

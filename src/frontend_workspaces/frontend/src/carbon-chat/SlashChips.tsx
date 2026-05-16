@@ -19,12 +19,6 @@
  *  (tagged with a `cuga_kind` discriminator) from both the live turn
  *  (customSendMessage.ts) and history reload (customLoadHistory.ts), and
  *  Carbon calls `renderCugaUserDefinedResponse` below to render it.
- *
- *  Content that belongs in the message stream goes through this custom-item
- *  path rather than the portal/MutationObserver overlay pattern used by the
- *  autocomplete dropdown: Carbon owns the lifecycle, the chip renders inline
- *  in message order, and history reload replays it through the exact same
- *  renderer with zero shadow-DOM traversal.
  */
 import React from "react";
 import type { ChatInstance, RenderUserDefinedState } from "@carbon/ai-chat";

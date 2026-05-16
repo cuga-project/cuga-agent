@@ -1,11 +1,4 @@
-"""``/clear`` — start a fresh conversation in a new thread.
-
-Mirrors the soft-reset idiom of ``POST /reset``: the stop event for the old
-thread is cleared, but persisted messages stay put — the old thread remains
-visible in ``GET /api/conversation-threads``. The slash response carries a
-freshly minted ``thread_id`` that the frontend adopts as its next
-``X-Thread-ID`` header (and the SDK surfaces via ``InvokeResult.thread_id``).
-"""
+"""``/clear`` — clear stop event for the current thread, mint a new thread id, return as new_thread_id."""
 
 from __future__ import annotations
 

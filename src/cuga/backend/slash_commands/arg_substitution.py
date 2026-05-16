@@ -37,10 +37,7 @@ from typing import List, Sequence
 _NUMERIC_NAME_RE = re.compile(r"^\d+$")
 _VALID_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
-# Alternation order encodes four-pass precedence. ``escaped`` is first so a
-# literal ``\$`` is never interpreted as a placeholder; ``indexed`` precedes
-# ``bare`` so ``$ARGUMENTS[0]`` is not eaten by ``$ARGUMENTS``; ``bare``
-# precedes ``named`` so ``$ARGUMENTS`` is not treated as a named arg.
+# Alternation order encodes four-pass precedence; see module docstring.
 _TOKEN_RE = re.compile(
     r"""
       (?P<escaped>\\\$)
@@ -75,8 +72,6 @@ def validate_arg_names(names: Sequence[str]) -> None:
                 "and do not start with a digit"
             )
         if n.upper() == "ARGUMENTS":
-            # $ARGUMENTS is reserved for raw full-args substitution; allowing a
-            # frontmatter arg of the same name would create ambiguous bindings.
             raise InvalidArgumentName(
                 f"Argument name {n!r} is reserved; $ARGUMENTS denotes the full raw-args substitution"
             )

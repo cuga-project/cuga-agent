@@ -1658,12 +1658,7 @@ class CugaAgent:
         return self._compiled_graph
 
     async def _dispatch_slash(self, message: str, thread_id: Optional[str]):
-        """Run the shared slash parser/dispatcher.
-
-        Returns ``None`` on any failure so callers fall back to the planner.
-        Skill-kind results carry synthesized messages the caller injects in
-        place of the bare user message.
-        """
+        """SDK-side wrapper around parse_and_dispatch; returns ``None`` on failure so the caller falls back to the planner."""
         try:
             from cuga.backend.skills import SkillRegistry, discover_skills
             from cuga.backend.slash_commands import (
@@ -1769,8 +1764,6 @@ class CugaAgent:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
-        # A `/<name>` message short-circuits the graph for built-in handlers
-        # and unknown commands.
         slash_result = None
         if isinstance(message, str):
             slash_result = await self._dispatch_slash(message, thread_id)
@@ -1956,9 +1949,7 @@ class CugaAgent:
         if self._policy_system:
             run_config["configurable"]["policy_system"] = self._policy_system
 
-        # When this turn invokes a slash-skill with a declared ``allowed-tools``
-        # list, propagate the whitelist so the tool-approval gate enforces it
-        # for the duration of this turn only.
+        # Propagate ``allowed-tools`` to the tool-approval gate (cleared otherwise).
         if (
             slash_result is not None
             and slash_result.kind == "skill"

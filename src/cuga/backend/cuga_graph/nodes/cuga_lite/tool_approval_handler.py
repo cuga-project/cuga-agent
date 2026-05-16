@@ -186,7 +186,6 @@ class ToolApprovalHandler:
         """
         from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
-        # Whitelist runs unconditionally; policy check gated on settings.policy.enabled.
         whitelist_interrupt = ToolApprovalHandler._check_skill_allowed_tools(state, code, content, config)
         if whitelist_interrupt is not None:
             return whitelist_interrupt
@@ -274,7 +273,6 @@ class ToolApprovalHandler:
 
             disallowed = find_disallowed_calls(code, skill_allowed_tools)
         except Exception:
-            # Whitelist enforcement is best-effort; fall through to policy gating on failure.
             logger.exception("skill allowed-tools enforcement failed; skipping whitelist check")
             return None
 

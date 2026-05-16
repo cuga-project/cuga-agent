@@ -141,16 +141,13 @@ export function setComposerInputValue(el: ComposerInput | null, value: string): 
     el.dispatchEvent(new Event("change", { bubbles: true }));
     try {
       el.setSelectionRange(value.length, value.length);
-    } catch {
-      /* some inputs disallow setSelectionRange */
-    }
+    } catch {}
     el.focus();
     return true;
   }
   // contenteditable / role=textbox host
   el.focus();
   el.textContent = value;
-  // Place caret at the end.
   try {
     const range = document.createRange();
     range.selectNodeContents(el);

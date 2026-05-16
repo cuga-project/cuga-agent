@@ -54,11 +54,7 @@ export function getOrCreateThreadId(): string {
   return currentThreadId;
 }
 
-// The backend mints a new thread_id when ``/clear`` is dispatched and
-// surfaces it through a ``ThreadIdChanged`` SSE event. The customSendMessage
-// stream handler calls this setter so the next outbound request carries the
-// new ``X-Thread-ID``. The wrapped customSendMessage in CarbonChat re-reads
-// ``currentThreadId`` after each turn and fires ``onThreadChange`` accordingly.
+// Setter used by customSendMessage on a ``ThreadIdChanged`` SSE event.
 export function setThreadId(newThreadId: string): void {
   currentThreadId = newThreadId;
 }
@@ -516,11 +512,7 @@ const CarbonChat = ({
 
     applyMessageAttachmentDecorations();
 
-    // Debounce attachment-decoration rebuilds with requestAnimationFrame —
-    // during active streaming the observer fires on every DOM mutation,
-    // which would otherwise turn into a tight loop of full-subtree rebuilds.
-    // The reasoning-toggle relabel runs directly (no debounce) because it's
-    // cheap and we want the label to flip the moment the toggle mounts.
+    // rAF-debounce decoration rebuilds — observer fires per mutation during streaming and a tight rebuild loop is expensive.
     let scheduled = false;
     let cancelled = false;
     let rafHandle = 0;

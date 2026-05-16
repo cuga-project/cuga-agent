@@ -81,7 +81,6 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     openRef.current = open;
   }, [open]);
 
-  // chatElement is a convenience anchor; falling back to document.body still works because findComposerTextarea also searches Carbon host elements globally.
   useEffect(() => {
     let cancelled = false;
     // MutationObserver does not cross the shadow boundary, so observe the shadowRoot when present.
@@ -91,8 +90,6 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     const tryFind = () => {
       if (cancelled) return;
       const found = findComposerTextarea(chatElement);
-      // Only update state when the live composer actually changed identity —
-      // avoids needless re-renders + listener churn on every mutation tick.
       if (found && found !== textarea) setTextarea(found);
     };
 
@@ -159,27 +156,15 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     }
   }, [filtered.length, highlightIndex]);
 
-  // Tracks the composer's original `role` attribute so we can restore it when
-  // the dropdown closes (Carbon ships ``role="textbox"`` on contenteditable
-  // composers; we transiently overwrite it with ``role="combobox"`` per the
-  // WAI-ARIA APG combobox pattern). Keyed by the textarea identity — when
-  // Carbon swaps the composer node we capture the new node's original role,
-  // not the previous one's.
+  // Per-node original-role capture (composer ships role=textbox; we transiently overwrite with role=combobox).
   const originalRoleRef = useRef<{ node: HTMLElement | null; role: string | null }>(
     { node: null, role: null },
   );
 
-  // Wire WAI-ARIA combobox semantics onto the composer textarea. Per the APG
-  // combobox pattern, ``role``, ``aria-controls``, ``aria-expanded`` and
-  // ``aria-activedescendant`` live on the focused TEXTBOX, not the listbox.
-  // The composer is inside Carbon's shadow root and gets replaced on every
-  // submit, so React can't own these via JSX — we write them imperatively
-  // and re-apply whenever ``textarea`` identity changes.
+  // Wire WAI-ARIA combobox attrs onto the textbox (see composerTextarea.setComposerAriaAttributes for the why).
   useEffect(() => {
     if (!textarea) return;
 
-    // Capture the original ``role`` once per composer node so we can restore
-    // it cleanly when the dropdown closes or the node is swapped out.
     if (originalRoleRef.current.node !== textarea) {
       originalRoleRef.current = {
         node: textarea,
@@ -198,10 +183,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
           : null,
       });
     } else {
-      // Restore the captured original role (or remove it if there was none),
-      // collapse the popup, and clear the stale active descendant. Per APG
-      // we keep ``aria-controls`` set even when collapsed — the listbox id
-      // is still meaningful to AT users.
+      // Per APG, keep ``aria-controls`` set even when collapsed — the listbox id stays meaningful to AT users.
       const originalRole = originalRoleRef.current.role;
       if (originalRole !== null) {
         textarea.setAttribute("role", originalRole);
@@ -216,7 +198,6 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     }
 
     return () => {
-      // Restore captured role so a Carbon re-attach never sees a stale role="combobox".
       const captured = originalRoleRef.current;
       clearComposerAriaAttributes(textarea);
       if (captured.node === textarea && captured.role !== null) {
@@ -256,10 +237,6 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     };
   }, [open, updatePosition]);
 
-  // Replace the textarea value programmatically and fire an input event so
-  // the underlying Carbon framework picks the change up. The traversal +
-  // value-setting mechanism lives in ./composerTextarea and is shared with
-  // SlashChips' unknown-command suggestion chips.
   const setTextareaValue = useCallback(
     (value: string) => {
       setComposerTextareaValue(textarea, value);
@@ -381,8 +358,6 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     };
   }, [acceptCommand, closeDropdown, fetchCommands, textarea]);
 
-  // Keep refs of mutable state for the keydown listener (which is attached
-  // once but needs current values).
   const filteredRef = useRef(filtered);
   const highlightIndexRef = useRef(highlightIndex);
   useEffect(() => {
@@ -413,9 +388,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     return null;
   }
 
-  // Position the dropdown ABOVE the textarea, anchored to its top-left.
-  // Use fixed positioning so we don't get clipped by overflow:hidden ancestors.
-  // We render bottom-up: dropdown bottom == textarea.top - gap.
+  // position: fixed so overflow:hidden ancestors don't clip; anchored to the textarea's top.
   const dropdownStyle: React.CSSProperties = {
     position: "fixed",
     left: position.left,

@@ -75,7 +75,6 @@ def get_skill_search_roots(
         cuga_root = None
         agents_root = Path(os.getcwd()) / ".agents"
 
-    # Legacy local roots are fallbacks; .agents/skills is the preferred project-local path.
     if cuga_root is not None:
         roots.extend([cuga_root / "skills", cuga_root / ".skills"])
     roots.append(agents_root / "skills")

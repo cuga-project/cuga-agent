@@ -541,10 +541,7 @@ export async function customSendMessage(
         case "FinalAnswer":
           console.log("Received Answer event, finalizing message...");
 
-          // If we already rendered SlashSuggestions chips, the backend's
-          // "Unknown command... Did you mean..." Answer is a redundant
-          // plain-text fallback. Finalize the streaming shell with empty
-          // text (so it collapses away) and skip rendering the text.
+          // Finalize the streaming shell with empty text — the SlashSuggestions chips already shown carry the same info.
           if (slashSuggestionsRendered) {
             const emptyItem = {
               response_type: MessageResponseTypes.TEXT,
