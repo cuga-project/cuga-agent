@@ -30,9 +30,6 @@ class ClearCommand:
             try:
                 ctx.clear_stop_event(ctx.thread_id)
             except Exception:
-                # Don't swallow silently — surface the failure so operators
-                # can diagnose a misbehaving clear-stop hook. Control flow
-                # is unchanged: we still rotate to a new thread id below.
                 logger.exception("clear_stop_event hook failed for thread_id=%s", ctx.thread_id)
         new_thread_id = str(uuid.uuid4())
         return DispatchResult(
