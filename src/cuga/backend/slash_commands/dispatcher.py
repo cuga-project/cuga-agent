@@ -179,11 +179,14 @@ async def _dispatch_parsed(
     if builtin is not None:
         try:
             result = await builtin.handle(ctx)
-        except Exception as e:
+        except Exception:
+            # Full traceback goes to the server log; the user-facing text is
+            # intentionally generic so internal paths/config from the builtin
+            # do not leak back into the chat surface.
             logger.exception(f"Built-in slash command '/{parsed.name}' raised")
             return DispatchResult(
                 kind="unknown",
-                text=f"Error executing /{parsed.name}: {e}",
+                text=f"Error executing /{parsed.name}.",
                 resolved_name=parsed.name,
                 raw_input=parsed.raw_input,
                 raw_args=parsed.raw_args,
@@ -199,11 +202,13 @@ async def _dispatch_parsed(
             # raw_args are substituted into the SKILL.md body via
             # ``$ARGUMENTS`` placeholders before install/sandbox wrapping.
             wrapped_body = skill_registry.load_skill(parsed.name, parsed.raw_args)
-        except Exception as e:
+        except Exception:
+            # Same rationale as the builtin branch above: keep the traceback
+            # on the server, surface only a generic message to the user.
             logger.exception(f"Failed to load skill '/{parsed.name}'")
             return DispatchResult(
                 kind="unknown",
-                text=f"Failed to load skill /{parsed.name}: {e}",
+                text=f"Failed to load skill /{parsed.name}.",
                 resolved_name=parsed.name,
                 raw_input=parsed.raw_input,
                 raw_args=parsed.raw_args,
@@ -313,4 +318,6 @@ def _emit_slash_telemetry(parsed: ParsedSlash, result: DispatchResult, duration_
         )
         span.end()
     except Exception:  # pragma: no cover - telemetry is best-effort
-        logger.debug("Langfuse slash_command span not emitted", exc_info=True)
+        # Loguru ignores ``exc_info`` (a stdlib-logging keyword); use opt() so
+        # the traceback is actually captured at debug level.
+        logger.opt(exception=True).debug("Langfuse slash_command span not emitted")
