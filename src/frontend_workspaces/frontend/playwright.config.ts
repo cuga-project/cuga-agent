@@ -3,10 +3,12 @@ import { defineConfig, devices } from "@playwright/test";
 /**
  * Playwright config for the CUGA frontend (slash-commands feature verification).
  *
- * Boots the webpack dev server (`pnpm run start`, port 3002) and runs specs
- * against it. All backend HTTP is stubbed per-test via ``page.route`` — no
- * real backend is required. Set ``reuseExistingServer: true`` so iterative
- * runs don't pay the ~30s webpack cold start every time.
+ * Boots a small Node static server (``tests/e2e/static-server.cjs``) on port
+ * 3002 that serves the production build out of ``dist/`` with SPA fallback —
+ * run ``pnpm run build`` first to populate ``dist/``. All backend HTTP is
+ * stubbed per-test via ``page.route``, so no real backend is required.
+ * ``reuseExistingServer: true`` lets iterative runs skip the static-server
+ * boot when one is already listening.
  */
 export default defineConfig({
   testDir: "./tests/e2e",
