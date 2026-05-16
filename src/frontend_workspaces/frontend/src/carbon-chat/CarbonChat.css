@@ -519,12 +519,10 @@
 }
 
 /* CUGA does not currently have an app-wide dark mode. The slash-dropdown
-   dark-mode rules previously living here were no-op'd to avoid the visual
-   inconsistency of dark chips inside an otherwise light UI. Restore them
+   dark-mode rules previously living here were dropped to avoid the visual
+   inconsistency of dark chips inside an otherwise light UI. Re-add them
    (selectors: .cuga-slash-dropdown, .cuga-slash-dropdown__status,
    .cuga-slash-option*) if/when a dark mode is introduced. */
-@media (prefers-color-scheme: dark) {
-}
 
 /* ---------------------------------------------------------------------------
  * Slash-command chips rendered inline in the chat transcript.
@@ -598,7 +596,7 @@
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   font-size: 12px;
   color: #1f2328;
-  word-break: break-word;
+  overflow-wrap: anywhere;
 }
 
 .cuga-slash-suggestions {
@@ -675,9 +673,7 @@
 }
 
 /* CUGA does not currently have an app-wide dark mode. The slash-chip
-   dark-mode rules previously living here were no-op'd to avoid the visual
-   inconsistency of dark chips inside an otherwise light UI. Restore them
+   dark-mode rules previously living here were dropped to avoid the visual
+   inconsistency of dark chips inside an otherwise light UI. Re-add them
    (selectors: .cuga-slash-skill-chip*, .cuga-slash-suggestions*,
    .cuga-slash-suggestion*) if/when a dark mode is introduced. */
-@media (prefers-color-scheme: dark) {
-}
