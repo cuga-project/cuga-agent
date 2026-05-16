@@ -56,8 +56,7 @@ const COMPOSER_SELECTOR =
  * keep listening to that one the dropdown never reopens.
  */
 function isVisibleComposer(el: Element): boolean {
-  const rect = (el as HTMLElement).getBoundingClientRect?.();
-  if (!rect) return false;
+  const rect = el.getBoundingClientRect();
   return rect.width > 0 && rect.height > 0;
 }
 
