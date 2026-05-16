@@ -75,6 +75,9 @@ class CommandResolver:
 
     async def index(self, commands: Sequence[CommandRef]) -> None:
         """Embed each command and write it to the store + in-memory index."""
+        # Drop stale entries from previous indexings so commands removed
+        # from disk don't keep surfacing in suggestions.
+        self._index.clear()
         for cmd in commands:
             embedding = await self._embed_fn(f"{cmd.name}: {cmd.description}")
             metadata = {
@@ -125,8 +128,9 @@ class CommandResolver:
         # 3. Cosine-rank every indexed command.
         scored: List[CommandSuggestion] = []
         for name, (embedding, metadata) in self._index.items():
-            # Never return the input itself.
-            if name == normalized:
+            # Never return the input itself. Compare case-insensitively to
+            # match the exact-match short-circuit above.
+            if name.lower() == lowered:
                 continue
             score = _cosine(query_embedding, embedding)
             if score < threshold:
