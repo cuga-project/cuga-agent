@@ -78,10 +78,7 @@ class _InMemoryEmbeddingStore:
         return list(self._rows.values())[:limit]
 
 
-# Cache of indexed resolvers keyed by a hash of the registry's command list, so
-# the embedding index is built lazily on first miss and reused until the set of
-# commands changes (PRD #13: "built lazily on first miss and cached by a hash
-# of the registry contents").
+# Cache keyed by registry contents — rebuild on registry change.
 _resolver_cache: Dict[int, CommandResolver] = {}
 # Serialize rebuilds so two concurrent first-time callers don't both
 # construct an embedding client and stomp on the size-1 cache.
@@ -123,7 +120,7 @@ async def build_command_resolver(slash_registry: SlashRegistry) -> Optional[Comm
 
         resolver = CommandResolver(store=_InMemoryEmbeddingStore(), embed_fn=embed_fn)
         await resolver.index(slash_registry.list_commands())
-        _resolver_cache.clear()  # only the latest registry snapshot is useful
+        _resolver_cache.clear()
         _resolver_cache[key] = resolver
         return resolver
 
@@ -199,12 +196,8 @@ async def _dispatch_parsed(
     if slash_registry.has_skill(parsed.name):
         assert skill_registry is not None  # has_skill is False without a registry
         try:
-            # raw_args are substituted into the SKILL.md body via
-            # ``$ARGUMENTS`` placeholders before install/sandbox wrapping.
             wrapped_body = skill_registry.load_skill(parsed.name, parsed.raw_args)
         except Exception:
-            # Same rationale as the builtin branch above: keep the traceback
-            # on the server, surface only a generic message to the user.
             logger.exception(f"Failed to load skill '/{parsed.name}'")
             return DispatchResult(
                 kind="unknown",
@@ -219,9 +212,7 @@ async def _dispatch_parsed(
             resolved_name=parsed.name,
             wrapped_body=wrapped_body,
         )
-        # Propagate the skill's ``allowed-tools`` whitelist for the caller to
-        # stash on the graph's RunnableConfig. ``None`` (key absent) means no
-        # restriction; ``()`` (key present but empty) means allow nothing.
+        # See DispatchResult.allowed_tools for None vs () semantics.
         allowed_tools = skill_registry.entry(parsed.name).allowed_tools
         return DispatchResult(
             kind="skill",
