@@ -1770,9 +1770,7 @@ class CugaAgent:
         init_openlit()
 
         # A `/<name>` message short-circuits the graph for built-in handlers
-        # and unknown commands. Skill-kind results carry a synthesized
-        # load_skill message quad that gets injected below in place of the
-        # bare HumanMessage.
+        # and unknown commands.
         slash_result = None
         if isinstance(message, str):
             slash_result = await self._dispatch_slash(message, thread_id)
