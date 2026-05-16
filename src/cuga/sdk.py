@@ -1691,7 +1691,10 @@ class CugaAgent:
                 command_resolver_factory=build_command_resolver,
             )
         except Exception:
-            logger.exception(f"Slash dispatch failed for input {message!r}")
+            # Log only the command name (token after leading "/"); arguments may
+            # carry secrets and are deliberately omitted.
+            command_name = message.split(maxsplit=1)[0] if message.startswith("/") else "<non-slash>"
+            logger.exception(f"Slash dispatch failed for command {command_name!r}")
             return None
 
     async def invoke(
