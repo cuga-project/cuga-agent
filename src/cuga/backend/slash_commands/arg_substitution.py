@@ -77,6 +77,12 @@ def validate_arg_names(names: Sequence[str]) -> None:
                 f"Argument name {n!r} is invalid; use letters, digits and underscore, "
                 "and do not start with a digit"
             )
+        if n.upper() == "ARGUMENTS":
+            # $ARGUMENTS is reserved for raw full-args substitution; allowing a
+            # frontmatter arg of the same name would create ambiguous bindings.
+            raise InvalidArgumentName(
+                f"Argument name {n!r} is reserved; $ARGUMENTS denotes the full raw-args substitution"
+            )
 
 
 def split_args(raw_args: str) -> List[str]:
