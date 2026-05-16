@@ -300,6 +300,143 @@ test.describe("slash-command chips", () => {
     expect(secondThreadId).toBe(NEW_THREAD_ID);
   });
 
+  test("combobox ARIA attributes mirror dropdown state", async ({ page }) => {
+    // Per the WAI-ARIA APG combobox pattern, the focused composer textbox —
+    // not the listbox — must carry ``role="combobox"``, ``aria-controls``,
+    // ``aria-expanded`` and ``aria-activedescendant``. Carbon Chat hosts the
+    // composer inside a shadow root and replaces the node on every submit,
+    // so the dropdown writes these attributes imperatively and re-applies
+    // them whenever the composer identity changes. This test guards the
+    // identity-tracking path: open the dropdown, walk the highlight, close
+    // it, submit a message (forcing Carbon to swap composers), then reopen
+    // and re-assert on the NEW node.
+    await stubBootEndpoints(page);
+    // ``stubBootEndpoints`` returns the commands as a bare array; the
+    // autocomplete dropdown calls ``getCommands()`` which expects
+    // ``{ commands: [...] }`` (see ``api.ts``). Override the route so the
+    // dropdown actually populates and ``aria-activedescendant`` resolves.
+    await page.route("**/api/commands", (r) =>
+      r.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ commands: COMMANDS_PAYLOAD }),
+      }),
+    );
+    await stubStream(page, SKILL_SSE);
+
+    await page.goto("/chat");
+
+    // Locate the composer via the same shadow-DOM walk as the production
+    // resolver — once we apply ``role="combobox"`` the textbox role no
+    // longer matches, so we re-find the live composer on each assertion
+    // instead of caching a Locator.
+    const readComposerAria = () =>
+      page.evaluate(() => {
+        const SEL =
+          'textarea, input[type="text"], [contenteditable="true"], [contenteditable=""], [role="textbox"], [role="combobox"]';
+        const isVisible = (e: Element) => {
+          const r = (e as HTMLElement).getBoundingClientRect?.();
+          return !!r && r.width > 0 && r.height > 0;
+        };
+        function find(root: Document | ShadowRoot): Element | null {
+          let firstSeen: Element | null = null;
+          const stack: Array<Document | ShadowRoot> = [root];
+          while (stack.length) {
+            const r = stack.shift()!;
+            for (const c of Array.from(r.querySelectorAll(SEL))) {
+              if (!firstSeen) firstSeen = c;
+              if (isVisible(c)) return c;
+            }
+            for (const el of Array.from(r.querySelectorAll("*"))) {
+              const sr = (el as Element & { shadowRoot?: ShadowRoot }).shadowRoot;
+              if (sr) stack.push(sr);
+            }
+          }
+          return firstSeen;
+        }
+        const el = find(document);
+        if (!el) return null;
+        return {
+          role: el.getAttribute("role"),
+          controls: el.getAttribute("aria-controls"),
+          expanded: el.getAttribute("aria-expanded"),
+          activedescendant: el.getAttribute("aria-activedescendant"),
+        };
+      });
+
+    // (1) Type ``/`` and assert combobox semantics are wired up.
+    const ta = composer(page);
+    await ta.waitFor({ state: "visible", timeout: 30_000 });
+    await ta.fill("/");
+
+    await expect
+      .poll(readComposerAria, { timeout: 10_000 })
+      .toMatchObject({
+        role: "combobox",
+        controls: "cuga-slash-options",
+        expanded: "true",
+        // First filtered match for the empty query is the first command in
+        // COMMANDS_PAYLOAD: ``help``.
+        activedescendant: "cuga-slash-option-help",
+      });
+
+    // (2) ArrowDown advances ``aria-activedescendant`` to the next option.
+    // After ArrowDown the highlight moves to the second command (``clear``).
+    await page.keyboard.press("ArrowDown");
+    await expect
+      .poll(async () => (await readComposerAria())?.activedescendant, {
+        timeout: 5_000,
+      })
+      .toBe("cuga-slash-option-clear");
+
+    // (3) Escape collapses the popup and clears ``aria-activedescendant``.
+    await page.keyboard.press("Escape");
+    await expect
+      .poll(readComposerAria, { timeout: 5_000 })
+      .toMatchObject({
+        expanded: "false",
+        // The attribute should be absent entirely — APG forbids pointing
+        // at a non-existent option.
+        activedescendant: null,
+      });
+
+    // (4) Submit a message — Carbon replaces the composer node — then
+    // reopen the dropdown. The new composer must receive the same ARIA
+    // wiring. This is the regression-critical assertion: the
+    // identity-tracking path in the dropdown's ARIA effect.
+    //
+    // The composer's ``role`` is back to ``textbox`` after Escape (step 3),
+    // so ``getByRole('textbox').first()`` resolves the live composer; once
+    // we fill it with ``/deck …`` the dropdown reopens and flips the role
+    // to ``combobox``, so we send the Enter via ``page.keyboard`` (which
+    // doesn't re-resolve a role-based locator) to dodge that race.
+    const ta2 = composer(page);
+    await ta2.waitFor({ state: "visible", timeout: 30_000 });
+    await ta2.fill("/deck make 3 slides");
+    await page.keyboard.press("Enter");
+
+    // Wait for the response so we know Carbon has finished swapping the
+    // composer.
+    const showDetails = page
+      .getByRole("button", { name: /Show details/i })
+      .first();
+    await expect(showDetails).toBeVisible({ timeout: 10_000 });
+
+    // After Carbon's submit the previous composer is replaced; the new
+    // composer ships with ``role="textbox"`` again, so this locator
+    // resolves to the FRESH node.
+    const freshTa = composer(page);
+    await freshTa.waitFor({ state: "visible", timeout: 10_000 });
+    await freshTa.fill("/");
+    await expect
+      .poll(readComposerAria, { timeout: 10_000 })
+      .toMatchObject({
+        role: "combobox",
+        controls: "cuga-slash-options",
+        expanded: "true",
+        activedescendant: "cuga-slash-option-help",
+      });
+  });
+
   // CUGA does not currently have an app-wide dark mode. The chip dark-mode
   // CSS rules were no-op'd; re-enable this test alongside any future dark-mode
   // work to guard against partial regressions.
