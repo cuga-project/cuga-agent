@@ -80,7 +80,7 @@ def test_skill_registry_load_skill_emits_install_steps_for_requirements() -> Non
     loaded = registry.load_skill("deck")
 
     assert "await run_command('uv pip install --quiet python-pptx')" in loaded
-    assert "await run_command('cd /tmp && npm install sharp')" in loaded
+    assert "await run_command('npm install sharp')" in loaded
     assert "STEP 2 — SKILL INSTRUCTIONS" in loaded
     assert "`python -m <module> ...` → `uv run python -m <module> ...`" in loaded
     assert "`pip list` / `pip show` / `pip freeze` → `uv pip list`" in loaded
