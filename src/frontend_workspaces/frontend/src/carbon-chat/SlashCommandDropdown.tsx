@@ -110,12 +110,23 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       }
     });
     observer.observe(observeTarget, { childList: true, subtree: true });
-    const interval = window.setInterval(tryFind, 500);
+    // The interval is only a bootstrap fallback for the case where the
+    // composer mounts before our observer can attach. Once we have a live
+    // textarea, the MutationObserver alone handles re-resolution — stop
+    // re-polling every 500ms forever.
+    let interval: number | null = window.setInterval(() => {
+      if (cancelled) return;
+      tryFind();
+      if (textarea && document.contains(textarea) && interval !== null) {
+        window.clearInterval(interval);
+        interval = null;
+      }
+    }, 500);
 
     return () => {
       cancelled = true;
       observer.disconnect();
-      window.clearInterval(interval);
+      if (interval !== null) window.clearInterval(interval);
     };
   }, [chatElement, textarea]);
 
