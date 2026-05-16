@@ -6,25 +6,10 @@ commands using embedding cosine similarity. It is a *suggester*, never an
 auto-corrector: it returns ranked candidates and lets the caller decide
 what to do with them.
 
-Design
-------
-``CommandResolver`` is a pure, dependency-injected unit:
-
-* ``embed_fn`` — an async callable turning a string into a vector.
-* ``store`` — an :class:`EmbeddingStoreBackend` used as the persistent
-  vector cache (commands are written there during :meth:`index`).
-
-Step 3 of :meth:`resolve` needs the indexed command vectors back in order
-to rank them. ``LocalEmbeddingStore.list`` only selects the id + metadata
-columns — it does **not** return the ``embedding`` column — so we cannot
-recover vectors from ``store.list``. Therefore :meth:`index` also keeps an
-in-memory copy of the ``(name, embedding, metadata)`` tuples it embedded,
-and :meth:`resolve` ranks from that copy. This keeps ranking independent of
-the backend's projection quirks and avoids a second round-trip; the store
-write is retained so the vectors are still cached/persisted for other
-consumers.
-
-The module has no FastAPI, settings, or global-state dependencies.
+Design:
+    index() maintains an in-memory copy of (name, embedding, metadata);
+    resolve() ranks from this copy because the EmbeddingStoreBackend
+    protocol doesn't expose embeddings on list.
 """
 
 from __future__ import annotations
@@ -109,7 +94,6 @@ class CommandResolver:
         if not self._index:
             return []
 
-        # 1. Exact-match short-circuit.
         lowered = normalized.lower()
         for name, (_embedding, metadata) in self._index.items():
             if name.lower() == lowered:
@@ -122,10 +106,8 @@ class CommandResolver:
                     )
                 ]
 
-        # 2. Embed the query.
         query_embedding = await self._embed_fn(normalized)
 
-        # 3. Cosine-rank every indexed command.
         scored: List[CommandSuggestion] = []
         for name, (embedding, metadata) in self._index.items():
             # Never return the input itself. Compare case-insensitively to
@@ -144,6 +126,5 @@ class CommandResolver:
                 )
             )
 
-        # 4. Rank descending, return top ``limit``.
         scored.sort(key=lambda s: s.score, reverse=True)
         return scored[:limit]
