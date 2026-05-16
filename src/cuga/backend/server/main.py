@@ -1356,7 +1356,7 @@ async def event_stream(
             # them as a discrete event so the frontend can render clickable
             # correction chips. The plain Answer text is kept as a fallback
             # for clients that don't render the chips.
-            slash_suggestions = getattr(slash_result, "suggestions", None) or []
+            slash_suggestions = slash_result.suggestions
             suggestions_event_data = (
                 json.dumps(
                     {
@@ -1428,12 +1428,7 @@ async def event_stream(
             )
             return
 
-    if (
-        slash_result is not None
-        and slash_result.kind == "skill"
-        and slash_result.injected_messages
-        and local_state is not None
-    ):
+    if slash_result is not None and slash_result.kind == "skill" and local_state is not None:
         # Prepend the synthesized load_skill message quad so the planner sees
         # the skill as already loaded. ``input`` is the trailing arg block (or
         # the bare slash invocation when there are no args) so the planner has
@@ -1759,7 +1754,7 @@ async def event_stream(
                             local_state = AgentState(**latest_state_values)
                     try:
                         name = StreamEvent.parse(event).name
-                    except (ValueError, IndexError) as parse_err:
+                    except ValueError as parse_err:
                         # A malformed event block would otherwise crash the
                         # stream mid-flight; log and skip so the rest of the
                         # turn keeps flowing.
