@@ -87,7 +87,13 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   // fall back to observing ``document.body``.
   useEffect(() => {
     let cancelled = false;
-    const observeTarget: Node = chatElement ?? document.body;
+    // Carbon Chat hosts its composer inside a shadow root; a MutationObserver
+    // attached to the host element does NOT cross the shadow boundary, so it
+    // would never see the composer get replaced after submit. Prefer the
+    // shadowRoot when present, falling back to the host (and finally
+    // document.body) for the rare host-only / light-DOM case.
+    const observeTarget: Node =
+      chatElement?.shadowRoot ?? chatElement ?? document.body;
 
     const tryFind = () => {
       if (cancelled) return;
