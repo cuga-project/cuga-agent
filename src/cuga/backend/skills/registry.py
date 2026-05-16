@@ -40,9 +40,7 @@ class SkillRegistry:
             known = ", ".join(sorted(self._by_name.keys())) or "(none)"
             return f"Unknown skill: {name!r}. Known skills: {known}"
 
-        # Argument substitution runs on the raw SKILL.md body before the
-        # install/sandbox wrapping below. Model-initiated load_skill calls
-        # pass no args and the body is used verbatim.
+        # Substitution runs on the raw body before install/sandbox wrapping.
         if args:
             from cuga.backend.slash_commands.arg_substitution import substitute
 
