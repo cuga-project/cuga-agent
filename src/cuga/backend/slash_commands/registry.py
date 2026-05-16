@@ -49,7 +49,7 @@ class SlashRegistry:
                     name=b.name,
                     description=b.description,
                     kind="builtin",
-                    argument_hint=getattr(b, "argument_hint", None),
+                    argument_hint=b.argument_hint,
                 )
             )
         if self._skill_registry is not None:
