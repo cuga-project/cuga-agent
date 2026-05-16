@@ -173,7 +173,7 @@ class ToolApprovalHandler:
              independent of the initial policy matching phase.
 
         The whitelist runs first. If both fire on the same code, the skill
-        whitelist takes precedence (it's the tighter, skill-scoped contract).
+        whitelist takes precedence.
 
         Args:
             state: Current CugaLiteState
@@ -186,15 +186,11 @@ class ToolApprovalHandler:
         """
         from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
-        # Skill ``allowed-tools`` enforcement runs even when no ToolApproval
-        # policy is configured and even when policy gating is off.
+        # Whitelist runs unconditionally; policy check gated on settings.policy.enabled.
         whitelist_interrupt = ToolApprovalHandler._check_skill_allowed_tools(state, code, content, config)
         if whitelist_interrupt is not None:
             return whitelist_interrupt
 
-        # Policy-based ToolApproval check is gated on settings.policy.enabled so
-        # users who turn off the policy system still get the skill whitelist
-        # but not the broader policy check.
         from cuga.config import settings
 
         if not settings.policy.enabled:
@@ -278,8 +274,7 @@ class ToolApprovalHandler:
 
             disallowed = find_disallowed_calls(code, skill_allowed_tools)
         except Exception:
-            # Whitelist enforcement is best-effort: a bug here must not break
-            # dispatch. The user still has the per-tool approval flow below.
+            # Whitelist enforcement is best-effort; fall through to policy gating on failure.
             logger.exception("skill allowed-tools enforcement failed; skipping whitelist check")
             return None
 
