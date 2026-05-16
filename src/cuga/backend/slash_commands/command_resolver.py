@@ -15,7 +15,7 @@ Design:
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Awaitable, Callable, Dict, List, Sequence, Tuple
+from typing import Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
@@ -54,20 +54,34 @@ class CommandResolver:
     ) -> None:
         self._store = store
         self._embed_fn = embed_fn
-        self._index: Dict[str, Tuple[List[float], Dict[str, str]]] = {}
+        # Each indexed command stores (name_vec, desc_vec_or_None, metadata).
+        # Two embeddings let us score name and description separately and take
+        # the max so a verbose description doesn't drown out a typo'd name.
+        self._index: Dict[str, Tuple[List[float], Optional[List[float]], Dict[str, str]]] = {}
 
     async def index(self, commands: Sequence[CommandRef]) -> None:
-        """Embed each command and write it to the store + in-memory index."""
+        """Embed each command's name and description separately.
+
+        Storing two vectors keeps ranking ``max(cosine(query, name),
+        cosine(query, description))`` so a command with a long, semantically
+        rich description can't out-rank a command whose *name* is the obvious
+        intended typo target. Commands with an empty description skip the
+        second vector. The store row uses the name vector for backward
+        compatibility with the EmbeddingStoreBackend protocol.
+        """
         self._index.clear()
         for cmd in commands:
-            embedding = await self._embed_fn(f"{cmd.name}: {cmd.description}")
+            name_embedding = await self._embed_fn(cmd.name)
+            desc_embedding: Optional[List[float]] = None
+            if cmd.description:
+                desc_embedding = await self._embed_fn(cmd.description)
             metadata = {
                 "name": cmd.name,
                 "kind": cmd.kind,
                 "description": cmd.description,
             }
-            await self._store.add(id=cmd.name, embedding=embedding, metadata=metadata)
-            self._index[cmd.name] = (embedding, metadata)
+            await self._store.add(id=cmd.name, embedding=name_embedding, metadata=metadata)
+            self._index[cmd.name] = (name_embedding, desc_embedding, metadata)
 
     async def resolve(
         self,
@@ -81,7 +95,10 @@ class CommandResolver:
         Steps:
           1. Exact-match short-circuit (case-insensitive, stripped) -> score 1.0.
           2. Embed ``raw_name``.
-          3. Rank all indexed commands by cosine similarity to the query.
+          3. Rank all indexed commands by ``max(cosine(query, name_vec),
+             cosine(query, desc_vec))``. The max prevents a command with a
+             verbose description from out-ranking the command whose *name* is
+             the obvious intended match.
           4. Drop the input itself, drop anything below ``threshold``,
              return the top ``limit``.
         """
@@ -91,7 +108,7 @@ class CommandResolver:
             return []
 
         lowered = normalized.lower()
-        for name, (_embedding, metadata) in self._index.items():
+        for name, (_name_vec, _desc_vec, metadata) in self._index.items():
             if name.lower() == lowered:
                 return [
                     CommandSuggestion(
@@ -105,10 +122,12 @@ class CommandResolver:
         query_embedding = await self._embed_fn(normalized)
 
         scored: List[CommandSuggestion] = []
-        for name, (embedding, metadata) in self._index.items():
+        for name, (name_vec, desc_vec, metadata) in self._index.items():
             if name.lower() == lowered:
                 continue
-            score = _cosine(query_embedding, embedding)
+            score = _cosine(query_embedding, name_vec)
+            if desc_vec is not None:
+                score = max(score, _cosine(query_embedding, desc_vec))
             if score < threshold:
                 continue
             scored.append(

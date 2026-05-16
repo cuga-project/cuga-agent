@@ -21,7 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
+from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from loguru import logger
 
@@ -73,7 +73,12 @@ class _InMemoryEmbeddingStore:
         return list(self._rows.values())[:limit]
 
 
-_resolver_cache: Dict[int, CommandResolver] = {}
+# Cache is intentionally size-1: registry contents change rarely (only when a
+# SKILL.md is added/removed) and a stale entry is immediately discarded. The
+# old ``Dict[int, CommandResolver]`` with a ``clear()`` before every insert
+# advertised a many-entry cache it never used; the explicit ``(key, resolver)``
+# tuple makes the contract obvious.
+_resolver_cache: Optional[Tuple[int, CommandResolver]] = None
 # Serialize rebuilds so two concurrent first-time callers don't both
 # construct an embedding client and stomp on the size-1 cache.
 _resolver_cache_lock = asyncio.Lock()
@@ -90,15 +95,16 @@ async def build_command_resolver(slash_registry: SlashRegistry) -> Optional[Comm
     misconfigured) so callers transparently fall back to a plain "unknown
     command" message. The result is cached by registry contents.
     """
+    global _resolver_cache
     key = _registry_key(slash_registry)
-    cached = _resolver_cache.get(key)
-    if cached is not None:
-        return cached
+    cached = _resolver_cache
+    if cached is not None and cached[0] == key:
+        return cached[1]
 
     async with _resolver_cache_lock:
-        cached = _resolver_cache.get(key)
-        if cached is not None:
-            return cached
+        cached = _resolver_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
 
         try:
             from cuga.backend.storage.embedding import create_embedding_function
@@ -112,8 +118,7 @@ async def build_command_resolver(slash_registry: SlashRegistry) -> Optional[Comm
 
         resolver = CommandResolver(store=_InMemoryEmbeddingStore(), embed_fn=embed_fn)
         await resolver.index(slash_registry.list_commands())
-        _resolver_cache.clear()
-        _resolver_cache[key] = resolver
+        _resolver_cache = (key, resolver)
         return resolver
 
 

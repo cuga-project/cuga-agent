@@ -16,13 +16,19 @@ from cuga.backend.slash_commands.types import CommandRef
 # --------------------------------------------------------------------------
 
 # Hand-chosen canned vectors. Cosine similarity ignores magnitude, so the
-# direction of each vector fully determines the ranking. The query strings
-# are mapped so that ranking is completely predictable.
+# direction of each vector fully determines the ranking. The resolver embeds
+# command names and descriptions separately and ranks by ``max(cos(name),
+# cos(desc))``, so we map both halves to the same direction per command — the
+# query is then closest to the intended command regardless of which half wins.
 _CANNED_VECTORS: Dict[str, List[float]] = {
-    # commands
-    "summarize: condense text": [1.0, 0.0, 0.0],
-    "deploy: ship the app": [0.0, 1.0, 0.0],
-    "search: find things": [0.0, 0.0, 1.0],
+    # command names
+    "summarize": [1.0, 0.0, 0.0],
+    "deploy": [0.0, 1.0, 0.0],
+    "search": [0.0, 0.0, 1.0],
+    # command descriptions (same direction so name/desc both rank well)
+    "condense text": [1.0, 0.0, 0.0],
+    "ship the app": [0.0, 1.0, 0.0],
+    "find things": [0.0, 0.0, 1.0],
     # queries
     "sumarize": [0.9, 0.1, 0.0],  # closest to summarize
     "deploi": [0.1, 0.9, 0.0],  # closest to deploy
@@ -173,3 +179,49 @@ def test_suggestion_carries_kind_and_description():
     assert top.name == "deploy"
     assert top.kind == "skill"
     assert top.description == "ship the app"
+
+
+def test_description_match_can_drive_ranking():
+    # ``max(cos(name), cos(desc))`` means a query that's similar to the
+    # description (but not the name) still ranks that command top.
+    canned = {
+        "deploy": [0.0, 1.0, 0.0],
+        "ship rocket": [1.0, 0.0, 0.0],  # description vector
+        "rocket": [1.0, 0.0, 0.0],  # query
+        "summarize": [0.0, 0.0, 1.0],
+        "condense text": [0.0, 0.0, 1.0],
+    }
+
+    async def embed(text: str) -> List[float]:
+        return list(canned.get(text, [0.0, 0.0, 0.0]))
+
+    resolver = CommandResolver(store=StubEmbeddingStore(), embed_fn=embed)
+    asyncio.run(
+        resolver.index(
+            [
+                CommandRef(name="deploy", description="ship rocket", kind="skill"),
+                CommandRef(name="summarize", description="condense text", kind="builtin"),
+            ]
+        )
+    )
+    results = asyncio.run(resolver.resolve("rocket"))
+    # "rocket" matches deploy's *description*, not its name; the max-based
+    # rule pulls it to the top anyway.
+    assert results[0].name == "deploy"
+
+
+def test_command_with_empty_description_skips_desc_vector():
+    # Commands with an empty description must not crash at index time and
+    # rank purely on the name vector.
+    canned = {
+        "deploy": [0.0, 1.0, 0.0],
+        "deploi": [0.1, 0.9, 0.0],
+    }
+
+    async def embed(text: str) -> List[float]:
+        return list(canned.get(text, [0.0, 0.0, 0.0]))
+
+    resolver = CommandResolver(store=StubEmbeddingStore(), embed_fn=embed)
+    asyncio.run(resolver.index([CommandRef(name="deploy", description="", kind="skill")]))
+    results = asyncio.run(resolver.resolve("deploi"))
+    assert results[0].name == "deploy"
