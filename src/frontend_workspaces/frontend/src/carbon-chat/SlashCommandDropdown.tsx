@@ -81,19 +81,10 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     openRef.current = open;
   }, [open]);
 
-  // Discover the composer input. ``chatElement`` is a convenience anchor — when
-  // it's available we observe its subtree directly. When it isn't (Carbon's
-  // ``handleChatReady`` may fire before the React ref is populated, leaving
-  // the prop ``null``), ``findComposerTextarea`` still resolves the composer
-  // by querying for the well-known Carbon host elements globally, so we just
-  // fall back to observing ``document.body``.
+  // chatElement is a convenience anchor; falling back to document.body still works because findComposerTextarea also searches Carbon host elements globally.
   useEffect(() => {
     let cancelled = false;
-    // Carbon Chat hosts its composer inside a shadow root; a MutationObserver
-    // attached to the host element does NOT cross the shadow boundary, so it
-    // would never see the composer get replaced after submit. Prefer the
-    // shadowRoot when present, falling back to the host (and finally
-    // document.body) for the rare host-only / light-DOM case.
+    // MutationObserver does not cross the shadow boundary, so observe the shadowRoot when present.
     const observeTarget: Node =
       chatElement?.shadowRoot ?? chatElement ?? document.body;
 
@@ -118,10 +109,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       }
     });
     observer.observe(observeTarget, { childList: true, subtree: true });
-    // The interval is only a bootstrap fallback for the case where the
-    // composer mounts before our observer can attach. Once we have a live
-    // textarea, the MutationObserver alone handles re-resolution — stop
-    // re-polling every 500ms forever.
+    // Interval is a bootstrap fallback for composer-mounts-before-observer; clear it once the textarea is live.
     let interval: number | null = window.setInterval(() => {
       if (cancelled) return;
       tryFind();
@@ -159,14 +147,12 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     }
   }, []);
 
-  // Filter commands case-insensitively by name prefix.
   const filtered = useMemo(() => {
     const q = query.toLowerCase();
     if (!q) return commands;
     return commands.filter((c) => c.name.toLowerCase().startsWith(q));
   }, [commands, query]);
 
-  // Clamp highlight index whenever the filtered list shrinks.
   useEffect(() => {
     if (highlightIndex >= filtered.length) {
       setHighlightIndex(filtered.length > 0 ? filtered.length - 1 : 0);
@@ -189,10 +175,6 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
   // The composer is inside Carbon's shadow root and gets replaced on every
   // submit, so React can't own these via JSX — we write them imperatively
   // and re-apply whenever ``textarea`` identity changes.
-  //
-  // Safety: the composer-resolution MutationObserver above watches
-  // ``childList``/``subtree`` only (NOT ``attributes``), so our
-  // ``setAttribute`` calls do not trigger a feedback loop.
   useEffect(() => {
     if (!textarea) return;
 
@@ -234,11 +216,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     }
 
     return () => {
-      // Cleanup fires on unmount AND when ``textarea`` identity changes; in
-      // the latter case the captured node may already be detached, which is
-      // fine — ``removeAttribute`` is a no-op on detached nodes. We also
-      // restore the captured role so we never leave ``role="combobox"`` on
-      // the old node if Carbon re-attaches it (defensive).
+      // Restore captured role so a Carbon re-attach never sees a stale role="combobox".
       const captured = originalRoleRef.current;
       clearComposerAriaAttributes(textarea);
       if (captured.node === textarea && captured.role !== null) {
