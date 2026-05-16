@@ -67,7 +67,9 @@ def test_emits_span_for_builtin_dispatch(monkeypatch):
     kwargs = fake_client.start_observation.call_args.kwargs
     assert kwargs["name"] == "slash_command"
     assert kwargs["as_type"] == "span"
-    assert kwargs["input"] == {"raw_input": "/help", "args": ""}
+    # Slash args are user-supplied and may carry secrets/PII — telemetry
+    # records shape metadata only, never the raw strings.
+    assert kwargs["input"] == {"command_name": "help", "args_present": False, "args_length": 0}
     assert kwargs["output"]["resolved_kind"] == "builtin"
     assert kwargs["output"]["resolved_name"] == "help"
     assert kwargs["output"]["top_suggestions"] == []
@@ -86,7 +88,12 @@ def test_emits_span_with_args_for_skill_dispatch(monkeypatch):
     asyncio.run(parse_and_dispatch("/deck 3 slides", slash_registry=reg, skill_registry=skills))
 
     kwargs = fake_client.start_observation.call_args.kwargs
-    assert kwargs["input"] == {"raw_input": "/deck 3 slides", "args": "3 slides"}
+    # Redacted: shape metadata only, never the raw "/deck 3 slides".
+    assert kwargs["input"] == {
+        "command_name": "deck",
+        "args_present": True,
+        "args_length": len("3 slides"),
+    }
     assert kwargs["output"]["resolved_kind"] == "skill"
     assert kwargs["output"]["resolved_name"] == "deck"
 
