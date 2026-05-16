@@ -12,7 +12,7 @@ import re
 from dataclasses import dataclass
 
 
-_SLASH_RE = re.compile(r"^/([a-zA-Z0-9_:-]+)(?:\s+(.*))?$", re.DOTALL)
+_SLASH_RE = re.compile(r"^/([a-zA-Z0-9_][a-zA-Z0-9_:-]*)(?:\s+(.*))?$", re.DOTALL)
 
 
 @dataclass(frozen=True)
