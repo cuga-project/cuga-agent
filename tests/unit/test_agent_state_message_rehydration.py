@@ -91,9 +91,7 @@ def test_validation_accepts_dict_inputs_via_discriminator():
             {
                 "type": "ai",
                 "content": "",
-                "tool_calls": [
-                    {"id": "1", "name": "f", "args": {}, "type": "tool_call"}
-                ],
+                "tool_calls": [{"id": "1", "name": "f", "args": {}, "type": "tool_call"}],
             },
             {"type": "tool", "content": "out", "tool_call_id": "1"},
         ],

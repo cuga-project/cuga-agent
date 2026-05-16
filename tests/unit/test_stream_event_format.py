@@ -19,12 +19,8 @@ def _assert_sse_block(formatted: str, name: str, data: str) -> None:
     ``data:`` line per logical line of ``data``, and (3) terminate with a
     blank line so the EventSource parser dispatches it.
     """
-    assert formatted.startswith(f"event: {name}\n"), (
-        f"missing event prefix; got: {formatted!r}"
-    )
-    assert formatted.endswith("\n\n"), (
-        f"missing SSE terminator blank line; got: {formatted!r}"
-    )
+    assert formatted.startswith(f"event: {name}\n"), f"missing event prefix; got: {formatted!r}"
+    assert formatted.endswith("\n\n"), f"missing SSE terminator blank line; got: {formatted!r}"
     # Round-trip parse to confirm the data survives intact.
     round_tripped = StreamEvent.parse(formatted)
     assert round_tripped.name == name
@@ -33,12 +29,8 @@ def _assert_sse_block(formatted: str, name: str, data: str) -> None:
 
 def test_default_format_wraps_slash_skill_invoked_event():
     """Regression: ``SlashSkillInvoked`` under ``DEFAULT`` used to leak raw JSON."""
-    payload = json.dumps(
-        {"resolved_name": "echo", "raw_input": "/echo", "raw_args": ""}
-    )
-    out = StreamEvent(name="SlashSkillInvoked", data=payload).format(
-        OutputFormat.DEFAULT, thread_id="t-1"
-    )
+    payload = json.dumps({"resolved_name": "echo", "raw_input": "/echo", "raw_args": ""})
+    out = StreamEvent(name="SlashSkillInvoked", data=payload).format(OutputFormat.DEFAULT, thread_id="t-1")
     _assert_sse_block(out, "SlashSkillInvoked", payload)
 
 
@@ -50,9 +42,7 @@ def test_default_format_wraps_thread_id_changed_event():
     thread-id, and the next request keeps the stale ``X-Thread-ID``.
     """
     payload = json.dumps({"thread_id": "11111111-2222-3333-4444-555555555555"})
-    out = StreamEvent(name="ThreadIdChanged", data=payload).format(
-        OutputFormat.DEFAULT, thread_id="t-prev"
-    )
+    out = StreamEvent(name="ThreadIdChanged", data=payload).format(OutputFormat.DEFAULT, thread_id="t-prev")
     _assert_sse_block(out, "ThreadIdChanged", payload)
 
 
@@ -71,17 +61,13 @@ def test_default_format_wraps_slash_suggestions_event():
             ],
         }
     )
-    out = StreamEvent(name="SlashSuggestions", data=payload).format(
-        OutputFormat.DEFAULT, thread_id="t-2"
-    )
+    out = StreamEvent(name="SlashSuggestions", data=payload).format(OutputFormat.DEFAULT, thread_id="t-2")
     _assert_sse_block(out, "SlashSuggestions", payload)
 
 
 def test_default_format_still_wraps_answer_event():
     """``Answer`` events must continue to receive the SSE wrapper."""
-    out = StreamEvent(name="Answer", data="hello world").format(
-        OutputFormat.DEFAULT, thread_id="t-3"
-    )
+    out = StreamEvent(name="Answer", data="hello world").format(OutputFormat.DEFAULT, thread_id="t-3")
     _assert_sse_block(out, "Answer", "hello world")
 
 
@@ -90,9 +76,7 @@ def test_default_format_multiline_data_splits_per_sse_spec():
     blank lines in markdown don't truncate the body at the first ``\\n\\n``.
     """
     body = "line one\n\nline three"
-    out = StreamEvent(name="Answer", data=body).format(
-        OutputFormat.DEFAULT, thread_id="t-4"
-    )
+    out = StreamEvent(name="Answer", data=body).format(OutputFormat.DEFAULT, thread_id="t-4")
     # Exactly three data lines, one of them empty.
     assert out == "event: Answer\ndata: line one\ndata: \ndata: line three\n\n"
     # And round-trip preserves the blank line.
@@ -114,9 +98,7 @@ def test_none_format_matches_default_for_non_answer_events():
 
 def test_wxo_format_path_is_unchanged():
     """``OutputFormat.WXO`` still wraps events into the chat-completion shape."""
-    out = StreamEvent(name="Answer", data="hi").format(
-        OutputFormat.WXO, thread_id="t-5"
-    )
+    out = StreamEvent(name="Answer", data="hi").format(OutputFormat.WXO, thread_id="t-5")
     assert out.startswith("data: ")
     assert out.endswith("\n\n")
     # The payload between ``data: `` and the trailing newlines is JSON.
