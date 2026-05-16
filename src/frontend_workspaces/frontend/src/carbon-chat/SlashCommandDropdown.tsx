@@ -422,7 +422,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       if (!target) return;
       if (dropdownRef.current && dropdownRef.current.contains(target)) return;
       // Composed path covers shadow DOM clicks (e.g. clicks on the textarea).
-      const path = typeof event.composedPath === "function" ? event.composedPath() : [];
+      const path = event.composedPath();
       if (textarea && path.includes(textarea)) return;
       closeDropdown();
     };
