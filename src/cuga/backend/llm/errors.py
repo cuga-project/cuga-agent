@@ -42,9 +42,26 @@ def is_tool_choice_none_tool_use_failed(err: Any) -> bool:
     True when the provider rejected the request because the model emitted a tool call
     while tool_choice was none (e.g. Groq 400 tool_use_failed).
     Safe to retry the same plain-text completion call.
+
+    Inspects both ``str(err)`` and ``err.body`` because LangChain typically wraps the
+    underlying provider error and surfaces the structured payload via ``.body``, while
+    ``str(err)`` collapses to the HTTP status line.
     """
     err_str = err if isinstance(err, str) else str(err)
-    return "tool_use_failed" in err_str and "Tool choice is none" in err_str
+    if "tool_use_failed" in err_str and "Tool choice is none" in err_str:
+        return True
+    body = getattr(err, "body", None)
+    if isinstance(body, dict):
+        error = body.get("error")
+        if isinstance(error, dict):
+            code = error.get("code")
+            message = error.get("message") or ""
+            body_str = str(body)
+            has_failure = code == "tool_use_failed" or "tool_use_failed" in body_str
+            has_tool_choice = "Tool choice is none" in message or "Tool choice is none" in body_str
+            if has_failure and has_tool_choice:
+                return True
+    return False
 
 
 async def ainvoke_with_retry_on_tool_choice_none(
