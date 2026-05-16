@@ -191,11 +191,9 @@ export interface ComposerAriaAttributes {
  * JSX; this helper writes them directly so the dropdown can re-apply them
  * whenever the composer identity changes.
  *
- * ``setAttribute`` on detached nodes is safe (a no-op as far as user-visible
- * a11y is concerned), so callers need not guard. A ``null`` or empty
- * ``activedescendant`` removes the attribute entirely (the APG pattern
- * forbids stale ``aria-activedescendant`` values pointing at non-existent
- * options).
+ * A ``null`` or empty ``activedescendant`` removes the attribute entirely
+ * (the APG pattern forbids stale ``aria-activedescendant`` values pointing
+ * at non-existent options).
  */
 export function setComposerAriaAttributes(
   el: HTMLElement,
@@ -222,8 +220,7 @@ export function setComposerAriaAttributes(
 /**
  * Remove every ARIA combobox attribute we own from the composer. Called when
  * the dropdown unmounts or when the composer identity changes (so we don't
- * leave stale ``aria-*`` on a detached node). ``removeAttribute`` on a
- * detached node is a no-op — safe to call unconditionally.
+ * leave stale ``aria-*`` on a detached node).
  *
  * Note: ``role`` restoration is the caller's responsibility — this helper
  * blindly removes the role attribute. The dropdown captures the original
