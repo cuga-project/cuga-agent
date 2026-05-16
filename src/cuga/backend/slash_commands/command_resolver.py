@@ -60,15 +60,7 @@ class CommandResolver:
         self._index: Dict[str, Tuple[List[float], Optional[List[float]], Dict[str, str]]] = {}
 
     async def index(self, commands: Sequence[CommandRef]) -> None:
-        """Embed each command's name and description separately.
-
-        Storing two vectors keeps ranking ``max(cosine(query, name),
-        cosine(query, description))`` so a command with a long, semantically
-        rich description can't out-rank a command whose *name* is the obvious
-        intended typo target. Commands with an empty description skip the
-        second vector. The store row uses the name vector for backward
-        compatibility with the EmbeddingStoreBackend protocol.
-        """
+        """Embed each command's name and description separately; see ``_index`` for the ranking rule."""
         self._index.clear()
         for cmd in commands:
             name_embedding = await self._embed_fn(cmd.name)
@@ -95,10 +87,7 @@ class CommandResolver:
         Steps:
           1. Exact-match short-circuit (case-insensitive, stripped) -> score 1.0.
           2. Embed ``raw_name``.
-          3. Rank all indexed commands by ``max(cosine(query, name_vec),
-             cosine(query, desc_vec))``. The max prevents a command with a
-             verbose description from out-ranking the command whose *name* is
-             the obvious intended match.
+          3. Rank by ``max(cosine(query, name_vec), cosine(query, desc_vec))``.
           4. Drop the input itself, drop anything below ``threshold``,
              return the top ``limit``.
         """

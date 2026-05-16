@@ -182,8 +182,6 @@ def test_suggestion_carries_kind_and_description():
 
 
 def test_description_match_can_drive_ranking():
-    # ``max(cos(name), cos(desc))`` means a query that's similar to the
-    # description (but not the name) still ranks that command top.
     canned = {
         "deploy": [0.0, 1.0, 0.0],
         "ship rocket": [1.0, 0.0, 0.0],  # description vector

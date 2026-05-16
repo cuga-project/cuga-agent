@@ -73,11 +73,8 @@ class _InMemoryEmbeddingStore:
         return list(self._rows.values())[:limit]
 
 
-# Cache is intentionally size-1: registry contents change rarely (only when a
-# SKILL.md is added/removed) and a stale entry is immediately discarded. The
-# old ``Dict[int, CommandResolver]`` with a ``clear()`` before every insert
-# advertised a many-entry cache it never used; the explicit ``(key, resolver)``
-# tuple makes the contract obvious.
+# Cache is intentionally size-1: registry contents change rarely (only on
+# SKILL.md add/remove) and a stale entry is immediately discarded.
 _resolver_cache: Optional[Tuple[int, CommandResolver]] = None
 # Serialize rebuilds so two concurrent first-time callers don't both
 # construct an embedding client and stomp on the size-1 cache.
