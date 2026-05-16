@@ -6,15 +6,8 @@ cuga_lite tool-approval gate calls :func:`find_disallowed_calls` on the
 generated code and, if any disallowed call is found, routes through the
 existing HITL approval interrupt.
 
-Why AST instead of regex
-------------------------
-
-The existing policy gate (``_check_code_uses_tools``) scans for
-``\\w+\\s*\\(``. That over-matches method calls (``response.get(...)``) and
-keyword constructs that look like calls. AST-walking lets us collect only
-*bare* function calls — ``Call(func=Name(id=...))`` — which is exactly what
-we want for a tool whitelist: the model invokes tools as bare names in the
-sandbox, while ``.method()`` chains are operations on values and not gated.
+Uses ast.Call(func=Name(id=...)) so only bare function calls — not
+.method() chains or other callables — are gated.
 
 Python builtins are filtered via :data:`PYTHON_BUILTINS_SAFELIST` so the
 whitelist only needs to enumerate domain tools, not ``print``/``len``/etc.
