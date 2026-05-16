@@ -862,8 +862,10 @@ async def lifespan(app: FastAPI):
             logger.info("Embedding model prefetched for slash command resolver")
         else:
             logger.info("No embedding backend available; slash resolver will degrade gracefully")
-    except Exception:
-        logger.opt(exception=True).warning("Embedding model prefetch skipped")
+    except ImportError:
+        logger.opt(exception=True).warning(
+            "Embedding model prefetch skipped — storage.embedding module not loadable"
+        )
 
     yield
     logger.info("Application is shutting down...")
