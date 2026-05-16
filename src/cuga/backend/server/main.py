@@ -854,18 +854,13 @@ async def lifespan(app: FastAPI):
     # pay a cold ~120MB FastEmbed download mid-request. The model is
     # process-cached, so this is a fast no-op if knowledge warmup already
     # loaded it.
-    try:
-        from cuga.backend.storage.embedding import create_embedding_function
+    from cuga.backend.storage.embedding import create_embedding_function
 
-        embed_fn, _embed_dim = await create_embedding_function()
-        if embed_fn is not None:
-            logger.info("Embedding model prefetched for slash command resolver")
-        else:
-            logger.info("No embedding backend available; slash resolver will degrade gracefully")
-    except ImportError:
-        logger.opt(exception=True).warning(
-            "Embedding model prefetch skipped — storage.embedding module not loadable"
-        )
+    embed_fn, _embed_dim = await create_embedding_function()
+    if embed_fn is not None:
+        logger.info("Embedding model prefetched for slash command resolver")
+    else:
+        logger.info("No embedding backend available; slash resolver will degrade gracefully")
 
     yield
     logger.info("Application is shutting down...")
