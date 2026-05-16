@@ -1455,6 +1455,11 @@ async def event_stream(
         yield StreamEvent(name="SlashSkillInvoked", data=slash_chip_event_data).format(
             app_state.output_format, thread_id=thread_id
         )
+    elif slash_result is not None and slash_result.kind == "skill" and local_state is None:
+        # Silent degradation otherwise: the skill resolved but we have no
+        # local state to inject the synthesized load_skill quad into, so the
+        # planner won't see the skill body. Surface so operators can spot it.
+        logger.warning("Skill dispatched but local_state is None; skipping message injection")
 
     langfuse_handler = (
         CallbackHandler()
@@ -1497,6 +1502,13 @@ async def event_stream(
                 "filenames": _session_kb.filenames,
             }
 
+    # NOTE: on resume (ActionResponse path), slash_result is None and
+    # skill_allowed_tools is therefore not re-set on run_config. This is
+    # intentional: HITL approval is the trust boundary — once the user has
+    # explicitly approved a tool call, downstream calls within the same skill
+    # turn ride that approval. Re-enforcing the whitelist mid-turn would not add
+    # defense (the approval already happened) and would require persisting the
+    # tuple into LangGraph state. Revisit if a real bypass case emerges.
     # Propagate ``allowed-tools`` to the tool-approval gate.
     _skill_allowed_tools = (
         slash_result.allowed_tools if slash_result is not None and slash_result.kind == "skill" else None

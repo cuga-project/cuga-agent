@@ -183,6 +183,7 @@ def discover_skills(
         global_skills_root=global_skills_root,
         legacy_global_skills_root=legacy_global_skills_root,
     ):
+        # Later roots override earlier — by_name[entry.name] reassignment is intentional.
         for path in _iter_skill_files(skills_dir):
             entry = _parse_skill_file(path)
             if entry:

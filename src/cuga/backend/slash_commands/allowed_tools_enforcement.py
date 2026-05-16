@@ -17,8 +17,27 @@ import builtins as _py_builtins
 from typing import Iterable, List, Optional, Set
 
 
+# Builtins that bypass the spirit of an ``allowed-tools`` whitelist for any
+# skill that meant to gate file IO / arbitrary code exec. We subtract these
+# from the safelist so they route through HITL approval like any other
+# non-whitelisted call.
+RISKY_BUILTINS: frozenset[str] = frozenset(
+    {
+        "open",
+        "exec",
+        "eval",
+        "compile",
+        "__import__",
+        "breakpoint",
+        "globals",
+        "vars",
+        "locals",
+    }
+)
+
+
 PYTHON_BUILTINS_SAFELIST: frozenset[str] = frozenset(
-    name for name in dir(_py_builtins) if not name.startswith("_")
+    name for name in dir(_py_builtins) if not name.startswith("_") and name not in RISKY_BUILTINS
 ) | frozenset(
     {
         # Common stdlib callables the sandbox treats as primitives; not tools.

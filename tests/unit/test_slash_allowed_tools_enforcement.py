@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from cuga.backend.slash_commands.allowed_tools_enforcement import (
     PYTHON_BUILTINS_SAFELIST,
+    RISKY_BUILTINS,
     find_disallowed_calls,
 )
 
@@ -61,8 +62,25 @@ def test_syntax_error_falls_back_to_no_blocking():
 def test_safelist_includes_common_builtins():
     # Sanity check on the safelist surface — these would be very surprising
     # to drop without breaking real skill code.
-    for name in ("print", "len", "range", "isinstance", "open"):
+    for name in ("print", "len", "range", "isinstance"):
         assert name in PYTHON_BUILTINS_SAFELIST
+
+
+def test_risky_builtins_are_excluded_from_safelist():
+    # ``open``/``exec``/``eval``/etc. defeat the spirit of a file-IO-gating
+    # whitelist if they're auto-allowed. They live in RISKY_BUILTINS and are
+    # subtracted from the safelist so they route through HITL approval.
+    for name in ("open", "exec", "eval", "compile", "__import__"):
+        assert name in RISKY_BUILTINS
+        assert name not in PYTHON_BUILTINS_SAFELIST
+
+
+def test_bare_open_is_flagged_when_not_whitelisted():
+    # With ``open`` no longer auto-safelisted, a bare ``open(...)`` call that
+    # isn't in the skill's ``allowed-tools`` is treated as disallowed and will
+    # route through the existing HITL approval interrupt.
+    code = "f = open('a.txt')\nawait read_file('b.txt')\n"
+    assert find_disallowed_calls(code, ("read_file",)) == ["open"]
 
 
 def test_lambda_call_does_not_count():

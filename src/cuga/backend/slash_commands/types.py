@@ -67,10 +67,12 @@ class DispatchResult:
     raw_args: Optional[str] = None
     # Top semantic matches for an unknown command; empty otherwise.
     suggestions: List["CommandSuggestion"] = field(default_factory=list)
-    # Tool whitelist from the skill's ``allowed-tools`` frontmatter. ``None`` =
-    # no restriction; ``()`` = allow nothing; ``(..)`` = whitelist. Only
-    # populated for ``kind == "skill"`` results.
     allowed_tools: Optional[tuple[str, ...]] = None
+    """Whitelist of tool names declared in the skill's ``allowed-tools``
+    frontmatter. Only meaningful when ``kind == "skill"``; for all other kinds
+    (``builtin``, ``unknown``, ``passthrough``) this stays ``None``. For skills:
+    ``None`` = no restriction declared; ``()`` = key present but empty
+    ("allow nothing, every call needs approval"); non-empty tuple = whitelist."""
 
 
 @runtime_checkable
