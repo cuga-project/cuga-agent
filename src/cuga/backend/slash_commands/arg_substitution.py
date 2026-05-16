@@ -26,9 +26,6 @@ The substitution itself is a single tokenizing pass: each position in the
 body matches exactly one token form, so a value substituted in one pass can
 never be re-scanned by a later one. The alternation order in ``_TOKEN_RE``
 encodes the four-pass precedence.
-
-This is a deep, pure module — no graph, registry, or IO — unit-tested in
-isolation per PRD #13's testing-decisions section.
 """
 
 from __future__ import annotations
