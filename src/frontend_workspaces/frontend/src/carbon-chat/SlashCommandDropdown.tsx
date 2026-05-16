@@ -21,9 +21,11 @@ import React, {
 import { createPortal } from "react-dom";
 import { getCommands, type SlashCommandInfo } from "../api";
 import {
+  clearComposerAriaAttributes,
   findComposerTextarea,
   getComposerInputValue,
   isComposerStale,
+  setComposerAriaAttributes,
   setComposerTextareaValue,
 } from "./composerTextarea";
 
@@ -170,6 +172,80 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       setHighlightIndex(filtered.length > 0 ? filtered.length - 1 : 0);
     }
   }, [filtered.length, highlightIndex]);
+
+  // Tracks the composer's original `role` attribute so we can restore it when
+  // the dropdown closes (Carbon ships ``role="textbox"`` on contenteditable
+  // composers; we transiently overwrite it with ``role="combobox"`` per the
+  // WAI-ARIA APG combobox pattern). Keyed by the textarea identity — when
+  // Carbon swaps the composer node we capture the new node's original role,
+  // not the previous one's.
+  const originalRoleRef = useRef<{ node: HTMLElement | null; role: string | null }>(
+    { node: null, role: null },
+  );
+
+  // Wire WAI-ARIA combobox semantics onto the composer textarea. Per the APG
+  // combobox pattern, ``role``, ``aria-controls``, ``aria-expanded`` and
+  // ``aria-activedescendant`` live on the focused TEXTBOX, not the listbox.
+  // The composer is inside Carbon's shadow root and gets replaced on every
+  // submit, so React can't own these via JSX — we write them imperatively
+  // and re-apply whenever ``textarea`` identity changes.
+  //
+  // Safety: the composer-resolution MutationObserver above watches
+  // ``childList``/``subtree`` only (NOT ``attributes``), so our
+  // ``setAttribute`` calls do not trigger a feedback loop.
+  useEffect(() => {
+    if (!textarea) return;
+
+    // Capture the original ``role`` once per composer node so we can restore
+    // it cleanly when the dropdown closes or the node is swapped out.
+    if (originalRoleRef.current.node !== textarea) {
+      originalRoleRef.current = {
+        node: textarea,
+        role: textarea.getAttribute("role"),
+      };
+    }
+
+    if (open) {
+      const activeOption = filtered[highlightIndex];
+      setComposerAriaAttributes(textarea, {
+        role: "combobox",
+        controls: optionsListId,
+        expanded: true,
+        activedescendant: activeOption
+          ? `cuga-slash-option-${activeOption.name}`
+          : null,
+      });
+    } else {
+      // Restore the captured original role (or remove it if there was none),
+      // collapse the popup, and clear the stale active descendant. Per APG
+      // we keep ``aria-controls`` set even when collapsed — the listbox id
+      // is still meaningful to AT users.
+      const originalRole = originalRoleRef.current.role;
+      if (originalRole !== null) {
+        textarea.setAttribute("role", originalRole);
+      } else {
+        textarea.removeAttribute("role");
+      }
+      setComposerAriaAttributes(textarea, {
+        controls: optionsListId,
+        expanded: false,
+        activedescendant: null,
+      });
+    }
+
+    return () => {
+      // Cleanup fires on unmount AND when ``textarea`` identity changes; in
+      // the latter case the captured node may already be detached, which is
+      // fine — ``removeAttribute`` is a no-op on detached nodes. We also
+      // restore the captured role so we never leave ``role="combobox"`` on
+      // the old node if Carbon re-attaches it (defensive).
+      const captured = originalRoleRef.current;
+      clearComposerAriaAttributes(textarea);
+      if (captured.node === textarea && captured.role !== null) {
+        textarea.setAttribute("role", captured.role);
+      }
+    };
+  }, [textarea, open, highlightIndex, filtered, optionsListId]);
 
   // Update dropdown position relative to the textarea (fixed positioning).
   const updatePosition = useCallback(() => {
@@ -377,11 +453,6 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
       role="listbox"
       id={optionsListId}
       aria-label="Slash commands"
-      aria-activedescendant={
-        filtered[highlightIndex]
-          ? `cuga-slash-option-${filtered[highlightIndex].name}`
-          : undefined
-      }
       style={dropdownStyle}
       onMouseDown={(e) => {
         // Prevent the textarea blur from firing before our click handler.
