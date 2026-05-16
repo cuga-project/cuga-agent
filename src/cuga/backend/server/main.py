@@ -1774,21 +1774,14 @@ async def event_stream(
                             )
                             event_sequence += 1
 
+                        # WXO mode wraps each event as a Chat Completions
+                        # chunk; DEFAULT mode emits the already-formatted SSE
+                        # block verbatim to avoid double-wrapping.
                         if app_state.output_format == OutputFormat.WXO:
-                            # WXO mode re-encodes each event as a Chat
-                            # Completions chunk; ``format_event`` partitions
-                            # on ``data: ``, so it actually expects the
-                            # already-formatted SSE block.
                             yield StreamEvent(name=name, data=event).format(
                                 app_state.output_format, thread_id=thread_id
                             )
                         else:
-                            # ``event`` is already a fully-formed
-                            # ``event: <name>\ndata: <body>\n\n`` block from
-                            # ``agent_loop.run_stream``; emit verbatim so we
-                            # don't double-wrap (the wrapper added a second
-                            # outer envelope, leaking the inner block as the
-                            # streamed message body).
                             yield event
     except Exception as e:
         logger.exception(e)
@@ -3327,13 +3320,7 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
 
 @app.get("/api/commands")
 async def get_commands(current_user: Optional[UserInfo] = Depends(require_chat_access)):
-    """Return the merged registry of slash commands (built-ins + skills).
-
-    The registry is rebuilt on each request so newly added SKILL.md files
-    appear without a server restart. Each entry carries a ``kind`` discriminator
-    (``'builtin'`` or ``'skill'``) so the autocomplete UI can style or group
-    entries by source.
-    """
+    """Return the merged registry of slash commands (built-ins + skills); rebuilt per request so new SKILL.md files appear without restart."""
     try:
         from cuga.backend.slash_commands import build_slash_registry
 
