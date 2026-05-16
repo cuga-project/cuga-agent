@@ -1068,7 +1068,10 @@ async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
             command_resolver_factory=build_command_resolver,
         )
     except Exception:
-        logger.exception(f"Slash dispatch failed for input {query!r}")
+        # Log only the command name (token after leading "/"); arguments may
+        # carry secrets and are deliberately omitted.
+        command_name = query.split(maxsplit=1)[0] if query.startswith("/") else "<non-slash>"
+        logger.exception(f"Slash dispatch failed for command {command_name!r}")
         return None
 
 
