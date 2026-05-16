@@ -19,6 +19,7 @@ kind/name, args, duration, and any unknown-command suggestions.
 
 from __future__ import annotations
 
+import asyncio
 import time
 from typing import TYPE_CHECKING, Awaitable, Callable, Dict, List, Optional
 
@@ -82,6 +83,9 @@ class _InMemoryEmbeddingStore:
 # commands changes (PRD #13: "built lazily on first miss and cached by a hash
 # of the registry contents").
 _resolver_cache: Dict[int, CommandResolver] = {}
+# Serialize rebuilds so two concurrent first-time callers don't both
+# construct an embedding client and stomp on the size-1 cache.
+_resolver_cache_lock = asyncio.Lock()
 
 
 def _registry_key(slash_registry: SlashRegistry) -> int:
@@ -100,21 +104,28 @@ async def build_command_resolver(slash_registry: SlashRegistry) -> Optional[Comm
     if cached is not None:
         return cached
 
-    try:
-        from cuga.backend.storage.embedding import create_embedding_function
+    async with _resolver_cache_lock:
+        # Re-check under the lock — another coroutine may have populated the
+        # cache while we were waiting.
+        cached = _resolver_cache.get(key)
+        if cached is not None:
+            return cached
 
-        embed_fn, _dim = await create_embedding_function()
-    except Exception:
-        logger.exception("Failed to create embedding function for command resolver")
-        return None
-    if embed_fn is None:
-        return None
+        try:
+            from cuga.backend.storage.embedding import create_embedding_function
 
-    resolver = CommandResolver(store=_InMemoryEmbeddingStore(), embed_fn=embed_fn)
-    await resolver.index(slash_registry.list_commands())
-    _resolver_cache.clear()  # only the latest registry snapshot is useful
-    _resolver_cache[key] = resolver
-    return resolver
+            embed_fn, _dim = await create_embedding_function()
+        except Exception:
+            logger.exception("Failed to create embedding function for command resolver")
+            return None
+        if embed_fn is None:
+            return None
+
+        resolver = CommandResolver(store=_InMemoryEmbeddingStore(), embed_fn=embed_fn)
+        await resolver.index(slash_registry.list_commands())
+        _resolver_cache.clear()  # only the latest registry snapshot is useful
+        _resolver_cache[key] = resolver
+        return resolver
 
 
 async def parse_and_dispatch(
@@ -264,12 +275,16 @@ def _emit_slash_telemetry(parsed: ParsedSlash, result: DispatchResult, duration_
     top_suggestions = [
         {"name": s.name, "kind": s.kind, "score": round(s.score, 4)} for s in (result.suggestions or [])
     ]
+    # Slash args are arbitrary user input and may contain secrets / PII —
+    # log shape metadata only, never the raw strings.
+    args_length = len(parsed.raw_args or "")
     logger.info(
-        "slash_command dispatch: kind={} name={} raw_input={!r} args={!r} duration_ms={:.1f} suggestions={}",
+        "slash_command dispatch: kind={} name={} command_name={} args_present={} args_length={} duration_ms={:.1f} suggestions={}",
         result.kind,
         result.resolved_name,
-        parsed.raw_input,
-        parsed.raw_args,
+        parsed.name,
+        bool(parsed.raw_args),
+        args_length,
         duration_ms,
         top_suggestions,
     )
@@ -284,7 +299,11 @@ def _emit_slash_telemetry(parsed: ParsedSlash, result: DispatchResult, duration_
         span = get_client().start_observation(
             name="slash_command",
             as_type="span",
-            input={"raw_input": parsed.raw_input, "args": parsed.raw_args},
+            input={
+                "command_name": parsed.name,
+                "args_present": bool(parsed.raw_args),
+                "args_length": args_length,
+            },
             output={
                 "resolved_kind": result.kind,
                 "resolved_name": result.resolved_name,
