@@ -863,7 +863,7 @@ async def lifespan(app: FastAPI):
         else:
             logger.info("No embedding backend available; slash resolver will degrade gracefully")
     except Exception:
-        logger.warning("Embedding model prefetch skipped", exc_info=True)
+        logger.opt(exception=True).warning("Embedding model prefetch skipped")
 
     yield
     logger.info("Application is shutting down...")
@@ -1766,7 +1766,7 @@ async def event_stream(
                         # A malformed event block would otherwise crash the
                         # stream mid-flight; log and skip so the rest of the
                         # turn keeps flowing.
-                        logger.warning("Skipping malformed stream event: %s", parse_err)
+                        logger.warning("Skipping malformed stream event: {}", parse_err)
                         continue
                     logger.debug("Yield {}".format(event))
                     if name not in ["ChatAgent"]:
