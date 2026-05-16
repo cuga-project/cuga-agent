@@ -144,7 +144,7 @@ def _normalize_allowed_tools(value: Any) -> Optional[tuple[str, ...]]:
 def _parse_skill_file(path: Path) -> SkillEntry | None:
     try:
         frontmatter, body = parse_markdown_with_frontmatter(str(path))
-    except Exception as e:
+    except (OSError, ValueError) as e:
         logger.warning(f"Skipping invalid skill file {path}: {e}")
         return None
     name = frontmatter.get("name")
