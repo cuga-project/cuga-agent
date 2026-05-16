@@ -222,8 +222,7 @@ async def _dispatch_parsed(
         # Propagate the skill's ``allowed-tools`` whitelist for the caller to
         # stash on the graph's RunnableConfig. ``None`` (key absent) means no
         # restriction; ``()`` (key present but empty) means allow nothing.
-        entry = skill_registry.entry(parsed.name)
-        allowed_tools = entry.allowed_tools if entry is not None else None
+        allowed_tools = skill_registry.entry(parsed.name).allowed_tools
         return DispatchResult(
             kind="skill",
             injected_messages=injected,
