@@ -65,7 +65,7 @@ function SlashSuggestionsChip({ data }: { data: SlashSuggestionsChipData }) {
     setComposerTextareaValue(textarea, `/${name} `);
   };
 
-  if (!data.suggestions || data.suggestions.length === 0) {
+  if (data.suggestions.length === 0) {
     return null;
   }
 
