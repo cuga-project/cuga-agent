@@ -406,7 +406,16 @@ def start_filesystem_server(
         print_info(f"Command: {' '.join(cmd)}")
         print_info(f"Workspace path: {Colors.BOLD}{workspace_str}{Colors.ENDC}")
 
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1)
+        # Anchor the MCP server's CWD at the workspace so relative paths from
+        # the agent (e.g. "contacts.txt") resolve inside the allowed directory.
+        proc = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            cwd=workspace_str,
+        )
 
         # Give it a moment to start
         time.sleep(3)
@@ -616,8 +625,8 @@ def print_configuration_info(workspace: Path, include_email: bool = False):
     """Print configuration information for LangFlow"""
     print_step(6, 6, "Configuration Complete!")
 
-    policy = f"""## Plan
-For the filesystem application: write or read files only from `{workspace}`"""
+    policy = """## Plan
+For the filesystem application: use relative paths only — your current working directory is the workspace. Do not hardcode absolute paths or `/workspace/...` references."""
     if include_email:
         policy += """
 For the email application: send emails only using the local SMTP sink"""
@@ -822,7 +831,14 @@ def main():
 
     workspace = create_workspace(workspace_path)
 
-    policy = f"## Plan\nFor the filesystem application: write or read files only from `{workspace}`"
+    # The agent operates inside the workspace as its CWD; instruct it to use
+    # relative paths only. The host-side mapping (./cuga_workspace, /workspace,
+    # per-thread subdir when skills are on) is managed by the runtime.
+    policy = (
+        "## Plan\nFor the filesystem application: use relative paths only — "
+        "your current working directory is the workspace. Do not hardcode "
+        "absolute paths or `/workspace/...` references."
+    )
     if args.email:
         policy += "\nFor the email application: send emails only using the local SMTP sink"
     os.environ["CUGA_POLICIES_CONTENT"] = policy

@@ -204,6 +204,10 @@ class TestEvalWithToolsAsyncE2B:
             mock_settings.advanced_features.e2b_sandbox = False
             mock_settings.advanced_features.code_executor_keep_last_n = -1
             mock_settings.advanced_features.execution_output_max_length = 10000
+            # Skills off so `_internal_re` isn't injected — keeps `context_locals`
+            # empty for this test's bare `y = 20` code, letting the
+            # validate_context_usage short-circuit trigger.
+            mock_settings.skills.enabled = False
 
             code = "y = 20"
             _locals = {}

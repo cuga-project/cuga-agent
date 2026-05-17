@@ -86,7 +86,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     CodeExecutor,
     is_find_tools_listing_markdown,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
+    AppDefinition,
+    ToolProviderInterface,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     resolved_runtime_model_name,
     resolve_bind_tools_fields,
@@ -1380,8 +1383,14 @@ def create_cuga_lite_graph(
                         "~/.config/cuga/skills fallbacks"
                     )
 
-            # Update tools context with all execution tools
-            # Wrap to make awaitable (agent always uses await)
+            # Resolve thread_id early for per-thread workspace selection.
+            _cfg_for_thread = config.get("configurable", {}) if config else {}
+            _runtime_thread_id_for_fs = _cfg_for_thread.get("thread_id") or state.thread_id or thread_id
+
+            # Update tools context with all execution tools.
+            # Wrap to make awaitable (agent always uses await). Filesystem path
+            # rewriting is no longer needed here — filesystem tools come from
+            # the consolidated runtime class below, not from MCP.
             for tool in tools_for_execution:
                 # Extract tool function - StructuredTool may use .func, .coroutine, or ._run
                 # IMPORTANT: Prefer coroutine over func to avoid run_in_executor issues
@@ -1413,23 +1422,68 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
 
-            # Inject sandbox tools when shell tools are enabled
+            # Inject the consolidated filesystem tools + run_command when shell
+            # tools are enabled. Filesystem tools come from the single runtime
+            # class (no MCP); the storage backend is selected by sandbox_mode:
+            # Filesystem tools are gated independently from run_command.
+            # enable_filesystem_tools → the 8 consolidated read/write/list/… tools.
+            # enable_shell_tool      → run_command (sandbox shell execution).
             _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
             _shell_tool_on = getattr(settings.advanced_features, "enable_shell_tool", False)
+            _fs_tool_on = (
+                configurable["enable_filesystem_tools"]
+                if "enable_filesystem_tools" in configurable
+                else getattr(settings.advanced_features, "enable_filesystem_tools", False)
+            )
             _opensandbox_on = getattr(settings.advanced_features, "opensandbox_sandbox", False)
             _use_sandbox = _shell_tool_on and (
                 (_sandbox_mode == "native")
                 or (_sandbox_mode == "opensandbox" and _opensandbox_on)
                 or (_sandbox_mode == "local")
             )
+
+            if _fs_tool_on or _use_sandbox:
+                cfg = config.get("configurable", {}) if config else {}
+                runtime_thread_id = cfg["thread_id"] if "thread_id" in cfg else (state.thread_id or thread_id)
+            else:
+                runtime_thread_id = None
+
+            # ── Filesystem tools (independent of run_command) ──────────────────
+            if _fs_tool_on:
+                from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
+                    RemoteSandboxBackend,
+                    create_filesystem_tools,
+                )
+
+                fs_backend = None
+                if _use_sandbox and _sandbox_mode == "opensandbox":
+                    from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+
+                    fs_backend = RemoteSandboxBackend(
+                        CodeExecutor._get_opensandbox_executor(), runtime_thread_id
+                    )
+
+                fs_tools = create_filesystem_tools(runtime_thread_id, backend=fs_backend)
+                for ft in fs_tools:
+                    fn = ft.coroutine or ft.func
+                    if fn:
+                        tools_context_dict[ft.name] = fn
+                tools_for_prompt.extend(fs_tools)
+                if apps_for_prompt is not None:
+                    apps_for_prompt = list(apps_for_prompt) + [
+                        AppDefinition(
+                            name="filesystem",
+                            type="runtime",
+                            description="Workspace filesystem tools: read, write, edit, list, search, move files and directories.",
+                        )
+                    ]
+                logger.info(
+                    f"Injected filesystem tools (thread_id={runtime_thread_id!r}): {[t.name for t in fs_tools]}"
+                )
+
+            # ── run_command (sandbox shell execution) ──────────────────────────
             if _use_sandbox:
                 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
-
-                cfg = config.get("configurable", {}) if config else {}
-                if "thread_id" in cfg:
-                    runtime_thread_id = cfg["thread_id"]
-                else:
-                    runtime_thread_id = state.thread_id or thread_id
 
                 if _sandbox_mode == "native":
                     sandbox_executor = CodeExecutor._get_native_executor()
@@ -1441,15 +1495,13 @@ def create_cuga_lite_graph(
                     sandbox_executor = CodeExecutor._get_opensandbox_executor()
                     sandbox_label = "OpenSandbox"
 
-                sandbox_tools = sandbox_executor.create_sandbox_tools(thread_id=runtime_thread_id)
-                for st in sandbox_tools:
+                run_cmd_tools = sandbox_executor.create_sandbox_tools(thread_id=runtime_thread_id)
+                for st in run_cmd_tools:
                     fn = st.coroutine or st.func
                     if fn:
                         tools_context_dict[st.name] = fn
-                tools_for_prompt.extend(sandbox_tools)
-                logger.info(
-                    f"[{sandbox_label}] Injected sandbox tools (thread_id={runtime_thread_id!r}) into execution context and prompt: {[t.name for t in sandbox_tools]}"
-                )
+                tools_for_prompt.extend(run_cmd_tools)
+                logger.info(f"[{sandbox_label}] Injected run_command (thread_id={runtime_thread_id!r})")
 
             from cuga.backend.evolve.integration import EvolveIntegration
 
@@ -1692,7 +1744,6 @@ def create_cuga_lite_graph(
                     skills_enabled=skills_enabled,
                     skills_prompt_section=skills_prompt_section,
                     enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
-                    sandbox_workspace="." if _sandbox_mode in ("native", "local") else "/workspace",
                     has_knowledge=has_knowledge_tools,
                     few_shot_examples=few_shot_examples,
                     few_shots_enabled=few_shots_enabled,

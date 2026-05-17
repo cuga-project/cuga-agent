@@ -920,7 +920,30 @@ class MCPManager:
                     resolved_env[k] = resolved if resolved is not None else v
                 else:
                     resolved_env[k] = v
-            return StdioTransport(command=config.command, args=config.args or [], env=resolved_env)
+
+            # Honor an optional `cwd:` from the YAML. For the bootstrap
+            # filesystem entry this anchors the MCP server's CWD at
+            # <cwd>/cuga_workspace/ so relative paths from the LLM resolve
+            # into the allowed root. Ensure the directory exists so the
+            # subprocess doesn't fail to start.
+            cwd_value: str | None = None
+            if config.cwd:
+                import os as _os
+
+                cwd_value = config.cwd
+                try:
+                    _os.makedirs(cwd_value, exist_ok=True)
+                except OSError:
+                    # If we can't create it, let the subprocess fail loudly
+                    # rather than silently swallow the launch error.
+                    pass
+
+            return StdioTransport(
+                command=config.command,
+                args=config.args or [],
+                env=resolved_env,
+                cwd=cwd_value,
+            )
 
         elif transport_type == 'sse':
             if not SSETransport:
