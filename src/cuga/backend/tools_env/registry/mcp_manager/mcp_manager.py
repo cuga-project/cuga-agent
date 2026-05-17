@@ -25,6 +25,7 @@ from cuga.backend.tools_env.registry.mcp_manager.openapi_parser import SimpleOpe
 from cuga.backend.tools_env.registry.mcp_manager.adapter import (
     new_mcp_from_custom_parser,
     apply_authentication,
+    sanitize_tool_name,
 )
 import threading
 from collections import defaultdict
@@ -43,6 +44,7 @@ class MCPManager:
         self.threads = {}
         self.tools_by_server = defaultdict(list)
         self.server_by_tool = {}
+        self.original_tool_name_by_sanitized: Dict[str, str] = {}
         self.server_ports = {}
         self.auth_config = {}
         self.schemas = {}
@@ -669,6 +671,7 @@ class MCPManager:
         stale_tools = [tool_name for tool_name, server in self.server_by_tool.items() if server == name]
         for tool_name in stale_tools:
             self.server_by_tool.pop(tool_name, None)
+            self.original_tool_name_by_sanitized.pop(tool_name, None)
 
     @staticmethod
     def _extract_json_path(payload: Any, path: str | None) -> Any:
@@ -760,7 +763,11 @@ class MCPManager:
                 if include_set and tool.name not in include_set:
                     continue
 
-                prefixed_name = f"{name}_{tool.name}"
+                sanitized_name = sanitize_tool_name(tool.name)
+                prefixed_name = f"{name}_{sanitized_name}"
+                # Keep a reverse map so _call_mcp_server_tool can send the original
+                # (possibly dashed) name to the MCP server, which only knows that name.
+                self.original_tool_name_by_sanitized[prefixed_name] = tool.name
                 input_schema = tool.inputSchema if hasattr(tool, 'inputSchema') else {}
                 flattened_params = self._flatten_tool_parameters(input_schema)
                 output_schema = tool.outputSchema if hasattr(tool, 'outputSchema') else {}
@@ -1069,7 +1076,11 @@ class MCPManager:
                 apply_authentication(auth, headers, query_params)
 
             if hasattr(self, 'mcp_transports') and server_name in self.mcp_transports:
-                original_tool_name = tool_name.removeprefix(f"{server_name}_")
+                # Use the reverse map to recover the original (possibly dashed) tool name
+                # that the MCP server registered under. Fall back to removeprefix for
+                # tools registered before this map existed (backward compatibility).
+                original_tool_name = self.original_tool_name_by_sanitized.get(tool_name) \
+                    or tool_name.removeprefix(f"{server_name}_")
 
                 transport = self.mcp_transports[server_name]
                 client = FastMCPClient(transport)
@@ -1091,7 +1102,8 @@ class MCPManager:
             else:
                 url = self.mcp_clients[server_name]
                 base_url = url.replace('/sse', '')
-                original_tool_name = tool_name.removeprefix(f"{server_name}_")
+                original_tool_name = self.original_tool_name_by_sanitized.get(tool_name) \
+                    or tool_name.removeprefix(f"{server_name}_")
 
                 # Add query params to URL if present
                 url_with_params = base_url
