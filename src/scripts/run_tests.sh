@@ -69,6 +69,7 @@ run_pytest_with_e2b() {
 
 echo "Running unit tests (registry + variables manager + local sandbox + E2B lite)..."
 run_pytest ./src/cuga/backend/tools_env/registry/tests/
+run_pytest ./src/cuga/backend/tools_env/registry/mcp_manager/tests/
 run_pytest ./src/cuga/backend/cuga_graph/nodes/api/variables_manager/tests/
 run_pytest_with_e2b ./src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/
 echo "Running knowledge tests..."
