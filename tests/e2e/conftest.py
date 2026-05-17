@@ -234,5 +234,7 @@ async def knowledge_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> K
     engine = KnowledgeEngine(config)
     await engine.warmup()
     yield engine
-    await engine.aclose()
-    engine.shutdown()
+    try:
+        await engine.aclose()
+    finally:
+        engine.shutdown()

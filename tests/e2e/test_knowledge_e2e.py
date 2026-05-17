@@ -1,9 +1,9 @@
 """E2E tests for the knowledge component.
 
 Two tiers:
-  Tier 1 – component-level (no LLM, no graph): exercises KnowledgeEngine's public
-            API (ingest → search → delete) and the awareness prompt-injection path.
-  Tier 2 – graph-level (CaptureChatModel): runs CugaLite with a mock LLM and asserts
+  Tier 1 - component-level (no LLM, no graph): exercises KnowledgeEngine's public
+            API (ingest -> search -> delete) and the awareness prompt-injection path.
+  Tier 2 - graph-level (CaptureChatModel): runs CugaLite with a mock LLM and asserts
             that the knowledge summary is present in the system message sent to the model.
 """
 
@@ -50,7 +50,7 @@ async def _ingest_and_wait(engine: KnowledgeEngine, collection: str, file_path: 
 
 
 # ---------------------------------------------------------------------------
-# Tier 1 – KnowledgeEngine lifecycle
+# Tier 1 - KnowledgeEngine lifecycle
 # ---------------------------------------------------------------------------
 
 
@@ -104,7 +104,7 @@ class TestKnowledgeEngineLifecycle:
 
 
 # ---------------------------------------------------------------------------
-# Tier 1 – Knowledge awareness (prompt-injection path)
+# Tier 1 - Knowledge awareness (prompt-injection path)
 # ---------------------------------------------------------------------------
 
 
@@ -147,7 +147,7 @@ class TestKnowledgeAwareness:
 
 
 # ---------------------------------------------------------------------------
-# Tier 1 – RAG retrieval path (tool boundary)
+# Tier 1 - RAG retrieval path (tool boundary)
 # ---------------------------------------------------------------------------
 
 
@@ -171,7 +171,11 @@ class TestKnowledgeRagPath:
 
         provider = RealSearchKnowledgeToolProvider(engine, _COLLECTION)
         tools = await provider.get_all_tools()
-        knowledge_tool = tools[0]
+        knowledge_tool = next(
+            (t for t in tools if getattr(t, "name", "") == "knowledge_search_knowledge"),
+            None,
+        )
+        assert knowledge_tool is not None, "knowledge_search_knowledge tool not found"
 
         result = await knowledge_tool.ainvoke({"query": "rag retrieval test"})
 
@@ -192,7 +196,11 @@ class TestKnowledgeRagPath:
 
         provider = RealSearchKnowledgeToolProvider(engine, _COLLECTION)
         tools = await provider.get_all_tools()
-        knowledge_tool = tools[0]
+        knowledge_tool = next(
+            (t for t in tools if getattr(t, "name", "") == "knowledge_search_knowledge"),
+            None,
+        )
+        assert knowledge_tool is not None, "knowledge_search_knowledge tool not found"
 
         result = await knowledge_tool.ainvoke({"query": "BETA_MARKER"})
 
@@ -201,7 +209,7 @@ class TestKnowledgeRagPath:
 
 
 # ---------------------------------------------------------------------------
-# Tier 2 – CugaLite graph integration
+# Tier 2 - CugaLite graph integration
 # ---------------------------------------------------------------------------
 
 
