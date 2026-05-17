@@ -110,8 +110,6 @@ class MinimalToolProvider(ToolProviderInterface):
         return []
 
 
-
-
 class KnowledgeToolProvider(MinimalToolProvider):
     """Tool provider that exposes a stub 'knowledge_search_knowledge' tool.
 

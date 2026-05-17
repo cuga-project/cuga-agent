@@ -70,9 +70,7 @@ class TestKnowledgeEngineLifecycle:
         assert _MARKER in combined, f"Marker not found in search results: {combined[:200]}"
 
     @pytest.mark.asyncio
-    async def test_delete_removes_document(
-        self, knowledge_engine: KnowledgeEngine, tmp_path: Path
-    ) -> None:
+    async def test_delete_removes_document(self, knowledge_engine: KnowledgeEngine, tmp_path: Path) -> None:
         engine = knowledge_engine
         doc = _make_doc(tmp_path, f"{_MARKER}: document to be deleted")
         await _ingest_and_wait(engine, _COLLECTION, doc)

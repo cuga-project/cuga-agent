@@ -39,9 +39,7 @@ class TestSkillDiscovery:
         names = [e.name for e in entries]
         assert "make_slides" in names
 
-    def test_multiple_skills_all_discovered(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_multiple_skills_all_discovered(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         for name in ("data_viz", "send_report", "schedule_meeting"):
             write_skill(tmp_path, name, f"{name} description", "## Body")
@@ -53,9 +51,7 @@ class TestSkillDiscovery:
         assert "send_report" in names
         assert "schedule_meeting" in names
 
-    def test_skill_entry_preserves_description(
-        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
+    def test_skill_entry_preserves_description(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.chdir(tmp_path)
         write_skill(tmp_path, "my_skill", "Exactly this description", "## Steps")
 
@@ -137,9 +133,7 @@ class TestSkillRegistry:
         assert "imagemin" in loaded
 
     def test_mixed_pip_and_npm_requirements(self) -> None:
-        registry = self._make_registry(
-            "mixed_skill", "## Mixed", requirements=("python-pptx", "npm:sharp")
-        )
+        registry = self._make_registry("mixed_skill", "## Mixed", requirements=("python-pptx", "npm:sharp"))
 
         loaded = registry.load_skill("mixed_skill")
 
@@ -256,8 +250,7 @@ class TestSkillsCugaLiteIntegration:
         system_content = extract_system_content(capture_model.captured_inputs[0])
         assert system_content, "No system message found in LLM inputs"
         assert "summarize_report" in system_content, (
-            f"Expected skill name 'summarize_report' in system message. "
-            f"Got: {system_content[:600]}"
+            f"Expected skill name 'summarize_report' in system message. Got: {system_content[:600]}"
         )
 
     @pytest.mark.asyncio
@@ -284,9 +277,7 @@ class TestSkillsCugaLiteIntegration:
         monkeypatch.setattr(settings.advanced_features, "enable_shell_tool", True)
         # Enable native tool binding so bind_tools is called with the skill tool
         monkeypatch.setattr(settings.advanced_features, "cuga_lite_bind_tools_mode", "tools")
-        monkeypatch.setattr(
-            settings.advanced_features, "cuga_lite_bind_tools_tool_names", ["load_skill"]
-        )
+        monkeypatch.setattr(settings.advanced_features, "cuga_lite_bind_tools_tool_names", ["load_skill"])
 
         capture_model = CaptureChatModel(responses=[AIMessage(content="Done.")])
         graph = create_cuga_lite_graph(
@@ -305,9 +296,7 @@ class TestSkillsCugaLiteIntegration:
         await graph.ainvoke(state, config=config)
 
         tool_names = [getattr(t, "name", None) for t in capture_model.captured_tools]
-        assert "load_skill" in tool_names, (
-            f"Expected 'load_skill' in bound tools, got: {tool_names}"
-        )
+        assert "load_skill" in tool_names, f"Expected 'load_skill' in bound tools, got: {tool_names}"
 
 
 # ---------------------------------------------------------------------------
