@@ -1,4 +1,6 @@
 .env
+.omc/
+.omx/
 __pycache__
 output
 *.db

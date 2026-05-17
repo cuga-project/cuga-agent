@@ -56,6 +56,7 @@ import re
 import json
 import asyncio
 import inspect
+from pathlib import Path
 from typing import Any, Optional, Sequence, Dict, List, Tuple, Set
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -105,7 +106,6 @@ from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
-from pathlib import Path
 
 from cuga.backend.skills import (
     SkillRegistry,
@@ -632,6 +632,7 @@ class CugaLiteState(BaseModel):
     # Shared keys (compatible with AgentState)
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
+    user_id: Optional[str] = None
     thread_id: Optional[str] = None
     service_scope: Optional[Dict[str, str]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""}
@@ -1503,27 +1504,16 @@ def create_cuga_lite_graph(
                 tools_for_prompt.extend(run_cmd_tools)
                 logger.info(f"[{sandbox_label}] Injected run_command (thread_id={runtime_thread_id!r})")
 
-            from cuga.backend.evolve.integration import EvolveIntegration
+            from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
             special_instructions_final = effective_special or ""
-            if EvolveIntegration.is_enabled():
-                task_description = ""
-                if state.sub_task:
-                    task_description = state.sub_task
-                elif state.chat_messages:
-                    for msg in state.chat_messages:
-                        if isinstance(msg, HumanMessage):
-                            task_description = msg.content
-                            break
-                if task_description:
-                    evolve_guidelines = await EvolveIntegration.get_guidelines(task_description)
-                    if evolve_guidelines:
-                        evolve_section = f"\n\n## Evolve Guidelines\n{evolve_guidelines}"
-                        special_instructions_final = (special_instructions_final or "") + evolve_section
-                        logger.info("Evolve: Injected guidelines into system prompt")
-                        logger.debug(
-                            f"Evolve: Full special_instructions with guidelines:\n{special_instructions_final}"
-                        )
+            evolve_extension = await build_evolve_special_instructions_extension(
+                state=state,
+                configurable=configurable,
+                timeout=settings.evolve.timeout,
+            )
+            if evolve_extension:
+                special_instructions_final = (special_instructions_final or "") + evolve_extension
 
             cfg = config.get("configurable", {}) if config else {}
             _thread_id = cfg.get("thread_id") or ""

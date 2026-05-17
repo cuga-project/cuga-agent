@@ -65,7 +65,7 @@ memory = ["mem0ai[extras]"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
-evolve = ["altk-evolve>=1.0.6; python_version>='3.12'"]
+evolve = ["altk-evolve>=1.1.0; python_version>='3.12'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
 # Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
 observability = ["openlit>=1.40.3"]
