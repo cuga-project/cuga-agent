@@ -765,6 +765,17 @@ class MCPManager:
 
                 sanitized_name = sanitize_tool_name(tool.name)
                 prefixed_name = f"{name}_{sanitized_name}"
+                # Detect sanitization collisions: two tools on the same server whose
+                # names differ only by dash vs underscore would map to the same
+                # prefixed_name, making the reverse lookup ambiguous.
+                if prefixed_name in self.original_tool_name_by_sanitized:
+                    existing_original = self.original_tool_name_by_sanitized[prefixed_name]
+                    logger.warning(
+                        f"MCP server '{name}': tool '{tool.name}' sanitizes to '{prefixed_name}' "
+                        f"which is already registered for original tool '{existing_original}'. "
+                        f"Skipping '{tool.name}' to avoid overwriting the existing mapping."
+                    )
+                    continue
                 # Keep a reverse map so _call_mcp_server_tool can send the original
                 # (possibly dashed) name to the MCP server, which only knows that name.
                 self.original_tool_name_by_sanitized[prefixed_name] = tool.name

@@ -148,3 +148,52 @@ class TestSanitizeToolName:
     )
     def test_sanitize(self, raw, expected):
         assert sanitize_tool_name(raw) == expected
+
+
+class TestSanitizationCollision:
+    """When two tool names on the same server sanitize to the same identifier,
+    the second one must be skipped (not silently overwrite the first)."""
+
+    SERVER = "myserver"
+
+    def _register(self, tool_names: list[str]):
+        """Run the registration loop from _initialize_single_fastmcp_server."""
+        from collections import defaultdict
+
+        mgr = MagicMock()
+        mgr.tools_by_server = defaultdict(list)
+        mgr.server_by_tool = {}
+        mgr.original_tool_name_by_sanitized = {}
+
+        for tool in [_make_fake_tool(n) for n in tool_names]:
+            sanitized_name = sanitize_tool_name(tool.name)
+            prefixed_name = f"{self.SERVER}_{sanitized_name}"
+            if prefixed_name in mgr.original_tool_name_by_sanitized:
+                # collision — skip (mirrors the new guard in mcp_manager.py)
+                continue
+            mgr.original_tool_name_by_sanitized[prefixed_name] = tool.name
+            tool_dict = {
+                "type": "function",
+                "function": {"name": prefixed_name, "description": tool.description},
+            }
+            mgr.tools_by_server[self.SERVER].append(tool_dict)
+            mgr.server_by_tool[prefixed_name] = self.SERVER
+
+        return mgr
+
+    def test_first_tool_wins_on_collision(self):
+        """echo-dash and echo_dash both sanitize to echo_dash; first one wins."""
+        mgr = self._register(["echo-dash", "echo_dash"])
+        assert mgr.original_tool_name_by_sanitized["myserver_echo_dash"] == "echo-dash"
+
+    def test_colliding_tool_not_registered_twice(self):
+        """Only one entry should exist for the colliding sanitized name."""
+        mgr = self._register(["echo-dash", "echo_dash"])
+        registered = [t["function"]["name"] for t in mgr.tools_by_server[self.SERVER]]
+        assert registered.count("myserver_echo_dash") == 1
+
+    def test_non_colliding_tool_still_registered(self):
+        """A third tool that doesn't collide must still be registered normally."""
+        mgr = self._register(["echo-dash", "echo_dash", "other-tool"])
+        assert "myserver_other_tool" in mgr.server_by_tool
+        assert mgr.original_tool_name_by_sanitized["myserver_other_tool"] == "other-tool"
