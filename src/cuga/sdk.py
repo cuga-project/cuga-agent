@@ -1792,9 +1792,22 @@ class CugaAgent:
             self._inject_knowledge_to_config(run_config)
 
             # Add callbacks to config (including TokenUsageTracker for trajectory tracking)
-            callbacks = self._build_callbacks()
-            run_config["callbacks"] = callbacks
-            run_config["configurable"]["callbacks"] = callbacks
+            # Merge with any existing per-call callbacks
+            built_callbacks = self._build_callbacks()
+            existing_callbacks = run_config.get("callbacks", [])
+            existing_configurable_callbacks = run_config.get("configurable", {}).get("callbacks", [])
+
+            # Ensure existing callbacks are lists
+            if not isinstance(existing_callbacks, list):
+                existing_callbacks = [existing_callbacks] if existing_callbacks else []
+            if not isinstance(existing_configurable_callbacks, list):
+                existing_configurable_callbacks = (
+                    [existing_configurable_callbacks] if existing_configurable_callbacks else []
+                )
+
+            # Merge: built callbacks first, then existing per-call callbacks
+            run_config["callbacks"] = built_callbacks + existing_callbacks
+            run_config["configurable"]["callbacks"] = built_callbacks + existing_configurable_callbacks
 
             # If action_response provided, update state with it
             if action_response:
@@ -1926,9 +1939,22 @@ class CugaAgent:
             run_config["configurable"]["policy_system"] = self._policy_system
 
         # Add callbacks to config (including TokenUsageTracker for trajectory tracking)
-        callbacks = self._build_callbacks()
-        run_config["callbacks"] = callbacks
-        run_config["configurable"]["callbacks"] = callbacks
+        # Merge with any existing per-call callbacks
+        built_callbacks = self._build_callbacks()
+        existing_callbacks = run_config.get("callbacks", [])
+        existing_configurable_callbacks = run_config.get("configurable", {}).get("callbacks", [])
+
+        # Ensure existing callbacks are lists
+        if not isinstance(existing_callbacks, list):
+            existing_callbacks = [existing_callbacks] if existing_callbacks else []
+        if not isinstance(existing_configurable_callbacks, list):
+            existing_configurable_callbacks = (
+                [existing_configurable_callbacks] if existing_configurable_callbacks else []
+            )
+
+        # Merge: built callbacks first, then existing per-call callbacks
+        run_config["callbacks"] = built_callbacks + existing_callbacks
+        run_config["configurable"]["callbacks"] = built_callbacks + existing_configurable_callbacks
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
@@ -2070,9 +2096,22 @@ class CugaAgent:
                 run_config["configurable"]["policy_system"] = self._policy_system
 
             # Add callbacks to config (including TokenUsageTracker for trajectory tracking)
-            callbacks = self._build_callbacks()
-            run_config["callbacks"] = callbacks
-            run_config["configurable"]["callbacks"] = callbacks
+            # Merge with any existing per-call callbacks
+            built_callbacks = self._build_callbacks()
+            existing_callbacks = run_config.get("callbacks", [])
+            existing_configurable_callbacks = run_config.get("configurable", {}).get("callbacks", [])
+
+            # Ensure existing callbacks are lists
+            if not isinstance(existing_callbacks, list):
+                existing_callbacks = [existing_callbacks] if existing_callbacks else []
+            if not isinstance(existing_configurable_callbacks, list):
+                existing_configurable_callbacks = (
+                    [existing_configurable_callbacks] if existing_configurable_callbacks else []
+                )
+
+            # Merge: built callbacks first, then existing per-call callbacks
+            run_config["callbacks"] = built_callbacks + existing_callbacks
+            run_config["configurable"]["callbacks"] = built_callbacks + existing_configurable_callbacks
 
             # Add knowledge engine for awareness injection
             self._inject_knowledge_to_config(run_config)
@@ -2122,9 +2161,22 @@ class CugaAgent:
             run_config["configurable"]["policy_system"] = self._policy_system
 
         # Add callbacks to config (including TokenUsageTracker for trajectory tracking)
-        callbacks = self._build_callbacks()
-        run_config["callbacks"] = callbacks
-        run_config["configurable"]["callbacks"] = callbacks
+        # Merge with any existing per-call callbacks
+        built_callbacks = self._build_callbacks()
+        existing_callbacks = run_config.get("callbacks", [])
+        existing_configurable_callbacks = run_config.get("configurable", {}).get("callbacks", [])
+
+        # Ensure existing callbacks are lists
+        if not isinstance(existing_callbacks, list):
+            existing_callbacks = [existing_callbacks] if existing_callbacks else []
+        if not isinstance(existing_configurable_callbacks, list):
+            existing_configurable_callbacks = (
+                [existing_configurable_callbacks] if existing_configurable_callbacks else []
+            )
+
+        # Merge: built callbacks first, then existing per-call callbacks
+        run_config["callbacks"] = built_callbacks + existing_callbacks
+        run_config["configurable"]["callbacks"] = built_callbacks + existing_configurable_callbacks
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
