@@ -86,6 +86,8 @@ from cuga.backend.llm.models import LLMManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
     create_cuga_lite_graph,
 )
+from cuga.backend.cuga_graph.utils.agent_loop import TokenUsageTracker
+from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.cuga_lite.direct_langchain_tools_provider import (
     DirectLangChainToolsProvider,
 )
@@ -1341,6 +1343,28 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system initialized during agent.initialize()")
 
+    def _build_callbacks(self) -> List[BaseCallbackHandler]:
+        """
+        Build callbacks list including TokenUsageTracker for trajectory tracking.
+
+        This ensures that all SDK invocations automatically track prompts and responses
+        for trajectory visualization in tools like cuga-viz.
+
+        Returns:
+            List of callback handlers including TokenUsageTracker and user-provided callbacks
+        """
+        tracker = ActivityTracker()
+        callbacks: List[BaseCallbackHandler] = [TokenUsageTracker(tracker)]
+
+        # Add user-provided callbacks
+        if self._callbacks:
+            callbacks.extend(self._callbacks)
+            logger.debug(f"Built callbacks: TokenUsageTracker + {len(self._callbacks)} user callback(s)")
+        else:
+            logger.debug("Built callbacks: TokenUsageTracker only")
+
+        return callbacks
+
     async def _ensure_initialized(self):
         """Ensure tool provider is initialized."""
         if not hasattr(self.tool_provider, 'initialized') or not self.tool_provider.initialized:
@@ -1767,7 +1791,10 @@ class CugaAgent:
             # Add knowledge engine for awareness injection
             self._inject_knowledge_to_config(run_config)
 
-            # Add callbacks to config (both top-level and configurable for nodes)
+            # Add callbacks to config (including TokenUsageTracker for trajectory tracking)
+            callbacks = self._build_callbacks()
+            run_config["callbacks"] = callbacks
+            run_config["configurable"]["callbacks"] = callbacks
 
             # If action_response provided, update state with it
             if action_response:
@@ -1898,13 +1925,10 @@ class CugaAgent:
         if self._policy_system:
             run_config["configurable"]["policy_system"] = self._policy_system
 
-        # Add callbacks to config (both top-level and configurable for nodes)
-        if self._callbacks:
-            run_config["callbacks"] = self._callbacks
-            run_config["configurable"]["callbacks"] = self._callbacks
-            logger.debug(
-                f"Added {len(self._callbacks)} callback(s) to config: {[type(cb).__name__ for cb in self._callbacks]}"
-            )
+        # Add callbacks to config (including TokenUsageTracker for trajectory tracking)
+        callbacks = self._build_callbacks()
+        run_config["callbacks"] = callbacks
+        run_config["configurable"]["callbacks"] = callbacks
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
@@ -2045,10 +2069,10 @@ class CugaAgent:
             if self._policy_system:
                 run_config["configurable"]["policy_system"] = self._policy_system
 
-            # Add callbacks to config (both top-level and configurable for nodes)
-            if self._callbacks:
-                run_config["callbacks"] = self._callbacks
-                run_config["configurable"]["callbacks"] = self._callbacks
+            # Add callbacks to config (including TokenUsageTracker for trajectory tracking)
+            callbacks = self._build_callbacks()
+            run_config["callbacks"] = callbacks
+            run_config["configurable"]["callbacks"] = callbacks
 
             # Add knowledge engine for awareness injection
             self._inject_knowledge_to_config(run_config)
@@ -2097,10 +2121,10 @@ class CugaAgent:
         if self._policy_system:
             run_config["configurable"]["policy_system"] = self._policy_system
 
-        # Add callbacks to config (both top-level and configurable for nodes)
-        if self._callbacks:
-            run_config["callbacks"] = self._callbacks
-            run_config["configurable"]["callbacks"] = self._callbacks
+        # Add callbacks to config (including TokenUsageTracker for trajectory tracking)
+        callbacks = self._build_callbacks()
+        run_config["callbacks"] = callbacks
+        run_config["configurable"]["callbacks"] = callbacks
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
