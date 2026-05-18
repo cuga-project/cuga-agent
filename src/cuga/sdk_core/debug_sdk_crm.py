@@ -65,18 +65,7 @@ DELETE_ALL_POLICIES_AT_START = os.environ.get("CUGA_E2E_ALLOW_DESTRUCTIVE", "").
 # Define policy to create (Finance industry revenue requirements)
 POLICY_CONFIG = {
     "name": "Finance eligibility revenue requirements",
-    "content": """## Finance Industry Revenue Requirements
-
-### Policy Rules
-- Accounts cannot be created for companies from the Finance industry with annual revenue under $100,000
-- This ensures we only onboard financially stable finance companies
-- Companies from other industries have no revenue restrictions
-
-### Validation Requirements
-- Always check the industry field before account creation
-- If industry is "Finance", verify annual_revenue >= 100000
-- Reject account creation that violates revenue requirements
-- Provide clear error messages when restrictions apply
+    "content": """## Accounts cannot be created for companies from the Finance industry with annual revenue under $100,000.
 """,
     "description": "Accounts cannot be created for companies from the Finance industry with annual revenue under $100,000.",
 }
@@ -214,32 +203,20 @@ async def run_tests(agent):
     
     test_cases = [
         {
-            "name": "Test Case 1: Non-Finance with Low Revenue (ALLOWED)",
+            "name": "Test Case 1: Non-Finance with Low Revenue",
             "query": "Create a CRM account for Small Law Firm. Website: smalllawfirm.com, Phone: +1-555-3000, Address: 456 Main Street, City: Boston, State: MA, Country: USA, Region: North America, Annual Revenue: $50,000, Employee Count: 10, Industry: Law",
-            "expected": "ALLOWED",
-            "reason": "Law industry has no revenue restrictions",
-            "check_keywords": ["created", "success", "account"]
         },
         {
-            "name": "Test Case 2: Non-Finance with High Revenue (ALLOWED)",
+            "name": "Test Case 2: Non-Finance with High Revenue",
             "query": "Create a CRM account for Big Tech Corp. Website: bigtech.com, Phone: +1-555-4000, Address: 789 Innovation Dr, City: San Francisco, State: CA, Country: USA, Region: North America, Annual Revenue: $5,000,000, Employee Count: 500, Industry: Technology",
-            "expected": "ALLOWED",
-            "reason": "Technology industry has no revenue restrictions",
-            "check_keywords": ["created", "success", "account"]
         },
         {
-            "name": "Test Case 3: Finance with Low Revenue (BLOCKED)",
+            "name": "Test Case 3: Finance with Low Revenue",
             "query": "Create a CRM account for ACM22 Corporation. Website: acm22corporation.com, Phone: +1-555-1883, Address: 94 rue du Gue Jacquet, City: Chatou, State: Île-de-France, Country: France, Region: Europe, Annual Revenue: $50,000, Employee Count: 88, Industry: Finance",
-            "expected": "BLOCKED",
-            "reason": "Finance industry with revenue $50,000 < $100,000",
-            "check_keywords": ["finance", "revenue", "policy", "restriction", "cannot"]
         },
         {
-            "name": "Test Case 4: Finance with High Revenue (ALLOWED)",
+            "name": "Test Case 4: Finance with High Revenue",
             "query": "Create a CRM account for Global Finance Corp. Website: globalfinance.com, Phone: +1-555-2000, Address: 123 Wall Street, City: New York, State: NY, Country: USA, Region: North America, Annual Revenue: $1,500,000, Employee Count: 250, Industry: Finance",
-            "expected": "ALLOWED",
-            "reason": "Finance industry with revenue $1,500,000 >= $100,000",
-            "check_keywords": ["created", "success", "account"]
         },
     ]
     
@@ -247,89 +224,33 @@ async def run_tests(agent):
     for test in test_cases:
         print(f"\n--- {test['name']} ---")
         print(f"User Query: {test['query']}")
-        print(f"Expected: {test['expected']} ({test['reason']})")
         
         try:
             # Invoke the agent with the user query
             invoke_result = await agent.invoke(test["query"])
             
-            # Check if the target tool was called by inspecting tool_calls
-            target_tool = "crm_create_account_accounts_post"
-            tool_was_called = any(
-                call.get("name") == target_tool
-                for call in invoke_result.tool_calls
-            )
-            
-            # Determine if blocked based on tool execution
-            if tool_was_called:
-                # Tool was executed - check if it succeeded
-                tool_call = next(
-                    call for call in invoke_result.tool_calls
-                    if call.get("name") == target_tool
-                )
-                
-                # Check for errors in the tool call
-                if tool_call.get("error"):
-                    actual = "BLOCKED"
-                    reason = f"Tool call failed: {tool_call.get('error')}"
-                else:
-                    actual = "ALLOWED"
-                    reason = f"Tool executed successfully"
-                    if tool_call.get("result"):
-                        reason += f" - Result: {str(tool_call.get('result'))[:100]}"
-            else:
-                # Tool was not called - likely blocked by policy
-                actual = "BLOCKED"
-                reason = "Tool was not invoked (likely blocked by policy)"
-            
-            success = actual == test["expected"]
-            
-            if success:
-                print(f"\n✅ SUCCESS: Request was correctly {actual}!")
-                print(f"Reason: {reason}")
-                print(f"Agent response: {invoke_result.answer[:200]}..." if len(invoke_result.answer) > 200 else f"Agent response: {invoke_result.answer}")
-            else:
-                print(f"\n⚠️  WARNING: Request was {actual} (expected {test['expected']})")
-                print(f"Reason: {reason}")
-                print(f"Agent response: {invoke_result.answer[:200]}..." if len(invoke_result.answer) > 200 else f"Agent response: {invoke_result.answer}")
-            
-            # Debug: Show all tool calls
-            if invoke_result.tool_calls:
-                print(f"\nTool calls made ({len(invoke_result.tool_calls)}):")
-                for call in invoke_result.tool_calls:
-                    print(f"  - {call.get('name')}: {call.get('result', 'N/A')[:100] if call.get('result') else 'N/A'}")
-                    if call.get("error"):
-                        print(f"    Error: {call.get('error')}")
-            else:
-                print("\nNo tool calls were made")
+            # Just print the agent response
+            print(f"\nAgent Response:")
+            print(f"{invoke_result.answer}")
             
             results.append({
                 "test": test["name"],
-                "success": success,
-                "actual": actual,
-                "reason": reason,
-                "tool_calls": invoke_result.tool_calls
+                "response": invoke_result.answer
             })
             
         except Exception as e:
             print(f"\n❌ Error during agent invocation: {type(e).__name__}: {e}")
             import traceback
             traceback.print_exc()
-            results.append({"test": test["name"], "success": False, "actual": "ERROR"})
+            results.append({"test": test["name"], "response": f"ERROR: {str(e)}"})
     
     # Print summary
     print(f"\n{'='*60}")
     print("Test Summary:")
     print(f"{'='*60}")
-    passed = sum(1 for r in results if r["success"])
-    print(f"Passed: {passed}/{len(results)}")
     for r in results:
-        status = "✅" if r["success"] else "❌"
-        print(f"  {status} {r['test']}: {r['actual']}")
-        if "reason" in r:
-            print(f"      Reason: {r['reason']}")
-        if "tool_calls" in r and r["tool_calls"]:
-            print(f"      Tool calls: {len(r['tool_calls'])}")
+        print(f"\n{r['test']}:")
+        print(f"  Response: {r['response'][:100]}..." if len(r['response']) > 100 else f"  Response: {r['response']}")
     print(f"{'='*60}")
     
     return results

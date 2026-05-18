@@ -21,6 +21,74 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
 from cuga.config import settings
 
 
+# Global ToolGuardRuntime instance (initialized once per app)
+_tool_guard_runtimes: Dict[str, Any] = {}
+_tool_guard_lock = asyncio.Lock()
+
+
+async def _get_or_create_tool_guard_runtime(app_name: str, agent_id: Optional[str] = None):
+    """
+    Get or create a ToolGuardRuntime instance for the specified app.
+    
+    Args:
+        app_name: Name of the application
+        agent_id: Optional agent ID for multi-agent support
+        
+    Returns:
+        ToolGuardRuntime instance or None if initialization fails
+    """
+    async with _tool_guard_lock:
+        if app_name in _tool_guard_runtimes:
+            return _tool_guard_runtimes[app_name]
+        
+        try:
+            from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
+            
+            # Create a simple tool provider that can be used by ToolGuardRuntime
+            class RegistryToolProvider:
+                """Simple tool provider that delegates to the registry."""
+                async def call_tool(self, tool_name: str, args: Dict[str, Any], headers: Optional[Dict[str, str]] = None):
+                    registry_base = get_registry_base_url()
+                    registry_host = f'{registry_base}/functions/call'
+                    if agent_id:
+                        registry_host += f'?agent_id={agent_id}'
+                    payload = {"function_name": tool_name, "app_name": app_name, "args": args}
+                    async with aiohttp.ClientSession() as session:
+                        async with session.post(
+                            registry_host,
+                            json=payload,
+                            headers={"accept": "application/json", "Content-Type": "application/json"},
+                        ) as response:
+                            if response.status != 200:
+                                error_text = await response.text()
+                                raise Exception(f"HTTP Error: {response.status} - {error_text}")
+                            return await response.json()
+            
+            runtime = ToolGuardRuntime(
+                tool_provider=RegistryToolProvider(),
+                enable_policies=True
+            )
+            await runtime.initialize()
+            
+            guarded_tools = runtime.get_guarded_tools()
+            logger.info(
+                f"✅ ToolGuardRuntime initialized for app '{app_name}' with guards for {len(guarded_tools)} tools"
+            )
+            if guarded_tools:
+                logger.debug(f"   Guarded tools: {', '.join(guarded_tools)}")
+            
+            _tool_guard_runtimes[app_name] = runtime
+            return runtime
+        except Exception as e:
+            logger.error(f"Failed to initialize ToolGuardRuntime for app '{app_name}': {e}", exc_info=True)
+            # Fail closed: if policy enforcement is enabled but ToolGuardRuntime fails,
+            # cache None to prevent repeated initialization attempts
+            _tool_guard_runtimes[app_name] = None
+            raise RuntimeError(
+                f"ToolGuardRuntime failed to initialize for app '{app_name}'. Policy enforcement cannot be bypassed. Error: {e}"
+            ) from e
+
+
 async def call_api(
     app_name: str,
     api_name: str,
@@ -142,7 +210,11 @@ def _convert_openapi_params_to_json_schema(parameters: List[Dict[str, Any]]) -> 
 
 
 def create_tool_from_api_dict(
-    tool_name: str, tool_def: Dict[str, Any], app_name: str, agent_id: Optional[str] = None
+    tool_name: str,
+    tool_def: Dict[str, Any],
+    app_name: str,
+    agent_id: Optional[str] = None,
+    enable_policies: bool = False
 ) -> StructuredTool:
     """Create a StructuredTool from an API definition dict.
 
@@ -151,6 +223,7 @@ def create_tool_from_api_dict(
         tool_def: Tool definition dict from get_apis
         app_name: Name of the app/server
         agent_id: Optional agent ID for multi-agent support
+        enable_policies: Whether to enable policy-based tool validation
 
     Returns:
         StructuredTool instance with .func attribute
@@ -211,14 +284,63 @@ def create_tool_from_api_dict(
     else:
         InputModel = create_model(f"{tool_name}Input")
 
-    # Capture operation_id and agent_id in closure for the tool function
+    # Capture operation_id, agent_id, and enable_policies in closure for the tool function
     _operation_id = operation_id
     _agent_id = agent_id
+    _enable_policies = enable_policies
 
     async def tool_func(*args, **kwargs):
         try:
             param_names = list(field_definitions.keys()) if field_definitions else []
             all_kwargs = merge_tool_call_args(args, kwargs, param_names)
+
+            # Validate tool call against ToolGuard policies if enabled
+            if _enable_policies:
+                try:
+                    runtime = await _get_or_create_tool_guard_runtime(app_name, _agent_id)
+                    
+                    if runtime and runtime.is_initialized:
+                        error_message = await runtime.guard_tool_call(
+                            app_name=app_name,
+                            function_name=tool_name,
+                            arguments=all_kwargs if isinstance(all_kwargs, dict) else {}
+                        )
+                        
+                        if error_message:
+                            # Guard validation failed - return error without executing tool
+                            logger.warning(
+                                f"🛡️ Tool guard blocked call to '{tool_name}': {error_message}"
+                            )
+                            return {
+                                "status": "exception",
+                                "status_code": 403,
+                                "message": f"Tool guard policy violation: {error_message}",
+                                "error_type": "ToolGuardViolation",
+                                "function_name": tool_name,
+                            }
+                        else:
+                            logger.debug(f"✅ Tool guard validation passed for '{tool_name}'")
+                except RuntimeError as e:
+                    # ToolGuardRuntime initialization failed - fail closed
+                    logger.error(f"ToolGuardRuntime initialization failed: {e}")
+                    return {
+                        "status": "exception",
+                        "status_code": 403,
+                        "message": f"Tool guard policy violation: {str(e)}",
+                        "error_type": "ToolGuardViolation",
+                        "function_name": tool_name,
+                    }
+                except Exception as e:
+                    # Fail-closed: treat exceptions from guard_tool_call as policy violations
+                    error_msg = f"Exception during tool guard execution for '{tool_name}': {e}"
+                    logger.error(error_msg, exc_info=True)
+                    return {
+                        "status": "exception",
+                        "status_code": 403,
+                        "message": f"Tool guard policy violation: {error_msg}",
+                        "error_type": "ToolGuardViolation",
+                        "function_name": tool_name,
+                    }
 
             # Call API with timeout (timeout is handled inside call_api)
             result = await call_api(
@@ -262,16 +384,23 @@ class ToolRegistryProvider(ToolProviderInterface):
     Tools are loaded from OpenAPI specs, MCP servers, or TRM services.
     """
 
-    def __init__(self, app_names: Optional[List[str]] = None, agent_id: Optional[str] = None):
+    def __init__(
+        self,
+        app_names: Optional[List[str]] = None,
+        agent_id: Optional[str] = None,
+        enable_policies: bool = False
+    ):
         """
         Initialize the registry provider.
 
         Args:
             app_names: Optional list of specific app names to load. If None, loads all.
             agent_id: Optional agent ID for multi-agent support
+            enable_policies: Whether to enable policy-based tool validation
         """
         self.app_names = app_names
         self.agent_id = agent_id
+        self.enable_policies = enable_policies
         self.apps: List[AppDefinition] = []
         self.tools_cache: Dict[str, List[StructuredTool]] = {}
         self.initialized = False
@@ -338,7 +467,13 @@ class ToolRegistryProvider(ToolProviderInterface):
         logger.info(f"Converting {len(api_dicts)} APIs to tools for '{app_name}'")
         for tool_name, tool_def in api_dicts.items():
             try:
-                tool = create_tool_from_api_dict(tool_name, tool_def, app_name, agent_id=self.agent_id)
+                tool = create_tool_from_api_dict(
+                    tool_name,
+                    tool_def,
+                    app_name,
+                    agent_id=self.agent_id,
+                    enable_policies=self.enable_policies
+                )
                 tools.append(tool)
                 logger.debug(f"  ✓ {tool_name}")
             except Exception as e:

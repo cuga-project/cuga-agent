@@ -35,19 +35,13 @@ class ApiRegistry:
         
         Args:
             client: MCPManager instance for tool management
-            enable_policies: Whether to enable policy-based tool validation
+            enable_policies: Whether to enable policy-based tool validation (deprecated, kept for compatibility)
         """
         logger.info("ApiRegistry: Initializing.")
         self.mcp_client = client
         self.auth_manager = None
         self.tavily_client = None
         self._init_tavily_if_enabled()
-        
-        # ToolGuardRuntime support for policy-based tool validation
-        # ToolGuardRuntime now manages its own policy storage lifecycle
-        self.tool_guard_runtime = None
-        self._tool_guard_initialized = False
-        self._enable_policies = enable_policies
 
     def _init_tavily_if_enabled(self):
         """Initialize Tavily client if web search is enabled."""
@@ -74,58 +68,9 @@ class ApiRegistry:
         await self.mcp_client.load_tools()
         logger.info("ApiRegistry: Servers started successfully.")
     
-    async def _initialize_tool_guard_runtime(self):
-        """
-        Initialize ToolGuardRuntime after tools are loaded.
-        
-        This is called after load_tools() to ensure both tools and policies are available.
-        ToolGuardRuntime now manages its own policy storage lifecycle.
-        """
-        if self._tool_guard_initialized:
-            return
-        
-        self._tool_guard_initialized = True
-        
-        if not self._enable_policies:
-            logger.debug("ToolGuardRuntime: Policy enforcement disabled, skipping initialization")
-            return
-        
-        try:
-            from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
-            
-            # ToolGuardRuntime now manages policy storage internally
-            # We just pass enable_policies flag and it handles the rest
-            self.tool_guard_runtime = ToolGuardRuntime(
-                tool_provider=self.mcp_client,
-                enable_policies=self._enable_policies
-            )
-            
-            await self.tool_guard_runtime.initialize()
-            
-            guarded_tools = self.tool_guard_runtime.get_guarded_tools()
-            logger.info(
-                f"✅ ToolGuardRuntime initialized with guards for {len(guarded_tools)} tools"
-            )
-            if guarded_tools:
-                logger.debug(f"   Guarded tools: {', '.join(guarded_tools)}")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize ToolGuardRuntime: {e}", exc_info=True)
-            # Fail closed: if policy enforcement is enabled but ToolGuardRuntime fails,
-            # don't allow the service to start without policy validation
-            raise RuntimeError(
-                f"ToolGuardRuntime failed to initialize. Policy enforcement cannot be bypassed. Error: {e}"
-            ) from e
-    
     async def cleanup(self):
-        """Cleanup resources including ToolGuardRuntime."""
-        if self.tool_guard_runtime is not None:
-            try:
-                await self.tool_guard_runtime.shutdown()
-                logger.debug("ToolGuardRuntime shutdown complete")
-            except Exception as e:
-                logger.warning(f"Error shutting down ToolGuardRuntime: {e}")
-            self.tool_guard_runtime = None
+        """Cleanup resources."""
+        pass
 
     async def show_applications(self) -> List[AppDefinition]:
         """Lists application names and their descriptions."""
@@ -246,50 +191,10 @@ class ApiRegistry:
     ) -> Dict[str, Any]:
         """Calls a function via the mcp_client."""
         
-        # Lazy initialization: Initialize ToolGuardRuntime on first tool call if not already initialized
-        if not self._tool_guard_initialized:
-            await self._initialize_tool_guard_runtime()
-        
         # Use arguments as-is - do not unwrap 'params' unconditionally
         # Transport-layer wrappers should be normalized at the request boundary,
         # not here where it affects both guards and tools
         unwrapped_args = arguments
-        
-        # Validate tool call against ToolGuard policies
-        if self.tool_guard_runtime and self.tool_guard_runtime.is_initialized:
-            try:
-                error_message = await self.tool_guard_runtime.guard_tool_call(
-                    app_name=app_name,
-                    function_name=function_name,
-                    arguments=unwrapped_args if isinstance(unwrapped_args, dict) else {}
-                )
-                
-                if error_message:
-                    # Guard validation failed - return error without executing tool
-                    logger.warning(
-                        f"🛡️ Tool guard blocked call to '{function_name}': {error_message}"
-                    )
-                    return {
-                        "status": "exception",
-                        "status_code": 403,
-                        "message": f"Tool guard policy violation: {error_message}",
-                        "error_type": "ToolGuardViolation",
-                        "function_name": function_name,
-                    }
-                else:
-                    logger.debug(f"✅ Tool guard validation passed for '{function_name}'")
-            except Exception as e:
-                # Fail-closed: treat exceptions from guard_tool_call as policy violations
-                # to honor ToolGuardRuntime's fail-closed contract
-                error_msg = f"Exception during tool guard execution for '{function_name}': {e}"
-                logger.error(error_msg, exc_info=True)
-                return {
-                    "status": "exception",
-                    "status_code": 403,
-                    "message": f"Tool guard policy violation: {error_msg}",
-                    "error_type": "ToolGuardViolation",
-                    "function_name": function_name,
-                }
         
         if app_name == "web" and function_name == "search_web" and self._is_web_search_enabled():
             query = unwrapped_args.get('query') if isinstance(unwrapped_args, dict) else str(unwrapped_args)
