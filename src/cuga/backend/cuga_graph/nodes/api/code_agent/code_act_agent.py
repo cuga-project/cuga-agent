@@ -164,6 +164,26 @@ StateSchema = TypeVar("StateSchema", bound=CodeActState)
 StateSchemaType = Type[StateSchema]
 
 
+def _get_tool_args_json_schema(tool: StructuredTool) -> Optional[dict[str, Any]]:
+    """Return a JSON schema dict for a tool's arguments, when available."""
+    args_schema = getattr(tool, "args_schema", None)
+    if args_schema is None:
+        return None
+
+    if isinstance(args_schema, dict):
+        return args_schema
+
+    model_json_schema = getattr(args_schema, "model_json_schema", None)
+    if callable(model_json_schema):
+        return model_json_schema()
+
+    schema = getattr(args_schema, "schema", None)
+    if callable(schema):
+        return schema()
+
+    return None
+
+
 def create_default_prompt(tools: list[StructuredTool], base_prompt: Optional[str] = None):
     """Create default prompt for the CodeAct agent."""
     tools = [t if isinstance(t, StructuredTool) else create_tool(t) for t in tools]
@@ -176,6 +196,14 @@ In addition to the Python Standard Library, you can use the following functions:
 """
 
     for tool in tools:
+        schema = _get_tool_args_json_schema(tool)
+        if schema:
+            schema_str = json.dumps(schema, indent=2)
+            prompt += f"""The arguments for `{tool.name}` should follow this JSON schema:
+```json
+{schema_str}
+```
+"""
         prompt += f'''
 def {tool.name}{str(inspect.signature(tool.func))}:
     """{tool.description}"""
