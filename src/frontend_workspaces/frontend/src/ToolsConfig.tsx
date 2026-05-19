@@ -150,6 +150,9 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
   const configuredNames = new Set(tools.map(t => t.name));
   const availableToAdd = connectedApps.filter(app => !configuredNames.has(app.name));
 
+  // Runtime built-in apps (injected by Cuga Lite, not user-configured)
+  const runtimeApps = connectedApps.filter(app => app.type === "CUGA_LITE");
+
   const displayTools = showAllTools ? tools : tools.slice(0, TOOLS_PREVIEW_COUNT);
 
   return (
@@ -213,6 +216,30 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
                 {source && (
                   <p className="tools-config-tile-source" title={source}>
                     {source.length > 60 ? `${source.slice(0, 60)}…` : source}
+                  </p>
+                )}
+              </Tile>
+            );
+          })}
+        </Stack>
+      )}
+
+      {runtimeApps.length > 0 && (
+        <Stack gap={3} orientation="vertical" className="tools-config-list">
+          {runtimeApps.map((app) => {
+            const appTools = connectedTools.filter((t) => t.app === app.name);
+            return (
+              <Tile key={app.name} className="tools-config-tile">
+                <div className="tools-config-tile-main">
+                  <div className="tools-config-tile-info">
+                    <span className="tools-config-tile-name">{app.name}</span>
+                    <Tag type="purple" size="sm">Built-in</Tag>
+                    <Tag type="gray" size="sm">{app.tool_count} tool{app.tool_count !== 1 ? "s" : ""}</Tag>
+                  </div>
+                </div>
+                {appTools.length > 0 && (
+                  <p className="tools-config-tile-source" title={appTools.map((t) => t.name).join(", ")}>
+                    {appTools.map((t) => t.name).join(", ")}
                   </p>
                 )}
               </Tile>

@@ -1,4 +1,6 @@
 .env
+.omc/
+.omx/
 __pycache__
 output
 *.db
@@ -8,6 +10,7 @@ node_modules
 .pnpm-store/
 .agents
 *.log
+.claude/settings.local.json
 /frontend/dist/
 src/frontend_workspaces/frontend/dist/
 /frontend/node_modules/

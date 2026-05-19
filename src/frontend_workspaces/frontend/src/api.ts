@@ -261,6 +261,10 @@ export async function getToolsList(draft?: boolean): Promise<Response> {
   return apiFetch(`/api/tools/list${q}`);
 }
 
+export async function getSkills(): Promise<Response> {
+  return apiFetch("/api/skills");
+}
+
 export async function getConversationThreads(): Promise<Response> {
   return apiFetch("/api/conversation-threads?agent_id=cuga-default");
 }
@@ -273,10 +277,6 @@ export async function deleteConversation(threadId: string): Promise<Response> {
   return apiFetch(`/api/conversations/${threadId}?agent_id=cuga-default`, {
     method: "DELETE",
   });
-}
-
-export async function getSkills(): Promise<Response> {
-  return apiFetch("/api/skills");
 }
 
 export async function getWorkspaceTree(threadId?: string): Promise<Response> {

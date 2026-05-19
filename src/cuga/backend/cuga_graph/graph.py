@@ -72,6 +72,7 @@ class DynamicAgentGraph:
         reflection_enabled: Optional[bool] = None,
         shortlisting_tool_threshold: Optional[int] = None,
         cuga_lite_max_steps: Optional[int] = None,
+        enable_filesystem_tools: Optional[bool] = None,
         llm_config: Optional[dict] = None,
         special_instructions: Optional[str] = None,
     ):
@@ -106,6 +107,7 @@ class DynamicAgentGraph:
         self.reflection_enabled = reflection_enabled
         self.shortlisting_tool_threshold = shortlisting_tool_threshold
         self.cuga_lite_max_steps = cuga_lite_max_steps
+        self.enable_filesystem_tools = enable_filesystem_tools
         self.llm_config: Optional[dict] = llm_config
         self.special_instructions: Optional[str] = special_instructions
         self.graph = None

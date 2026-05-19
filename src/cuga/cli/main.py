@@ -85,7 +85,7 @@ def _apply_demo_skills_env() -> None:
 
 
 def _apply_local_demo_workspace_env() -> None:
-    """Demos that use ./cuga_workspace + filesystem MCP — not OpenSandbox /tmp paths from settings.toml."""
+    """Demos that use ./cuga_workspace with runtime filesystem tools — not OpenSandbox /tmp paths from settings.toml."""
     os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL"] = "false"
     os.environ["DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX"] = "false"
     os.environ["DYNACONF_SKILLS__ENABLED"] = "false"
@@ -652,6 +652,7 @@ def _start_demo_crm_services(
     enable_supervisor: bool = False,
     tools: list | None = None,
     cuga_workspace: str | None = None,
+    filesystem: bool = True,
 ):
     """Shared startup logic for demo_crm and demo_supervisor services.
 
@@ -667,7 +668,7 @@ def _start_demo_crm_services(
         _apply_local_demo_workspace_env()
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
         logger.info("🧹 Resetting config db and setting up manage demo_crm...")
-        setup_demo_manage_config("demo_crm", no_email=no_email, tools=tools)
+        setup_demo_manage_config("demo_crm", no_email=no_email, tools=tools, filesystem=filesystem)
 
         # Configure supervisor mode
         if enable_supervisor:
@@ -696,14 +697,11 @@ def _start_demo_crm_services(
         os.environ["CUGA_LOAD_POLICIES"] = "true"
         logger.info(f"📋 Policies configured for {service_label}")
 
-        start_filesystem = "filesystem" in tool_names if tools else True
         start_crm = "crm" in tool_names if tools else True
         start_docs = "docs" in tool_names if tools else False
         start_oak_health = "oak_health" in tool_names if tools else False
 
-        ports_to_clean = app_mgr.ports_for_apps(
-            start_email, start_filesystem, start_crm, start_docs, start_oak_health
-        )
+        ports_to_clean = app_mgr.ports_for_apps(start_email, False, start_crm, start_docs, start_oak_health)
         ports_to_clean.extend([settings.server_ports.registry, settings.server_ports.demo])
         logger.info("🧹 Checking for existing processes on required ports...")
         kill_processes_by_port(ports_to_clean)
@@ -719,9 +717,6 @@ def _start_demo_crm_services(
             app_mgr.start_email()
         else:
             logger.info("Email services disabled (--no-email flag or not in tools)")
-
-        if start_filesystem:
-            app_mgr.start_filesystem(workspace_path, read_only=read_only)
 
         if start_crm:
             crm_db_path = app_mgr.prepare_crm_db(workspace_path)
@@ -754,8 +749,6 @@ def _start_demo_crm_services(
             if start_email:
                 services_table.add_row("• Email Sink", f"smtp://localhost:{app_mgr.email_sink_port}")
                 services_table.add_row("• Email MCP Server", f"http://localhost:{app_mgr.email_mcp_port}/sse")
-            if start_filesystem:
-                services_table.add_row("• Filesystem MCP Server", f"http://localhost:{app_mgr.fs_port}/sse")
             if start_crm:
                 services_table.add_row("• CRM API Server", f"http://localhost:{app_mgr.crm_port}")
             if start_docs:
@@ -868,7 +861,7 @@ def start(
     read_only: bool = typer.Option(
         False,
         "--read-only",
-        help="For demo_crm: Start filesystem server in read-only mode (only read_text_file tool exposed)",
+        help="For demo_crm: prepare workspace in read-only context",
     ),
     sample_memory_data: bool = typer.Option(
         False,
@@ -898,7 +891,7 @@ def start(
     filesystem: bool = typer.Option(
         False,
         "--filesystem",
-        help="Enable filesystem MCP (default on for demo/demo_crm/manager; use with demo_health/demo_docs to add it)",
+        help="Enable workspace filesystem tools (enabled by default for demo/demo_crm/manager; use with demo_health/demo_docs to add filesystem access)",
     ),
     docs: bool = typer.Option(
         False,
@@ -934,31 +927,31 @@ def start(
       - demo_knowledge: Starts registry + demo with knowledge engine enabled (upload docs, RAG search). Use --reset to wipe knowledge data.
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
-      - demo_health: Starts cuga-oak-health OpenAPI, registry, and demo (insurance member APIs + OAK playbooks; add --filesystem for workspace MCP)
+      - demo_health: Starts cuga-oak-health OpenAPI, registry, and demo (insurance member APIs + OAK playbooks; add --filesystem for workspace tools)
       - manager: Manage-config mode: registry uses managed MCP YAML, policy filesync off, demo on 7860
       - registry: Starts only the registry service directly (uvicorn on port 8001)
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
     App flags (--crm, --email, --digital-sales, --docs, --filesystem) add apps to the preset:
-      - demo: default = digital_sales + filesystem
-      - demo_skills: default = digital_sales + skills/OpenSandbox shell tools (no classic filesystem MCP)
-      - demo_crm: default = crm + filesystem + email
-      - manager: default = filesystem only
+      - demo: default = digital_sales + filesystem tools
+      - demo_skills: default = digital_sales + skills/OpenSandbox shell tools
+      - demo_crm: default = crm + filesystem tools + email
+      - manager: default = filesystem tools
       - demo_health: default = oak_health only
 
     Examples:
-      cuga start demo                     # registry + demo; digital_sales + filesystem MCP
+      cuga start demo                     # registry + demo; digital_sales + filesystem tools
       cuga start demo_skills              # skills + OpenSandbox shell tools; aborts if unreachable
       cuga start demo --crm               # add CRM to demo
-      cuga start demo_crm                 # crm + filesystem + email
-      cuga start demo_crm --no-email      # crm + filesystem only
-      cuga start manager --crm --email    # filesystem + crm + email
-      cuga start manager --digital-sales  # filesystem + digital_sales
+      cuga start demo_crm                 # crm + filesystem tools + email
+      cuga start demo_crm --no-email      # crm + filesystem tools only
+      cuga start manager --crm --email    # filesystem tools + crm + email
+      cuga start manager --digital-sales  # filesystem tools + digital_sales
       cuga start manager --docs  # add IBM Docs MCP server
       cuga start demo_knowledge             # demo + knowledge engine
       cuga start demo_knowledge --reset     # wipe knowledge data + fresh start
       cuga start demo_docs  # registry + demo + IBM Docs MCP only
       cuga start demo_health  # oak health OpenAPI + registry + demo
-      cuga start demo_health --filesystem  # also workspace filesystem MCP
+      cuga start demo_health --filesystem  # also enable workspace filesystem tools
       cuga start manager --oak-health  # add insurance APIs to manager preset
       cuga start manager --cuga-workspace /path/to/workspace  # custom workspace + policy
       cuga start demo --sandbox           # with remote sandbox
@@ -990,7 +983,7 @@ def start(
             os.environ["MCP_SERVERS_FILE"] = "none"
             _apply_local_demo_workspace_env()
             logger.info("Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE=%s", managed_path)
-            setup_demo_manage_config("manager", tools=resolved_tools)
+            setup_demo_manage_config("manager", tools=resolved_tools, filesystem=app_filesystem)
 
             app_mgr = _make_app_manager()
             workspace_path = cuga_workspace or os.path.join(os.getcwd(), "cuga_workspace")
@@ -999,9 +992,7 @@ def start(
                 workspace_abs, include_email=app_email
             )
             os.environ["CUGA_LOAD_POLICIES"] = "true"
-            ports_to_kill = app_mgr.ports_for_apps(
-                app_email, app_filesystem, app_crm, app_docs, app_oak_health
-            )
+            ports_to_kill = app_mgr.ports_for_apps(app_email, False, app_crm, app_docs, app_oak_health)
             ports_to_kill.extend([settings.server_ports.registry, settings.server_ports.demo])
             kill_processes_by_port(ports_to_kill)
             os.environ["CUGA_HOST"] = host
@@ -1010,8 +1001,6 @@ def start(
                 app_mgr.prepare_workspace(workspace_path)
             if app_email:
                 app_mgr.start_email()
-            if app_filesystem:
-                app_mgr.start_filesystem(workspace_path)
             if app_crm:
                 crm_db_path = app_mgr.prepare_crm_db(workspace_path)
                 app_mgr.start_crm(crm_db_path)
@@ -1038,7 +1027,7 @@ def start(
                     table.add_row("Email Sink:", f"smtp://localhost:{app_mgr.email_sink_port}")
                     table.add_row("Email MCP:", f"http://localhost:{app_mgr.email_mcp_port}/sse")
                 if app_filesystem:
-                    table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                    table.add_row("Filesystem tools:", os.path.abspath(workspace_path))
                 if app_crm:
                     table.add_row("CRM API:", f"http://localhost:{app_mgr.crm_port}")
                 if app_docs:
@@ -1083,20 +1072,19 @@ def start(
         ensure_managed_mcp_file_exists(get_managed_mcp_path())
 
         try:
+            fs_for_demo = app_filesystem
             logger.info("🧹 Resetting config db and setting up manage %s...", demo_preset)
-            setup_demo_manage_config(demo_preset, tools=resolved_tools)
+            setup_demo_manage_config(demo_preset, tools=resolved_tools, filesystem=fs_for_demo)
             logger.info("🧹 Checking for existing processes on required ports...")
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            resolved_tool_names = {str(tool.get("name", "")) for tool in resolved_tools}
-            fs_for_demo = "filesystem" in resolved_tool_names
-            if service == "demo_skills" and not fs_for_demo:
+            if service == "demo_skills":
                 logger.info(
-                    "demo_skills: skipping filesystem MCP — agent uses OpenSandbox shell tools "
-                    "(run_command, write_file, …)"
+                    "demo_skills: filesystem tools %s for this agent",
+                    "enabled" if fs_for_demo else "disabled",
                 )
-            ports_to_clean.extend(app_mgr.ports_for_apps(False, fs_for_demo, False, app_docs, app_oak_health))
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, False, False, app_docs, app_oak_health))
             kill_processes_by_port(ports_to_clean)
 
             os.environ["CUGA_HOST"] = host
@@ -1105,8 +1093,6 @@ def start(
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
             app_mgr.prepare_workspace(workspace_path)
-            if fs_for_demo:
-                app_mgr.start_filesystem(workspace_path)
             if app_docs:
                 app_mgr.start_docs()
             if app_oak_health:
@@ -1130,7 +1116,7 @@ def start(
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
                 if fs_for_demo:
-                    table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                    table.add_row("Filesystem tools:", os.path.abspath(workspace_path))
                 if app_docs:
                     table.add_row("Docs MCP:", f"http://localhost:{app_mgr.docs_port}/sse")
                 if app_oak_health:
@@ -1177,12 +1163,14 @@ def start(
             if reset:
                 logger.info("🧹 Resetting knowledge data...")
             logger.info("🧹 Setting up demo_knowledge config...")
-            setup_demo_manage_config("demo_knowledge", tools=resolved_tools, reset_knowledge=reset)
+            setup_demo_manage_config(
+                "demo_knowledge", tools=resolved_tools, reset_knowledge=reset, filesystem=app_filesystem
+            )
             logger.info("🧹 Checking for existing processes on required ports...")
             app_mgr = _make_app_manager()
             workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            ports_to_clean.extend(app_mgr.ports_for_apps(False, True, False, app_docs, app_oak_health))
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, False, False, app_docs, app_oak_health))
             kill_processes_by_port(ports_to_clean)
 
             os.environ["CUGA_HOST"] = host
@@ -1190,8 +1178,6 @@ def start(
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
             app_mgr.prepare_workspace(workspace_path)
-            if app_filesystem:
-                app_mgr.start_filesystem(workspace_path)
 
             registry_process = app_mgr.start_registry(host)
             if registry_process is None or registry_process.poll() is not None:
@@ -1210,7 +1196,7 @@ def start(
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
                 if app_filesystem:
-                    table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                    table.add_row("Filesystem tools:", os.path.abspath(workspace_path))
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
 
@@ -1299,11 +1285,11 @@ def start(
 
         try:
             logger.info("🧹 Resetting config db and setting up manage demo_health (oak_health)...")
-            setup_demo_manage_config("demo_health", tools=resolved_tools)
+            setup_demo_manage_config("demo_health", tools=resolved_tools, filesystem=app_filesystem)
             logger.info("🧹 Checking for existing processes on required ports...")
             app_mgr = _make_app_manager()
             ports_to_clean = [settings.server_ports.registry, settings.server_ports.demo]
-            ports_to_clean.extend(app_mgr.ports_for_apps(False, app_filesystem, False, False, True))
+            ports_to_clean.extend(app_mgr.ports_for_apps(False, False, False, False, True))
             kill_processes_by_port(ports_to_clean)
 
             os.environ["CUGA_HOST"] = host
@@ -1316,7 +1302,6 @@ def start(
             if app_filesystem:
                 workspace_path = os.path.join(os.getcwd(), "cuga_workspace")
                 app_mgr.prepare_workspace(workspace_path)
-                app_mgr.start_filesystem(workspace_path)
             app_mgr.start_oak_health()
 
             registry_process = app_mgr.start_registry(host)
@@ -1336,7 +1321,9 @@ def start(
                 table.add_column("Service", style="bold white")
                 table.add_column("URL", style="cyan")
                 if app_filesystem:
-                    table.add_row("Filesystem MCP:", f"http://localhost:{app_mgr.fs_port}/sse")
+                    table.add_row(
+                        "Filesystem tools:", os.path.abspath(os.path.join(os.getcwd(), "cuga_workspace"))
+                    )
                 table.add_row("Oak Health API:", f"http://localhost:{app_mgr.oak_health_port}/openapi.json")
                 table.add_row("Registry:", f"http://localhost:{settings.server_ports.registry}")
                 table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
@@ -1368,6 +1355,7 @@ def start(
             enable_supervisor=(service == "demo_supervisor"),
             tools=resolved_tools,
             cuga_workspace=cuga_workspace,
+            filesystem=app_filesystem,
         )
         return
 
@@ -1577,7 +1565,7 @@ def manage_service(action: str, service: str):
     if action == "stop":
         if service in ("demo", "demo_skills", "manager", "travel_agent"):
             stopped_any = False
-            for service_name in ["oak-health", "docs-mcp", "filesystem-server", "registry", "demo"]:
+            for service_name in ["oak-health", "docs-mcp", "registry", "demo"]:
                 if service_name in direct_processes:
                     process = direct_processes[service_name]
                     if process and process.poll() is None:
@@ -1594,7 +1582,6 @@ def manage_service(action: str, service: str):
             for service_name in [
                 "email-sink",
                 "email-mcp",
-                "filesystem-server",
                 "crm-server",
                 "oak-health",
                 "registry",
@@ -1623,7 +1610,7 @@ def manage_service(action: str, service: str):
                 logger.info("demo_docs services are not running")
         elif service == "demo_health":
             stopped_any = False
-            for service_name in ["oak-health", "filesystem-server", "registry", "demo"]:
+            for service_name in ["oak-health", "registry", "demo"]:
                 if service_name in direct_processes:
                     process = direct_processes[service_name]
                     if process and process.poll() is None:
@@ -1635,7 +1622,7 @@ def manage_service(action: str, service: str):
                 logger.info("demo_health services are not running")
         elif service == "demo_knowledge":
             stopped_any = False
-            for service_name in ["filesystem-server", "registry", "demo"]:
+            for service_name in ["registry", "demo"]:
                 if service_name in direct_processes:
                     process = direct_processes[service_name]
                     if process and process.poll() is None:
@@ -1691,8 +1678,8 @@ def stop(
       - demo_skills: Same processes as demo
       - demo_crm: Stops all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Stops docs MCP, registry, and demo
-      - demo_health: Stops oak-health API, registry, and demo (and filesystem MCP if started with --filesystem)
-      - demo_knowledge: Stops registry and demo (and filesystem MCP if started with --filesystem)
+      - demo_health: Stops oak-health API, registry, and demo
+      - demo_knowledge: Stops registry and demo
       - demo_supervisor: Same as demo_crm
       - travel_agent: Stops Travel Agent demo services (registry, demo)
       - registry: Stops only the registry service (direct process)
@@ -1749,7 +1736,7 @@ def status(
       - demo_skills: Same as demo
       - demo_crm: Shows status of all CRM demo services (email sink, email MCP, CRM API, registry, demo)
       - demo_docs: Shows docs MCP, registry, and demo
-      - demo_health: Shows oak-health API, registry, and demo (and filesystem MCP if used)
+      - demo_health: Shows oak-health API, registry, and demo
       - demo_supervisor: Same as demo_crm
       - travel_agent: Shows status of Travel Agent demo services (registry, demo)
       - registry: Shows status of registry service only (direct process)
@@ -1791,7 +1778,7 @@ def status(
         return
 
     elif service == "demo_health":
-        for service_name in ["oak-health", "filesystem-server", "registry", "demo"]:
+        for service_name in ["oak-health", "registry", "demo"]:
             if service_name in direct_processes:
                 process = direct_processes[service_name]
                 if process.poll() is None:
@@ -1852,7 +1839,6 @@ def status(
             "crm-server",
             "oak-health",
             "docs-mcp",
-            "filesystem-server",
             "appworld-environment",
             "appworld-api",
         ]:

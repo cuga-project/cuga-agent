@@ -14,25 +14,43 @@ def get_managed_mcp_path() -> str:
     return os.path.join(DBS_DIR, MANAGED_MCP_FILENAME)
 
 
+# Filesystem is no longer an MCP server — it is provided by the
+# consolidated runtime filesystem tools (no subprocess, no SSE/stdio
+# registration). The bootstrap therefore registers no MCP servers.
 BOOTSTRAP_YAML = {
     "services": [],
-    "mcpServers": {
-        "filesystem": {
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", "./cuga_workspace"],
-            "transport": "stdio",
-            "description": "File system operations for workspace management",
-        }
-    },
+    "mcpServers": {},
 }
 
 
 def ensure_managed_mcp_file_exists(path: str | None = None) -> str:
-    """Create managed MCP YAML with bootstrap content if missing. Return path."""
+    """Create managed MCP YAML with bootstrap content if missing. Return path.
+
+    Also strips any legacy ``filesystem`` MCP entry from pre-existing YAMLs —
+    the filesystem tools are now runtime (see the ``filesystem`` package), so
+    a stale MCP registration would only re-introduce duplicate, conflicting
+    ``filesystem_*`` tools.
+    """
     p = path or get_managed_mcp_path()
     if not os.path.exists(p):
         with open(p, "w") as f:
             yaml.dump(BOOTSTRAP_YAML, f, default_flow_style=False, sort_keys=False)
+        return p
+
+    # Migration: drop a legacy filesystem MCP entry if present.
+    try:
+        with open(p) as f:
+            data = yaml.safe_load(f) or {}
+    except Exception:
+        return p
+    mcp_servers = data.get("mcpServers") if isinstance(data, dict) else None
+    if isinstance(mcp_servers, dict) and "filesystem" in mcp_servers:
+        mcp_servers.pop("filesystem", None)
+        try:
+            with open(p, "w") as f:
+                yaml.dump(data, f, default_flow_style=False, sort_keys=False)
+        except OSError:
+            pass
     return p
 
 
@@ -64,6 +82,8 @@ def tools_to_registry_yaml(tools: list[dict[str, Any]]) -> dict[str, Any]:
                 entry["transport"] = t.get("transport") or "stdio"
             if t.get("env"):
                 entry["env"] = t["env"]
+            if t.get("cwd"):
+                entry["cwd"] = t["cwd"]
             mcp_servers[name] = entry
     return {"services": services, "mcpServers": mcp_servers}
 
@@ -95,7 +115,7 @@ def _merge_existing_mcp_servers(new_data: dict[str, Any], path: str) -> None:
         if not entry.get("command") and name in existing_mcp:
             existing_entry = existing_mcp[name]
             if isinstance(existing_entry, dict):
-                for key in ("command", "args", "transport", "env", "description"):
+                for key in ("command", "args", "transport", "env", "cwd", "description"):
                     if key in existing_entry and key not in entry:
                         entry[key] = existing_entry[key]
     existing_svc = existing.get("services") or []
