@@ -155,5 +155,71 @@ class TestTokenUsageTrackerIntegration:
         # (This is verified by code inspection - both invoke() and stream()
         # set run_config["callbacks"] and run_config["configurable"]["callbacks"])
 
+    @pytest.mark.asyncio
+    async def test_invoke_does_not_mutate_caller_config(self):
+        """Reusing a config across invoke() calls must not accumulate callbacks.
 
-# Made with Bob
+        Regression for the case where the SDK aliased and mutated the caller's
+        config dict, causing TokenUsageTracker instances to pile up on each call.
+        """
+        from unittest.mock import patch, AsyncMock
+
+        agent = CugaAgent(tools=[simple_calculator])
+
+        # Stub out graph execution; we only care about what gets written to config.
+        with (
+            patch.object(
+                type(agent),
+                "graph",
+                new_callable=lambda: property(lambda self: AsyncMock(ainvoke=AsyncMock(return_value={}))),
+            ),
+        ):
+            caller_config: dict = {"configurable": {"thread_id": "t-1"}}
+            snapshot_before = {
+                "top_level_keys": set(caller_config.keys()),
+                "configurable_keys": set(caller_config["configurable"].keys()),
+            }
+
+            await agent.invoke("first", thread_id="t-1", config=caller_config)
+            await agent.invoke("second", thread_id="t-1", config=caller_config)
+            await agent.invoke("third", thread_id="t-1", config=caller_config)
+
+            # The caller's dict must not have been mutated with SDK internals.
+            assert set(caller_config.keys()) == snapshot_before["top_level_keys"], (
+                "invoke() must not add keys to caller's config dict"
+            )
+            assert set(caller_config["configurable"].keys()) == snapshot_before["configurable_keys"], (
+                "invoke() must not add keys to caller's configurable dict"
+            )
+
+    @pytest.mark.asyncio
+    async def test_direct_graph_access_is_instrumented(self):
+        """`agent.graph` is documented for advanced use. Its base callbacks should
+        include TokenUsageTracker so direct `agent.graph.ainvoke(...)` calls also
+        produce trajectory data.
+        """
+        from cuga.backend.cuga_graph.nodes.cuga_lite import cuga_lite_graph as glg
+
+        captured: dict = {}
+        original = glg.create_cuga_lite_graph
+
+        def spy(*args, **kwargs):
+            captured["callbacks"] = kwargs.get("callbacks")
+            return original(*args, **kwargs)
+
+        agent = CugaAgent(tools=[simple_calculator])
+
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(glg, "create_cuga_lite_graph", spy)
+            # Also patch the symbol that sdk.py imported at module load time.
+            from cuga import sdk as sdk_module
+
+            mp.setattr(sdk_module, "create_cuga_lite_graph", spy)
+            # Trigger graph construction
+            _ = agent.graph
+
+        base_callbacks = captured.get("callbacks") or []
+        assert any(isinstance(cb, TokenUsageTracker) for cb in base_callbacks), (
+            "Graph-level base callbacks must include TokenUsageTracker so direct "
+            "`agent.graph.ainvoke()` is instrumented"
+        )
