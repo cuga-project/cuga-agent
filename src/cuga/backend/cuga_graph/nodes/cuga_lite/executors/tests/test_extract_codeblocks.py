@@ -1,4 +1,4 @@
-from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import extract_and_combine_codeblocks
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.code_extraction import extract_and_combine_codeblocks
 
 
 class TestExtractAndCombineCodeblocks:

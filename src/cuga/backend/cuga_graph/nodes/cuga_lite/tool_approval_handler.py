@@ -4,7 +4,7 @@ Tool Approval Handler for CugaLite subgraph.
 Handles the detection, interruption, and resumption of tool approval flows.
 """
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import Any, List, Optional
 from loguru import logger
 
 from langchain_core.messages import AIMessage
@@ -12,61 +12,43 @@ from langchain_core.messages import AIMessage
 from langgraph.types import Command
 from langgraph.graph import END
 
-
-if TYPE_CHECKING:
-    from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import CugaLiteState
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import (
+    CoreGraphAdapter,
+    append_chat_messages_with_step_limit as _core_append_with_step_limit,
+    create_error_command as _core_create_error_command,
+)
 
 
 class ToolApprovalHandler:
     """Handles tool approval detection, interruption, and resumption logic."""
 
     @staticmethod
-    def should_skip_policy_check(state: "CugaLiteState") -> bool:
+    def should_skip_policy_check(adapter: CoreGraphAdapter, state: Any) -> bool:
         """
         Check if policy checking should be skipped.
 
         Returns True if we're returning from approval (user_approved=True),
         which preserves the approval state and prevents re-matching the same policy.
-
-        Args:
-            state: Current CugaLiteState
-
-        Returns:
-            True if policy check should be skipped, False otherwise
         """
-        return bool(state.cuga_lite_metadata and state.cuga_lite_metadata.get("user_approved"))
+        md = adapter.get_metadata(state)
+        return bool(md and md.get("user_approved"))
 
     @staticmethod
-    def is_returning_from_approval(state: "CugaLiteState") -> bool:
-        """
-        Check if we're returning from tool approval.
-
-        Args:
-            state: Current CugaLiteState
-
-        Returns:
-            True if returning from approval, False otherwise
-        """
-        return bool(state.cuga_lite_metadata and state.cuga_lite_metadata.get("user_approved") is True)
+    def is_returning_from_approval(adapter: CoreGraphAdapter, state: Any) -> bool:
+        """Check if we're returning from tool approval."""
+        md = adapter.get_metadata(state)
+        return bool(md and md.get("user_approved") is True)
 
     @staticmethod
-    def extract_approved_code(state: "CugaLiteState") -> Optional[str]:
-        """
-        Extract the approved code from the last AI message.
-
-        Args:
-            state: Current CugaLiteState with chat_messages
-
-        Returns:
-            Extracted code string, or None if not found
-        """
-        from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
+    def extract_approved_code(adapter: CoreGraphAdapter, state: Any) -> Optional[str]:
+        """Extract the approved code from the last AI message."""
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.code_extraction import (
             extract_and_combine_codeblocks,
         )
 
         # Find the last AI message
         last_ai_message = None
-        for msg in reversed(state.chat_messages):
+        for msg in reversed(adapter.get_messages(state)):
             if msg.type == "ai":
                 last_ai_message = msg
                 break
@@ -107,70 +89,44 @@ class ToolApprovalHandler:
         return {k: v for k, v in metadata.items() if k not in fields_to_remove}
 
     @staticmethod
-    def handle_approval_resumption(state: "CugaLiteState") -> Optional[Command]:
-        """
-        Handle resumption after user approval.
-
-        Extracts the approved code and routes to sandbox for execution.
-
-        Args:
-            state: Current CugaLiteState
-
-        Returns:
-            Command to route to sandbox, or error Command if code extraction fails
-        """
-        from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
-            create_error_command,
-        )
-
+    def handle_approval_resumption(adapter: CoreGraphAdapter, state: Any) -> Optional[Command]:
+        """Handle resumption after user approval: run the approved code."""
         logger.info("Returning from tool approval - skipping code generation, executing approved code")
 
         # Extract code from last AI message
-        code = ToolApprovalHandler.extract_approved_code(state)
+        code = ToolApprovalHandler.extract_approved_code(adapter, state)
 
         if not code:
             logger.error("Could not extract code from last AI message after approval")
-            return create_error_command(
-                state.chat_messages,
+            return _core_create_error_command(
+                adapter,
+                adapter.get_messages(state),
                 AIMessage(content="Failed to retrieve approved code for execution"),
                 state.step_count,
             )
 
         # Clean approval metadata
-        cleaned_metadata = ToolApprovalHandler.clean_approval_metadata(state.cuga_lite_metadata)
+        cleaned_metadata = ToolApprovalHandler.clean_approval_metadata(adapter.get_metadata(state))
 
-        # Route to sandbox with approved code
+        # Route to the graph's execute node with approved code
         return Command(
-            goto="sandbox",
+            goto=adapter.execute_node_name,
             update={
                 "script": code,
-                "cuga_lite_metadata": cleaned_metadata,
+                adapter.metadata_key: cleaned_metadata,
                 "step_count": state.step_count + 1,
             },
         )
 
     @staticmethod
     async def check_and_create_approval_interrupt(
-        state: "CugaLiteState",
+        adapter: CoreGraphAdapter,
+        state: Any,
         code: str,
         content: str,
         config: dict = None,
     ) -> Optional[Command]:
-        """
-        Check if code requires approval and create interrupt if needed.
-
-        This method checks ToolApproval policies directly against the generated code,
-        independent of the initial policy matching phase.
-
-        Args:
-            state: Current CugaLiteState
-            code: Generated code to check
-            content: Full AI response content
-            config: Optional config containing policy system
-
-        Returns:
-            Command to interrupt for approval, or None if no approval needed
-        """
+        """Check if code requires approval and create an interrupt if needed."""
         from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 
         try:
@@ -200,7 +156,7 @@ class ToolApprovalHandler:
 
             # Store policy metadata for the approval flow
             approval_metadata = {
-                **state.cuga_lite_metadata,
+                **adapter.get_metadata(state),
                 "policy_type": "tool_approval",
                 "policy_id": policy.id,
                 "policy_name": policy.name,
@@ -212,10 +168,12 @@ class ToolApprovalHandler:
             }
 
             # Update state metadata temporarily for the interrupt creation
-            state.cuga_lite_metadata = approval_metadata
+            adapter.set_metadata(state, approval_metadata)
 
             # Create the approval interrupt
-            return ToolApprovalHandler._create_approval_interrupt(state, code, content, preview_lines)
+            return ToolApprovalHandler._create_approval_interrupt(
+                adapter, state, code, content, preview_lines
+            )
 
         except Exception as e:
             logger.error(f"Error checking tool approval policies: {e}", exc_info=True)
@@ -223,44 +181,30 @@ class ToolApprovalHandler:
 
     @staticmethod
     def _create_approval_interrupt(
-        state: "CugaLiteState",
+        adapter: CoreGraphAdapter,
+        state: Any,
         code: str,
         content: str,
         preview_lines: List[str],
     ) -> Command:
-        """
-        Create an interrupt Command for tool approval.
-
-        Args:
-            state: Current CugaLiteState
-            code: Generated code
-            content: Full AI response content
-            preview_lines: Code preview lines to show user
-
-        Returns:
-            Command to exit subgraph and route to HITL
-        """
-        from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
-            append_chat_messages_with_step_limit,
-            create_error_command,
-        )
+        """Create an interrupt Command for tool approval."""
         from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import create_tool_approval_action
+
+        md = adapter.get_metadata(state)
 
         # Create approval request metadata
         approval_metadata = {
-            **state.cuga_lite_metadata,
+            **md,
             "approval_required": True,
             "code_preview": preview_lines,
-            "full_code": code if state.cuga_lite_metadata.get("show_code_preview") else None,
+            "full_code": code if md.get("show_code_preview") else None,
         }
 
         # Extract policy details
-        policy_name = state.cuga_lite_metadata.get("policy_name", "Tool Approval")
-        approval_msg = state.cuga_lite_metadata.get(
-            "approval_message", "This tool requires your approval before execution."
-        )
-        tools_list = state.cuga_lite_metadata.get("required_tools", [])
-        apps_list = state.cuga_lite_metadata.get("required_apps", [])
+        policy_name = md.get("policy_name", "Tool Approval")
+        approval_msg = md.get("approval_message", "This tool requires your approval before execution.")
+        tools_list = md.get("required_tools", [])
+        apps_list = md.get("required_apps", [])
 
         # Create HITL action for tool approval
         hitl_action = create_tool_approval_action(
@@ -281,22 +225,22 @@ class ToolApprovalHandler:
         )
 
         # Update messages
-        updated_messages, error_message = append_chat_messages_with_step_limit(
-            state, [AIMessage(content=content)]
+        updated_messages, error_message = _core_append_with_step_limit(
+            adapter, state, [AIMessage(content=content)]
         )
         if error_message:
-            return create_error_command(updated_messages, error_message, state.step_count)
+            return _core_create_error_command(adapter, updated_messages, error_message, state.step_count)
 
         # Return command to exit subgraph and route to parent's SuggestHumanActions -> WaitForResponse
         return Command(
-            goto=END,  # Exit subgraph to parent CugaLiteNode.callback_node
+            goto=END,  # Exit subgraph to parent callback node
             update={
-                "chat_messages": updated_messages,
+                adapter.messages_key: updated_messages,
                 "script": code,
                 "final_answer": final_answer_text,
-                "cuga_lite_metadata": approval_metadata,
+                adapter.metadata_key: approval_metadata,
                 "hitl_action": hitl_action,  # Set HITL action for parent to detect
-                "sender": "CugaLite",  # Mark sender for return routing
+                "sender": adapter.sender_name,  # Mark sender for return routing
                 "step_count": state.step_count + 1,
             },
         )
@@ -349,17 +293,9 @@ class ToolApprovalHandler:
         return "\n".join(content_lines)
 
     @staticmethod
-    def handle_denial(state: "CugaLiteState") -> Optional[Command]:
-        """
-        Handle user denial of tool approval.
-
-        Args:
-            state: Current CugaLiteState
-
-        Returns:
-            Command to end execution, or None if not denied
-        """
-        if state.cuga_lite_metadata.get("user_approved") is False:
+    def handle_denial(adapter: CoreGraphAdapter, state: Any) -> Optional[Command]:
+        """Handle user denial of tool approval."""
+        if adapter.get_metadata(state).get("user_approved") is False:
             logger.warning("User denied tool approval - skipping execution")
             return Command(
                 goto=END,

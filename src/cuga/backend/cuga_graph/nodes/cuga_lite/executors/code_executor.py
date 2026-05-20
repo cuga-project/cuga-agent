@@ -13,6 +13,7 @@ from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
 from .native import NativeSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution_policy import ExecutionPlan
 
 
 def _skills_enabled() -> bool:
@@ -107,6 +108,8 @@ class CodeExecutor:
         thread_id: Optional[str] = None,
         apps_list: Optional[List[str]] = None,
         mode: Optional[Literal['local', 'e2b', 'opensandbox']] = None,
+        plan: Optional[ExecutionPlan] = None,
+        variable_manager: Optional[Any] = None,
     ) -> tuple[str, dict[str, Any]]:
         """Execute code with async tools available in the local namespace.
 
@@ -116,7 +119,12 @@ class CodeExecutor:
             state: AgentState instance with variables_manager
             thread_id: Thread ID for sandbox caching (optional)
             apps_list: List of app names for parsing tool names correctly (optional)
-            mode: Execution mode ('local', 'e2b', or 'opensandbox'). If None, uses settings.
+            mode: Execution mode ('local', 'e2b', or 'opensandbox'). If None, uses
+                ``plan.python_backend`` when a plan is given, else settings.
+            plan: Resolved ExecutionPlan; its ``python_backend`` selects the
+                Python execution path unless ``mode`` is given explicitly.
+            variable_manager: Variable manager to record new variables into.
+                Defaults to ``state.variables_manager`` (preserves prior behavior).
 
         Returns:
             Tuple of (execution result, new variables dictionary)
@@ -125,7 +133,10 @@ class CodeExecutor:
         result = ""
 
         if mode is None:
-            mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
+            if plan is not None:
+                mode = 'e2b' if plan.python_backend == 'e2b' else 'local'
+            else:
+                mode = 'e2b' if settings.advanced_features.e2b_sandbox else 'local'
 
         # Force local execution for short find_tools or load_skill calls
         code_lines = [line.strip() for line in code.split('\n') if line.strip()]
@@ -216,7 +227,7 @@ class CodeExecutor:
         # Add variables summary to the formatted output
         result = VariableUtils.add_variables_to_manager(
             new_vars,
-            state.variables_manager,
+            variable_manager if variable_manager is not None else state.variables_manager,
             result,
             skip_summary_keys={'todos'},
         )

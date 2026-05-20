@@ -130,6 +130,10 @@ class InvokeResult(BaseModel):
     )
     thread_id: str = Field(default="", description="Thread ID used for this invocation")
     error: Optional[str] = Field(default=None, description="Error message if execution failed")
+    variables: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Variables computed by the sub-agent, bridged to the Supervisor's namespace",
+    )
 
     def __str__(self) -> str:
         """Return the answer when converting to string for backward compatibility."""
@@ -1803,11 +1807,16 @@ class CugaAgent:
             # Get tool calls from result (only if tracking was enabled)
             tool_calls = result.get("tool_calls", []) if track_tool_calls else []
 
+            from cuga.backend.cuga_graph.nodes.cuga_agent_core.variable_bridge import VariableBridge
+
+            _hitl_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
+
             return InvokeResult(
                 answer=final_answer,
                 tool_calls=tool_calls,
                 thread_id=thread_id,
                 error=error_msg,
+                variables=_hitl_variables,
             )
 
         # Normal invocation case
@@ -1937,6 +1946,12 @@ class CugaAgent:
 
         # Get tool calls from result (only if tracking was enabled)
         tool_calls = result.get("tool_calls", []) if track_tool_calls else []
+
+        # Extract sub-agent variables for VariableBridge (Phase 8).
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.variable_bridge import VariableBridge
+
+        _result_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
+
         if settings.advanced_features.benchmark == "appworld":
             llm_model = llm_manager.get_model(settings.agent.final_answer.model)
             appworld_plain = getattr(settings.advanced_features, "appworld_final_answer_plain", False)
@@ -1974,6 +1989,7 @@ class CugaAgent:
             tool_calls=tool_calls,
             thread_id=thread_id,
             error=error_msg,
+            variables=_result_variables,
         )
 
     async def stream(

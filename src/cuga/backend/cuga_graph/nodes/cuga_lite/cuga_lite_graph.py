@@ -52,10 +52,7 @@ This class needs architectural changes to support multi-user, multi-model, and m
 """
 
 import os
-import re
 import json
-import asyncio
-import inspect
 from pathlib import Path
 from typing import Any, Optional, Sequence, Dict, List, Tuple, Set
 from loguru import logger
@@ -68,13 +65,12 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.messages import BaseMessage, AIMessage, HumanMessage
 
-from langgraph.graph import END, START, StateGraph
+from langgraph.graph import StateGraph
 from langgraph.types import Command
 
 from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 from cuga.backend.llm.models import LLMManager
-from cuga.backend.llm.errors import extract_code_from_tool_use_failed
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
     create_mcp_prompt,
@@ -87,21 +83,37 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
     CodeExecutor,
     is_find_tools_listing_markdown,
 )
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.code_extraction import (
+    make_tool_awaitable,
+)
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.runtime_tools import (
+    build_runtime_tools,
+    resolve_runtime_backends,
+)
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import (
+    CoreGraphAdapter,
+    append_chat_messages_with_step_limit as _core_append_with_step_limit,
+    create_error_command as _core_create_error_command,
+    execution_output_text,
+)
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.shared_nodes import (
+    create_call_model_node as _create_shared_call_model_node,
+)
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.shared_graph import build_agent_graph
+from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import AgentGraphAdapter
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution_policy import (
+    ExecutionRouter,
+    split_execution_note,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
-    AppDefinition,
     ToolProviderInterface,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
     resolved_runtime_model_name,
     resolve_bind_tools_fields,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
-    classify_nl_auto_continue,
-    normalize_assistant_text,
-)
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
-from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 from cuga.backend.llm.utils.helpers import load_one_prompt
@@ -126,8 +138,6 @@ except ImportError:
 
 tracker = ActivityTracker()
 llm_manager = LLMManager()
-
-BACKTICK_PATTERN = r'```python(.*?)```'
 
 
 def _tool_call_kwarg_literal(value: Any) -> str:
@@ -551,53 +561,6 @@ def _decorate_knowledge_tool(tool: Any, allowed_scopes: tuple[str, ...], thread_
     tool.description = f"{base_description}\n\n{hint}".strip()
 
 
-def make_tool_awaitable(func):
-    """Wrap a sync function to make it awaitable (since agent always uses await).
-
-    Also automatically converts Pydantic model return values to dicts using .model_dump().
-
-    If the function is already async, wrap it to handle Pydantic models.
-    If it's sync, wrap it to be awaitable using asyncio.run_in_executor and handle Pydantic models.
-
-    Args:
-        func: The tool function (sync or async)
-
-    Returns:
-        An awaitable function (coroutine function) that returns dicts for Pydantic models
-    """
-    from pydantic import BaseModel
-
-    async def wrapper_with_pydantic(*args, **kwargs):
-        """Inner wrapper that handles Pydantic model conversion."""
-        result = await func(*args, **kwargs) if inspect.iscoroutinefunction(func) else func(*args, **kwargs)
-
-        # Convert Pydantic models to dicts
-        if isinstance(result, BaseModel):
-            return result.model_dump()
-
-        return result
-
-    if inspect.iscoroutinefunction(func):
-        # Function is already async, just add Pydantic handling
-        return wrapper_with_pydantic
-
-    # Function is sync, make it awaitable and add Pydantic handling
-    async def async_wrapper(*args, **kwargs):
-        # For sync functions, run in executor to make them awaitable
-        loop = asyncio.get_event_loop()
-        result = await loop.run_in_executor(None, lambda: func(*args, **kwargs))
-
-        # Convert Pydantic models to dicts
-        from pydantic import BaseModel
-
-        if isinstance(result, BaseModel):
-            return result.model_dump()
-
-        return result
-
-    return async_wrapper
-
-
 class CugaLiteState(BaseModel):
     """State for CugaLite subgraph.
 
@@ -716,23 +679,20 @@ def _reflection_current_task(state: CugaLiteState) -> str:
     return ""
 
 
-def extract_and_combine_codeblocks(text: str) -> str:
-    """Extract all python codeblocks from text and combine them."""
-    code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
+class _CugaLiteLoopAdapter(CoreGraphAdapter):
+    """Lite seam: messages live on ``chat_messages``; step limit from
+    ``configurable`` override else ``settings.advanced_features``."""
 
-    if code_blocks:
-        return "\n\n".join(block.strip() for block in code_blocks)
+    messages_key = "chat_messages"
 
-    stripped_text = text.strip()
+    def get_messages(self, state: CugaLiteState) -> List[BaseMessage]:
+        return state.chat_messages
 
-    if "print(" not in stripped_text:
-        return ""
+    def resolve_max_steps(self, state: CugaLiteState, override: Optional[int]) -> int:
+        return override if override is not None else settings.advanced_features.cuga_lite_max_steps
 
-    try:
-        compile(stripped_text.replace('await ', ''), '<string>', 'exec')
-        return stripped_text
-    except SyntaxError:
-        return ""
+
+_LITE_LOOP_ADAPTER = _CugaLiteLoopAdapter()
 
 
 def append_chat_messages_with_step_limit(
@@ -740,33 +700,8 @@ def append_chat_messages_with_step_limit(
     new_messages: List[BaseMessage],
     max_steps: Optional[int] = None,
 ) -> Tuple[List[BaseMessage], Optional[AIMessage]]:
-    """Append new messages to chat_messages with step counting and limit checking.
-
-    Args:
-        state: Current CugaLiteState
-        new_messages: List of new messages to append
-        max_steps: Override from configurable; when None, use settings
-
-    Returns:
-        Tuple of (updated_chat_messages, error_message)
-        - updated_chat_messages: Updated list of chat messages
-        - error_message: AIMessage with error if limit reached, None otherwise
-    """
-    limit = max_steps if max_steps is not None else settings.advanced_features.cuga_lite_max_steps
-    new_step_count = state.step_count + 1
-
-    if new_step_count > limit:
-        error_msg = (
-            f"Maximum step limit ({limit}) reached. "
-            f"The task has exceeded the allowed number of execution cycles. "
-            f"Please simplify your request or break it into smaller tasks."
-        )
-        logger.warning(f"Step limit reached: {new_step_count} > {limit}")
-        error_ai_message = AIMessage(content=error_msg)
-        return state.chat_messages + new_messages + [error_ai_message], error_ai_message
-
-    logger.debug(f"Step count: {new_step_count}/{limit}")
-    return state.chat_messages + new_messages, None
+    """Append messages to ``chat_messages`` with step counting + limit check."""
+    return _core_append_with_step_limit(_LITE_LOOP_ADAPTER, state, new_messages, max_steps)
 
 
 def create_error_command(
@@ -775,29 +710,10 @@ def create_error_command(
     step_count: int,
     additional_updates: Optional[Dict[str, Any]] = None,
 ) -> Command:
-    """Create a Command to END with error information.
-
-    Args:
-        updated_messages: Updated chat messages
-        error_message: Error message to return
-        step_count: Current step count
-        additional_updates: Optional additional state updates
-
-    Returns:
-        Command routing to END with error state
-    """
-    updates = {
-        "chat_messages": updated_messages,
-        "script": None,
-        "final_answer": error_message.content,
-        "execution_complete": True,
-        "error": error_message.content,
-        "step_count": step_count + 1,
-    }
-    if additional_updates:
-        updates.update(additional_updates)
-
-    return Command(goto=END, update=updates)
+    """Create a Command to END with error information."""
+    return _core_create_error_command(
+        _LITE_LOOP_ADAPTER, updated_messages, error_message, step_count, additional_updates
+    )
 
 
 class Todo(BaseModel):
@@ -1170,7 +1086,9 @@ def create_cuga_lite_graph(
             )
 
             # Skip policy checking if policies are disabled or if we're returning from approval
-            if settings.policy.enabled and not ToolApprovalHandler.should_skip_policy_check(state):
+            if settings.policy.enabled and not ToolApprovalHandler.should_skip_policy_check(
+                _LITE_LOOP_ADAPTER, state
+            ):
                 # Check for policies and enact if matched
                 # Include IntentGuard, Playbook, and ToolGuide for intent checks
                 from cuga.backend.cuga_graph.policy.models import PolicyType
@@ -1179,6 +1097,7 @@ def create_cuga_lite_graph(
                     state,
                     config,
                     policy_types=[PolicyType.INTENT_GUARD, PolicyType.PLAYBOOK, PolicyType.TOOL_GUIDE],
+                    adapter=_LITE_LOOP_ADAPTER,
                 )
 
                 # If policy returned a command (e.g., BLOCK_INTENT), execute it immediately
@@ -1187,7 +1106,7 @@ def create_cuga_lite_graph(
 
                 # If policy returned metadata (e.g., playbook guidance), store it
                 if metadata:
-                    state.cuga_lite_metadata = metadata
+                    _LITE_LOOP_ADAPTER.set_metadata(state, metadata)
             elif not settings.policy.enabled:
                 logger.debug("Policy system disabled - skipping policy checks")
             else:
@@ -1423,90 +1342,31 @@ def create_cuga_lite_graph(
                 else:
                     logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
 
-            # Inject the consolidated filesystem tools + run_command when shell
-            # tools are enabled. Filesystem tools come from the single runtime
-            # class (no MCP); the storage backend is selected by sandbox_mode:
-            # Filesystem tools are gated independently from run_command.
-            # enable_filesystem_tools → the 8 consolidated read/write/list/… tools.
-            # enable_shell_tool      → run_command (sandbox shell execution).
-            _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
-            _shell_tool_on = getattr(settings.advanced_features, "enable_shell_tool", False)
-            _fs_tool_on = (
-                configurable["enable_filesystem_tools"]
-                if "enable_filesystem_tools" in configurable
-                else getattr(settings.advanced_features, "enable_filesystem_tools", False)
-            )
-            _opensandbox_on = getattr(settings.advanced_features, "opensandbox_sandbox", False)
-            _use_sandbox = _shell_tool_on and (
-                (_sandbox_mode == "native")
-                or (_sandbox_mode == "opensandbox" and _opensandbox_on)
-                or (_sandbox_mode == "local")
-            )
+            # Inject the consolidated filesystem tools + run_command via the
+            # shared runtime_tools orchestrator. Backend selection and gating
+            # live in cuga_agent_core (behavior-identical to the previous
+            # inline block); filesystem and run_command remain independently
+            # gated by enable_filesystem_tools / enable_shell_tool.
+            _runtime_backends = resolve_runtime_backends(settings, configurable)
 
-            if _fs_tool_on or _use_sandbox:
+            if _runtime_backends.filesystem != "none" or _runtime_backends.shell != "none":
                 cfg = config.get("configurable", {}) if config else {}
                 runtime_thread_id = cfg["thread_id"] if "thread_id" in cfg else (state.thread_id or thread_id)
             else:
                 runtime_thread_id = None
 
-            # ── Filesystem tools (independent of run_command) ──────────────────
-            if _fs_tool_on:
-                from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
-                    RemoteSandboxBackend,
-                    create_filesystem_tools,
-                )
-
-                fs_backend = None
-                if _use_sandbox and _sandbox_mode == "opensandbox":
-                    from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
-
-                    fs_backend = RemoteSandboxBackend(
-                        CodeExecutor._get_opensandbox_executor(), runtime_thread_id
-                    )
-
-                fs_tools = create_filesystem_tools(runtime_thread_id, backend=fs_backend)
-                for ft in fs_tools:
-                    fn = ft.coroutine or ft.func
-                    if fn:
-                        tools_context_dict[ft.name] = fn
-                tools_for_prompt.extend(fs_tools)
-                if apps_for_prompt is not None:
-                    apps_for_prompt = list(apps_for_prompt) + [
-                        AppDefinition(
-                            name="filesystem",
-                            type="runtime",
-                            description="Workspace filesystem tools: read, write, edit, list, search, move files and directories.",
-                        )
-                    ]
-                logger.info(
-                    f"Injected filesystem tools (thread_id={runtime_thread_id!r}): {[t.name for t in fs_tools]}"
-                )
-
-            # ── run_command (sandbox shell execution) ──────────────────────────
-            if _use_sandbox:
-                from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
-
-                if _sandbox_mode == "native":
-                    sandbox_executor = CodeExecutor._get_native_executor()
-                    sandbox_label = "NativeSandbox"
-                elif _sandbox_mode == "local":
-                    sandbox_executor = CodeExecutor._get_local_sandbox_executor()
-                    sandbox_label = "LocalSandbox"
-                else:
-                    sandbox_executor = CodeExecutor._get_opensandbox_executor()
-                    sandbox_label = "OpenSandbox"
-
-                run_cmd_tools = sandbox_executor.create_sandbox_tools(thread_id=runtime_thread_id)
-                for st in run_cmd_tools:
-                    fn = st.coroutine or st.func
-                    if fn:
-                        tools_context_dict[st.name] = fn
-                tools_for_prompt.extend(run_cmd_tools)
-                logger.info(f"[{sandbox_label}] Injected run_command (thread_id={runtime_thread_id!r})")
+            _runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=_runtime_backends)
+            tools_context_dict.update(_runtime_bundle.execution_callables)
+            tools_for_prompt.extend(_runtime_bundle.prompt_tools)
+            if _runtime_bundle.app_definitions and apps_for_prompt is not None:
+                apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions
 
             from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
             special_instructions_final = effective_special or ""
+            _split_note = split_execution_note(ExecutionRouter.resolve(settings))
+            if _split_note:
+                special_instructions_final = (special_instructions_final + "\n\n" + _split_note).strip()
             evolve_extension = await build_evolve_special_instructions_extension(
                 state=state,
                 configurable=configurable,
@@ -1773,407 +1633,6 @@ def create_cuga_lite_graph(
 
         return prepare_tools_and_apps
 
-    # Factory function to create call_model node with access to model
-    def create_call_model_node(
-        base_model,
-        base_callbacks,
-        task_todos_ref: List[Dict[str, str]],
-        model_settings=None,
-        tools_context_ref=None,
-        base_tool_provider=None,
-    ):
-        """Factory to create call_model node. Model is taken from config['configurable']['llm']
-        when set (injected at invocation), otherwise uses base_model from graph build.
-        """
-
-        async def call_model(state: CugaLiteState, config: Optional[RunnableConfig] = None) -> Command:
-            """Call the LLM to generate code or text response."""
-            configurable = config.get("configurable", {}) if config else {}
-            max_steps = (
-                configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
-            )
-
-            logger.debug(
-                f"[APPROVAL DEBUG] call_model received cuga_lite_metadata: {state.cuga_lite_metadata}"
-            )
-
-            # Check if we're returning from tool approval - if so, skip code generation and go to sandbox
-            # Only check if policies are enabled
-            if settings.policy.enabled and ToolApprovalHandler.is_returning_from_approval(state):
-                return ToolApprovalHandler.handle_approval_resumption(state)
-
-            # Get prompt from state (tools are available via sandbox context, not needed here)
-            dynamic_prompt = state.prepared_prompt or ""
-
-            _cfg = config.get("configurable", {}) if config else {}
-            _enable_todos = (
-                _cfg.get("enable_todos")
-                if "enable_todos" in _cfg
-                else settings.advanced_features.enable_todos
-            )
-
-            system_content = dynamic_prompt
-            if _enable_todos:
-                if task_todos_ref:
-                    system_content = dynamic_prompt + format_task_todos_system_block(task_todos_ref)
-                elif state.task_todos:
-                    system_content = dynamic_prompt + format_current_plan_section(state.task_todos)
-
-            # Convert BaseMessage objects to dict format for model invocation
-            messages_for_model = [{"role": "system", "content": system_content}]
-            few_shot_messages = state.mcp_few_shot_messages or []
-            for example in few_shot_messages:
-                role = (example.get("role") or "").strip().lower()
-                content = example.get("content") or ""
-                if role in {"user", "assistant"} and content:
-                    messages_for_model.append({"role": role, "content": content})
-            if few_shot_messages:
-                logger.info(
-                    "Injected {} MCP few-shot turn(s) as chat messages before live conversation",
-                    len(few_shot_messages),
-                )
-
-            # Check if we have variables and this is a new question (not a follow-up with existing AI responses)
-            # If this is a new question (1 user msg, 0 AI msgs) or follow-up, add variables to the last user message
-            var_manager = state.variables_manager
-            for _vn in list(var_manager.get_variable_names()):
-                if is_find_tools_listing_markdown(var_manager.get_variable(_vn)):
-                    var_manager.remove_variable(_vn)
-            existing_variable_names = var_manager.get_variable_names()
-            variables_summary_text = None
-
-            if existing_variable_names and state.sub_task_app:
-                variables_summary_text = var_manager.get_variables_summary(
-                    variable_names=existing_variable_names
-                )
-                variables_addendum = f"\n\n## Available Variables\n\n{variables_summary_text}\n\nYou can use these variables directly by their names."
-                logger.info(
-                    f"Will add variables summary for {len(existing_variable_names)} variables to user message"
-                )
-
-            logger.info(f"Processing {len(state.chat_messages)} chat messages for model invocation")
-
-            # Track if we've added personal information (pi)
-            pi_added = False
-
-            # Get playbook guidance if available (only on first detection)
-            # TODO: In the future, we could refine the playbook guidance on each message
-            # based on conversation progress and completed steps
-            playbook_guidance = None
-            playbook_already_added = False
-
-            # Check if playbook guidance was already added in previous messages
-            if state.cuga_lite_metadata and state.cuga_lite_metadata.get('playbook_guidance_added'):
-                playbook_already_added = True
-
-            if (
-                state.cuga_lite_metadata
-                and state.cuga_lite_metadata.get('policy_matched')
-                and not playbook_already_added
-            ):
-                if state.cuga_lite_metadata.get('policy_type') == 'playbook':
-                    playbook_guidance = state.cuga_lite_metadata.get('playbook_guidance')
-                    if playbook_guidance:
-                        logger.info(
-                            "Will inject playbook guidance into current user message (first time only)"
-                        )
-
-            # Get configurable values from config
-            configurable = config.get("configurable", {}) if config else {}
-            current_callbacks = configurable.get("callbacks", base_callbacks or [])
-            active_model = configurable.get("llm") or base_model
-            _runtime_model_name = resolved_runtime_model_name(
-                configurable_llm=configurable.get("llm"),
-                graph_default_model=base_model,
-            )
-
-            # ── Context management BEFORE building messages_for_model ────────────
-            effective_chat_messages = await apply_context_summarization(
-                state.chat_messages or [],
-                active_model,
-                system_prompt=dynamic_prompt,
-                tools=None,
-                tracker=tracker,
-                variables_storage=state.variables_storage,
-                variable_counter_state=state.variable_counter_state,
-                variable_creation_order=state.variable_creation_order,
-            )
-            # effective_chat_messages may contain summarized messages if context limit exceeded
-            # ─────────────────────────────────────────────────────────────────────
-
-            # Build messages_for_model from effective_chat_messages (post-summarization)
-            # Also build modified_chat_messages with playbook/pi/variables injected
-            modified_chat_messages = []
-            for i, msg in enumerate(effective_chat_messages):
-                msg_type = type(msg).__name__
-                msg_role = getattr(msg, 'type', None)
-
-                if isinstance(msg, HumanMessage):
-                    content = msg.content
-                    content_modified = False
-
-                    # Add personal information (pi) to the FIRST user message only
-                    if (
-                        state.pi
-                        and not pi_added
-                        and "## User Context" not in content
-                        and len(effective_chat_messages) == 1
-                    ):
-                        content = f"{content}\n\n## User Context\n{state.pi}"
-                        pi_added = True
-                        content_modified = True
-                        logger.debug("Added personal information (pi) to first user message")
-
-                    # Add playbook guidance to the LAST user message only
-                    if playbook_guidance and i == len(effective_chat_messages) - 1:
-                        content = f"{content}\n\n## Task Guidance\n{playbook_guidance}"
-                        content_modified = True
-                        logger.debug("Added playbook guidance to last user message")
-
-                    # Add variables summary to the LAST user message only
-                    if variables_summary_text and i == len(effective_chat_messages) - 1:
-                        content = content + variables_addendum
-                        content_modified = True
-                        logger.debug("Added variables summary to last user message")
-
-                    # Build new message if modified, otherwise keep original
-                    if content_modified:
-                        modified_chat_messages.append(HumanMessage(content=content))
-                        logger.debug(f"Created modified message at index {i} with playbook/pi/variables")
-                    else:
-                        modified_chat_messages.append(msg)
-
-                    messages_for_model.append({"role": "user", "content": content})
-                elif isinstance(msg, AIMessage):
-                    modified_chat_messages.append(msg)
-                    messages_for_model.append({"role": "assistant", "content": msg.content})
-                else:
-                    # Handle generic BaseMessage by checking the 'type' attribute
-                    if msg_role == 'human' or msg_role == 'user':
-                        content = msg.content
-                        content_modified = False
-
-                        # Add personal information (pi) to the FIRST user message only
-                        if state.pi and not pi_added:
-                            content = f"{content}\n\n## User Context\n{state.pi}"
-                            pi_added = True
-                            content_modified = True
-                            logger.debug("Added personal information (pi) to first user message")
-
-                        # Add playbook guidance to the LAST user message only
-                        if playbook_guidance and i == len(effective_chat_messages) - 1:
-                            content = f"{content}\n\n## Task Guidance\n{playbook_guidance}"
-                            content_modified = True
-                            logger.debug("Added playbook guidance to last user message")
-
-                        if variables_summary_text and i == len(effective_chat_messages) - 1:
-                            content = content + variables_addendum
-                            content_modified = True
-
-                        # Build new message if modified, otherwise keep original
-                        if content_modified:
-                            modified_chat_messages.append(HumanMessage(content=content))
-                            logger.debug(f"Created modified message at index {i} with playbook/pi/variables")
-                        else:
-                            modified_chat_messages.append(msg)
-
-                        messages_for_model.append({"role": "user", "content": content})
-                        logger.debug(f"Added BaseMessage as user message (role={msg_role})")
-                    elif msg_role == 'ai' or msg_role == 'assistant':
-                        modified_chat_messages.append(msg)
-                        messages_for_model.append({"role": "assistant", "content": msg.content})
-                        logger.debug(f"Added BaseMessage as assistant message (role={msg_role})")
-                    else:
-                        modified_chat_messages.append(msg)
-                        logger.warning(
-                            f"Skipping message {i} with unknown type: {msg_type}, role: {msg_role}"
-                        )
-
-            try:
-                invoke_model = await resolve_model_with_bind_tools(
-                    active_model,
-                    configurable=configurable,
-                    tools_context_ref=tools_context_ref,
-                    tool_provider=base_tool_provider,
-                    model_name=_runtime_model_name,
-                )
-
-                response = await invoke_model.ainvoke(
-                    messages_for_model, config={"callbacks": current_callbacks}
-                )
-                logger.debug(f"Response: {response}")
-            except Exception as e:
-                code = extract_code_from_tool_use_failed(e)
-                if code:
-                    logger.warning(
-                        "Model attempted tool call without tools bound (tool_use_failed). "
-                        "Using generated code in sandbox"
-                    )
-                    response = type(
-                        "_FakeResponse", (), {"content": f"```python\n{code}\n```", "additional_kwargs": {}}
-                    )()
-                else:
-                    raise e
-
-            _resp_tool_calls = getattr(response, "tool_calls", None) or []
-            _resp_ak_keys = list((getattr(response, "additional_kwargs", None) or {}).keys())
-            _resp_finish = (getattr(response, "response_metadata", None) or {}).get(
-                "finish_reason", "unknown"
-            )
-            logger.debug(
-                f"LLM response — type: {type(response).__name__} | "
-                f"content_len: {len(response.content or '')} | "
-                f"finish_reason: {_resp_finish} | "
-                f"tool_calls: {_resp_tool_calls} | "
-                f"additional_kwargs_keys: {_resp_ak_keys}"
-            )
-
-            raw_content = normalize_assistant_text(response.content)
-            if not raw_content:
-                tool_code = _extract_code_from_response_tool_calls(response)
-                if tool_code:
-                    logger.warning(
-                        "Empty content with tool_calls detected (proxy conversion); "
-                        "recovering tool call as Python code"
-                    )
-                    raw_content = tool_code
-                elif _resp_finish not in ("stop", "unknown"):
-                    logger.warning(
-                        f"LLM returned empty content with finish_reason='{_resp_finish}'; "
-                        "likely a safety filter or terminal stop."
-                    )
-
-            content = raw_content
-
-            reasoning_str = normalize_assistant_text(response.additional_kwargs.get('reasoning_content'))
-
-            tracker.collect_step(step=Step(name="Raw_Assistant_Response", data=content))
-
-            # Try to extract code from content first, then reasoning if content has no code
-            code = extract_and_combine_codeblocks(content) if content else ""
-
-            if not code and reasoning_str:
-                code = extract_and_combine_codeblocks(reasoning_str)
-
-            if code:
-                tracker.collect_step(step=Step(name="Assistant_code", data=content))
-                logger.debug(
-                    f"\n{'=' * 50} ASSISTANT CODE {'=' * 50}\n{code}\n{'=' * 50} END ASSISTANT CODE {'=' * 50}"
-                )
-
-                # Check if code requires approval and create interrupt if needed
-                # Only check if policies are enabled
-                if settings.policy.enabled:
-                    approval_command = await ToolApprovalHandler.check_and_create_approval_interrupt(
-                        state, code, content, config
-                    )
-                    if approval_command:
-                        return approval_command
-
-                # Build updated messages from modified_chat_messages + new AI response
-                updated_messages = modified_chat_messages + [AIMessage(content=content)]
-                new_step_count = state.step_count + 1
-
-                # Check step limit
-                limit = max_steps if max_steps is not None else settings.advanced_features.cuga_lite_max_steps
-                if new_step_count > limit:
-                    error_msg = (
-                        f"Maximum step limit ({limit}) reached. "
-                        f"The task has exceeded the allowed number of execution cycles. "
-                        f"Please simplify your request or break it into smaller tasks."
-                    )
-                    logger.warning(f"Step limit reached: {new_step_count} > {limit}")
-                    error_ai_message = AIMessage(content=error_msg)
-                    return create_error_command(
-                        updated_messages + [error_ai_message], error_ai_message, state.step_count
-                    )
-
-                logger.debug(f"Step count: {new_step_count}/{limit}")
-
-                # Update metadata to mark playbook guidance as added
-                updated_metadata = _clean_empty_response_retry_meta(state.cuga_lite_metadata or {})
-                if playbook_guidance:
-                    updated_metadata = {**updated_metadata, "playbook_guidance_added": True}
-
-                return Command(
-                    goto="sandbox",
-                    update={
-                        "chat_messages": updated_messages,
-                        "script": code,
-                        "step_count": new_step_count,
-                        "cuga_lite_metadata": updated_metadata,
-                    },
-                )
-            else:
-                tracker.collect_step(step=Step(name="Assistant_nl", data=content))
-                planning_response = content or ""
-
-                # Build updated messages from modified_chat_messages + new AI response
-                updated_messages = modified_chat_messages + [AIMessage(content=planning_response)]
-                new_step_count = state.step_count + 1
-
-                # Check step limit
-                limit = max_steps if max_steps is not None else settings.advanced_features.cuga_lite_max_steps
-                if new_step_count > limit:
-                    error_msg = (
-                        f"Maximum step limit ({limit}) reached. "
-                        f"The task has exceeded the allowed number of execution cycles. "
-                        f"Please simplify your request or break it into smaller tasks."
-                    )
-                    logger.warning(f"Step limit reached: {new_step_count} > {limit}")
-                    error_ai_message = AIMessage(content=error_msg)
-                    return create_error_command(
-                        updated_messages + [error_ai_message], error_ai_message, state.step_count
-                    )
-
-                logger.debug(f"Step count: {new_step_count}/{limit}")
-
-                # Update metadata to mark playbook guidance as added
-                updated_metadata = _clean_empty_response_retry_meta(state.cuga_lite_metadata or {})
-                if playbook_guidance:
-                    updated_metadata = {**updated_metadata, "playbook_guidance_added": True}
-
-                should_auto_continue = await classify_nl_auto_continue(
-                    active_model,
-                    planning_response,
-                    reasoning_str or None,
-                )
-                tracker.collect_step(
-                    step=Step(
-                        name="NL_Auto_Continue_Classifier",
-                        data=json.dumps({"auto_continue": should_auto_continue}),
-                    )
-                )
-                if should_auto_continue:
-                    logger.info(
-                        "CugaLite: NL-only response classified as interim; simulating user 'continue'"
-                    )
-                    return Command(
-                        goto="call_model",
-                        update={
-                            "chat_messages": updated_messages + [HumanMessage(content="continue")],
-                            "script": None,
-                            "final_answer": "",
-                            "execution_complete": False,
-                            "step_count": new_step_count,
-                            "cuga_lite_metadata": updated_metadata,
-                        },
-                    )
-
-                return Command(
-                    goto=END,
-                    update={
-                        "chat_messages": updated_messages,
-                        "script": None,
-                        "final_answer": planning_response,
-                        "execution_complete": True,
-                        "step_count": new_step_count,
-                        "cuga_lite_metadata": updated_metadata,
-                    },
-                )
-
-        return call_model
-
     # Factory function to create sandbox node with access to tools context
     def create_sandbox_node(base_tools_context, base_thread_id, base_apps_list):
         """Factory to create sandbox node with closure over tools context and config."""
@@ -2184,7 +1643,7 @@ def create_cuga_lite_graph(
 
             # Check if user denied approval (only if policies are enabled)
             if settings.policy.enabled:
-                denial_command = ToolApprovalHandler.handle_denial(state)
+                denial_command = ToolApprovalHandler.handle_denial(_LITE_LOOP_ADAPTER, state)
                 if denial_command:
                     return denial_command
 
@@ -2221,12 +1680,21 @@ def create_cuga_lite_graph(
 
             try:
                 # Execute the script - pass the CugaLiteState itself since it has variables_manager
+                _exec_plan = ExecutionRouter.resolve(settings)
+                if _exec_plan.split_execution_active:
+                    logger.info(
+                        "Split execution: python=%s shell=%s fs=%s",
+                        _exec_plan.python_backend,
+                        _exec_plan.shell_backend,
+                        _exec_plan.filesystem_backend,
+                    )
                 output, new_vars = await CodeExecutor.eval_with_tools_async(
                     code=state.script,
                     _locals=context,
                     state=state,  # Pass CugaLiteState - it has variables_manager property
                     thread_id=current_thread_id,
                     apps_list=current_apps_list,
+                    plan=_exec_plan,
                 )
 
                 tracker.collect_step(step=Step(name="User_output", data=output))
@@ -2295,7 +1763,7 @@ def create_cuga_lite_graph(
                         reflection_output = ""
 
                 # Output is already formatted by code_executor
-                execution_message_content = f"Execution output:\n{output}"
+                execution_message_content = execution_output_text(output)
                 if reflection_output:
                     execution_message_content = (
                         f"{execution_message_content}\n\n---\n\nSummary:\n{reflection_output}"
@@ -2386,23 +1854,22 @@ def create_cuga_lite_graph(
         task_todos_ref,
         lc_bind_tools_meta=lc_bind_tools_meta,
     )
-    call_model_node = create_call_model_node(
-        model,
-        callbacks,
-        task_todos_ref,
-        model_settings=model_settings,
+    sandbox_node = create_sandbox_node(tools_context, thread_id, apps_list)
+
+    # Shared call_model node via AgentGraphAdapter
+    adapter = AgentGraphAdapter(
+        tracker=tracker,
+        base_callbacks=callbacks or [],
+        task_todos_ref=task_todos_ref,
         tools_context_ref=lc_bind_tools_meta,
         base_tool_provider=tool_provider,
     )
-    sandbox_node = create_sandbox_node(tools_context, thread_id, apps_list)
+    call_model_node = _create_shared_call_model_node(adapter, model, settings)
 
-    # Build the graph
-    graph = StateGraph(CugaLiteState)
-    graph.add_node("prepare_tools_and_apps", prepare_node)
-    graph.add_node("call_model", call_model_node)
-    graph.add_node("sandbox", sandbox_node)
-
-    graph.add_edge(START, "prepare_tools_and_apps")
-    graph.add_edge("sandbox", "call_model")
-
-    return graph
+    return build_agent_graph(
+        adapter=adapter,
+        state_class=CugaLiteState,
+        prepare_node=prepare_node,
+        call_model_node=call_model_node,
+        execute_node=sandbox_node,
+    )

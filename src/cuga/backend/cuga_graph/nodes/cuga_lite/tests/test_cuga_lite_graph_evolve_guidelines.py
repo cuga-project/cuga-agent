@@ -56,7 +56,7 @@ async def test_cuga_lite_evolve_guidelines_are_injected_independently_of_legacy_
             False,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.apply_context_summarization",
+            "cuga.backend.cuga_graph.nodes.cuga_agent_core.shared_nodes.apply_context_summarization",
             new=AsyncMock(side_effect=lambda messages, *args, **kwargs: messages),
         ),
         patch(
