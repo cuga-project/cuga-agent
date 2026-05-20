@@ -85,9 +85,7 @@ async def main() -> None:
         logger.info(f"A: {result.answer}")
 
         logger.info("=== 3. Direct search API (no LLM) ===")
-        hits = await agent.knowledge.search(
-            "HSA contribution limit family coverage", scope="agent", limit=3
-        )
+        hits = await agent.knowledge.search("HSA contribution limit family coverage", scope="agent", limit=3)
         print_hits("Top agent-level hits for 'HSA contribution limit family coverage':", hits)
 
         # ---------- Session-level: direct client API only ----------

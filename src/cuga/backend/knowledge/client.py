@@ -182,14 +182,10 @@ class KnowledgeClient:
         ) -> dict:
             return await client.ingest(file_path, scope, replace_duplicates, thread_id=_thread_id)
 
-        async def knowledge_ingest_knowledge_url(
-            url: str, scope: str = default_scope, **_: Any
-        ) -> dict:
+        async def knowledge_ingest_knowledge_url(url: str, scope: str = default_scope, **_: Any) -> dict:
             return await client.ingest_url(url, scope, thread_id=_thread_id)
 
-        async def knowledge_list_knowledge_documents(
-            scope: str = default_scope, **_: Any
-        ) -> dict:
+        async def knowledge_list_knowledge_documents(scope: str = default_scope, **_: Any) -> dict:
             docs = await client.list_documents(scope, thread_id=_thread_id)
             return {"documents": docs}
 
