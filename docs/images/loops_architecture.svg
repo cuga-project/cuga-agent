@@ -1,0 +1,222 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1100 760" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif" font-size="13">
+  <defs>
+    <linearGradient id="gAgent" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#eef4ff"/>
+      <stop offset="1" stop-color="#d8e6ff"/>
+    </linearGradient>
+    <linearGradient id="gTools" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff5e6"/>
+      <stop offset="1" stop-color="#ffe2b8"/>
+    </linearGradient>
+    <linearGradient id="gService" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e9fbef"/>
+      <stop offset="1" stop-color="#c6f0d4"/>
+    </linearGradient>
+    <linearGradient id="gPersist" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#f3e9ff"/>
+      <stop offset="1" stop-color="#dec4ff"/>
+    </linearGradient>
+    <linearGradient id="gCtx" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fff0f4"/>
+      <stop offset="1" stop-color="#ffd1de"/>
+    </linearGradient>
+    <linearGradient id="gApi" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#e8f6fb"/>
+      <stop offset="1" stop-color="#bfe4f1"/>
+    </linearGradient>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#5b6473"/>
+    </marker>
+    <marker id="arrDash" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#a0a8b6"/>
+    </marker>
+    <filter id="shadow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur in="SourceAlpha" stdDeviation="2"/>
+      <feOffset dx="0" dy="2" result="off"/>
+      <feComponentTransfer><feFuncA type="linear" slope="0.18"/></feComponentTransfer>
+      <feMerge><feMergeNode/><feMergeNode in="SourceGraphic"/></feMerge>
+    </filter>
+  </defs>
+
+  <!-- Title -->
+  <text x="550" y="34" text-anchor="middle" font-size="22" font-weight="700" fill="#1f2a44">CUGA Loops — Architecture</text>
+  <text x="550" y="56" text-anchor="middle" font-size="13" fill="#5b6473">Self-scheduling agent: tools → service → APScheduler → runner → invoke</text>
+
+  <!-- Agent box (top-left) -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="90" width="290" height="150" rx="14" fill="url(#gAgent)" stroke="#7a99d6" stroke-width="1.5"/>
+  </g>
+  <text x="60" y="115" font-weight="700" fill="#1f2a44">CUGA Agent (per thread)</text>
+  <rect x="60" y="128" width="250" height="36" rx="8" fill="#ffffff" stroke="#a8bbe0"/>
+  <text x="72" y="151" fill="#1f2a44">agent.invoke(prompt, thread_id)</text>
+  <rect x="60" y="174" width="250" height="50" rx="8" fill="#ffffff" stroke="#a8bbe0"/>
+  <text x="72" y="194" fill="#1f2a44">LLM + LangChain tools</text>
+  <text x="72" y="212" fill="#5b6473" font-size="11">register_agent(name, invoke_fn) → service</text>
+
+  <!-- Context vars (top-center) -->
+  <g filter="url(#shadow)">
+    <rect x="380" y="90" width="320" height="150" rx="14" fill="url(#gCtx)" stroke="#d97a99" stroke-width="1.5"/>
+  </g>
+  <text x="400" y="115" font-weight="700" fill="#3a1c2a">contextvars (set around invoke)</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#3a1c2a">
+    <text x="400" y="142">current_agent_name</text>
+    <text x="400" y="162">current_thread_id</text>
+    <text x="400" y="182">current_app_name</text>
+    <text x="400" y="202">current_loop_id   <tspan fill="#7b3a52">(set by runner per fire)</tspan></text>
+  </g>
+  <text x="400" y="226" font-size="11" fill="#7b3a52">Tools call _identity() to read these — no explicit args.</text>
+
+  <!-- Tools (top-right) -->
+  <g filter="url(#shadow)">
+    <rect x="750" y="90" width="310" height="150" rx="14" fill="url(#gTools)" stroke="#d8a14a" stroke-width="1.5"/>
+  </g>
+  <text x="770" y="115" font-weight="700" fill="#4a330a">loops/tools.py — @tool</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="12" fill="#4a330a">
+    <text x="770" y="142">schedule_recurring(cadence, prompt)</text>
+    <text x="770" y="162">schedule_wakeup(delay, prompt)</text>
+    <text x="770" y="182">list_my_loops()</text>
+    <text x="770" y="202">cancel_loop(loop_id)</text>
+  </g>
+  <text x="770" y="226" font-size="11" fill="#7a570f">Parses cadence via cron_parser.py</text>
+
+  <!-- Service (middle) -->
+  <g filter="url(#shadow)">
+    <rect x="290" y="300" width="520" height="190" rx="14" fill="url(#gService)" stroke="#4ea876" stroke-width="1.8"/>
+  </g>
+  <text x="310" y="326" font-weight="700" fill="#0f3a23">LoopsService (singleton)</text>
+  <text x="310" y="344" font-size="11" fill="#2a5a3f">service.py · owns scheduler + agent registry</text>
+
+  <!-- Agent registry sub-box -->
+  <rect x="310" y="358" width="220" height="110" rx="10" fill="#ffffff" stroke="#9ccab1"/>
+  <text x="322" y="380" font-weight="600" fill="#0f3a23">Agent registry</text>
+  <text x="322" y="400" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#1f2a44">name → invoke_fn</text>
+  <text x="322" y="420" font-size="11" fill="#2a5a3f">register_loop / pause / resume</text>
+  <text x="322" y="436" font-size="11" fill="#2a5a3f">cancel / delete / run_now</text>
+  <text x="322" y="456" font-size="11" fill="#2a5a3f">re-arm ACTIVE on start()</text>
+
+  <!-- APScheduler sub-box -->
+  <rect x="560" y="358" width="230" height="110" rx="10" fill="#ffffff" stroke="#9ccab1"/>
+  <text x="572" y="380" font-weight="600" fill="#0f3a23">APScheduler</text>
+  <text x="572" y="398" font-size="11" fill="#2a5a3f">AsyncIOScheduler</text>
+  <text x="572" y="418" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#1f2a44">DELAY  → DateTrigger</text>
+  <text x="572" y="434" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#1f2a44">INTERVAL → IntervalTrigger</text>
+  <text x="572" y="450" font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#1f2a44">CRON   → CronTrigger</text>
+
+  <!-- Runner -->
+  <g filter="url(#shadow)">
+    <rect x="850" y="330" width="210" height="120" rx="14" fill="#ffffff" stroke="#5b6473" stroke-width="1.5"/>
+  </g>
+  <text x="870" y="354" font-weight="700" fill="#1f2a44">runner.fire_loop()</text>
+  <text x="870" y="374" font-size="11" fill="#5b6473">1. lookup loop + agent</text>
+  <text x="870" y="390" font-size="11" fill="#5b6473">2. set current_loop_id</text>
+  <text x="870" y="406" font-size="11" fill="#5b6473">3. invoke(prompt, thread)</text>
+  <text x="870" y="422" font-size="11" fill="#5b6473">4. write LoopRun</text>
+  <text x="870" y="438" font-size="11" fill="#a14a4a">no agent → ORPHANED</text>
+
+  <!-- Persistence (bottom-left) -->
+  <g filter="url(#shadow)">
+    <rect x="40" y="540" width="330" height="140" rx="14" fill="url(#gPersist)" stroke="#9b6cd1" stroke-width="1.5"/>
+  </g>
+  <text x="60" y="565" font-weight="700" fill="#2a1c44">loops/registry.py</text>
+  <text x="60" y="586" font-size="11" fill="#4a3370">SQLite-backed persistence</text>
+  <ellipse cx="135" cy="630" rx="60" ry="28" fill="#ffffff" stroke="#b89adb"/>
+  <text x="135" y="626" text-anchor="middle" font-size="12" fill="#2a1c44">Loop rows</text>
+  <text x="135" y="642" text-anchor="middle" font-size="11" fill="#5b3f80">(state + metadata)</text>
+  <ellipse cx="280" cy="630" rx="60" ry="28" fill="#ffffff" stroke="#b89adb"/>
+  <text x="280" y="626" text-anchor="middle" font-size="12" fill="#2a1c44">LoopRun</text>
+  <text x="280" y="642" text-anchor="middle" font-size="11" fill="#5b3f80">history</text>
+
+  <!-- Cron parser (bottom-center) -->
+  <g filter="url(#shadow)">
+    <rect x="410" y="540" width="280" height="140" rx="14" fill="#fafbe6" stroke="#c2c45a" stroke-width="1.5"/>
+  </g>
+  <text x="430" y="565" font-weight="700" fill="#3a3a14">cron_parser.py</text>
+  <text x="430" y="586" font-size="11" fill="#5a5a2a">parse_cadence / parse_delay_seconds</text>
+  <g font-family="ui-monospace, SFMono-Regular, Menlo, monospace" font-size="11" fill="#3a3a14">
+    <text x="430" y="610">"5m"  "2h"  "1d"</text>
+    <text x="430" y="628">"0 9 * * *"</text>
+    <text x="430" y="646">"daily"  "every weekday"</text>
+    <text x="430" y="664">"hourly"  "daily 9am"</text>
+  </g>
+
+  <!-- API + UI (bottom-right) -->
+  <g filter="url(#shadow)">
+    <rect x="730" y="540" width="330" height="140" rx="14" fill="url(#gApi)" stroke="#5fa3c0" stroke-width="1.5"/>
+  </g>
+  <text x="750" y="565" font-weight="700" fill="#0f3a4a">loops/api.py + ui.html</text>
+  <rect x="750" y="580" width="140" height="80" rx="8" fill="#ffffff" stroke="#9ccede"/>
+  <text x="820" y="608" text-anchor="middle" font-weight="600" fill="#0f3a4a">HTTP API</text>
+  <text x="820" y="628" text-anchor="middle" font-size="11" fill="#3a677a">list / pause / resume</text>
+  <text x="820" y="644" text-anchor="middle" font-size="11" fill="#3a677a">cancel / run_now</text>
+  <rect x="900" y="580" width="150" height="80" rx="8" fill="#ffffff" stroke="#9ccede"/>
+  <text x="975" y="608" text-anchor="middle" font-weight="600" fill="#0f3a4a">Inspector UI</text>
+  <text x="975" y="628" text-anchor="middle" font-size="11" fill="#3a677a">loop browser,</text>
+  <text x="975" y="644" text-anchor="middle" font-size="11" fill="#3a677a">run history</text>
+
+  <!-- ===== Arrows ===== -->
+  <!-- Agent.invoke -.sets.-> ctxvars -->
+  <path d="M 330 165 C 360 165, 360 165, 380 165" fill="none" stroke="#a0a8b6" stroke-width="1.5" stroke-dasharray="5,4" marker-end="url(#arrDash)"/>
+  <text x="338" y="158" font-size="10" fill="#7a8090">sets</text>
+
+  <!-- LLM tools -> Tools box -->
+  <path d="M 310 200 C 540 200, 540 200, 750 175" fill="none" stroke="#5b6473" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="540" y="183" text-anchor="middle" font-size="11" fill="#3a4050">calls @tool</text>
+
+  <!-- Tools -> ctxvars (read identity) -->
+  <path d="M 750 200 C 730 200, 730 200, 700 200" fill="none" stroke="#5b6473" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="715" y="193" text-anchor="middle" font-size="10" fill="#7a8090">_identity()</text>
+
+  <!-- Tools -> Service.register_loop -->
+  <path d="M 905 240 C 905 280, 760 280, 700 305" fill="none" stroke="#5b6473" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="880" y="278" text-anchor="middle" font-size="11" fill="#3a4050">register_loop()</text>
+
+  <!-- Agent -> Service.register_agent -->
+  <path d="M 185 240 C 185 280, 320 280, 380 305" fill="none" stroke="#5b6473" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="220" y="278" font-size="11" fill="#3a4050">register_agent()</text>
+
+  <!-- Service registry -> APScheduler (arm) -->
+  <path d="M 530 410 C 545 410, 545 410, 560 410" fill="none" stroke="#2a5a3f" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="545" y="402" text-anchor="middle" font-size="10" fill="#2a5a3f">_arm_loop</text>
+
+  <!-- APScheduler -> runner.fire_loop -->
+  <path d="M 790 405 C 820 400, 820 400, 850 390" fill="none" stroke="#2a5a3f" stroke-width="1.8" marker-end="url(#arr)"/>
+  <text x="822" y="380" text-anchor="middle" font-size="11" fill="#2a5a3f">fire(loop_id)</text>
+
+  <!-- runner -> agent.invoke (long arc up & left) -->
+  <path d="M 950 330 C 950 250, 600 60, 185 128" fill="none" stroke="#3a4050" stroke-width="1.6" marker-end="url(#arr)"/>
+  <text x="640" y="80" text-anchor="middle" font-size="11" fill="#3a4050">invoke_fn(prompt, thread_id)</text>
+
+  <!-- runner -> registry (write LoopRun) -->
+  <path d="M 900 450 C 900 510, 350 510, 270 540" fill="none" stroke="#5b3f80" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="600" y="505" text-anchor="middle" font-size="11" fill="#5b3f80">append LoopRun · bump fire_count</text>
+
+  <!-- service <-> registry -->
+  <path d="M 380 470 C 320 510, 280 510, 230 540" fill="none" stroke="#5b3f80" stroke-width="1.5" marker-end="url(#arr)"/>
+  <path d="M 230 540 C 280 510, 320 510, 380 470" fill="none" stroke="#5b3f80" stroke-width="1.5" marker-end="url(#arr)"/>
+  <text x="305" y="528" text-anchor="middle" font-size="10" fill="#5b3f80">load / persist</text>
+
+  <!-- Tools -> cron_parser -->
+  <path d="M 870 240 C 870 400, 600 480, 555 540" fill="none" stroke="#7a7a2a" stroke-width="1.4" stroke-dasharray="4,3" marker-end="url(#arrDash)"/>
+  <text x="745" y="455" text-anchor="middle" font-size="10" fill="#7a7a2a">parse cadence</text>
+
+  <!-- API/UI <-> service & registry -->
+  <path d="M 850 540 C 850 500, 800 490, 760 490" fill="none" stroke="#3a677a" stroke-width="1.4" marker-end="url(#arr)"/>
+  <text x="820" y="514" text-anchor="middle" font-size="10" fill="#3a677a">control</text>
+  <path d="M 760 580 C 600 580, 450 580, 370 610" fill="none" stroke="#3a677a" stroke-width="1.2" stroke-dasharray="4,3" marker-end="url(#arrDash)"/>
+  <text x="565" y="572" text-anchor="middle" font-size="10" fill="#3a677a">read run history</text>
+
+  <!-- Legend -->
+  <g transform="translate(40, 700)">
+    <rect x="0" y="0" width="1020" height="50" rx="10" fill="#f7f8fa" stroke="#d6dae2"/>
+    <circle cx="22" cy="25" r="6" fill="#d8e6ff" stroke="#7a99d6"/><text x="36" y="29" font-size="11" fill="#1f2a44">Agent</text>
+    <circle cx="100" cy="25" r="6" fill="#ffe2b8" stroke="#d8a14a"/><text x="114" y="29" font-size="11" fill="#1f2a44">Tools</text>
+    <circle cx="170" cy="25" r="6" fill="#c6f0d4" stroke="#4ea876"/><text x="184" y="29" font-size="11" fill="#1f2a44">Service / Scheduler</text>
+    <circle cx="320" cy="25" r="6" fill="#dec4ff" stroke="#9b6cd1"/><text x="334" y="29" font-size="11" fill="#1f2a44">Persistence</text>
+    <circle cx="430" cy="25" r="6" fill="#ffd1de" stroke="#d97a99"/><text x="444" y="29" font-size="11" fill="#1f2a44">contextvars</text>
+    <circle cx="540" cy="25" r="6" fill="#bfe4f1" stroke="#5fa3c0"/><text x="554" y="29" font-size="11" fill="#1f2a44">API + UI</text>
+    <line x1="650" y1="25" x2="690" y2="25" stroke="#5b6473" stroke-width="1.6" marker-end="url(#arr)"/>
+    <text x="700" y="29" font-size="11" fill="#1f2a44">control flow</text>
+    <line x1="800" y1="25" x2="840" y2="25" stroke="#a0a8b6" stroke-width="1.4" stroke-dasharray="4,3" marker-end="url(#arrDash)"/>
+    <text x="850" y="29" font-size="11" fill="#1f2a44">read / metadata</text>
+  </g>
+</svg>

@@ -1,0 +1,247 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 920" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif">
+  <defs>
+    <linearGradient id="bgGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0f172a"/>
+      <stop offset="1" stop-color="#1e293b"/>
+    </linearGradient>
+    <linearGradient id="phaseGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#312e81"/>
+      <stop offset="1" stop-color="#1e3a8a"/>
+    </linearGradient>
+    <linearGradient id="capGrad" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#0891b2"/>
+      <stop offset="1" stop-color="#0e7490"/>
+    </linearGradient>
+    <marker id="arrow" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrowDark" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#475569"/>
+    </marker>
+    <marker id="arrowLoop" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#f59e0b"/>
+    </marker>
+    <filter id="soft" x="-20%" y="-20%" width="140%" height="140%">
+      <feDropShadow dx="0" dy="2" stdDeviation="3" flood-opacity="0.25"/>
+    </filter>
+  </defs>
+
+  <rect width="1280" height="920" fill="url(#bgGrad)"/>
+
+  <!-- Title -->
+  <text x="640" y="44" text-anchor="middle" font-size="26" font-weight="700" fill="#f8fafc">Ouroboros — Multi-agent Lead-Hunt Flow</text>
+  <text x="640" y="68" text-anchor="middle" font-size="13" fill="#94a3b8">Example: "salons in westchester that need appointment booking"</text>
+
+  <!-- ============================ LEFT: Loop trigger ============================ -->
+  <g filter="url(#soft)">
+    <rect x="40" y="100" width="200" height="120" rx="14" fill="#78350f" stroke="#f59e0b" stroke-width="1.5"/>
+    <text x="140" y="128" text-anchor="middle" font-size="13" font-weight="700" fill="#fde68a">CUGA Loop</text>
+    <text x="140" y="148" text-anchor="middle" font-size="11" fill="#fef3c7">schedule_recurring()</text>
+    <text x="140" y="168" text-anchor="middle" font-size="10" fill="#fcd34d">cadence: every 5 min</text>
+    <text x="140" y="186" text-anchor="middle" font-size="10" fill="#fcd34d">"diff against last run"</text>
+    <text x="140" y="208" text-anchor="middle" font-size="10" font-style="italic" fill="#fbbf24">recurring trigger</text>
+  </g>
+
+  <!-- User question -->
+  <g filter="url(#soft)">
+    <rect x="40" y="244" width="200" height="74" rx="12" fill="#1e293b" stroke="#64748b"/>
+    <text x="140" y="266" text-anchor="middle" font-size="12" font-weight="600" fill="#cbd5e1">User request</text>
+    <text x="140" y="288" text-anchor="middle" font-size="10" fill="#94a3b8">"salons in westchester</text>
+    <text x="140" y="302" text-anchor="middle" font-size="10" fill="#94a3b8">that need appointment booking"</text>
+  </g>
+
+  <!-- Arrow loop → supervisor -->
+  <path d="M 240 160 Q 290 160 320 200" stroke="#f59e0b" stroke-width="2" fill="none" marker-end="url(#arrowLoop)"/>
+  <path d="M 240 280 Q 290 280 320 230" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- ============================ SUPERVISOR ============================ -->
+  <g filter="url(#soft)">
+    <rect x="320" y="160" width="220" height="110" rx="14" fill="url(#phaseGrad)" stroke="#a5b4fc" stroke-width="1.5"/>
+    <text x="430" y="188" text-anchor="middle" font-size="14" font-weight="700" fill="#fff">Supervisor (CugaAgent)</text>
+    <text x="430" y="208" text-anchor="middle" font-size="11" fill="#c7d2fe">writes Python; calls</text>
+    <text x="430" y="222" text-anchor="middle" font-size="11" fill="#c7d2fe">delegate_to_&lt;specialist&gt;()</text>
+    <text x="430" y="244" text-anchor="middle" font-size="10" fill="#a5b4fc">3 phases · 7 specialists</text>
+    <text x="430" y="258" text-anchor="middle" font-size="10" fill="#a5b4fc">orchestrates enrichments dict</text>
+  </g>
+
+  <!-- ============================ PHASE 1: Scout ============================ -->
+  <g filter="url(#soft)">
+    <rect x="610" y="100" width="240" height="180" rx="14" fill="#0c4a6e" stroke="#38bdf8" stroke-width="1.5"/>
+    <text x="730" y="124" text-anchor="middle" font-size="13" font-weight="700" fill="#bae6fd">PHASE 1 · Scout</text>
+    <line x1="630" y1="134" x2="830" y2="134" stroke="#0ea5e9" stroke-width="0.5" opacity="0.5"/>
+
+    <text x="625" y="156" font-size="11" font-weight="600" fill="#e0f2fe">geocode(place)</text>
+    <text x="640" y="172" font-size="10" fill="#7dd3fc">→ Nominatim HTTP</text>
+
+    <text x="625" y="194" font-size="11" font-weight="600" fill="#e0f2fe">find_local_businesses()</text>
+    <text x="640" y="210" font-size="10" fill="#7dd3fc">→ OSM Overpass QL</text>
+    <text x="640" y="223" font-size="10" fill="#7dd3fc">   shop=hairdresser/beauty</text>
+
+    <text x="625" y="248" font-size="10" fill="#cbd5e1">Output: 4 candidates</text>
+    <text x="625" y="262" font-size="10" fill="#cbd5e1">top = candidates[:3]</text>
+  </g>
+
+  <path d="M 540 215 L 610 190" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- ============================ PHASE 2: Five sweeps ============================ -->
+  <text x="640" y="320" text-anchor="middle" font-size="15" font-weight="700" fill="#f1f5f9">PHASE 2 · Five enrichment sweeps (per top-3 candidate)</text>
+
+  <!-- Sweep card template -->
+  <g>
+    <!-- Sweep 1: VoC -->
+    <g filter="url(#soft)">
+      <rect x="80" y="345" width="220" height="170" rx="12" fill="#14532d" stroke="#4ade80" stroke-width="1.2"/>
+      <text x="190" y="368" text-anchor="middle" font-size="12" font-weight="700" fill="#bbf7d0">1 · voice_of_customer</text>
+      <line x1="100" y1="378" x2="280" y2="378" stroke="#22c55e" stroke-width="0.4" opacity="0.5"/>
+      <text x="92" y="398" font-size="10.5" font-weight="600" fill="#dcfce7">search_reviews()</text>
+      <text x="92" y="414" font-size="10" fill="#86efac">↳ MCP web_search (Tavily)</text>
+      <text x="92" y="428" font-size="10" fill="#86efac">   "name city reviews"</text>
+      <text x="92" y="448" font-size="10" fill="#cbd5e1">LLM extracts verbatim</text>
+      <text x="92" y="461" font-size="10" fill="#cbd5e1">friction quotes (0–4)</text>
+      <text x="92" y="485" font-size="9.5" font-style="italic" fill="#facc15">2nd pass if too positive</text>
+      <text x="92" y="500" font-size="9.5" font-style="italic" fill="#facc15">→ self-correction</text>
+    </g>
+
+    <!-- Sweep 2: Site auditor -->
+    <g filter="url(#soft)">
+      <rect x="320" y="345" width="220" height="170" rx="12" fill="#581c87" stroke="#c084fc" stroke-width="1.2"/>
+      <text x="430" y="368" text-anchor="middle" font-size="12" font-weight="700" fill="#e9d5ff">2 · site_auditor</text>
+      <line x1="340" y1="378" x2="520" y2="378" stroke="#a855f7" stroke-width="0.4" opacity="0.5"/>
+      <text x="332" y="398" font-size="10.5" font-weight="600" fill="#f3e8ff">analyze_business_website()</text>
+      <text x="332" y="414" font-size="10" fill="#d8b4fe">↳ httpx.get(url)</text>
+      <text x="332" y="428" font-size="10" fill="#d8b4fe">↳ regex classifiers</text>
+      <text x="332" y="448" font-size="10" fill="#cbd5e1">9 capability buckets</text>
+      <text x="332" y="461" font-size="10" fill="#cbd5e1">freshness + tech smells</text>
+      <text x="332" y="485" font-size="9.5" fill="#fcd34d">agent_unblock_score</text>
+      <text x="332" y="500" font-size="9.5" font-style="italic" fill="#facc15">deterministic, no LLM</text>
+    </g>
+
+    <!-- Sweep 3: Revenue -->
+    <g filter="url(#soft)">
+      <rect x="560" y="345" width="220" height="170" rx="12" fill="#7c2d12" stroke="#fb923c" stroke-width="1.2"/>
+      <text x="670" y="368" text-anchor="middle" font-size="12" font-weight="700" fill="#fed7aa">3 · revenue_estimator</text>
+      <line x1="580" y1="378" x2="760" y2="378" stroke="#ea580c" stroke-width="0.4" opacity="0.5"/>
+      <text x="572" y="398" font-size="10.5" font-weight="600" fill="#ffedd5">search_size_signals()</text>
+      <text x="572" y="412" font-size="10" fill="#fdba74">↳ MCP web_search (Tavily)</text>
+      <text x="572" y="432" font-size="10.5" font-weight="600" fill="#ffedd5">estimate_arr_band()</text>
+      <text x="572" y="446" font-size="10" fill="#fdba74">↳ heuristic table</text>
+      <text x="572" y="460" font-size="10" fill="#fdba74">   $/employee × locations</text>
+      <text x="572" y="485" font-size="9.5" font-style="italic" fill="#facc15">reasoning over signals</text>
+      <text x="572" y="500" font-size="9.5" fill="#cbd5e1">→ band: &lt;$200k … &gt;$5M</text>
+    </g>
+
+    <!-- Sweep 4: Person finder -->
+    <g filter="url(#soft)">
+      <rect x="800" y="345" width="220" height="170" rx="12" fill="#831843" stroke="#f472b6" stroke-width="1.2"/>
+      <text x="910" y="368" text-anchor="middle" font-size="12" font-weight="700" fill="#fbcfe8">4 · person_finder</text>
+      <line x1="820" y1="378" x2="1000" y2="378" stroke="#ec4899" stroke-width="0.4" opacity="0.5"/>
+      <text x="812" y="398" font-size="10.5" font-weight="600" fill="#fce7f3">search_owner()</text>
+      <text x="812" y="412" font-size="10" fill="#f9a8d4">↳ MCP web_search (Tavily)</text>
+      <text x="812" y="426" font-size="10" fill="#f9a8d4">  "owner OR founder OR GM"</text>
+      <text x="812" y="446" font-size="10.5" font-weight="600" fill="#fce7f3">guess_email_from_name()</text>
+      <text x="812" y="460" font-size="10" fill="#f9a8d4">↳ 6 ordered patterns</text>
+      <text x="812" y="485" font-size="9.5" fill="#cbd5e1">first.last@ · flast@ · ...</text>
+      <text x="812" y="500" font-size="9.5" font-style="italic" fill="#facc15">no SMTP probe — guesses</text>
+    </g>
+
+    <!-- Sweep 5: Stack scanner -->
+    <g filter="url(#soft)">
+      <rect x="1040" y="345" width="200" height="170" rx="12" fill="#164e63" stroke="#22d3ee" stroke-width="1.2"/>
+      <text x="1140" y="368" text-anchor="middle" font-size="12" font-weight="700" fill="#a5f3fc">5 · stack_scanner</text>
+      <line x1="1060" y1="378" x2="1220" y2="378" stroke="#06b6d4" stroke-width="0.4" opacity="0.5"/>
+      <text x="1052" y="398" font-size="10.5" font-weight="600" fill="#cffafe">fingerprint(url)</text>
+      <text x="1052" y="412" font-size="10" fill="#67e8f9">↳ httpx.get(url)</text>
+      <text x="1052" y="426" font-size="10" fill="#67e8f9">↳ ~25 vendor regexes</text>
+      <text x="1052" y="446" font-size="10" fill="#cbd5e1">OpenTable, Resy, Square,</text>
+      <text x="1052" y="459" font-size="10" fill="#cbd5e1">Calendly, Mindbody, Toast,</text>
+      <text x="1052" y="472" font-size="10" fill="#cbd5e1">Booksy, DoorDash, ...</text>
+      <text x="1052" y="497" font-size="9.5" font-style="italic" fill="#facc15">incumbent-tool detection</text>
+    </g>
+  </g>
+
+  <!-- enrichments dict bus -->
+  <g filter="url(#soft)">
+    <rect x="80" y="540" width="1160" height="42" rx="8" fill="#1e293b" stroke="#64748b" stroke-dasharray="4 3"/>
+    <text x="660" y="566" text-anchor="middle" font-size="12" fill="#cbd5e1" font-weight="600">enrichments[i] = { candidate, voc, audit, revenue, person, stack }   ← shared accumulator across sweeps</text>
+  </g>
+
+  <!-- ============================ PHASE 3: Writer ============================ -->
+  <g filter="url(#soft)">
+    <rect x="320" y="615" width="380" height="120" rx="14" fill="#3f1d38" stroke="#e879f9" stroke-width="1.5"/>
+    <text x="510" y="640" text-anchor="middle" font-size="13" font-weight="700" fill="#f5d0fe">PHASE 3 · pitch_email_writer</text>
+    <text x="510" y="660" text-anchor="middle" font-size="11" fill="#e9d5ff">TOOLS = []  (pure synthesis)</text>
+    <text x="510" y="682" text-anchor="middle" font-size="10" fill="#cbd5e1">LLM consumes enriched_list bundle, applies SKILL.md schema:</text>
+    <text x="510" y="697" text-anchor="middle" font-size="10" fill="#cbd5e1">fit_score, pitch (60–150w), evidence URLs, email_draft</text>
+    <text x="510" y="720" text-anchor="middle" font-size="10" font-style="italic" fill="#facc15">cites concrete signals from voc / audit / stack — never fabricates</text>
+  </g>
+
+  <!-- arrow phase2 -> phase3 -->
+  <path d="M 510 583 L 510 615" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Final output -->
+  <g filter="url(#soft)">
+    <rect x="740" y="615" width="290" height="120" rx="14" fill="#064e3b" stroke="#34d399" stroke-width="1.5"/>
+    <text x="885" y="640" text-anchor="middle" font-size="13" font-weight="700" fill="#a7f3d0">Final lead board (JSON)</text>
+    <text x="885" y="660" text-anchor="middle" font-size="10" fill="#d1fae5">Modern Blow Dry Bar — fit 8/10</text>
+    <text x="885" y="676" text-anchor="middle" font-size="10" fill="#d1fae5">"Yelp shows CLOSED + no booking widget"</text>
+    <text x="885" y="694" text-anchor="middle" font-size="10" fill="#d1fae5">+ personalized email draft</text>
+    <text x="885" y="716" text-anchor="middle" font-size="10" fill="#6ee7b7">→ rendered in UI · persisted to runs/</text>
+  </g>
+
+  <path d="M 700 675 L 740 675" stroke="#94a3b8" stroke-width="2" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- Loop feedback arrow -->
+  <path d="M 1030 685 Q 1180 700 1180 400 Q 1180 150 240 150" stroke="#f59e0b" stroke-width="1.8" fill="none" stroke-dasharray="6 4" marker-end="url(#arrowLoop)" opacity="0.7"/>
+  <text x="1200" y="430" text-anchor="middle" font-size="10" fill="#fbbf24" font-style="italic" transform="rotate(90 1200 430)">CUGA Loop · re-fires with diff</text>
+
+  <!-- ============================ Capability legend ============================ -->
+  <g filter="url(#soft)">
+    <rect x="40" y="770" width="1200" height="125" rx="14" fill="#0b1220" stroke="#334155" stroke-width="1"/>
+    <text x="640" y="794" text-anchor="middle" font-size="13" font-weight="700" fill="#e2e8f0">CUGA capabilities exercised in this flow</text>
+
+    <!-- Cap chips -->
+    <g transform="translate(60, 810)">
+      <rect width="180" height="68" rx="10" fill="url(#capGrad)"/>
+      <text x="90" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Skills (SKILL.md)</text>
+      <text x="90" y="40" text-anchor="middle" font-size="9.5" fill="#cffafe">7 portable specialists,</text>
+      <text x="90" y="53" text-anchor="middle" font-size="9.5" fill="#cffafe">each = SKILL.md + tools.py</text>
+    </g>
+
+    <g transform="translate(254, 810)">
+      <rect width="180" height="68" rx="10" fill="url(#capGrad)"/>
+      <text x="90" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Multi-agent collaboration</text>
+      <text x="90" y="40" text-anchor="middle" font-size="9.5" fill="#cffafe">Supervisor delegates;</text>
+      <text x="90" y="53" text-anchor="middle" font-size="9.5" fill="#cffafe">enrichments[] shared bus</text>
+    </g>
+
+    <g transform="translate(448, 810)">
+      <rect width="180" height="68" rx="10" fill="url(#capGrad)"/>
+      <text x="90" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Tool calling</text>
+      <text x="90" y="40" text-anchor="middle" font-size="9.5" fill="#cffafe">LangChain @tool, MCP</text>
+      <text x="90" y="53" text-anchor="middle" font-size="9.5" fill="#cffafe">web_search, httpx, OSM</text>
+    </g>
+
+    <g transform="translate(642, 810)">
+      <rect width="180" height="68" rx="10" fill="url(#capGrad)"/>
+      <text x="90" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Self-correction</text>
+      <text x="90" y="40" text-anchor="middle" font-size="9.5" fill="#cffafe">VoC 2nd-pass · skip on</text>
+      <text x="90" y="53" text-anchor="middle" font-size="9.5" fill="#cffafe">empty website · cascade</text>
+    </g>
+
+    <g transform="translate(836, 810)">
+      <rect width="180" height="68" rx="10" fill="url(#capGrad)"/>
+      <text x="90" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">Reasoning</text>
+      <text x="90" y="40" text-anchor="middle" font-size="9.5" fill="#cffafe">Supervisor writes Python;</text>
+      <text x="90" y="53" text-anchor="middle" font-size="9.5" fill="#cffafe">writer synthesizes pitch</text>
+    </g>
+
+    <g transform="translate(1030, 810)">
+      <rect width="190" height="68" rx="10" fill="#b45309" stroke="#fbbf24" stroke-width="1.2"/>
+      <text x="95" y="22" text-anchor="middle" font-size="11" font-weight="700" fill="#fff">CUGA Loops ★ NEW</text>
+      <text x="95" y="40" text-anchor="middle" font-size="9.5" fill="#fef3c7">schedule_recurring()</text>
+      <text x="95" y="53" text-anchor="middle" font-size="9.5" fill="#fef3c7">cron · diff against last run</text>
+    </g>
+  </g>
+
+</svg>
