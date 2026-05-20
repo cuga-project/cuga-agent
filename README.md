@@ -43,6 +43,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Reflection** | `[advanced_features] reflection_enabled` in [`settings.toml`](src/cuga/settings.toml) |
 > | **Langflow** | Low-code visual workflows — integrates with CUGA ([langflow.org](https://www.langflow.org/)) |
 > | **Memory** (optional) | `enable_memory` in `settings.toml` · `uv sync --extra memory` · `cuga start memory` |
+> | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
 > | **Agent skills** | `SKILL.md` under `.agents/skills` · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
 > | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
@@ -73,6 +74,8 @@ CUGA achieves state-of-the-art performance on leading benchmarks:
 - **Save-and-reuse capabilities** _(Experimental)_ — Capture and reuse successful execution paths (plans, code, and trajectories) for faster and consistent behavior across repeated tasks
 
 - **Agent skills** — Package domain workflows as `SKILL.md` files with frontmatter; the agent discovers them and loads full instructions on demand via the `load_skill` tool (see [Agent skills](#agent-skills))
+
+- **Knowledge engine** — Built-in RAG over your documents: ingest PDFs, Office files, HTML, Markdown, and images through **Docling**, then search and reason over them via auto-injected knowledge tools. Documents can be scoped to **agent-level** (permanent, shared across conversations) or **session-level** (per-thread, isolated to a single conversation) — so long-lived reference material and ephemeral per-user uploads can coexist (see [Knowledge Base](#knowledge-base))
 
 ### Manage, publish, and self-hosting
 
