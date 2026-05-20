@@ -1,9 +1,0 @@
-{
-  "permissions": {
-    "allow": [
-      "Bash(python -m pytest src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/test_runtime_tools.py::test_skill_tool_is_prompt_dict_compatible src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/test_runtime_tools.py::test_skill_tool_func_is_awaitable_via_make_tool_awaitable -v)",
-      "Bash(python -m pytest src/cuga/backend/cuga_graph/nodes/cuga_agent_core/tests/ src/cuga/backend/cuga_graph/nodes/cuga_lite/executors/tests/ -q)",
-      "Bash(python -m *)"
-    ]
-  }
-}

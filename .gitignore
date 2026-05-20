@@ -10,6 +10,7 @@ node_modules
 .pnpm-store/
 .agents
 *.log
+.claude/settings.json
 .claude/settings.local.json
 /frontend/dist/
 src/frontend_workspaces/frontend/dist/
