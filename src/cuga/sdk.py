@@ -535,6 +535,85 @@ class PoliciesManager:
 
         logger.info(f"Added Tool Guide policy: {policy.id}")
         return policy.id
+    async def update_tool_guide(
+        self,
+        policy_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        guide_content: Optional[str] = None,
+    ) -> str:
+        """
+        Update an existing Tool Guide policy's name, description, and/or guide content.
+
+        Args:
+            policy_id: ID of the existing Tool Guide policy to update
+            name: New policy name (optional)
+            description: New policy description (optional)
+            guide_content: New guide content (optional)
+
+        Returns:
+            Policy ID
+
+        Raises:
+            ValueError: If policy not found or not a ToolGuide type
+
+        Example:
+            ```python
+            await agent.policies.update_tool_guide(
+                policy_id="tool_guide_abc123",
+                name="Updated Policy Name",
+                description="Updated description",
+                guide_content="## Updated guide content"
+            )
+            ```
+        """
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            logger.warning("Policy system is disabled - skipping update_tool_guide")
+            return None
+
+        # Retrieve the existing policy
+        existing_policy = await policy_system.storage.get_policy(policy_id)
+        if existing_policy is None:
+            raise ValueError(f"Policy with ID '{policy_id}' not found")
+
+        # Verify it's a ToolGuide policy
+        if not isinstance(existing_policy, ToolGuide):
+            raise ValueError(
+                f"Policy '{policy_id}' is not a ToolGuide policy (type: {type(existing_policy).__name__})"
+            )
+
+        # Create updated policy with new values (or keep existing if not provided)
+        updated_policy = ToolGuide(
+            id=existing_policy.id,
+            name=name if name is not None else existing_policy.name,
+            description=description if description is not None else existing_policy.description,
+            guide_content=guide_content if guide_content is not None else existing_policy.guide_content,
+            target_tools=existing_policy.target_tools,
+            target_apps=existing_policy.target_apps,
+            triggers=existing_policy.triggers,
+            tool_guards=existing_policy.tool_guards,
+            prepend=existing_policy.prepend,
+            priority=existing_policy.priority,
+            enabled=existing_policy.enabled,
+            metadata=existing_policy.metadata,
+        )
+
+        # Update in storage
+        await policy_system.storage.update_policy(updated_policy)
+        await policy_system.initialize()  # Reload policies
+
+        # Save to filesystem if sync is enabled
+        if self._fs_sync:
+            try:
+                self._fs_sync.save_policy_to_file(updated_policy)
+                logger.debug(f"Saved updated policy '{policy_id}' to filesystem")
+            except Exception as e:
+                logger.warning(f"Failed to save updated policy to filesystem: {e}")
+
+        logger.info(f"Updated Tool Guide policy '{policy_id}'")
+        return policy_id
+
 
     async def update_tool_guard(
         self,
@@ -585,20 +664,8 @@ class PoliciesManager:
                 f"Policy '{policy_id}' is not a ToolGuide policy (type: {type(existing_policy).__name__})"
             )
 
-        # Merge with existing tool_guards to preserve guards for other tools
-        tool_guards_obj = dict(existing_policy.tool_guards or {})
-        
-        # Validate that tool_guards keys are in target_tools
-        target_tools_set = set(existing_policy.target_tools or [])
-        invalid_tools = set(tool_guards.keys()) - target_tools_set
-        
-        if invalid_tools:
-            raise ValueError(
-                f"Invalid tool names in tool_guards: {', '.join(sorted(invalid_tools))}. "
-                f"Must be one of: {', '.join(sorted(target_tools_set))}"
-            )
-        
-        # Convert and update only the incoming tool_guards
+        # Convert tool_guards dict to ToolGuard objects
+        tool_guards_obj = {}
         for tool_name, guard_data in tool_guards.items():
             tool_guards_obj[tool_name] = ToolGuard(
                 violating_examples=guard_data.get("violating_examples", []),
@@ -606,7 +673,7 @@ class PoliciesManager:
                 policy_code=guard_data.get("policy_code", ""),
             )
 
-        # Create updated policy with tool_guards
+        # Create updated policy with new tool_guards (replaces existing)
         updated_policy = ToolGuide(
             id=existing_policy.id,
             name=existing_policy.name,
@@ -615,7 +682,7 @@ class PoliciesManager:
             target_tools=existing_policy.target_tools,
             target_apps=existing_policy.target_apps,
             guide_content=existing_policy.guide_content,
-            tool_guards=tool_guards_obj,
+            tool_guards=tool_guards_obj,  # Replace with new tool_guards
             prepend=existing_policy.prepend,
             priority=existing_policy.priority,
             enabled=existing_policy.enabled,
