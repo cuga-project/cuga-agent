@@ -133,6 +133,7 @@ async def _create_openai(
 async def _create_local(model_name: str) -> Optional[Callable]:
     try:
         from fastembed import TextEmbedding
+        import os
 
         cache_key = model_name
         if cache_key in _embedding_model_cache:
@@ -140,7 +141,9 @@ async def _create_local(model_name: str) -> Optional[Callable]:
             model = _embedding_model_cache[cache_key]
         else:
             logger.info(f"Loading local embedding model: {model_name}")
-            model = TextEmbedding(model_name)
+            cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
+            local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
+            model = TextEmbedding(model_name, cache_dir=cache_dir, local_files_only=local_files_only)
             _embedding_model_cache[cache_key] = model
 
         sample = next(model.embed(["probe"]))

@@ -87,6 +87,13 @@ datetime.datetime = _fake_dt
 
         Returns:
             Wrapped code ready for execution
+
+        Note:
+            Workspace CWD is managed externally (shell subprocess `cwd=`,
+            filesystem MCP server `cwd=`, sandbox-tool path resolution) — not
+            injected into the wrapped user code. Keeping `os` out of the user
+            namespace means SecurityValidator.validate_imports() remains the
+            sole gate on what imports the wrapped code can reach.
         """
         indented_code = '\n'.join('    ' + line for line in code.split('\n'))
         lines = [line.strip() for line in code.split('\n') if line.strip()]

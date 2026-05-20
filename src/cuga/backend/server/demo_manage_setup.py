@@ -4,15 +4,17 @@ import asyncio
 import json
 import logging
 import os
+import platform
 from pathlib import Path
 from typing import Any
+
+from loguru import logger as loguru_logger
 
 from cuga.config import settings
 
 logger = logging.getLogger("cuga.demo")
 
 _OAK_POLICIES_PATH = Path(__file__).resolve().parent / "demo_setup_utils" / "oak_policies.json"
-
 
 DIGITAL_SALES_OPENAPI_URL = (
     "https://digitalsales.19pc1vtv090u.us-east.codeengine.appdomain.cloud/openapi.json"
@@ -25,14 +27,13 @@ DIGITAL_SALES_DESCRIPTION = (
 )
 
 
-def _get_filesystem_tool() -> dict[str, Any]:
-    fs_port = int(os.environ.get("DYNACONF_SERVER_PORTS__FILESYSTEM_MCP", "8112"))
-    return {
-        "name": "filesystem",
-        "url": f"http://localhost:{fs_port}/sse",
-        "transport": "sse",
-        "description": "Standard file system operations for workspace management",
-    }
+def _normalize_demo_sandbox_mode() -> None:
+    """Native sandbox uses macOS sandbox-exec; demo falls back to local elsewhere."""
+    sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+    if sandbox_mode == "native" and platform.system().lower() != "darwin":
+        os.environ["DYNACONF_ADVANCED_FEATURES__SANDBOX_MODE"] = "local"
+        settings.reload()
+        logger.info("Demo sandbox_mode='native' is only supported on macOS; using 'local' instead.")
 
 
 def _get_email_tool() -> dict[str, Any]:
@@ -137,6 +138,60 @@ def load_oak_policy_entries() -> list[dict[str, Any]]:
     return list(data.get("policies") or [])
 
 
+def load_cuga_policy_entries_for_demo(cuga_folder: str | None = None) -> list[dict[str, Any]]:
+    """One-way import of local .cuga policy markdown files into demo manage config.
+
+    This intentionally does not initialize PolicyFilesystemSync. The UI can edit the
+    managed config copy without writing changes back to .cuga.
+    """
+    from cuga.backend.cuga_graph.policy.folder_loader import (
+        POLICY_CREATORS,
+        parse_markdown_with_frontmatter,
+    )
+
+    root = Path(cuga_folder or os.getenv("CUGA_FOLDER", settings.policy.cuga_folder))
+    if not root.exists():
+        logger.warning(
+            "Demo policy preload: .cuga folder not found at %s; skipping local policy import",
+            root,
+        )
+        return []
+
+    subfolders = {
+        "playbooks": "playbook",
+        "output_formatters": "output_formatter",
+        "tool_guides": "tool_guide",
+        "intent_guards": "intent_guard",
+        "tool_approvals": "tool_approval",
+    }
+    policies: list[dict[str, Any]] = []
+
+    for subfolder_name, default_policy_type in subfolders.items():
+        subfolder = root / subfolder_name
+        if not subfolder.exists():
+            continue
+
+        for policy_file in sorted(subfolder.glob("*.md")):
+            try:
+                frontmatter, content = parse_markdown_with_frontmatter(str(policy_file))
+                policy_type = frontmatter.get("type", default_policy_type)
+                creator = POLICY_CREATORS.get(policy_type)
+                if creator is None:
+                    raise ValueError(f"Unknown policy type: {policy_type}")
+
+                policy_obj = creator(str(policy_file), frontmatter, content)
+                policy_data = policy_obj.model_dump(mode="json")
+                policy_data["policy_type"] = policy_data.get("type", policy_type)
+                policies.append(policy_data)
+            except Exception as e:
+                logger.warning("Skipping demo policy preload from %s: %s", policy_file, e)
+
+    if policies:
+        logger.info("Preloaded %s local .cuga policy file(s) into demo config", len(policies))
+
+    return policies
+
+
 def _get_docs_tool() -> dict[str, Any]:
     docs_port = int(
         os.environ.get(
@@ -163,8 +218,9 @@ def build_tools_from_apps(
 ) -> list[dict[str, Any]]:
     """Build tools list from enabled app flags."""
     tools: list[dict[str, Any]] = []
-    if filesystem:
-        tools.append(_get_filesystem_tool())
+    # Filesystem is no longer an MCP server — it is provided by the
+    # consolidated runtime filesystem tools. The ``filesystem`` flag is
+    # kept for signature/CLI compatibility but adds no MCP tool.
     if email:
         tools.append(_get_email_tool())
     if crm:
@@ -305,6 +361,26 @@ Replace `<search term>` with a descriptive phrase, using `+` to separate words. 
 }
 
 
+# Require approval for run_command when using the skills / shell-tools demo preset with
+# sandbox_mode = "local" only (native/opensandbox/e2b are not seeded with this policy here).
+# Stable id for run_command approval in skills demo / local shell workflows (Manage or preset config).
+DEMO_SKILLS_SHELL_TOOL_APPROVAL: dict[str, Any] = {
+    "id": "tool_approval_run_command_local",
+    "name": "Shell command approval (skills demo)",
+    "description": (
+        "Require approval before run_command when using Cuga Lite injected shell tools "
+        "(run_command is not an MCP/OpenAPI tool; it is listed under app cuga_lite_shell in Manage)."
+    ),
+    "policy_type": "tool_approval",
+    "type": "tool_approval",
+    "enabled": True,
+    "required_tools": ["run_command"],
+    "approval_message": ("About to run a shell command in the agent workspace. Approve to continue?"),
+    "show_code_preview": True,
+    "priority": 10,
+}
+
+
 def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
     """Return default app flags for a given preset (demo, demo_crm, demo_docs, demo_health, demo_knowledge, manager).
     Knowledge is disabled by default; only demo_knowledge hardcodes it to True."""
@@ -343,13 +419,23 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
         return {
             "crm": False,
             "email": False,
-            "digital_sales": True,
+            "digital_sales": False,
             "docs": False,
-            "filesystem": True,
+            "filesystem": False,
             "oak_health": False,
             "knowledge": True,  # Always enabled for demo_knowledge
         }
     if preset == "demo":
+        return {
+            "crm": False,
+            "email": False,
+            "digital_sales": True,
+            "docs": False,
+            "filesystem": True,
+            "oak_health": False,
+            "knowledge": knowledge,
+        }
+    if preset == "demo_skills":
         return {
             "crm": False,
             "email": False,
@@ -376,13 +462,17 @@ def setup_demo_manage_config(
     no_email: bool = False,
     tools: list[dict[str, Any]] | None = None,
     reset_knowledge: bool = False,
+    filesystem: bool = True,
 ) -> None:
     """
     Reset config db, then setup agent config (draft + v1) for demo or demo_crm.
-    Uses same SSE links as cli for filesystem, email, crm.
+    Uses same SSE links as cli for email, crm.
     If tools is provided, uses it; otherwise builds from demo_type and no_email.
     When reset_knowledge is True, wipes all knowledge data (vector DB, metadata, files).
+    When filesystem is True, enables runtime filesystem tools (enable_shell_tool=True).
     """
+    _normalize_demo_sandbox_mode()
+
     from cuga.backend.server.config_store import (
         reset_config_db,
         save_config,
@@ -406,8 +496,7 @@ def setup_demo_manage_config(
         "account's revenue percentile across all accounts. Finally, draft an email based on email_template.md "
         "template summarizing the result and show it to me",
         "from contacts.txt show me which users belong to the crm system",
-        "./cuga_workspace/cuga_playbook.md",
-        "What is CUGA?",
+        "What can you do?",
     ]
     DEMO_DOCS_STARTERS = [
         "What was the latest watsonx orchestrate release?",
@@ -422,6 +511,17 @@ def setup_demo_manage_config(
         "Find knee surgeons nearby and what are my benefits for surgery",
         "What is my deductible and out-of-pocket progress this plan year?",
         "Check the status of my referral and where it was sent",
+    ]
+    DEMO_SKILLS_STARTERS = [
+        "List what agent skills are available and summarize what each is for",
+        "Use the pptx skill to outline a short deck about our product",
+        "What is in my workspace .cuga skills folder?",
+    ]
+    # Aligns with OOBE doc sovereign_core_overview.pdf (ingested on first demo_knowledge start).
+    DEMO_KNOWLEDGE_STARTERS = [
+        "What is Sovereign Core, and what problem does it solve?",
+        "Summarize the main themes from the Sovereign Core overview in my knowledge base.",
+        "What capabilities does the platform highlight on-premises use?",
     ]
     reset_config_db()
 
@@ -509,6 +609,7 @@ def setup_demo_manage_config(
     use_crm_starters = demo_type == "demo_crm"
     use_docs_starters = demo_type == "demo_docs"
     use_health_starters = demo_type == "demo_health"
+    use_skills_starters = demo_type == "demo_skills"
     use_knowledge = demo_type == "demo_knowledge"
     if use_crm_starters:
         homescreen = {
@@ -527,6 +628,21 @@ def setup_demo_manage_config(
             "isOn": True,
             "greeting": "Ask about claims, benefits, coverage, and finding in-network care.",
             "starters": DEMO_HEALTH_STARTERS,
+        }
+    elif use_skills_starters:
+        homescreen = {
+            "isOn": True,
+            "greeting": "Try agent skills (SKILL.md under .cuga) and OpenSandbox shell tools.",
+            "starters": DEMO_SKILLS_STARTERS,
+        }
+    elif use_knowledge:
+        homescreen = {
+            "isOn": True,
+            "greeting": (
+                "Sovereign Core puts this agent and your data under your control. "
+                "The overview (sovereign_core_overview.pdf) is in your knowledge base—ask anything about it."
+            ),
+            "starters": DEMO_KNOWLEDGE_STARTERS,
         }
     else:
         homescreen = DEFAULT_HOMESCREEN
@@ -552,7 +668,12 @@ def setup_demo_manage_config(
         knowledge_cfg["_vector_config_hash"] = _kc.vector_config_hash()
     except Exception:
         pass
-    if use_crm_starters:
+    if demo_type == "manager":
+        agent_meta = {
+            "name": "Default",
+            "description": "Configurable agent for manage mode (filesystem and optional integrations)",
+        }
+    elif use_crm_starters:
         agent_meta = {
             "name": "CRM Agent",
             "description": "CRM-enabled agent with email and filesystem for managing contacts and accounts",
@@ -573,12 +694,20 @@ def setup_demo_manage_config(
     elif use_knowledge:
         agent_meta = {
             "name": "Knowledge Agent",
-            "description": "Agent with knowledge base, digital sales API, and filesystem for document-grounded workflows",
+            "description": (
+                "Document-grounded assistant; includes the Sovereign Core overview (sovereign_core_overview.pdf) "
+                "for onboarding Q&A, plus your workspace files."
+            ),
         }
-    else:
+    elif tools and any(t.get("name") == "digital_sales" for t in tools):
         agent_meta = {
             "name": "Digital Sales Agent",
             "description": "Agent with Digital Sales API and filesystem for sales workflows",
+        }
+    else:
+        agent_meta = {
+            "name": "Default",
+            "description": "Agent with workspace filesystem and optional tools",
         }
     policies: list[dict[str, Any]] = []
     if tools and any(t.get("name") == "oak_health" for t in tools):
@@ -586,6 +715,11 @@ def setup_demo_manage_config(
     if tools and any(t.get("name") == "docs" for t in tools):
         policies.append(DOCS_PLAYBOOK)
         policies.append(DOCS_OUTPUT_FORMATTER)
+    if demo_type == "demo_skills":
+        _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
+        if _sandbox_mode == "local":
+            policies.append(DEMO_SKILLS_SHELL_TOOL_APPROVAL)
+    policies.extend(load_cuga_policy_entries_for_demo())
     policies_struct: dict[str, Any] = {"enablePolicies": True, "policies": policies}
     config: dict[str, Any] = {
         "agent": agent_meta,
@@ -595,12 +729,105 @@ def setup_demo_manage_config(
         "llm": llm_cfg,
         "knowledge": knowledge_cfg,
     }
-    if tools and any(t.get("name") == "docs" for t in tools):
+    if tools and (any(t.get("name") == "docs" for t in tools) or demo_type in ("demo", "demo_skills")):
         config["feature_flags"] = config.get("feature_flags") or {}
         config["feature_flags"]["enable_todos"] = True
+
+    if demo_type == "demo_skills":
+        config.setdefault("advanced_features", {})["enable_shell_tool"] = True
+    if filesystem:
+        config.setdefault("advanced_features", {})["enable_filesystem_tools"] = True
 
     async def _setup():
         await save_draft(config, agent_id)
         await save_config(config, agent_id)
 
     asyncio.run(_setup())
+
+
+# Packaged with cuga at src/cuga/demo_tools/huggingface/; copied to workspace by prepare_workspace.
+DEMO_KNOWLEDGE_OOBE_PDF_NAME = "sovereign_core_overview.pdf"
+
+
+def _resolve_oobe_knowledge_pdf_path() -> Path | None:
+    """Package data path first; then cuga_workspace/ (e.g. Docker OOTB copy)."""
+    from cuga.config import DEMO_TOOLS_ROOT
+
+    primary = DEMO_TOOLS_ROOT / "huggingface" / DEMO_KNOWLEDGE_OOBE_PDF_NAME
+    if primary.is_file():
+        return primary
+    fallback = Path.cwd() / "cuga_workspace" / DEMO_KNOWLEDGE_OOBE_PDF_NAME
+    if fallback.is_file():
+        return fallback
+    return None
+
+
+async def seed_demo_knowledge_oobe_pdf_via_engine_if_needed(app_state: Any) -> None:
+    """Ingest packaged OOBE PDF into agent KB in-process.
+
+    Intended to run immediately after KnowledgeEngine.warmup() succeeds on the demo server
+    (`mcp_transport == http`). Requires CUGA_DEMO_MODE knowledge / demo_knowledge.
+    Caller must invoke only while knowledge subsystem is ``ready``.
+    """
+    from cuga.backend.knowledge.auth import resolve_agent_collection
+    from cuga.backend.knowledge.engine import DocumentExistsError
+
+    mode = os.environ.get("CUGA_DEMO_MODE", "").strip().lower()
+    loguru_logger.info("OOBE PDF seed check started (mode={!r})", mode)
+    if mode not in ("knowledge", "demo_knowledge"):
+        loguru_logger.info("OOBE PDF seed skipped: unsupported CUGA_DEMO_MODE={!r}", mode)
+        return
+
+    st = app_state.get_subsystem_status("knowledge")
+    if st["state"] != "ready":
+        if st["state"] == "failed":
+            loguru_logger.warning("Knowledge subsystem failed; skip OOBE PDF seed")
+        else:
+            loguru_logger.warning(
+                "OOBE PDF seed skipped: knowledge subsystem not ready yet (state={})",
+                st["state"],
+            )
+        return
+
+    pdf_path = _resolve_oobe_knowledge_pdf_path()
+    if pdf_path is None:
+        from cuga.config import DEMO_TOOLS_ROOT
+
+        loguru_logger.warning(
+            "OOBE knowledge PDF not found (tried {} and cuga_workspace/); skipping seed",
+            DEMO_TOOLS_ROOT / "huggingface" / DEMO_KNOWLEDGE_OOBE_PDF_NAME,
+        )
+        return
+    loguru_logger.info("OOBE knowledge PDF resolved to {}", pdf_path)
+
+    engine = getattr(app_state, "knowledge_engine", None)
+    if engine is None:
+        loguru_logger.warning("Knowledge engine missing; skip OOBE PDF seed")
+        return
+
+    if not getattr(app_state, "knowledge_config_hash", None):
+        cfg = getattr(engine, "_config", None)
+        if cfg is not None:
+            app_state.knowledge_config_hash = cfg.vector_config_hash()
+
+    agent_id = os.environ.get(
+        "CUGA_AGENT_ID", getattr(app_state, "agent_id", "cuga-default") or "cuga-default"
+    )
+    collection = resolve_agent_collection(agent_id, app_state)
+    loguru_logger.info(
+        "OOBE PDF seed targeting collection {} for agent_id={}",
+        collection,
+        agent_id,
+    )
+
+    try:
+        docs = await engine.list_documents(collection)
+        if any(d.filename == DEMO_KNOWLEDGE_OOBE_PDF_NAME for d in docs):
+            loguru_logger.info("OOBE knowledge PDF already indexed; skip ingest")
+            return
+        await engine.ingest(collection, pdf_path, True, DEMO_KNOWLEDGE_OOBE_PDF_NAME)
+        loguru_logger.info("Ingested OOBE knowledge PDF {}", DEMO_KNOWLEDGE_OOBE_PDF_NAME)
+    except DocumentExistsError:
+        loguru_logger.info("OOBE knowledge PDF already present; skip ingest")
+    except Exception as e:
+        loguru_logger.warning("OOBE PDF seed failed: {}", e)

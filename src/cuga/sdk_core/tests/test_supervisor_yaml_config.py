@@ -209,3 +209,72 @@ agents:
             # This test mainly verifies parsing works
         finally:
             os.unlink(temp_path)
+
+    @pytest.mark.asyncio
+    async def test_import_from_agent(self):
+        """Test that import_from loads a pre-configured CugaAgent from a Python module."""
+        from langchain_core.tools import tool
+        from cuga.sdk import CugaAgent
+        import sys
+        import types
+
+        # Build a minimal CugaAgent and expose it via a temporary module so the
+        # YAML loader can import it by dotted path.
+        @tool
+        def echo_tool(message: str) -> str:
+            """Echo the message back."""
+            return message
+
+        agent_instance = CugaAgent(tools=[echo_tool])
+        agent_instance.description = "Echo agent for testing import_from"
+
+        # Register a fake module so importlib.import_module can find it
+        fake_module_name = "_test_import_from_module"
+        fake_module = types.ModuleType(fake_module_name)
+        fake_module.echo_agent = agent_instance
+        sys.modules[fake_module_name] = fake_module
+
+        yaml_content = f"""
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: echo_agent
+    import_from: {fake_module_name}.echo_agent
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            config = await load_supervisor_config(temp_path)
+
+            assert len(config.agents) == 1
+            assert "echo_agent" in config.agents
+            loaded = config.agents["echo_agent"]
+            # Should be the exact same instance we registered
+            assert loaded is agent_instance
+        finally:
+            os.unlink(temp_path)
+            sys.modules.pop(fake_module_name, None)
+
+    @pytest.mark.asyncio
+    async def test_import_from_invalid_path_raises(self):
+        """Test that import_from raises when the module or attribute does not exist."""
+        yaml_content = """
+supervisor:
+  strategy: adaptive
+
+agents:
+  - name: bad_agent
+    import_from: non_existent_module.non_existent_attr
+"""
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+            f.write(yaml_content)
+            temp_path = f.name
+
+        try:
+            with pytest.raises(ModuleNotFoundError):
+                await load_supervisor_config(temp_path)
+        finally:
+            os.unlink(temp_path)

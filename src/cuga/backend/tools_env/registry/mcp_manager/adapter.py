@@ -166,6 +166,13 @@ TYPE_MAP: Dict[str, Any] = {
 }
 
 
+def _optional_field_spec(py_t: Any, *, required: bool) -> tuple[Any, Any]:
+    """Optional OpenAPI fields must use Optional[T] so explicit None validates (Pydantic v2)."""
+    if required:
+        return (py_t, ...)
+    return (Optional[py_t], None)
+
+
 def _resolve_ref(schema, resolve):
     # resolve is parser._resolve_ref
     if not schema:
@@ -268,13 +275,14 @@ def _walk_schema_fields(
 
     # If anyOf with multiple real variants remains, treat as broad 'Any'
     if "anyOf" in core and len(core["anyOf"]) > 1:
+        req_f = _is_required(prefix, required)
         py_t = Any
-        default = ... if _is_required(prefix, required) else None
+        spec = _optional_field_spec(py_t, required=req_f)
         if prefix:
-            out[prefix] = (py_t, default)
+            out[prefix] = spec
         else:
             # top-level
-            out.update({"body": (py_t, default)})
+            out.update({"body": spec})
         return
 
     if t == "array":
@@ -282,11 +290,10 @@ def _walk_schema_fields(
         item_schema = core.get("items") or {}
         item_core, item_nullable = _normalize_union(item_schema, resolve_ref)
         list_py = list  # type: ignore[index]
-        py_t = list_py
-        default = ... if _is_required(prefix, required) else None
+        req_f = _is_required(prefix, required)
 
         key = prefix or "body"
-        out[key] = (py_t, default)
+        out[key] = _optional_field_spec(list_py, required=req_f)
 
         # Only flatten array item properties if explicitly requested
         if flatten and (item_core or {}).get("type") == "object" and (item_core or {}).get("properties"):
@@ -324,26 +331,25 @@ def _walk_schema_fields(
             value_schema = {} if addl is True else addl
             value_py = _python_type_for_schema(_resolve_ref(value_schema, resolve_ref) or {})
             dict_py = Dict[str, value_py]  # type: ignore[index]
-            py_t = dict_py
-            default = ... if _is_required(prefix, required) else None
+            req_f = _is_required(prefix, required)
             (out if prefix else out.setdefault("body", {}))
-            out[prefix or "body"] = (py_t, default)
+            out[prefix or "body"] = _optional_field_spec(dict_py, required=req_f)
             return
 
         else:
             # empty object -> dict leaf
-            py_t = dict
-            default = ... if _is_required(prefix, required) else None
-            out[prefix or "body"] = (py_t, default)
+            req_f = _is_required(prefix, required)
+            out[prefix or "body"] = _optional_field_spec(dict, required=req_f)
             return
 
     # primitive leaf
     py_t = _python_type_for_schema(core)
-    default = ... if _is_required(prefix, required) else None
+    req_f = _is_required(prefix, required)
+    spec = _optional_field_spec(py_t, required=req_f)
     if prefix:
-        out[prefix] = (py_t, default)
+        out[prefix] = spec
     else:
-        out["body"] = (py_t, default)
+        out["body"] = spec
 
 
 def extract_field_definitions(api) -> Dict[str, tuple[type, Any]]:
@@ -372,8 +378,7 @@ def extract_field_definitions(api) -> Dict[str, tuple[type, Any]]:
             py_type = str
             if sch and (param.schema_field.type and param.schema_field.type in TYPE_MAP):
                 py_type = TYPE_MAP[param.schema_field.type]
-            default = ... if param.required else None
-            field_defs[name] = (py_type, default)
+            field_defs[name] = _optional_field_spec(py_type, required=param.required)
 
     # 2) Request body
     if api.request_body:

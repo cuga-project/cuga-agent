@@ -114,18 +114,18 @@ class CugaLiteNode(BaseNode):
     def __init__(self, langfuse_handler: Optional[Any] = None, prompt_template: Optional[str] = None):
         super().__init__()
         self.name = "CugaLite"
-        if settings.advanced_features.enable_todos:
-            prompt_filename = 'prompts/mcp_prompt_todos.jinja2'
-        else:
-            prompt_filename = 'prompts/mcp_prompt.jinja2'
-        self.prompt_template = load_one_prompt(prompt_filename)
+        self.prompt_template = load_one_prompt('prompts/mcp_prompt.jinja2')
         self.langfuse_handler = langfuse_handler
         self.hitl_handler = CugaLiteHumanInTheLoopHandler()
         self._background_tasks: set = set()
 
     @staticmethod
     async def read_text_file(file_path: str) -> Optional[str]:
-        """Read text file content using filesystem tool via registry.
+        """Read text file content directly from disk.
+
+        Filesystem is no longer an MCP server; this helper just reads the
+        markdown task-input path (absolute, or relative to the cwd /
+        cuga_workspace) using the consolidated workspace path resolver.
 
         Args:
             file_path: Path to the file to read
@@ -133,28 +133,23 @@ class CugaLiteNode(BaseNode):
         Returns:
             File content as string, or None if failed
         """
-        try:
-            from cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider import call_api
+        from pathlib import Path
 
-            result = await call_api(
-                app_name="filesystem", api_name="filesystem_read_text_file", args={"path": file_path}
+        try:
+            p = Path(file_path).expanduser()
+            if p.is_file():
+                return p.read_text(encoding="utf-8", errors="replace")
+            # Fall back to the consolidated workspace resolver for relative
+            # paths (handles /workspace and cuga_workspace layouts).
+            from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
+                resolve_workspace_path,
             )
 
-            if isinstance(result, dict):
-                if "error" in result:
-                    logger.error(f"Error reading file {file_path}: {result['error']}")
-                    return None
-                if "result" in result:
-                    return result["result"]
-                if "content" in result:
-                    return result["content"]
-                return str(result)
-            elif isinstance(result, str):
-                return result
-            else:
-                logger.error(f"Unexpected result type from read_text_file: {type(result)}")
-                return None
-
+            resolved = resolve_workspace_path(file_path, thread_id=None, operation="read_file")
+            if resolved.is_file():
+                return resolved.read_text(encoding="utf-8", errors="replace")
+            logger.warning(f"File not found: {file_path}")
+            return None
         except Exception as e:
             logger.error(f"Exception reading file {file_path}: {e}")
             return None
@@ -420,6 +415,7 @@ class CugaLiteNode(BaseNode):
         self._log_variable_changes(state, initial_var_names)
 
         # Process the results using the existing logic
+
         result = await self._process_results(
             state=state,
             answer=answer,

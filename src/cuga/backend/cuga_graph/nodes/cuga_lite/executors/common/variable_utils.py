@@ -1,10 +1,149 @@
 import types
-from typing import Any, Set
+from typing import Any, Optional, Set
+
 from loguru import logger
+
+_TODO_CONFIRMATION_VALUES = frozenset({"Todos updated", "Todos have been updated"})
 
 
 class VariableUtils:
     """Utilities for managing variables during code execution."""
+
+    @staticmethod
+    def strip_todo_confirmation_only_vars(new_vars: dict[str, Any]) -> dict[str, Any]:
+        """Drop variables that only hold the short create_update_todos confirmation string."""
+        if not new_vars:
+            return new_vars
+        return {
+            k: v
+            for k, v in new_vars.items()
+            if not (isinstance(v, str) and v.strip() in _TODO_CONFIRMATION_VALUES)
+        }
+
+    @staticmethod
+    def strip_tools_output_var(new_vars: dict[str, Any], code: str) -> dict[str, Any]:
+        """Drop `tools_output` after find_tools — same idea as not persisting noisy todo confirmation; discovery markdown is for the turn only."""
+        if not new_vars or "tools_output" not in new_vars:
+            return new_vars
+        if "find_tools" not in code:
+            return new_vars
+        return {k: v for k, v in new_vars.items() if k != "tools_output"}
+
+    @staticmethod
+    def _sanitize_recursive(obj: Any) -> Any:
+        """Recursively convert non-JSON-serializable scalars and containers.
+
+        Handles:
+        - numpy: integer, floating, complexfloating, bool_, ndarray
+        - pandas scalars: NaT → None, Timestamp → ISO string, Timedelta → seconds
+        - Python datetime: datetime/date/time → ISO string, timedelta → seconds
+        - bytes: UTF-8 string if decodable, else base64-encoded ASCII string
+        - complex: {"real": float, "imag": float}
+        - dict / list: recursive traversal
+
+        DataFrame and Series are intentionally excluded; sanitize_value wraps
+        those with metadata before delegating cell content here.
+        """
+        import base64
+        import datetime as dt
+
+        if obj is None:
+            return obj
+
+        # --- numpy ---
+        try:
+            import numpy as np  # type: ignore[import-untyped]
+
+            if isinstance(obj, np.integer):
+                return int(obj)
+            if isinstance(obj, np.floating):
+                # nan and inf are not valid JSON — map to None
+                v = float(obj)
+                return None if (v != v or v == float("inf") or v == float("-inf")) else v
+            if isinstance(obj, np.complexfloating):
+                return {"real": float(obj.real), "imag": float(obj.imag)}
+            if isinstance(obj, np.bool_):
+                return bool(obj)
+            if isinstance(obj, np.ndarray):
+                # tolist() converts simple dtypes to Python natives; recurse to
+                # catch object-dtype arrays that may still contain exotic types.
+                return VariableUtils._sanitize_recursive(obj.tolist())
+        except ImportError:
+            pass
+
+        # --- pandas scalars ---
+        try:
+            import pandas as pd  # type: ignore[import-untyped]
+
+            if obj is pd.NaT or obj is pd.NA:
+                return None
+            if isinstance(obj, pd.Timestamp):
+                return obj.isoformat()
+            if isinstance(obj, pd.Timedelta):
+                return obj.total_seconds()
+        except ImportError:
+            pass
+
+        # --- Python stdlib datetime (datetime before date: it's a subclass) ---
+        if isinstance(obj, dt.datetime):
+            return obj.isoformat()
+        if isinstance(obj, dt.date):
+            return obj.isoformat()
+        if isinstance(obj, dt.time):
+            return obj.isoformat()
+        if isinstance(obj, dt.timedelta):
+            return obj.total_seconds()
+
+        # --- bytes ---
+        if isinstance(obj, bytes):
+            try:
+                return obj.decode("utf-8")
+            except UnicodeDecodeError:
+                return base64.b64encode(obj).decode("ascii")
+
+        # --- complex ---
+        if isinstance(obj, complex):
+            return {"real": obj.real, "imag": obj.imag}
+
+        # --- containers ---
+        if isinstance(obj, dict):
+            return {k: VariableUtils._sanitize_recursive(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [VariableUtils._sanitize_recursive(v) for v in obj]
+
+        return obj
+
+    @staticmethod
+    def sanitize_value(value: Any) -> Any:
+        """Convert non-JSON-serializable types to serializable equivalents.
+
+        - pd.DataFrame → dict with records (cells recursively sanitized)
+        - pd.Series    → dict with data list (values recursively sanitized)
+        - All other types → delegated to _sanitize_recursive
+
+        All other values are returned unchanged.
+        """
+        try:
+            import pandas as pd  # type: ignore[import-untyped]
+
+            if isinstance(value, pd.DataFrame):
+                return {
+                    "__pandas_type__": "DataFrame",
+                    "records": VariableUtils._sanitize_recursive(value.to_dict("records")),
+                    "columns": list(value.columns),
+                    "reconstruct": "pd.DataFrame(value['records'])",
+                }
+            if isinstance(value, pd.Series):
+                return {
+                    "__pandas_type__": "Series",
+                    "data": VariableUtils._sanitize_recursive(value.tolist()),
+                    "name": value.name,
+                    "reconstruct": "pd.Series(value['data'], name=value['name'])",
+                }
+        except ImportError:
+            pass
+
+        return VariableUtils._sanitize_recursive(value)
 
     @staticmethod
     def is_serializable(value: Any) -> bool:
@@ -36,8 +175,11 @@ class VariableUtils:
         try:
             import pandas as pd
 
-            if isinstance(value, (pd.DataFrame, pd.Series)):
-                return True
+            if isinstance(value, pd.DataFrame):
+                return False
+            if isinstance(value, pd.Series):
+                return False
+
         except ImportError:
             pass
 
@@ -79,7 +221,7 @@ class VariableUtils:
             if key.startswith('_'):
                 continue
 
-            value = all_locals[key]
+            value = VariableUtils.sanitize_value(all_locals[key])
             if VariableUtils.is_serializable(value):
                 new_vars[key] = value
             else:
@@ -171,19 +313,29 @@ class VariableUtils:
         return dict(limited_items)
 
     @staticmethod
-    def add_variables_to_manager(new_vars: dict[str, Any], var_manager, result: str) -> str:
+    def add_variables_to_manager(
+        new_vars: dict[str, Any],
+        var_manager,
+        result: str,
+        skip_summary_keys: Optional[Set[str]] = None,
+    ) -> str:
         """Add new variables to VariablesManager and append summary to result.
 
         Args:
             new_vars: Dictionary of new variables
             var_manager: VariablesManager instance
             result: Current execution result string
+            skip_summary_keys: Variable names to still store but omit from the execution-output
+                summary (e.g. ``todos`` from ``create_update_todos``, shown via Current Plan instead).
 
         Returns:
             Updated result string with variables summary
         """
         if not new_vars:
             return result
+
+        if skip_summary_keys is None:
+            skip_summary_keys = set()
 
         existing_names = (
             set(var_manager.get_variable_names()) if hasattr(var_manager, 'get_variable_names') else set()
@@ -193,14 +345,18 @@ class VariableUtils:
 
         for var_name, var_value in new_vars.items():
             if var_name in existing_names:
-                updated_names.append(var_name)
+                if var_name not in skip_summary_keys:
+                    updated_names.append(var_name)
             else:
-                created_names.append(var_name)
+                if var_name not in skip_summary_keys:
+                    created_names.append(var_name)
             var_manager.add_variable(var_value, name=var_name, description="Created during code execution")
 
         try:
-            all_names = list(new_vars.keys())
-            variables_summary = var_manager.get_variables_summary(variable_names=all_names)
+            summary_names = [k for k in new_vars.keys() if k not in skip_summary_keys]
+            if not summary_names:
+                return result
+            variables_summary = var_manager.get_variables_summary(variable_names=summary_names)
             if variables_summary and variables_summary != "# No variables stored":
                 if created_names and updated_names:
                     header = "## New Variables Created / Updated:"

@@ -55,6 +55,63 @@ class EvolveIntegration:
             return None
 
     @classmethod
+    async def store_user_facts(
+        cls,
+        user_id: str,
+        message: str,
+        metadata: dict | None = None,
+    ) -> None:
+        """Store durable user facts/preferences without interrupting lite execution."""
+        if not cls.is_enabled():
+            return
+        if not user_id or not message:
+            return
+
+        try:
+            payload = {
+                "user_id": user_id,
+                "message": message,
+                "metadata": json.dumps(metadata or {}),
+            }
+            result = await cls._call_tool("store_user_facts", payload)
+            if isinstance(result, dict):
+                logger.info(
+                    "Evolve: Stored user facts (stored_count=%s)",
+                    result.get("stored_count", 0),
+                )
+        except Exception as e:
+            logger.warning(f"Evolve store_user_facts failed (non-fatal): {e}")
+
+    @classmethod
+    async def retrieve_user_facts(
+        cls,
+        user_id: str,
+        query: str,
+        limit: int = 5,
+    ) -> Optional[dict]:
+        """Retrieve durable user facts/preferences without interrupting lite execution."""
+        if not cls.is_enabled():
+            return None
+        if not user_id or not query:
+            return None
+
+        try:
+            result = await cls._call_tool(
+                "retrieve_user_facts",
+                {
+                    "user_id": user_id,
+                    "query": query,
+                    "limit": limit,
+                },
+            )
+            if result:
+                return result if isinstance(result, dict) else None
+            return None
+        except Exception as e:
+            logger.warning(f"Evolve retrieve_user_facts failed (non-fatal): {e}")
+            return None
+
+    @classmethod
     async def save_trajectory(
         cls,
         chat_messages: List[BaseMessage],

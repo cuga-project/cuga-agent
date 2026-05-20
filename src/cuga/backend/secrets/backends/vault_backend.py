@@ -175,8 +175,23 @@ def _resolve_vault_path(
     list_prefix = _vault_list_prefix(vault_secret_path, mp, kv)
 
     sid = (secret_id or "").strip()
+    # Strip leading mount point if it's already in the sid to avoid double-prepending
+    if sid.startswith(mp + "/"):
+        sid = sid[len(mp) + 1 :]
+
     if not sid:
         return mp, "", list_prefix
+
+    if (vault_secret_path or "").strip():
+        # If a base path is set, we never want to guess the mount from the path.
+        # We always use the explicitly configured mount_point.
+        merged = _merge_vault_secret_base(sid, vault_secret_path)
+        # Ensure we don't accidentally double-strip "data/" if it's part of the base path
+        # but normalize the ID portion if it was provided as "data/..."
+        crud_path = merged
+        if kv != "1":
+            crud_path = _normalize_kv_v2_data_prefix(crud_path)
+        return mp, crud_path, list_prefix
 
     merged = _merge_vault_secret_base(sid, vault_secret_path)
     crud_mount, crud_path = _split_mount_and_path(merged, default_mount=mp, kv_version=kv)
@@ -319,19 +334,14 @@ class VaultBackend:
                 )
                 payload = (resp or {}).get("data", {})
             else:
-                try:
-                    resp = client.secrets.kv.v2.read_secret_version(
-                        path=secret_path,
-                        mount_point=mount_point,
-                    )
-                    data = (resp or {}).get("data", {}) or {}
-                    payload = data.get("data", data)
-                except Exception:
-                    resp = client.secrets.kv.v1.read_secret(
-                        path=secret_path,
-                        mount_point=mount_point,
-                    )
-                    payload = (resp or {}).get("data", {})
+                # Empty / unset defaults to KV v2 only. Do not fall back to v1: that hits
+                # /v1/{mount}/{path} and fails on versioned KV with "Invalid path..." warnings.
+                resp = client.secrets.kv.v2.read_secret_version(
+                    path=secret_path,
+                    mount_point=mount_point,
+                )
+                data = (resp or {}).get("data", {}) or {}
+                payload = data.get("data", data)
             if not isinstance(payload, dict):
                 return None
             if key_field:

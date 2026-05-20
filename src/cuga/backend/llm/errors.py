@@ -37,6 +37,34 @@ def _parse_tool_use_failed_from_body(body: Any) -> Optional[dict]:
     return None
 
 
+def is_tool_choice_none_tool_use_failed(err: Any) -> bool:
+    """
+    True when the provider rejected the request because the model emitted a tool call
+    while tool_choice was none (e.g. Groq 400 tool_use_failed).
+    Safe to retry the same plain-text completion call.
+    """
+    err_str = err if isinstance(err, str) else str(err)
+    return "tool_use_failed" in err_str and "Tool choice is none" in err_str
+
+
+async def ainvoke_with_retry_on_tool_choice_none(
+    chain: Any, input_data: dict, *, max_attempts: int = 2
+) -> Any:
+    """Invoke a LangChain runnable; retry when the provider rejects a spurious tool call (tool_choice none)."""
+    from loguru import logger
+
+    for attempt in range(max_attempts):
+        try:
+            return await chain.ainvoke(input_data)
+        except Exception as e:
+            if attempt < max_attempts - 1 and is_tool_choice_none_tool_use_failed(e):
+                logger.warning(
+                    "Retrying LLM call after tool_use_failed (Tool choice is none, but model called a tool)"
+                )
+                continue
+            raise
+
+
 def parse_tool_use_failed_generation(err: Any) -> Optional[dict]:
     """
     Parse tool_use_failed error with failed_generation (e.g. Groq malformed tool call).

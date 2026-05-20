@@ -1,5 +1,7 @@
 from typing import Any, Dict, List, Optional
 
+from loguru import logger
+
 from cuga.backend.storage.embedding.base import EmbeddingSchemaConfig
 
 SCOPE_COLS = ["tenant_id", "instance_id"]
@@ -37,7 +39,14 @@ class ProdEmbeddingStore:
                 command_timeout=60,
             )
             async with self._pool.acquire() as conn:
-                await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                try:
+                    await conn.execute("CREATE EXTENSION IF NOT EXISTS vector")
+                except asyncpg.exceptions.InsufficientPrivilegeError:
+                    logger.warning(
+                        "Permission denied for CREATE EXTENSION vector; assuming it was pre-installed by "
+                        "a database admin. If pgvector is not installed in this database, embedding store "
+                        "setup will fail next."
+                    )
                 await register_vector(conn)
             await self._ensure_table()
         return self._pool

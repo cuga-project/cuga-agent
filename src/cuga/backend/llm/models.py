@@ -1,19 +1,77 @@
 import re
 import threading
 from datetime import date
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Mapping
 import hashlib
 import json
 import os
 
 import httpx
+import openai
 from langchain_openai import ChatOpenAI, AzureChatOpenAI
 from langchain_ibm import ChatWatsonx
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import AIMessage
+from langchain_core.outputs import ChatResult
 from loguru import logger
 
 from cuga.backend.secrets import resolve_secret
 from cuga.config import settings
+
+
+class ReasoningChatOpenAI(ChatOpenAI):
+    """ChatOpenAI subclass that preserves non-standard reasoning fields.
+
+    LangChain's _convert_dict_to_message only forwards function_call, tool_calls,
+    and audio into additional_kwargs. Models that return reasoning_content (e.g.
+    DeepSeek-style or self-hosted reasoning models) have that field silently
+    dropped. This subclass rescues it by post-processing the raw response dict.
+    """
+
+    def _create_chat_result(
+        self,
+        response: "dict | openai.BaseModel",
+        generation_info: "dict | None" = None,
+    ) -> ChatResult:
+        result = super()._create_chat_result(response, generation_info)
+
+        response_dict = response if isinstance(response, dict) else response.model_dump()
+        choices = response_dict.get("choices") or []
+        for i, res in enumerate(choices):
+            if i >= len(result.generations):
+                break
+            raw_msg = res.get("message") or {}
+            reasoning = raw_msg.get("reasoning_content")
+            if reasoning and isinstance(result.generations[i].message, AIMessage):
+                result.generations[i].message.additional_kwargs.setdefault("reasoning_content", reasoning)
+
+        return result
+
+
+try:
+    from langchain_litellm import ChatLiteLLM as _ChatLiteLLMBase
+
+    class ReasoningChatLiteLLM(_ChatLiteLLMBase):
+        """LiteLLM chat model that preserves ``reasoning_content`` on AIMessage.
+
+        Mirrors :class:`ReasoningChatOpenAI` for backends where the raw completion
+        includes ``choices[].message.reasoning_content`` but conversion drops it.
+        """
+
+        def _create_chat_result(self, response: Mapping[str, Any]) -> ChatResult:
+            result = super()._create_chat_result(response)
+            choices = response.get("choices") or []
+            for i, res in enumerate(choices):
+                if i >= len(result.generations):
+                    break
+                raw_msg = res.get("message") or {}
+                reasoning = raw_msg.get("reasoning_content")
+                if reasoning and isinstance(result.generations[i].message, AIMessage):
+                    result.generations[i].message.additional_kwargs.setdefault("reasoning_content", reasoning)
+            return result
+
+except ImportError:
+    ReasoningChatLiteLLM = None  # type: ignore[misc, assignment]
 
 _ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
 
@@ -68,12 +126,6 @@ try:
 except ImportError:
     logger.warning("Langchain Google GenAI not installed, using OpenAI instead")
     ChatGoogleGenerativeAI = None
-
-try:
-    from langchain_litellm import ChatLiteLLM
-except ImportError:
-    logger.warning("Langchain ChatLiteLLM not installed (langchain-litellm)")
-    ChatLiteLLM = None
 
 
 class LLMManager:
@@ -461,6 +513,49 @@ class LLMManager:
             # For other platforms, use TOML settings
             return model_settings.get('url')
 
+    def _get_ssl_verify(self, model_settings: Dict[str, Any]) -> "bool | str":
+        """Return the ssl verify value for httpx / litellm clients.
+
+        Priority:
+        1. disable_ssl flag (model_settings or CUGA_DISABLE_SSL env) → False
+        2. ssl_ca_bundle in model_settings → cert path string
+        3. CUGA_SSL_CA_BUNDLE env var → cert path string
+        4. settings.connections.ssl_ca_bundle (TOML) → cert path string
+        5. OPENAI_SSL_VERIFY=false env var → False
+        6. Default → True
+        """
+        disable_ssl = model_settings.get("disable_ssl") or os.environ.get("CUGA_DISABLE_SSL", "").lower() in (
+            "true",
+            "1",
+            "yes",
+        )
+        if disable_ssl:
+            return False
+
+        # Explicit verify=false via legacy env var
+        if os.environ.get("OPENAI_SSL_VERIFY", "true").lower() in ("false", "0", "no"):
+            return False
+
+        # Per-model CA bundle from config dict
+        ca_bundle = model_settings.get("ssl_ca_bundle")
+        if ca_bundle and str(ca_bundle).strip():
+            return str(ca_bundle).strip()
+
+        # Global env var override
+        env_bundle = os.environ.get("CUGA_SSL_CA_BUNDLE", "").strip()
+        if env_bundle:
+            return env_bundle
+
+        # Global TOML setting via dynaconf
+        try:
+            toml_bundle = settings.connections.ssl_ca_bundle
+            if toml_bundle and str(toml_bundle).strip():
+                return str(toml_bundle).strip()
+        except Exception:
+            pass
+
+        return True
+
     def _is_reasoning_model(self, model_name: str) -> bool:
         """Check if model is a reasoning model that doesn't support temperature
 
@@ -468,7 +563,7 @@ class LLMManager:
         """
         if not model_name:
             return False
-        reasoning_prefixes = ('o1', 'o3', 'gpt-5')
+        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5')
         return model_name.startswith(reasoning_prefixes)
 
     def _create_llm_instance(self, model_settings: Dict[str, Any]):
@@ -536,18 +631,12 @@ class LLMManager:
             if base_url:
                 openai_params["openai_api_base"] = base_url
 
-            disable_ssl = model_settings.get("disable_ssl") or os.environ.get(
-                "CUGA_DISABLE_SSL", ""
-            ).lower() in ("true", "1", "yes")
-            ssl_verify = (
-                os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
-                and not disable_ssl
-            )
-            if not ssl_verify:
-                openai_params["http_client"] = httpx.Client(verify=False)
-                openai_params["http_async_client"] = httpx.AsyncClient(verify=False)
+            ssl_verify = self._get_ssl_verify(model_settings)
+            if ssl_verify is not True:
+                openai_params["http_client"] = httpx.Client(verify=ssl_verify)
+                openai_params["http_async_client"] = httpx.AsyncClient(verify=ssl_verify)
 
-            llm = ChatOpenAI(**openai_params)
+            llm = ReasoningChatOpenAI(**openai_params)
         elif platform == "groq":
             api_key = None
             apikey_ref = model_settings.get("api_key")
@@ -563,12 +652,37 @@ class LLMManager:
                 temperature=temperature,
             )
         elif platform == "watsonx":
-            llm = ChatWatsonx(
-                model_id=model_name,
-                temperature=temperature,
-                max_tokens=max_tokens,
-                project_id=os.environ['WATSONX_PROJECT_ID'],
-            )
+            watsonx_params: Dict[str, Any] = {
+                "params": {
+                    "temperature": temperature,
+                    "max_completion_tokens": max_tokens,
+                },
+            }
+
+            watsonx_url = model_settings.get("url")
+            if watsonx_url:
+                watsonx_params["url"] = watsonx_url
+
+            deployment_id = model_settings.get("deployment_id")
+            if deployment_id:
+                # Deployment id is model-specific configuration representing
+                # the id of a deployed model in production
+                watsonx_params["deployment_id"] = deployment_id
+            else:
+                # model id is not used when using a deployment id
+                watsonx_params["model_id"] = model_name
+
+            space_id = os.getenv("WATSONX_SPACE_ID")
+            project_id = os.getenv("WATSONX_PROJECT_ID")
+
+            if space_id:
+                watsonx_params["space_id"] = space_id
+            elif project_id:
+                watsonx_params["project_id"] = project_id
+            else:
+                raise ValueError("WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID to be set.")
+
+            llm = ChatWatsonx(**watsonx_params)
         elif platform == "rits":
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
@@ -644,31 +758,27 @@ class LLMManager:
             if default_headers:
                 openrouter_params["default_headers"] = default_headers
 
-            llm = ChatOpenAI(**openrouter_params)
-        elif platform == "litellm" and ChatLiteLLM is not None:
+            llm = ReasoningChatOpenAI(**openrouter_params)
+        elif platform == "litellm" and ReasoningChatLiteLLM is not None:
             logger.debug(f"Creating LiteLLM model: {model_name}")
-            disable_ssl = model_settings.get("disable_ssl") or os.environ.get(
-                "CUGA_DISABLE_SSL", ""
-            ).lower() in ("true", "1", "yes")
-            ssl_verify = (
-                os.environ.get("OPENAI_SSL_VERIFY", "true").lower() not in ("false", "0", "no")
-                and not disable_ssl
-            )
+            ssl_verify = self._get_ssl_verify(model_settings)
 
-            # Import litellm and configure global settings
             import litellm
 
-            litellm.drop_params = True  # Disable default prefix globally
+            litellm.drop_params = True
+            if ssl_verify is not True:
+                litellm.ssl_verify = ssl_verify
 
-            if not ssl_verify:
-                litellm.ssl_verify = False
-
+            is_reasoning = self._is_reasoning_model(model_name)
             litellm_params: Dict[str, Any] = {
                 "model": model_name,
-                "temperature": temperature,
                 "max_tokens": max_tokens,
                 "drop_params": True,
             }
+            if not is_reasoning:
+                litellm_params["temperature"] = temperature
+            else:
+                logger.debug(f"Skipping temperature for reasoning model (litellm): {model_name}")
             # Tell litellm to use the OpenAI-compatible code path without parsing
             # a provider from the model name (e.g. "ibm-granite/granite-4.0-1b"
             # would otherwise be misread as provider=ibm-granite).
@@ -697,7 +807,7 @@ class LLMManager:
                         api_key = os.environ.get(apikey_name)
                 if api_key:
                     litellm_params["api_key"] = api_key
-            llm = ChatLiteLLM(**litellm_params)
+            llm = ReasoningChatLiteLLM(**litellm_params)
         else:
             raise ValueError(f"Unsupported platform: {platform}")
 
@@ -839,6 +949,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         "api_key": api_key,
         "temperature": llm_cfg.get("temperature", 0.1),
         "disable_ssl": llm_cfg.get("disable_ssl", False),
+        "ssl_ca_bundle": llm_cfg.get("ssl_ca_bundle") or None,
         "auth_type": llm_cfg.get("auth_type"),
         "auth_header_name": llm_cfg.get("auth_header_name"),
         "max_tokens": max_tokens,

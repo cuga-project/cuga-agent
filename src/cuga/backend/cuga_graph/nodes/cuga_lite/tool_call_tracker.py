@@ -104,7 +104,6 @@ class ToolCallTracker:
         }
 
         calls.append(record)
-        logger.debug(f"Recorded tool call: {tool_name} (operation_id={operation_id}, app={app_name})")
 
     @staticmethod
     def get_current_calls() -> List[Dict[str, Any]]:

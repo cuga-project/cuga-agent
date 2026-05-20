@@ -14,9 +14,11 @@ interface WorkspacePanelProps {
   isOpen: boolean;
   onToggle: () => void;
   highlightedFile?: string | null;
+  threadId?: string;
+  workspaceFilesystemRoot?: string;
 }
 
-export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspacePanelProps) {
+export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, workspaceFilesystemRoot = "cuga_workspace" }: WorkspacePanelProps) {
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
   const [selectedFile, setSelectedFile] = useState<{ path: string; content: string; name: string } | null>(null);
@@ -29,13 +31,14 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspaceP
     try {
       setError(null);
       const { workspaceService } = await import('./workspaceService');
-      const data = await workspaceService.getWorkspaceTree();
+      const tid = threadId?.trim() || undefined;
+      const data = await workspaceService.getWorkspaceTree(false, tid);
       setFileTree(data.tree || []);
     } catch (err) {
       console.error("Error loading workspace:", err);
       setError("Error loading workspace");
     }
-  }, []);
+  }, [threadId]);
 
   useEffect(() => {
     if (isOpen) {
@@ -73,7 +76,10 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspaceP
 
     setLoading(true);
     try {
-      const response = await apiFetch(`/api/workspace/file?path=${encodeURIComponent(file.path)}`);
+      const qp = new URLSearchParams({ path: file.path });
+      const tid = threadId?.trim();
+      if (tid) qp.set("thread_id", tid);
+      const response = await apiFetch(`/api/workspace/file?${qp.toString()}`);
       if (response.ok) {
         const data = await response.json();
         setSelectedFile({
@@ -94,7 +100,10 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspaceP
 
   const handleDownload = async (filePath: string, fileName: string) => {
     try {
-      const response = await apiFetch(`/api/workspace/download?path=${encodeURIComponent(filePath)}`);
+      const qp = new URLSearchParams({ path: filePath });
+      const tid = threadId?.trim();
+      if (tid) qp.set("thread_id", tid);
+      const response = await apiFetch(`/api/workspace/download?${qp.toString()}`);
       if (response.ok) {
         const blob = await response.blob();
         const url = window.URL.createObjectURL(blob);
@@ -303,7 +312,8 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile }: WorkspaceP
             >
               <Info size={16} className="info-icon" />
               <div className="workspace-info-tooltip">
-                This is the CUGA workspace. Tag files directly from your working directory using <code>@</code>
+                Workspace files for this chat. Paths mirror the agent: <code>{workspaceFilesystemRoot}</code>
+                . Tag files using <code>@</code>
               </div>
             </div>
           </div>

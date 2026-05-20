@@ -1,4 +1,6 @@
 .env
+.omc/
+.omx/
 __pycache__
 output
 *.db
@@ -6,7 +8,9 @@ cuga_workspace/
 .idea
 node_modules
 .pnpm-store/
+.agents
 *.log
+.claude/settings.local.json
 /frontend/dist/
 src/frontend_workspaces/frontend/dist/
 /frontend/node_modules/
@@ -64,6 +68,7 @@ src/cuga/demo_tools/email_mcp/mail_sink/build
 src/cuga/demo_tools/email_mcp/mcp_server/build
 src/cuga/demo_tools/file_system/build
 src/cuga/demo_tools/**/*.egg-info/
+skills-lock.json
 
 # Local dependencies
 vendor/
@@ -94,3 +99,6 @@ scripts/registry.env
 
 # Knowledge demo docs (local only)
 demo_knowledge_docs/
+
+# Tracked even if core.excludesfile / global gitignore lists this basename
+!scripts/smoke_pip_install_isolated.sh

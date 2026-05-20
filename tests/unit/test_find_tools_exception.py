@@ -86,3 +86,30 @@ async def test_find_tools_func_success_passes_through(mock_tools, mock_apps):
         result = await func(query="find contacts", app_name="test_app")
 
     assert result == expected
+
+
+@pytest.mark.asyncio
+async def test_find_tools_composes_query_with_initial_user_message(mock_tools, mock_apps):
+    """When initial_user_message is set, shortlister query includes task context."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_find_tools_tool
+
+    app_to_tools_map = {"test_app": mock_tools}
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.find_tools",
+        new_callable=AsyncMock,
+        return_value="ok",
+    ) as mock_find:
+        tool = await create_find_tools_tool(
+            all_tools=mock_tools,
+            all_apps=mock_apps,
+            app_to_tools_map=app_to_tools_map,
+            initial_user_message="Book a flight to NYC",
+        )
+        func = tool.coroutine or tool.func
+        await func(query="list calendar tools", app_name="test_app")
+
+    mock_find.assert_awaited_once()
+    call_kw = mock_find.await_args.kwargs
+    assert call_kw["query"] == (
+        "query: list calendar tools,\nTask context (initial user message): Book a flight to NYC"
+    )

@@ -195,9 +195,8 @@ class ToolApprovalHandler:
             policy = policy_match.policy
             logger.warning(f"Tool approval required by policy '{policy.name}' - routing to HITL")
 
-            # Extract preview lines from code
             code_lines = code.split("\n")
-            preview_lines = code_lines[:10] if len(code_lines) > 10 else code_lines
+            preview_lines = code_lines
 
             # Store policy metadata for the approval flow
             approval_metadata = {

@@ -1,3 +1,6 @@
+# Shell scripts must use LF so Linux containers do not get CRLF shebangs (exec format error)
+*.sh text eol=lf
+
 # Exclude build directories from diffs and linguist statistics
 src/frontend_workspaces/extension/releases/** -diff
 src/frontend_workspaces/extension/releases/** linguist-vendored

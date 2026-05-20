@@ -4,7 +4,12 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider import ToolR
 from cuga.backend.cuga_graph.nodes.cuga_lite.direct_langchain_tools_provider import (
     DirectLangChainToolsProvider,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import create_mcp_prompt, PromptUtils
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    create_mcp_prompt,
+    PromptUtils,
+    normalize_mcp_few_shot_examples,
+    resolve_cuga_lite_few_shots_enabled,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
 
 __all__ = [
@@ -12,6 +17,8 @@ __all__ = [
     'ToolRegistryProvider',
     'DirectLangChainToolsProvider',
     'create_mcp_prompt',
+    'normalize_mcp_few_shot_examples',
+    'resolve_cuga_lite_few_shots_enabled',
     'PromptUtils',
     'CodeExecutor',
 ]

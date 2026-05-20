@@ -1,9 +1,7 @@
-import asyncio
 import copy
 import json
 import os
 import shutil
-import signal
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 import time
@@ -20,12 +18,6 @@ from langchain_core.tools import StructuredTool
 from loguru import logger
 from mcp.types import CallToolResult, TextContent
 from pydantic import BaseModel, Field
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from cuga.backend.memory.memory import Memory
-
-background_tasks = set()
 
 AGENT_ANALYTICS = True
 try:
@@ -93,8 +85,6 @@ class ActivityTracker(object):
     tasks: Dict[str, Dict[str, Any]] = {}
     experiment_folder: Optional[str] = None
     tasks_metadata: Optional[TasksMetadata] = None
-    _memory: 'Memory' = None
-
     # Base directory configuration
     _base_dir: str = TRAJECTORY_DATA_DIR
 
@@ -102,33 +92,6 @@ class ActivityTracker(object):
         if not cls._instance:
             cls._instance = super(ActivityTracker, cls).__new__(cls)
         return cls._instance
-
-    @property
-    def memory(self) -> 'Memory':
-        if settings.advanced_features.enable_memory is False:
-            raise RuntimeError('Unintentional memory access. Memory is disabled.')
-
-        # Initializing memory at utterance-time instead of ahead-of-time
-        # allows memory to be enabled after config changes
-        if self._memory is None:
-            from cuga.backend.memory.memory import Memory
-            from cuga.backend.memory.agentic_memory import NamespaceNotFoundException
-
-            self._memory = Memory()
-            try:
-                self._memory.get_namespace_details(namespace_id="memory")
-            except NamespaceNotFoundException:
-                self._instance.memory.create_namespace(namespace_id="memory")
-
-            def background_process_interrupt_handler(signum, frame):
-                """Notify that N processes were interrupted when this process closed."""
-                if len(background_tasks) > 0:
-                    logger.info(
-                        f"{len(background_tasks)} memory background analysis tasks were prematurely interrupted."
-                    )
-
-            signal.signal(signal.SIGINT, background_process_interrupt_handler)
-        return self._memory
 
     async def invoke_tool(self, server_name: str, tool_name: str, args: dict):
         if server_name not in self.tools:
@@ -671,32 +634,9 @@ class ActivityTracker(object):
                         annotation_content=f"{step.image_before}",
                     )
 
-        if settings.advanced_features.enable_memory:
-            from cuga.backend.memory.agentic_memory.utils.prompts import prompts
-
-            step_data = step.model_dump()
-            if len(self.steps) == 0:
-                self.generate_run_id()
-                self.memory.create_run(namespace_id="memory", run_id=self.run_id)
-
-                # Include intent in step metadata so it's available during tip extraction
-                step_data['intent'] = self.intent  # Add the user's task intent
-            self.memory.add_step(
-                namespace_id='memory',
-                run_id=self.run_id,
-                step=step_data,
-                prompt=prompts[step.name],
-            )
         step.prompts = copy.deepcopy(self.prompts)
         self.prompts = []
         self.steps.append(step)
-        if settings.advanced_features.enable_memory and step.name == "FinalAnswerAgent":
-            # End run and execute any background processing.
-            # If memory is running as a library, process must finish before exiting
-            task = asyncio.create_task(self.memory.end_run(namespace_id="memory", run_id=self.run_id))
-            background_tasks.add(task)
-            task.add_done_callback(background_tasks.discard)
-
         if settings.advanced_features.tracker_enabled:
             self.to_file()
         self.prompts = []
