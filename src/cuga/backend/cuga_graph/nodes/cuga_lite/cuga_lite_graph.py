@@ -731,7 +731,10 @@ def extract_and_combine_codeblocks(text: str) -> str:
     # mistaken for code.
     unclosed = re.search(r'```python\s*\n(.*)', text, re.DOTALL)
     if unclosed:
-        candidate = re.sub(r'\n?```\s*$', '', unclosed.group(1)).strip()
+        # Strip a trailing full OR partial markdown fence (1–3 backticks).
+        # Streamed responses can be truncated mid-fence; without this the
+        # straggler backticks make `compile()` fail and we'd drop valid code.
+        candidate = re.sub(r'\n?`{1,3}\s*$', '', unclosed.group(1)).strip()
         if candidate:
             try:
                 compile(candidate.replace('await ', ''), '<string>', 'exec')

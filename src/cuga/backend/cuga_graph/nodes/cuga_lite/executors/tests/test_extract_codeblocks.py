@@ -149,6 +149,15 @@ class TestExtractAndCombineCodeblocks:
         result = extract_and_combine_codeblocks('```python\nthis is not python at all $$$')
         assert result == ''
 
+    def test_incomplete_markdown_block_strips_partial_trailing_fence(self):
+        """Streamed responses can be truncated mid-fence (1 or 2 trailing
+        backticks instead of 3). The recovery path must strip those stragglers
+        so ``compile()`` doesn't reject otherwise-valid code (#204 CR feedback)."""
+        result_one_tick = extract_and_combine_codeblocks('```python\nprint("test")\n`')
+        result_two_ticks = extract_and_combine_codeblocks('```python\nprint("test")\n``')
+        assert result_one_tick == 'print("test")'
+        assert result_two_ticks == 'print("test")'
+
     def test_nested_code_structures(self):
         """Nested code structures should be preserved."""
         code = '''def outer():
