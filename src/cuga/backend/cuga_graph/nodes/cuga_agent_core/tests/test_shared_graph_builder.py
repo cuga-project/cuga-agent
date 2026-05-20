@@ -100,6 +100,39 @@ def test_built_graph_has_prepare_and_call_model_nodes():
     assert "sandbox" in node_names  # adapter.execute_node_name
 
 
+def test_built_graph_has_execute_to_call_model_edge():
+    """Sandbox must loop back to call_model after code execution (regression guard)."""
+    build = _get_builder()
+    adapter = _MinimalAdapter()
+
+    graph = build(
+        adapter=adapter,
+        state_class=_MockState,
+        prepare_node=_noop_node(),
+        call_model_node=_noop_node(),
+        execute_node=_noop_node(),
+    )
+
+    edges = graph.edges
+    assert ("sandbox", "call_model") in edges
+
+
+def test_built_graph_has_no_prepare_to_call_model_edge():
+    """prepare routes via Command only — static edge would run call_model after BLOCK_INTENT."""
+    build = _get_builder()
+    adapter = _MinimalAdapter()
+
+    graph = build(
+        adapter=adapter,
+        state_class=_MockState,
+        prepare_node=_noop_node(),
+        call_model_node=_noop_node(),
+        execute_node=_noop_node(),
+    )
+
+    assert ("prepare", "call_model") not in graph.edges
+
+
 # ── 3. Graph has expected node names (Supervisor-like) ────────────────────
 
 

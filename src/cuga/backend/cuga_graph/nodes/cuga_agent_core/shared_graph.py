@@ -2,7 +2,7 @@
 
 ``build_agent_graph`` wires the canonical 3-node agent graph structure:
 
-    START → prepare → call_model ↔ execute (loop) → END
+    START → prepare --Command--> call_model ↔ execute (loop) → END
 
 Both CugaLite and CugaSupervisor share this structure.  The nodes themselves
 are provided by the caller (produced by adapter factories), so the graph
@@ -54,6 +54,8 @@ def build_agent_graph(
     graph.add_node(adapter.execute_node_name, execute_node)
 
     graph.add_edge(START, "prepare")
-    graph.add_edge("prepare", "call_model")
+    # prepare returns Command(goto=...) — no static edge (avoids call_model after BLOCK_INTENT).
+    # Execute node returns a state update (not Command); loop back for the NL answer.
+    graph.add_edge(adapter.execute_node_name, "call_model")
 
     return graph
