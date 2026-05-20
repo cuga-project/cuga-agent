@@ -78,6 +78,22 @@ def load_prompt_chat(system_path, relative_to_caller=True):
     return prompt
 
 
+def model_supports_vision(model_config) -> bool:
+    """Return whether ``model_config`` indicates the underlying LLM accepts
+    multimodal (image+text) ``content`` blocks on user messages.
+
+    Defaults to ``True`` when the flag is missing so existing model configs
+    continue to use vision when the global ``advanced_features.use_vision``
+    setting is on. Set ``enable_vision = false`` on the model config to opt
+    out — the browser planner will then send a plain-string user message,
+    which avoids ``messages[1].content must be a string`` 400s from
+    openai-compatible endpoints that reject multimodal content (issue #214).
+    """
+    if model_config is None:
+        return True
+    return bool(getattr(model_config, 'enable_vision', True))
+
+
 def load_prompt_with_image(
     system_path, user_path, model_config=None, format_instructions=None, relative_to_caller=True
 ):
@@ -104,7 +120,8 @@ def load_prompt_with_image(
 
     pmt_user = PromptTemplate.from_file(user_path, template_format="jinja2", encoding="utf-8")
     pmt_image = ImagePromptTemplate(input_variables=['img'], template={"url": '{img}'})
-    pmt_with_vision = [pmt_image, pmt_user] if settings.advanced_features.use_vision else pmt_user
+    use_vision_effective = settings.advanced_features.use_vision and model_supports_vision(model_config)
+    pmt_with_vision = [pmt_image, pmt_user] if use_vision_effective else pmt_user
     prompt = ChatPromptTemplate(
         messages=[
             SystemMessagePromptTemplate(prompt=pmt_system),

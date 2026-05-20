@@ -13,7 +13,7 @@ from cuga.backend.cuga_graph.nodes.browser.browser_planner_agent.prompts.load_pr
     parser,
 )
 from cuga.backend.llm.models import LLMManager
-from cuga.backend.llm.utils.helpers import load_prompt_with_image
+from cuga.backend.llm.utils.helpers import load_prompt_with_image, model_supports_vision
 from cuga.config import settings
 
 llm_manager = LLMManager()
@@ -21,11 +21,21 @@ tracker = ActivityTracker()
 
 
 class BrowserPlannerAgent(BaseAgent):
-    def __init__(self, prompt_template: ChatPromptTemplate, llm: BaseChatModel, tools: Any = None):
+    def __init__(
+        self,
+        prompt_template: ChatPromptTemplate,
+        llm: BaseChatModel,
+        tools: Any = None,
+        use_vision_effective: bool = True,
+    ):
         super().__init__()
         self.name = "BrowserPlannerAgent"
         parser = RunnableLambda(BrowserPlannerAgent.output_parser)
         self.chain = BaseAgent.get_chain(prompt_template, llm, NextAgentPlan) | (parser.bind(name=self.name))
+        # Mirror the gate applied to the prompt template so the system prompt's
+        # ``{% if use_vision %}`` block and the runtime image attachment stay in
+        # sync with whether the resolved model accepts multimodal content.
+        self.use_vision_effective = use_vision_effective
 
     @staticmethod
     def output_parser(result: NextAgentPlan, name) -> Any:
@@ -40,12 +50,12 @@ class BrowserPlannerAgent(BaseAgent):
         ):
             pass
         data = input_variables.model_dump()
-        data.update({"use_vision": settings.advanced_features.use_vision})
+        data.update({"use_vision": self.use_vision_effective})
         if settings.advanced_features.mode == "hybrid":
             data["variables_history"] = input_variables.variables_manager.get_variables_summary(last_n=1)
         else:
             data["variables_history"] = ""
-        if settings.advanced_features.use_vision and getattr(tracker, "images", None):
+        if self.use_vision_effective and getattr(tracker, "images", None):
             # Only attach an image if one has been captured
             if len(tracker.images) > 0:
                 data['img'] = tracker.images[-1]
@@ -62,4 +72,5 @@ class BrowserPlannerAgent(BaseAgent):
                 format_instructions=BaseAgent.get_format_instructions(parser),
             ),
             llm=llm_manager.get_model(dyna_model),
+            use_vision_effective=settings.advanced_features.use_vision and model_supports_vision(dyna_model),
         )
