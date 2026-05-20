@@ -723,6 +723,22 @@ def extract_and_combine_codeblocks(text: str) -> str:
     if code_blocks:
         return "\n\n".join(block.strip() for block in code_blocks)
 
+    # Recovery path for an unclosed ```python fence: without this the
+    # sdk_callback_node routes the raw, unexecuted code straight to
+    # FinalAnswerAgent and the user sees Python source as the chat reply
+    # (issue #204). Only return the recovered candidate when it compiles,
+    # so prose that happens to live after a stray opening fence is not
+    # mistaken for code.
+    unclosed = re.search(r'```python\s*\n(.*)', text, re.DOTALL)
+    if unclosed:
+        candidate = re.sub(r'\n?```\s*$', '', unclosed.group(1)).strip()
+        if candidate:
+            try:
+                compile(candidate.replace('await ', ''), '<string>', 'exec')
+                return candidate
+            except SyntaxError:
+                pass
+
     stripped_text = text.strip()
 
     if "print(" not in stripped_text:

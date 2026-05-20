@@ -119,9 +119,34 @@ class TestExtractAndCombineCodeblocks:
         result = extract_and_combine_codeblocks('```\nprint("test")\n```')
         assert result == ''
 
-    def test_incomplete_markdown_block(self):
-        """Incomplete markdown block should not match."""
+    def test_incomplete_markdown_block_with_valid_code_recovered(self):
+        """Unclosed ```python fence containing syntactically valid code should be
+        recovered (regression test for issue #204: sdk_callback_node routed the
+        raw, unexecuted code block to FinalAnswerAgent because the strict
+        regex failed to match an open fence)."""
         result = extract_and_combine_codeblocks('```python\nprint("test")')
+        assert result == 'print("test")'
+
+    def test_incomplete_markdown_block_recovers_multiline_code(self):
+        """Unclosed fence with multi-line valid Python preceded by prose — the
+        exact shape that surfaced in issue #204."""
+        text = (
+            "Config is available, so the scan can proceed. "
+            "I'll list all Gmail messages...\n"
+            "```python\n"
+            "import json, re\n"
+            "from datetime import datetime, timedelta\n"
+            "print('starting scan')\n"
+        )
+        result = extract_and_combine_codeblocks(text)
+        assert result.startswith("import json, re")
+        assert "print('starting scan')" in result
+
+    def test_incomplete_markdown_block_with_invalid_code_returns_empty(self):
+        """Unclosed fence containing non-compilable text must NOT be treated as
+        code — without this guard the recovery path could swallow prose that
+        happens to live after an open fence."""
+        result = extract_and_combine_codeblocks('```python\nthis is not python at all $$$')
         assert result == ''
 
     def test_nested_code_structures(self):
