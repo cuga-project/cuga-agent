@@ -43,8 +43,18 @@ async def build_evolve_special_instructions_extension(
     task_description = state.sub_task or get_first_human_message_content(state.chat_messages)
     if task_description:
         try:
+            # Extract multi-user parameters from state for Evolve attribution
+            _evolve_user_id = getattr(state, 'user_id', None)
+            _evolve_namespace_id = (getattr(state, 'service_scope', {}) or {}).get('tenant_id') or None
+            _evolve_session_id = getattr(state, 'thread_id', None)
+            
             evolve_guidelines = await asyncio.wait_for(
-                EvolveIntegration.get_guidelines(task_description),
+                EvolveIntegration.get_guidelines(
+                    task_description,
+                    user_id=_evolve_user_id,
+                    namespace_id=_evolve_namespace_id,
+                    session_id=_evolve_session_id,
+                ),
                 timeout=timeout,
             )
         except Exception:
