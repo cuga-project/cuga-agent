@@ -54,7 +54,7 @@ def create_call_model_node(
         settings: Application settings object (policy, advanced_features, …).
     """
 
-    async def call_model(state: Any, config: RunnableConfig | None = None) -> Command:
+    async def call_model(state: Any, config: RunnableConfig = None) -> Command:
         configurable: dict = config.get("configurable", {}) if config else {}
 
         # ── Tool-approval HITL resumption ──────────────────────────────────
