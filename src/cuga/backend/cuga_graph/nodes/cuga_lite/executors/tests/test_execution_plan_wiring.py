@@ -16,7 +16,7 @@ import pytest
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution_policy import ExecutionPlan
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
 
 
 def _plan(python_backend: str) -> ExecutionPlan:

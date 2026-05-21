@@ -12,20 +12,20 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.graph import StateGraph
 from langgraph.types import Command
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import (
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     CoreGraphAdapter,
     append_chat_messages_with_step_limit as _core_append_with_step_limit,
     create_error_command as _core_create_error_command,
 )
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.shared_graph import build_agent_graph
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.shared_nodes import (
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_graph import build_agent_graph
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
     create_call_model_node as _create_shared_call_model_node,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import AgentGraphAdapter
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_one_prompt
@@ -105,8 +105,7 @@ class CugaLiteState(BaseModel):
         default_factory=list
     )  # List of tracked tool calls (when track_tool_calls is enabled)
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
     def variables_manager(self):

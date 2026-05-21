@@ -20,19 +20,19 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import 
 )
 from cuga.sdk import CugaAgent
 from cuga.config import settings
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import (
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     CoreGraphAdapter,
     append_chat_messages_with_step_limit as _core_append_with_step_limit,
     create_error_command as _core_create_error_command,
 )
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.shared_nodes import (
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
     create_call_model_node as _create_shared_call_model_node,
 )
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.shared_graph import build_agent_graph
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_graph import build_agent_graph
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter import (
     SupervisorGraphAdapter,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 
 
 class _CugaSupervisorLoopAdapter(CoreGraphAdapter):

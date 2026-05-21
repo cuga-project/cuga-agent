@@ -13,7 +13,7 @@ from .docker import DockerExecutor
 from .opensandbox import OpenSandboxExecutor
 from .native import NativeSandboxExecutor
 from .base_executor import BaseExecutor, RemoteExecutor
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution_policy import ExecutionPlan
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionPlan
 
 
 def _skills_enabled() -> bool:

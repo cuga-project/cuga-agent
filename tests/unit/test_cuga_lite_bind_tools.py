@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 from langchain_core.tools import StructuredTool
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import resolve_model_with_bind_tools
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolve_bind_tools_fields
 
 

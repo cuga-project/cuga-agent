@@ -17,7 +17,7 @@ from .helpers import (
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import ActionResponse, ActionType
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     ToolProviderInterface,
     AppDefinition,
 )

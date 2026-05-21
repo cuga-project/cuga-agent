@@ -86,10 +86,10 @@ from cuga.backend.llm.models import LLMManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
     create_cuga_lite_graph,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.direct_langchain_tools_provider import (
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
     DirectLangChainToolsProvider,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
     FinalAnswerAppworldOutput,
@@ -1807,7 +1807,7 @@ class CugaAgent:
             # Get tool calls from result (only if tracking was enabled)
             tool_calls = result.get("tool_calls", []) if track_tool_calls else []
 
-            from cuga.backend.cuga_graph.nodes.cuga_agent_core.variable_bridge import VariableBridge
+            from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
 
             _hitl_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
 
@@ -1948,7 +1948,7 @@ class CugaAgent:
         tool_calls = result.get("tool_calls", []) if track_tool_calls else []
 
         # Extract sub-agent variables for VariableBridge (Phase 8).
-        from cuga.backend.cuga_graph.nodes.cuga_agent_core.variable_bridge import VariableBridge
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
 
         _result_variables = VariableBridge.extract_values(result.get("variables_storage", {}) or {})
 

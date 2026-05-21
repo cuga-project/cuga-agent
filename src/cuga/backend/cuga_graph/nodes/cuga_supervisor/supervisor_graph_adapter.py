@@ -26,7 +26,7 @@ from typing import Any, Callable, Dict, List, Optional
 from langchain_core.messages import BaseMessage, HumanMessage
 from loguru import logger
 
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import CoreGraphAdapter
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
 from cuga.config import settings
 
 
@@ -118,12 +118,12 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
             CugaSupervisorState,
         )
         from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
-        from cuga.backend.cuga_graph.nodes.cuga_agent_core.runtime_tools import (
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
             build_runtime_tools,
             prompt_tool_dicts,
             resolve_runtime_backends,
         )
-        from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution_policy import (
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
             ExecutionRouter,
             split_execution_note,
         )
@@ -170,7 +170,7 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
                         and result.variables
                         and adapter._shared_vm_ref[0] is not None
                     ):
-                        from cuga.backend.cuga_graph.nodes.cuga_agent_core.variable_bridge import (
+                        from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import (
                             VariableBridge,
                         )
 
@@ -338,8 +338,10 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
                     }
                 agent_tools_for_prompt.append(tool_info)
 
-            from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import create_update_todos_tool
-            from cuga.backend.cuga_graph.nodes.cuga_agent_core.code_extraction import make_tool_awaitable
+            from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
+            from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import (
+                make_tool_awaitable,
+            )
 
             todos_tool = await create_update_todos_tool()
             adapter._agent_tools_context["create_update_todos"] = make_tool_awaitable(todos_tool.func)
@@ -445,12 +447,12 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         )
         from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
-        from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import (
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
             append_chat_messages_with_step_limit as _core_append,
             create_error_command as _core_create_error,
             execution_output_text,
         )
-        from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution_policy import ExecutionRouter
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
         from langchain_core.runnables import RunnableConfig
 
         adapter = self

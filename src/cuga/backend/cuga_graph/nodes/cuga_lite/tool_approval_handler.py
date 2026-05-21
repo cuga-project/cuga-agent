@@ -12,7 +12,7 @@ from langchain_core.messages import AIMessage
 from langgraph.types import Command
 from langgraph.graph import END
 
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import (
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     CoreGraphAdapter,
     append_chat_messages_with_step_limit as _core_append_with_step_limit,
     create_error_command as _core_create_error_command,
@@ -42,7 +42,7 @@ class ToolApprovalHandler:
     @staticmethod
     def extract_approved_code(adapter: CoreGraphAdapter, state: Any) -> Optional[str]:
         """Extract the approved code from the last AI message."""
-        from cuga.backend.cuga_graph.nodes.cuga_agent_core.code_extraction import (
+        from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import (
             extract_and_combine_codeblocks,
         )
 
