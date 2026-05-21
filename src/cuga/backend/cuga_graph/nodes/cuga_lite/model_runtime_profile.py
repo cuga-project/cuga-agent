@@ -53,7 +53,7 @@ def _bool_coerce(val: Any) -> bool:
     return bool(val)
 
 
-def normalize_bind_tools_apps_value(raw: Any) -> List[str]:
+def _normalize_bind_tools_string_list(raw: Any) -> List[str]:
     if raw is None:
         return []
     if isinstance(raw, str):
@@ -63,14 +63,23 @@ def normalize_bind_tools_apps_value(raw: Any) -> List[str]:
     return []
 
 
+def normalize_bind_tools_apps_value(raw: Any) -> List[str]:
+    return _normalize_bind_tools_string_list(raw)
+
+
+def normalize_bind_tools_tool_names_value(raw: Any) -> List[str]:
+    return _normalize_bind_tools_string_list(raw)
+
+
 def resolve_bind_tools_fields(
     configurable: Optional[Dict[str, Any]],
     model_name: Optional[str],
     *,
     settings_mode_fn: Callable[[], str],
     settings_apps_fn: Callable[[], List[str]],
+    settings_tool_names_fn: Callable[[], List[str]],
     settings_include_fn: Callable[[], bool],
-) -> tuple[str, List[str], bool]:
+) -> tuple[str, List[str], List[str], bool]:
     """Configurable overrides profile overrides plain settings for bind_tools_* keys."""
     cfg = configurable or {}
     mn = (model_name or "").strip()
@@ -90,10 +99,17 @@ def resolve_bind_tools_fields(
         apps_raw = settings_apps_fn()
     apps_list = normalize_bind_tools_apps_value(apps_raw)
 
+    tnames_raw = cfg.get("cuga_lite_bind_tools_tool_names")
+    if tnames_raw is None or tnames_raw == []:
+        tnames_raw = prof.get("cuga_lite_bind_tools_tool_names")
+    if tnames_raw is None or tnames_raw == []:
+        tnames_raw = settings_tool_names_fn()
+    tool_names_list = normalize_bind_tools_tool_names_value(tnames_raw)
+
     inc = cfg.get("cuga_lite_bind_tools_include_find_tools")
     if inc is None:
         inc = prof.get("cuga_lite_bind_tools_include_find_tools")
     if inc is None:
         inc = settings_include_fn()
 
-    return mode_s, apps_list, _bool_coerce(inc)
+    return mode_s, apps_list, tool_names_list, _bool_coerce(inc)

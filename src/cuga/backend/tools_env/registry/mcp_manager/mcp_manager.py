@@ -22,7 +22,11 @@ except ImportError:
 from cuga.backend.tools_env.registry.config.config_loader import Auth
 from cuga.backend.tools_env.registry.config.config_loader import ServiceConfig, Service
 from cuga.backend.tools_env.registry.mcp_manager.openapi_parser import SimpleOpenAPIParser
-from cuga.backend.tools_env.registry.mcp_manager.adapter import new_mcp_from_custom_parser
+from cuga.backend.tools_env.registry.mcp_manager.adapter import (
+    new_mcp_from_custom_parser,
+    apply_authentication,
+    sanitize_tool_name,
+)
 import threading
 from collections import defaultdict
 from urllib.parse import urlparse
@@ -40,6 +44,7 @@ class MCPManager:
         self.threads = {}
         self.tools_by_server = defaultdict(list)
         self.server_by_tool = {}
+        self.original_tool_name_by_sanitized: Dict[str, str] = {}
         self.server_ports = {}
         self.auth_config = {}
         self.schemas = {}
@@ -666,6 +671,7 @@ class MCPManager:
         stale_tools = [tool_name for tool_name, server in self.server_by_tool.items() if server == name]
         for tool_name in stale_tools:
             self.server_by_tool.pop(tool_name, None)
+            self.original_tool_name_by_sanitized.pop(tool_name, None)
 
     @staticmethod
     def _extract_json_path(payload: Any, path: str | None) -> Any:
@@ -684,8 +690,12 @@ class MCPManager:
             return True, "No readiness probe configured"
 
         timeout = config.readiness_timeout_seconds or 2.0
+        parsed_url = urlparse(config.readiness_url)
+        verify_ssl = not (
+            parsed_url.scheme == "https" and parsed_url.hostname in ("127.0.0.1", "localhost", "::1")
+        )
         try:
-            async with httpx.AsyncClient(timeout=timeout) as client:
+            async with httpx.AsyncClient(timeout=timeout, verify=verify_ssl) as client:
                 response = await client.get(config.readiness_url)
             response.raise_for_status()
 
@@ -753,7 +763,22 @@ class MCPManager:
                 if include_set and tool.name not in include_set:
                     continue
 
-                prefixed_name = f"{name}_{tool.name}"
+                sanitized_name = sanitize_tool_name(tool.name)
+                prefixed_name = f"{name}_{sanitized_name}"
+                # Detect sanitization collisions: two tools on the same server whose
+                # names differ only by dash vs underscore would map to the same
+                # prefixed_name, making the reverse lookup ambiguous.
+                if prefixed_name in self.original_tool_name_by_sanitized:
+                    existing_original = self.original_tool_name_by_sanitized[prefixed_name]
+                    logger.warning(
+                        f"MCP server '{name}': tool '{tool.name}' sanitizes to '{prefixed_name}' "
+                        f"which is already registered for original tool '{existing_original}'. "
+                        f"Skipping '{tool.name}' to avoid overwriting the existing mapping."
+                    )
+                    continue
+                # Keep a reverse map so _call_mcp_server_tool can send the original
+                # (possibly dashed) name to the MCP server, which only knows that name.
+                self.original_tool_name_by_sanitized[prefixed_name] = tool.name
                 input_schema = tool.inputSchema if hasattr(tool, 'inputSchema') else {}
                 flattened_params = self._flatten_tool_parameters(input_schema)
                 output_schema = tool.outputSchema if hasattr(tool, 'outputSchema') else {}
@@ -913,7 +938,30 @@ class MCPManager:
                     resolved_env[k] = resolved if resolved is not None else v
                 else:
                     resolved_env[k] = v
-            return StdioTransport(command=config.command, args=config.args or [], env=resolved_env)
+
+            # Honor an optional `cwd:` from the YAML. For the bootstrap
+            # filesystem entry this anchors the MCP server's CWD at
+            # <cwd>/cuga_workspace/ so relative paths from the LLM resolve
+            # into the allowed root. Ensure the directory exists so the
+            # subprocess doesn't fail to start.
+            cwd_value: str | None = None
+            if config.cwd:
+                import os as _os
+
+                cwd_value = config.cwd
+                try:
+                    _os.makedirs(cwd_value, exist_ok=True)
+                except OSError:
+                    # If we can't create it, let the subprocess fail loudly
+                    # rather than silently swallow the launch error.
+                    pass
+
+            return StdioTransport(
+                command=config.command,
+                args=config.args or [],
+                env=resolved_env,
+                cwd=cwd_value,
+            )
 
         elif transport_type == 'sse':
             if not SSETransport:
@@ -924,7 +972,14 @@ class MCPManager:
                 raise Exception(f"SSE transport requires 'url' for {name}")
 
             print(f"Connecting to MCP server '{name}' via SSE at {config.url}")
-            return SSETransport(url=config.url)
+
+            # Build headers from auth config if available
+            headers = {}
+            if config.auth:
+                query_params = {}
+                apply_authentication(config.auth, headers, query_params)
+
+            return SSETransport(url=config.url, headers=headers if headers else None)
 
         elif transport_type == 'http':
             if not StreamableHttpTransport:
@@ -939,8 +994,6 @@ class MCPManager:
             # Build headers from auth config if available
             headers = {}
             if config.auth:
-                from cuga.backend.tools_env.registry.mcp_manager.adapter import apply_authentication
-
                 query_params = {}
                 apply_authentication(config.auth, headers, query_params)
 
@@ -1057,7 +1110,9 @@ class MCPManager:
                 apply_authentication(auth, headers, query_params)
 
             if hasattr(self, 'mcp_transports') and server_name in self.mcp_transports:
-                original_tool_name = tool_name.removeprefix(f"{server_name}_")
+                # Use the reverse map to recover the original (possibly dashed) tool name
+                # that the MCP server registered under.
+                original_tool_name = self.original_tool_name_by_sanitized[tool_name]
 
                 transport = self.mcp_transports[server_name]
                 client = FastMCPClient(transport)
@@ -1079,7 +1134,7 @@ class MCPManager:
             else:
                 url = self.mcp_clients[server_name]
                 base_url = url.replace('/sse', '')
-                original_tool_name = tool_name.removeprefix(f"{server_name}_")
+                original_tool_name = self.original_tool_name_by_sanitized[tool_name]
 
                 # Add query params to URL if present
                 url_with_params = base_url

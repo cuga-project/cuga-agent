@@ -148,6 +148,7 @@ def create_error_command(
 def create_cuga_supervisor_graph(
     supervisor_model: BaseChatModel,
     agents: Dict[str, Union[CugaAgent, Dict[str, Any]]],
+    special_instructions: Optional[str] = None,
 ) -> StateGraph:
     """
     Create supervisor subgraph that orchestrates multiple CugaAgent instances.
@@ -155,16 +156,18 @@ def create_cuga_supervisor_graph(
     Args:
         supervisor_model: The language model for the supervisor
         agents: Dict mapping agent names to CugaAgent instances (internal) or A2A config (external)
+        special_instructions: Optional workflow instructions injected into the supervisor's system prompt
 
     Returns:
         StateGraph implementing the CugaSupervisor architecture
     """
-    return _create_supervisor_conversational_graph(supervisor_model, agents)
+    return _create_supervisor_conversational_graph(supervisor_model, agents, special_instructions)
 
 
 def _create_supervisor_conversational_graph(
     supervisor_model: BaseChatModel,
     agents: Dict[str, Union[CugaAgent, Dict[str, Any]]],
+    special_instructions: Optional[str] = None,
 ) -> StateGraph:
     """
     Create supervisor conversational mode graph - supervisor acts as a single agent with delegation tools.
@@ -376,7 +379,7 @@ def _create_supervisor_conversational_graph(
                 is_autonomous_subtask=is_autonomous_subtask,
                 instructions=base_instructions,
                 enable_todos=True,  # Always enable todos for supervisor conversational mode
-                special_instructions=None,
+                special_instructions=special_instructions,
             )
 
             return Command(

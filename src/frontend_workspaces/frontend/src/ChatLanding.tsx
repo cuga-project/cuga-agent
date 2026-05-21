@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import * as api from "./api";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
@@ -14,6 +14,13 @@ import {
   SkeletonText,
   ToastNotification,
   Button,
+  Accordion,
+  AccordionItem,
+  ContainedList,
+  ContainedListItem,
+  Tile,
+  Layer,
+  Stack,
 } from "@carbon/react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import {
@@ -75,6 +82,20 @@ interface FileNode {
   children?: FileNode[];
 }
 
+function collectDirectoryPaths(nodes: FileNode[]): Set<string> {
+  const out = new Set<string>();
+  const walk = (list: FileNode[]) => {
+    for (const n of list) {
+      if (n.type === "directory") {
+        out.add(n.path);
+        if (n.children?.length) walk(n.children);
+      }
+    }
+  };
+  walk(nodes);
+  return out;
+}
+
 interface AgentConfig {
   name: string;
   description: string;
@@ -89,7 +110,14 @@ interface HomescreenConfig {
   starters?: string[];
 }
 
-type RightPanelSection = "configuration" | "workspace" | "knowledge";
+type RightPanelSection = "configuration" | "workspace" | "knowledge" | "skills";
+
+interface SkillInfo {
+  name: string;
+  description: string;
+  requirements: string[];
+  source: string;
+}
 
 interface DraftThreadState {
   threadId: string;
@@ -128,6 +156,13 @@ const RIGHT_PANEL_META: Record<
     icon: DocumentBlank,
     badgeClass: "agent-section-badge--knowledge",
     ariaLabel: "Knowledge section",
+  },
+  skills: {
+    title: "Skills",
+    subtitle: "Installed automation workflows",
+    icon: Application,
+    badgeClass: "agent-section-badge--skills",
+    ariaLabel: "Skills section",
   },
 };
 
@@ -317,11 +352,15 @@ export function ChatLanding() {
   const [homescreenConfig, setHomescreenConfig] = useState<HomescreenConfig | undefined>(undefined);
   const [configLoading, setConfigLoading] = useState(true);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
-  const [expandedApps, setExpandedApps] = useState<Set<string>>(new Set());
   const [workspaceTree, setWorkspaceTree] = useState<FileNode[]>([]);
+  const [workspaceExpandedDirs, setWorkspaceExpandedDirs] = useState<Set<string>>(() => new Set());
+  const workspaceTreeDirPathsPrevRef = useRef<Set<string>>(new Set());
   const [workspaceTreeLoading, setWorkspaceTreeLoading] = useState(true);
   const [fileModal, setFileModal] = useState<{ path: string; content: string; name: string } | null>(null);
   const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<KnowledgePreviewModalState | null>(null);
+  const [skills, setSkills] = useState<SkillInfo[]>([]);
+  const [skillsLoading, setSkillsLoading] = useState(true);
+  const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
 
   useEffect(() => {
     return () => {
@@ -365,6 +404,8 @@ export function ChatLanding() {
   }, []);
 
   const currentChatThreadId = activeThreadId;
+  /** Same resolver as `threadId` on `CarbonChat` — stream, sandbox workspace, and session knowledge must match. */
+  const effectiveChatThreadId = selectedThreadId ?? currentChatThreadId;
 
   const refreshKnowledgeDocCount = useCallback(
     async (threadId: string) => {
@@ -408,8 +449,8 @@ export function ChatLanding() {
   }, [draftThread.threadId, selectedThreadId]);
 
   useEffect(() => {
-    void refreshKnowledgeDocCount(currentChatThreadId);
-  }, [currentChatThreadId, refreshKnowledgeDocCount, sessionDocsVersion]);
+    void refreshKnowledgeDocCount(effectiveChatThreadId);
+  }, [effectiveChatThreadId, refreshKnowledgeDocCount, sessionDocsVersion]);
 
   const handleSessionDocsChanged = useCallback(() => {
     setSessionDocsVersion((version) => version + 1);
@@ -646,9 +687,27 @@ export function ChatLanding() {
     })();
   }, [addToast]);
 
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await api.getSkills();
+        if (!res.ok) {
+          console.error(`Failed to load skills (${res.status} ${res.statusText})`);
+        } else {
+          const data = await res.json();
+          setSkills(data.skills || []);
+        }
+      } catch (err) {
+        console.error("Failed to load skills:", err);
+      } finally {
+        setSkillsLoading(false);
+      }
+    })();
+  }, []);
+
   const fetchWorkspaceTree = useCallback(async () => {
     try {
-      const res = await api.getWorkspaceTree();
+      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined);
       if (res.ok) {
         const data = await res.json();
         setWorkspaceTree(data.tree || []);
@@ -658,13 +717,54 @@ export function ChatLanding() {
     } finally {
       setWorkspaceTreeLoading(false);
     }
-  }, []);
+  }, [effectiveChatThreadId]);
 
   useEffect(() => {
     fetchWorkspaceTree();
     const interval = setInterval(fetchWorkspaceTree, 2500);
     return () => clearInterval(interval);
   }, [fetchWorkspaceTree]);
+
+  useEffect(() => {
+    workspaceTreeDirPathsPrevRef.current = new Set();
+    setWorkspaceExpandedDirs(new Set());
+    setWorkspaceTree([]);
+    setWorkspaceTreeLoading(true);
+  }, [effectiveChatThreadId]);
+
+  useEffect(() => {
+    const valid = collectDirectoryPaths(workspaceTree);
+    const prevValid = workspaceTreeDirPathsPrevRef.current;
+    setWorkspaceExpandedDirs((expanded) => {
+      const next = new Set<string>();
+      for (const p of expanded) {
+        if (valid.has(p)) next.add(p);
+      }
+      for (const p of valid) {
+        if (!prevValid.has(p)) next.add(p);
+      }
+      return next;
+    });
+    workspaceTreeDirPathsPrevRef.current = valid;
+  }, [workspaceTree]);
+
+  const handleWorkspaceDirToggle = useCallback((path: string, ...args: unknown[]) => {
+    const first = args[0];
+    const second = args[1];
+    let nextExpanded: boolean | undefined;
+    if (typeof first === "boolean") {
+      nextExpanded = first;
+    } else if (second && typeof second === "object" && second !== null && "isExpanded" in second) {
+      nextExpanded = Boolean((second as { isExpanded?: boolean }).isExpanded);
+    }
+    if (typeof nextExpanded !== "boolean") return;
+    setWorkspaceExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (nextExpanded) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }, []);
 
   const totalTools = agentConfig.apps.reduce((s, a) => s + a.tools.length, 0);
 
@@ -676,7 +776,7 @@ export function ChatLanding() {
       return;
     }
     try {
-      const res = await api.getWorkspaceFile(node.path);
+      const res = await api.getWorkspaceFile(node.path, effectiveChatThreadId || undefined);
       if (res.ok) {
         const data = await res.json();
         setFileModal({ path: node.path, content: data.content, name: node.name });
@@ -686,7 +786,30 @@ export function ChatLanding() {
     } catch (err) {
       addToast("error", "Error loading file", err instanceof Error ? err.message : "Unknown error");
     }
-  }, [addToast]);
+  }, [addToast, effectiveChatThreadId]);
+
+  const handleWorkspaceFileDownload = useCallback(
+    async (node: FileNode) => {
+      if (node.type !== "file") return;
+      try {
+        const res = await api.getWorkspaceDownload(node.path, effectiveChatThreadId || undefined);
+        if (!res.ok) {
+          addToast("error", "Download failed", res.statusText || `HTTP ${res.status}`);
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = node.name;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        addToast("error", "Download failed", err instanceof Error ? err.message : "Unknown error");
+      }
+    },
+    [addToast, effectiveChatThreadId],
+  );
 
   const closeKnowledgePreviewModal = useCallback(() => {
     setKnowledgePreviewModal((current) => {
@@ -702,7 +825,7 @@ export function ChatLanding() {
       const response = await api.getKnowledgeDocumentFile(
         attachment.scope,
         attachment.knowledge_filename,
-        attachment.scope === "session" ? currentChatThreadId : undefined,
+        attachment.scope === "session" ? effectiveChatThreadId : undefined,
       );
       if (!response.ok) {
         addToast("error", "Preview unavailable", response.statusText || "Failed to load attachment.");
@@ -742,36 +865,68 @@ export function ChatLanding() {
     } catch (error) {
       addToast("error", "Preview unavailable", error instanceof Error ? error.message : "Unknown error");
     }
-  }, [addToast, currentChatThreadId]);
+  }, [addToast, effectiveChatThreadId]);
 
   const renderFileNode = useCallback(
-    (node: FileNode) => (
-      <TreeNode
-        key={node.path}
-        id={node.path}
-        label={
-          <span
-            style={{
-              display: "flex",
-              alignItems: "center",
-              gap: "0.5rem",
-              fontSize: "0.8125rem",
-              color: "var(--cds-text-primary)",
-              cursor: node.type === "file" ? "pointer" : "default",
-            }}
-            role={node.type === "file" ? "button" : undefined}
-            onClick={node.type === "file" ? (e) => { e.stopPropagation(); handleFileClick(node); } : undefined}
-          >
-            {node.name}
-          </span>
-        }
-        renderIcon={node.type === "directory" ? FolderOpen : DocumentBlank}
-        isExpanded={node.type === "directory"}
-      >
-        {node.type === "directory" && node.children?.map((child) => renderFileNode(child))}
-      </TreeNode>
-    ),
-    [handleFileClick],
+    (node: FileNode) => {
+      const isDir = node.type === "directory";
+      const dirOpen = isDir && workspaceExpandedDirs.has(node.path);
+      return (
+        <TreeNode
+          key={node.path}
+          id={node.path}
+          label={
+            isDir ? (
+              <span
+                className="chat-landing-workspace-tree-name"
+                style={{
+                  fontSize: "0.8125rem",
+                  color: "var(--cds-text-primary)",
+                }}
+              >
+                {node.name}
+              </span>
+            ) : (
+              <span className="chat-landing-workspace-tree-row">
+                <span
+                  className="chat-landing-workspace-tree-filename"
+                  style={{
+                    cursor: "pointer",
+                    fontSize: "0.8125rem",
+                    color: "var(--cds-text-primary)",
+                  }}
+                  role="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleFileClick(node);
+                  }}
+                >
+                  {node.name}
+                </span>
+                <IconButton
+                  className="chat-landing-workspace-tree-download"
+                  label={`Download ${node.name}`}
+                  kind="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleWorkspaceFileDownload(node);
+                  }}
+                >
+                  <Download size={14} />
+                </IconButton>
+              </span>
+            )
+          }
+          renderIcon={isDir ? (dirOpen ? FolderOpen : Folder) : DocumentBlank}
+          isExpanded={isDir ? dirOpen : false}
+          onToggle={isDir ? (first: unknown, second?: unknown) => handleWorkspaceDirToggle(node.path, first, second) : undefined}
+        >
+          {isDir && node.children?.map((child) => renderFileNode(child))}
+        </TreeNode>
+      );
+    },
+    [handleFileClick, handleWorkspaceDirToggle, handleWorkspaceFileDownload, workspaceExpandedDirs],
   );
 
   const handleToggleLeft = () => canShowLeft && setLeftOpen((v) => !v);
@@ -790,11 +945,17 @@ export function ChatLanding() {
     setRightSection("configuration");
     setRightOpen(true);
   };
-  const activeKnowledgeThreadId = currentChatThreadId;
+  const handleToggleSkills = () => {
+    if (!canShowRight) return;
+    setRightSection("skills");
+    setRightOpen(true);
+  };
+  const activeKnowledgeThreadId = effectiveChatThreadId;
   const sectionCounts: Record<RightPanelSection, number> = {
     configuration: totalTools,
     workspace: workspaceTree.length,
     knowledge: knowledgeDocCount,
+    skills: skills.length,
   };
   const activeSectionMeta = RIGHT_PANEL_META[rightSection];
   const ActiveSectionIcon = activeSectionMeta.icon;
@@ -812,7 +973,7 @@ export function ChatLanding() {
       <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>
         <CarbonChat
           contained={true}
-          threadId={selectedThreadId ?? currentChatThreadId}
+          threadId={effectiveChatThreadId}
           attachmentScope="session"
           knowledgeEnabled={knowledgeEnabled}
           sessionKnowledgeEnabled={sessionKnowledgeEnabled}
@@ -875,11 +1036,11 @@ export function ChatLanding() {
               </div>
             </div>
 
-            {currentChatThreadId && (
+            {effectiveChatThreadId && (
               <div style={{ marginTop: "0.5rem", display: "flex", alignItems: "center", gap: "0.375rem" }}>
                 <Time size={12} style={{ color: "var(--cds-text-secondary)" }} />
                 <code style={{ fontSize: "0.6rem", color: "var(--cds-text-secondary)", fontFamily: "monospace" }}>
-                  {currentChatThreadId}
+                  {effectiveChatThreadId}
                 </code>
               </div>
             )}
@@ -1010,7 +1171,7 @@ export function ChatLanding() {
             style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden" }}
           >
             <div className="agent-section-switcher">
-              {(["configuration", "workspace", "knowledge"] as RightPanelSection[]).map((section) => {
+              {(["configuration", "workspace", "knowledge", "skills"] as RightPanelSection[]).map((section) => {
                 const meta = RIGHT_PANEL_META[section];
                 const SectionIcon = meta.icon;
                 const handleClick =
@@ -1018,18 +1179,35 @@ export function ChatLanding() {
                     ? handleToggleConfiguration
                     : section === "workspace"
                       ? handleToggleWorkspace
-                      : handleToggleKnowledge;
+                      : section === "knowledge"
+                        ? handleToggleKnowledge
+                        : handleToggleSkills;
+                const isActive = rightSection === section;
                 return (
                   <button
                     key={section}
                     type="button"
-                    className={`agent-section-button ${rightSection === section ? "active" : ""}`}
+                    className={`agent-section-button ${isActive ? "active" : ""}`}
                     onClick={handleClick}
                     aria-label={meta.ariaLabel}
                     title={meta.title}
+                    style={{ position: "relative" }}
                   >
                     <SectionIcon size={18} />
                     <span className={`agent-section-badge ${meta.badgeClass}`}>{sectionCounts[section]}</span>
+                    <span
+                      aria-hidden="true"
+                      style={{
+                        position: "absolute",
+                        left: 0,
+                        right: 0,
+                        bottom: -2,
+                        height: 3,
+                        backgroundColor: isActive ? "var(--cds-interactive, #0f62fe)" : "transparent",
+                        pointerEvents: "none",
+                        zIndex: 2,
+                      }}
+                    />
                   </button>
                 );
               })}
@@ -1051,63 +1229,32 @@ export function ChatLanding() {
                 </div>
               </div>
 
-              <div style={{ flex: 1, overflowY: "auto" }}>
+              <Layer level={2} style={{ display: "flex", flexDirection: "column", flex: 1, minHeight: 0 }}>
+                <div style={{ flex: 1, overflowY: "auto", minHeight: 0 }}>
               {rightSection === "configuration" && (
-                <div style={{ padding: "1rem", overflowY: "scroll" }}>
-                <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-                  {agentConfig.apps.map((app) => {
-                    const isExpanded = expandedApps.has(app.appName);
-                    const visibleTools = isExpanded ? app.tools : app.tools.slice(0, 5);
-                    const hasMore = app.tools.length > 5;
-                    
-                    return (
-                      <div
+                <div style={{ padding: "1rem" }}>
+                  <Accordion>
+                    {agentConfig.apps.map((app) => (
+                      <AccordionItem
                         key={app.appName}
-                        style={{
-                          border: "1px solid var(--cds-border-subtle-01)",
-                          borderRadius: "4px",
-                          overflow: "hidden",
-                          background: "rgba(var(--cds-background-rgb, 255,255,255), 0.4)",
-                        }}
-                      >
-                        <div
-                          style={{
-                            background: "rgba(var(--cds-layer-02-rgb, 244,244,244), 0.6)",
-                            padding: "0.5rem 0.75rem",
-                            display: "flex",
-                            alignItems: "center",
-                            justifyContent: "space-between",
-                            borderBottom: "1px solid var(--cds-border-subtle-01)",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "center", gap: "0.5rem" }}>
-                            <Application size={14} style={{ color: "var(--cds-interactive)" }} />
-                            <span style={{ fontSize: "0.8125rem", fontWeight: 600, color: "var(--cds-text-primary)" }}>
+                        title={
+                          <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", width: "100%" }}>
+                            <Application size={14} style={{ color: "var(--cds-interactive)", flexShrink: 0 }} />
+                            <span style={{ fontWeight: 600, color: "var(--cds-text-primary)", flex: 1 }}>
                               {app.appName}
                             </span>
+                            <Tag type="teal" size="sm">
+                              {app.tools.length} tool{app.tools.length !== 1 ? "s" : ""}
+                            </Tag>
                           </div>
-                          <Tag type="teal" size="sm">
-                            {app.tools.length} tool{app.tools.length !== 1 ? "s" : ""}
-                          </Tag>
-                        </div>
-
-                        <div style={{ padding: "0.25rem 0" }}>
-                          {visibleTools.map((tool, idx) => (
-                            <div
+                        }
+                      >
+                        <ContainedList>
+                          {app.tools.map((tool) => (
+                            <ContainedListItem
                               key={tool.name}
-                              style={{
-                                padding: "0.5rem 0.75rem",
-                                borderBottom:
-                                  idx < visibleTools.length - 1 || hasMore ? "1px solid var(--cds-border-subtle-00)" : "none",
-                                display: "flex",
-                                alignItems: "flex-start",
-                                gap: "0.5rem",
-                              }}
+                              renderIcon={ChevronRight}
                             >
-                              <ChevronRight
-                                size={12}
-                                style={{ flexShrink: 0, marginTop: "0.2rem", color: "var(--cds-interactive)" }}
-                              />
                               <div>
                                 <code
                                   style={{
@@ -1132,41 +1279,17 @@ export function ChatLanding() {
                                   {truncateText(tool.description, 120)}
                                 </span>
                               </div>
-                            </div>
+                            </ContainedListItem>
                           ))}
-                          
-                          {hasMore && (
-                            <div style={{ padding: "0.5rem 0.75rem", display: "flex", justifyContent: "center" }}>
-                              <Button
-                                kind="ghost"
-                                size="sm"
-                                renderIcon={isExpanded ? ChevronUp : ChevronDown}
-                                onClick={() => {
-                                  setExpandedApps((prev) => {
-                                    const next = new Set(prev);
-                                    if (isExpanded) {
-                                      next.delete(app.appName);
-                                    } else {
-                                      next.add(app.appName);
-                                    }
-                                    return next;
-                                  });
-                                }}
-                              >
-                                {isExpanded ? "Show less" : `Show ${app.tools.length - 5} more`}
-                              </Button>
-                            </div>
-                          )}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
+                        </ContainedList>
+                      </AccordionItem>
+                    ))}
+                  </Accordion>
                 </div>
               )}
 
               {rightSection === "workspace" && (
-                <div style={{ padding: "1rem", overflowY: "scroll" }}>
+                <div style={{ padding: "1rem" }}>
                 {workspaceTreeLoading ? (
                   <div style={{ padding: "1rem" }}>
                     <SkeletonText paragraph lineCount={5} />
@@ -1184,7 +1307,7 @@ export function ChatLanding() {
                     No workspace files.
                   </div>
                 ) : (
-                  <TreeView label="Workspace" hideLabel>
+                  <TreeView label="Workspace" hideLabel className="chat-landing-workspace-tree">
                     {workspaceTree.map((node) => renderFileNode(node))}
                   </TreeView>
                 )}
@@ -1209,7 +1332,155 @@ export function ChatLanding() {
                   agentLabel={agentConfig.name}
                 />
               )}
-              </div>
+
+              {rightSection === "skills" && (
+                <div style={{ padding: "1rem" }}>
+                {skillsLoading ? (
+                  <div style={{ padding: "1rem" }}>
+                    <SkeletonText paragraph lineCount={4} />
+                  </div>
+                ) : skills.length === 0 ? (
+                  <div
+                    style={{
+                      padding: "3rem 1rem",
+                      textAlign: "center",
+                      color: "var(--cds-text-secondary)",
+                      fontSize: "0.875rem",
+                    }}
+                  >
+                    <Application size={40} style={{ opacity: 0.3, display: "block", margin: "0 auto 1rem" }} />
+                    <p style={{ margin: 0 }}>No skills installed</p>
+                    <p style={{ margin: "0.5rem 0 0 0", fontSize: "0.75rem" }}>Skills will appear here once configured</p>
+                  </div>
+                ) : (
+                  <Stack gap={4}>
+                    {skills.map((skill) => {
+                      const isExpanded = expandedSkills.has(skill.name);
+                      const descLength = skill.description?.length || 0;
+                      const shouldTruncate = descLength > 100;
+                      const displayDesc = isExpanded || !shouldTruncate
+                        ? skill.description
+                        : truncateText(skill.description || "", 100);
+
+                      return (
+                        <Tile
+                          key={skill.name}
+                          style={{ padding: 0, overflow: "hidden", borderRadius: "4px" }}
+                        >
+                          {/* Header */}
+                          <div
+                            style={{
+                              background: "var(--cds-layer-02)",
+                              padding: "1rem",
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              gap: "0.75rem",
+                            }}
+                          >
+                            <div style={{ display: "flex", alignItems: "center", gap: "0.75rem", flex: 1, minWidth: 0 }}>
+                              <div
+                                style={{
+                                  width: "32px",
+                                  height: "32px",
+                                  borderRadius: "4px",
+                                  background: "var(--cds-interactive-01)",
+                                  display: "flex",
+                                  alignItems: "center",
+                                  justifyContent: "center",
+                                  flexShrink: 0,
+                                }}
+                              >
+                                <Application size={16} style={{ color: "white" }} />
+                              </div>
+                              <div style={{ minWidth: 0, flex: 1 }}>
+                                <h4
+                                  style={{
+                                    margin: "0 0 0.125rem 0",
+                                    fontSize: "0.875rem",
+                                    fontWeight: 600,
+                                    color: "var(--cds-text-primary)",
+                                    overflow: "hidden",
+                                    textOverflow: "ellipsis",
+                                    whiteSpace: "nowrap",
+                                  }}
+                                >
+                                  {skill.name}
+                                </h4>
+                              </div>
+                            </div>
+                            <Tag type="blue" size="sm" style={{ whiteSpace: "nowrap", flexShrink: 0 }}>
+                              {skill.source}
+                            </Tag>
+                          </div>
+
+                          {/* Content */}
+                          <div style={{ padding: "1rem", display: "flex", flexDirection: "column", gap: "0.75rem" }}>
+                            <p
+                              style={{
+                                margin: 0,
+                                fontSize: "0.75rem",
+                                color: "var(--cds-text-secondary)",
+                                lineHeight: 1.6,
+                              }}
+                            >
+                              {displayDesc || "No description available"}
+                            </p>
+
+                            {shouldTruncate && (
+                              <Button
+                                kind="ghost"
+                                size="sm"
+                                onClick={() => {
+                                  setExpandedSkills((prev) => {
+                                    const next = new Set(prev);
+                                    if (isExpanded) {
+                                      next.delete(skill.name);
+                                    } else {
+                                      next.add(skill.name);
+                                    }
+                                    return next;
+                                  });
+                                }}
+                                style={{ justifyContent: "flex-start", paddingLeft: 0 }}
+                              >
+                                {isExpanded ? "Show less" : "Show more"}
+                              </Button>
+                            )}
+
+                            {skill.requirements && skill.requirements.length > 0 && (
+                              <div style={{ marginTop: "0.25rem" }}>
+                                <div
+                                  style={{
+                                    fontSize: "0.7rem",
+                                    fontWeight: 700,
+                                    color: "var(--cds-text-primary)",
+                                    textTransform: "uppercase",
+                                    letterSpacing: "0.5px",
+                                    marginBottom: "0.5rem",
+                                  }}
+                                >
+                                  Requirements
+                                </div>
+                                <div style={{ display: "flex", flexWrap: "wrap", gap: "0.5rem" }}>
+                                  {skill.requirements.map((req) => (
+                                    <Tag key={req} type="cool-gray" size="sm">
+                                      {req}
+                                    </Tag>
+                                  ))}
+                                </div>
+                              </div>
+                            )}
+                          </div>
+                        </Tile>
+                      );
+                    })}
+                  </Stack>
+                )}
+                </div>
+              )}
+                </div>
+              </Layer>
             </div>
           </div>
         </div>
@@ -1292,7 +1563,7 @@ export function ChatLanding() {
               renderIcon={Download}
               onClick={async () => {
                 try {
-                  const res = await api.getWorkspaceDownload(fileModal.path);
+                  const res = await api.getWorkspaceDownload(fileModal.path, effectiveChatThreadId || undefined);
                   if (res.ok) {
                     const blob = await res.blob();
                     const url = URL.createObjectURL(blob);

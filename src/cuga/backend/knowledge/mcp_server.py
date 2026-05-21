@@ -40,7 +40,14 @@ def _resolve_env(key: str, default: str) -> str:
     return val
 
 
-CUGA_BACKEND_URL = _resolve_env("CUGA_BACKEND_URL", "http://localhost:7860").rstrip("/")
+def _default_backend_url() -> str:
+    require_https = os.getenv("DYNACONF_AUTH__REQUIRE_HTTPS", "").lower() in ("true", "1", "yes", "on")
+    ssl_enabled = bool(os.getenv("SSL_KEYFILE", "").strip() and os.getenv("SSL_CERTFILE", "").strip())
+    scheme = "https" if require_https or ssl_enabled else "http"
+    return f"{scheme}://localhost:7860"
+
+
+CUGA_BACKEND_URL = _resolve_env("CUGA_BACKEND_URL", _default_backend_url()).rstrip("/")
 CUGA_INTERNAL_TOKEN_FILE = _resolve_env(
     "CUGA_INTERNAL_TOKEN_FILE", str(Path.cwd() / ".cuga" / ".internal_token")
 )
@@ -88,6 +95,7 @@ def _get_client() -> httpx.AsyncClient:
         _client = httpx.AsyncClient(
             base_url=CUGA_BACKEND_URL,
             timeout=httpx.Timeout(60.0, connect=10.0),
+            verify=False,
             trust_env=False,
         )
     return _client

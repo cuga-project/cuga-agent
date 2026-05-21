@@ -278,8 +278,10 @@ class AgentLoop:
         reflection_enabled: Optional[bool] = None,
         shortlisting_tool_threshold: Optional[int] = None,
         cuga_lite_max_steps: Optional[int] = None,
+        enable_filesystem_tools: Optional[bool] = None,
         current_llm: Optional[Any] = None,
         knowledge_context: Optional[dict[str, Any]] = None,
+        special_instructions: Optional[str] = None,
     ):
         self.env_pointer = env_pointer
         self.thread_id = thread_id
@@ -292,8 +294,10 @@ class AgentLoop:
         self.reflection_enabled = reflection_enabled
         self.shortlisting_tool_threshold = shortlisting_tool_threshold
         self.cuga_lite_max_steps = cuga_lite_max_steps
+        self.enable_filesystem_tools = enable_filesystem_tools
         self.current_llm = current_llm
         self.knowledge_context = knowledge_context
+        self.special_instructions = special_instructions
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
@@ -500,8 +504,12 @@ class AgentLoop:
             config["configurable"]["shortlisting_tool_threshold"] = self.shortlisting_tool_threshold
         if self.cuga_lite_max_steps is not None:
             config["configurable"]["cuga_lite_max_steps"] = self.cuga_lite_max_steps
+        if self.enable_filesystem_tools is not None:
+            config["configurable"]["enable_filesystem_tools"] = self.enable_filesystem_tools
         if self.current_llm is not None:
             config["configurable"]["llm"] = self.current_llm
+        if self.special_instructions:
+            config["configurable"]["special_instructions"] = self.special_instructions
         if self.knowledge_context:
             if "agent_knowledge" in self.knowledge_context:
                 config["configurable"]["agent_knowledge"] = self.knowledge_context["agent_knowledge"]

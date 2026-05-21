@@ -47,11 +47,15 @@ interface CustomChatProps {
   onSessionDocsChanged?: () => void;
   /** When set externally (e.g. from sidebar), switches to this thread and loads its messages. */
   externalThreadId?: string;
+  /** Stable thread id from parent on first paint (sandbox /api/workspace needs this before mount effects). */
+  initialThreadId?: string;
   /** Whether session-level knowledge uploads are enabled for this chat. */
   knowledgeEnabled?: boolean | null;
+  /** Host path shown for workspace / filesystem copy (e.g. /tmp/cuga_workspace when OpenSandbox skills are on). */
+  workspaceFilesystemRoot?: string;
 }
 
-export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false, useDraftAgent = false, sessionDocsVersion = 0, onSessionDocsChanged, externalThreadId, knowledgeEnabled }: CustomChatProps) {
+export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHover, onMessageSent, onChatStarted, onThreadIdChange, initialChatStarted = false, forceAdvancedMode = false, useDraftAgent = false, sessionDocsVersion = 0, onSessionDocsChanged, externalThreadId, initialThreadId, knowledgeEnabled, workspaceFilesystemRoot = "cuga_workspace" }: CustomChatProps) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [inputValue, setInputValue] = useState("");
   const [isProcessing, setIsProcessing] = useState(false);
@@ -64,8 +68,8 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
   const [filteredFiles, setFilteredFiles] = useState<Array<{ name: string; path: string }>>([]);
   const [selectedFileIndex, setSelectedFileIndex] = useState(0);
   const [selectedFiles, setSelectedFiles] = useState<Array<{ name: string; path: string; id: string }>>([]);
-  const [threadId, setThreadId] = useState<string>("");
-  const threadIdRef = useRef<string>("");
+  const [threadId, setThreadId] = useState<string>(() => initialThreadId ?? "");
+  const threadIdRef = useRef<string>(initialThreadId ?? "");
   const [showExampleUtterances, setShowExampleUtterances] = useState(true);
   const [hasStartedChat, setHasStartedChat] = useState(initialChatStarted);
   const effectiveHasStartedChat = forceAdvancedMode || hasStartedChat;
@@ -82,13 +86,16 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
     }
   }, [effectiveHasStartedChat, onChatStarted]);
 
-  // Initialize threadId on mount
+  // Ensure we have a thread id and notify parent. App may pass initialThreadId so sandbox workspace API sees thread_id on first paint.
   useEffect(() => {
-    const newThreadId = randomUUID();
-    setThreadId(newThreadId);
-    threadIdRef.current = newThreadId;
+    let id = threadIdRef.current;
+    if (!id) {
+      id = randomUUID();
+      setThreadId(id);
+      threadIdRef.current = id;
+    }
     if (onThreadIdChange) {
-      onThreadIdChange(newThreadId);
+      onThreadIdChange(id);
     }
   }, [onThreadIdChange]);
 
@@ -222,7 +229,8 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
     const loadFiles = async () => {
       try {
         const { workspaceService } = await import('./workspaceService');
-        const data = await workspaceService.getWorkspaceTree();
+        const tid = (threadIdRef.current || threadId || "").trim() || undefined;
+        const data = await workspaceService.getWorkspaceTree(false, tid);
         const files = extractFiles(data.tree || []);
         setAllFiles(files);
       } catch (error) {
@@ -233,7 +241,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
     loadFiles();
     const interval = setInterval(loadFiles, 15000);
     return () => clearInterval(interval);
-  }, []);
+  }, [threadId]);
 
   // Filter files based on query
   useEffect(() => {
@@ -897,7 +905,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
                         <span className="demo-app-tag">Read File</span>
                       </div>
                       <p className="demo-app-description">
-                        Read files from the cuga_workspace directory
+                        Read files from the <code>{workspaceFilesystemRoot}</code> directory
                       </p>
                       
                       <div className="workspace-files-preview">
@@ -1225,7 +1233,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
                     <FileText size={16} className="file-icon" />
                     <div className="file-info">
                       <span className="file-name">{file.name}</span>
-                      <span className="file-path">./{file.path}</span>
+                      <span className="file-path">{file.path.startsWith("/") ? file.path : `./${file.path}`}</span>
                     </div>
                   </div>
                 ))}

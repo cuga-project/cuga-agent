@@ -107,6 +107,77 @@ class TestGetGuidelines:
         result = await EvolveIntegration.get_guidelines("test task")
         assert result is None
 
+
+class TestUserFacts:
+    """Test user fact memory behavior when disabled or on error."""
+
+    @pytest.mark.asyncio
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_store_user_facts_skips_when_disabled(self, mock_settings):
+        mock_settings.evolve.enabled = False
+        await EvolveIntegration.store_user_facts("user-123", "I prefer concise answers")
+
+    @pytest.mark.asyncio
+    @patch.object(EvolveIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_store_user_facts_calls_tool(self, mock_settings, mock_call_tool):
+        mock_settings.evolve.enabled = True
+        mock_settings.evolve.lite_mode_only = False
+        mock_call_tool.return_value = {"stored_count": 1}
+
+        await EvolveIntegration.store_user_facts(
+            "user-123",
+            "I prefer concise answers",
+            metadata={"source": "cuga-lite"},
+        )
+
+        mock_call_tool.assert_called_once()
+        call_name, payload = mock_call_tool.call_args.args
+        assert call_name == "store_user_facts"
+        assert payload["user_id"] == "user-123"
+        assert payload["message"] == "I prefer concise answers"
+        assert json.loads(payload["metadata"]) == {"source": "cuga-lite"}
+
+    @pytest.mark.asyncio
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_retrieve_user_facts_returns_none_when_disabled(self, mock_settings):
+        mock_settings.evolve.enabled = False
+        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+        assert result is None
+
+    @pytest.mark.asyncio
+    @patch.object(EvolveIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_retrieve_user_facts_returns_payload(self, mock_settings, mock_call_tool):
+        mock_settings.evolve.enabled = True
+        mock_settings.evolve.lite_mode_only = False
+        mock_call_tool.return_value = {
+            "user_id": "user-123",
+            "matched_count": 1,
+            "categories": {"style": [{"content": "Prefers concise answers"}]},
+        }
+
+        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+
+        assert result is not None
+        assert result["matched_count"] == 1
+        mock_call_tool.assert_called_once_with(
+            "retrieve_user_facts",
+            {"user_id": "user-123", "query": "How should I answer?", "limit": 5},
+        )
+
+    @pytest.mark.asyncio
+    @patch.object(EvolveIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_retrieve_user_facts_returns_none_on_error(self, mock_settings, mock_call_tool):
+        mock_settings.evolve.enabled = True
+        mock_settings.evolve.lite_mode_only = False
+        mock_call_tool.side_effect = ConnectionError("Unable to connect")
+
+        result = await EvolveIntegration.retrieve_user_facts("user-123", "How should I answer?")
+
+        assert result is None
+
     @pytest.mark.asyncio
     @patch.object(EvolveIntegration, "_call_tool", new_callable=AsyncMock)
     @patch("cuga.backend.evolve.integration.settings")
