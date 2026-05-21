@@ -7,7 +7,6 @@ Similar structure to cuga_lite_graph.py but focused on multi-agent orchestration
 Uses conversational mode: Supervisor acts as a single agent with delegation tools (similar to cuga_lite).
 """
 
-import inspect
 from typing import Any, Dict, List, Optional, Union, Tuple
 
 from langchain_core.language_models import BaseChatModel
@@ -34,29 +33,6 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.supervisor_graph_adapter impo
     SupervisorGraphAdapter,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
-
-
-def _resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]:
-    """Resolve names from the delegated code's caller frame.
-
-    LocalExecutor injects supervisor context into ``_async_main``'s globals; only
-    using ``f_locals`` missed those bindings, so sub-agents received no variables
-    and tasks showed e.g. ``amount=None``.
-    """
-    resolved: Dict[str, Any] = {}
-    frame = inspect.currentframe()
-    try:
-        caller = frame.f_back if frame is not None else None
-        if caller is None:
-            return resolved
-        for name in variable_names:
-            if name in caller.f_locals:
-                resolved[name] = caller.f_locals[name]
-            elif name in caller.f_globals:
-                resolved[name] = caller.f_globals[name]
-    finally:
-        del frame
-    return resolved
 
 
 class _CugaSupervisorLoopAdapter(CoreGraphAdapter):

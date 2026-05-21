@@ -120,6 +120,7 @@ def test_handle_denial_lite_shape():
         "execution_complete": True,
         "final_answer": "Execution cancelled by user.",
         "step_count": 5,
+        "cuga_lite_metadata": {},
     }
     assert ToolApprovalHandler.handle_denial(a, SimpleNamespace(cuga_lite_metadata={})) is None
 

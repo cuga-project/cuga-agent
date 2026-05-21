@@ -254,7 +254,9 @@ def inject_playbook_guidance(
 
     result = list(messages)
     original = result[last_human_idx]
-    result[last_human_idx] = HumanMessage(content=f"{original.content}\n\n## Task Guidance\n{guidance}")
+    result[last_human_idx] = original.model_copy(
+        update={"content": f"{original.content}\n\n## Task Guidance\n{guidance}"}
+    )
     return result
 
 

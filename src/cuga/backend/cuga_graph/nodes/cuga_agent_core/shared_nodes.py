@@ -146,7 +146,7 @@ def create_call_model_node(
                     content = content + variables_addendum
                     modified = True
 
-                modified_messages.append(HumanMessage(content=content) if modified else msg)
+                modified_messages.append(msg.model_copy(update={"content": content}) if modified else msg)
                 messages_for_model.append({"role": "user", "content": content})
 
             elif is_ai:
@@ -156,10 +156,10 @@ def create_call_model_node(
 
             else:
                 modified_messages.append(msg)
-                logger.warning("call_model: skipping message %d with unknown role: %s", i, msg_role)
+                logger.warning("call_model: skipping message {} with unknown role: {}", i, msg_role)
 
         logger.info(
-            "call_model: %d messages → model (%s)",
+            "call_model: {} messages → model ({})",
             len(messages_for_model),
             adapter.sender_name,
         )

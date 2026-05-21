@@ -297,12 +297,15 @@ class ToolApprovalHandler:
         """Handle user denial of tool approval."""
         if adapter.get_metadata(state).get("user_approved") is False:
             logger.warning("User denied tool approval - skipping execution")
+            meta_key = adapter.metadata_key
+            cleared_meta = {k: v for k, v in adapter.get_metadata(state).items() if k != "user_approved"}
             return Command(
                 goto=END,
                 update={
                     "execution_complete": True,
                     "final_answer": "Execution cancelled by user.",
                     "step_count": state.step_count + 1,
+                    meta_key: cleared_meta,
                 },
             )
         return None

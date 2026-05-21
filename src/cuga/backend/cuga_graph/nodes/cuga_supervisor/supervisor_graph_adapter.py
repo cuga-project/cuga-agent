@@ -338,7 +338,7 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
                     }
                 agent_tools_for_prompt.append(tool_info)
 
-            from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_update_todos_tool
+            from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import create_update_todos_tool
             from cuga.backend.cuga_graph.nodes.cuga_agent_core.code_extraction import make_tool_awaitable
 
             todos_tool = await create_update_todos_tool()
@@ -473,10 +473,10 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
 
             existing_vars = {}
             var_manager = adapter.get_variable_manager(state)
-            for var_name in var_manager.get_variable_names():
-                existing_vars[var_name] = var_manager.get_variable(var_name)
-
-            adapter._shared_vm_ref[0] = var_manager
+            if var_manager is not None:
+                for var_name in var_manager.get_variable_names():
+                    existing_vars[var_name] = var_manager.get_variable(var_name)
+                adapter._shared_vm_ref[0] = var_manager
 
             context = {**existing_vars, **adapter._agent_tools_context}
 
@@ -501,10 +501,11 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
 
                 logger.debug(f"Execution output: {output.strip()[:500]}...")
 
-                for name, value in new_vars.items():
-                    var_manager.add_variable(
-                        value, name=name, description="Created during agent delegation execution"
-                    )
+                if var_manager is not None:
+                    for name, value in new_vars.items():
+                        var_manager.add_variable(
+                            value, name=name, description="Created during agent delegation execution"
+                        )
 
                 execution_message_content = execution_output_text(output)
                 new_message = HumanMessage(content=execution_message_content)

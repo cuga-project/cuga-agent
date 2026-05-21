@@ -17,21 +17,751 @@ imports them from here in Phase 6.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+import os
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Tuple
 
-from langchain_core.messages import BaseMessage
+from langchain_core.exceptions import OutputParserException
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.runnables import RunnableConfig
+from langchain_core.tools import StructuredTool
+from langgraph.types import Command
 from loguru import logger
+from pydantic import BaseModel, Field
 
-from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import CoreGraphAdapter
+from cuga.backend.activity_tracker.tracker import Step
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph_nodes import (
+    CoreGraphAdapter,
+    append_chat_messages_with_step_limit as _core_append_with_step_limit,
+    create_error_command as _core_create_error_command,
+    execution_output_text,
+)
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.code_extraction import make_tool_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution_policy import (
+    ExecutionRouter,
+    split_execution_note,
+)
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.runtime_tools import (
+    build_runtime_tools,
+    resolve_runtime_backends,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import (
+    CodeExecutor,
+    is_find_tools_listing_markdown,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import (
+    resolve_bind_tools_fields,
+    resolved_runtime_model_name,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     classify_nl_auto_continue,
     normalize_assistant_text,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    PromptUtils,
+    create_mcp_prompt,
+    format_apps_for_prompt,
+    normalize_mcp_few_shot_examples,
+    resolve_cuga_lite_few_shots_enabled,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.reflection.reflection import reflection_task
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
+from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.task_decomposition_planning.analyze_task import TaskAnalyzer
+from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
 from cuga.backend.llm.errors import extract_code_from_tool_use_failed
+from cuga.backend.llm.models import LLMManager
+from cuga.backend.skills import (
+    SkillRegistry,
+    create_skill_tools,
+    discover_skills,
+    format_available_skills_block,
+)
 from cuga.config import settings
+
+_llm_manager = LLMManager()
 
 
 # ── Helpers (moved from cuga_lite_graph.py) ────────────────────────────────
+
+# ── Bind-tools helpers (Task 1) ────────────────────────────────────────────
+
+
+def _bind_tools_mode_from_settings() -> str:
+    try:
+        m = getattr(settings.advanced_features, "cuga_lite_bind_tools_mode", None)
+        if m is not None and str(m).strip():
+            return str(m).strip().lower()
+    except Exception:
+        pass
+    return "none"
+
+
+def _bind_tools_apps_from_settings():
+    try:
+        raw = getattr(settings.advanced_features, "cuga_lite_bind_tools_apps", None)
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [raw.strip()] if raw.strip() else []
+        if isinstance(raw, (list, tuple)):
+            return [str(x).strip() for x in raw if str(x).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _bind_tools_tool_names_from_settings():
+    try:
+        raw = getattr(settings.advanced_features, "cuga_lite_bind_tools_tool_names", None)
+        if raw is None:
+            return []
+        if isinstance(raw, str):
+            return [raw.strip()] if raw.strip() else []
+        if isinstance(raw, (list, tuple)):
+            return [str(x).strip() for x in raw if str(x).strip()]
+    except Exception:
+        pass
+    return []
+
+
+def _bind_include_find_tools_from_config(cfg: Dict[str, Any]) -> bool:
+    v = cfg.get("cuga_lite_bind_tools_include_find_tools")
+    if v is None:
+        try:
+            v = getattr(settings.advanced_features, "cuga_lite_bind_tools_include_find_tools", False)
+        except Exception:
+            v = False
+    if isinstance(v, bool):
+        return v
+    if isinstance(v, str):
+        return v.strip().lower() in ("true", "1", "yes", "on")
+    return bool(v)
+
+
+def _merge_find_tools_into_bound(
+    bound: List[StructuredTool],
+    seen: Set[str],
+    *,
+    include_find_tools: bool,
+    tools_context_ref: Optional[Dict[str, Any]],
+) -> None:
+    if not include_find_tools:
+        return
+    ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+    if not ft:
+        return
+    name = getattr(ft, "name", None) or ""
+    if name and name not in seen:
+        seen.add(name)
+        bound.append(ft)
+
+
+async def _indexed_provider_tools_first_wins(
+    tool_provider: ToolProviderInterface,
+) -> Dict[str, StructuredTool]:
+    """Map tool name → StructuredTool using provider.get_all_tools (first occurrence wins)."""
+    try:
+        all_tools = await tool_provider.get_all_tools()
+    except Exception as e:
+        logger.warning("bind_tools: get_all_tools failed: %s", e)
+        return {}
+    by_name: Dict[str, StructuredTool] = {}
+    duplicates: Set[str] = set()
+    for t in all_tools or []:
+        n = getattr(t, "name", None) or ""
+        if not n:
+            continue
+        if n in by_name:
+            duplicates.add(n)
+            continue
+        by_name[n] = t
+    if duplicates:
+        logger.debug(
+            "bind_tools: duplicate tool names from provider (using first): %s",
+            sorted(duplicates),
+        )
+    return by_name
+
+
+async def _indexed_tools_for_native_bind(
+    tool_provider: ToolProviderInterface,
+    tools_context_ref: Optional[Dict[str, Any]],
+) -> Dict[str, StructuredTool]:
+    """Registry MCP tools plus in-graph overlays (skills, OpenSandbox shell, todos, find_tools).
+
+    ``run_command`` / ``write_file`` / etc. are not registered with ToolRegistryProvider; prepare
+    copies them onto ``tools_for_prompt`` only. Overlay must merge so ``cuga_lite_bind_tools_tool_names``
+    can bind them by name.
+    """
+    by_name = await _indexed_provider_tools_first_wins(tool_provider)
+    overlay = (tools_context_ref or {}).get("_lc_bind_tools_overlay_structured_tools") or []
+    if not overlay:
+        return by_name
+    for t in overlay:
+        n = getattr(t, "name", None) or ""
+        if not n:
+            continue
+        by_name[n] = t
+    return by_name
+
+
+async def resolve_model_with_bind_tools(
+    active_model: BaseChatModel,
+    *,
+    configurable: Optional[Dict[str, Any]],
+    tools_context_ref: Optional[Dict[str, Any]],
+    tool_provider: Optional[ToolProviderInterface],
+    model_name: Optional[str] = None,
+) -> BaseChatModel:
+    """Optionally wrap ``active_model`` with ``bind_tools`` for native tool-calling tests.
+
+    LangGraph ``config['configurable']`` overrides per-model runtime profile overrides TOML:
+
+    - ``cuga_lite_bind_tools_mode``: ``none`` | ``find_tools`` | ``all`` | ``apps`` | ``tools`` | ``apps_and_tools``
+    - ``cuga_lite_bind_tools_apps``: list of app names (``mode=apps`` or ``apps_and_tools``)
+    - ``cuga_lite_bind_tools_tool_names``: StructuredTool ``name`` values (``mode=tools`` or ``apps_and_tools``)
+    - ``cuga_lite_bind_tools_include_find_tools``: merge ``find_tools`` into ``all`` / ``apps`` / ``tools`` / ``apps_and_tools``
+
+    Profile ``gpt-oss-20b``: see ``model_runtime_profile.GPT_OSS_20B_RUNTIME_DEFAULTS``.
+    """
+    cfg = configurable or {}
+    mn = (model_name or "").strip()
+    if not mn:
+        mn = resolved_runtime_model_name(
+            configurable_llm=cfg.get("llm"),
+            graph_default_model=active_model,
+        )
+    mode, app_names, tool_names, include_find_tools = resolve_bind_tools_fields(
+        configurable,
+        mn,
+        settings_mode_fn=_bind_tools_mode_from_settings,
+        settings_apps_fn=_bind_tools_apps_from_settings,
+        settings_tool_names_fn=_bind_tools_tool_names_from_settings,
+        settings_include_fn=lambda: _bind_include_find_tools_from_config({}),
+    )
+
+    if mode in ("", "none", "false", "0", "off"):
+        if include_find_tools:
+            ft_only = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+            if ft_only:
+                return active_model.bind_tools([ft_only])
+        return active_model
+
+    try:
+        if mode == "find_tools":
+            ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+            if ft:
+                return active_model.bind_tools([ft])
+            logger.debug(
+                "cuga_lite_bind_tools_mode=find_tools but find_tools StructuredTool is missing "
+                "(shortlisting may be off)"
+            )
+            return active_model
+
+        if mode == "all":
+            if not tool_provider:
+                logger.warning("cuga_lite_bind_tools_mode=all but tool_provider is missing")
+                return active_model
+            by_name = await _indexed_tools_for_native_bind(tool_provider, tools_context_ref)
+            bound = list(by_name.values())
+            seen: Set[str] = {n for n in by_name}
+            _merge_find_tools_into_bound(
+                bound, seen, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
+            )
+            if not bound:
+                return active_model
+            return active_model.bind_tools(bound)
+
+        if mode == "apps_and_tools":
+            if not tool_provider:
+                logger.warning("cuga_lite_bind_tools_mode=apps_and_tools but tool_provider is missing")
+                return active_model
+            if not app_names and not tool_names:
+                if include_find_tools:
+                    ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+                    if ft:
+                        return active_model.bind_tools([ft])
+                logger.warning(
+                    "cuga_lite_bind_tools_mode=apps_and_tools but cuga_lite_bind_tools_apps and "
+                    "cuga_lite_bind_tools_tool_names are both empty "
+                    "(set include_find_tools to bind find_tools only)"
+                )
+                return active_model
+
+            bound: List[StructuredTool] = []
+            seen_names: Set[str] = set()
+            for app_name in app_names:
+                try:
+                    for t in await tool_provider.get_tools(app_name):
+                        name = getattr(t, "name", None) or ""
+                        if name and name not in seen_names:
+                            seen_names.add(name)
+                            bound.append(t)
+                except Exception as e:
+                    logger.warning("bind_tools apps_and_tools: get_tools(%s) failed: %s", app_name, e)
+
+            by_name_lookup: Dict[str, StructuredTool] = {}
+            if tool_names:
+                by_name_lookup = await _indexed_tools_for_native_bind(tool_provider, tools_context_ref)
+
+            missing: List[str] = []
+            if tool_names:
+                for tn in tool_names:
+                    if tn in seen_names:
+                        continue
+                    t = by_name_lookup.get(tn)
+                    if t is None:
+                        missing.append(tn)
+                        continue
+                    seen_names.add(tn)
+                    bound.append(t)
+                if missing:
+                    logger.warning(
+                        "cuga_lite_bind_tools_tool_names not found among provider tools (skipped): %s",
+                        missing,
+                    )
+
+            _merge_find_tools_into_bound(
+                bound, seen_names, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
+            )
+            if not bound:
+                return active_model
+            return active_model.bind_tools(bound)
+
+        if mode == "apps":
+            if not app_names:
+                if include_find_tools:
+                    ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+                    if ft:
+                        return active_model.bind_tools([ft])
+                logger.warning(
+                    "cuga_lite_bind_tools_mode=apps but cuga_lite_bind_tools_apps is empty "
+                    "(set include_find_tools to bind find_tools only)"
+                )
+                return active_model
+            if not tool_provider:
+                logger.warning("cuga_lite_bind_tools_mode=apps but tool_provider is missing")
+                return active_model
+
+            bound = []
+            seen: Set[str] = set()
+            for app_name in app_names:
+                try:
+                    for t in await tool_provider.get_tools(app_name):
+                        name = getattr(t, "name", None) or ""
+                        if name and name not in seen:
+                            seen.add(name)
+                            bound.append(t)
+                except Exception as e:
+                    logger.warning("bind_tools apps: get_tools(%s) failed: %s", app_name, e)
+            _merge_find_tools_into_bound(
+                bound, seen, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
+            )
+            if not bound:
+                return active_model
+            return active_model.bind_tools(bound)
+
+        if mode == "tools":
+            if not tool_names:
+                if include_find_tools:
+                    ft = (tools_context_ref or {}).get("_lc_bind_tools_find_tools")
+                    if ft:
+                        return active_model.bind_tools([ft])
+                logger.warning(
+                    "cuga_lite_bind_tools_mode=tools but cuga_lite_bind_tools_tool_names is empty "
+                    "(set include_find_tools to bind find_tools only)"
+                )
+                return active_model
+            if not tool_provider:
+                logger.warning("cuga_lite_bind_tools_mode=tools but tool_provider is missing")
+                return active_model
+            by_name = await _indexed_tools_for_native_bind(tool_provider, tools_context_ref)
+            if not by_name:
+                return active_model
+            bound = []
+            seen: Set[str] = set()
+            missing: List[str] = []
+            for tn in tool_names:
+                t = by_name.get(tn)
+                if t is None:
+                    missing.append(tn)
+                    continue
+                if tn not in seen:
+                    seen.add(tn)
+                    bound.append(t)
+            if missing:
+                logger.warning(
+                    "cuga_lite_bind_tools_tool_names not found among provider tools (skipped): %s",
+                    missing,
+                )
+            _merge_find_tools_into_bound(
+                bound, seen, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
+            )
+            if not bound:
+                return active_model
+            return active_model.bind_tools(bound)
+
+        logger.warning(
+            "Unknown cuga_lite_bind_tools_mode: %s (use none|find_tools|all|apps|tools|apps_and_tools)",
+            mode,
+        )
+    except Exception as e:
+        logger.warning("resolve_model_with_bind_tools failed: %s", e)
+    return active_model
+
+
+# ── Find-tools helpers (Task 2) ────────────────────────────────────────────
+
+_BUNDLED_FIND_TOOLS_FEW_SHOT_JSON = (
+    Path(__file__).resolve().parent / "prompts" / "find_tools_few_shot_examples.json"
+)
+
+
+def _first_user_message_text(chat_messages: Optional[List[BaseMessage]]) -> Optional[str]:
+    if not chat_messages:
+        return None
+    for msg in chat_messages:
+        if isinstance(msg, HumanMessage):
+            raw = msg.content
+            text = raw.strip() if isinstance(raw, str) else str(raw).strip()
+            return text or None
+    return None
+
+
+def _compose_find_tools_shortlister_query(query: str, initial_user_message: Optional[str]) -> str:
+    q = query.strip()
+    init = (initial_user_message or "").strip()
+    if not init:
+        return q
+    return f"Query: {q}\nTask context (initial user message): {init}"
+
+
+def _web_search_enabled() -> bool:
+    return bool(getattr(settings.advanced_features, "enable_web_search", False))
+
+
+def _ensure_web_app(apps: List[Any], all_apps: List[Any]) -> List[Any]:
+    if not _web_search_enabled() or any(getattr(app, "name", None) == "web" for app in apps):
+        return apps
+    web_app = next((app for app in all_apps if getattr(app, "name", None) == "web"), None)
+    if web_app:
+        return [*apps, web_app]
+    return apps
+
+
+async def create_find_tools_tool(
+    all_tools,
+    all_apps: List[Any],
+    app_to_tools_map: Optional[Dict[str, List[StructuredTool]]] = None,
+    llm: Optional[Any] = None,
+    initial_user_message: Optional[str] = None,
+) -> StructuredTool:
+    """Create a find_tools StructuredTool for tool discovery.
+
+    Args:
+        all_tools: All available tools to search through
+        all_apps: All available app definitions
+        app_to_tools_map: Optional mapping of app_name -> list of tools. If provided, used for filtering by app_name.
+        initial_user_message: First human message in the session; combined with the tool `query` for shortlisting.
+
+    Returns:
+        StructuredTool configured for finding relevant tools
+    """
+
+    async def find_tools_func(query: str, app_name: str):
+        """Search for relevant tools from the connected applications based on a natural language query.
+
+        Args:
+            query: Natural language query describing what tools are needed to accomplish the task can include also which parameters are needed or the output expected
+            app_name: Name of a specific app to filter tools from. Only searches tools from that app.
+
+        Returns:
+            Top 4 matching tools with their details
+        """
+        if app_to_tools_map and app_name in app_to_tools_map:
+            filtered_tools = app_to_tools_map[app_name]
+        else:
+            logger.warning(
+                f"App '{app_name}' not found in app_to_tools_map. Available apps: {list(app_to_tools_map.keys()) if app_to_tools_map else 'N/A'}"
+            )
+            filtered_tools = []
+
+        filtered_apps = [app for app in all_apps if hasattr(app, 'name') and app.name == app_name]
+
+        if not filtered_apps:
+            logger.warning(
+                f"App '{app_name}' not found in available apps. Available apps: {[app.name if hasattr(app, 'name') else str(app) for app in all_apps]}"
+            )
+
+        shortlister_query = _compose_find_tools_shortlister_query(query, initial_user_message)
+
+        try:
+            return await PromptUtils.find_tools(
+                query=shortlister_query, all_tools=filtered_tools, all_apps=filtered_apps, llm=llm
+            )
+        except OutputParserException as e:
+            logger.bind(
+                query_len=len(shortlister_query),
+                error_type=type(e).__name__,
+            ).opt(exception=True).warning(
+                "Tool shortlisting failed due to parser error; returning error to agent"
+            )
+            return (
+                f"Tool shortlisting failed due to malformed response: {e}. "
+                "Please retry with a different query."
+            )
+        except Exception as e:
+            logger.bind(
+                query_len=len(shortlister_query),
+                error_type=type(e).__name__,
+            ).opt(exception=True).warning("Tool shortlisting failed unexpectedly; returning error to agent")
+            return (
+                f"Tool shortlisting failed due to an internal error: {e}. "
+                "Please retry with a different query."
+            )
+
+    return StructuredTool.from_function(
+        func=find_tools_func,
+        name="find_tools",
+        description="Search for relevant tools from a specific connected application based on a natural language query. Use this when you need to discover what tools are available for a specific task within a specific application.",
+    )
+
+
+def _resolve_find_tools_few_shot_json_path() -> Optional[Path]:
+    if _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON.is_file():
+        return _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON
+    return None
+
+
+def _load_default_find_tools_few_shot_examples() -> List[Dict[str, str]]:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import normalize_mcp_few_shot_examples
+
+    path = _resolve_find_tools_few_shot_json_path()
+    if path is None:
+        logger.debug(
+            "Find-tools few-shot JSON not found (expected packaged %s or repo samples copy); skipping",
+            _BUNDLED_FIND_TOOLS_FEW_SHOT_JSON,
+        )
+        return []
+    try:
+        import json as _json
+
+        raw = _json.loads(path.read_text(encoding="utf-8"))
+        normalized = normalize_mcp_few_shot_examples(raw)
+        if normalized:
+            logger.info(f"Loaded {len(normalized)} find_tools MCP few-shot turn(s) from {path}")
+        return normalized
+    except (OSError, _json.JSONDecodeError) as e:
+        logger.warning(f"Could not load find_tools few-shot JSON from {path}: {e}")
+        return []
+
+
+# ── Knowledge helpers (Task 4b) ───────────────────────────────────────────
+
+
+def _get_knowledge_tool_scope_context(
+    engine: Any | None,
+    thread_id: str | None,
+) -> tuple[tuple[str, ...], str | None]:
+    config = getattr(engine, "_config", None) if engine else None
+    if not config or not getattr(config, "enabled", False):
+        return (), None
+
+    scopes: list[str] = []
+    if getattr(config, "agent_level_enabled", True):
+        scopes.append("agent")
+    if getattr(config, "session_level_enabled", True) and thread_id:
+        scopes.append("session")
+
+    default_scope = "agent" if "agent" in scopes else scopes[0] if scopes else None
+    return tuple(scopes), default_scope
+
+
+def _knowledge_scope_instruction(allowed_scopes: tuple[str, ...], thread_id: str | None) -> str:
+    if allowed_scopes == ("agent",):
+        return (
+            "Knowledge scope rules for this run: only agent-level knowledge is available. "
+            "Never call `knowledge_*` tools with `scope=\"session\"`."
+        )
+    if allowed_scopes == ("session",):
+        return (
+            "Knowledge scope rules for this run: only session-level knowledge is available. "
+            "Never call `knowledge_*` tools with `scope=\"agent\"`. The conversation thread context is injected automatically."
+        )
+    if allowed_scopes == ("agent", "session"):
+        return (
+            "Knowledge scope rules for this run: both knowledge scopes are available. "
+            "Use `scope=\"agent\"` for permanent agent documents and `scope=\"session\"` for this conversation's documents."
+        )
+    if thread_id:
+        return "Knowledge tools are unavailable in this run. Do not call any `knowledge_*` tool."
+    return (
+        "Knowledge tools are unavailable in this run. "
+        "Session scope cannot be used here because there is no conversation thread context."
+    )
+
+
+def _decorate_knowledge_tool(tool: Any, allowed_scopes: tuple[str, ...], thread_id: str | None) -> None:
+    """Add a brief scope hint to the tool description.
+
+    The full scope rules are already in the system instructions, so we only
+    add a short reminder here to avoid bloating the prompt with repeated text.
+    """
+    base_description = getattr(tool, "description", "") or "Knowledge tool"
+    scopes_str = ", ".join(f'"{s}"' for s in allowed_scopes)
+    hint = f"Allowed scopes: {scopes_str}. See knowledge scope rules in instructions above."
+    tool.description = f"{base_description}\n\n{hint}".strip()
+
+
+# ── Reflection helper (Task 5a) ────────────────────────────────────────────
+
+
+def _reflection_current_task(state: Any) -> str:
+    """Prefer ``sub_task``; else last user message that is not sandbox ``Execution output`` feedback."""
+    if (state.sub_task or "").strip():
+        return state.sub_task.strip()
+    if state.chat_messages:
+        execution_prefix = "Execution output:"
+        for msg in reversed(state.chat_messages):
+            if isinstance(msg, HumanMessage):
+                c = (msg.content or "").strip()
+                if c and not c.startswith(execution_prefix):
+                    return c
+    return ""
+
+
+# ── Todos helpers (Task 3) ─────────────────────────────────────────────────
+
+
+class Todo(BaseModel):
+    """A single todo item with text and status."""
+
+    text: str = Field(..., description="The task description")
+    status: str = Field(
+        default="pending",
+        description="Status of the todo: 'pending', 'in_progress', or 'completed'",
+    )
+
+
+class TodosInput(BaseModel):
+    """Input schema for create_update_todos function."""
+
+    todos: List[Todo] = Field(..., description="List of todos, each with 'text' and 'status' fields")
+
+
+class TodosOutput(BaseModel):
+    """Output schema for create_update_todos function."""
+
+    todos: List[Todo] = Field(..., description="List of todos with their current status")
+
+
+def _try_parse_todos_payload(value: Any) -> Optional[List[Dict[str, Any]]]:
+    if not isinstance(value, dict) or "todos" not in value:
+        return None
+    raw = value["todos"]
+    if not isinstance(raw, list):
+        return None
+    if not raw:
+        return []
+    if not all(isinstance(x, dict) and "text" in x and "status" in x for x in raw):
+        return None
+    return raw
+
+
+def extract_task_todos_from_new_vars(new_vars: dict) -> Optional[List[Dict[str, Any]]]:
+    for val in new_vars.values():
+        parsed = _try_parse_todos_payload(val)
+        if parsed is not None:
+            return parsed
+    return None
+
+
+def _serialize_todos_for_store(todos_list: List[Any]) -> List[Dict[str, str]]:
+    out: List[Dict[str, str]] = []
+    for t in todos_list:
+        if isinstance(t, Todo):
+            out.append({"text": t.text, "status": t.status})
+        elif hasattr(t, "model_dump"):
+            d = t.model_dump()
+            out.append({"text": str(d.get("text", "")), "status": str(d.get("status", "pending"))})
+        elif isinstance(t, dict):
+            out.append({"text": str(t.get("text", "")), "status": str(t.get("status", "pending"))})
+        else:
+            out.append({"text": str(t), "status": "pending"})
+    return out
+
+
+async def create_update_todos_tool(
+    agent_state: Optional[Any] = None,
+    todos_store_ref: Optional[List[Dict[str, str]]] = None,
+) -> StructuredTool:
+    """Create a create_update_todos StructuredTool for managing task todos.
+
+    Args:
+        agent_state: Optional AgentState (reserved for future use)
+        todos_store_ref: Mutable list shared with the graph; latest todos are written here for the system prompt.
+
+    Returns:
+        StructuredTool configured for creating and updating todos
+    """
+
+    async def create_update_todos_func(todos: Any) -> TodosOutput:
+        """Create or update a list of todos for complex multi-step tasks.
+
+        Use this tool when you have a complex task that requires multiple steps.
+        This helps you track progress and organize your work.
+
+        Args:
+            todos: List of todo dicts/models (matches ``TodosInput.todos`` / tool schema).
+
+        Returns:
+            Short confirmation only (full list is shown in the system prompt via todos_store_ref).
+        """
+        input_data = todos
+        # Handle different input types
+        if isinstance(input_data, TodosInput):
+            todos_list = input_data.todos
+        elif isinstance(input_data, dict):
+            # If it's a dict, check if it has 'todos' key
+            if 'todos' in input_data:
+                todos_list = input_data['todos']
+            else:
+                # If no 'todos' key, treat the whole dict as a single todo or wrap it
+                todos_list = [input_data]
+            # Convert dict items to Todo models
+            todos_list = [Todo(**todo) if isinstance(todo, dict) else todo for todo in todos_list]
+        elif isinstance(input_data, list):
+            # If it's a list directly, convert each item to Todo
+            todos_list = [Todo(**todo) if isinstance(todo, dict) else todo for todo in input_data]
+        else:
+            # Fallback: try to create TodosInput
+            try:
+                if isinstance(input_data, dict):
+                    input_data = TodosInput(**input_data)
+                else:
+                    input_data = TodosInput(todos=input_data)
+                todos_list = input_data.todos
+            except Exception:
+                # Last resort: wrap in a list
+                todos_list = [Todo(**input_data) if isinstance(input_data, dict) else input_data]
+
+        if todos_store_ref is not None:
+            serialized = _serialize_todos_for_store(todos_list)
+            todos_store_ref.clear()
+            todos_store_ref.extend(serialized)
+
+        normalized = [t if isinstance(t, Todo) else Todo(**t) for t in todos_list]
+        return TodosOutput(todos=normalized)
+
+    return StructuredTool.from_function(
+        func=create_update_todos_func,
+        name="create_update_todos",
+        description="Create or update a list of todos for complex multi-step tasks. Pass `todos` as a list of objects with 'text' and 'status' ('pending', 'in_progress', or 'completed'). Returns a todos payload; the full list is shown in the system prompt under 'Current task todos' (Current Plan).",
+        args_schema=TodosInput,
+        return_direct=False,
+    )
 
 
 def _clean_empty_response_retry_meta(meta: Optional[Dict[str, Any]]) -> Dict[str, Any]:
@@ -128,12 +858,26 @@ class AgentGraphAdapter(CoreGraphAdapter):
         task_todos_ref: List[Dict[str, str]],
         tools_context_ref: Optional[Dict[str, Any]],
         base_tool_provider: Any,
+        model: Any = None,
+        prompt_template: Any = None,
+        instructions: Any = None,
+        special_instructions: Any = None,
+        tools_context: Optional[Dict[str, Any]] = None,
+        static_prompt: Any = None,
+        thread_id: Any = None,
     ) -> None:
         self._tracker = tracker
         self._base_callbacks = base_callbacks or []
         self._task_todos_ref = task_todos_ref
         self._tools_context_ref = tools_context_ref
         self._base_tool_provider = base_tool_provider
+        self._model = model
+        self._prompt_template = prompt_template
+        self._instructions = instructions
+        self._special_instructions = special_instructions
+        self._tools_context = tools_context if tools_context is not None else {}
+        self._static_prompt = static_prompt
+        self._thread_id = thread_id
 
     # ── Abstract method implementations ───────────────────────────────────
 
@@ -191,10 +935,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
             raise
 
     async def resolve_bind_tools(self, state: Any, active_model: Any, configurable: dict) -> Any:
-        from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
-            resolve_model_with_bind_tools,
-        )
-
         try:
             return await resolve_model_with_bind_tools(
                 active_model,
@@ -204,7 +944,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
             )
         except Exception as exc:
             logger.warning("AgentGraphAdapter.resolve_bind_tools failed: %s", exc)
-            return None
+        return None
 
     # ── Post-invocation hook overrides ────────────────────────────────────
 
@@ -222,8 +962,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
 
     def on_response_processed(self, state: Any, code: Optional[str], content: str) -> None:
         try:
-            from cuga.backend.activity_tracker.tracker import Step
-
             self._tracker.collect_step(step=Step(name="Raw_Assistant_Response", data=content))
             if code:
                 self._tracker.collect_step(step=Step(name="Assistant_code", data=content))
@@ -242,3 +980,804 @@ class AgentGraphAdapter(CoreGraphAdapter):
         self, state: Any, model: Any, content: str, reasoning: Optional[str]
     ) -> bool:
         return await classify_nl_auto_continue(model, content, reasoning)
+
+    # ── Node factory methods (Tasks 4c and 5b) ────────────────────────────
+
+    def build_prepare_node(self, lc_bind_tools_meta: dict):
+        """Return the prepare_tools_and_apps async node."""
+
+        async def prepare_tools_and_apps(state: Any, config: Optional[RunnableConfig] = None) -> Command:
+            """Prepare tools, apps, and prompt once at the start of the graph.
+
+            This node gets tools from tool_provider, filters based on state configuration,
+            determines if find_tools should be enabled, and prepares the prompt.
+            Tools are available via closure (per graph instance), prompt is stored in state.
+
+            enable_todos is read from config["configurable"] at runtime.
+
+            Optional configurable key ``mcp_few_shot_examples``: overrides few-shots—a JSON string or
+            list of dicts with ``role`` and ``content``. If absent (or explicitly ``None``) and
+            ``find_tools`` is enabled, ``prompts/find_tools_few_shot_examples.json`` (bundled next to the
+            MCP template) is loaded, with optional fallback to repo ``samples/cuga_lite/mcp_few_shot_examples.json``.
+            Bundled few-shots only apply when ``find_tools`` shortlisting is active
+            (``total_tool_count > shortlisting_tool_threshold``, see settings configurable).
+
+            Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
+            or ``cuga_lite_enable_few_shots`` in configurable (skips prefix chat few-shots).
+            """
+            configurable = config.get("configurable", {}) if config else {}
+            enable_todos = (
+                configurable.get("enable_todos")
+                if "enable_todos" in configurable
+                else settings.advanced_features.enable_todos
+            )
+            shortlisting_threshold = (
+                configurable.get("shortlisting_tool_threshold")
+                if "shortlisting_tool_threshold" in configurable
+                else settings.advanced_features.shortlisting_tool_threshold
+            )
+            _runtime_model_name = resolved_runtime_model_name(
+                configurable_llm=configurable.get("llm"),
+                graph_default_model=self._model,
+            )
+            few_shots_enabled = resolve_cuga_lite_few_shots_enabled(
+                configurable,
+                model_name=_runtime_model_name,
+            )
+            logger.debug(
+                f"[APPROVAL DEBUG] prepare_tools_and_apps received cuga_lite_metadata: {state.cuga_lite_metadata}"
+            )
+
+            # Skip policy checking if policies are disabled or if we're returning from approval
+            if settings.policy.enabled and not ToolApprovalHandler.should_skip_policy_check(self, state):
+                # Check for policies and enact if matched
+                # Include IntentGuard, Playbook, and ToolGuide for intent checks
+                from cuga.backend.cuga_graph.policy.models import PolicyType
+
+                command, metadata = await PolicyEnactment.check_and_enact(
+                    state,
+                    config,
+                    policy_types=[PolicyType.INTENT_GUARD, PolicyType.PLAYBOOK, PolicyType.TOOL_GUIDE],
+                    adapter=self,
+                )
+
+                # If policy returned a command (e.g., BLOCK_INTENT), execute it immediately
+                if command:
+                    return command
+
+                # If policy returned metadata (e.g., playbook guidance), store it
+                if metadata:
+                    self.set_metadata(state, metadata)
+            elif not settings.policy.enabled:
+                logger.debug("Policy system disabled - skipping policy checks")
+            else:
+                logger.info("[APPROVAL DEBUG] Skipping policy check - user has already approved")
+
+            if not self._base_tool_provider:
+                raise ValueError("tool_provider is required")
+
+            # Get total tool count across ALL apps (for shortlisting threshold - not per app)
+            all_tools_total = await self._base_tool_provider.get_all_tools()
+            total_tool_count = len(all_tools_total) if all_tools_total else 0
+
+            # Get tools from provider
+            apps_for_prompt = None
+            app_to_tools_map = {}
+
+            # Get apps from state and filter tools if specific app is selected
+            if state.sub_task_app:
+                # Specific app selected - filter tools to only this app
+                all_apps = await self._base_tool_provider.get_apps()
+                # add here the implementation of force_
+                force_lite_apps = getattr(settings.advanced_features, 'force_lite_mode_apps', [])
+                if force_lite_apps:
+                    allowed_apps_names = list(set([state.sub_task_app] + force_lite_apps))
+                    if _web_search_enabled():
+                        allowed_apps_names.append("web")
+                    # call authenticate_apps for the allowed apps
+                    if settings.advanced_features.benchmark == "appworld":
+                        await TaskAnalyzer.call_authenticate_apps(force_lite_apps)
+                    apps_for_prompt = [app for app in all_apps if app.name in allowed_apps_names]
+                else:
+                    apps_for_prompt = [app for app in all_apps if app.name == state.sub_task_app]
+                    apps_for_prompt = _ensure_web_app(apps_for_prompt, all_apps)
+                # Get only tools for this specific app
+                tools_for_execution = []
+                for app in apps_for_prompt:
+                    current_tools_for_execution = await self._base_tool_provider.get_tools(app.name)
+                    app_to_tools_map[app.name] = current_tools_for_execution
+                    tools_for_execution.extend(current_tools_for_execution)
+
+                logger.info(
+                    f"Filtered to {len(tools_for_execution)} tools for {len(apps_for_prompt)} identified apps"
+                )
+            elif state.api_intent_relevant_apps:
+                # Filter to API apps
+                all_apps = await self._base_tool_provider.get_apps()
+                apps_for_prompt = [
+                    app
+                    for app in state.api_intent_relevant_apps
+                    if hasattr(app, 'type') and app.type == 'api'
+                ]
+                apps_for_prompt = _ensure_web_app(apps_for_prompt, all_apps)
+                # Get tools only for the identified apps
+                tools_for_execution = []
+                for app in apps_for_prompt:
+                    app_tools = await self._base_tool_provider.get_tools(app.name)
+                    app_to_tools_map[app.name] = app_tools
+                    tools_for_execution.extend(app_tools)
+                logger.info(
+                    f"Filtered to {len(tools_for_execution)} tools for {len(apps_for_prompt)} identified apps"
+                )
+            else:
+                # Get all tools and apps
+                all_apps = await self._base_tool_provider.get_apps()
+                apps_for_prompt = all_apps
+                tools_for_execution = all_tools_total or []
+                # Build mapping for all apps
+                for app in apps_for_prompt:
+                    app_tools = await self._base_tool_provider.get_tools(app.name)
+                    app_to_tools_map[app.name] = app_tools
+
+            enable_find_tools = total_tool_count > shortlisting_threshold or _web_search_enabled()
+
+            if enable_find_tools:
+                logger.info(
+                    f"Auto-enabling find_tools: total {total_tool_count} tools (across all apps) exceeds threshold of {shortlisting_threshold}"
+                )
+
+            # Prepare prompt
+            is_autonomous_subtask = state.sub_task is not None and state.sub_task.strip() != ""
+
+            # TODO: Add task loaded from file support this happens when we load file as playboook
+            task_loaded_from_file = False  # Not used in current flow
+
+            # Prepare tools for prompt - if find_tools enabled, only expose find_tools
+            tools_for_prompt = tools_for_execution
+            if enable_find_tools:
+                active_model = configurable.get("llm")
+                find_tool = await create_find_tools_tool(
+                    all_tools=tools_for_execution,
+                    all_apps=apps_for_prompt,
+                    app_to_tools_map=app_to_tools_map,
+                    llm=active_model,
+                    initial_user_message=_first_user_message_text(state.chat_messages),
+                )
+                tools_for_prompt = [find_tool]
+                # Add find_tools to tools context for sandbox execution
+                # Wrap to make awaitable (agent always uses await)
+                # Prefer coroutine over func to avoid run_in_executor issues
+                find_tool_func = (
+                    find_tool.coroutine
+                    if hasattr(find_tool, 'coroutine') and find_tool.coroutine
+                    else find_tool.func
+                )
+                self._tools_context['find_tools'] = make_tool_awaitable(find_tool_func)
+                if lc_bind_tools_meta is not None:
+                    lc_bind_tools_meta["_lc_bind_tools_find_tools"] = find_tool
+                logger.info(
+                    "Exposing only find_tools in prompt (all tools + find_tools available in execution context)"
+                )
+
+            if few_shots_enabled:
+                if "mcp_few_shot_examples" in configurable:
+                    raw_fs = configurable["mcp_few_shot_examples"]
+                    if raw_fs is not None:
+                        few_shot_examples = normalize_mcp_few_shot_examples(raw_fs)
+                    elif enable_find_tools:
+                        few_shot_examples = _load_default_find_tools_few_shot_examples()
+                    else:
+                        few_shot_examples = []
+                elif enable_find_tools:
+                    few_shot_examples = _load_default_find_tools_few_shot_examples()
+                else:
+                    few_shot_examples = []
+                    logger.debug(
+                        "Bundled MCP few-shots (prompts/find_tools_few_shot_examples.json) not loaded: find_tools "
+                        "is off "
+                        f"(total_tool_count={total_tool_count} <= shortlisting_tool_threshold="
+                        f"{shortlisting_threshold}). Lower the threshold via configurable or add apps/tools."
+                    )
+            else:
+                few_shot_examples = []
+                logger.debug("MCP few-shots disabled (cuga_lite_enable_few_shots=false)")
+            if few_shot_examples:
+                logger.debug(f"MCP few-shot examples: {len(few_shot_examples)} turns")
+
+            # Add create_update_todos tool for complex task management if enabled
+            if enable_todos:
+                todos_tool = await create_update_todos_tool(
+                    agent_state=state, todos_store_ref=self._task_todos_ref
+                )
+                tools_for_prompt.append(todos_tool)
+                # Add to tools context for sandbox execution
+                # Prefer coroutine over func to avoid run_in_executor issues
+                todos_tool_func = (
+                    todos_tool.coroutine
+                    if hasattr(todos_tool, 'coroutine') and todos_tool.coroutine
+                    else todos_tool.func
+                )
+                self._tools_context['create_update_todos'] = make_tool_awaitable(todos_tool_func)
+
+            # Apply tool guide if guides exist in metadata and haven't been applied yet
+            # Guides should apply regardless of whether a playbook matched
+            if settings.policy.enabled and state.cuga_lite_metadata:
+                # Check if guides exist (either as separate guides list or legacy format)
+                has_guides = (
+                    state.cuga_lite_metadata.get("guides")
+                    or state.cuga_lite_metadata.get("guide_content")
+                    or state.cuga_lite_metadata.get("policy_type") == "tool_guide"
+                    or state.cuga_lite_metadata.get("has_guides", False)
+                )
+
+                if has_guides:
+                    tools_for_execution = PolicyEnactment.apply_tool_guide(
+                        tools_for_execution, state.cuga_lite_metadata
+                    )
+                    tools_for_prompt = PolicyEnactment.apply_tool_guide(
+                        tools_for_prompt, state.cuga_lite_metadata
+                    )
+                    # Mark guides as applied to prevent re-application
+                    state.cuga_lite_metadata["guides_applied"] = True
+                    logger.info("Applied tool guide from policy")
+                else:
+                    logger.debug("No tool guides found in metadata")
+
+            skill_tools = []
+            skills_prompt_section = ""
+            skills_enabled = False
+            configurable_special = (
+                (config or {}).get("configurable", {}).get("special_instructions") if config else None
+            )
+            effective_special = self._special_instructions or configurable_special or ""
+            skills_cfg_on = getattr(settings.skills, "enabled", False)
+            cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+            if skills_cfg_on:
+                skill_entries = discover_skills(cuga_folder_for_skills)
+                if skill_entries:
+                    skill_registry = SkillRegistry(skill_entries)
+                    skill_tools = create_skill_tools(skill_registry)
+                    tools_for_prompt.extend(skill_tools)
+                    skills_prompt_section = format_available_skills_block(skill_registry)
+                    skills_enabled = True
+                    logger.info(
+                        f"Loaded {len(skill_entries)} agent skill(s) from .agents/skills and "
+                        f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
+                        "~/.config/cuga/skills fallbacks"
+                    )
+
+            # Resolve thread_id early for per-thread workspace selection.
+            _cfg_for_thread = config.get("configurable", {}) if config else {}
+            _runtime_thread_id_for_fs = _cfg_for_thread.get("thread_id") or state.thread_id or self._thread_id
+
+            # Update tools context with all execution tools.
+            # Wrap to make awaitable (agent always uses await). Filesystem path
+            # rewriting is no longer needed here — filesystem tools come from
+            # the consolidated runtime class below, not from MCP.
+            for tool in tools_for_execution:
+                # Extract tool function - StructuredTool may use .func, .coroutine, or ._run
+                # IMPORTANT: Prefer coroutine over func to avoid run_in_executor issues
+                # with tools that have async implementations (like MCP tools)
+                tool_func = None
+                if hasattr(tool, 'coroutine') and tool.coroutine:
+                    # Prefer async coroutine - avoids run_in_executor timeout issues
+                    tool_func = tool.coroutine
+                elif hasattr(tool, 'func') and tool.func:
+                    tool_func = tool.func
+                else:
+                    tool_func = getattr(tool, '_run', None)
+
+                if tool_func:
+                    self._tools_context[tool.name] = make_tool_awaitable(tool_func)
+                else:
+                    logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
+
+            for tool in skill_tools:
+                tool_func = None
+                if hasattr(tool, "coroutine") and tool.coroutine:
+                    tool_func = tool.coroutine
+                elif hasattr(tool, "func") and tool.func:
+                    tool_func = tool.func
+                else:
+                    tool_func = getattr(tool, "_run", None)
+                if tool_func:
+                    self._tools_context[tool.name] = make_tool_awaitable(tool_func)
+                else:
+                    logger.warning(f"Skill tool '{tool.name}' has no callable, skipping")
+
+            # Inject the consolidated filesystem tools + run_command via the
+            # shared runtime_tools orchestrator. Backend selection and gating
+            # live in cuga_agent_core (behavior-identical to the previous
+            # inline block); filesystem and run_command remain independently
+            # gated by enable_filesystem_tools / enable_shell_tool.
+            _runtime_backends = resolve_runtime_backends(settings, configurable)
+
+            if _runtime_backends.filesystem != "none" or _runtime_backends.shell != "none":
+                cfg = config.get("configurable", {}) if config else {}
+                runtime_thread_id = (
+                    cfg["thread_id"] if "thread_id" in cfg else (state.thread_id or self._thread_id)
+                )
+            else:
+                runtime_thread_id = None
+
+            _runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=_runtime_backends)
+            self._tools_context.update(_runtime_bundle.execution_callables)
+            tools_for_prompt.extend(_runtime_bundle.prompt_tools)
+            if _runtime_bundle.app_definitions and apps_for_prompt is not None:
+                apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions
+
+            from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
+
+            special_instructions_final = effective_special or ""
+            _split_note = split_execution_note(ExecutionRouter.resolve(settings))
+            if _split_note:
+                special_instructions_final = (special_instructions_final + "\n\n" + _split_note).strip()
+            evolve_extension = await build_evolve_special_instructions_extension(
+                state=state,
+                configurable=configurable,
+                timeout=settings.evolve.timeout,
+            )
+            if evolve_extension:
+                special_instructions_final = (special_instructions_final or "") + evolve_extension
+
+            cfg = config.get("configurable", {}) if config else {}
+            _thread_id = cfg.get("thread_id") or ""
+            _knowledge_engine = cfg.get("knowledge_engine")
+            if _knowledge_engine is None:
+                try:
+                    from cuga.backend.server.main import app as _app
+
+                    _app_state = getattr(_app.state, "app_state", None)
+                    _knowledge_engine = getattr(_app_state, "knowledge_engine", None) if _app_state else None
+                except Exception:
+                    _knowledge_engine = None
+
+            allowed_knowledge_scopes, default_knowledge_scope = _get_knowledge_tool_scope_context(
+                _knowledge_engine,
+                _thread_id or None,
+            )
+
+            knowledge_tool_names = {
+                tool.name
+                for tool in tools_for_execution
+                if getattr(tool, "name", "").startswith("knowledge_")
+            }
+
+            if knowledge_tool_names and not allowed_knowledge_scopes:
+                tools_for_execution = [
+                    tool
+                    for tool in tools_for_execution
+                    if getattr(tool, "name", "") not in knowledge_tool_names
+                ]
+                tools_for_prompt = [
+                    tool for tool in tools_for_prompt if getattr(tool, "name", "") not in knowledge_tool_names
+                ]
+                apps_for_prompt = [
+                    app for app in (apps_for_prompt or []) if getattr(app, "name", "") != "knowledge"
+                ]
+                for tool_name in knowledge_tool_names:
+                    self._tools_context.pop(tool_name, None)
+            elif knowledge_tool_names:
+                if _thread_id:
+                    logger.debug("Knowledge tools: thread context available for session scope injection")
+
+                def _wrap_knowledge_tool(fn, tid, allowed_scopes, default_scope):
+                    async def _wrapped(*args, **kwargs):
+                        scope = kwargs.get("scope")
+                        if scope is None and default_scope:
+                            kwargs["scope"] = default_scope
+                            scope = default_scope
+                        if scope is not None and scope not in allowed_scopes:
+                            allowed_text = ", ".join(allowed_scopes)
+                            return {
+                                "error": (
+                                    f"Knowledge scope '{scope}' is unavailable in this context. "
+                                    f"Allowed scopes: {allowed_text}"
+                                )
+                            }
+                        if tid and "session" in allowed_scopes:
+                            kwargs.setdefault("thread_id", tid)
+                        return await fn(*args, **kwargs)
+
+                    _wrapped.__doc__ = getattr(fn, "__doc__", None)
+                    _wrapped._knowledge_allowed_scopes = allowed_scopes
+                    _wrapped._knowledge_default_scope = default_scope
+                    _wrapped._knowledge_thread_id = tid
+                    return _wrapped
+
+                for tool_name in knowledge_tool_names:
+                    original_fn = self._tools_context.get(tool_name)
+                    if original_fn:
+                        self._tools_context[tool_name] = _wrap_knowledge_tool(
+                            original_fn,
+                            _thread_id,
+                            allowed_knowledge_scopes,
+                            default_knowledge_scope,
+                        )
+
+                # Note: scope rules are injected once via effective_instructions.
+                # No per-tool decoration needed — avoids repeated text in prompt.
+
+            # Inject knowledge base awareness if knowledge tools are available
+            effective_instructions = self._instructions
+            # Detect knowledge tools — works for both registry (app named
+            # "knowledge") and SDK mode (tools under "runtime_tools")
+            has_knowledge_tools = any(
+                getattr(app, "name", "") == "knowledge" for app in (apps_for_prompt or [])
+            )
+            if not has_knowledge_tools and tools_for_execution:
+                has_knowledge_tools = any(
+                    getattr(t, "name", "").startswith("knowledge_") for t in tools_for_execution
+                )
+            knowledge_scope_instruction = _knowledge_scope_instruction(
+                allowed_knowledge_scopes,
+                _thread_id or None,
+            )
+            if knowledge_tool_names:
+                effective_instructions = (
+                    f"{knowledge_scope_instruction}\n\n{effective_instructions}"
+                    if effective_instructions
+                    else knowledge_scope_instruction
+                )
+            if has_knowledge_tools:
+                try:
+                    from cuga.backend.knowledge.awareness import (
+                        get_knowledge_summary,
+                        format_knowledge_context,
+                        get_engine_from_app_state,
+                    )
+
+                    cfg = config.get("configurable", {})
+                    engine = cfg.get("knowledge_engine") or get_engine_from_app_state()
+                    # Get agent_id: configurable > app_state > fallback
+                    agent_id = cfg.get("agent_id")
+                    knowledge_config_hash = cfg.get("knowledge_config_hash")
+                    if not agent_id:
+                        try:
+                            from cuga.backend.server.main import app as _app
+
+                            _as = getattr(_app.state, "app_state", None)
+                            agent_id = getattr(_as, "agent_id", None) if _as else None
+                            if knowledge_config_hash is None:
+                                knowledge_config_hash = (
+                                    getattr(_as, "knowledge_config_hash", None) if _as else None
+                                )
+                        except Exception:
+                            pass
+                    if not agent_id:
+                        agent_id = "cuga-default"
+                    awareness_thread_id = cfg.get("thread_id")
+                    kb_ctx = format_knowledge_context(
+                        agent_id,
+                        awareness_thread_id,
+                        engine=engine,
+                        agent_config_hash=knowledge_config_hash,
+                    )
+                    logger.info(
+                        f"Knowledge awareness: agent_id={agent_id}, thread_id={awareness_thread_id}, "
+                        f"agent_collection={kb_ctx.get('agent_collection')}, "
+                        f"session_collection={kb_ctx.get('session_collection')}"
+                    )
+
+                    if not engine:
+                        logger.warning("Knowledge awareness skipped: engine not available")
+                    else:
+                        # Use draft knowledge config for search-time params when running
+                        # in draft mode (Try-It-Out). Published agent always uses engine config.
+                        _search_cfg = engine._config
+                        _is_draft = agent_id and agent_id.endswith("--draft")
+                        if _is_draft:
+                            try:
+                                from cuga.backend.server.main import app as _app
+
+                                _das = getattr(_app.state, "draft_app_state", None)
+                                _draft_kc = getattr(_das, "draft_knowledge_config", None) if _das else None
+                                if _draft_kc:
+                                    _search_cfg = _draft_kc
+                            except Exception:
+                                pass
+                        knowledge_block = await get_knowledge_summary(
+                            engine,
+                            agent_collection=kb_ctx.get("agent_collection"),
+                            session_collection=kb_ctx.get("session_collection"),
+                            max_search_attempts=getattr(_search_cfg, "max_search_attempts", None)
+                            or getattr(engine._config, "max_search_attempts", None),
+                            default_limit=getattr(_search_cfg, "default_limit", None)
+                            or getattr(engine._config, "default_limit", None),
+                            rag_profile=getattr(_search_cfg, "rag_profile", None)
+                            or getattr(engine._config, "rag_profile", "standard"),
+                        )
+                        if knowledge_block:
+                            # Load knowledge search instructions from dedicated file
+                            knowledge_instructions_text = ""
+                            try:
+                                kb_instructions_path = (
+                                    Path(__file__).parents[4]
+                                    / "configurations"
+                                    / "knowledge"
+                                    / "knowledge_instructions.md"
+                                )
+                                if kb_instructions_path.exists():
+                                    knowledge_instructions_text = kb_instructions_path.read_text(
+                                        encoding="utf-8"
+                                    ).strip()
+                            except Exception as ki_err:
+                                logger.debug(f"Failed to load knowledge instructions: {ki_err}")
+
+                            # Prepend knowledge block BEFORE other instructions
+                            # so the LLM sees it early and acts on it
+                            effective_instructions = (
+                                f"{knowledge_block}\n\n{knowledge_instructions_text}\n\n{effective_instructions}"
+                                if effective_instructions
+                                else f"{knowledge_block}\n\n{knowledge_instructions_text}"
+                            )
+                            logger.info(f"Knowledge awareness injected: {len(knowledge_block)} chars")
+                except Exception as e:
+                    logger.debug(f"Knowledge awareness injection skipped: {e}")
+            if lc_bind_tools_meta is not None:
+                lc_bind_tools_meta["_lc_bind_tools_overlay_structured_tools"] = [
+                    t for t in (tools_for_prompt or []) if getattr(t, "name", None)
+                ]
+
+            # Create prompt dynamically
+            dynamic_prompt = self._static_prompt
+
+            if not dynamic_prompt:
+                dynamic_prompt = create_mcp_prompt(
+                    tools_for_prompt,
+                    allow_user_clarification=True,
+                    return_to_user_cases=None,
+                    instructions=effective_instructions,
+                    apps=apps_for_prompt,
+                    task_loaded_from_file=task_loaded_from_file,
+                    is_autonomous_subtask=settings.advanced_features.force_autonomous_mode
+                    or is_autonomous_subtask,
+                    prompt_template=self._prompt_template,
+                    enable_find_tools=enable_find_tools,
+                    enable_todos=enable_todos,
+                    special_instructions=special_instructions_final,
+                    skills_enabled=skills_enabled,
+                    skills_prompt_section=skills_prompt_section,
+                    enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
+                    has_knowledge=has_knowledge_tools,
+                    few_shot_examples=few_shot_examples,
+                    few_shots_enabled=few_shots_enabled,
+                )
+                logger.info(
+                    "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "
+                    "few_shots_as_messages={} prompt_chars={}",
+                    enable_find_tools,
+                    len(few_shot_examples),
+                    bool(few_shot_examples),
+                    len(dynamic_prompt),
+                )
+            else:
+                logger.info(
+                    "Using static CugaLite prompt; dynamic few-shot injection skipped "
+                    "(enable_find_tools={} few_shot_turns={})",
+                    enable_find_tools,
+                    len(few_shot_examples),
+                )
+
+            reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
+
+            return Command(
+                goto="call_model",
+                update={
+                    "tools_prepared": True,
+                    "prepared_prompt": dynamic_prompt,
+                    "step_count": 0,
+                    "cuga_lite_metadata": state.cuga_lite_metadata,
+                    "reflection_apps": reflection_apps_snapshot,
+                    "reflection_enable_find_tools": enable_find_tools,
+                    "reflection_skills_enabled": skills_enabled,
+                    "reflection_skills_prompt_section": skills_prompt_section,
+                    "mcp_few_shot_messages": few_shot_examples,
+                },
+            )
+
+        return prepare_tools_and_apps
+
+    def build_sandbox_node(self, base_thread_id: Any, base_apps_list: Any):
+        """Return the sandbox async node."""
+
+        async def sandbox(state: Any, config: Optional[RunnableConfig] = None):
+            """Execute code in sandbox and return results."""
+            from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import ToolCallTracker
+
+            # Check if user denied approval (only if policies are enabled)
+            if settings.policy.enabled:
+                denial_command = ToolApprovalHandler.handle_denial(self, state)
+                if denial_command:
+                    return denial_command
+
+            configurable = config.get("configurable", {}) if config else {}
+            max_steps = (
+                configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
+            )
+            if "thread_id" in configurable:
+                current_thread_id = configurable["thread_id"]
+            else:
+                current_thread_id = state.thread_id or base_thread_id
+            current_apps_list = configurable.get("apps_list", base_apps_list)
+            track_tool_calls = configurable.get("track_tool_calls", False)
+            reflection_enabled = (
+                configurable.get("reflection_enabled")
+                if "reflection_enabled" in configurable
+                else settings.advanced_features.reflection_enabled
+            )
+
+            # Get existing variables using CugaLiteState's own variables_manager
+            existing_vars = {}
+            for var_name in list(state.variables_manager.get_variable_names()):
+                var_value = state.variables_manager.get_variable(var_name)
+                if is_find_tools_listing_markdown(var_value):
+                    state.variables_manager.remove_variable(var_name)
+                    continue
+                existing_vars[var_name] = var_value
+
+            # Add tools to context
+            context = {**existing_vars, **self._tools_context}
+
+            # Start tool call tracking (only if enabled via invoke parameter)
+            ToolCallTracker.start_tracking(enabled=track_tool_calls)
+
+            try:
+                # Execute the script - pass the CugaLiteState itself since it has variables_manager
+                _exec_plan = ExecutionRouter.resolve(settings)
+                if _exec_plan.split_execution_active:
+                    logger.info(
+                        "Split execution: python=%s shell=%s fs=%s",
+                        _exec_plan.python_backend,
+                        _exec_plan.shell_backend,
+                        _exec_plan.filesystem_backend,
+                    )
+                output, new_vars = await CodeExecutor.eval_with_tools_async(
+                    code=state.script,
+                    _locals=context,
+                    state=state,  # Pass CugaLiteState - it has variables_manager property
+                    thread_id=current_thread_id,
+                    apps_list=current_apps_list,
+                    plan=_exec_plan,
+                )
+
+                self._tracker.collect_step(step=Step(name="User_output", data=output))
+                self._tracker.collect_step(
+                    step=Step(
+                        name="User_output_variables",
+                        data=json.dumps(
+                            new_vars,
+                            default=lambda o: o.model_dump() if hasattr(o, "model_dump") else str(o),
+                        ),
+                    )
+                )
+
+                # Output is already formatted and trimmed by code_executor
+                logger.debug(f"\n\n------\n\n📝 Execution output:\n\n{output}\n\n------\n\n")
+
+                # Update variables using CugaLiteState's variables_manager
+                # This automatically updates state.variables_storage
+                for name, value in new_vars.items():
+                    if is_find_tools_listing_markdown(value):
+                        continue
+                    state.variables_manager.add_variable(
+                        value, name=name, description="Created during code execution"
+                    )
+
+                reflection_output = ""
+                if reflection_enabled:
+                    try:
+                        active_model = configurable.get("llm") or _llm_manager.get_model(
+                            settings.agent.planner.model
+                        )
+                        reflection_agent = reflection_task(llm=active_model)
+                        # Format chat messages as history string
+                        agent_history_parts = []
+                        for msg in state.chat_messages:
+                            if isinstance(msg, HumanMessage):
+                                agent_history_parts.append(f"User: {msg.content}")
+                            elif isinstance(msg, AIMessage):
+                                agent_history_parts.append(f"Assistant: {msg.content}")
+                            else:
+                                agent_history_parts.append(
+                                    f"{type(msg).__name__}: {getattr(msg, 'content', str(msg))}"
+                                )
+                        agent_history = (
+                            "\n".join(agent_history_parts)
+                            if agent_history_parts
+                            else "No previous conversation history"
+                        )
+                        reflection_result = await reflection_agent.ainvoke(
+                            {
+                                "instructions": "",
+                                "current_task": _reflection_current_task(state) or "(no task text)",
+                                "agent_history": agent_history,
+                                "coder_agent_output": output,
+                                "apps": state.reflection_apps or [],
+                                "enable_find_tools": state.reflection_enable_find_tools,
+                                "skills_enabled": state.reflection_skills_enabled,
+                                "skills_prompt_section": state.reflection_skills_prompt_section,
+                                "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
+                            }
+                        )
+                        reflection_output = reflection_result.content
+                        logger.debug(f"Reflection output:\n{reflection_output}")
+                    except Exception as e:
+                        logger.warning(f"Reflection failed: {e}")
+                        reflection_output = ""
+
+                # Output is already formatted by code_executor
+                execution_message_content = execution_output_text(output)
+                if reflection_output:
+                    execution_message_content = (
+                        f"{execution_message_content}\n\n---\n\nSummary:\n{reflection_output}"
+                    )
+
+                self._tracker.collect_step(
+                    step=Step(
+                        name="User_return",
+                        data=execution_message_content,
+                    )
+                )
+
+                new_message = HumanMessage(content=execution_message_content)
+                updated_messages, error_message = _core_append_with_step_limit(
+                    self, state, [new_message], max_steps
+                )
+
+                # Collect tool calls from this execution
+                execution_tool_calls = ToolCallTracker.stop_tracking()
+                accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
+
+                if error_message:
+                    return _core_create_error_command(
+                        self,
+                        updated_messages,
+                        error_message,
+                        state.step_count,
+                        additional_updates={
+                            "variables_storage": state.variables_storage,
+                            "variable_counter_state": state.variable_counter_state,
+                            "variable_creation_order": state.variable_creation_order,
+                            "tool_calls": accumulated_tool_calls,
+                        },
+                    )
+
+                todo_state_update = extract_task_todos_from_new_vars(new_vars)
+                base_update = {
+                    "chat_messages": updated_messages,
+                    "variables_storage": state.variables_storage,
+                    "variable_counter_state": state.variable_counter_state,
+                    "variable_creation_order": state.variable_creation_order,
+                    "step_count": state.step_count + 1,
+                    "tool_calls": accumulated_tool_calls,
+                }
+                if todo_state_update is not None:
+                    base_update["task_todos"] = todo_state_update
+                return base_update
+            except Exception as e:
+                # Collect tool calls even on error
+                execution_tool_calls = ToolCallTracker.stop_tracking()
+                accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
+
+                error_msg = f"Error during execution: {str(e)}"
+                logger.error(error_msg)
+                new_message = HumanMessage(content=error_msg)
+                updated_messages, limit_error_message = _core_append_with_step_limit(
+                    self, state, [new_message], max_steps
+                )
+
+                if limit_error_message:
+                    return _core_create_error_command(
+                        self, updated_messages, limit_error_message, state.step_count
+                    )
+
+                return {
+                    "chat_messages": updated_messages,
+                    "error": error_msg,
+                    "execution_complete": True,
+                    "step_count": state.step_count + 1,
+                    "tool_calls": accumulated_tool_calls,
+                }
+
+        return sandbox
