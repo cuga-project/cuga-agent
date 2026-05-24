@@ -53,6 +53,12 @@ docs/examples/knowledge_demo/
         └── sarah_chen_paystub_march_2026.pdf
 ```
 
+> The two scopes intentionally use different formats: company policies are
+> markdown (how HR authors them), while Sarah's personal documents are PDFs
+> (how an employee actually receives a pay stub or enrollment confirmation).
+> Both flow through the same `agent.knowledge.ingest(...)` call — Docling
+> handles PDF/DOCX/PPTX/XLSX/HTML/MD/images uniformly under the hood.
+
 ## Prerequisites
 
 - Python 3.12 (see `.python-version`)
