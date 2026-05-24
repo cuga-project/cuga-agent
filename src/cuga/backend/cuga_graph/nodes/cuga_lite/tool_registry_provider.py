@@ -26,20 +26,23 @@ _tool_guard_runtimes: Dict[str, Any] = {}
 _tool_guard_lock = asyncio.Lock()
 
 
-async def _get_or_create_tool_guard_runtime(app_name: str, agent_id: Optional[str] = None):
+async def _get_or_create_tool_guard_runtime(app_name: str, agent_id: Optional[str] = None, policy_storage=None):
     """
     Get or create a ToolGuardRuntime instance for the specified app.
     
     Args:
         app_name: Name of the application
         agent_id: Optional agent ID for multi-agent support
+        policy_storage: Optional shared PolicyStorage instance to use
         
     Returns:
         ToolGuardRuntime instance or None if initialization fails
     """
     async with _tool_guard_lock:
-        if app_name in _tool_guard_runtimes:
-            return _tool_guard_runtimes[app_name]
+        # Use a cache key that includes whether we have shared storage
+        cache_key = f"{app_name}_{id(policy_storage) if policy_storage else 'default'}"
+        if cache_key in _tool_guard_runtimes:
+            return _tool_guard_runtimes[cache_key]
         
         try:
             from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
@@ -66,7 +69,8 @@ async def _get_or_create_tool_guard_runtime(app_name: str, agent_id: Optional[st
             
             runtime = ToolGuardRuntime(
                 tool_provider=RegistryToolProvider(),
-                enable_policies=True
+                enable_policies=True,
+                policy_storage=policy_storage  # Use shared policy storage if provided
             )
             await runtime.initialize()
             
@@ -77,13 +81,13 @@ async def _get_or_create_tool_guard_runtime(app_name: str, agent_id: Optional[st
             if guarded_tools:
                 logger.debug(f"   Guarded tools: {', '.join(guarded_tools)}")
             
-            _tool_guard_runtimes[app_name] = runtime
+            _tool_guard_runtimes[cache_key] = runtime
             return runtime
         except Exception as e:
             logger.error(f"Failed to initialize ToolGuardRuntime for app '{app_name}': {e}", exc_info=True)
             # Fail closed: if policy enforcement is enabled but ToolGuardRuntime fails,
             # cache None to prevent repeated initialization attempts
-            _tool_guard_runtimes[app_name] = None
+            _tool_guard_runtimes[cache_key] = None
             raise RuntimeError(
                 f"ToolGuardRuntime failed to initialize for app '{app_name}'. Policy enforcement cannot be bypassed. Error: {e}"
             ) from e
@@ -214,7 +218,8 @@ def create_tool_from_api_dict(
     tool_def: Dict[str, Any],
     app_name: str,
     agent_id: Optional[str] = None,
-    enable_policies: bool = False
+    enable_policies: bool = False,
+    policy_storage=None
 ) -> StructuredTool:
     """Create a StructuredTool from an API definition dict.
 
@@ -224,6 +229,7 @@ def create_tool_from_api_dict(
         app_name: Name of the app/server
         agent_id: Optional agent ID for multi-agent support
         enable_policies: Whether to enable policy-based tool validation
+        policy_storage: Optional shared PolicyStorage instance for tool guards
 
     Returns:
         StructuredTool instance with .func attribute
@@ -284,10 +290,11 @@ def create_tool_from_api_dict(
     else:
         InputModel = create_model(f"{tool_name}Input")
 
-    # Capture operation_id, agent_id, and enable_policies in closure for the tool function
+    # Capture operation_id, agent_id, enable_policies, and policy_storage in closure for the tool function
     _operation_id = operation_id
     _agent_id = agent_id
     _enable_policies = enable_policies
+    _policy_storage = policy_storage
 
     async def tool_func(*args, **kwargs):
         try:
@@ -297,7 +304,7 @@ def create_tool_from_api_dict(
             # Validate tool call against ToolGuard policies if enabled
             if _enable_policies:
                 try:
-                    runtime = await _get_or_create_tool_guard_runtime(app_name, _agent_id)
+                    runtime = await _get_or_create_tool_guard_runtime(app_name, _agent_id, _policy_storage)
                     
                     if runtime and runtime.is_initialized:
                         error_message = await runtime.guard_tool_call(

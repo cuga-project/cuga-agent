@@ -317,18 +317,25 @@ class ToolGuardRuntime:
         domain_dir = Path.cwd() / ".cuga" / "toolguard" / "domain"
         self._validate_domain_directory(domain_dir)
 
-        # Look for the specific app's domain
-        app_dir = domain_dir / app_name
-        if not app_dir.exists():
-            raise RuntimeError(
-                f"ToolGuard domain directory not found for app '{app_name}': {app_dir}"
-            )
-
+        # Try exact match first
         selected_domain = self._find_complete_domain_for_app(domain_dir, app_name)
+        
+        # If exact match not found, try fuzzy match (e.g., "crm" -> "crm_demo")
+        if selected_domain is None:
+            logger.debug(f"Exact domain match not found for '{app_name}', trying fuzzy match...")
+            for dir_path in domain_dir.iterdir():
+                if dir_path.is_dir() and app_name in dir_path.name:
+                    candidate_name = dir_path.name
+                    selected_domain = self._find_complete_domain_for_app(domain_dir, candidate_name)
+                    if selected_domain:
+                        logger.info(f"Found domain for app '{app_name}' using fuzzy match: '{candidate_name}'")
+                        break
 
         if selected_domain is None:
+            available_apps = [d.name for d in domain_dir.iterdir() if d.is_dir()]
             raise RuntimeError(
-                f"No complete ToolGuard domain found for app '{app_name}' under {domain_dir}"
+                f"No complete ToolGuard domain found for app '{app_name}' under {domain_dir}. "
+                f"Available apps: {', '.join(available_apps) if available_apps else 'none'}"
             )
 
         return self._create_runtime_domain(domain_dir, selected_domain)

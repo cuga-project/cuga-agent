@@ -2836,3 +2836,4 @@ async def run_agent(
     """
     agent = CugaAgent(tools=tools, model=model)
     return await agent.invoke(message)
+
