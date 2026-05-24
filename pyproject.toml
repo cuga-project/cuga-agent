@@ -46,7 +46,6 @@ dependencies = [
     "cryptography>=46.0.7",
     "hvac>=2.0.0",
     "boto3>=1.34.0",
-    "openlit>=1.40.1",
     # Knowledge engine (replaces OpenRAG)
     "langchain-docling>=2.0,<3.0",
     "torch", # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels
