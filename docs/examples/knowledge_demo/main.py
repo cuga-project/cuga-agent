@@ -47,7 +47,8 @@ async def reset_agent_scope(agent: CugaAgent) -> None:
 
 
 async def ingest_all(agent: CugaAgent, folder: Path, scope: str, thread_id: str | None = None) -> None:
-    for path in sorted(folder.glob("*.md")):
+    paths = sorted(p for p in folder.iterdir() if p.suffix.lower() in {".md", ".pdf"})
+    for path in paths:
         logger.info(f"Ingesting [{scope}] {path.name} ...")
         result = await agent.knowledge.ingest(str(path), scope=scope, thread_id=thread_id)
         status = result.get("status") if isinstance(result, dict) else result

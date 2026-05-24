@@ -48,9 +48,9 @@ docs/examples/knowledge_demo/
     │   ├── 03_pto_policy.md
     │   └── 04_retirement_401k_plan.md
     └── session_level/                            # attach per-conversation
-        ├── sarah_chen_benefits_enrollment.md
-        ├── sarah_chen_pto_balance.md
-        └── sarah_chen_paystub_march_2026.md
+        ├── sarah_chen_benefits_enrollment.pdf
+        ├── sarah_chen_pto_balance.pdf
+        └── sarah_chen_paystub_march_2026.pdf
 ```
 
 ## Prerequisites
@@ -117,11 +117,11 @@ Top agent-level hits for 'HSA contribution limit family coverage':
   • 02_health_insurance_plan.md  score=0.615  preview='Acme Corp Health Insurance Plan Summary Health Savings Account (HSA) Employees enrolled in Option C (HDHP) are eligible '
 === 4. Ingest session-level documents ===
 Session thread_id: sarah-demo-session
-  → sarah_chen_benefits_enrollment.md: completed
+  → sarah_chen_benefits_enrollment.pdf: completed
 ... (3 docs total)
 === 5. Session-scoped search API ===
 Top session-level hits for 'current PTO balance and usage this year':
-  • sarah_chen_pto_balance.md  score=0.636  preview='PTO Balance Statement Current Balance Summary PTO accrued year-to-date (Jan–Apr), Hours = 53.33 ...'
+  • sarah_chen_pto_balance.pdf  score=0.636  preview='PTO Balance Statement Current Balance Summary PTO accrued year-to-date (Jan–Apr), Hours = 53.33 ...'
 === Done. For end-to-end session RAG … run `cuga start demo_knowledge` …
 ```
 
@@ -192,7 +192,7 @@ December 31 unless a carryover waiver is granted.
 
 > How many PTO days do I have left right now, and what have I used this year?
 
-**Expected:** Agent searches session-level docs, finds `sarah_chen_pto_balance.md`,
+**Expected:** Agent searches session-level docs, finds `sarah_chen_pto_balance.pdf`,
 reports **61.33 hours (7.67 days)** remaining and the usage history: ski trip in
 January, a personal day in February, flu sick days in March — 32 hours used YTD.
 
@@ -206,9 +206,9 @@ January, a personal day in February, flu sick days in March — 32 hours used YT
 
 - `02_health_insurance_plan.md` (agent): 2026 family HSA IRS limit = **$8,550**;
   Acme employer contribution for family coverage = **$2,000**/year
-- `sarah_chen_benefits_enrollment.md` (session): family coverage, $250/paycheck
+- `sarah_chen_benefits_enrollment.pdf` (session): family coverage, $250/paycheck
   employee contribution
-- `sarah_chen_paystub_march_2026.md` (session): YTD employee HSA contribution = $1,770
+- `sarah_chen_paystub_march_2026.pdf` (session): YTD employee HSA contribution = $1,770
 
 Math: employee room = $8,550 − $2,000 = **$6,550**. Current election = $250 ×
 26 paychecks = **$6,500** → Sarah is **$50 short** of the max. Recommendation:
@@ -222,7 +222,7 @@ bump contribution by ~$2/paycheck or make a one-time $50 catch-up by 12/31.
 
 **Expected:** Agent pulls the 2-week advance-notice rule for 3+ day requests
 from `03_pto_policy.md`, then combines with Sarah's balance (61.33h) and
-accrual rate (13.33h/month) from `sarah_chen_pto_balance.md`:
+accrual rate (13.33h/month) from `sarah_chen_pto_balance.pdf`:
 
 - By July 6, Sarah will have accrued ~40 additional hours → ~100 hours total
 - A 10-day vacation = 80 hours → **yes**, she has enough
