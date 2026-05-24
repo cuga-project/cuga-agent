@@ -33,7 +33,7 @@ class CoreGraphAdapter(ABC):
     messages_key: str
 
     #: Approval seams — defaults are exactly the legacy Lite values so the
-    #: adapter-ized ToolApprovalHandler stays byte-identical for Lite.
+    #: shared ToolApprovalHandler stays byte-identical for Lite.
     metadata_key: str = "cuga_lite_metadata"
     execute_node_name: str = "sandbox"
     sender_name: str = "CugaLite"

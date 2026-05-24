@@ -1,7 +1,7 @@
 """CugaLite LangGraph — thin wiring module.
 
 State class, loop adapter, and the ``create_cuga_lite_graph`` factory.
-All node logic lives in ``AgentGraphAdapter``.
+All node logic lives in ``cuga_lite.adapter`` (prepare/sandbox nodes + hook overrides).
 """
 
 from pathlib import Path

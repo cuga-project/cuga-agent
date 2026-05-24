@@ -2,9 +2,7 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import (
-    _get_knowledge_tool_scope_context,
-)
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import _get_knowledge_tool_scope_context
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.e2b.e2b_executor import E2BExecutor
 
 

@@ -240,7 +240,7 @@ async def test_classify_auto_continue_delegates_to_nl_classifier():
     mock_model = MagicMock()
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter.classify_nl_auto_continue",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue",
         new_callable=AsyncMock,
         return_value=True,
     ) as mock_classify:
@@ -255,7 +255,7 @@ async def test_classify_auto_continue_returns_false_when_not_continuing():
     state = SimpleNamespace()
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter.classify_nl_auto_continue",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.adapter.graph_adapter.classify_nl_auto_continue",
         new_callable=AsyncMock,
         return_value=False,
     ):

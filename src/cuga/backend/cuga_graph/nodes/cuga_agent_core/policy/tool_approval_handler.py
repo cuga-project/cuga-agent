@@ -1,16 +1,14 @@
-"""
-Tool Approval Handler for CugaLite subgraph.
+"""Tool approval detection, interruption, and resumption for agent graphs.
 
-Handles the detection, interruption, and resumption of tool approval flows.
+Shared by CugaLite and CugaSupervisor via :class:`CoreGraphAdapter` seams.
 """
 
 from typing import Any, List, Optional
-from loguru import logger
 
 from langchain_core.messages import AIMessage
-
-from langgraph.types import Command
 from langgraph.graph import END
+from langgraph.types import Command
+from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     CoreGraphAdapter,
@@ -46,7 +44,6 @@ class ToolApprovalHandler:
             extract_and_combine_codeblocks,
         )
 
-        # Find the last AI message
         last_ai_message = None
         for msg in reversed(adapter.get_messages(state)):
             if msg.type == "ai":
@@ -56,7 +53,6 @@ class ToolApprovalHandler:
         if not last_ai_message or not last_ai_message.content:
             return None
 
-        # Extract code from the message
         code = extract_and_combine_codeblocks(last_ai_message.content)
         if code:
             logger.info(f"Extracted approved code from last AI message: {len(code)} chars")
@@ -66,17 +62,7 @@ class ToolApprovalHandler:
 
     @staticmethod
     def clean_approval_metadata(metadata: dict) -> dict:
-        """
-        Clean approval-related fields from metadata.
-
-        Removes temporary approval fields to avoid interference with future executions.
-
-        Args:
-            metadata: Current metadata dictionary
-
-        Returns:
-            Cleaned metadata dictionary
-        """
+        """Remove temporary approval fields from metadata."""
         fields_to_remove = [
             "approval_required",
             "user_approved",
@@ -93,7 +79,6 @@ class ToolApprovalHandler:
         """Handle resumption after user approval: run the approved code."""
         logger.info("Returning from tool approval - skipping code generation, executing approved code")
 
-        # Extract code from last AI message
         code = ToolApprovalHandler.extract_approved_code(adapter, state)
 
         if not code:
@@ -105,10 +90,8 @@ class ToolApprovalHandler:
                 state.step_count,
             )
 
-        # Clean approval metadata
         cleaned_metadata = ToolApprovalHandler.clean_approval_metadata(adapter.get_metadata(state))
 
-        # Route to the graph's execute node with approved code
         return Command(
             goto=adapter.execute_node_name,
             update={
@@ -132,15 +115,12 @@ class ToolApprovalHandler:
         try:
             logger.debug(f"Checking if code requires tool approval (code length: {len(code)} chars)")
 
-            # Get policy system from config
             policy_system = PolicyConfigurable.from_config(config or {})
             logger.debug(f"Got policy system: {policy_system}")
 
-            # Create context from state
             context = PolicyConfigurable.create_context_from_state(state, config or {})
             logger.debug(f"Created context with user_input: '{context.user_input}'")
 
-            # Check if any ToolApproval policies apply to this code
             policy_match = await policy_system.agent.check_tool_approval_for_code(code, context)
             logger.debug(f"Policy match result: {policy_match}")
 
@@ -154,7 +134,6 @@ class ToolApprovalHandler:
             code_lines = code.split("\n")
             preview_lines = code_lines
 
-            # Store policy metadata for the approval flow
             approval_metadata = {
                 **adapter.get_metadata(state),
                 "policy_type": "tool_approval",
@@ -167,10 +146,8 @@ class ToolApprovalHandler:
                 "show_code_preview": policy.show_code_preview,
             }
 
-            # Update state metadata temporarily for the interrupt creation
             adapter.set_metadata(state, approval_metadata)
 
-            # Create the approval interrupt
             return ToolApprovalHandler._create_approval_interrupt(
                 adapter, state, code, content, preview_lines
             )
@@ -192,7 +169,6 @@ class ToolApprovalHandler:
 
         md = adapter.get_metadata(state)
 
-        # Create approval request metadata
         approval_metadata = {
             **md,
             "approval_required": True,
@@ -200,13 +176,11 @@ class ToolApprovalHandler:
             "full_code": code if md.get("show_code_preview") else None,
         }
 
-        # Extract policy details
         policy_name = md.get("policy_name", "Tool Approval")
         approval_msg = md.get("approval_message", "This tool requires your approval before execution.")
         tools_list = md.get("required_tools", [])
         apps_list = md.get("required_apps", [])
 
-        # Create HITL action for tool approval
         hitl_action = create_tool_approval_action(
             policy_name=policy_name,
             required_tools=tools_list,
@@ -215,7 +189,6 @@ class ToolApprovalHandler:
             approval_message=approval_msg,
         )
 
-        # Generate user-friendly markdown message
         final_answer_text = ToolApprovalHandler._generate_approval_message(
             policy_name=policy_name,
             approval_msg=approval_msg,
@@ -224,23 +197,21 @@ class ToolApprovalHandler:
             preview_lines=preview_lines,
         )
 
-        # Update messages
         updated_messages, error_message = _core_append_with_step_limit(
             adapter, state, [AIMessage(content=content)]
         )
         if error_message:
             return _core_create_error_command(adapter, updated_messages, error_message, state.step_count)
 
-        # Return command to exit subgraph and route to parent's SuggestHumanActions -> WaitForResponse
         return Command(
-            goto=END,  # Exit subgraph to parent callback node
+            goto=END,
             update={
                 adapter.messages_key: updated_messages,
                 "script": code,
                 "final_answer": final_answer_text,
                 adapter.metadata_key: approval_metadata,
-                "hitl_action": hitl_action,  # Set HITL action for parent to detect
-                "sender": adapter.sender_name,  # Mark sender for return routing
+                "hitl_action": hitl_action,
+                "sender": adapter.sender_name,
                 "step_count": state.step_count + 1,
             },
         )
@@ -253,19 +224,7 @@ class ToolApprovalHandler:
         apps_list: List[str],
         preview_lines: List[str],
     ) -> str:
-        """
-        Generate user-friendly markdown message for approval request.
-
-        Args:
-            policy_name: Name of the policy
-            approval_msg: Approval message from policy
-            tools_list: List of tools requiring approval
-            apps_list: List of apps requiring approval
-            preview_lines: Code preview lines
-
-        Returns:
-            Formatted markdown string
-        """
+        """Generate user-friendly markdown message for approval request."""
         content_lines = [f"## ✋ {policy_name}", "", approval_msg, ""]
 
         if tools_list:

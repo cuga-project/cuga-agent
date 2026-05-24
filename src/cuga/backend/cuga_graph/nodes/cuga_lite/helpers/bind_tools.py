@@ -93,7 +93,7 @@ async def _indexed_provider_tools_first_wins(
     try:
         all_tools = await tool_provider.get_all_tools()
     except Exception as e:
-        logger.warning("bind_tools: get_all_tools failed: %s", e)
+        logger.warning("bind_tools: get_all_tools failed: {}", e)
         return {}
     by_name: Dict[str, StructuredTool] = {}
     duplicates: Set[str] = set()
@@ -228,7 +228,7 @@ async def resolve_model_with_bind_tools(
                             seen_names.add(name)
                             bound.append(t)
                 except Exception as e:
-                    logger.warning("bind_tools apps_and_tools: get_tools(%s) failed: %s", app_name, e)
+                    logger.warning("bind_tools apps_and_tools: get_tools({}) failed: {}", app_name, e)
 
             by_name_lookup: Dict[str, StructuredTool] = {}
             if tool_names:
@@ -283,7 +283,7 @@ async def resolve_model_with_bind_tools(
                             seen.add(name)
                             bound.append(t)
                 except Exception as e:
-                    logger.warning("bind_tools apps: get_tools(%s) failed: %s", app_name, e)
+                    logger.warning("bind_tools apps: get_tools({}) failed: {}", app_name, e)
             _merge_find_tools_into_bound(
                 bound, seen, include_find_tools=include_find_tools, tools_context_ref=tools_context_ref
             )
@@ -336,5 +336,5 @@ async def resolve_model_with_bind_tools(
             mode,
         )
     except Exception as e:
-        logger.warning("resolve_model_with_bind_tools failed: %s", e)
+        logger.warning("resolve_model_with_bind_tools failed: {}", e)
     return active_model

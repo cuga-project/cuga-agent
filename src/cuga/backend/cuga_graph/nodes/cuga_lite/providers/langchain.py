@@ -61,15 +61,14 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
                 raise ValueError(f"Tool at index {i} is missing a name")
 
             if isinstance(tool, StructuredTool) and not hasattr(tool, "func"):
-                if not hasattr(tool, "coroutine") and not hasattr(tool, "_run"):
-                    logger.warning(
-                        f"StructuredTool '{tool.name}' is missing .func attribute. "
-                        f"Adding it for CodeAct compatibility."
-                    )
-                    if hasattr(tool, "coroutine") and tool.coroutine:
-                        tool.func = tool.coroutine
-                    elif hasattr(tool, "_run"):
-                        tool.func = tool._run
+                logger.warning(
+                    f"StructuredTool '{tool.name}' is missing .func attribute. "
+                    f"Adding it for CodeAct compatibility."
+                )
+                if hasattr(tool, "coroutine") and tool.coroutine:
+                    tool.func = tool.coroutine
+                elif hasattr(tool, "_run"):
+                    tool.func = tool._run
 
     async def initialize(self):
         """Initialize the provider (validates tools)."""

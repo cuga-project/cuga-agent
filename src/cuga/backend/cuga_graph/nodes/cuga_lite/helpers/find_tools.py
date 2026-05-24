@@ -82,6 +82,8 @@ async def create_find_tools_tool(
         """
         if app_to_tools_map and app_name in app_to_tools_map:
             filtered_tools = app_to_tools_map[app_name]
+        elif app_to_tools_map is None:
+            filtered_tools = all_tools
         else:
             logger.warning(
                 f"App '{app_name}' not found in app_to_tools_map. Available apps: {list(app_to_tools_map.keys()) if app_to_tools_map else 'N/A'}"

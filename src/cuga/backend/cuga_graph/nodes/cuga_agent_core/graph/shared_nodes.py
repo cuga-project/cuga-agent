@@ -36,7 +36,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     CoreGraphAdapter,
     enforce_step_limit,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_approval_handler import ToolApprovalHandler
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
 from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 
 
@@ -180,14 +180,6 @@ def create_call_model_node(
 
         adapter.on_response_processed(state, code, content)
 
-        # ── Tool-approval interrupt for generated code ─────────────────────
-        if code and settings.policy.enabled:
-            approval_command = await ToolApprovalHandler.check_and_create_approval_interrupt(
-                adapter, state, code, content, config
-            )
-            if approval_command:
-                return approval_command
-
         # ── Build final message list + step count ──────────────────────────
         final_messages: list = modified_messages + [AIMessage(content=content)]
         new_step_count: int = state.step_count + 1
@@ -203,6 +195,14 @@ def create_call_model_node(
         )
         if limit_cmd is not None:
             return limit_cmd
+
+        # ── Tool-approval interrupt for generated code ─────────────────────
+        if code and settings.policy.enabled:
+            approval_command = await ToolApprovalHandler.check_and_create_approval_interrupt(
+                adapter, state, code, content, config
+            )
+            if approval_command:
+                return approval_command
 
         # ── Metadata update ────────────────────────────────────────────────
         meta_value = adapter.build_metadata_update(state, playbook_fired=playbook_fired)
