@@ -86,6 +86,8 @@ from cuga.backend.llm.models import LLMManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
     create_cuga_lite_graph,
 )
+from cuga.backend.cuga_graph.utils.agent_loop import TokenUsageTracker
+from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.cuga_lite.direct_langchain_tools_provider import (
     DirectLangChainToolsProvider,
 )
@@ -1693,6 +1695,58 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system initialized during agent.initialize()")
 
+    def _build_callbacks(self) -> List[BaseCallbackHandler]:
+        """
+        Build callbacks list including TokenUsageTracker for trajectory tracking.
+
+        This ensures that all SDK invocations automatically track prompts and responses
+        for trajectory visualization in tools like cuga-viz.
+
+        Returns:
+            List of callback handlers including TokenUsageTracker and user-provided callbacks
+        """
+        tracker = ActivityTracker()
+        callbacks: List[BaseCallbackHandler] = [TokenUsageTracker(tracker)]
+
+        # Add user-provided callbacks
+        if self._callbacks:
+            callbacks.extend(self._callbacks)
+            logger.debug(f"Built callbacks: TokenUsageTracker + {len(self._callbacks)} user callback(s)")
+        else:
+            logger.debug("Built callbacks: TokenUsageTracker only")
+
+        return callbacks
+
+    def _prepare_run_config(self, config: Optional[RunnableConfig]) -> dict:
+        """
+        Shallow-copy caller's config so per-call mutations don't accumulate on reuse.
+
+        Without this, callers that reuse a config dict across invoke()/stream() calls
+        would see TokenUsageTracker and any other injected entries pile up on each call.
+        """
+        run_config: dict = dict(config) if config else {}
+        run_config["configurable"] = dict(run_config.get("configurable") or {})
+        return run_config
+
+    def _apply_callbacks(self, run_config: dict) -> None:
+        """
+        Merge built-in callbacks (TokenUsageTracker + user callbacks) with any
+        caller-supplied callbacks in run_config, writing the result to both the
+        top-level and ``configurable`` slots.
+        """
+        built_callbacks = self._build_callbacks()
+
+        def _as_list(value: Any) -> list:
+            if value is None:
+                return []
+            return list(value) if isinstance(value, list) else [value]
+
+        existing = _as_list(run_config.get("callbacks"))
+        existing_configurable = _as_list(run_config["configurable"].get("callbacks"))
+
+        run_config["callbacks"] = built_callbacks + existing
+        run_config["configurable"]["callbacks"] = built_callbacks + existing_configurable
+
     async def _ensure_initialized(self):
         """Ensure tool provider is initialized."""
         if not hasattr(self.tool_provider, 'initialized') or not self.tool_provider.initialized:
@@ -1762,12 +1816,15 @@ class CugaAgent:
         from langgraph.types import Command
         from typing import Literal
 
-        # Create CugaLite subgraph
+        # Create CugaLite subgraph. Bake in built-in callbacks (TokenUsageTracker + user
+        # callbacks) as base_callbacks so direct `agent.graph.ainvoke(...)` is also
+        # instrumented. invoke()/stream() override these via configurable["callbacks"],
+        # which the node prefers when present (no double-counting).
         cuga_lite_subgraph = create_cuga_lite_graph(
             model=self._model,
             tool_provider=self.tool_provider,
             thread_id=thread_id,
-            callbacks=self._callbacks,
+            callbacks=self._build_callbacks(),
             special_instructions=self._special_instructions,
         )
         # Compile subgraph without checkpointer so it streams internal updates
@@ -2089,10 +2146,8 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system auto-initialized during first invoke()")
 
-        # Setup config
-        run_config = config or {}
-        if "configurable" not in run_config:
-            run_config["configurable"] = {}
+        # Setup config (shallow-copied so we don't mutate the caller's dict)
+        run_config = self._prepare_run_config(config)
 
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
@@ -2119,7 +2174,8 @@ class CugaAgent:
             # Add knowledge engine for awareness injection
             self._inject_knowledge_to_config(run_config)
 
-            # Add callbacks to config (both top-level and configurable for nodes)
+            # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
+            self._apply_callbacks(run_config)
 
             # If action_response provided, update state with it
             if action_response:
@@ -2250,13 +2306,8 @@ class CugaAgent:
         if self._policy_system:
             run_config["configurable"]["policy_system"] = self._policy_system
 
-        # Add callbacks to config (both top-level and configurable for nodes)
-        if self._callbacks:
-            run_config["callbacks"] = self._callbacks
-            run_config["configurable"]["callbacks"] = self._callbacks
-            logger.debug(
-                f"Added {len(self._callbacks)} callback(s) to config: {[type(cb).__name__ for cb in self._callbacks]}"
-            )
+        # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
+        self._apply_callbacks(run_config)
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
@@ -2376,10 +2427,8 @@ class CugaAgent:
             await self.policies._ensure_policy_system()
             logger.debug("Policy system auto-initialized during first stream()")
 
-        # Setup config
-        run_config = config or {}
-        if "configurable" not in run_config:
-            run_config["configurable"] = {}
+        # Setup config (shallow-copied so we don't mutate the caller's dict)
+        run_config = self._prepare_run_config(config)
 
         # Handle resume case (message is None or action_response is provided)
         if message is None or action_response is not None:
@@ -2397,10 +2446,8 @@ class CugaAgent:
             if self._policy_system:
                 run_config["configurable"]["policy_system"] = self._policy_system
 
-            # Add callbacks to config (both top-level and configurable for nodes)
-            if self._callbacks:
-                run_config["callbacks"] = self._callbacks
-                run_config["configurable"]["callbacks"] = self._callbacks
+            # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
+            self._apply_callbacks(run_config)
 
             # Add knowledge engine for awareness injection
             self._inject_knowledge_to_config(run_config)
@@ -2449,10 +2496,8 @@ class CugaAgent:
         if self._policy_system:
             run_config["configurable"]["policy_system"] = self._policy_system
 
-        # Add callbacks to config (both top-level and configurable for nodes)
-        if self._callbacks:
-            run_config["callbacks"] = self._callbacks
-            run_config["configurable"]["callbacks"] = self._callbacks
+        # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
+        self._apply_callbacks(run_config)
 
         # Add knowledge engine for awareness injection
         self._inject_knowledge_to_config(run_config)
