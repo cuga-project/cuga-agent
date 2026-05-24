@@ -89,6 +89,7 @@ deployment/helm/openshift.env
 deployment/helm/*.env
 !deployment/helm/openshift.example.env
 KNOWLEDGE_PIPELINE.md
+docs/examples/demo_apps/file_system/build/
 
 # Examples that use repo-root uv.lock only (see CONTRIBUTING.md)
 docs/examples/cuga_as_mcp/uv.lock
@@ -96,6 +97,9 @@ docs/examples/cuga_with_runtime_tools/uv.lock
 
 # Registry credentials (copy from registry.example.env)
 scripts/registry.env
+
+# Knowledge demo docs (local only)
+demo_knowledge_docs/
 
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh
