@@ -136,18 +136,36 @@ export async function customSendMessage(
     requestOptions.signal.addEventListener("abort", abortHandler);
   }
   
-  // Create shell message for streaming
-  instance.messaging.addMessageChunk({
-    partial_item: {
-      response_type: MessageResponseTypes.TEXT,
-      text: "",
-      streaming_metadata: { id: "text-stream", cancellable: true },
-    },
-    partial_response: {
-      message_options: { reasoning: { steps: [] }, response_user_profile: RESPONSE_USER_PROFILE },
-    },
-    streaming_metadata: { response_id: responseID },
-  });
+  // Show Carbon's built-in loading indicator while waiting for the first SSE event.
+  // The shell message is intentionally deferred until the first event arrives so that
+  // Carbon doesn't suppress the indicator upon seeing an immediate addMessageChunk call.
+  console.log("[Loading indicator ON — waiting for first SSE event");
+  instance.updateIsMessageLoadingCounter("increase");
+  let shellMessageCreated = false;
+  let loadingIndicatorCleared = false;
+  const clearLoadingIndicator = () => {
+    if (!loadingIndicatorCleared) {
+      loadingIndicatorCleared = true;
+      console.log("[Loading indicator OFF — first SSE event received");
+      instance.updateIsMessageLoadingCounter("decrease");
+    }
+  };
+  const ensureShellMessage = () => {
+    if (!shellMessageCreated) {
+      shellMessageCreated = true;
+      instance.messaging.addMessageChunk({
+        partial_item: {
+          response_type: MessageResponseTypes.TEXT,
+          text: "",
+          streaming_metadata: { id: "text-stream", cancellable: true },
+        },
+        partial_response: {
+          message_options: { reasoning: { steps: [] }, response_user_profile: RESPONSE_USER_PROFILE },
+        },
+        streaming_metadata: { response_id: responseID },
+      });
+    }
+  };
 
   const baseUrl = api.getApiBaseUrl();
 
@@ -207,6 +225,10 @@ export async function customSendMessage(
       if (requestOptions.signal?.aborted) {
         break;
       }
+
+      // First event means backend is responding — create shell and hide loading indicator
+      ensureShellMessage();
+      clearLoadingIndicator();
 
       console.log("CUGA Event:", event);
 
@@ -579,6 +601,8 @@ export async function customSendMessage(
     }
 
   } catch (error: any) {
+    ensureShellMessage();
+    clearLoadingIndicator();
     console.error("Error calling CUGA backend:", error);
     
     if (error.name === "AbortError") {
