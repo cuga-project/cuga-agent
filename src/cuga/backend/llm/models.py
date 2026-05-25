@@ -633,8 +633,14 @@ class LLMManager:
 
             ssl_verify = self._get_ssl_verify(model_settings)
             if ssl_verify is not True:
-                openai_params["http_client"] = httpx.Client(verify=ssl_verify)
-                openai_params["http_async_client"] = httpx.AsyncClient(verify=ssl_verify)
+                # The OpenAI SDK does not propagate the `timeout` kwarg to a
+                # caller-supplied http_client, so the timeout must be set on
+                # the client itself to prevent connections hanging indefinitely.
+                _client_timeout = httpx.Timeout(openai_params.get("timeout", 61))
+                openai_params["http_client"] = httpx.Client(verify=ssl_verify, timeout=_client_timeout)
+                openai_params["http_async_client"] = httpx.AsyncClient(
+                    verify=ssl_verify, timeout=_client_timeout
+                )
 
             llm = ReasoningChatOpenAI(**openai_params)
         elif platform == "groq":

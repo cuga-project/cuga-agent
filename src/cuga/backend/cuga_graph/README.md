@@ -76,6 +76,43 @@ This agent filters and ranks a list of available tools or APIs to find the most 
 
 ---
 
+## CUGA FLO Nodes
+
+CUGA FLO compiles a BPMN 2.0 diagram into a LangGraph at init time. Each element in the diagram becomes a graph node. LLMs reason only *inside* nodes — never about the topology. The flow between nodes is structurally enforced by the compiled graph edges.
+
+
+### **FlowAgent | Flow Agent**
+
+The meta-agent and entry point for BPMN-driven process execution. At initialisation it parses the BPMN file, compiles each task, gateway, and hook into a LangGraph node, and wires them with edges that follow the BPMN sequence flows. At runtime it manages process variables (a shared dict readable and writable by all nodes), builds the completion message from task results, and handles hook interception via `_llm_hook_decision`. A `FlowAgent` instance can be registered as a sub-agent inside a `CugaSupervisor`, where it is treated as a peer alongside `CugaAgent` instances.
+
+
+### **TaskAgent | Task Node**
+
+Wraps a `CugaAgent` for execution inside a single BPMN task element. Binds the agent to a specific `task_id` and `task_name`, applies optional input/output variable mappings to translate between process variables and agent prompts, records the result in `FlowState`, and fires optional pre/post hooks. Returns a result dict with `status: completed` (or `status: failed` on error) so the FlowAgent's completion message builder can surface task output to the caller.
+
+
+### **DecisionAgent | Gateway Decision Node**
+
+Per-gateway LLM router implemented as a two-node internal LangGraph:
+
+- **Node 1 — `eval_condition`**: deterministic, no LLM. Substitutes `${variable}` tokens from process variables into the condition expression and evaluates it safely (no `eval()`). Produces `TRUE`, `FALSE`, or `UNKNOWN`.
+- **Node 2 — `decide`**: a `CugaAgent` (created lazily) reads the condition result, the full process state, and the gateway's markdown policy, then responds with exactly one flow ID.
+
+Gateways with a single outgoing flow, or configured in `mode: tool`, are routed inline by `FlowAgent` using `eval_condition` directly — no `DecisionAgent` is instantiated for them.
+
+
+### **Hook Node | Edge Interceptor**
+
+Hook nodes are inserted between BPMN sequence flow edges at compile time. When the process reaches a hooked edge, the hook node fires before the target node is entered. Each hook carries:
+
+- **`location`**: the BPMN flow ID it intercepts
+- **`condition`**: optional guard — if it returns false the hook is skipped
+- **`policy`**: optional markdown; when present the FlowAgent reasons with its LLM (`_llm_hook_decision`) against the policy and full process state to produce a `HookResult`; otherwise the static `handler` function is called
+
+The `HookResult.action` determines what happens next: `CONTINUE` proceeds normally, `SKIP_TO` jumps to a named node via `Command(goto=)`, `TERMINATE` halts the process, `REQUEST_USER_INPUT` soft-halts and surfaces a question to the user. Hook nodes always return a `Command(goto=…)` — never bare state — to satisfy LangGraph's routing constraint. The **HookManager** is owned by `FlowAgent` and serves as a priority-sorted registry of all registered hooks, indexed by edge location.
+
+---
+
 ### **FinalAnswerAgent | Final Answer**
 
 This agent is responsible for gathering the results from all completed tasks and synthesizing them into a final, coherent response for the user. It represents the last step in the cognitive process before presenting the solution.

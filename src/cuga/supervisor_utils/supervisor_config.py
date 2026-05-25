@@ -50,6 +50,27 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
             }
             logger.info(f"Registered external agent: {agent_name}")
 
+        elif agent_config.get("type") == "flow_agent":
+            # Inline FlowAgent — compiled from a YAML config + BPMN file.
+            # No Python agent files required: all task/gateway/hook agents are
+            # instantiated by FlowConfig from the referenced flow_config YAML.
+            flow_config_rel = agent_config.get("flow_config")
+            if not flow_config_rel:
+                raise ValueError(f"Agent '{agent_name}' has type: flow_agent but no flow_config path")
+
+            from pathlib import Path
+            from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import load_flow_from_yaml
+
+            flow_config_path = str(Path(yaml_path).parent / flow_config_rel)
+            logger.info(f"Instantiating inline FlowAgent '{agent_name}' from {flow_config_path}")
+            try:
+                agent = load_flow_from_yaml(flow_config_path)
+                agents[agent_name] = agent
+                logger.info(f"✅ Inline FlowAgent '{agent_name}' compiled from {flow_config_path}")
+            except Exception as e:
+                logger.error(f"Failed to instantiate FlowAgent '{agent_name}' from '{flow_config_path}': {e}")
+                raise
+
         elif "import_from" in agent_config:
             # Import a pre-configured CugaAgent instance from a Python module.
             # This lets you define agents fully in Python (with tools, policies, etc.)
@@ -75,14 +96,16 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
 
                 # Use class-name check to avoid issues when the same class is imported
                 # from different paths (which would break isinstance()).
-                if not (hasattr(agent, "__class__") and agent.__class__.__name__ == "CugaAgent"):
+                # Accept both CugaAgent and FlowAgent (BPMN-based supervisor)
+                agent_class_name = agent.__class__.__name__ if hasattr(agent, "__class__") else None
+                if agent_class_name not in ("CugaAgent", "FlowAgent"):
                     raise TypeError(
                         f"Imported object '{agent_var}' from '{module_path}' is not a "
-                        f"CugaAgent instance (got {type(agent).__name__})"
+                        f"CugaAgent or FlowAgent instance (got {type(agent).__name__})"
                     )
 
                 agents[agent_name] = agent
-                logger.info(f"✅ Imported agent '{agent_name}' from {import_path}")
+                logger.info(f"✅ Imported {agent_class_name} '{agent_name}' from {import_path}")
             except Exception as e:
                 logger.error(f"Failed to import agent '{agent_name}' from '{import_path}': {e}")
                 raise

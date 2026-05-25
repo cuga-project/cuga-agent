@@ -8,12 +8,15 @@ from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import SecurityValidator
 from ..common.benchmark_mode import is_benchmark_mode
+from cuga.config import settings
 
 
 class LocalExecutor(BaseExecutor):
     """Handles local code execution with restricted environment."""
 
-    _timeout = 30
+    @property
+    def _timeout(self) -> int:
+        return settings.advanced_features.code_executor_timeout
 
     ALLOWED_MODULES = {
         'asyncio',
@@ -36,7 +39,7 @@ class LocalExecutor(BaseExecutor):
         self,
         wrapped_code: str,
         context_locals: dict[str, Any],
-        timeout: int = 30,
+        timeout: int = None,
     ) -> str:
         """Execute code locally in a restricted environment.
 
@@ -52,7 +55,8 @@ class LocalExecutor(BaseExecutor):
             asyncio.TimeoutError: If execution times out
             Exception: For any execution errors
         """
-        self._timeout = timeout
+        if timeout is None:
+            timeout = self._timeout
         with contextlib.redirect_stdout(io.StringIO()) as f:
             benchmark_mode = is_benchmark_mode()
 

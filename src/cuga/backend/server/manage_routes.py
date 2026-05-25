@@ -1376,6 +1376,90 @@ async def get_manage_config_history(agent_id: Optional[str] = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+def _flow_policies_dir() -> "Optional[str]":
+    """Return the policies/ directory for the current supervisor config, or None if unavailable.
+
+    Checks two locations in order:
+    1. policies/ adjacent to the supervisor YAML (e.g. config/policies/)
+    2. policies/ one level above the supervisor YAML's directory (e.g. app/policies/)
+       — used when the supervisor YAML lives inside a config/ subdirectory.
+    """
+    from pathlib import Path
+    from cuga.config import settings
+
+    config_path = getattr(settings.supervisor, "config_path", "") or ""
+    if not config_path:
+        return None
+    resolved = Path(config_path) if os.path.isabs(config_path) else Path(os.getcwd()) / config_path
+    for candidate in (resolved.parent / "policies", resolved.parent.parent / "policies"):
+        if candidate.is_dir():
+            return str(candidate)
+    return None
+
+
+def _policy_display_name(filename: str) -> str:
+    """'task-credit_check.md' → 'Credit Check'"""
+    stem = filename.rsplit(".", 1)[0]  # drop .md
+    for prefix in ("task-", "decision-", "hook-"):
+        if stem.startswith(prefix):
+            stem = stem[len(prefix):]
+            break
+    return stem.replace("_", " ").replace("-", " ").title()
+
+
+@router.get("/flow/policies")
+async def get_flow_policies():
+    """Return all flow policy markdown files grouped by type (task/decision/hook)."""
+    from pathlib import Path
+
+    policies_dir = _flow_policies_dir()
+    if not policies_dir:
+        return JSONResponse({"tasks": [], "decisions": [], "hooks": [], "available": False})
+
+    result: dict = {"tasks": [], "decisions": [], "hooks": [], "available": True}
+    prefix_map = {"task-": "tasks", "decision-": "decisions", "hook-": "hooks"}
+
+    for f in sorted(Path(policies_dir).glob("*.md")):
+        for prefix, bucket in prefix_map.items():
+            if f.name.startswith(prefix):
+                result[bucket].append(
+                    {
+                        "filename": f.name,
+                        "name": _policy_display_name(f.name),
+                        "content": f.read_text(encoding="utf-8"),
+                    }
+                )
+                break
+
+    return JSONResponse(result)
+
+
+@router.patch("/flow/policies")
+async def patch_flow_policy(request: Request):
+    """Overwrite a single flow policy markdown file."""
+    from pathlib import Path
+
+    body = await request.json()
+    filename: str = body.get("filename", "")
+    content: str = body.get("content", "")
+
+    if not filename or not filename.endswith(".md"):
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    policies_dir = _flow_policies_dir()
+    if not policies_dir:
+        raise HTTPException(status_code=404, detail="No flow policies directory found")
+
+    target = Path(policies_dir) / filename
+    # Prevent path traversal
+    if not target.resolve().parent == Path(policies_dir).resolve():
+        raise HTTPException(status_code=400, detail="Invalid filename")
+
+    target.write_text(content, encoding="utf-8")
+    logger.info(f"Flow policy updated: {filename}")
+    return JSONResponse({"status": "ok", "filename": filename})
+
+
 @router.delete("/config")
 async def delete_manage_config(agent_id: Optional[str] = None, reset_db: Optional[bool] = None):
     """Delete all configs for agent, or reset entire config db. Use ?reset_db=1 for full reset."""
