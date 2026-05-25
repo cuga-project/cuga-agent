@@ -1,27 +1,27 @@
-"""
-Combined Tool Provider
+"""Combined Tool Provider
 
 Provides tools from both runtime tracker tools and registry.
 First checks tracker for runtime tools, then falls back to registry.
 """
 
-from typing import List, Dict, Optional, Any, Callable, Tuple
-import aiohttp
-import asyncio
+from __future__ import annotations
 
-from loguru import logger
+import asyncio
+from typing import Any, Callable, Dict, List, Optional, Tuple
+import aiohttp
 from langchain_core.tools import StructuredTool
+from loguru import logger
 
 from cuga.backend.activity_tracker.tracker import ActivityTracker
-from cuga.backend.tools_env.registry.utils.api_utils import get_apps, get_registry_base_url, get_agent_id
-from cuga.backend.tools_env.registry.utils.types import AppDefinition
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_args import merge_tool_call_args
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
+    AppDefinition,
     ToolProviderInterface,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider import (
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import (
     create_tool_from_api_dict,
 )
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+from cuga.backend.tools_env.registry.utils.api_utils import get_agent_id, get_apps, get_registry_base_url
 from cuga.config import settings
 
 
@@ -36,11 +36,11 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
     Returns:
         StructuredTool instance that calls tracker.invoke_tool
     """
-    from pydantic import create_model, Field
+    from pydantic import Field, create_model
 
-    description = tool_def.get('description', '')
-    parameters = tool_def.get('parameters', {})
-    operation_id = tool_def.get('operation_id')  # Original OpenAPI operationId if available
+    description = tool_def.get("description", "")
+    parameters = tool_def.get("parameters", {})
+    operation_id = tool_def.get("operation_id")  # Original OpenAPI operationId if available
 
     # Convert OpenAPI parameter format to JSON schema format if needed
     if isinstance(parameters, list):
@@ -49,56 +49,56 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
             properties = {}
             required = []
             for param in params:
-                name = param.get('name', '')
-                param_type = param.get('schema', {}).get('type', 'string')
-                param_desc = param.get('description', '')
-                properties[name] = {'type': param_type, 'description': param_desc}
+                name = param.get("name", "")
+                param_type = param.get("schema", {}).get("type", "string")
+                param_desc = param.get("description", "")
+                properties[name] = {"type": param_type, "description": param_desc}
 
                 # Handle constraints
-                constraints = param.get('constraints', [])
+                constraints = param.get("constraints", [])
                 if constraints:
-                    properties[name]['constraints'] = constraints
+                    properties[name]["constraints"] = constraints
 
-                if param.get('required', False):
+                if param.get("required", False):
                     required.append(name)
-            return {'properties': properties, 'required': required}
+            return {"properties": properties, "required": required}
 
         parameters = _convert_openapi_params_to_json_schema(parameters)
 
     field_definitions = {}
     param_constraints = {}
     if isinstance(parameters, dict):
-        if 'properties' in parameters:
-            props = parameters['properties']
-            required = parameters.get('required', [])
+        if "properties" in parameters:
+            props = parameters["properties"]
+            required = parameters.get("required", [])
             for param_name, param_schema in props.items():
-                param_type = param_schema.get('type', 'string')
-                param_desc = param_schema.get('description', '')
+                param_type = param_schema.get("type", "string")
+                param_desc = param_schema.get("description", "")
 
                 # Handle type that might be a list (e.g., ['string', 'null'])
                 if isinstance(param_type, list):
                     # Take the first non-null type, or default to 'string'
-                    param_type = next((t for t in param_type if t != 'null'), 'string')
+                    param_type = next((t for t in param_type if t != "null"), "string")
 
                 type_mapping = {
-                    'string': str,
-                    'integer': int,
-                    'number': float,
-                    'boolean': bool,
-                    'array': list,
-                    'object': dict,
+                    "string": str,
+                    "integer": int,
+                    "number": float,
+                    "boolean": bool,
+                    "array": list,
+                    "object": dict,
                 }
                 python_type = type_mapping.get(param_type, str)
 
                 # Store constraints for later use in prompt
-                constraints = param_schema.get('constraints', [])
+                constraints = param_schema.get("constraints", [])
                 if constraints:
                     param_constraints[param_name] = constraints
 
                 if param_name in required:
                     field_definitions[param_name] = (python_type, Field(..., description=param_desc))
                 else:
-                    default_val = param_schema.get('default', None)
+                    default_val = param_schema.get("default", None)
                     # Make sure default values are hashable if needed
                     if isinstance(default_val, list):
                         default_val = None  # Skip unhashable defaults
@@ -117,7 +117,7 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
 
     async def tool_func(*args, **kwargs):
         import time
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import ToolCallTracker
+        from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 
         start_time = time.time()
         result = None
@@ -128,7 +128,7 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
             all_kwargs = merge_tool_call_args(args, kwargs, param_names)
 
             # Use tracker.invoke_tool with timeout
-            timeout_seconds = getattr(settings.advanced_features, 'tool_call_timeout', 30)
+            timeout_seconds = getattr(settings.advanced_features, "tool_call_timeout", 30)
             try:
                 result = await asyncio.wait_for(
                     tracker.invoke_tool(app_name, tool_name, all_kwargs), timeout=timeout_seconds
@@ -148,7 +148,7 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
             duration_ms = (time.time() - start_time) * 1000
             ToolCallTracker.record_call(
                 tool_name=tool_name,
-                arguments=all_kwargs if 'all_kwargs' in dir() else {},
+                arguments=all_kwargs if "all_kwargs" in dir() else {},
                 result=result,
                 app_name=app_name,
                 operation_id=_operation_id,
@@ -165,7 +165,7 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
 
     tool.func = tool_func
 
-    if not hasattr(tool.func, '_param_constraints'):
+    if not hasattr(tool.func, "_param_constraints"):
         tool.func._param_constraints = param_constraints
 
     # Store metadata for tool call tracking
@@ -179,8 +179,7 @@ tracker = ActivityTracker()
 
 
 class CombinedToolProvider(ToolProviderInterface):
-    """
-    Tool provider that combines runtime tools from tracker and registry tools.
+    """Tool provider that combines runtime tools from tracker and registry tools.
 
     First checks tracker for runtime tools, then tries registry with try/catch.
     """
@@ -191,8 +190,7 @@ class CombinedToolProvider(ToolProviderInterface):
         get_include_by_app: Optional[Callable[[], Tuple[Optional[Dict[str, List[str]]], int]]] = None,
         agent_id: Optional[str] = None,
     ):
-        """
-        Initialize the combined tool provider.
+        """Initialize the combined tool provider.
 
         Args:
             app_names: Optional list of specific app names to load. If None, loads all.
@@ -214,7 +212,7 @@ class CombinedToolProvider(ToolProviderInterface):
         logger.info(f"Initializing CombinedToolProvider (agent_id={self.agent_id})...")
 
         tracker_apps = []
-        if hasattr(tracker, 'apps') and tracker.apps:
+        if hasattr(tracker, "apps") and tracker.apps:
             tracker_apps = tracker.apps
 
         registry_apps = []
@@ -239,8 +237,8 @@ class CombinedToolProvider(ToolProviderInterface):
                     AppDefinition(
                         name=app.name,
                         url=app.url,
-                        description=getattr(app, 'description', None),
-                        type=getattr(app, 'type', 'api'),
+                        description=getattr(app, "description", None),
+                        type=getattr(app, "type", "api"),
                     )
                     for app in filtered_apps
                 ]
@@ -249,8 +247,8 @@ class CombinedToolProvider(ToolProviderInterface):
                     AppDefinition(
                         name=app.name,
                         url=app.url,
-                        description=getattr(app, 'description', None),
-                        type=getattr(app, 'type', 'api'),
+                        description=getattr(app, "description", None),
+                        type=getattr(app, "type", "api"),
                     )
                     for app in all_apps
                 ]
@@ -280,7 +278,7 @@ class CombinedToolProvider(ToolProviderInterface):
         # Fetch fresh apps list (cheap — a few items)
         try:
             fresh: List[AppDefinition] = []
-            if hasattr(tracker, 'apps') and tracker.apps:
+            if hasattr(tracker, "apps") and tracker.apps:
                 fresh.extend(tracker.apps)
             if settings.advanced_features.registry:
                 fresh.extend(await get_apps(agent_id=self.agent_id))
@@ -293,7 +291,7 @@ class CombinedToolProvider(ToolProviderInterface):
                     AppDefinition(
                         name=a.name,
                         url=a.url,
-                        description=getattr(a, 'description', None),
+                        description=getattr(a, "description", None),
                     )
                     for a in fresh
                 ]
@@ -319,8 +317,7 @@ class CombinedToolProvider(ToolProviderInterface):
         return out
 
     async def get_tools(self, app_name: str) -> List[StructuredTool]:
-        """
-        Get tools for a specific application.
+        """Get tools for a specific application.
 
         First checks tracker for runtime tools, then tries registry.
         If get_include_by_app is set, filters to only tools in the include list for this app.
@@ -381,14 +378,14 @@ class CombinedToolProvider(ToolProviderInterface):
             try:
                 logger.debug(f"Getting tools from registry for: {app_name} (agent_id={self.agent_id})")
                 registry_base = get_registry_base_url()
-                url = f'{registry_base}/applications/{app_name}/apis?include_response_schema=true'
+                url = f"{registry_base}/applications/{app_name}/apis?include_response_schema=true"
 
                 # Add agent_id parameter if available
                 agent_id = self.agent_id or get_agent_id()
                 if agent_id:
-                    url += f'&agent_id={agent_id}'
+                    url += f"&agent_id={agent_id}"
 
-                headers = {'accept': 'application/json'}
+                headers = {"accept": "application/json"}
 
                 async with aiohttp.ClientSession() as session:
                     async with session.get(url, headers=headers) as response:

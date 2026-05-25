@@ -9,7 +9,7 @@ import pytest
 from langchain_core.tools import tool
 
 from cuga import CugaAgent, run_agent
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     ToolProviderInterface,
     AppDefinition,
 )
@@ -43,6 +43,8 @@ def get_user_count() -> int:
 
 class TestToolProvider(ToolProviderInterface):
     """Test tool provider for integration tests"""
+
+    __test__ = False
 
     def __init__(self, tools):
         self.tools = tools

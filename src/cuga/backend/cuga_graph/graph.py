@@ -47,8 +47,8 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_node import CugaLiteNode
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
     create_cuga_lite_graph,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_node import CugaSupervisorNode
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
     create_cuga_supervisor_graph,

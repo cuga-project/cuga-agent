@@ -135,7 +135,7 @@ class TestDynamicAgentGraphPicksUpLLMConfig:
         """When llm_config is set, build_graph calls create_llm_from_config with it."""
         from unittest.mock import AsyncMock
         from cuga.backend.cuga_graph.graph import DynamicAgentGraph
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 
         mock_tp = MagicMock(spec=ToolProviderInterface)
         mock_tp.initialize = AsyncMock()

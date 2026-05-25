@@ -15,7 +15,7 @@ from .helpers import (
 )
 
 from cuga.backend.cuga_graph.policy.models import KeywordTrigger, ToolGuide
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
