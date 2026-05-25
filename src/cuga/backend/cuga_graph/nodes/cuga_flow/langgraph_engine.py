@@ -1,0 +1,580 @@
+"""
+LangGraphWorkflowEngine - Concrete LangGraph backend for BPMN process execution.
+
+Implements WorkflowEngine using LangGraph StateGraph.  All graph-building logic
+lives here; the FlowAgent harness communicates exclusively via the MCP bridge.
+
+At each annotated control point the engine builds a ControlPointContext — embedding
+current state, execution history, process model summary, and (for tasks) the task
+instruction from the YAML — and calls the appropriate MCP tool on the bridge.
+
+_ControlOverlay is a private internal dataclass used to wire LangGraph nodes.
+It is no longer part of the public API between FlowAgent and WorkflowEngine.
+"""
+
+import copy
+from collections import defaultdict
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from typing import Any, Callable, Dict, List, Optional
+
+from fastmcp import Client
+from fastmcp.client.transports import FastMCPTransport
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import Command
+from loguru import logger
+
+from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNProcess
+from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
+from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import (
+    Hook,
+    HookAction,
+    HookManager,
+    HookResult,
+)
+from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import (
+    ControlPointContext,
+    WorkflowEngine,
+)
+
+
+@dataclass
+class _ControlOverlay:
+    """
+    Internal LangGraph wiring: maps annotated elements to handler callables.
+
+    In the MCP path these handlers are closures that call FlowAgent tools via
+    the MCP client.  In direct/test paths they may be arbitrary callables.
+
+    Handler signatures (all async):
+      task_handlers[task_id](ctx: ControlPointContext) → dict
+      gateway_handlers[gw_id](ctx: ControlPointContext) → str  (chosen flow_id)
+      hook_evaluator(hook: Hook, ctx: ControlPointContext) → HookResult  (async)
+    """
+
+    task_handlers: Dict[str, Callable] = field(default_factory=dict)
+    gateway_handlers: Dict[str, Callable] = field(default_factory=dict)
+    hook_evaluator: Optional[Callable] = None
+    task_instructions: Dict[str, str] = field(default_factory=dict)
+    hooks: List[Hook] = field(default_factory=list)
+    flow_conditions: Dict[str, str] = field(default_factory=dict)
+    tool_tasks: Dict[str, Optional[str]] = field(default_factory=dict)
+    tools: Dict[str, Callable] = field(default_factory=dict)
+    action_permissions: Dict[str, List[str]] = field(default_factory=dict)
+
+
+class LangGraphWorkflowEngine(WorkflowEngine):
+    """LangGraph-backed WorkflowEngine.  Uses the MCP bridge for all harness callbacks."""
+
+    # ──────────────────────────────────────────────────────────────
+    # Primary entry point (called by MCPFlowBridge's run_process tool)
+    # ──────────────────────────────────────────────────────────────
+
+    async def _run_via_mcp(
+        self,
+        process: BPMNProcess,
+        initial_inputs: Dict[str, Any],
+        mcp_server: Any,
+    ) -> FlowState:
+        """
+        Fetch static config from FlowAgent via MCP, build an internal _ControlOverlay
+        with MCP-backed handlers, then execute the LangGraph.
+        """
+        async with Client(FastMCPTransport(mcp_server)) as c:
+            config_result = await c.call_tool("get_static_config", {})
+            static = config_result.data
+
+            agentic_task_ids: List[str] = static.get("agentic_task_ids", [])
+            decision_gw_ids: List[str] = static.get("decision_gateway_ids", [])
+            task_instructions: Dict[str, str] = static.get("task_instructions", {})
+            hooks_data: List[dict] = static.get("hooks", [])
+            flow_conditions: Dict[str, str] = static.get("flow_conditions", {})
+            tool_tasks: Dict[str, Optional[str]] = static.get("tool_tasks", {})
+            action_permissions: Dict[str, List[str]] = static.get("action_permissions", {})
+
+            # Build stub Hook objects (condition/handler live in FlowAgent; engine only
+            # needs id/type/location/priority to register them with HookManager).
+            stub_hooks: List[Hook] = [
+                Hook(
+                    id=h["id"],
+                    hook_type=__import__(
+                        "cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager",
+                        fromlist=["HookType"],
+                    ).HookType(h["hook_type"]),
+                    location=h["location"],
+                    priority=h.get("priority", 0),
+                    enabled=h.get("enabled", True),
+                    handler=lambda s: HookResult(action=HookAction.CONTINUE),
+                )
+                for h in hooks_data
+            ]
+
+            # Task handlers: call execute_task MCP tool
+            task_handlers: Dict[str, Callable] = {}
+            for task_id in agentic_task_ids:
+
+                async def _task_handler(ctx: ControlPointContext, _tid: str = task_id) -> dict:
+                    res = await c.call_tool("execute_task", {"task_id": _tid, "ctx": ctx.to_dict()})
+                    return res.data
+
+                task_handlers[task_id] = _task_handler
+
+            # Gateway handlers: call route_gateway MCP tool
+            gateway_handlers: Dict[str, Callable] = {}
+            for gw_id in decision_gw_ids:
+
+                async def _gw_handler(ctx: ControlPointContext, _gw: str = gw_id) -> str:
+                    res = await c.call_tool("route_gateway", {"gateway_id": _gw, "ctx": ctx.to_dict()})
+                    return res.data
+
+                gateway_handlers[gw_id] = _gw_handler
+
+            # Hook evaluator: call evaluate_hook MCP tool
+            async def hook_evaluator(hook: Hook, ctx: ControlPointContext) -> HookResult:
+                res = await c.call_tool("evaluate_hook", {"hook_id": hook.id, "ctx": ctx.to_dict()})
+                return HookResult.from_dict(res.data)
+
+            overlay = _ControlOverlay(
+                task_handlers=task_handlers,
+                gateway_handlers=gateway_handlers,
+                hook_evaluator=hook_evaluator,
+                task_instructions=task_instructions,
+                hooks=stub_hooks,
+                flow_conditions=flow_conditions,
+                tool_tasks=tool_tasks,
+                tools={},
+                action_permissions=action_permissions,
+            )
+
+            return await self._run_graph(process, initial_inputs, overlay)
+
+    async def _run_graph(
+        self,
+        process: BPMNProcess,
+        initial_inputs: Dict[str, Any],
+        overlay: _ControlOverlay,
+    ) -> FlowState:
+        initial_state = FlowState(
+            process_id=process.id,
+            process_name=process.name,
+            process_variables=initial_inputs,
+        )
+        initial_state.start_time = datetime.now(timezone.utc)
+        compiled = self._build_graph(process, overlay)
+        raw = await compiled.ainvoke(initial_state)
+        return FlowState.model_validate(raw) if isinstance(raw, dict) else raw
+
+    # ──────────────────────────────────────────────────────────────
+    # Graph construction
+    # ──────────────────────────────────────────────────────────────
+
+    def _build_graph(self, process: BPMNProcess, overlay: _ControlOverlay):
+        graph = StateGraph(FlowState)
+
+        flows_by_source: Dict[str, list] = defaultdict(list)
+        flows_by_target: Dict[str, list] = defaultdict(list)
+        for flow in process.flows:
+            flows_by_source[flow.source_ref].append(flow)
+            flows_by_target[flow.target_ref].append(flow)
+
+        for elem_id, element in process.elements.items():
+            if element.element_type in ("startEvent", "endEvent"):
+                continue
+
+            if "Gateway" in element.element_type:
+                node_fn = self._create_gateway_node(elem_id, element, flows_by_source, overlay)
+            elif "task" in element.element_type.lower():
+                if elem_id in overlay.task_handlers:
+                    node_fn = self._create_task_node(elem_id, element, process, overlay)
+                else:
+                    node_fn = self._create_tool_task_node(
+                        elem_id, element, overlay.tool_tasks.get(elem_id), overlay
+                    )
+            else:
+                node_fn = self._create_default_node(elem_id, element)
+
+            graph.add_node(elem_id, node_fn)
+            logger.debug(f"  Added node: {elem_id}")
+
+        self._add_edges_with_hooks(graph, process, overlay, flows_by_source)
+        return graph.compile()
+
+    def _add_edges_with_hooks(
+        self,
+        graph: StateGraph,
+        process: BPMNProcess,
+        overlay: _ControlOverlay,
+        flows_by_source: Dict[str, list],
+    ) -> None:
+        hook_manager = HookManager()
+        for hook in overlay.hooks:
+            hook_manager.register_hook(hook)
+
+        for source_ref, outgoing_flows in flows_by_source.items():
+            lg_source = START if source_ref == process.start_event else source_ref
+
+            if len(outgoing_flows) > 1:
+                element = process.elements.get(source_ref)
+
+                if element and element.element_type == "parallelGateway":
+                    for flow in outgoing_flows:
+                        lg_target = END if flow.target_ref in process.end_events else flow.target_ref
+                        hooks_for_flow = hook_manager.get_hooks_at_location(flow.id)
+                        if hooks_for_flow:
+                            hook_node_id = f"hook_{flow.id}"
+                            graph.add_node(
+                                hook_node_id,
+                                self._create_hook_node(flow.id, hooks_for_flow, lg_target, process, overlay),
+                            )
+                            graph.add_edge(lg_source, hook_node_id)
+                            logger.debug(
+                                f"  Parallel branch {flow.id}: {lg_source}→{hook_node_id}→(cmd){lg_target}"
+                            )
+                        else:
+                            graph.add_edge(lg_source, lg_target)
+                            logger.debug(f"  Parallel branch {flow.id}: {lg_source}→{lg_target}")
+
+                elif element and "Gateway" in element.element_type:
+                    flow_to_target: Dict[str, str] = {}
+                    for flow in outgoing_flows:
+                        lg_target = END if flow.target_ref in process.end_events else flow.target_ref
+                        hooks_for_flow = hook_manager.get_hooks_at_location(flow.id)
+                        if hooks_for_flow:
+                            hook_node_id = f"hook_{flow.id}"
+                            graph.add_node(
+                                hook_node_id,
+                                self._create_hook_node(flow.id, hooks_for_flow, lg_target, process, overlay),
+                            )
+                            flow_to_target[flow.id] = hook_node_id
+                        else:
+                            flow_to_target[flow.id] = lg_target
+                    router = self._create_gateway_router(source_ref, flow_to_target)
+                    graph.add_conditional_edges(lg_source, router, flow_to_target)
+                    logger.debug(f"  Conditional edges from {source_ref} → {list(flow_to_target.values())}")
+
+                else:
+                    for flow in outgoing_flows:
+                        lg_target = END if flow.target_ref in process.end_events else flow.target_ref
+                        graph.add_edge(lg_source, lg_target)
+
+            else:
+                flow = outgoing_flows[0]
+                lg_target = END if flow.target_ref in process.end_events else flow.target_ref
+                hooks_for_edge = hook_manager.get_hooks_at_location(flow.id)
+                if hooks_for_edge:
+                    hook_node_id = f"hook_{flow.id}"
+                    graph.add_node(
+                        hook_node_id,
+                        self._create_hook_node(flow.id, hooks_for_edge, lg_target, process, overlay),
+                    )
+                    graph.add_edge(lg_source, hook_node_id)
+                    logger.debug(f"  Hook node {hook_node_id}: {lg_source}→{hook_node_id}→(cmd){lg_target}")
+                else:
+                    graph.add_edge(lg_source, lg_target)
+                    logger.debug(f"  Edge: {lg_source}→{lg_target}")
+
+    # ──────────────────────────────────────────────────────────────
+    # Router factory
+    # ──────────────────────────────────────────────────────────────
+
+    def _create_gateway_router(self, gateway_id: str, flow_to_target: Dict[str, str]) -> Callable:
+        default_flow_id = next(iter(flow_to_target.keys()))
+
+        def router(state) -> str:
+            decisions = (
+                state.get("gateway_decisions", {})
+                if isinstance(state, dict)
+                else getattr(state, "gateway_decisions", {})
+            )
+            chosen_flow = decisions.get(gateway_id)
+            if chosen_flow in flow_to_target:
+                return chosen_flow
+            logger.warning(f"No routing decision for {gateway_id}, defaulting to {default_flow_id}")
+            return default_flow_id
+
+        return router
+
+    # ──────────────────────────────────────────────────────────────
+    # Node factories
+    # ──────────────────────────────────────────────────────────────
+
+    def _create_gateway_node(
+        self,
+        gateway_id: str,
+        element: Any,
+        flows_by_source: Dict[str, list],
+        overlay: _ControlOverlay,
+    ) -> Callable:
+        async def gateway_node(state: FlowState) -> dict:
+            logger.info(f"Executing gateway: {element.name} ({gateway_id})")
+            outgoing_flows = flows_by_source.get(gateway_id, [])
+
+            if element.element_type == "parallelGateway":
+                if len(outgoing_flows) > 1:
+                    logger.info(f"  Parallel gateway {gateway_id}: split — {len(outgoing_flows)} branches")
+                else:
+                    logger.info(f"  Parallel gateway {gateway_id}: join")
+                return {"execution_path": [gateway_id]}
+
+            chosen = None
+            if gateway_id in overlay.gateway_handlers:
+                enriched_flows = []
+                for f in outgoing_flows:
+                    override = overlay.flow_conditions.get(f.id)
+                    if override and not f.condition:
+                        f = copy.copy(f)
+                        f.condition = override
+                    enriched_flows.append(f)
+
+                ctx = ControlPointContext(
+                    process_instance_id=state.process_id,
+                    element_id=gateway_id,
+                    element_name=element.name or gateway_id,
+                    current_state=state,
+                    execution_history=list(state.execution_path),
+                    process_model_summary={},
+                    available_flows=enriched_flows,
+                )
+                try:
+                    chosen = await overlay.gateway_handlers[gateway_id](ctx)
+                except Exception as e:
+                    logger.error(f"  Gateway handler error for {gateway_id}: {e}")
+                    chosen = outgoing_flows[0].id if outgoing_flows else None
+            else:
+                chosen = self._tool_route_gateway(gateway_id, outgoing_flows, state, overlay)
+
+            if chosen:
+                logger.info(f"  Gateway {gateway_id} → flow {chosen}")
+
+            return {
+                "execution_path": [gateway_id],
+                "gateway_decisions": {gateway_id: chosen} if chosen else {},
+            }
+
+        return gateway_node
+
+    def _tool_route_gateway(
+        self,
+        gateway_id: str,
+        flows: list,
+        state: FlowState,
+        overlay: _ControlOverlay,
+    ) -> str:
+        from cuga.backend.cuga_graph.nodes.cuga_flow.decision_agent import eval_condition
+
+        if len(flows) == 1:
+            return flows[0].id
+
+        lines: List[str] = []
+        for flow in flows:
+            condition = overlay.flow_conditions.get(flow.id) or flow.condition
+            matched = bool(condition and eval_condition(condition, state))
+            status = "✓ MATCHED" if matched else "✗"
+            lines.append(f"  {flow.id}: `{condition or '(no condition)'}` → {status}")
+            if matched:
+                return flow.id
+
+        logger.warning(f"  Gateway {gateway_id}: no condition matched, defaulting to first flow")
+        return flows[0].id
+
+    def _create_task_node(
+        self,
+        task_id: str,
+        element: Any,
+        process: BPMNProcess,
+        overlay: _ControlOverlay,
+    ) -> Callable:
+        model_summary = self.inspect_model(process)
+
+        async def task_node(state: FlowState) -> dict:
+            logger.info(f"Executing agentic task: {element.name} ({task_id})")
+
+            if state.process_variables.get("_skip_next_node"):
+                logger.info("  Skipping task as requested by hook")
+                return {
+                    "execution_path": [task_id],
+                    "process_variables": {**state.process_variables, "_skip_next_node": False},
+                    "task_results": {task_id: {"status": "skipped", "reason": "hook requested skip"}},
+                }
+
+            ctx = ControlPointContext(
+                process_instance_id=state.process_id,
+                element_id=task_id,
+                element_name=element.name or task_id,
+                current_state=state,
+                execution_history=list(state.execution_path),
+                process_model_summary=model_summary,
+                task_instruction=overlay.task_instructions.get(task_id),
+            )
+            return await overlay.task_handlers[task_id](ctx)
+
+        return task_node
+
+    def _create_tool_task_node(
+        self,
+        task_id: str,
+        element: Any,
+        tool_name: Optional[str],
+        overlay: _ControlOverlay,
+    ) -> Callable:
+        def tool_task_node(state: FlowState) -> dict:
+            logger.info(f"Executing tool task: {element.name} ({task_id})")
+
+            if state.process_variables.get("_skip_next_node"):
+                return {
+                    "execution_path": [task_id],
+                    "process_variables": {**state.process_variables, "_skip_next_node": False},
+                    "task_results": {task_id: {"status": "skipped", "reason": "hook requested skip"}},
+                }
+
+            resolved = overlay.tools.get(tool_name) if tool_name else None
+            if resolved:
+                try:
+                    result = resolved(state)
+                    output = str(result) if result is not None else f"'{tool_name}' executed"
+                    task_result = {"status": "completed", "output": output}
+                    logger.info(f"  Tool task '{task_id}' completed via tool '{tool_name}'")
+                except Exception as e:
+                    logger.error(f"  Error in tool task '{task_id}': {e}")
+                    task_result = {"status": "failed", "error": str(e)}
+            else:
+                note = (
+                    f"tool '{tool_name}' not found in tools dict — pass-through"
+                    if tool_name
+                    else "no tool bound — pass-through"
+                )
+                logger.info(f"  Tool task '{task_id}': {note}")
+                task_result = {"status": "completed", "output": note}
+
+            return {
+                "execution_path": [task_id],
+                "process_variables": state.process_variables,
+                "task_results": {task_id: task_result},
+            }
+
+        return tool_task_node
+
+    def _create_default_node(self, node_id: str, element: Any) -> Callable:
+        def default_node(state: FlowState) -> dict:
+            logger.info(f"Executing node: {element.name} ({node_id})")
+            return {"execution_path": [node_id]}
+
+        return default_node
+
+    def _create_hook_node(
+        self,
+        edge_id: str,
+        hooks: List[Hook],
+        normal_target: str,
+        process: BPMNProcess,
+        overlay: _ControlOverlay,
+    ) -> Callable:
+        permitted = overlay.action_permissions.get("permitted_actions", [])
+        prohibited = overlay.action_permissions.get("prohibited_actions", [])
+        model_summary = self.inspect_model(process)
+
+        async def hook_node(state: FlowState):
+            logger.info(f"Executing hook node for edge: {edge_id}")
+            ctx = ControlPointContext(
+                process_instance_id=state.process_id,
+                element_id=edge_id,
+                element_name=edge_id,
+                current_state=state,
+                execution_history=list(state.execution_path),
+                process_model_summary=model_summary,
+                edge_id=edge_id,
+            )
+
+            for hook in hooks:
+                # Condition check deferred to FlowAgent when using MCP evaluator;
+                # for direct/test overlays with a real condition callable, check here.
+                if hook.condition and not hook.condition(state):
+                    logger.debug(f"  Hook {hook.id} condition not met, skipping")
+                    continue
+
+                try:
+                    if overlay.hook_evaluator:
+                        result = await overlay.hook_evaluator(hook, ctx)
+                    elif hook.handler:
+                        result = hook.handler(state)
+                    else:
+                        result = HookResult(action=HookAction.CONTINUE)
+
+                    action_val = result.action.value
+                    if permitted and action_val not in permitted:
+                        logger.warning(
+                            f"  Hook {hook.id} action '{action_val}' not in permitted_actions — CONTINUE"
+                        )
+                        result = HookResult(
+                            action=HookAction.CONTINUE,
+                            message=f"Action '{action_val}' not permitted",
+                        )
+                    elif action_val in prohibited:
+                        logger.warning(f"  Hook {hook.id} action '{action_val}' is prohibited — CONTINUE")
+                        result = HookResult(
+                            action=HookAction.CONTINUE,
+                            message=f"Action '{action_val}' is prohibited",
+                        )
+
+                    state.add_hook_evaluation(
+                        hook_id=hook.id,
+                        edge_id=edge_id,
+                        action=result.action.value,
+                        reason=result.message or "Hook evaluated",
+                    )
+                    logger.info(f"  Hook {hook.id} → {result.action.value}: {result.message}")
+
+                    if result.state_updates:
+                        state.process_variables.update(result.state_updates)
+
+                    if result.action == HookAction.TERMINATE:
+                        state.halt(result.message or "Hook terminated process")
+                        return Command(update=state.model_dump(), goto=END)
+
+                    elif result.action == HookAction.SKIP_NODE:
+                        state.process_variables["_skip_next_node"] = True
+                        return Command(update=state.model_dump(), goto=normal_target)
+
+                    elif result.action == HookAction.SKIP_TO:
+                        target = result.skip_to_node
+                        if target:
+                            logger.info(f"  Hook issuing Command(goto={target!r})")
+                            state.add_graph_modification(
+                                hook_id=hook.id,
+                                modification_type="skip_to",
+                                details={"target": target},
+                                reason=result.message or f"Hook routed to {target}",
+                            )
+                            return Command(update=state.model_dump(), goto=target)
+
+                    elif result.action == HookAction.REQUEST_USER_INPUT:
+                        prompt = result.user_prompt or "Input required before continuing."
+                        state.process_variables["_user_input_requested"] = True
+                        state.process_variables["_user_input_prompt"] = prompt
+                        state.halt(f"user_input_required: {prompt}")
+                        return Command(update=state.model_dump(), goto=END)
+
+                    elif result.action == HookAction.SWAP_NODES:
+                        pair = result.swap_nodes
+                        if pair and len(pair) == 2:
+                            node_a, node_b = pair
+                            target = node_b if normal_target == node_a else node_a
+                            logger.info(f"  SWAP_NODES: {node_a} ↔ {node_b}, routing to {target!r}")
+                            state.add_graph_modification(
+                                hook_id=hook.id,
+                                modification_type="swap_nodes",
+                                details={
+                                    "node_a": node_a,
+                                    "node_b": node_b,
+                                    "routed_to": target,
+                                },
+                                reason=result.message or f"Hook shuffled {node_a} ↔ {node_b}",
+                            )
+                            return Command(update=state.model_dump(), goto=target)
+
+                except Exception as e:
+                    logger.error(f"  Error evaluating hook {hook.id}: {e}")
+
+            return Command(update=state.model_dump(), goto=normal_target)
+
+        return hook_node

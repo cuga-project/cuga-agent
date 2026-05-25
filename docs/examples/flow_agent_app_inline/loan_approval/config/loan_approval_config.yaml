@@ -1,0 +1,83 @@
+# Loan Approval Process Configuration
+
+flow:
+  name: "Loan Approval Process"
+  id: "loan_approval_v1"
+  version: "1.0"
+  bpmn_file: "BPMNdiagram.bpmn"
+
+variables:
+  applicant_name: ""
+  applicant_id: ""
+  loan_amount: 1000
+  credit_score: 0.0
+  approved: false
+  rejection_reason: ""
+  loan_granted: false
+
+tasks:
+  # Default for any BPMN task not listed here: mode: tool (pass-through, no LLM).
+  # mode: task_agent  → full CugaAgent reasoning loop, requires agent: section
+  # mode: tool        → lightweight tool node; optional tool: names the callable
+
+  - id: "Activity_0oydey5"
+    mode: task_agent
+    agent:
+      name: "credit_checker"
+      system_instruction: "Analyses applicant information and returns a credit score 0.0–1.0"
+      tools: []
+      policy: "../policies/task-credit_check.md"
+
+  - id: "Activity_1h9ix55"
+    mode: task_agent
+    agent:
+      name: "loan_processor"
+      system_instruction: "Processes and grants the approved loan"
+      tools: []
+      policy: "../policies/task-loan_processor.md"
+
+  - id: "Activity_131ar38"
+    mode: task_agent
+    agent:
+      name: "rejection_handler"
+      system_instruction: "Sends a polite rejection notification to the applicant"
+      tools: []
+      policy: "../policies/task-rejection_handler.md"
+
+  # Example tool-mode task (not active in this process — illustrative):
+  # - id: "Activity_audit_log"
+  #   mode: tool
+  #   tool: "write_audit_log"   # calls FlowAgent.tools["write_audit_log"](state)
+
+gateways:
+  Gateway_09ad5fc:
+    mode: decision_agent
+    condition: "${credit_score} > 0.6"   # evaluated by eval_condition; result forwarded to LLM + policy
+    policy: "../policies/decision-credit_decision.md"
+    flows:
+      Flow_0ybszcv:
+        decision: "Approve — credit score sufficient"
+      Flow_1jgea85:
+        decision: "Reject — credit score insufficient"
+
+  Gateway_15y9k7z:
+    mode: tool                    # merge gateway — single outgoing flow, no decision needed
+
+action_permissions:
+  permitted_actions:
+    - continue
+    - skip_to
+    - request_user_input
+    - terminate
+  prohibited_actions:
+    - swap_nodes
+    - skip_node
+
+hooks:
+  - id: "audit_credit_decision"
+    type: "pre_edge"
+    location: "Flow_0ybszcv"
+    priority: 0
+    policy: "../policies/hook-audit_credit_decision.md"
+
+# Made with Bob

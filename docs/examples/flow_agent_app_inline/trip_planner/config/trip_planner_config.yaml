@@ -1,0 +1,58 @@
+# Trip Planner Process Configuration
+
+flow:
+  name: "Trip Planner Process"
+  id: "trip_planner_v1"
+  version: "1.0"
+  bpmn_file: "trip-planner.bpmn"
+
+variables:
+  destination: ""
+  planning_preference: "agent"   # "human" or "agent" — drives the Preference? gateway
+  trip_plan: ""
+
+tasks:
+  # Default for any BPMN task not listed here: mode: tool (pass-through, no LLM).
+  # mode: task_agent  → full CugaAgent reasoning loop, requires agent: section
+  # mode: tool        → lightweight tool node; optional tool: names the callable
+
+  - id: "Activity_0w2einw"
+    mode: tool   # "Request travel destination" — pass-through; destination comes from process variables
+
+  - id: "Activity_1dlyezk"
+    mode: tool   # "Choose type of planner" — pass-through; planning_preference already set
+
+  - id: "Activity_199zx27"
+    mode: tool   # "Plan trip by human" — pass-through; human-authored plan is in process variables
+
+  - id: "Activity_00olk6b"
+    mode: task_agent
+    agent:
+      name: "trip_planner_agent"
+      system_instruction: "Plans a detailed trip itinerary for the requested destination, covering transport, accommodation, daily activities, and estimated costs"
+      tools: []
+      policy: "../policies/task-plan_trip_by_agent.md"
+
+gateways:
+  Gateway_1ctgj6w:
+    mode: tool
+    flows:
+      Flow_0g3h7rx:
+        condition: "${planning_preference} == agent"
+      Flow_0xkvb29:
+        condition: "${planning_preference} == human"
+
+  Gateway_1c6a5ar:
+    mode: tool   # merge/join — single outgoing flow, no decision needed
+
+# No hooks for this process
+
+action_permissions:
+  permitted_actions:
+    - continue
+    - skip_to
+    - request_user_input
+    - terminate
+  prohibited_actions:
+    - swap_nodes
+    - skip_node

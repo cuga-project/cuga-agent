@@ -1,0 +1,133 @@
+"""
+MCPFlowBridge - Shared FastMCP server for CUGA FLO bi-directional messaging.
+
+Both FlowAgent and WorkflowEngine register their services here:
+  - FlowAgent registers: execute_task, route_gateway, evaluate_hook, get_static_config
+  - WorkflowEngine registers: run_process
+
+Both sides communicate exclusively via MCP tool calls using get_client(),
+which returns an in-process client backed by FastMCPTransport.
+
+Replacing ControlOverlay (Python-closure bridge) with this MCP bridge makes the
+contract explicit via tool schemas and enables future remote/cross-process transport
+by swapping FastMCPTransport for an HTTP or SSE transport.
+"""
+
+from typing import TYPE_CHECKING
+
+from fastmcp import Client, FastMCP
+from fastmcp.client.transports import FastMCPTransport
+from loguru import logger
+
+if TYPE_CHECKING:
+    from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent import FlowAgent
+    from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
+    from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import ProcessRegistry
+
+
+class MCPFlowBridge:
+    """
+    Shared FastMCP server mediating bi-directional messaging between
+    FlowAgent and WorkflowEngine.
+
+    Usage:
+        bridge = MCPFlowBridge()
+        bridge.register_flow_agent(fa)
+        bridge.register_engine(engine, registry)
+        # FlowAgent.invoke() calls bridge.get_client() internally
+    """
+
+    def __init__(self, name: str = "cuga-flo-mcp") -> None:
+        self._mcp = FastMCP(name)
+        logger.debug(f"MCPFlowBridge created: {name!r}")
+
+    # ──────────────────────────────────────────────────────────────
+    # Registration
+    # ──────────────────────────────────────────────────────────────
+
+    def register_flow_agent(self, fa: "FlowAgent") -> None:
+        """
+        Register FlowAgent's control-point handlers as MCP tools.
+
+        Tools registered:
+          execute_task(task_id, ctx)     → dict   (agentic task execution)
+          route_gateway(gateway_id, ctx) → str    (gateway routing)
+          evaluate_hook(hook_id, ctx)    → dict   (hook evaluation)
+          get_static_config()            → dict   (static config for engine graph-build)
+        """
+        from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import ControlPointContext
+
+        async def execute_task(task_id: str, ctx: dict) -> dict:
+            """Execute an agentic task via FlowAgent."""
+            ctx_obj = ControlPointContext.from_dict(ctx)
+            return await fa._handle_task(task_id, ctx_obj)
+
+        async def route_gateway(gateway_id: str, ctx: dict) -> str:
+            """Route a gateway via FlowAgent's DecisionAgent."""
+            ctx_obj = ControlPointContext.from_dict(ctx)
+            return await fa._handle_gateway(gateway_id, ctx_obj)
+
+        async def evaluate_hook(hook_id: str, ctx: dict) -> dict:
+            """Evaluate a hook via FlowAgent's hook evaluator."""
+            ctx_obj = ControlPointContext.from_dict(ctx)
+            hook = next((h for h in fa.hooks if h.id == hook_id), None)
+            if hook is None:
+                from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookAction, HookResult
+
+                return HookResult(action=HookAction.CONTINUE, message=f"Hook {hook_id!r} not found").to_dict()
+            result = await fa._handle_hook(hook, ctx_obj)
+            return result.to_dict()
+
+        def get_static_config() -> dict:
+            """Return static config the engine needs at graph-build time."""
+            return fa._get_static_config()
+
+        for fn, tool_name in [
+            (execute_task, "execute_task"),
+            (route_gateway, "route_gateway"),
+            (evaluate_hook, "evaluate_hook"),
+            (get_static_config, "get_static_config"),
+        ]:
+            self._mcp.tool(name=tool_name)(fn)
+
+        logger.info(f"MCPFlowBridge: registered FlowAgent tools for process '{fa.process_key}'")
+
+    def register_engine(
+        self,
+        engine: "LangGraphWorkflowEngine",
+        registry: "ProcessRegistry",
+    ) -> None:
+        """
+        Register WorkflowEngine's run_process as an MCP tool.
+
+        Tool registered:
+          run_process(process_key, initial_inputs) → dict  (FlowState serialised)
+        """
+        _mcp_server = self._mcp  # captured for closure
+
+        async def run_process(process_key: str, initial_inputs: dict) -> dict:
+            """Execute a BPMN process via the WorkflowEngine."""
+            bpmn = registry.get_bpmn_process(process_key)
+            state = await engine._run_via_mcp(bpmn, initial_inputs, _mcp_server)
+            return state.model_dump(mode="json")
+
+        self._mcp.tool(name="run_process")(run_process)
+        logger.info("MCPFlowBridge: registered WorkflowEngine run_process tool")
+
+    # ──────────────────────────────────────────────────────────────
+    # Client access
+    # ──────────────────────────────────────────────────────────────
+
+    def get_client(self) -> Client:
+        """
+        Return an in-process MCP client backed by FastMCPTransport.
+
+        Use as an async context manager:
+            async with bridge.get_client() as c:
+                result = await c.call_tool("run_process", {...})
+        """
+        return Client(FastMCPTransport(self._mcp))
+
+    @property
+    def mcp(self) -> FastMCP:
+        return self._mcp

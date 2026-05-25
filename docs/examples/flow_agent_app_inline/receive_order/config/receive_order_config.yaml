@@ -1,0 +1,69 @@
+# Receive Order Process Configuration
+
+flow:
+  name: "Receive Order Process"
+  id: "receive_order_v1"
+  version: "1.0"
+  bpmn_file: "BPMNdiagram.bpmn"
+
+variables:
+  order_id: ""
+  customer_name: ""
+  customer_id: ""
+  items: []
+  total_amount: 0.0
+  inventory_reserved: false
+  invoice_generated: false
+
+tasks:
+  # Default for any BPMN task not listed here: mode: tool (pass-through, no LLM).
+  # mode: task_agent  → full CugaAgent reasoning loop, requires agent: section
+  # mode: tool        → lightweight tool node; optional tool: names the callable
+
+  - id: "Activity_0oydey5"
+    mode: task_agent
+    agent:
+      name: "order_receiver"
+      system_instruction: "Validates and registers an incoming order, extracting order ID, customer details, and line items"
+      tools: []
+      policy: "../policies/task-receive_order.md"
+
+  - id: "Activity_1h9ix55"
+    mode: task_agent
+    agent:
+      name: "inventory_reserver"
+      system_instruction: "Reserves the required inventory items for the confirmed order and records the reservation"
+      tools: []
+      policy: "../policies/task-reserve_inventory.md"
+
+  - id: "Activity_131ar38"
+    mode: task_agent
+    agent:
+      name: "invoice_generator"
+      system_instruction: "Generates a formatted invoice for the confirmed order and marks it as issued"
+      tools: []
+      policy: "../policies/task-generate_invoice.md"
+
+gateways:
+  Gateway_09ad5fc:
+    mode: tool    # parallel split — all branches run concurrently, no decision needed
+
+  Gateway_15y9k7z:
+    mode: tool    # parallel join — waits for all incoming branches, no decision needed
+
+action_permissions:
+  permitted_actions:
+    - continue
+    - skip_to
+    - request_user_input
+    - terminate
+  prohibited_actions:
+    - swap_nodes
+    - skip_node
+
+hooks:
+  - id: "post_receival_check"
+    type: "pre_edge"
+    location: "Flow_1ji6b0i"
+    priority: 0
+    policy: "../policies/hook-post_receival.md"
