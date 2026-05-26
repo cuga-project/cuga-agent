@@ -437,7 +437,7 @@ Figure~\ref{fig:architecture} shows the component architecture.
 \begin{tikzpicture}[node distance=1.1cm and 1.6cm, font=\small]
 
 % ── Reasoning side: FlowAgent box (left) ───────────────────
-\coordinate (fa@bl) at (-0.4,2.05);
+\coordinate (fa@bl) at (-0.4,1.85);
 \coordinate (fa@tr) at (4.8,5.45);
 \begin{scope}[on background layer]
   \node[frame, fit=(fa@bl)(fa@tr), inner sep=2pt] (fabox) {};
@@ -448,7 +448,7 @@ Figure~\ref{fig:architecture} shows the component architecture.
 \node[agent] (da) at (0.95, 4.1) {\texttt{Decision}\\[-2pt]\texttt{Agent}};
 \node[agent] (hm) at (3.5, 4.1) {\texttt{Hook}\\[-2pt]\texttt{reasoning}};
 \node[task] (ta) at (2.2, 2.95) {Task\\Agents};
-\node[font=\scriptsize\color{black!55}] at (2.2, 2.38) {CugaAgent$\times n$};
+\node[font=\scriptsize\color{black!55}] at (2.2, 2.18) {CugaAgent$\times n$};
 
 % ── FRAME (below FlowAgent) ────────────────────────────────
 \node[policy] (pt) at (0.7, 0.95) {Task\\Policies};
@@ -487,7 +487,7 @@ Figure~\ref{fig:architecture} shows the component architecture.
 
 \draw[flow, double] (bpmn) -- (parser);
 \draw[flow, double] (parser) -- (engine)
-      node[midway, xshift=-1.1cm, font=\scriptsize]{compile};
+      node[midway, xshift=-2.0cm, font=\scriptsize]{compile};
 \draw[flow] (engine) -- (fs);
 
 % ── Bridge connections (bi-directional MCP) ────────────────
