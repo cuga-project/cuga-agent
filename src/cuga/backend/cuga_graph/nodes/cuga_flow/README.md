@@ -251,11 +251,11 @@ Used by `DecisionAgent` and by `FlowAgent` directly for tool-mode gateways.
 
 Three inline demo processes are included under `docs/examples/flow_agent_app_inline/`, each illustrating a different combination of CUGA FLO capabilities:
 
-| App | Highlights |
-|---|---|
-| `loan_approval` | Exclusive gateway with agentic routing decision, followed by a policy-governed hook on the outgoing flow |
-| `receive_order` | Parallel gateway splitting execution across concurrent branches, followed by a hook that intercepts the merge transition |
-| `trip_planner` | Single TaskAgent fulfilling the full process — no agentic gateway routing and no hooks; illustrates the minimal configuration |
+| App | Description | Highlights |
+|---|---|---|
+| `loan_approval` | Multi-step loan processing with credit check, compliance, and approval gateways | Exclusive gateway with agentic routing decision, followed by a policy-governed hook on the outgoing flow |
+| `receive_order` | Order intake flow with inventory check and fulfilment routing | Parallel gateway splitting execution across concurrent branches, followed by a hook that intercepts the merge transition |
+| `trip_planner` | Travel planning flow with itinerary assembly and booking steps | Single TaskAgent fulfilling the full process — no agentic gateway routing and no hooks; illustrates the minimal configuration |
 
 Start any demo with:
 
