@@ -82,11 +82,15 @@ TaskAgent(
 
 ### DecisionAgent
 
-A per-gateway routing agent that binds a `CugaAgent` to a specific gateway, giving it a routing policy and the responsibility to select the correct outgoing branch. Routing proceeds in two steps: first, the gateway condition expression is evaluated deterministically by substituting `${variable}` tokens from process variables and applying a binary comparison — without `eval()`. If the result is conclusive, the flow is selected directly. If it is ambiguous or policy reasoning is required, the `CugaAgent` reads the condition result, the full process state, and the gateway's markdown policy, then selects exactly one flow ID in adherence to that policy.
+A per-gateway routing agent that binds a `CugaAgent` to a specific gateway, giving it a routing policy and the responsibility to select the correct outgoing branch. It operates in two distinct steps:
+
+**Step 1 — condition evaluation** (deterministic, no LLM)
+The gateway condition expression is evaluated by substituting `${variable}` tokens from process variables and applying a binary comparison — without `eval()`. Produces `TRUE`, `FALSE`, or `UNKNOWN`.
+
+**Step 2 — policy-governed decision** (CugaAgent)
+If the condition result is conclusive and unambiguous, the flow is selected directly. Otherwise, the `CugaAgent` reads the condition result, the full process state, and the gateway's markdown policy, then selects exactly one flow ID in adherence to that policy.
 
 Gateways with a single outgoing flow, or configured as `mode: tool`, are routed inline by `FlowAgent` using condition evaluation directly — no `DecisionAgent` is instantiated for them.
-
-> **LangGraph note:** In the included LangGraph engine, the two-step routing is implemented as a two-node internal graph: `eval_condition` (deterministic) followed by `decide` (CugaAgent).
 
 ```yaml
 gateways:
