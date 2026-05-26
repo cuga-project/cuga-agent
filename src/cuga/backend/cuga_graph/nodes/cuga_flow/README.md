@@ -132,7 +132,7 @@ The `HookResult.action` determines what happens next:
 | `REMOVE_NODE` | Remove a node from the process graph at runtime: the engine rewires its predecessor and successor flows to bypass it, recompiles the graph, and resumes |
 | `ADD_NODE` | Insert a new task node into the process graph at runtime: the engine adds the node before the current target, wires flows through it, registers an MCP-backed task handler for it, recompiles, and resumes |
 
-`REMOVE_NODE` and `ADD_NODE` trigger a **graph rebuild**: the engine modifies the live `BPMNProcess` model, recompiles the LangGraph, and replays already-executed nodes as fast-forward no-ops to resume from the correct point. This means the BPMN topology is genuinely mutable at runtime — not just a routing flag.
+`REMOVE_NODE` and `ADD_NODE` trigger a **graph rebuild** and may only target nodes that have not yet executed. The hook routes to END; the engine modifies the live `BPMNProcess` model, recompiles the LangGraph, and resumes directly at the correct entry point — `new_node_id` for ADD_NODE, or the successor of the removed node for REMOVE_NODE — via a conditional START edge. No previously-executed nodes are replayed.
 
 Hook reasoning is performed by the **FlowAgent** itself — not a separate agent — because hooks are a process-level concern. The FlowAgent holds the full process state and BPMN structure, and reasons against the hook's policy to decide what flow adaptation (if any) is warranted. Hooks are the only points in the process where the FlowAgent is permitted to deviate from the nominal BPMN path, and every such deviation is policy-governed and recorded in the audit log.
 

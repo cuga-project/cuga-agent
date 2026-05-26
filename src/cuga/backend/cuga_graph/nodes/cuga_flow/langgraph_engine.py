@@ -281,6 +281,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             flows_by_source[flow.source_ref].append(flow)
             flows_by_target[flow.target_ref].append(flow)
 
+        graph_node_ids: List[str] = []
         for elem_id, element in process.elements.items():
             if element.element_type in ("startEvent", "endEvent"):
                 continue
@@ -298,9 +299,37 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                 node_fn = self._create_default_node(elem_id, element)
 
             graph.add_node(elem_id, node_fn)
+            graph_node_ids.append(elem_id)
             logger.debug(f"  Added node: {elem_id}")
 
+        # Build internal edges (skips start_event flows — handled by START routing below)
         self._add_edges_with_hooks(graph, process, overlay, flows_by_source)
+
+        # Collect hook node IDs added during edge building
+        hook_node_ids = [f"hook_{flow.id}" for flow in process.flows]
+        all_entry_targets = {nid: nid for nid in graph_node_ids + hook_node_ids}
+
+        # Determine the natural first entry node (successor of the start event)
+        start_flows = flows_by_source.get(process.start_event, [])
+        if start_flows:
+            first_target = start_flows[0].target_ref
+            # If there's a hook on the start edge, the hook node is the real entry
+            from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookManager as _HM
+            _hm = _HM()
+            for h in overlay.hooks:
+                _hm.register_hook(h)
+            start_hooks = _hm.get_hooks_at_location(start_flows[0].id)
+            natural_entry = f"hook_{start_flows[0].id}" if start_hooks else first_target
+        else:
+            natural_entry = next(iter(graph_node_ids), None)
+
+        def _start_router(state: FlowState) -> str:
+            resume = state.process_variables.get("_resume_from_node")
+            if resume and resume in all_entry_targets:
+                return resume
+            return natural_entry
+
+        graph.add_conditional_edges(START, _start_router, all_entry_targets)
         return graph.compile()
 
     def _add_edges_with_hooks(
@@ -315,7 +344,10 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             hook_manager.register_hook(hook)
 
         for source_ref, outgoing_flows in flows_by_source.items():
-            lg_source = START if source_ref == process.start_event else source_ref
+            # Start-event outgoing flows are handled by the conditional START edge in _build_graph
+            if source_ref == process.start_event:
+                continue
+            lg_source = source_ref
 
             if len(outgoing_flows) > 1:
                 element = process.elements.get(source_ref)
@@ -412,18 +444,9 @@ class LangGraphWorkflowEngine(WorkflowEngine):
         async def gateway_node(state: FlowState) -> dict:
             logger.info(f"Executing gateway: {element.name} ({gateway_id})")
 
-            replay = list(state.process_variables.get("_replay_completed_nodes", []))
-            if gateway_id in replay:
-                logger.info(f"  Fast-forwarding replayed gateway: {gateway_id}")
-                replay.remove(gateway_id)
-                new_vars = {**state.process_variables, "_replay_completed_nodes": replay}
-                if not replay:
-                    new_vars.pop("_replay_completed_nodes", None)
-                return {
-                    "execution_path": [gateway_id],
-                    "gateway_decisions": state.gateway_decisions,
-                    "process_variables": new_vars,
-                }
+            # Clear _resume_from_node once we've arrived at the resume point
+            if state.process_variables.get("_resume_from_node") == gateway_id:
+                state.process_variables.pop("_resume_from_node", None)
 
             outgoing_flows = flows_by_source.get(gateway_id, [])
 
@@ -507,14 +530,9 @@ class LangGraphWorkflowEngine(WorkflowEngine):
         async def task_node(state: FlowState) -> dict:
             logger.info(f"Executing agentic task: {element.name} ({task_id})")
 
-            replay = list(state.process_variables.get("_replay_completed_nodes", []))
-            if task_id in replay:
-                logger.info(f"  Fast-forwarding replayed node: {task_id}")
-                replay.remove(task_id)
-                new_vars = {**state.process_variables, "_replay_completed_nodes": replay}
-                if not replay:
-                    new_vars.pop("_replay_completed_nodes", None)
-                return {"execution_path": [task_id], "process_variables": new_vars}
+            # Clear _resume_from_node once we've arrived at the resume point
+            if state.process_variables.get("_resume_from_node") == task_id:
+                state.process_variables.pop("_resume_from_node", None)
 
             if state.process_variables.get("_skip_next_node"):
                 logger.info("  Skipping task as requested by hook")
@@ -547,14 +565,9 @@ class LangGraphWorkflowEngine(WorkflowEngine):
         def tool_task_node(state: FlowState) -> dict:
             logger.info(f"Executing tool task: {element.name} ({task_id})")
 
-            replay = list(state.process_variables.get("_replay_completed_nodes", []))
-            if task_id in replay:
-                logger.info(f"  Fast-forwarding replayed node: {task_id}")
-                replay.remove(task_id)
-                new_vars = {**state.process_variables, "_replay_completed_nodes": replay}
-                if not replay:
-                    new_vars.pop("_replay_completed_nodes", None)
-                return {"execution_path": [task_id], "process_variables": new_vars}
+            # Clear _resume_from_node once we've arrived at the resume point
+            if state.process_variables.get("_resume_from_node") == task_id:
+                state.process_variables.pop("_resume_from_node", None)
 
             if state.process_variables.get("_skip_next_node"):
                 return {
@@ -718,12 +731,24 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                                 details={"removed": target},
                                 reason=result.message or f"Hook removed node {target}",
                             )
-                            # Store rebuild spec and mark executed nodes for fast-forward replay
+                            # Determine where the rebuilt graph should resume.
+                            # If the target is the immediate next node, skip past it to
+                            # its successor; otherwise resume at normal_target as usual.
+                            if target == normal_target:
+                                successors = [
+                                    f.target_ref for f in process.flows
+                                    if f.source_ref == target
+                                    and f.target_ref not in (process.end_events or [])
+                                ]
+                                resume_from = successors[0] if successors else None
+                            else:
+                                resume_from = normal_target
                             state.process_variables["_graph_rebuild_spec"] = {
                                 "type": "remove_node",
                                 "node_id": target,
                             }
-                            state.process_variables["_replay_completed_nodes"] = list(state.execution_path)
+                            if resume_from:
+                                state.process_variables["_resume_from_node"] = resume_from
                             return Command(update=state.model_dump(), goto=END)
 
                     elif result.action == HookAction.ADD_NODE:
@@ -742,14 +767,14 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                                 },
                                 reason=result.message or f"Hook inserted node {new_node_id}",
                             )
-                            # Store rebuild spec and mark executed nodes for fast-forward replay
                             state.process_variables["_graph_rebuild_spec"] = {
                                 "type": "add_node",
                                 "node_id": new_node_id,
                                 "task_instruction": instruction,
                                 "before": normal_target,
                             }
-                            state.process_variables["_replay_completed_nodes"] = list(state.execution_path)
+                            # Resume at the newly inserted node in the rebuilt graph
+                            state.process_variables["_resume_from_node"] = new_node_id
                             return Command(update=state.model_dump(), goto=END)
 
                 except Exception as e:
