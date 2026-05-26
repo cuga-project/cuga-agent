@@ -136,6 +136,8 @@ The `HookResult.action` determines what happens next:
 
 Hook reasoning is performed by the **FlowAgent** itself — not a separate agent — because hooks are a process-level concern. The FlowAgent holds the full process state and BPMN structure, and reasons against the hook's policy to decide what flow adaptation (if any) is warranted. Hooks are the only points in the process where the FlowAgent is permitted to deviate from the nominal BPMN path, and every such deviation is policy-governed and recorded in the audit log.
 
+**Separation of concerns:** CUGA FLO issues the hook action instruction — it does not execute it. Carrying out the action is the responsibility of the workflow engine. The engine receives the `HookResult` via the MCP bridge and applies the corresponding structural intervention (routing, graph rebuild, halt, etc.) according to its own execution model.
+
 Per-process `action_permissions` (declared in the YAML config) explicitly list which hook actions are permitted or prohibited for a given process, providing an additional governance layer over what adaptations the FlowAgent may apply.
 
 ---
