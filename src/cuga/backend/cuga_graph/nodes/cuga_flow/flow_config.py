@@ -177,6 +177,8 @@ class FlowConfig:
                     task_id=task_id,
                     task_name=agent_config.get("name", task_id),
                     agent=cuga_agent,
+                    input_mapping=task_config.get("input_mapping"),
+                    output_mapping=task_config.get("output_mapping"),
                 )
                 task_agents[task_id] = task_agent
                 logger.info(f"Created TaskAgent for: {task_id}")
