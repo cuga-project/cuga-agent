@@ -8,7 +8,7 @@
 
 ## Overview
 
-Standard multi-agent systems leave routing decisions to the LLM at runtime — the model decides what to call next, which makes the execution path unpredictable and hard to audit. CUGA FLO inverts this: the process structure is defined upfront in a BPMN 2.0 diagram and compiled into a graph at initialisation time. The graph topology is the ground truth.
+The technical problem is how to combine the deterministic structural guarantees of workflow engines with open-world, policy-bounded agentic reasoning without allowing the LLM layer to bypass process semantics. Existing systems tend to choose one side of the tradeoff: classical BPM has structural conformance but weak runtime adaptability, while LLM-as-planner approaches have adaptability but weaker guarantees of conformance and auditability.
 
 Within that structure, three layers of policy-aware reasoning operate:
 
