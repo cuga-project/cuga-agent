@@ -176,17 +176,30 @@ class TaskAgent:
         if self.output_mapping:
             import json as _json
 
-            # Try to parse the output as JSON so individual keys can be extracted
+            # Try to parse the output as JSON so individual keys can be extracted.
+            # Use JSONDecoder.raw_decode to handle preamble text before the JSON object.
             parsed_output = None
             try:
                 raw = content.strip()
-                if raw.startswith("```"):
-                    raw = raw.split("```")[1]
-                    if raw.startswith("json"):
-                        raw = raw[4:]
-                parsed_output = _json.loads(raw.strip())
+                # Strip markdown code fences if present
+                if "```" in raw:
+                    fence_start = raw.find("```")
+                    fence_end = raw.rfind("```")
+                    if fence_end > fence_start:
+                        inner = raw[fence_start + 3:fence_end].strip()
+                        if inner.startswith("json"):
+                            inner = inner[4:].strip()
+                        raw = inner
+                # Find the first JSON object anywhere in the content
+                brace_pos = raw.find("{")
+                if brace_pos != -1:
+                    parsed_output, _ = _json.JSONDecoder().raw_decode(raw, brace_pos)
+                else:
+                    parsed_output = _json.loads(raw)
             except (ValueError, TypeError):
                 pass
+
+            logger.info(f"Task '{self.task_id}' output_mapping — parsed_output: {parsed_output}")
 
             for output_key, process_var in self.output_mapping.items():
                 if isinstance(result, dict) and output_key in result:
@@ -197,7 +210,7 @@ class TaskAgent:
                     value = content
 
                 state.set_process_variable(process_var, value)
-                logger.debug(f"Mapped output '{output_key}' to process variable '{process_var}': {value}")
+                logger.info(f"  set_process_variable('{process_var}', {value!r})")
 
         return task_result
 

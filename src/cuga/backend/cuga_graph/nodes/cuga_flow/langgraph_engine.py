@@ -506,16 +506,17 @@ class LangGraphWorkflowEngine(WorkflowEngine):
         if len(flows) == 1:
             return flows[0].id
 
-        lines: List[str] = []
+        pv = state.process_variables if hasattr(state, "process_variables") else {}
+        logger.info(f"  Gateway {gateway_id} — process_variables: { {k: v for k, v in pv.items() if not k.startswith('_')} }")
         for flow in flows:
             condition = overlay.flow_conditions.get(flow.id) or flow.condition
             matched = bool(condition and eval_condition(condition, state))
             status = "✓ MATCHED" if matched else "✗"
-            lines.append(f"  {flow.id}: `{condition or '(no condition)'}` → {status}")
+            logger.info(f"  {flow.id}: `{condition or '(no condition)'}` → {status}")
             if matched:
                 return flow.id
 
-        logger.warning(f"  Gateway {gateway_id}: no condition matched, defaulting to first flow")
+        logger.warning(f"  Gateway {gateway_id}: no condition matched, defaulting to first flow ({flows[0].id})")
         return flows[0].id
 
     def _create_task_node(
