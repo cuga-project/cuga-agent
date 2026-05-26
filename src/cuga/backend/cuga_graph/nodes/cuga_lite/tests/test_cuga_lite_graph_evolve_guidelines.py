@@ -87,7 +87,7 @@ async def test_cuga_lite_evolve_guidelines_are_injected_independently_of_legacy_
 @pytest.mark.asyncio
 async def test_multi_user_params_flow_end_to_end():
     """Verify user_id, namespace_id, and session_id are passed to get_guidelines during graph execution.
-    
+
     This test verifies that multi-user parameters from state are correctly extracted
     and passed to EvolveIntegration.get_guidelines() during the graph execution flow.
     """
@@ -128,7 +128,7 @@ async def test_multi_user_params_flow_end_to_end():
 
     # Verify the graph completed successfully
     assert result["final_answer"] == "done"
-    
+
     # Verify get_guidelines was called with multi-user parameters
     mock_get_guidelines.assert_awaited_once_with(
         "fetch all users",
@@ -141,7 +141,7 @@ async def test_multi_user_params_flow_end_to_end():
 @pytest.mark.asyncio
 async def test_multi_user_params_flow_with_none_values():
     """Verify that None values for multi-user parameters are handled correctly in get_guidelines.
-    
+
     This test verifies that when state has no user_id, thread_id, or service_scope set,
     the get_guidelines call receives None values for all multi-user parameters.
     """
@@ -180,7 +180,7 @@ async def test_multi_user_params_flow_with_none_values():
 
     # Verify the graph completed successfully
     assert result["final_answer"] == "done"
-    
+
     # Verify get_guidelines was called with None values for all multi-user parameters
     mock_get_guidelines.assert_awaited_once_with(
         "test task",

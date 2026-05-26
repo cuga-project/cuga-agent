@@ -12,11 +12,11 @@ def test_local_state_user_id_is_set_from_authenticated_user():
         input="test query",
         url="https://example.com",
     )
-    
+
     # Simulate the user_id assignment from main.py
     user_id = "authenticated-user-123"
     local_state.user_id = user_id
-    
+
     assert local_state.user_id == "authenticated-user-123"
 
 
@@ -26,17 +26,17 @@ def test_local_state_service_scope_is_set_with_tenant_and_instance():
         input="test query",
         url="https://example.com",
     )
-    
+
     # Simulate the service_scope assignment from main.py
     with patch("cuga.config.get_tenant_id", return_value="tenant-456"):
         with patch("cuga.config.get_service_instance_id", return_value="instance-789"):
             from cuga.config import get_service_instance_id, get_tenant_id
-            
+
             local_state.service_scope = {
                 "tenant_id": get_tenant_id(),
                 "instance_id": get_service_instance_id(),
             }
-    
+
     assert local_state.service_scope["tenant_id"] == "tenant-456"
     assert local_state.service_scope["instance_id"] == "instance-789"
 
@@ -47,13 +47,13 @@ def test_local_state_user_id_and_service_scope_set_together():
         input="test query",
         url="https://example.com",
     )
-    
+
     user_id = "authenticated-user-123"
-    
+
     with patch("cuga.config.get_tenant_id", return_value="tenant-456"):
         with patch("cuga.config.get_service_instance_id", return_value="instance-789"):
             from cuga.config import get_service_instance_id, get_tenant_id
-            
+
             # Simulate the assignments from main.py (lines 1245-1247)
             local_state.user_id = user_id
             local_state.service_scope = {
@@ -61,7 +61,7 @@ def test_local_state_user_id_and_service_scope_set_together():
                 "instance_id": get_service_instance_id(),
             }
             local_state.user_id = user_id  # Duplicate assignment as in main.py
-    
+
     # Verify both are set correctly
     assert local_state.user_id == "authenticated-user-123"
     assert local_state.service_scope["tenant_id"] == "tenant-456"
@@ -74,13 +74,13 @@ def test_local_state_user_id_duplicate_assignment_does_not_cause_issues():
         input="test query",
         url="https://example.com",
     )
-    
+
     user_id = "authenticated-user-123"
-    
+
     # First assignment (line 1245)
     local_state.user_id = user_id
     assert local_state.user_id == "authenticated-user-123"
-    
+
     # Second assignment (line 1247) - should not cause any issues
     local_state.user_id = user_id
     assert local_state.user_id == "authenticated-user-123"
@@ -92,10 +92,10 @@ def test_local_state_handles_none_user_id():
         input="test query",
         url="https://example.com",
     )
-    
+
     user_id = None
     local_state.user_id = user_id
-    
+
     assert local_state.user_id is None
 
 
@@ -106,31 +106,32 @@ def test_local_state_multi_user_context_complete():
         url="https://example.com",
         thread_id="thread-999",
     )
-    
+
     user_id = "authenticated-user-123"
-    
+
     with patch("cuga.config.get_tenant_id", return_value="tenant-456"):
         with patch("cuga.config.get_service_instance_id", return_value="instance-789"):
             from cuga.config import get_service_instance_id, get_tenant_id
-            
+
             local_state.user_id = user_id
             local_state.service_scope = {
                 "tenant_id": get_tenant_id(),
                 "instance_id": get_service_instance_id(),
             }
-    
+
     # Verify all multi-user context fields are set for Evolve
     assert local_state.user_id == "authenticated-user-123"
     assert local_state.thread_id == "thread-999"
     assert local_state.service_scope["tenant_id"] == "tenant-456"
-    
+
     # These values would be passed to EvolveIntegration
     evolve_user_id = local_state.user_id or None
     evolve_namespace_id = (local_state.service_scope or {}).get("tenant_id") or None
     evolve_session_id = local_state.thread_id or None
-    
+
     assert evolve_user_id == "authenticated-user-123"
     assert evolve_namespace_id == "tenant-456"
     assert evolve_session_id == "thread-999"
+
 
 # Made with Bob

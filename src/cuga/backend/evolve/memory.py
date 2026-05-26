@@ -47,7 +47,7 @@ async def build_evolve_special_instructions_extension(
             _evolve_user_id = getattr(state, 'user_id', None)
             _evolve_namespace_id = (getattr(state, 'service_scope', {}) or {}).get('tenant_id') or None
             _evolve_session_id = getattr(state, 'thread_id', None)
-            
+
             evolve_guidelines = await asyncio.wait_for(
                 EvolveIntegration.get_guidelines(
                     task_description,

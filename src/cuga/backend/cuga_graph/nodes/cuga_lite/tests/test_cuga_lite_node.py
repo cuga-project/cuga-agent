@@ -109,14 +109,14 @@ async def test_callback_node_passes_multi_user_params_to_save_trajectory():
 
     assert result.goto == "FinalAnswerAgent"
     mock_save_trajectory.assert_awaited_once()
-    
+
     # Verify positional arguments
     call_args = mock_save_trajectory.await_args
     saved_messages, task_id, success = call_args.args
     assert [message.content for message in saved_messages] == ["hello"]
     assert task_id == "task_1"
     assert success is True
-    
+
     # Verify keyword arguments for multi-user parameters
     kwargs = call_args.kwargs
     assert kwargs["user_id"] == "user-123"
@@ -153,7 +153,7 @@ async def test_callback_node_handles_missing_multi_user_params():
 
     assert result.goto == "FinalAnswerAgent"
     mock_save_trajectory.assert_awaited_once()
-    
+
     # Verify keyword arguments - user_id defaults to "default" in AgentState
     kwargs = mock_save_trajectory.await_args.kwargs
     assert kwargs["user_id"] == "default"  # AgentState default value
