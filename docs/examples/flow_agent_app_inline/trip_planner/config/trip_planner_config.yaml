@@ -20,7 +20,12 @@ tasks:
     mode: tool   # "Request travel destination" — pass-through; destination comes from process variables
 
   - id: "Activity_1dlyezk"
-    mode: tool   # "Choose type of planner" — pass-through; planning_preference already set
+    mode: task_agent
+    agent:
+      name: "choose_type_of_planner_agent"
+      system_instruction: "Determines the user's planning preference (human or agent) from their message and sets planning_preference and destination in process variables"
+      tools: []
+      policy: "../policies/task-choose_type_of_planner.md"
 
   - id: "Activity_199zx27"
     mode: tool   # "Plan trip by human" — pass-through; human-authored plan is in process variables

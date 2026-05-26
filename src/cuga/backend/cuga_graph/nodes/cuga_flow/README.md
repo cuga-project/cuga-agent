@@ -255,7 +255,7 @@ Three inline demo processes are included under `docs/examples/flow_agent_app_inl
 |---|---|---|
 | `loan_approval` | Multi-step loan processing with credit check, compliance, and approval gateways | Exclusive gateway with agentic routing decision, followed by a policy-governed hook on the outgoing flow |
 | `receive_order` | Order intake flow with inventory check and fulfilment routing | Parallel gateway splitting execution across concurrent branches, followed by a hook that intercepts the merge transition |
-| `trip_planner` | Travel planning flow with itinerary assembly and booking steps | Single TaskAgent fulfilling the full process — no agentic gateway routing and no hooks; illustrates the minimal configuration |
+| `trip_planner` | Travel planning flow with itinerary assembly and booking steps | Two TaskAgents: one extracts the planning preference from natural language input, one plans the itinerary; no hooks |
 
 Start any demo with:
 
