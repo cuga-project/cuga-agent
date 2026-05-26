@@ -82,15 +82,11 @@ TaskAgent(
 
 ### DecisionAgent
 
-A per-gateway routing agent that binds a `CugaAgent` to a specific gateway, giving it a routing policy and the responsibility to select the correct outgoing branch. Implemented as a two-node internal LangGraph:
-
-**Node 1 — `eval_condition`** (deterministic, no LLM)
-Substitutes `${variable}` tokens from process variables into the gateway condition expression and evaluates it safely without `eval()`. Produces `TRUE`, `FALSE`, or `UNKNOWN`.
-
-**Node 2 — `decide`** (CugaAgent)
-Reads the condition result, the full process state, and the gateway's markdown policy, then selects exactly one flow ID — the branch to activate — in adherence to that policy.
+A per-gateway routing agent that binds a `CugaAgent` to a specific gateway, giving it a routing policy and the responsibility to select the correct outgoing branch. Routing proceeds in two steps: first, the gateway condition expression is evaluated deterministically by substituting `${variable}` tokens from process variables and applying a binary comparison — without `eval()`. If the result is conclusive, the flow is selected directly. If it is ambiguous or policy reasoning is required, the `CugaAgent` reads the condition result, the full process state, and the gateway's markdown policy, then selects exactly one flow ID in adherence to that policy.
 
 Gateways with a single outgoing flow, or configured as `mode: tool`, are routed inline by `FlowAgent` using condition evaluation directly — no `DecisionAgent` is instantiated for them.
+
+> **LangGraph note:** In the included LangGraph engine, the two-step routing is implemented as a two-node internal graph: `eval_condition` (deterministic) followed by `decide` (CugaAgent).
 
 ```yaml
 gateways:
@@ -126,14 +122,16 @@ The `HookResult.action` determines what happens next:
 |---|---|
 | `CONTINUE` | Proceed to the target node normally |
 | `SKIP_NODE` | Skip the immediate next node |
-| `SKIP_TO` | Jump directly to a named node via `Command(goto=)` |
+| `SKIP_TO` | Jump directly to a named node, bypassing all intermediate nodes |
 | `SWAP_NODES` | Swap two nodes: redirect to `node_b` when `node_a` was next, or `node_a` when `node_b` was next |
 | `REQUEST_USER_INPUT` | Soft-halt and surface a question to the user |
 | `TERMINATE` | Hard-halt the process immediately |
-| `REMOVE_NODE` | Remove a node from the process graph at runtime: the engine rewires its predecessor and successor flows to bypass it, recompiles the graph, and resumes |
-| `ADD_NODE` | Insert a new task node into the process graph at runtime: the engine adds the node before the current target, wires flows through it, registers an MCP-backed task handler for it, recompiles, and resumes |
+| `REMOVE_NODE` | Remove a node from the process topology at runtime: the engine rewires its predecessor and successor flows to bypass it and resumes at the correct point |
+| `ADD_NODE` | Insert a new task node into the process topology at runtime: the engine wires flows through the new node before the current target and resumes at the inserted node |
 
-`REMOVE_NODE` and `ADD_NODE` trigger a **graph rebuild** and may only target nodes that have not yet executed. The hook routes to END; the engine modifies the live `BPMNProcess` model, recompiles the LangGraph, and resumes directly at the correct entry point — `new_node_id` for ADD_NODE, or the successor of the removed node for REMOVE_NODE — via a conditional START edge. No previously-executed nodes are replayed.
+`REMOVE_NODE` and `ADD_NODE` trigger a **topology modification** and may only target nodes that have not yet executed. The engine is responsible for applying the structural change and resuming execution at the correct point without replaying already-executed nodes.
+
+> **LangGraph note:** In the included LangGraph engine, `REMOVE_NODE` and `ADD_NODE` trigger a full graph recompile. The hook routes to `END`; the engine modifies the live `BPMNProcess` model, recompiles the graph, and resumes directly at the correct entry point — `new_node_id` for ADD_NODE, or the successor of the removed node for REMOVE_NODE — via a conditional `START` edge.
 
 Hook reasoning is performed by the **FlowAgent** itself — not a separate agent — because hooks are a process-level concern. The FlowAgent holds the full process state and BPMN structure, and reasons against the hook's policy to decide what flow adaptation (if any) is warranted. Hooks are the only points in the process where the FlowAgent is permitted to deviate from the nominal BPMN path, and every such deviation is policy-governed and recorded in the audit log.
 
@@ -175,7 +173,9 @@ bridge.register_engine(engine, registry)
 client = bridge.get_client()
 ```
 
-The in-process transport (`FastMCPTransport`) is used by the demo LangGraph engine. A remote transport (HTTP/SSE) can be substituted without changing any FlowAgent or engine logic — enabling cross-process or cross-host deployment.
+A remote transport (HTTP/SSE) can be substituted without changing any FlowAgent or engine logic — enabling cross-process or cross-host deployment.
+
+> **LangGraph note:** The included LangGraph engine uses an in-process `FastMCPTransport` for the MCP connection.
 
 ---
 
@@ -193,14 +193,9 @@ async def _run_via_mcp(
     ...
 ```
 
-**LangGraphWorkflowEngine** (`langgraph_engine.py`) is the concrete demo engine included with CUGA FLO. It:
+A demo engine is included with CUGA FLO. At each control point it calls the corresponding FlowAgent MCP tool with a `ControlPointContext`. Enterprise-grade workflow engines (with their own persistence, audit trails, and compliance guarantees) connect to the same `WorkflowEngine` interface and MCP bridge in production — no changes to the FlowAgent harness are required.
 
-1. Fetches static process config from the FlowAgent via the `get_static_config` MCP tool
-2. Builds a `_ControlOverlay` — a set of MCP-backed handlers for tasks, gateways, and hooks
-3. Compiles the BPMN topology into a LangGraph using `_build_graph` and `_add_edges_with_hooks`
-4. At each control point (task node, gateway node, hook node), calls the corresponding FlowAgent MCP tool with a `ControlPointContext`
-
-The LangGraph engine is the **current/demo backend**. Enterprise-grade workflow engines (with their own persistence, audit trails, and compliance guarantees) connect to the same `WorkflowEngine` interface and MCP bridge in production — no changes to the FlowAgent harness are required.
+> **LangGraph note:** The included demo engine is `LangGraphWorkflowEngine` (`langgraph_engine.py`). It fetches static process config from the FlowAgent via `get_static_config`, builds a `_ControlOverlay` of MCP-backed handlers, and compiles the BPMN topology into a `StateGraph` using `_build_graph` and `_add_edges_with_hooks`.
 
 ---
 
@@ -244,7 +239,7 @@ A module-level utility (`eval_condition`) that evaluates BPMN condition expressi
 2. Parses the resulting expression into a binary comparison
 3. Applies the operator safely using Python's `operator` module
 
-Used by `DecisionAgent` (Node 1) and by `FlowAgent` directly for tool-mode gateways.
+Used by `DecisionAgent` and by `FlowAgent` directly for tool-mode gateways.
 
 ---
 
