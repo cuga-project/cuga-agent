@@ -145,10 +145,9 @@ class Hook:
 
     id: str
     hook_type: HookType
-    location: str  # edge_id, node_id, or gateway_id
+    location: str  # edge_id — exactly one hook per edge
     handler: Callable[[FlowState], HookResult]
     condition: Optional[Callable[[FlowState], bool]] = None
-    priority: int = 0
     enabled: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)
     # Optional markdown policy. When set the FlowAgent's hook node calls an LLM
@@ -170,50 +169,31 @@ class HookManager:
 
     def __init__(self):
         self.hooks: Dict[str, Hook] = {}
-        self.hooks_by_location: Dict[str, List[Hook]] = {}
+        self.hooks_by_location: Dict[str, Hook] = {}
         self.hooks_by_type: Dict[HookType, List[Hook]] = {hook_type: [] for hook_type in HookType}
 
     def register_hook(self, hook: Hook) -> None:
-        """
-        Register a hook for execution.
-
-        Args:
-            hook: Hook to register
-        """
+        """Register a hook for execution. Each edge may have at most one hook."""
+        if hook.location in self.hooks_by_location:
+            existing = self.hooks_by_location[hook.location]
+            raise ValueError(
+                f"Edge '{hook.location}' already has hook '{existing.id}'. "
+                f"Only one hook is permitted per edge."
+            )
         logger.info(f"Registering hook: {hook.id} at {hook.location} ({hook.hook_type.value})")
-
-        # Store by ID
         self.hooks[hook.id] = hook
-
-        # Index by location
-        if hook.location not in self.hooks_by_location:
-            self.hooks_by_location[hook.location] = []
-        self.hooks_by_location[hook.location].append(hook)
-
-        # Index by type
+        self.hooks_by_location[hook.location] = hook
         self.hooks_by_type[hook.hook_type].append(hook)
 
-        # Sort by priority (descending)
-        self.hooks_by_location[hook.location].sort(key=lambda h: h.priority, reverse=True)
-        self.hooks_by_type[hook.hook_type].sort(key=lambda h: h.priority, reverse=True)
-
     def unregister_hook(self, hook_id: str) -> None:
-        """
-        Unregister a hook.
-
-        Args:
-            hook_id: ID of hook to remove
-        """
+        """Unregister a hook."""
         if hook_id not in self.hooks:
             logger.warning(f"Hook not found: {hook_id}")
             return
-
         hook = self.hooks[hook_id]
         logger.info(f"Unregistering hook: {hook_id}")
-
-        # Remove from all indexes
         del self.hooks[hook_id]
-        self.hooks_by_location[hook.location].remove(hook)
+        del self.hooks_by_location[hook.location]
         self.hooks_by_type[hook.hook_type].remove(hook)
 
     def enable_hook(self, hook_id: str) -> None:
@@ -228,9 +208,9 @@ class HookManager:
             self.hooks[hook_id].enabled = False
             logger.info(f"Disabled hook: {hook_id}")
 
-    def get_hooks_at_location(self, location: str) -> List[Hook]:
-        """Get all hooks at a specific location."""
-        return self.hooks_by_location.get(location, [])
+    def get_hook_at_location(self, location: str) -> Optional[Hook]:
+        """Return the hook on the given edge, or None if no hook is registered there."""
+        return self.hooks_by_location.get(location)
 
     def get_hooks_by_type(self, hook_type: HookType) -> List[Hook]:
         """Get all hooks of a specific type."""
@@ -243,18 +223,16 @@ def create_simple_hook(
     hook_type: HookType,
     handler: Callable[[FlowState], HookResult],
     condition: Optional[Callable[[FlowState], bool]] = None,
-    priority: int = 0,
 ) -> Hook:
     """
-    Convenience function to create a simple hook.
+    Convenience function to create a hook on a BPMN sequence flow edge.
 
     Args:
         hook_id: Unique identifier
-        location: Where to attach the hook
+        location: Edge ID to attach the hook to (one hook per edge)
         hook_type: Type of hook
         handler: Function to evaluate the hook
         condition: Optional activation condition
-        priority: Execution priority
 
     Returns:
         Configured Hook instance
@@ -265,7 +243,6 @@ def create_simple_hook(
         location=location,
         handler=handler,
         condition=condition,
-        priority=priority,
     )
 
 

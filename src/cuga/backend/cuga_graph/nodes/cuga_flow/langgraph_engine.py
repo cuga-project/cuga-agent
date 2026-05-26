@@ -318,8 +318,8 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             _hm = _HM()
             for h in overlay.hooks:
                 _hm.register_hook(h)
-            start_hooks = _hm.get_hooks_at_location(start_flows[0].id)
-            natural_entry = f"hook_{start_flows[0].id}" if start_hooks else first_target
+            start_hook = _hm.get_hook_at_location(start_flows[0].id)
+            natural_entry = f"hook_{start_flows[0].id}" if start_hook else first_target
         else:
             natural_entry = next(iter(graph_node_ids), None)
 
@@ -355,12 +355,12 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                 if element and element.element_type == "parallelGateway":
                     for flow in outgoing_flows:
                         lg_target = END if flow.target_ref in process.end_events else flow.target_ref
-                        hooks_for_flow = hook_manager.get_hooks_at_location(flow.id)
-                        if hooks_for_flow:
+                        hook_for_flow = hook_manager.get_hook_at_location(flow.id)
+                        if hook_for_flow:
                             hook_node_id = f"hook_{flow.id}"
                             graph.add_node(
                                 hook_node_id,
-                                self._create_hook_node(flow.id, hooks_for_flow, lg_target, process, overlay),
+                                self._create_hook_node(flow.id, hook_for_flow, lg_target, process, overlay),
                             )
                             graph.add_edge(lg_source, hook_node_id)
                             logger.debug(
@@ -374,12 +374,12 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                     flow_to_target: Dict[str, str] = {}
                     for flow in outgoing_flows:
                         lg_target = END if flow.target_ref in process.end_events else flow.target_ref
-                        hooks_for_flow = hook_manager.get_hooks_at_location(flow.id)
-                        if hooks_for_flow:
+                        hook_for_flow = hook_manager.get_hook_at_location(flow.id)
+                        if hook_for_flow:
                             hook_node_id = f"hook_{flow.id}"
                             graph.add_node(
                                 hook_node_id,
-                                self._create_hook_node(flow.id, hooks_for_flow, lg_target, process, overlay),
+                                self._create_hook_node(flow.id, hook_for_flow, lg_target, process, overlay),
                             )
                             flow_to_target[flow.id] = hook_node_id
                         else:
@@ -396,12 +396,12 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             else:
                 flow = outgoing_flows[0]
                 lg_target = END if flow.target_ref in process.end_events else flow.target_ref
-                hooks_for_edge = hook_manager.get_hooks_at_location(flow.id)
-                if hooks_for_edge:
+                hook_for_edge = hook_manager.get_hook_at_location(flow.id)
+                if hook_for_edge:
                     hook_node_id = f"hook_{flow.id}"
                     graph.add_node(
                         hook_node_id,
-                        self._create_hook_node(flow.id, hooks_for_edge, lg_target, process, overlay),
+                        self._create_hook_node(flow.id, hook_for_edge, lg_target, process, overlay),
                     )
                     graph.add_edge(lg_source, hook_node_id)
                     logger.debug(f"  Hook node {hook_node_id}: {lg_source}→{hook_node_id}→(cmd){lg_target}")
@@ -613,7 +613,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
     def _create_hook_node(
         self,
         edge_id: str,
-        hooks: List[Hook],
+        hook: Hook,
         normal_target: str,
         process: BPMNProcess,
         overlay: _ControlOverlay,
@@ -634,14 +634,13 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                 edge_id=edge_id,
             )
 
-            for hook in hooks:
-                # Condition check deferred to FlowAgent when using MCP evaluator;
-                # for direct/test overlays with a real condition callable, check here.
-                if hook.condition and not hook.condition(state):
-                    logger.debug(f"  Hook {hook.id} condition not met, skipping")
-                    continue
+            # Condition check deferred to FlowAgent when using MCP evaluator;
+            # for direct/test overlays with a real condition callable, check here.
+            if hook.condition and not hook.condition(state):
+                logger.debug(f"  Hook {hook.id} condition not met, skipping")
+                return Command(update=state.model_dump(), goto=normal_target)
 
-                try:
+            try:
                     if overlay.hook_evaluator:
                         result = await overlay.hook_evaluator(hook, ctx)
                     elif hook.handler:

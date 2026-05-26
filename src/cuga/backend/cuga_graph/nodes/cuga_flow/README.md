@@ -115,11 +115,10 @@ Each hook carries:
 
 | Field | Purpose |
 |---|---|
-| `location` | BPMN flow ID to intercept |
+| `location` | BPMN flow ID to intercept — exactly one hook per edge |
 | `hook_type` | `PRE_EDGE`, `POST_NODE`, `PRE_GATEWAY`, `POST_GATEWAY` |
 | `condition` | Optional guard — hook is skipped if it returns false |
 | `policy` | Markdown policy; when present, FlowAgent reasons with its LLM against it |
-| `priority` | Execution order when multiple hooks share an edge |
 
 The `HookResult.action` determines what happens next:
 
