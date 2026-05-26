@@ -438,19 +438,23 @@ Figure~\ref{fig:architecture} shows the component architecture.
 
 % ── Reasoning side: FlowAgent box (left) ───────────────────
 \coordinate (fa@bl) at (-1.0,1.65);
-\coordinate (fa@tr) at (5.5,5.55);
+\coordinate (fa@tr) at (5.5,6.10);
 \begin{scope}[on background layer]
   \node[frame, fit=(fa@bl)(fa@tr), inner sep=2pt] (fabox) {};
 \end{scope}
 \node[font=\footnotesize\bfseries\color{teal!60!black}] at (3.75,4.28)
       {FlowAgent};
 
-% DecisionAgent outer box with nested CugaAgent
-\node[agent, minimum height=1.7cm] (da) at (0.6, 4.6) {};
-\node[font=\small, align=center] at (0.6, 5.02) {\texttt{Decision}\\[-2pt]\texttt{Agent}};
+% DecisionAgent outer box with condition eval circle and nested CugaAgent
+\node[agent, minimum height=2.2cm] (da) at (0.6, 4.85) {};
+\node[font=\small, align=center] at (0.6, 5.72) {\texttt{Decision}\\[-2pt]\texttt{Agent}};
+\node[circle, draw=purple!40, fill=purple!4, minimum size=0.8cm,
+      font=\tiny, align=center, inner sep=1pt] (ceval) at (0.6, 5.15)
+      {cond.\\[-1pt]eval};
 \node[draw=blue!50, fill=blue!6, rounded corners=2pt,
       minimum width=2.1cm, minimum height=0.4cm, font=\tiny, align=center]
-      at (0.6, 4.18) {\texttt{CugaAgent}};
+      (da@ca) at (0.6, 4.10) {\texttt{CugaAgent}};
+\draw[-{Stealth[length=4pt]}, thin, black!55] (ceval) -- (da@ca);
 
 % TaskAgents outer box with nested CugaAgent
 \node[task, minimum height=1.7cm] (ta) at (0.6, 2.7) {};
