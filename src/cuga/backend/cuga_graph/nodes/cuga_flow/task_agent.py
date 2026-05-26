@@ -174,12 +174,26 @@ class TaskAgent:
 
         # Apply output mapping to process variables
         if self.output_mapping:
+            import json as _json
+
+            # Try to parse the output as JSON so individual keys can be extracted
+            parsed_output = None
+            try:
+                raw = content.strip()
+                if raw.startswith("```"):
+                    raw = raw.split("```")[1]
+                    if raw.startswith("json"):
+                        raw = raw[4:]
+                parsed_output = _json.loads(raw.strip())
+            except (ValueError, TypeError):
+                pass
+
             for output_key, process_var in self.output_mapping.items():
-                # Try to extract structured data from result
                 if isinstance(result, dict) and output_key in result:
                     value = result[output_key]
+                elif isinstance(parsed_output, dict) and output_key in parsed_output:
+                    value = parsed_output[output_key]
                 else:
-                    # For simple string results, store the whole output
                     value = content
 
                 state.set_process_variable(process_var, value)
