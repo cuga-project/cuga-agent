@@ -35,7 +35,7 @@ sequenceDiagram
         Bridge->>Eng: run_process tool handler
         Eng->>Bridge: call_tool("get_static_config", {})
         Bridge->>FA: _get_static_config()
-        FA-->>Bridge: {task_instructions, hooks, flow_conditions, tool_tasks, action_permissions}
+        FA-->>Bridge: {agentic_task_ids, decision_gateway_ids, task_instructions, hooks,<br/>flow_conditions, tool_tasks, action_permissions}
         Bridge-->>Eng: static config dict
         Note right of Eng: Builds _ControlOverlay with<br/>MCP-backed handlers for each<br/>task / gateway / hook
         Eng->>FS: FlowState(process_id, process_variables)
@@ -49,8 +49,10 @@ sequenceDiagram
         Eng->>Bridge: call_tool("execute_task", {task_id, ctx.to_dict()})
         Bridge->>FA: _handle_task(task_id, ctx)
         Note right of FA: WHO: self.task_agents[task_id]<br/>HOW: self.task_policies[task_id]<br/>WHAT: ctx.task_instruction (engine disclosed)
+        FA->>FA: _build_task_input(task_id, ctx)
+        Note right of FA: combines task_instruction + policy +<br/>user_msg + process_variables + task_results
         FA->>TA: execute(ctx.current_state, task_input)
-        TA-->>FA: result string
+        TA-->>FA: task result dict
         FA-->>Bridge: partial dict {execution_path, task_results, process_variables}
         Bridge-->>Eng: result dict
         Eng->>FS: merge partial dict via reducers
@@ -72,7 +74,7 @@ sequenceDiagram
 
     rect rgb(245, 230, 255)
         Note over Eng,FA: ENGINE EXECUTION — Hook Node (PRE_EDGE)
-        Eng->>Eng: _create_hook_node(edge_id, hooks)
+        Eng->>Eng: _create_hook_node(edge_id, hook, normal_target, process, overlay)
         Note right of Eng: Builds ControlPointContext:<br/>edge_id — intercepted flow ID<br/>current_state — engine-held FS<br/>execution_history — engine-held path<br/>(no task_instruction)
         Eng->>Bridge: call_tool("evaluate_hook", {hook_id, ctx.to_dict()})
         Bridge->>FA: _handle_hook(hook, ctx)
@@ -88,7 +90,9 @@ sequenceDiagram
         Bridge-->>FA: result.data (FlowState dict)
         FA->>FS: FlowState.model_validate(result.data)
         Note right of FA: FA does NOT store FlowState<br/>Ready for next invoke() call
-        FA->>FS: mark_complete()
+        alt not is_halted
+            FA->>FS: mark_complete()
+        end
         FA->>FA: _build_completion_message(final_state, bpmn_process)
         FA->>FS: messages.append(summary)
         FA-->>App: FlowState

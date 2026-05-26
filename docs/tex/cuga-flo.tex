@@ -705,6 +705,7 @@ The defining architectural choice of CUGA FLO is that the reasoning layer (the
 FlowAgent and its sub-agents) and the execution layer (the workflow engine) are
 fully decoupled and communicate only through a Model Context Protocol bridge. This
 makes the execution backend replaceable without any change to the reasoning layer.
+The runtime interaction sequence is shown in Figure~\ref{fig:sequence}.
 
 \paragraph{MCPFlowBridge.}
 The \texttt{MCPFlowBridge} is a FastMCP server that acts as the integration contract
@@ -737,6 +738,106 @@ process keys to a parsed \texttt{BPMNProcess} paired with its \texttt{FlowConfig
 caching parsed results for reuse across invocations. It auto-discovers process
 definitions from a directory, allowing a single deployment to serve many distinct
 processes through one bridge.
+
+Figure~\ref{fig:sequence} shows the runtime interaction sequence.
+
+\begin{figure}[H]
+\centering
+\begin{tikzpicture}[
+  seqact/.style={rectangle, rounded corners=2pt, draw=black!50,
+                 minimum width=2.3cm, minimum height=0.5cm,
+                 text centered, font=\footnotesize\bfseries, fill=white},
+  msg/.style={-{Stealth[length=3.5pt]}, semithick, black!70},
+  ret/.style={-{Stealth[length=3.5pt]}, semithick, black!40, densely dashed},
+]
+
+%% Lifeline x-positions
+\def\xA{0}     % App
+\def\xF{3.5}   % FlowAgent
+\def\xB{8.2}   % MCPFlowBridge
+\def\xE{12.8}  % WorkflowEngine
+
+%% Phase background boxes (drawn first so they sit behind everything)
+\begin{scope}[on background layer]
+  \draw[rounded corners=2pt, draw=black!18, fill=gray!4]
+       (\xF-0.3,-2.8) rectangle (\xE+0.4,-5.6);
+  \draw[rounded corners=2pt, draw=black!18, fill=gray!4]
+       (\xF-0.3,-6.0) rectangle (\xE+0.4,-9.5);
+\end{scope}
+
+%% Phase labels
+\node[font=\tiny\bfseries\color{black!45}, anchor=north west]
+     at (\xF-0.25,-2.85) {build — fetch config \& compile \texttt{StateGraph}};
+\node[font=\tiny\bfseries\color{black!45}, anchor=north west]
+     at (\xF-0.25,-6.05) {execute — per control point (loop)};
+
+%% Lifelines
+\draw[black!18, densely dashed, thin] (\xA,-0.27) -- (\xA,-11.2);
+\draw[black!18, densely dashed, thin] (\xF,-0.27) -- (\xF,-11.2);
+\draw[black!18, densely dashed, thin] (\xB,-0.27) -- (\xB,-11.2);
+\draw[black!18, densely dashed, thin] (\xE,-0.27) -- (\xE,-11.2);
+
+%% Participant headers
+\node[seqact, draw=black!35,   fill=gray!6]    at (\xA,0) {App};
+\node[seqact, draw=purple!55,  fill=purple!5]  at (\xF,0) {FlowAgent};
+\node[seqact, draw=orange!60,  fill=orange!8,  text width=2.3cm]
+     at (\xB,0) {\texttt{MCPFlow-}\\\texttt{Bridge}};
+\node[seqact, draw=blue!50,    fill=blue!6]    at (\xE,0) {WorkflowEngine};
+
+%% ── (1) App invokes FlowAgent ───────────────────────────────────────────
+\draw[msg] (\xA,-1.0) -- (\xF,-1.0)
+     node[midway,above,font=\tiny]{\texttt{invoke(user\_msg)}};
+
+%% ── (2) FlowAgent calls run_process via bridge ─────────────────────────
+\draw[msg] (\xF,-1.7) -- (\xB,-1.7)
+     node[midway,above,font=\tiny]{\texttt{call\_tool("run\_process", process\_key)}};
+\draw[msg] (\xB,-2.3) -- (\xE,-2.3)
+     node[midway,above,font=\tiny]{\texttt{run\_process} handler};
+
+%% ── BUILD phase ─────────────────────────────────────────────────────────
+%% Engine fetches static config from FlowAgent via bridge
+\draw[msg] (\xE,-3.3) -- (\xB,-3.3)
+     node[midway,above,font=\tiny]{\texttt{call\_tool("get\_static\_config")}};
+\draw[msg] (\xB,-4.0) -- (\xF,-4.0)
+     node[midway,above,font=\tiny]{\texttt{\_get\_static\_config()}};
+\draw[ret] (\xF,-4.7) -- (\xB,-4.7)
+     node[midway,above,font=\tiny]{task/gateway ids, hooks, flow conditions, action\_permissions};
+\draw[ret] (\xB,-5.2) -- (\xE,-5.2)
+     node[midway,above,font=\tiny]{static config $\rightarrow$ compile \texttt{StateGraph}};
+
+%% ── EXECUTE phase ───────────────────────────────────────────────────────
+%% Engine calls FlowAgent reasoning tools at each BPMN control point
+\draw[msg] (\xE,-6.7) -- (\xB,-6.7)
+     node[midway,above,font=\tiny]{\texttt{execute\_task} $|$ \texttt{route\_gateway} $|$ \texttt{evaluate\_hook}
+     (\texttt{ControlPointContext})};
+\draw[msg] (\xB,-7.5) -- (\xF,-7.5)
+     node[midway,above,font=\tiny]{dispatch to TaskAgent / DecisionAgent / hook policy};
+\draw[ret] (\xF,-8.2) -- (\xB,-8.2)
+     node[midway,above,font=\tiny]{partial state update / \texttt{flow\_id} / \texttt{HookResult}};
+\draw[ret] (\xB,-9.0) -- (\xE,-9.0)
+     node[midway,above,font=\tiny]{merge into \texttt{FlowState} via reducers};
+
+%% ── COMPLETE ────────────────────────────────────────────────────────────
+\draw[ret] (\xE,-9.9) -- (\xB,-9.9)
+     node[midway,above,font=\tiny]{\texttt{FlowState.model\_dump()} (terminal state)};
+\draw[ret] (\xB,-10.5) -- (\xF,-10.5)
+     node[midway,above,font=\tiny]{\texttt{result.data} (FlowState dict)};
+\draw[ret] (\xF,-11.1) -- (\xA,-11.1)
+     node[midway,above,font=\tiny]{\texttt{FlowState}};
+
+\end{tikzpicture}
+\caption{CUGA FLO runtime interaction sequence. Solid arrows are calls; dashed
+arrows are returns. \texttt{MCPFlowBridge} is the sole channel between the reasoning
+layer (\texttt{FlowAgent}) and the execution layer (\texttt{WorkflowEngine}).
+The \emph{build} phase (once per invocation) fetches static config so the engine can
+compile its LangGraph \texttt{StateGraph}. The \emph{execute} phase issues one
+round-trip per BPMN control point---task nodes, gateways, and hook intercept
+edges---passing a \texttt{ControlPointContext} and receiving structured results that
+the engine merges into \texttt{FlowState}. No direct reference between
+\texttt{FlowAgent} and \texttt{WorkflowEngine} exists; either side can be replaced by
+swapping the transport or the engine implementation.}
+\label{fig:sequence}
+\end{figure}
 
 % =============================================================================
 \section{Comparison with Related Paradigms}
