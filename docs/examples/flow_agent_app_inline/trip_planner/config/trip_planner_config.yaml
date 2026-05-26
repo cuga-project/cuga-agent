@@ -26,6 +26,9 @@ tasks:
       system_instruction: "Determines the user's planning preference (human or agent) from their message and sets planning_preference and destination in process variables"
       tools: []
       policy: "../policies/task-choose_type_of_planner.md"
+    output_mapping:
+      planning_preference: "planning_preference"
+      destination: "destination"
 
   - id: "Activity_199zx27"
     mode: tool   # "Plan trip by human" — pass-through; human-authored plan is in process variables

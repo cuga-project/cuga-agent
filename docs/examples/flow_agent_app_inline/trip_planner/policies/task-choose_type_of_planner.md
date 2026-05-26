@@ -1,9 +1,10 @@
-Read the user's message and determine their planning preference.
+Read the user's message and determine their planning preference and destination.
 
-Set `planning_preference` to exactly one of:
-- `"human"` — if the user indicates they want a human to handle the planning (e.g. "by human", "human handling", "I'll plan it myself", "manual")
-- `"agent"` — if the user wants automated or AI-based planning, or if no clear preference is expressed
+Set the following output variables:
+- `planning_preference`: exactly `"human"` if the user wants a human to handle the planning (e.g. "by human", "human handling", "I'll plan it myself", "manual"), or `"agent"` if they want automated/AI planning or no preference is expressed.
+- `destination`: the travel destination extracted from the message, or an empty string if not mentioned.
 
-Also extract the travel destination from the message if present and set `destination` accordingly.
-
-Respond only by updating the process variables. Do not produce a narrative response.
+Return a JSON object with exactly these two keys:
+```json
+{"planning_preference": "human", "destination": "Tokyo"}
+```
