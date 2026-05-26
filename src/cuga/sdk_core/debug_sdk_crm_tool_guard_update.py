@@ -44,6 +44,12 @@ from cuga.backend.server.demo_manage_setup import setup_demo_manage_config
 _processes: dict[str, subprocess.Popen] = {}
 
 
+# ── Configuration ─────────────────────────────────────────────────────────────
+# If False, only adds policies using add_tool_guide without generating examples and code
+# If True, generates examples and code, then updates the tool guard
+USE_TOOLGUARD = True
+
+
 # ── Tool Guard Configurations ─────────────────────────────────────────────────
 FINANCE_GUARD_CONFIG = {
     "name": "Finance eligibility revenue requirements",
@@ -299,7 +305,7 @@ async def main() -> None:
         print("   ✓ Shared policy storage with tool provider for guard enforcement")
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PHASE 1: Create Finance industry tool guard with examples and code
+    # PHASE 1: Create Finance industry tool guard
     # ══════════════════════════════════════════════════════════════════════════
     
     print("\n" + "="*80)
@@ -316,59 +322,68 @@ async def main() -> None:
     )
     print(f"   ✓ Tool guard created: {FINANCE_GUARD_CONFIG['name']} (ID: {policy_id})")
     
-    # Generate examples for the tool guard
-    print("\n🔧 Generating tool guard examples…")
     target_tool = "crm_create_account_accounts_post"
-    violating_examples, compliance_examples = await agent.policies.generate_tool_guard_examples(
-        policy_id=policy_id,
-        target_tool=target_tool
-    )
-    print(f"   ✓ Generated {len(violating_examples)} violating examples")
-    print(f"   ✓ Generated {len(compliance_examples)} compliance examples")
-    if violating_examples:
-        print("\n   Violating example:")
-        print(f"   - {violating_examples[0][:80]}...")
-    if compliance_examples:
-        print("\n   Compliance example:")
-        print(f"   - {compliance_examples[0][:80]}...")
     
-    # Update policy with generated examples
-    print("\n📝 Updating policy with generated examples…")
-    await agent.policies.update_tool_guard(
-        policy_id=policy_id,
-        tool_guards={
-            target_tool: {
-                "violating_examples": violating_examples,
-                "compliance_examples": compliance_examples
+    # Initialize variables for later use
+    violating_examples = []
+    compliance_examples = []
+    guard_code = ""
+    
+    if USE_TOOLGUARD:
+        # Generate examples for the tool guard
+        print("\n🔧 Generating tool guard examples…")
+        violating_examples, compliance_examples = await agent.policies.generate_tool_guard_examples(
+            policy_id=policy_id,
+            target_tool=target_tool
+        )
+        print(f"   ✓ Generated {len(violating_examples)} violating examples")
+        print(f"   ✓ Generated {len(compliance_examples)} compliance examples")
+        if violating_examples:
+            print("\n   Violating example:")
+            print(f"   - {violating_examples[0][:80]}...")
+        if compliance_examples:
+            print("\n   Compliance example:")
+            print(f"   - {compliance_examples[0][:80]}...")
+        
+        # Update policy with generated examples
+        print("\n📝 Updating policy with generated examples…")
+        await agent.policies.update_tool_guard(
+            policy_id=policy_id,
+            tool_guards={
+                target_tool: {
+                    "violating_examples": violating_examples,
+                    "compliance_examples": compliance_examples
+                }
             }
-        }
-    )
-    print(f"   ✓ Policy updated with examples")
-    
-    # Generate code for the tool guard
-    print("\n💻 Generating tool guard code…")
-    guard_code = await agent.policies.generate_tool_guard_code(
-        policy_id=policy_id,
-        target_tool=target_tool
-    )
-    print(f"   ✓ Generated code for tool guard")
-    if guard_code:
-        code_preview = guard_code[:200].replace('\n', '\n   ')
-        print(f"\n   Code preview:\n   {code_preview}...")
-    
-    # Update policy with generated code
-    print("\n📝 Updating policy with generated code…")
-    await agent.policies.update_tool_guard(
-        policy_id=policy_id,
-        tool_guards={
-            target_tool: {
-                "violating_examples": violating_examples,
-                "compliance_examples": compliance_examples,
-                "policy_code": guard_code
+        )
+        print(f"   ✓ Policy updated with examples")
+        
+        # Generate code for the tool guard
+        print("\n💻 Generating tool guard code…")
+        guard_code = await agent.policies.generate_tool_guard_code(
+            policy_id=policy_id,
+            target_tool=target_tool
+        )
+        print(f"   ✓ Generated code for tool guard")
+        if guard_code:
+            code_preview = guard_code[:200].replace('\n', '\n   ')
+            print(f"\n   Code preview:\n   {code_preview}...")
+        
+        # Update policy with generated code
+        print("\n📝 Updating policy with generated code…")
+        await agent.policies.update_tool_guard(
+            policy_id=policy_id,
+            tool_guards={
+                target_tool: {
+                    "violating_examples": violating_examples,
+                    "compliance_examples": compliance_examples,
+                    "policy_code": guard_code
+                }
             }
-        }
-    )
-    print(f"   ✓ Policy updated with guard code")
+        )
+        print(f"   ✓ Policy updated with guard code")
+    else:
+        print("\n⏭️  Skipping example and code generation (USE_TOOLGUARD=False)")
     
     # Verify policy
     policies = await agent.policies.list()
@@ -394,7 +409,7 @@ async def main() -> None:
     print("="*80)
 
     # ══════════════════════════════════════════════════════════════════════════
-    # PHASE 2: Update tool guard content and regenerate
+    # PHASE 2: Update tool guard content
     # ══════════════════════════════════════════════════════════════════════════
     
     print("\n" + "="*80)
@@ -432,58 +447,66 @@ async def main() -> None:
     if updated_policy:
         print(f"   ✓ Updated policy confirmed: {updated_policy['name']}")
     
-    # Re-generate examples with updated guard
-    print("\n🔧 Re-generating tool guard examples after update…")
-    violating_examples_updated, compliance_examples_updated = await agent.policies.generate_tool_guard_examples(
-        policy_id=policy_id,
-        target_tool=target_tool
-    )
-    print(f"   ✓ Generated {len(violating_examples_updated)} updated violating examples")
-    print(f"   ✓ Generated {len(compliance_examples_updated)} updated compliance examples")
-    if violating_examples_updated:
-        print("\n   Updated violating example:")
-        print(f"   - {violating_examples_updated[0][:80]}...")
-    if compliance_examples_updated:
-        print("\n   Updated compliance example:")
-        print(f"   - {compliance_examples_updated[0][:80]}...")
+    # Initialize variables for later use
+    violating_examples_updated = []
+    compliance_examples_updated = []
+    guard_code_updated = ""
     
-    # Update policy with new examples
-    print("\n📝 Updating policy with regenerated examples…")
-    await agent.policies.update_tool_guard(
-        policy_id=policy_id,
-        tool_guards={
-            target_tool: {
-                "violating_examples": violating_examples_updated,
-                "compliance_examples": compliance_examples_updated
+    if USE_TOOLGUARD:
+        # Re-generate examples with updated guard
+        print("\n🔧 Re-generating tool guard examples after update…")
+        violating_examples_updated, compliance_examples_updated = await agent.policies.generate_tool_guard_examples(
+            policy_id=policy_id,
+            target_tool=target_tool
+        )
+        print(f"   ✓ Generated {len(violating_examples_updated)} updated violating examples")
+        print(f"   ✓ Generated {len(compliance_examples_updated)} updated compliance examples")
+        if violating_examples_updated:
+            print("\n   Updated violating example:")
+            print(f"   - {violating_examples_updated[0][:80]}...")
+        if compliance_examples_updated:
+            print("\n   Updated compliance example:")
+            print(f"   - {compliance_examples_updated[0][:80]}...")
+        
+        # Update policy with new examples
+        print("\n📝 Updating policy with regenerated examples…")
+        await agent.policies.update_tool_guard(
+            policy_id=policy_id,
+            tool_guards={
+                target_tool: {
+                    "violating_examples": violating_examples_updated,
+                    "compliance_examples": compliance_examples_updated
+                }
             }
-        }
-    )
-    print(f"   ✓ Policy updated with new examples")
-    
-    # Re-generate code with updated guard
-    print("\n💻 Re-generating tool guard code after update…")
-    guard_code_updated = await agent.policies.generate_tool_guard_code(
-        policy_id=policy_id,
-        target_tool=target_tool
-    )
-    print(f"   ✓ Generated updated code for tool guard")
-    if guard_code_updated:
-        code_preview = guard_code_updated[:200].replace('\n', '\n   ')
-        print(f"\n   Updated code preview:\n   {code_preview}...")
-    
-    # Update policy with new code
-    print("\n📝 Updating policy with regenerated code…")
-    await agent.policies.update_tool_guard(
-        policy_id=policy_id,
-        tool_guards={
-            target_tool: {
-                "violating_examples": violating_examples_updated,
-                "compliance_examples": compliance_examples_updated,
-                "policy_code": guard_code_updated
+        )
+        print(f"   ✓ Policy updated with new examples")
+        
+        # Re-generate code with updated guard
+        print("\n💻 Re-generating tool guard code after update…")
+        guard_code_updated = await agent.policies.generate_tool_guard_code(
+            policy_id=policy_id,
+            target_tool=target_tool
+        )
+        print(f"   ✓ Generated updated code for tool guard")
+        if guard_code_updated:
+            code_preview = guard_code_updated[:200].replace('\n', '\n   ')
+            print(f"\n   Updated code preview:\n   {code_preview}...")
+        
+        # Update policy with new code
+        print("\n📝 Updating policy with regenerated code…")
+        await agent.policies.update_tool_guard(
+            policy_id=policy_id,
+            tool_guards={
+                target_tool: {
+                    "violating_examples": violating_examples_updated,
+                    "compliance_examples": compliance_examples_updated,
+                    "policy_code": guard_code_updated
+                }
             }
-        }
-    )
-    print(f"   ✓ Policy updated with new guard code")
+        )
+        print(f"   ✓ Policy updated with new guard code")
+    else:
+        print("\n⏭️  Skipping example and code regeneration (USE_TOOLGUARD=False)")
     
     # Run Finance test with updated Finance policy (should still be blocked)
     print("\n" + "="*80)
@@ -514,25 +537,30 @@ async def main() -> None:
     
     print("\n🔵 PHASE 1 - Finance Industry Tool Guard (Initial):")
     print(f"   Tool Guard Active: {FINANCE_GUARD_CONFIG['name']}")
-    print(f"   Generated Violating Examples: {len(violating_examples)}")
-    print(f"   Generated Compliance Examples: {len(compliance_examples)}")
-    print(f"   Generated Code: {'Yes' if guard_code else 'No'}")
+    print(f"   USE_TOOLGUARD: {USE_TOOLGUARD}")
     
-    print("\n   📝 Generated Violating Examples:")
-    for i, example in enumerate(violating_examples, 1):
-        print(f"      {i}. {example}")
-    
-    print("\n   ✅ Generated Compliance Examples:")
-    for i, example in enumerate(compliance_examples, 1):
-        print(f"      {i}. {example}")
-    
-    print("\n   💻 Generated Guard Code:")
-    print("   " + "-"*76)
-    for line in guard_code.split('\n')[:20]:  # Show first 20 lines
-        print(f"   {line}")
-    if len(guard_code.split('\n')) > 20:
-        print(f"   ... ({len(guard_code.split('\n')) - 20} more lines)")
-    print("   " + "-"*76)
+    if USE_TOOLGUARD:
+        print(f"   Generated Violating Examples: {len(violating_examples)}")
+        print(f"   Generated Compliance Examples: {len(compliance_examples)}")
+        print(f"   Generated Code: {'Yes' if guard_code else 'No'}")
+        
+        print("\n   📝 Generated Violating Examples:")
+        for i, example in enumerate(violating_examples, 1):
+            print(f"      {i}. {example}")
+        
+        print("\n   ✅ Generated Compliance Examples:")
+        for i, example in enumerate(compliance_examples, 1):
+            print(f"      {i}. {example}")
+        
+        print("\n   💻 Generated Guard Code:")
+        print("   " + "-"*76)
+        for line in guard_code.split('\n')[:20]:  # Show first 20 lines
+            print(f"   {line}")
+        if len(guard_code.split('\n')) > 20:
+            print(f"   ... ({len(guard_code.split('\n')) - 20} more lines)")
+        print("   " + "-"*76)
+    else:
+        print("   Skipped generation (USE_TOOLGUARD=False)")
     
     print(f"\n   Test: Finance Company with Finance Guard (SHOULD BE BLOCKED)")
     print(f"\n   Initial Query: {FINANCE_TEST_CASE['query'][:80]}...")
@@ -542,25 +570,30 @@ async def main() -> None:
     
     print("\n🟢 PHASE 2 - Finance Industry Tool Guard (After Update):")
     print(f"   Tool Guard Active: {updated_config['name']}")
-    print(f"   Re-generated Violating Examples: {len(violating_examples_updated)}")
-    print(f"   Re-generated Compliance Examples: {len(compliance_examples_updated)}")
-    print(f"   Re-generated Code: {'Yes' if guard_code_updated else 'No'}")
+    print(f"   USE_TOOLGUARD: {USE_TOOLGUARD}")
     
-    print("\n   📝 Re-generated Violating Examples:")
-    for i, example in enumerate(violating_examples_updated, 1):
-        print(f"      {i}. {example}")
-    
-    print("\n   ✅ Re-generated Compliance Examples:")
-    for i, example in enumerate(compliance_examples_updated, 1):
-        print(f"      {i}. {example}")
-    
-    print("\n   💻 Re-generated Guard Code:")
-    print("   " + "-"*76)
-    for line in guard_code_updated.split('\n')[:20]:  # Show first 20 lines
-        print(f"   {line}")
-    if len(guard_code_updated.split('\n')) > 20:
-        print(f"   ... ({len(guard_code_updated.split('\n')) - 20} more lines)")
-    print("   " + "-"*76)
+    if USE_TOOLGUARD:
+        print(f"   Re-generated Violating Examples: {len(violating_examples_updated)}")
+        print(f"   Re-generated Compliance Examples: {len(compliance_examples_updated)}")
+        print(f"   Re-generated Code: {'Yes' if guard_code_updated else 'No'}")
+        
+        print("\n   📝 Re-generated Violating Examples:")
+        for i, example in enumerate(violating_examples_updated, 1):
+            print(f"      {i}. {example}")
+        
+        print("\n   ✅ Re-generated Compliance Examples:")
+        for i, example in enumerate(compliance_examples_updated, 1):
+            print(f"      {i}. {example}")
+        
+        print("\n   💻 Re-generated Guard Code:")
+        print("   " + "-"*76)
+        for line in guard_code_updated.split('\n')[:20]:  # Show first 20 lines
+            print(f"   {line}")
+        if len(guard_code_updated.split('\n')) > 20:
+            print(f"   ... ({len(guard_code_updated.split('\n')) - 20} more lines)")
+        print("   " + "-"*76)
+    else:
+        print("   Skipped regeneration (USE_TOOLGUARD=False)")
     
     print(f"\n   Test: Finance Company with Updated Guard (SHOULD BE BLOCKED)")
     print(f"\n   Initial Query: {FINANCE_TEST_CASE['query'][:80]}...")
@@ -570,9 +603,11 @@ async def main() -> None:
     
     print("\n✅ Tool guard workflow completed successfully!")
     print("   - Created tool guard")
-    print("   - Generated examples and code")
+    if USE_TOOLGUARD:
+        print("   - Generated examples and code")
     print("   - Updated tool guard")
-    print("   - Re-generated examples and code")
+    if USE_TOOLGUARD:
+        print("   - Re-generated examples and code")
     print("   - Tested enforcement before and after update")
     print("="*80)
 
