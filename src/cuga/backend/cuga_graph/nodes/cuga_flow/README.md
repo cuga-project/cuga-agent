@@ -2,19 +2,21 @@
 
 # CUGA FLO
 
-**CUGA FLO** is a BPMN-compiled process orchestration harness for policy-aware, structurally-enforced agent workflows.
+**CUGA FLO** is a process harness for policy-aware, structurally-enforced agent workflows. The process topology is defined upfront and compiled into a LangGraph at initialisation; LLM reasoning is scoped to designated control points — task fulfillment, gateway routing, and hook-governed flow adaptations.
 
 ---
 
 ## Overview
 
-Standard multi-agent systems leave routing decisions to the LLM at runtime — the model decides what to call next, which makes the execution path unpredictable and hard to audit. CUGA FLO inverts this: the process structure is defined upfront in a BPMN 2.0 diagram and compiled into a LangGraph at initialisation time. The graph topology is the ground truth.
+Standard multi-agent systems leave routing decisions to the LLM at runtime — the model decides what to call next, which makes the execution path unpredictable and hard to audit. CUGA FLO inverts this: the process structure is defined upfront in a BPMN 2.0 diagram and compiled into a graph at initialisation time. The graph topology is the ground truth.
 
 Within that structure, three layers of policy-aware reasoning operate:
 
 - **FlowAgent** oversees the process as a whole. At permitted interception points (hooks), it can adapt the flow — skipping nodes, jumping to a target, escalating, or halting — by reasoning against a hook-specific policy and the full current process state.
-- **CugaAgent as DecisionAgent** reasons about gateway routing: given the condition evaluation result, the process state, and the gateway's policy, it selects which branch to follow.
-- **CugaAgent as TaskAgent** fulfils individual tasks: it executes the task logic in accordance with the task's policy and writes results back into the shared process variable namespace.
+- **DecisionAgent** reasons about gateway routing: given the condition evaluation result, the process state, and the gateway's policy, it selects which branch to follow.
+- **TaskAgent** fulfils individual tasks: it executes the task logic in accordance with the task's policy and writes results back into the shared process variable namespace.
+
+**MCP as the integration bridge.** The FlowAgent harness does not execute the BPMN process graph itself at runtime — a `WorkflowEngine` does. The two are decoupled by `MCPFlowBridge`, a FastMCP server that mediates all communication between them. The FlowAgent exposes reasoning tools (`execute_task`, `route_gateway`, `evaluate_hook`, `get_static_config`) over MCP; the engine calls those tools at every control point. This makes the execution engine replaceable — the included LangGraph engine is the demo/current backend; enterprise-grade engines connect to the same MCP interface in production.
 
 This makes CUGA FLO suited for regulated, repeatable, or auditable processes — loan approvals, compliance workflows, onboarding pipelines — where the sequence of steps is structurally enforced but each step and permitted intervention is still governed by policy.
 
@@ -24,13 +26,15 @@ This makes CUGA FLO suited for regulated, repeatable, or auditable processes —
 
 ### FlowAgent
 
-The meta-agent and single entry point for BPMN process execution. At initialisation it:
+The meta-agent and single entry point for the process harness. At initialisation it:
 
 1. Parses the BPMN 2.0 XML into a `BPMNProcess` (elements + sequence flows)
-2. Compiles each task, gateway, and hook into a LangGraph node
-3. Wires nodes with edges that follow the BPMN sequence flows exactly
+2. Compiles each task, gateway, and hook definition into the corresponding agent/policy structure
+3. Registers its reasoning capabilities (`execute_task`, `route_gateway`, `evaluate_hook`, `get_static_config`) on the shared `MCPFlowBridge`
 
-At runtime it oversees the process as a whole: manages the shared **process variable** namespace, evaluates hook policies to decide whether and how to adapt the flow at permitted interception points, and builds the final completion message from task results. A `FlowAgent` can be registered as a sub-agent inside a `CugaSupervisor`, where it is treated as a peer alongside `CugaAgent` instances.
+At runtime, the `WorkflowEngine` drives execution. The FlowAgent responds only at MCP-mediated control points, each call carrying a `ControlPointContext` that embeds the full process state, execution history, model summary, and task instruction. The FlowAgent manages the shared **process variable** namespace, evaluates hook policies to decide whether and how to adapt the flow, and builds the final completion message from task results.
+
+A `FlowAgent` can be registered as a sub-agent inside a `CugaSupervisor`, where it is treated as a peer alongside `CugaAgent` instances.
 
 ```python
 flow_agent = FlowAgent(
@@ -128,6 +132,85 @@ The `HookResult.action` determines what happens next:
 
 Hook reasoning is performed by the **FlowAgent** itself — not a separate agent — because hooks are a process-level concern. The FlowAgent holds the full process state and BPMN structure, and reasons against the hook's policy to decide what flow adaptation (if any) is warranted. Hooks are the only points in the process where the FlowAgent is permitted to deviate from the nominal BPMN path, and every such deviation is policy-governed and recorded in the audit log.
 
+Per-process `action_permissions` (declared in the YAML config) explicitly list which hook actions are permitted or prohibited for a given process, providing an additional governance layer over what adaptations the FlowAgent may apply.
+
+---
+
+### MCP Bridge
+
+`MCPFlowBridge` (`cuga_flo_mcp/bridge.py`) is a FastMCP server that acts as the integration contract between the FlowAgent harness and any `WorkflowEngine`. The two sides register independently:
+
+**FlowAgent side** — registers reasoning tools:
+
+| MCP Tool | Called by engine when |
+|---|---|
+| `execute_task` | A BPMN task node is reached |
+| `route_gateway` | A gateway node needs a routing decision |
+| `evaluate_hook` | A hook intercept point fires |
+| `get_static_config` | Engine fetches process metadata at startup |
+
+**WorkflowEngine side** — registers:
+
+| MCP Tool | Called by FlowAgent when |
+|---|---|
+| `run_process` | Starting a new process instance |
+
+Every MCP call carries a `ControlPointContext` — a dataclass embedding the full process state, execution history, model summary, and task instruction — so each reasoning call is self-contained and stateless from the engine's perspective.
+
+```python
+from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
+
+bridge = MCPFlowBridge()
+bridge.register_flow_agent(flow_agent)
+bridge.register_engine(engine, registry)
+
+# Engine obtains an in-process MCP client; can be swapped for HTTP/SSE transport
+client = bridge.get_client()
+```
+
+The in-process transport (`FastMCPTransport`) is used by the demo LangGraph engine. A remote transport (HTTP/SSE) can be substituted without changing any FlowAgent or engine logic — enabling cross-process or cross-host deployment.
+
+---
+
+### WorkflowEngine
+
+`WorkflowEngine` (`workflow_engine.py`) is the abstract execution backend. It holds the process model and instance state, drives execution node-by-node, and communicates with the FlowAgent exclusively through the MCP bridge. The single abstract method is:
+
+```python
+async def _run_via_mcp(
+    self,
+    process: BPMNProcess,
+    initial_inputs: dict,
+    mcp_server: MCPFlowBridge,
+) -> FlowState:
+    ...
+```
+
+**LangGraphWorkflowEngine** (`langgraph_engine.py`) is the concrete demo engine included with CUGA FLO. It:
+
+1. Fetches static process config from the FlowAgent via the `get_static_config` MCP tool
+2. Builds a `_ControlOverlay` — a set of MCP-backed handlers for tasks, gateways, and hooks
+3. Compiles the BPMN topology into a LangGraph using `_build_graph` and `_add_edges_with_hooks`
+4. At each control point (task node, gateway node, hook node), calls the corresponding FlowAgent MCP tool with a `ControlPointContext`
+
+The LangGraph engine is the **current/demo backend**. Enterprise-grade workflow engines (with their own persistence, audit trails, and compliance guarantees) connect to the same `WorkflowEngine` interface and MCP bridge in production — no changes to the FlowAgent harness are required.
+
+---
+
+### ProcessRegistry
+
+`ProcessRegistry` (`process_registry.py`) is a catalog of BPMN process definitions. It maps short process keys to `ProcessDefinition` objects (pairing a parsed `BPMNProcess` with a `FlowConfig`) and caches parsed results for reuse across invocations.
+
+`register_from_directory()` auto-discovers process definitions from a directory using the `flow_agent_app_inline/` layout convention: each subdirectory containing a YAML file with a `flow:` key is registered as a named process.
+
+```python
+registry = ProcessRegistry()
+registry.register_from_directory("docs/examples/flow_agent_app_inline/")
+
+# Lookup returns (BPMNProcess, FlowConfig) — cached after first parse
+process, config = registry.get("loan_approval")
+```
+
 ---
 
 ### FlowState
@@ -158,15 +241,46 @@ Used by `DecisionAgent` (Node 1) and by `FlowAgent` directly for tool-mode gatew
 
 ---
 
+## Demo Apps
+
+Three inline demo processes are included under `docs/examples/flow_agent_app_inline/`:
+
+| App | Description |
+|---|---|
+| `loan_approval` | Multi-step loan processing with credit check, compliance, and approval gateways |
+| `receive_order` | Order intake flow with inventory check and fulfilment routing |
+| `trip_planner` | Travel planning flow with itinerary assembly and booking steps |
+
+Start any demo with:
+
+```bash
+cuga start flow_agent_inline <app_name>
+
+# Examples:
+cuga start flow_agent_inline loan_approval
+cuga start flow_agent_inline receive_order
+cuga start flow_agent_inline trip_planner
+```
+
+Each app directory follows the same layout: a BPMN file, a `flow_config.yaml` referencing it, agent definitions, and per-task/gateway policy markdown files under `policies/`.
+
+---
+
 ## Module Structure
 
 ```
 cuga_flow/
-├── flow_agent.py        # FlowAgent — compiles BPMN → LangGraph, meta-agent
-├── flow_agent_state.py  # FlowState — process-aware agent state
-├── flow_config.py       # FlowConfig — YAML-based instantiation
-├── bpmn_parser.py       # BPMN 2.0 XML parser → BPMNProcess
-├── task_agent.py        # TaskAgent — CugaAgent wrapper for task nodes
-├── decision_agent.py    # DecisionAgent — two-node gateway router
-└── hook_manager.py      # Hook, HookManager, HookAction, HookResult
+├── flow_agent.py          # FlowAgent — process harness meta-agent
+├── flow_agent_state.py    # FlowState — process-aware agent state
+├── flow_config.py         # FlowConfig — YAML-based instantiation
+├── bpmn_parser.py         # BPMN 2.0 XML parser → BPMNProcess
+├── task_agent.py          # TaskAgent — CugaAgent wrapper for task nodes
+├── decision_agent.py      # DecisionAgent — two-node gateway router
+├── hook_manager.py        # Hook, HookManager, HookAction, HookResult
+├── workflow_engine.py     # WorkflowEngine ABC + ControlPointContext
+├── langgraph_engine.py    # LangGraphWorkflowEngine — demo/current engine
+└── process_registry.py    # ProcessRegistry — multi-process catalog
+
+cuga_flo_mcp/
+└── bridge.py              # MCPFlowBridge — FastMCP integration contract
 ```
