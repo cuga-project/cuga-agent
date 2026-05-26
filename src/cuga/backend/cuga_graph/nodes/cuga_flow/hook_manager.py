@@ -46,6 +46,10 @@ class HookAction(Enum):
     TERMINATE = "terminate"  # Hard-halt the process
     SWAP_NODES = "swap_nodes"  # Swap two nodes: redirect to node_b when
     # node_a was next, or node_a when node_b was next
+    REMOVE_NODE = "remove_node"  # Remove a node from the execution path;
+    # provide target node_id in remove_node field
+    ADD_NODE = "add_node"  # Insert a node into the execution path before
+    # the normal target; provide node_id and task_instruction in add_node field
 
 
 @dataclass
@@ -66,6 +70,12 @@ class HookResult:
                        for REFORM_GRAPH (informational only at this stage).
         state_updates: Optional process-variable patches to apply before
                        the action takes effect.
+        remove_node:   Node ID to skip over for REMOVE_NODE — engine sets
+                       _skip_next_node if it matches the immediate next node,
+                       or routes past it via Command(goto=) for non-adjacent nodes.
+        add_node:      Dict with 'node_id' and optional 'task_instruction' for
+                       ADD_NODE — engine inserts a dynamic task node before the
+                       normal target and routes through it first.
     """
 
     action: HookAction
@@ -75,6 +85,8 @@ class HookResult:
     swap_nodes: Optional[tuple] = None  # (node_a, node_b) pair for SWAP_NODES
     graph_modifications: Optional[Dict[str, Any]] = None
     state_updates: Optional[Dict[str, Any]] = None
+    remove_node: Optional[str] = None  # node ID to remove for REMOVE_NODE
+    add_node: Optional[Dict[str, Any]] = None  # {node_id, task_instruction} for ADD_NODE
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -85,6 +97,8 @@ class HookResult:
             "swap_nodes": list(self.swap_nodes) if self.swap_nodes else None,
             "graph_modifications": self.graph_modifications,
             "state_updates": self.state_updates,
+            "remove_node": self.remove_node,
+            "add_node": self.add_node,
         }
 
     @classmethod
@@ -98,6 +112,8 @@ class HookResult:
             swap_nodes=tuple(swap) if swap else None,
             graph_modifications=d.get("graph_modifications"),
             state_updates=d.get("state_updates"),
+            remove_node=d.get("remove_node"),
+            add_node=d.get("add_node"),
         )
 
 

@@ -331,6 +331,8 @@ what structural action (if any) the FlowAgent should apply.
 - "swap_nodes"          — swap two nodes: provide node_a and node_b
 - "request_user_input"  — pause and ask the user a question (provide user_prompt)
 - "terminate"           — halt the process immediately
+- "remove_node"         — remove a specific node from the execution path (provide remove_node)
+- "add_node"            — insert a new task node before the next node (provide add_node with node_id and task_instruction)
 
 Respond ONLY with a JSON object:
 {{
@@ -339,6 +341,8 @@ Respond ONLY with a JSON object:
   "node_a": "<first node_id for swap_nodes or null>",
   "node_b": "<second node_id for swap_nodes or null>",
   "user_prompt": "<question or null>",
+  "remove_node": "<node_id to remove or null>",
+  "add_node": {{"node_id": "<new node_id or null>", "task_instruction": "<instruction or null>"}},
   "reason": "<one sentence explanation>",
   "state_updates": {{}}
 }}
@@ -372,6 +376,7 @@ Respond ONLY with a JSON object:
             node_a = decision.get("node_a")
             node_b = decision.get("node_b")
             state_updates = decision.get("state_updates") or {}
+            add_node = decision.get("add_node")
             return HookResult(
                 action=action,
                 message=reason,
@@ -379,6 +384,8 @@ Respond ONLY with a JSON object:
                 user_prompt=decision.get("user_prompt"),
                 swap_nodes=(node_a, node_b) if node_a and node_b else None,
                 state_updates=state_updates if isinstance(state_updates, dict) else {},
+                remove_node=decision.get("remove_node"),
+                add_node=add_node if isinstance(add_node, dict) else None,
             )
         except Exception as e:
             logger.error(f"  LLM hook decision failed for {hook.id}: {e}; defaulting to CONTINUE")

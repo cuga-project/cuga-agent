@@ -572,6 +572,46 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                             )
                             return Command(update=state.model_dump(), goto=target)
 
+                    elif result.action == HookAction.REMOVE_NODE:
+                        target = result.remove_node
+                        if target:
+                            logger.info(f"  REMOVE_NODE: skipping node {target!r}")
+                            state.add_graph_modification(
+                                hook_id=hook.id,
+                                modification_type="remove_node",
+                                details={"removed": target},
+                                reason=result.message or f"Hook removed node {target}",
+                            )
+                            # If the node to remove is the immediate next, skip it via flag;
+                            # otherwise route past it directly.
+                            if target == normal_target:
+                                state.process_variables["_skip_next_node"] = True
+                                return Command(update=state.model_dump(), goto=normal_target)
+                            else:
+                                return Command(update=state.model_dump(), goto=normal_target)
+
+                    elif result.action == HookAction.ADD_NODE:
+                        add_spec = result.add_node
+                        if add_spec and add_spec.get("node_id"):
+                            new_node_id = add_spec["node_id"]
+                            instruction = add_spec.get("task_instruction", "")
+                            logger.info(f"  ADD_NODE: inserting dynamic node {new_node_id!r} before {normal_target!r}")
+                            state.add_graph_modification(
+                                hook_id=hook.id,
+                                modification_type="add_node",
+                                details={
+                                    "node_id": new_node_id,
+                                    "before": normal_target,
+                                    "task_instruction": instruction,
+                                },
+                                reason=result.message or f"Hook inserted node {new_node_id}",
+                            )
+                            # Record the pending dynamic node so the next task node
+                            # can execute its instruction before proceeding.
+                            state.process_variables["_dynamic_node_id"] = new_node_id
+                            state.process_variables["_dynamic_node_instruction"] = instruction
+                            state.process_variables["_dynamic_node_target"] = normal_target
+
                 except Exception as e:
                     logger.error(f"  Error evaluating hook {hook.id}: {e}")
 
