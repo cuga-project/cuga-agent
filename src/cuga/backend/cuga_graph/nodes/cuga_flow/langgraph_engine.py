@@ -146,23 +146,127 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                 action_permissions=action_permissions,
             )
 
-            return await self._run_graph(process, initial_inputs, overlay)
+            return await self._run_graph(process, initial_inputs, overlay, mcp_client=c)
 
     async def _run_graph(
         self,
         process: BPMNProcess,
         initial_inputs: Dict[str, Any],
         overlay: _ControlOverlay,
+        mcp_client: Any = None,
     ) -> FlowState:
-        initial_state = FlowState(
+        state = FlowState(
             process_id=process.id,
             process_name=process.name,
             process_variables=initial_inputs,
         )
-        initial_state.start_time = datetime.now(timezone.utc)
-        compiled = self._build_graph(process, overlay)
-        raw = await compiled.ainvoke(initial_state)
-        return FlowState.model_validate(raw) if isinstance(raw, dict) else raw
+        state.start_time = datetime.now(timezone.utc)
+
+        # Rebuild loop: each iteration compiles and runs the graph; if a hook action
+        # (ADD_NODE / REMOVE_NODE) requests a structural change, the process model and
+        # overlay are updated and the graph is recompiled.  Already-executed nodes are
+        # fast-forwarded on the next pass via _replay_completed_nodes.
+        while True:
+            compiled = self._build_graph(process, overlay)
+            raw = await compiled.ainvoke(state)
+            state = FlowState.model_validate(raw) if isinstance(raw, dict) else raw
+
+            rebuild_spec = state.process_variables.pop("_graph_rebuild_spec", None)
+            if not rebuild_spec:
+                break
+
+            logger.info(
+                f"Graph rebuild requested: {rebuild_spec.get('type')} — recompiling process model"
+            )
+            process, overlay = self._apply_graph_modification(
+                process, overlay, rebuild_spec, mcp_client
+            )
+
+        return state
+
+    def _apply_graph_modification(
+        self,
+        process: BPMNProcess,
+        overlay: _ControlOverlay,
+        spec: Dict[str, Any],
+        mcp_client: Any = None,
+    ) -> tuple:
+        """
+        Apply a structural modification to the process model and overlay, returning
+        updated copies.  Called between graph runs when a hook action triggers a rebuild.
+        """
+        import copy as _copy
+
+        process = _copy.deepcopy(process)
+        mod_type = spec.get("type")
+
+        if mod_type == "remove_node":
+            node_id = spec["node_id"]
+            process.elements.pop(node_id, None)
+            incoming = [f for f in process.flows if f.target_ref == node_id]
+            outgoing = [f for f in process.flows if f.source_ref == node_id]
+            process.flows = [
+                f for f in process.flows
+                if f.source_ref != node_id and f.target_ref != node_id
+            ]
+            # Reconnect: each predecessor → each successor, bypassing the removed node
+            for inc in incoming:
+                for out in outgoing:
+                    bypass = _copy.deepcopy(out)
+                    bypass.id = f"bypass__{inc.source_ref}__to__{out.target_ref}"
+                    bypass.source_ref = inc.source_ref
+                    process.flows.append(bypass)
+            logger.info(f"  Removed node '{node_id}' and rewired {len(incoming)}×{len(outgoing)} flows")
+
+        elif mod_type == "add_node":
+            from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNElement, BPMNFlow
+
+            node_id = spec["node_id"]
+            instruction = spec.get("task_instruction", "")
+            before_node = spec["before"]
+
+            process.elements[node_id] = BPMNElement(
+                id=node_id,
+                name=spec.get("node_name", node_id),
+                element_type="task",
+                attributes={},
+            )
+
+            # Redirect all flows pointing to before_node → now point to new node
+            redirected, to_remove = [], []
+            for f in process.flows:
+                if f.target_ref == before_node:
+                    to_remove.append(f.id)
+                    new_f = _copy.deepcopy(f)
+                    new_f.id = f"{f.id}__via__{node_id}"
+                    new_f.target_ref = node_id
+                    redirected.append(new_f)
+            process.flows = [f for f in process.flows if f.id not in to_remove]
+            process.flows.extend(redirected)
+            process.flows.append(
+                BPMNFlow(
+                    id=f"flow__{node_id}__to__{before_node}",
+                    name="",
+                    source_ref=node_id,
+                    target_ref=before_node,
+                )
+            )
+
+            # Register MCP-backed task handler for the new node
+            overlay.task_handlers = dict(overlay.task_handlers)
+            overlay.task_instructions = dict(overlay.task_instructions)
+            overlay.task_instructions[node_id] = instruction
+            if mcp_client:
+                async def _dynamic_handler(ctx: ControlPointContext, _tid: str = node_id) -> dict:
+                    res = await mcp_client.call_tool(
+                        "execute_task", {"task_id": _tid, "ctx": ctx.to_dict()}
+                    )
+                    return res.data
+
+                overlay.task_handlers[node_id] = _dynamic_handler
+            logger.info(f"  Inserted node '{node_id}' before '{before_node}', rewired {len(to_remove)} flow(s)")
+
+        return process, overlay
 
     # ──────────────────────────────────────────────────────────────
     # Graph construction
@@ -307,6 +411,20 @@ class LangGraphWorkflowEngine(WorkflowEngine):
     ) -> Callable:
         async def gateway_node(state: FlowState) -> dict:
             logger.info(f"Executing gateway: {element.name} ({gateway_id})")
+
+            replay = list(state.process_variables.get("_replay_completed_nodes", []))
+            if gateway_id in replay:
+                logger.info(f"  Fast-forwarding replayed gateway: {gateway_id}")
+                replay.remove(gateway_id)
+                new_vars = {**state.process_variables, "_replay_completed_nodes": replay}
+                if not replay:
+                    new_vars.pop("_replay_completed_nodes", None)
+                return {
+                    "execution_path": [gateway_id],
+                    "gateway_decisions": state.gateway_decisions,
+                    "process_variables": new_vars,
+                }
+
             outgoing_flows = flows_by_source.get(gateway_id, [])
 
             if element.element_type == "parallelGateway":
@@ -389,6 +507,15 @@ class LangGraphWorkflowEngine(WorkflowEngine):
         async def task_node(state: FlowState) -> dict:
             logger.info(f"Executing agentic task: {element.name} ({task_id})")
 
+            replay = list(state.process_variables.get("_replay_completed_nodes", []))
+            if task_id in replay:
+                logger.info(f"  Fast-forwarding replayed node: {task_id}")
+                replay.remove(task_id)
+                new_vars = {**state.process_variables, "_replay_completed_nodes": replay}
+                if not replay:
+                    new_vars.pop("_replay_completed_nodes", None)
+                return {"execution_path": [task_id], "process_variables": new_vars}
+
             if state.process_variables.get("_skip_next_node"):
                 logger.info("  Skipping task as requested by hook")
                 return {
@@ -419,6 +546,15 @@ class LangGraphWorkflowEngine(WorkflowEngine):
     ) -> Callable:
         def tool_task_node(state: FlowState) -> dict:
             logger.info(f"Executing tool task: {element.name} ({task_id})")
+
+            replay = list(state.process_variables.get("_replay_completed_nodes", []))
+            if task_id in replay:
+                logger.info(f"  Fast-forwarding replayed node: {task_id}")
+                replay.remove(task_id)
+                new_vars = {**state.process_variables, "_replay_completed_nodes": replay}
+                if not replay:
+                    new_vars.pop("_replay_completed_nodes", None)
+                return {"execution_path": [task_id], "process_variables": new_vars}
 
             if state.process_variables.get("_skip_next_node"):
                 return {
@@ -575,27 +711,27 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                     elif result.action == HookAction.REMOVE_NODE:
                         target = result.remove_node
                         if target:
-                            logger.info(f"  REMOVE_NODE: skipping node {target!r}")
+                            logger.info(f"  REMOVE_NODE: scheduling graph rebuild to remove node {target!r}")
                             state.add_graph_modification(
                                 hook_id=hook.id,
                                 modification_type="remove_node",
                                 details={"removed": target},
                                 reason=result.message or f"Hook removed node {target}",
                             )
-                            # If the node to remove is the immediate next, skip it via flag;
-                            # otherwise route past it directly.
-                            if target == normal_target:
-                                state.process_variables["_skip_next_node"] = True
-                                return Command(update=state.model_dump(), goto=normal_target)
-                            else:
-                                return Command(update=state.model_dump(), goto=normal_target)
+                            # Store rebuild spec and mark executed nodes for fast-forward replay
+                            state.process_variables["_graph_rebuild_spec"] = {
+                                "type": "remove_node",
+                                "node_id": target,
+                            }
+                            state.process_variables["_replay_completed_nodes"] = list(state.execution_path)
+                            return Command(update=state.model_dump(), goto=END)
 
                     elif result.action == HookAction.ADD_NODE:
                         add_spec = result.add_node
                         if add_spec and add_spec.get("node_id"):
                             new_node_id = add_spec["node_id"]
                             instruction = add_spec.get("task_instruction", "")
-                            logger.info(f"  ADD_NODE: inserting dynamic node {new_node_id!r} before {normal_target!r}")
+                            logger.info(f"  ADD_NODE: scheduling graph rebuild to insert node {new_node_id!r} before {normal_target!r}")
                             state.add_graph_modification(
                                 hook_id=hook.id,
                                 modification_type="add_node",
@@ -606,11 +742,15 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                                 },
                                 reason=result.message or f"Hook inserted node {new_node_id}",
                             )
-                            # Record the pending dynamic node so the next task node
-                            # can execute its instruction before proceeding.
-                            state.process_variables["_dynamic_node_id"] = new_node_id
-                            state.process_variables["_dynamic_node_instruction"] = instruction
-                            state.process_variables["_dynamic_node_target"] = normal_target
+                            # Store rebuild spec and mark executed nodes for fast-forward replay
+                            state.process_variables["_graph_rebuild_spec"] = {
+                                "type": "add_node",
+                                "node_id": new_node_id,
+                                "task_instruction": instruction,
+                                "before": normal_target,
+                            }
+                            state.process_variables["_replay_completed_nodes"] = list(state.execution_path)
+                            return Command(update=state.model_dump(), goto=END)
 
                 except Exception as e:
                     logger.error(f"  Error evaluating hook {hook.id}: {e}")
