@@ -107,7 +107,7 @@ gateways:
 
 ### Hook
 
-Hooks are annotations over BPMN sequence flow edges. When execution reaches an annotated transition, CUGA FLO intercepts it and reasons — against the current process state and the hook's policy — about how execution should proceed before the target node is entered. The BPMN diagram is never modified; hooks are declared separately and attached to flows by ID.
+Hooks are annotations over BPMN sequence flow edges. When execution reaches an annotated transition, CUGA FLO intercepts it and reasons — against the current process state and the hook's policy — about how execution should proceed before the target node is entered. Hooks are declared separately and attached to flows by ID.
 
 > **LangGraph note:** In the included LangGraph engine, hooks are materialised as intermediate graph nodes inserted at compile time between the source and target of each annotated edge. This is a technical choice specific to LangGraph's compiled graph model and is not part of the general hook contract.
 
