@@ -5,6 +5,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.runnables import RunnableLambda
 from langchain_core.language_models import BaseChatModel
+from loguru import logger
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -18,6 +19,22 @@ from cuga.config import settings
 
 llm_manager = LLMManager()
 tracker = ActivityTracker()
+
+
+_VISION_REJECTION_MARKERS = (
+    "content must be a string",
+    "image_url",
+    "multimodal",
+    "image input",
+    "does not support images",
+    "vision",
+)
+
+
+def _looks_like_vision_rejection(exc: BaseException) -> bool:
+    """Heuristic: did the endpoint reject the request because of image content?"""
+    msg = str(exc).lower()
+    return any(marker in msg for marker in _VISION_REJECTION_MARKERS)
 
 
 class BrowserPlannerAgent(BaseAgent):
@@ -55,11 +72,27 @@ class BrowserPlannerAgent(BaseAgent):
             data["variables_history"] = input_variables.variables_manager.get_variables_summary(last_n=1)
         else:
             data["variables_history"] = ""
+        image_attached = False
         if self.use_vision_effective and getattr(tracker, "images", None):
             # Only attach an image if one has been captured
             if len(tracker.images) > 0:
                 data['img'] = tracker.images[-1]
-        return await self.chain.ainvoke(data)
+                image_attached = True
+        try:
+            return await self.chain.ainvoke(data)
+        except Exception as exc:
+            if not image_attached or not _looks_like_vision_rejection(exc):
+                raise
+            # Endpoint rejected the multimodal payload — disable vision for
+            # subsequent calls on this agent and retry with a text-only message.
+            logger.warning(
+                "Vision request rejected ({}); disabling vision for this agent and retrying text-only.",
+                type(exc).__name__,
+            )
+            self.use_vision_effective = False
+            data["use_vision"] = False
+            data.pop('img', None)
+            return await self.chain.ainvoke(data)
 
     @staticmethod
     def create():
