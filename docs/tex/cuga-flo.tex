@@ -437,23 +437,23 @@ Figure~\ref{fig:architecture} shows the component architecture.
 \begin{tikzpicture}[node distance=1.1cm and 1.6cm, font=\small]
 
 % ── Reasoning side: FlowAgent box (left) ───────────────────
-\coordinate (fa@bl) at (-0.4,1.85);
-\coordinate (fa@tr) at (4.8,5.45);
+\coordinate (fa@bl) at (-1.0,1.85);
+\coordinate (fa@tr) at (5.5,5.45);
 \begin{scope}[on background layer]
   \node[frame, fit=(fa@bl)(fa@tr), inner sep=2pt] (fabox) {};
 \end{scope}
 \node[font=\footnotesize\bfseries\color{teal!60!black}] at (2.2,5.15)
       {FlowAgent (reasoning meta-agent)};
 
-\node[agent] (da) at (0.95, 4.1) {\texttt{Decision}\\[-2pt]\texttt{Agent}};
-\node[agent] (hm) at (3.5, 4.1) {\texttt{Hook}\\[-2pt]\texttt{reasoning}};
+\node[agent] (da) at (0.6, 4.1) {\texttt{Decision}\\[-2pt]\texttt{Agent}};
+\node[agent] (hm) at (3.8, 4.1) {\texttt{Hook}\\[-2pt]\texttt{reasoning}};
 \node[task] (ta) at (2.2, 2.95) {Task\\Agents};
 \node[font=\scriptsize\color{black!55}] at (2.2, 2.18) {CugaAgent$\times n$};
 
 % ── FRAME (below FlowAgent) ────────────────────────────────
-\node[policy] (pt) at (0.7, 0.95) {Task\\Policies};
+\node[policy] (pt) at (0.1, 0.95) {Task\\Policies};
 \node[policy] (pd) at (2.2, 0.95) {Decision\\Policies};
-\node[policy] (ph) at (3.7, 0.95) {Hook\\Policies};
+\node[policy] (ph) at (4.3, 0.95) {Hook\\Policies};
 \begin{scope}[on background layer]
   \node[draw=green!40,fill=green!4,rounded corners=4pt,
         fit=(pt)(pd)(ph),inner sep=4pt] (framebox) {};
@@ -467,23 +467,23 @@ Figure~\ref{fig:architecture} shows the component architecture.
 % ── MCP bridge (centre) ────────────────────────────────────
 \node[draw=orange!60, fill=orange!10, rounded corners=4pt,
       minimum width=1.8cm, minimum height=3.0cm, text width=1.65cm,
-      text centered, font=\scriptsize] (bridge) at (6.3,3.75)
+      text centered, font=\scriptsize] (bridge) at (7.1,3.75)
       {\texttt{MCPFlow}\\\texttt{Bridge}\\\scriptsize(FastMCP)\\[5pt]
        \tiny execute\_task\\\tiny route\_gateway\\\tiny evaluate\_hook\\\tiny get\_static\_config};
 
 % ── Execution side: compilation + engine (right) ───────────
 \node[draw=black!45, fill=yellow!12, rounded corners=4pt,
       minimum width=2.6cm, minimum height=0.85cm, text centered, text width=2.4cm]
-      (bpmn) at (10.4,6.6) {BPMN 2.0 Diagram};
+      (bpmn) at (10.9,6.6) {BPMN 2.0 Diagram};
 \node[draw=black!45, fill=green!10, rounded corners=4pt,
       minimum width=2.6cm, minimum height=0.85cm, text centered, text width=2.4cm]
-      (parser) at (10.4,5.35) {\texttt{BPMNParser}};
+      (parser) at (10.9,5.35) {\texttt{BPMNParser}};
 \node[draw=blue!50, fill=blue!8, rounded corners=4pt,
       minimum width=2.6cm, minimum height=1.0cm, text centered, text width=2.4cm]
-      (engine) at (10.4,3.7) {\texttt{WorkflowEngine}\\\scriptsize(LangGraph demo)};
+      (engine) at (10.9,3.7) {\texttt{WorkflowEngine}\\\scriptsize(LangGraph demo)};
 \node[draw=black!45, fill=gray!8, rounded corners=4pt,
       minimum width=2.6cm, minimum height=0.9cm, text centered, text width=2.4cm]
-      (fs) at (10.4,2.3) {\texttt{FlowState}\\\scriptsize shared state};
+      (fs) at (10.9,2.3) {\texttt{FlowState}\\\scriptsize shared state};
 
 \draw[flow, double] (bpmn) -- (parser);
 \draw[flow, double] (parser) -- (engine)
@@ -541,8 +541,7 @@ point, passing a \texttt{ControlPointContext} that embeds the full process state
 execution history, model summary, and task instruction---so each reasoning call is
 self-contained and stateless from the engine's perspective.
 
-\subsection{Hook-Based Runtime Flow Adaptation}
-
+\paragraph{Hook-based runtime adaptation.}
 Hooks are the central mechanism for runtime adaptation in CUGA FLO. In the general
 model, \textbf{a hook is an annotation over a BPMN sequence flow edge}: exactly one
 hook may be attached to any given edge. When execution reaches an annotated
