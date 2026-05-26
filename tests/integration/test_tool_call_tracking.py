@@ -16,8 +16,8 @@ Run E2E tests with:
 import pytest
 
 from cuga.sdk import CugaAgent
-from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import ToolCallTracker
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 
 
 @pytest.mark.e2e
@@ -261,7 +261,7 @@ class TestTrackedToolDecorator:
 
     def test_tracked_tool_decorator_simple(self):
         """Test @tracked_tool decorator without any arguments."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import tracked_tool
+        from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
 
         @tracked_tool
         def add(a: int, b: int) -> int:
@@ -282,7 +282,7 @@ class TestTrackedToolDecorator:
 
     def test_tracked_tool_decorator_with_app_name(self):
         """Test @tracked_tool decorator with app_name."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import tracked_tool
+        from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
 
         @tracked_tool(app_name="calculator")
         def multiply(a: int, b: int) -> int:
@@ -301,7 +301,7 @@ class TestTrackedToolDecorator:
     @pytest.mark.asyncio
     async def test_tracked_tool_decorator_async(self):
         """Test @tracked_tool decorator with async function."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import tracked_tool
+        from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
 
         @tracked_tool(app_name="user_service")
         async def fetch_user(user_id: int) -> dict:
@@ -320,7 +320,7 @@ class TestTrackedToolDecorator:
 
     def test_tracked_tool_records_error(self):
         """Test that @tracked_tool records errors."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import tracked_tool
+        from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
 
         @tracked_tool(app_name="failing_service")
         def failing_func() -> None:
@@ -339,7 +339,7 @@ class TestTrackedToolDecorator:
 
     def test_tracked_tool_no_tracking_when_disabled(self):
         """Test that @tracked_tool doesn't record when tracking is disabled."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import tracked_tool
+        from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
 
         @tracked_tool
         def my_func(x: int) -> int:
@@ -375,7 +375,7 @@ class TestToolProviderOperationId:
 
     def test_create_tool_from_api_dict_stores_operation_id(self):
         """Test that create_tool_from_api_dict stores operation_id on tool.func."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider import create_tool_from_api_dict
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import create_tool_from_api_dict
 
         tool_def = {
             "description": "Get all accounts",
@@ -397,7 +397,7 @@ class TestToolProviderOperationId:
 
     def test_operation_id_not_in_model_dump(self):
         """Test that _operation_id is NOT serialized in tool.model_dump() - ensuring it won't leak into prompts."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider import create_tool_from_api_dict
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import create_tool_from_api_dict
 
         tool_def = {
             "description": "Get all accounts",
@@ -427,7 +427,7 @@ class TestToolProviderOperationId:
 
     def test_operation_id_not_in_prompt_serialization(self):
         """Test that operation_id does NOT appear in prompt-formatted tool output."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider import create_tool_from_api_dict
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import create_tool_from_api_dict
         from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
 
         tool_def = {
@@ -458,7 +458,7 @@ class TestToolProviderOperationId:
 
     def test_create_tool_from_api_dict_handles_missing_operation_id(self):
         """Test that create_tool_from_api_dict handles missing operation_id gracefully."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider import create_tool_from_api_dict
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import create_tool_from_api_dict
 
         tool_def = {
             "description": "Get all accounts",
@@ -477,7 +477,7 @@ class TestToolProviderOperationId:
 
     def test_create_tool_from_tracker_stores_operation_id(self):
         """Test that create_tool_from_tracker stores operation_id on tool.func."""
-        from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import create_tool_from_tracker
+        from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import create_tool_from_tracker
 
         tool_def = {
             "description": "Get all accounts",

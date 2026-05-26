@@ -1,4 +1,4 @@
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_args import merge_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
 
 
 def test_single_dict_unpacks_to_named_params():

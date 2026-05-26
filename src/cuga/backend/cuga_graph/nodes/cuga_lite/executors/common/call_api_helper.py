@@ -47,7 +47,7 @@ class CallApiHelper:
         import aiohttp
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
         from cuga.backend.activity_tracker.tracker import ActivityTracker
-        from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import ToolCallTracker
+        from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 
         tracker = ActivityTracker()
 

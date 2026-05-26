@@ -10,8 +10,8 @@ from pydantic import BaseModel
 if TYPE_CHECKING:
     pass
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
-from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
 
 
 class SupervisorConfig(BaseModel):

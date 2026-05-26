@@ -3,7 +3,7 @@ CugaSupervisor State - State schema for supervisor subgraph
 """
 
 from typing import Any, Dict, List, Optional
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from langchain_core.messages import BaseMessage
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
@@ -54,8 +54,7 @@ class CugaSupervisorState(AgentState):
 
     cuga_lite_max_steps: Optional[int] = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    model_config = ConfigDict(arbitrary_types_allowed=True)
 
     @property
     def supervisor_variables_manager(self):

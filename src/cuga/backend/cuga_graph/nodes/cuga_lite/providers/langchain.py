@@ -1,22 +1,22 @@
-"""
-Direct LangChain Tools Provider
+"""Direct LangChain Tools Provider
 
 Provides LangChain tools that are passed directly at runtime (in-process).
 """
 
-from typing import List, Optional
-from loguru import logger
-from langchain_core.tools import StructuredTool, BaseTool
+from __future__ import annotations
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
-    ToolProviderInterface,
+from typing import List, Optional
+from langchain_core.tools import BaseTool, StructuredTool
+from loguru import logger
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
+    ToolProviderInterface,
 )
 
 
 class DirectLangChainToolsProvider(ToolProviderInterface):
-    """
-    Tool provider for direct LangChain tools (in-process).
+    """Tool provider for direct LangChain tools (in-process).
 
     This provider accepts LangChain tools directly at initialization time.
     Useful when CUGA is embedded as a component in another system.
@@ -36,8 +36,7 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
     """
 
     def __init__(self, tools: Optional[List[BaseTool]] = None, app_name: str = "runtime_tools"):
-        """
-        Initialize the direct tools provider.
+        """Initialize the direct tools provider.
 
         Args:
             tools: List of LangChain BaseTool or StructuredTool instances
@@ -58,19 +57,18 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
                     f"Got {type(tool).__name__}, expected BaseTool or StructuredTool."
                 )
 
-            if not hasattr(tool, 'name') or not tool.name:
+            if not hasattr(tool, "name") or not tool.name:
                 raise ValueError(f"Tool at index {i} is missing a name")
 
-            if isinstance(tool, StructuredTool) and not hasattr(tool, 'func'):
-                if not hasattr(tool, 'coroutine') and not hasattr(tool, '_run'):
-                    logger.warning(
-                        f"StructuredTool '{tool.name}' is missing .func attribute. "
-                        f"Adding it for CodeAct compatibility."
-                    )
-                    if hasattr(tool, 'coroutine') and tool.coroutine:
-                        tool.func = tool.coroutine
-                    elif hasattr(tool, '_run'):
-                        tool.func = tool._run
+            if isinstance(tool, StructuredTool) and not hasattr(tool, "func"):
+                logger.warning(
+                    f"StructuredTool '{tool.name}' is missing .func attribute. "
+                    f"Adding it for CodeAct compatibility."
+                )
+                if hasattr(tool, "coroutine") and tool.coroutine:
+                    tool.func = tool.coroutine
+                elif hasattr(tool, "_run"):
+                    tool.func = tool._run
 
     async def initialize(self):
         """Initialize the provider (validates tools)."""
@@ -87,8 +85,7 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
         self.initialized = True
 
     async def get_apps(self) -> List[AppDefinition]:
-        """
-        Get list of applications (single virtual app for runtime tools).
+        """Get list of applications (single virtual app for runtime tools).
 
         Returns:
             List with one AppDefinition representing the runtime tools
@@ -106,8 +103,7 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
         ]
 
     async def get_tools(self, app_name: str) -> List[StructuredTool]:
-        """
-        Get tools for the specified app.
+        """Get tools for the specified app.
 
         Args:
             app_name: Name of the application (should match self.app_name)
@@ -125,8 +121,7 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
         return self.tools
 
     async def get_all_tools(self) -> List[StructuredTool]:
-        """
-        Get all available tools.
+        """Get all available tools.
 
         Returns:
             List of all LangChain tools
@@ -137,8 +132,7 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
         return self.tools
 
     def add_tool(self, tool: BaseTool):
-        """
-        Add a tool dynamically after initialization.
+        """Add a tool dynamically after initialization.
 
         Args:
             tool: LangChain BaseTool or StructuredTool instance
@@ -150,8 +144,7 @@ class DirectLangChainToolsProvider(ToolProviderInterface):
         logger.info(f"Added tool '{tool.name}' to DirectLangChainToolsProvider")
 
     def add_tools(self, tools: List[BaseTool]):
-        """
-        Add multiple tools dynamically after initialization.
+        """Add multiple tools dynamically after initialization.
 
         Args:
             tools: List of LangChain BaseTool or StructuredTool instances

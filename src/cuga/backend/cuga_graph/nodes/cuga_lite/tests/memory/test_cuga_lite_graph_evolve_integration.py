@@ -29,11 +29,11 @@ def _make_stub_tool_provider():
 
 
 def _make_prepare_node():
-    """Return the prepare_tools_and_apps runnable extracted from a minimal graph."""
+    """Return the prepare node runnable extracted from a minimal graph."""
     model = MagicMock()
     model.bind_tools = MagicMock(return_value=model)
     graph = create_cuga_lite_graph(model=model, tool_provider=_make_stub_tool_provider(), apps_list=[])
-    return graph.nodes["prepare_tools_and_apps"].runnable
+    return graph.nodes["prepare"].runnable
 
 
 class TestEvolveStoreAndRetrieveCalledDuringPrepare:
