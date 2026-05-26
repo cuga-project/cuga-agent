@@ -21,17 +21,15 @@ BACKTICK_PATTERN = r"```python(.*?)```"
 
 
 def extract_and_combine_codeblocks(text: str) -> str:
-    """Extract all ```python codeblocks from text and combine them.
-
-    If fenced blocks are present they are returned joined by a blank line
-    with no further filtering. Otherwise the raw text is treated as code
-    only if it contains ``print(`` and compiles (``await`` is stripped for
-    the compile check only; the original text is returned).
-    """
+    """Extract all ```python codeblocks from text and combine them."""
     code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
 
     if code_blocks:
         return "\n\n".join(block.strip() for block in code_blocks)
+
+    recovered = _recover_non_closing_python_fence(text)
+    if recovered:
+        return recovered
 
     stripped_text = text.strip()
 
@@ -87,3 +85,28 @@ def make_tool_awaitable(func: Callable[..., Any]) -> Callable[..., Any]:
         return result
 
     return async_wrapper
+
+
+def _recover_non_closing_python_fence(text: str) -> str:
+    """Recover code from an unclosed ```python fence (#204); compile-guarded."""
+    # ``\s*`` (not ``\s*\n``) tolerates same-line fences like ```python print("x").
+    unclosed = re.search(r"```python\s*(.*)", text, re.DOTALL)
+    if not unclosed:
+        return ""
+    # Strip a trailing full OR partial markdown fence (1–3 backticks).
+    candidate = re.sub(r"\n?`{1,3}\s*$", "", unclosed.group(1)).strip()
+    if not candidate:
+        return ""
+    # Walk back line-by-line so trailing prose after otherwise-valid code
+    # is salvageable: ``print("x")\nhope this helps`` returns ``print("x")``.
+    lines = candidate.split("\n")
+    for end in range(len(lines), 0, -1):
+        attempt = "\n".join(lines[:end]).rstrip()
+        if not attempt:
+            continue
+        try:
+            compile(attempt.replace("await ", ""), "<string>", "exec")
+            return attempt
+        except SyntaxError:
+            continue
+    return ""
