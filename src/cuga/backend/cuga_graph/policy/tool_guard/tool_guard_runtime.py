@@ -710,6 +710,117 @@ class ToolGuardRuntime:
             self._runtimes_by_app[app_name] = None
             return None
 
+    def _type_cast_arguments(
+        self,
+        arguments: Dict[str, Any],
+        app_name: str,
+        function_name: str
+    ) -> Dict[str, Any]:
+        """
+        Type-cast string arguments to their proper types based on the tool schema.
+        
+        This is necessary because LLM outputs and some tool invocation paths may
+        convert all arguments to strings, but guard code expects proper types
+        (e.g., float for annual_revenue, not string).
+        
+        Args:
+            arguments: Raw arguments dictionary
+            app_name: Name of the application
+            function_name: Name of the tool/function
+            
+        Returns:
+            Type-casted arguments dictionary
+        """
+        # Get the runtime domain for this app to access type information
+        runtime_domain = self._runtime_domains_by_app.get(app_name)
+        if not runtime_domain:
+            logger.debug(f"No runtime domain for app '{app_name}', skipping type casting")
+            return arguments
+        
+        # Parse the types file to extract parameter types from Pydantic models
+        try:
+            import re
+            
+            typed_arguments = {}
+            types_content = runtime_domain.app_types.content
+            
+            # Convert function_name to the Args class name
+            # e.g., crm_create_account_accounts_post -> CrmCreateAccountAccountsPostArgs
+            parts = function_name.split('_')
+            args_class_name = ''.join(word.capitalize() for word in parts) + 'Args'
+            
+            # Find the class definition in the types file
+            class_pattern = rf'class\s+{re.escape(args_class_name)}\s*\([^)]*\):\s*\n((?:\s+.*\n)*)'
+            class_match = re.search(class_pattern, types_content)
+            
+            if not class_match:
+                logger.debug(f"Could not find Args class '{args_class_name}' for '{function_name}', skipping type casting")
+                return arguments
+            
+            class_body = class_match.group(1)
+            
+            # Extract field definitions with types
+            # Pattern: field_name: type or field_name: type | None = default
+            field_pattern = r'^\s+(\w+)\s*:\s*([^=\n]+?)(?:\s*=.*)?$'
+            field_matches = re.findall(field_pattern, class_body, re.MULTILINE)
+            
+            # Build type mapping
+            type_map = {}
+            for field_name, field_type in field_matches:
+                # Clean up the type annotation (remove | None, whitespace, etc.)
+                field_type = field_type.strip()
+                # Extract base type from union types like "float | None"
+                if '|' in field_type:
+                    base_type = field_type.split('|')[0].strip()
+                else:
+                    base_type = field_type
+                type_map[field_name] = base_type
+            
+            logger.debug(f"Type map for '{function_name}': {type_map}")
+            
+            # Type-cast each argument
+            for key, value in arguments.items():
+                if key not in type_map:
+                    typed_arguments[key] = value
+                    continue
+                
+                expected_type = type_map[key]
+                
+                # Skip if value is None
+                if value is None:
+                    typed_arguments[key] = value
+                    continue
+                
+                # Type-cast string values to their expected types
+                if isinstance(value, str):
+                    try:
+                        if expected_type == 'int':
+                            typed_arguments[key] = int(value)
+                            logger.debug(f"Cast '{key}' from string '{value}' to int {typed_arguments[key]}")
+                        elif expected_type == 'float':
+                            typed_arguments[key] = float(value)
+                            logger.debug(f"Cast '{key}' from string '{value}' to float {typed_arguments[key]}")
+                        elif expected_type == 'bool':
+                            typed_arguments[key] = value.lower() in ('true', '1', 'yes')
+                            logger.debug(f"Cast '{key}' from string '{value}' to bool {typed_arguments[key]}")
+                        else:
+                            typed_arguments[key] = value
+                    except (ValueError, TypeError) as e:
+                        logger.warning(
+                            f"Failed to cast argument '{key}' from string to {expected_type}: {e}. "
+                            f"Using original value."
+                        )
+                        typed_arguments[key] = value
+                else:
+                    # Value is already the correct type
+                    typed_arguments[key] = value
+            
+            return typed_arguments
+            
+        except Exception as e:
+            logger.warning(f"Error during type casting for '{function_name}': {e}. Using original arguments.", exc_info=True)
+            return arguments
+
     async def guard_tool_call(
         self,
         app_name: str,
@@ -768,10 +879,13 @@ class ToolGuardRuntime:
         )
 
         try:
-            args_obj = SimpleNamespace(**arguments)
+            # Type-cast arguments to their proper types before validation
+            typed_arguments = self._type_cast_arguments(arguments, app_name, function_name)
+            
+            args_obj = SimpleNamespace(**typed_arguments)
             await runtime.guard_toolcall(
                 tool_name=function_name,
-                args=arguments | {"args": args_obj},
+                args=typed_arguments | {"args": args_obj},
                 delegate=self.invoker,
             )
         except PolicyViolationException as e:
