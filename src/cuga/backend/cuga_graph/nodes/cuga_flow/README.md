@@ -8,7 +8,7 @@
 
 ## Overview
 
-The technical problem is how to combine the deterministic structural guarantees of workflow engines with open-world, policy-bounded agentic reasoning without allowing the LLM layer to bypass process semantics. Existing systems tend to choose one side of the tradeoff: classical BPM has structural conformance but weak runtime adaptability, while LLM-as-planner approaches have adaptability but weaker guarantees of conformance and auditability.
+CUGA FLO combines the deterministic structural guarantees of workflow engines with open-world, policy-bounded agentic reasoning without relinquishing process semantics to the LLM layer. Rather than allowing agents to bypass or redefine process behavior, adaptations—when permitted—must be explicitly enabled and remain policy-adherent within governed execution boundaries. Existing systems tend to choose one side of the tradeoff: classical BPM emphasizes structural conformance but limited runtime adaptability, whereas LLM-as-planner approaches favor adaptability at the cost of conformance guarantees and auditability. CUGA FLO seeks to reconcile these two extremes by providing a holistic process harness that can be configured to enforce both structural conformance and runtime adaptability.
 
 Within that structure, three layers of policy-aware reasoning operate:
 
