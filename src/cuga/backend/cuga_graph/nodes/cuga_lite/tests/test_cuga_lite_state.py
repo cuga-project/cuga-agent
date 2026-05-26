@@ -1,6 +1,5 @@
 """Tests for CugaLiteState model."""
 
-import pytest
 from langchain_core.messages import HumanMessage
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import CugaLiteState

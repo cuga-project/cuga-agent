@@ -1,7 +1,6 @@
 """Tests for user_id propagation in server main.py event_stream."""
 
-import pytest
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 
