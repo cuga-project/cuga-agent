@@ -9,7 +9,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.callbacks import BaseCallbackHandler
 from langchain_core.language_models import BaseChatModel
-from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
+from langchain_core.messages import AIMessage, BaseMessage
 from langgraph.graph import StateGraph
 from langgraph.types import Command
 from pydantic import BaseModel, ConfigDict, Field
@@ -132,20 +132,6 @@ class _CugaLiteLoopAdapter(CoreGraphAdapter):
 
 
 _LITE_LOOP_ADAPTER = _CugaLiteLoopAdapter()
-
-
-def _reflection_current_task(state: CugaLiteState) -> str:
-    """Prefer ``sub_task``; else last user message that is not sandbox ``Execution output`` feedback."""
-    if (state.sub_task or "").strip():
-        return state.sub_task.strip()
-    if state.chat_messages:
-        execution_prefix = "Execution output:"
-        for msg in reversed(state.chat_messages):
-            if isinstance(msg, HumanMessage):
-                c = (msg.content or "").strip()
-                if c and not c.startswith(execution_prefix):
-                    return c
-    return ""
 
 
 def append_chat_messages_with_step_limit(

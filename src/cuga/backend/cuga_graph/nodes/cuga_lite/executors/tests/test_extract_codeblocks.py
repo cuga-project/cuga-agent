@@ -122,16 +122,12 @@ class TestExtractAndCombineCodeblocks:
         assert result == ''
 
     def test_incomplete_markdown_block_with_valid_code_recovered(self):
-        """Unclosed ```python fence containing syntactically valid code should be
-        recovered (regression test for issue #204: sdk_callback_node routed the
-        raw, unexecuted code block to FinalAnswerAgent because the strict
-        regex failed to match an open fence)."""
+        """Unclosed fence with valid code returns the code."""
         result = extract_and_combine_codeblocks('```python\nprint("test")')
         assert result == 'print("test")'
 
     def test_incomplete_markdown_block_recovers_multiline_code(self):
-        """Unclosed fence with multi-line valid Python preceded by prose — the
-        exact shape that surfaced in issue #204."""
+        """Unclosed fence with multi-line valid Python preceded by prose returns the code."""
         text = (
             "Config is available, so the scan can proceed. "
             "I'll list all Gmail messages...\n"
@@ -145,20 +141,27 @@ class TestExtractAndCombineCodeblocks:
         assert "print('starting scan')" in result
 
     def test_incomplete_markdown_block_with_invalid_code_returns_empty(self):
-        """Unclosed fence containing non-compilable text must NOT be treated as
-        code — without this guard the recovery path could swallow prose that
-        happens to live after an open fence."""
+        """Unclosed fence with non-compilable text returns empty."""
         result = extract_and_combine_codeblocks('```python\nthis is not python at all $$$')
         assert result == ''
 
     def test_incomplete_markdown_block_strips_partial_trailing_fence(self):
-        """Streamed responses can be truncated mid-fence (1 or 2 trailing
-        backticks instead of 3). The recovery path must strip those stragglers
-        so ``compile()`` doesn't reject otherwise-valid code (#204 CR feedback)."""
+        """Unclosed fence with 1 or 2 trailing backticks still returns the code."""
         result_one_tick = extract_and_combine_codeblocks('```python\nprint("test")\n`')
         result_two_ticks = extract_and_combine_codeblocks('```python\nprint("test")\n``')
         assert result_one_tick == 'print("test")'
         assert result_two_ticks == 'print("test")'
+
+    def test_incomplete_markdown_block_recovers_valid_code_with_trailing_prose(self):
+        """Unclosed fence with valid code followed by prose returns just the code."""
+        text = '```python\nprint("test")\n\nHope that helps!\n'
+        result = extract_and_combine_codeblocks(text)
+        assert result == 'print("test")'
+
+    def test_incomplete_same_line_python_fence_recovered(self):
+        """Unclosed fence with code on the same line as ```python returns the code."""
+        result = extract_and_combine_codeblocks('```python print("x")')
+        assert result == 'print("x")'
 
     def test_nested_code_structures(self):
         """Nested code structures should be preserved."""
