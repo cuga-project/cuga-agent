@@ -2,7 +2,7 @@
 
 # CUGA FLO
 
-**CUGA FLO** is a process harness for policy-aware, structurally-enforced agent workflows. The process topology is defined upfront and compiled into a LangGraph at initialisation; LLM reasoning is scoped to designated control points — task fulfillment, gateway routing, and hook-governed flow adaptations.
+**CUGA FLO (FLow Orchestration)** is a process harness for policy-aware, structurally-enforced agent workflows. The architecture separates deterministic process execution from agentic reasoning and governance. CUGA FLO enables the integration with any workflow engine via MCP. A demo instantiation with LangGraph is included, but this may be replaced with other workflow engines in production settings. LLM reasoning is scoped to designated control points — task fulfillment, gateway routing, and hook-governed flow adaptations.
 
 ---
 
