@@ -8,7 +8,7 @@ from unittest.mock import MagicMock, AsyncMock, patch
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider import call_api
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry import call_api
 
 
 @pytest.fixture
@@ -81,7 +81,7 @@ async def test_call_api_timeout():
 
     # Mock the HTTP call to simulate a timeout
     with patch(
-        'cuga.backend.cuga_graph.nodes.cuga_lite.tool_registry_provider.aiohttp.ClientSession'
+        'cuga.backend.cuga_graph.nodes.cuga_lite.providers.registry.aiohttp.ClientSession'
     ) as mock_session_class:
         # Create a mock post context manager that raises TimeoutError
         async def timeout_post_context(*args, **kwargs):

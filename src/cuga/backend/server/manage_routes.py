@@ -32,6 +32,7 @@ def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool |
         "reflection_enabled": None,
         "shortlisting_tool_threshold": None,
         "cuga_lite_max_steps": None,
+        "enable_filesystem_tools": None,
     }
     feature_flags = config.get("feature_flags") or {}
     advanced = config.get("advanced_features") or {}
@@ -42,6 +43,11 @@ def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool |
         feature_flags.get("reflection")
         if "reflection" in feature_flags
         else advanced.get("reflection_enabled")
+    )
+    out["enable_filesystem_tools"] = (
+        feature_flags.get("enable_filesystem_tools")
+        if "enable_filesystem_tools" in feature_flags
+        else advanced.get("enable_filesystem_tools")
     )
     val = (
         feature_flags.get("shortlisting_tool_threshold")
@@ -59,23 +65,73 @@ def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool |
 
 
 def _merge_feature_flags_defaults(config: dict[str, Any]) -> None:
-    """Merge settings.advanced_features into config.feature_flags when keys are absent."""
+    """Fill config.feature_flags from stored advanced_features, then global settings.
+
+    Manage stores agent overrides under ``advanced_features`` (e.g. demo_manage_setup
+    sets enable_filesystem_tools there only). The UI reads ``feature_flags``. When a
+    key is missing from feature_flags, prefer the persisted advanced_features dict
+    over global settings so per-agent demo/publish state is reflected correctly.
+    """
     from cuga.config import settings
 
     ff = config.setdefault("feature_flags", {})
+    raw_adv = config.get("advanced_features")
+    stored_adv: dict[str, Any] = raw_adv if isinstance(raw_adv, dict) else {}
     af = getattr(settings, "advanced_features", None)
-    if not af:
-        return
+
+    def _bool(v: Any) -> bool:
+        return bool(v)
+
     if "enable_todos" not in ff:
-        ff["enable_todos"] = getattr(af, "enable_todos", False)
+        if "enable_todos" in stored_adv:
+            ff["enable_todos"] = _bool(stored_adv["enable_todos"])
+        elif af:
+            ff["enable_todos"] = getattr(af, "enable_todos", False)
+        else:
+            ff["enable_todos"] = False
     if "reflection" not in ff:
-        ff["reflection"] = getattr(af, "reflection_enabled", False)
+        if "reflection" in stored_adv:
+            ff["reflection"] = _bool(stored_adv["reflection"])
+        elif "reflection_enabled" in stored_adv:
+            ff["reflection"] = _bool(stored_adv["reflection_enabled"])
+        elif af:
+            ff["reflection"] = getattr(af, "reflection_enabled", False)
+        else:
+            ff["reflection"] = False
+    if "enable_filesystem_tools" not in ff:
+        if "enable_filesystem_tools" in stored_adv:
+            ff["enable_filesystem_tools"] = _bool(stored_adv["enable_filesystem_tools"])
+        elif af:
+            ff["enable_filesystem_tools"] = getattr(af, "enable_filesystem_tools", False)
+        else:
+            ff["enable_filesystem_tools"] = False
     if "shortlisting_tool_threshold" not in ff:
-        ff["shortlisting_tool_threshold"] = getattr(af, "shortlisting_tool_threshold", 35)
+        if "shortlisting_tool_threshold" in stored_adv:
+            v = stored_adv["shortlisting_tool_threshold"]
+            ff["shortlisting_tool_threshold"] = int(v) if v is not None else 35
+        elif af:
+            ff["shortlisting_tool_threshold"] = getattr(af, "shortlisting_tool_threshold", 35)
+        else:
+            ff["shortlisting_tool_threshold"] = 35
     if "max_steps" not in ff:
-        ff["max_steps"] = getattr(af, "cuga_lite_max_steps", 70)
+        if "max_steps" in stored_adv:
+            v = stored_adv["max_steps"]
+            ff["max_steps"] = int(v) if v is not None else 70
+        elif "cuga_lite_max_steps" in stored_adv:
+            v = stored_adv["cuga_lite_max_steps"]
+            ff["max_steps"] = int(v) if v is not None else 70
+        elif af:
+            ff["max_steps"] = getattr(af, "cuga_lite_max_steps", 70)
+        else:
+            ff["max_steps"] = 70
     if "builtin_tools" not in ff:
-        ff["builtin_tools"] = list(getattr(af, "builtin_tools", ["knowledge"]))
+        if "builtin_tools" in stored_adv:
+            bt = stored_adv["builtin_tools"]
+            ff["builtin_tools"] = list(bt) if isinstance(bt, (list, tuple)) else bt
+        elif af:
+            ff["builtin_tools"] = list(getattr(af, "builtin_tools", ["knowledge"]))
+        else:
+            ff["builtin_tools"] = ["knowledge"]
 
 
 def _merge_mcp_yaml_into_config(config: dict[str, Any]) -> None:
@@ -674,6 +730,8 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                     draft_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
                 if overrides["cuga_lite_max_steps"] is not None:
                     draft_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
+                if overrides["enable_filesystem_tools"] is not None:
+                    draft_agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
                 llm_cfg = (config or {}).get("llm") or {}
                 draft_agent.llm_config = llm_cfg if llm_cfg else None
                 await draft_agent.build_graph()
@@ -796,6 +854,8 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
                     draft_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
                 if overrides["cuga_lite_max_steps"] is not None:
                     draft_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
+                if overrides["enable_filesystem_tools"] is not None:
+                    draft_agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
                 draft_agent.llm_config = full_draft.get("llm") or None
                 await draft_agent.build_graph()
         except Exception as rebuild_err:
@@ -1184,6 +1244,8 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     prod_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
                 if overrides["cuga_lite_max_steps"] is not None:
                     prod_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
+                if overrides["enable_filesystem_tools"] is not None:
+                    prod_agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
                 llm_cfg = (config or {}).get("llm") or {}
                 prod_agent.llm_config = llm_cfg if llm_cfg else None
                 await prod_agent.build_graph()

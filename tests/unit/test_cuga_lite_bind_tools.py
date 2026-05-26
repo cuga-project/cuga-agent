@@ -5,7 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 from langchain_core.tools import StructuredTool
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import resolve_model_with_bind_tools
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolve_bind_tools_fields
 
 
@@ -125,11 +125,11 @@ async def test_bind_tools_mode_all_shortlists_when_over_cap():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=3,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=fake_shortlist,
         ),
     ):
@@ -156,7 +156,7 @@ async def test_bind_tools_mode_all_raises_when_over_cap_without_query():
     model = MagicMock()
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
         return_value=3,
     ):
         with pytest.raises(RuntimeError, match="provider-safe cap"):
@@ -183,11 +183,11 @@ async def test_bind_tools_mode_all_no_cap_when_under_threshold():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=128,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=shortlist_calls,
         ),
     ):
@@ -215,7 +215,7 @@ async def test_bind_tools_mode_all_disabled_cap_binds_everything():
     model = MagicMock()
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
         return_value=0,
     ):
         await resolve_model_with_bind_tools(
@@ -246,7 +246,7 @@ async def test_bind_tools_cap_does_not_pad_by_default():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=5,
         ),
         patch(
@@ -254,7 +254,7 @@ async def test_bind_tools_cap_does_not_pad_by_default():
             return_value=False,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=stingy_shortlist,
         ),
     ):
@@ -285,7 +285,7 @@ async def test_bind_tools_cap_pads_when_opt_in():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=5,
         ),
         patch(
@@ -293,7 +293,7 @@ async def test_bind_tools_cap_pads_when_opt_in():
             return_value=True,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=stingy_shortlist,
         ),
     ):
@@ -335,11 +335,11 @@ async def test_bind_tools_cap_not_violated_when_at_boundary_with_find_tools():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=5,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=fake_shortlist,
         ),
     ):
@@ -386,11 +386,11 @@ async def test_bind_tools_cap_guarantees_find_tools_when_in_overlay_bound():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=4,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=fake_shortlist,
         ),
     ):
@@ -440,11 +440,11 @@ async def test_bind_tools_include_find_tools_false_strips_overlay_find_tools():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=3,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=fake_shortlist,
         ),
     ):
@@ -485,11 +485,11 @@ async def test_bind_tools_cap_raises_when_shortlist_names_dont_match_pool():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=3,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=hallucinating_shortlist,
         ),
     ):
@@ -521,11 +521,11 @@ async def test_bind_tools_cap_clamps_shortlist_when_llm_returns_too_many():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=4,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=overlong_shortlist,
         ),
     ):
@@ -560,11 +560,11 @@ async def test_bind_tools_cap_clamps_shortlist_with_find_tools_slot():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=4,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=overlong_shortlist,
         ),
     ):
@@ -598,7 +598,7 @@ async def test_bind_tools_cap_binds_only_find_tools_when_max_count_is_one():
     model = MagicMock()
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
         return_value=1,
     ):
         await resolve_model_with_bind_tools(
@@ -635,11 +635,11 @@ async def test_bind_tools_cap_reserves_slot_for_find_tools():
 
     with (
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.bind_tools_max_count_from_settings",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools.bind_tools_max_count_from_settings",
             return_value=4,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.shortlist_tool_names",
+            "cuga.backend.cuga_graph.nodes.cuga_lite.bind_tools.cap.PromptUtils.shortlist_tool_names",
             side_effect=fake_shortlist,
         ),
     ):

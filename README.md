@@ -43,6 +43,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Reflection** | `[advanced_features] reflection_enabled` in [`settings.toml`](src/cuga/settings.toml) |
 > | **Langflow** | Low-code visual workflows — integrates with CUGA ([langflow.org](https://www.langflow.org/)) |
 > | **Memory** (optional) | `enable_memory` in `settings.toml` · `uv sync --extra memory` · `cuga start memory` |
+> | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
 > | **Agent skills** | `SKILL.md` under `.agents/skills` · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
 > | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
@@ -73,6 +74,8 @@ CUGA achieves state-of-the-art performance on leading benchmarks:
 - **Save-and-reuse capabilities** _(Experimental)_ — Capture and reuse successful execution paths (plans, code, and trajectories) for faster and consistent behavior across repeated tasks
 
 - **Agent skills** — Package domain workflows as `SKILL.md` files with frontmatter; the agent discovers them and loads full instructions on demand via the `load_skill` tool (see [Agent skills](#agent-skills))
+
+- **Knowledge engine** — Built-in RAG over your documents: ingest PDFs, Office files, HTML, Markdown, and images through **Docling**, then search and reason over them via auto-injected knowledge tools. Documents can be scoped to **agent-level** (permanent, shared across conversations) or **session-level** (per-thread, isolated to a single conversation) — so long-lived reference material and ephemeral per-user uploads can coexist (see [Knowledge Base](#knowledge-base))
 
 ### Manage, publish, and self-hosting
 
@@ -271,8 +274,8 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 **Setup Instructions:**
 
 1. Access [IBM WatsonX](https://www.ibm.com/watsonx)
-2. Create a project and get your credentials:
-   - Project ID
+2. Create a project or space and get your credentials:
+   - Project ID or Space ID
    - API Key
    - Region/URL
 3. Add to your `.env` file:
@@ -281,6 +284,7 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
    # WatsonX Configuration
    WATSONX_API_KEY=your-watsonx-api-key
    WATSONX_PROJECT_ID=your-project-id
+   # WATSONX_SPACE_ID=your-space-id  # Alternative to WATSONX_PROJECT_ID
    WATSONX_URL=https://us-south.ml.cloud.ibm.com  # or your region
    AGENT_SETTING_CONFIG="settings.watsonx.toml"
 
@@ -516,6 +520,9 @@ When enabled, the agent can search, ingest, and manage documents.
 ```bash
 cuga start demo_knowledge
 ```
+
+> Walk through a full HR-Benefits demo with sample documents and example prompts:
+> **[docs/examples/knowledge_demo/](./docs/examples/knowledge_demo)**
 
 Knowledge is **enabled by default** via `settings.toml`. The SDK auto-injects knowledge tools
 and awareness into the agent, so it knows what documents are available and how to search them.
@@ -1062,6 +1069,7 @@ CUGA supports three types of tool integrations. Each approach has its own use ca
 - **Tool Registry**: [./src/cuga/backend/tools_env/registry/README.md](./src/cuga/backend/tools_env/registry/README.md)
 - **Comprehensive example with different tools + MCP**: [./docs/examples/cuga_with_runtime_tools/README.md](Adding Tools)
 - **CUGA as MCP**: [./docs/examples/cuga_as_mcp/README.md](docs/examples/cuga_as_mcp)
+- **Knowledge Engine demo**: [./docs/examples/knowledge_demo/README.md](./docs/examples/knowledge_demo) — agent-level + session-level knowledge walkthrough
 
 </details>
 

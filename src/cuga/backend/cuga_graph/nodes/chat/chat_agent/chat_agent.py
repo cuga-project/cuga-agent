@@ -14,7 +14,7 @@ from mcp.client.sse import sse_client
 from mcp import ClientSession
 
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
-from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 
@@ -266,7 +266,21 @@ class ChatAgent(BaseAgent):
         except Exception as exc:
             logger.debug(f"Chat knowledge context unavailable: {exc}")
 
-        runtime_tools = self._dedupe_tools([*self.base_tools, *knowledge_tools])
+        # Filesystem tools — only when enable_filesystem_tools is on.
+        # Any stale ``filesystem_*`` MCP tools from base_tools are always stripped.
+        base_without_mcp_fs = [
+            t for t in self.base_tools if not getattr(t, "name", "").startswith("filesystem_")
+        ]
+        _fs_on = getattr(settings.advanced_features, "enable_filesystem_tools", False)
+        if _fs_on:
+            from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem import (
+                create_filesystem_tools,
+            )
+
+            fs_tools = create_filesystem_tools(state.thread_id)
+        else:
+            fs_tools = []
+        runtime_tools = self._dedupe_tools([*base_without_mcp_fs, *fs_tools, *knowledge_tools])
         tools_list = "\n".join(
             [f"- {tool.name}: {tool.description or 'No description'}" for tool in runtime_tools]
         )

@@ -243,8 +243,8 @@ class TaskAnalyzer(BaseNode):
         # if not settings.features.chat:
         # state.variables_manager.reset()
 
-        # Apply sliding window to message history at the start of task analysis
-        state.apply_message_sliding_window()
+        # Apply context management to message history at the start of task analysis
+        await state.manage_message_context()
 
         # Check supervisor mode first (takes priority over fast mode)
         if await TaskAnalyzer.should_use_supervisor_mode(state):

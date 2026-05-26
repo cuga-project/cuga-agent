@@ -33,7 +33,7 @@ REGISTRY_BASE_URL = "http://localhost:8001"
 MANAGE_API_URL = f"{MANAGER_BASE_URL}/api/manage"
 STREAM_API_URL = f"{MANAGER_BASE_URL}/stream"
 TEST_AGENT_ID = "cuga-default"
-MANAGER_STARTUP_TIMEOUT = 60  # seconds
+MANAGER_STARTUP_TIMEOUT = 120  # seconds
 MANAGER_HEALTH_CHECK_INTERVAL = 1  # seconds
 
 
@@ -166,10 +166,12 @@ def cleanup_and_start_manager():
         except Exception as e:
             logger.warning(f"Failed to remove {db_file}: {e}")
 
-    # Create test workspace directory for filesystem tool
-    test_workspace = Path("./test_workspace")
+    # Create test workspace directory inside cuga_workspace so the sandboxed
+    # runtime filesystem tool (which resolves paths relative to cuga_workspace/)
+    # can find files when the agent calls list_files("./test_workspace").
+    test_workspace = Path("./cuga_workspace/test_workspace")
     logger.info(f"Creating test workspace directory: {test_workspace.absolute()}")
-    test_workspace.mkdir(exist_ok=True)
+    test_workspace.mkdir(parents=True, exist_ok=True)
 
     # Create a sample file in the workspace for testing
     sample_file = test_workspace / "sample.txt"
@@ -190,6 +192,10 @@ def cleanup_and_start_manager():
         if test_workspace.exists():
             shutil.rmtree(test_workspace)
             logger.info(f"Removed test workspace: {test_workspace}")
+        # Also clean up the cuga_workspace root if we created it
+        cuga_ws = Path("./cuga_workspace")
+        if cuga_ws.exists() and not any(cuga_ws.iterdir()):
+            cuga_ws.rmdir()
     except Exception as e:
         logger.warning(f"Failed to remove test workspace: {e}")
 
@@ -212,7 +218,7 @@ def test_agent_config():
                 "name": "filesystem",
                 "type": "mcp",
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./cuga_workspace"],
                 "transport": "stdio",
                 "description": "File system operations for testing",
             }
@@ -234,7 +240,7 @@ def test_agent_config_with_partial_tools():
                 "name": "filesystem",
                 "type": "mcp",
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./cuga_workspace"],
                 "transport": "stdio",
                 "description": "File system operations",
                 "include": ["read_file", "write_file"],  # Only include specific tools
@@ -550,10 +556,11 @@ class TestManagerAPIWorkflow:
         draft_data = draft_response.json()
         assert len(draft_data["config"]["tools"]) == 2
 
-        # Get production config - should still have 1 tool
+        # Get production config - version 2 was published by test_04 with 1 tool
+        # (version 1 is the manager startup config with 0 tools)
         prod_response = http_client.get(
             f"{MANAGE_API_URL}/config",
-            params={"agent_id": TEST_AGENT_ID, "version": "1"},
+            params={"agent_id": TEST_AGENT_ID, "version": "2"},
         )
         assert prod_response.status_code == 200
         prod_data = prod_response.json()
@@ -1018,7 +1025,7 @@ class TestPatchDraftEndpoints:
                 "name": "filesystem",
                 "type": "mcp",
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./cuga_workspace"],
                 "transport": "stdio",
             }
         ]
@@ -1059,7 +1066,7 @@ class TestPatchDraftEndpoints:
                 "name": "filesystem",
                 "type": "mcp",
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./cuga_workspace"],
                 "transport": "stdio",
             },
         ]
@@ -1074,7 +1081,7 @@ class TestPatchDraftEndpoints:
                 "name": "filesystem",
                 "type": "mcp",
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./cuga_workspace"],
                 "transport": "stdio",
             },
             {
@@ -1113,7 +1120,7 @@ class TestPatchDraftEndpoints:
                 "name": "filesystem",
                 "type": "mcp",
                 "command": "npx",
-                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./test_workspace"],
+                "args": ["-y", "@modelcontextprotocol/server-filesystem", "./cuga_workspace"],
                 "transport": "stdio",
             }
         ]

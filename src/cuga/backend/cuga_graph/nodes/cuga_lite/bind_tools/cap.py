@@ -20,7 +20,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import StructuredTool
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 from cuga.config import settings
 
 

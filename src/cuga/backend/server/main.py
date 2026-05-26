@@ -676,7 +676,7 @@ async def lifespan(app: FastAPI):
         if settings.advanced_features.langfuse_tracing and CallbackHandler is not None
         else None
     )
-    from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
     from cuga.backend.server.config_store import load_config, load_draft
 
     # Load the latest published config so both agents start with the correct LLM.
@@ -742,6 +742,7 @@ async def lifespan(app: FastAPI):
         reflection_enabled=_prod_overrides.get("reflection_enabled"),
         shortlisting_tool_threshold=_prod_overrides.get("shortlisting_tool_threshold"),
         cuga_lite_max_steps=_prod_overrides.get("cuga_lite_max_steps"),
+        enable_filesystem_tools=_prod_overrides.get("enable_filesystem_tools"),
         special_instructions=(_startup_config or {}).get("special_instructions") or None,
     )
     await app_state.agent.build_graph()
@@ -827,6 +828,7 @@ async def lifespan(app: FastAPI):
         reflection_enabled=draft_overrides.get("reflection_enabled"),
         shortlisting_tool_threshold=draft_overrides.get("shortlisting_tool_threshold"),
         cuga_lite_max_steps=draft_overrides.get("cuga_lite_max_steps"),
+        enable_filesystem_tools=draft_overrides.get("enable_filesystem_tools"),
         llm_config=_draft_llm_cfg or None,
         special_instructions=(draft_config or {}).get("special_instructions") or None,
     )
@@ -1240,6 +1242,7 @@ async def event_stream(
     if local_state:
         from cuga.config import get_service_instance_id, get_tenant_id
 
+        local_state.user_id = user_id
         local_state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
         if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
             from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
@@ -1331,6 +1334,7 @@ async def event_stream(
         reflection_enabled=getattr(run_agent, "reflection_enabled", None),
         shortlisting_tool_threshold=getattr(run_agent, "shortlisting_tool_threshold", None),
         cuga_lite_max_steps=getattr(run_agent, "cuga_lite_max_steps", None),
+        enable_filesystem_tools=getattr(run_agent, "enable_filesystem_tools", None),
         current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
         knowledge_context=_knowledge_ctx or None,
         special_instructions=getattr(run_agent, "special_instructions", None),
@@ -2579,18 +2583,26 @@ async def save_policies_config(
         )
 
 
-_CUGA_LITE_INJECTED_SHELL_TOOLS: tuple[tuple[str, str], ...] = (
-    ("run_command", "Run a shell command in the Cuga Lite workspace (injected at prepare; not from MCP)."),
-    ("write_file", "Write a file under /workspace (Cuga Lite shell tooling)."),
-    ("read_file", "Read a text file from the workspace (Cuga Lite shell tooling)."),
-    ("list_files", "List files under /workspace (Cuga Lite shell tooling)."),
-    ("download_file", "Copy a workspace file to cuga_workspace (Cuga Lite shell tooling)."),
-    ("upload_file", "Copy a local file into the workspace (Cuga Lite shell tooling)."),
+# Runtime tools injected by Cuga Lite — split by gate so each group only
+# appears when its own flag is actually enabled.
+# download_file/upload_file are intentionally NOT listed (host↔sandbox plumbing).
+_CUGA_LITE_SHELL_TOOLS: tuple[tuple[str, str], ...] = (
+    ("run_command", "Run a shell command in the Cuga Lite workspace."),
+)
+_CUGA_LITE_FILESYSTEM_TOOLS: tuple[tuple[str, str], ...] = (
+    ("read_file", "Read a text file from the workspace."),
+    ("write_file", "Write a file in the workspace."),
+    ("edit_file", "Apply exact-text edits to a workspace file."),
+    ("list_files", "List files/directories in the workspace."),
+    ("make_directory", "Create a directory in the workspace."),
+    ("move_file", "Move or rename a workspace file/directory."),
+    ("search_files", "Recursively search the workspace by glob pattern."),
+    ("get_file_info", "Get metadata for a workspace file/directory."),
 )
 
 
-async def _shell_tooling_enabled_for_tools_list(agent_id: Optional[str], use_draft: bool) -> bool:
-    """True when Cuga Lite injects shell StructuredTools — same condition as the manage UI needs for policy pickers."""
+async def _runtime_tools_flags(agent_id: Optional[str], use_draft: bool) -> tuple[bool, bool]:
+    """Return (shell_enabled, filesystem_enabled) from agent config or settings fallback."""
     from cuga.backend.server.config_store import _parse_agent_id, load_config, load_draft
 
     base = _parse_agent_id(agent_id or get_agent_id() or "cuga-default")
@@ -2601,11 +2613,15 @@ async def _shell_tooling_enabled_for_tools_list(agent_id: Optional[str], use_dra
             cfg, _ = await load_config(None, base)
         if cfg:
             adv = cfg.get("advanced_features")
-            if isinstance(adv, dict) and "enable_shell_tool" in adv:
-                return bool(adv["enable_shell_tool"])
+            if isinstance(adv, dict):
+                return bool(adv.get("enable_shell_tool")), bool(adv.get("enable_filesystem_tools"))
     except Exception as e:
-        logger.debug("tools/list: could not read manage config for enable_shell_tool: {}", e)
-    return bool(getattr(settings.advanced_features, "enable_shell_tool", False))
+        logger.debug("tools/list: could not read manage config for runtime tools: {}", e)
+    adv_settings = settings.advanced_features
+    return (
+        bool(getattr(adv_settings, "enable_shell_tool", False)),
+        bool(getattr(adv_settings, "enable_filesystem_tools", False)),
+    )
 
 
 @app.get("/api/tools/list")
@@ -2671,26 +2687,42 @@ async def get_tools_list(
                     {"name": app.name, "type": getattr(app, "type", "api").upper(), "tool_count": 0}
                 )
 
-        if await _shell_tooling_enabled_for_tools_list(agent_id, use_draft):
-            shell_app = "cuga_lite_shell"
-            existing_names = {t["name"] for t in tools_list}
+        shell_on, fs_on = await _runtime_tools_flags(agent_id, use_draft)
+        existing_names = {t["name"] for t in tools_list}
+        if shell_on:
             added = 0
-            for tool_name, descr in _CUGA_LITE_INJECTED_SHELL_TOOLS:
-                if tool_name in existing_names:
-                    continue
-                tools_list.append(
-                    {
-                        "name": tool_name,
-                        "id": tool_name,
-                        "app": shell_app,
-                        "app_type": "CUGA_LITE",
-                        "description": descr,
-                    }
-                )
-                existing_names.add(tool_name)
-                added += 1
+            for tool_name, descr in _CUGA_LITE_SHELL_TOOLS:
+                if tool_name not in existing_names:
+                    tools_list.append(
+                        {
+                            "name": tool_name,
+                            "id": tool_name,
+                            "app": "cuga_lite_shell",
+                            "app_type": "CUGA_LITE",
+                            "description": descr,
+                        }
+                    )
+                    existing_names.add(tool_name)
+                    added += 1
             if added:
-                apps_list.append({"name": shell_app, "type": "CUGA_LITE", "tool_count": added})
+                apps_list.append({"name": "cuga_lite_shell", "type": "CUGA_LITE", "tool_count": added})
+        if fs_on:
+            added = 0
+            for tool_name, descr in _CUGA_LITE_FILESYSTEM_TOOLS:
+                if tool_name not in existing_names:
+                    tools_list.append(
+                        {
+                            "name": tool_name,
+                            "id": tool_name,
+                            "app": "filesystem",
+                            "app_type": "CUGA_LITE",
+                            "description": descr,
+                        }
+                    )
+                    existing_names.add(tool_name)
+                    added += 1
+            if added:
+                apps_list.append({"name": "filesystem", "type": "CUGA_LITE", "tool_count": added})
 
         logger.info(
             f"Retrieved {len(tools_list)} tools from {len(apps_list)} apps (agent_id={agent_id}, draft={use_draft})"

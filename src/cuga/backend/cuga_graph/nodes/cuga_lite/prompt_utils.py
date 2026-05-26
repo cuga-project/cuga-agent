@@ -11,7 +11,7 @@ from cuga.config import settings
 from loguru import logger
 from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import AppDefinition
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
 
@@ -105,7 +105,10 @@ class PromptUtils:
         """
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                schema = tool.args_schema.schema()
+                if hasattr(tool.args_schema, 'model_json_schema'):
+                    schema = tool.args_schema.model_json_schema()
+                else:
+                    schema = tool.args_schema.schema()
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 
@@ -172,7 +175,10 @@ class PromptUtils:
 
         if hasattr(tool, 'args_schema') and tool.args_schema:
             try:
-                schema = tool.args_schema.schema()
+                if hasattr(tool.args_schema, 'model_json_schema'):
+                    schema = tool.args_schema.model_json_schema()
+                else:
+                    schema = tool.args_schema.schema()
                 properties = schema.get('properties', {})
                 required = schema.get('required', [])
 

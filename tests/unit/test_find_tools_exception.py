@@ -26,7 +26,7 @@ def mock_apps():
 
 async def _get_find_tools_func(mock_tools, mock_apps):
     """Create find_tools_tool and extract the inner async function for direct testing."""
-    from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import (
         create_find_tools_tool,
     )
 
@@ -44,7 +44,7 @@ async def _get_find_tools_func(mock_tools, mock_apps):
 async def test_find_tools_func_returns_error_on_output_parser_exception(mock_tools, mock_apps):
     """When PromptUtils.find_tools raises OutputParserException, return an error string."""
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.find_tools",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools.PromptUtils.find_tools",
         new_callable=AsyncMock,
         side_effect=OutputParserException("Invalid json output: "),
     ):
@@ -60,7 +60,7 @@ async def test_find_tools_func_returns_error_on_output_parser_exception(mock_too
 async def test_find_tools_func_returns_error_on_generic_exception(mock_tools, mock_apps):
     """Any exception type should be caught and return a generic internal error string with source error."""
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.find_tools",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools.PromptUtils.find_tools",
         new_callable=AsyncMock,
         side_effect=RuntimeError("unexpected LLM failure"),
     ):
@@ -78,7 +78,7 @@ async def test_find_tools_func_success_passes_through(mock_tools, mock_apps):
     expected = "## 1. `test_tool`\nSome tool details"
 
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.find_tools",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools.PromptUtils.find_tools",
         new_callable=AsyncMock,
         return_value=expected,
     ):
@@ -91,11 +91,11 @@ async def test_find_tools_func_success_passes_through(mock_tools, mock_apps):
 @pytest.mark.asyncio
 async def test_find_tools_composes_query_with_initial_user_message(mock_tools, mock_apps):
     """When initial_user_message is set, shortlister query includes task context."""
-    from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import create_find_tools_tool
+    from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import create_find_tools_tool
 
     app_to_tools_map = {"test_app": mock_tools}
     with patch(
-        "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.PromptUtils.find_tools",
+        "cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools.PromptUtils.find_tools",
         new_callable=AsyncMock,
         return_value="ok",
     ) as mock_find:
@@ -111,5 +111,5 @@ async def test_find_tools_composes_query_with_initial_user_message(mock_tools, m
     mock_find.assert_awaited_once()
     call_kw = mock_find.await_args.kwargs
     assert call_kw["query"] == (
-        "query: list calendar tools,\nTask context (initial user message): Book a flight to NYC"
+        "Query: list calendar tools\nTask context (initial user message): Book a flight to NYC"
     )

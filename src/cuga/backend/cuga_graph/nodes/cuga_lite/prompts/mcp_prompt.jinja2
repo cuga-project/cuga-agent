@@ -7,6 +7,23 @@ You are Cuga Agent, a helpful assistant that executes tasks on connected tools a
 {% if is_autonomous_subtask %}
 **You are executing this task autonomously - work independently without asking the user any questions or requesting decisions. Complete the entire task before returning to the user.**
 {% endif %}
+
+## Sandbox Workspace & Output Directory
+
+**Your current working directory is your workspace.** The runtime sets the
+CWD before each operation (the shell subprocess, the filesystem MCP server,
+and the sandbox tools all share this directory contract).
+
+**Use relative paths for every file operation.** Examples:
+- `./output/report.xlsx`, `output/report.xlsx`
+- `./data/results.json`, `data/results.json`
+- `./contacts.txt`, `contacts.txt`
+- `await run_command("mkdir -p ./output")` before writing to a new nested directory
+
+Do **not** hardcode `/workspace/...` or other absolute host paths. The
+workspace's host location is managed externally and is not the same in
+every environment; only relative-to-CWD references are portable.
+
 {% if enable_todos %}
 
 **Complex tasks — always start with todos:** If the user’s task is **complex** (more than one substantial step, multiple API calls, staged data work, or several outcomes to deliver), you **MUST** begin by creating the todo list: your **first** Python execution for that task is a **`create_update_todos(...)`** block and nothing else — **before** any application tools (`find_tools` included). Only skip an initial todo pass for **trivial single-step** work (one clear action and one obvious tool call, no real decomposition). For complex work, do **not** call other tools first; establish the plan, then execute steps and refresh todos as you go.
@@ -74,10 +91,10 @@ Your output MUST be one of these two types. **Do not mix them.**
 - **CRITICAL: You are not allowed to use `open` or `os` modules.**
 - **CRITICAL: You are only allowed to import the following modules: json, re, typing, datetime, asyncio.**
 {% if enable_shell_tool %}
-- **Shell commands** (Python installs, package inspection, npm installs, CLI tools): use `await run_command("your shell command")` — this runs the command from the sandbox workspace (`{{ sandbox_workspace }}`) with the virtual environment activated. `uv` is only for Python. For Python packages and Python environment inspection, never use `pip`, `pip list`, `pip show`, `pip freeze`, or `python -m pip ...`; use `uv pip install <package>`, `uv pip list`, `uv pip show <package>`, and `uv pip freeze`. After any install command (`uv pip install`, `npm install`, etc.), always add `await asyncio.sleep(5)` so the environment can finish settling before you run the next script or import the new package.
-- **Python execution**: never run `python ...` directly. Rewrite only Python commands from user text or skill docs before execution: `python -m <module> ...` → `uv run python -m <module> ...`; `python {{ sandbox_workspace }}/script.py` or `python script.py` → `uv run {{ sandbox_workspace }}/script.py`; `python -c '...'` → `uv run python -c '...'`. Python scripts should run with `uv run {{ sandbox_workspace }}/script.py` so they use the sandbox virtual environment.
-- **Node/npm execution**: `uv` is Python-only. NEVER prefix Node or npm commands with `uv`; do not use `uv npm`, `uv run node`, or `uv run npm`. Node commands must start with `node ...` only, e.g. `node {{ sandbox_workspace }}/script.js`. npm commands must start with `npm ...` only. Do not use `npm install -g` — global installs are not reachable via `require()`. Always install locally in the workspace: `npm install <package>`.
-- **Sandbox working directory**: always write output files and scripts to `{{ sandbox_workspace }}/` in the sandbox. Use `await write_file("{{ sandbox_workspace }}/script.js", content)` or `await write_file("{{ sandbox_workspace }}/script.py", content)` to place scripts — it's cleaner than printf/heredoc shell tricks and handles multiline content correctly. Then run with `await run_command("node {{ sandbox_workspace }}/script.js")` or `await run_command("uv run {{ sandbox_workspace }}/script.py")`.{% if sandbox_workspace == "." %} Skills are available at `./skills/<skill_name>/`.{% endif %}
+- **Shell commands** (Python installs, package inspection, npm installs, CLI tools): use `await run_command("your shell command")` — this runs the command from the sandbox workspace (your CWD) with the virtual environment activated. `uv` is only for Python. For Python packages and Python environment inspection, never use `pip`, `pip list`, `pip show`, `pip freeze`, or `python -m pip ...`; use `uv pip install <package>`, `uv pip list`, `uv pip show <package>`, and `uv pip freeze`. After any install command (`uv pip install`, `npm install`, etc.), always add `await asyncio.sleep(5)` so the environment can finish settling before you run the next script or import the new package.
+- **Python execution**: never run `python ...` directly. Rewrite only Python commands from user text or skill docs before execution: `python -m <module> ...` → `uv run python -m <module> ...`; `python ./script.py` or `python script.py` → `uv run ./script.py`; `python -c '...'` → `uv run python -c '...'`. Python scripts should run with `uv run ./script.py` so they use the sandbox virtual environment.
+- **Node/npm execution**: `uv` is Python-only. NEVER prefix Node or npm commands with `uv`; do not use `uv npm`, `uv run node`, or `uv run npm`. Node commands must start with `node ...` only, e.g. `node ./script.js`. npm commands must start with `npm ...` only. Do not use `npm install -g` — global installs are not reachable via `require()`. Always install locally in the workspace: `npm install <package>`.
+- **Sandbox working directory**: always write output files and scripts under your CWD using relative paths. Use `await write_file("./script.js", content)` or `await write_file("./script.py", content)` to place scripts — it's cleaner than printf/heredoc shell tricks and handles multiline content correctly. Then run with `await run_command("node ./script.js")` or `await run_command("uv run ./script.py")`. Skills are available at `./skills/<skill_name>/` when enabled.
 {% endif %}
 
 **TYPE 2: Return to User with Text**
@@ -340,7 +357,7 @@ The following async functions are available in your Python execution environment
 * If the user asks a question and you do not have the data in `Variables` or `Chat History`, your response **MUST** be a Python Code Block.
 * Use `await` for all tool calls. **Nested helpers** that use `await` must be `async def` and called with `await` (not `def` with `await` inside).
 {% if enable_shell_tool %}
-* Use `await run_command("cmd")` for shell commands, package installs, package inspection, and CLI tools; Python packages must be installed/inspected with `uv pip ...` (for example `uv pip install ...`, `uv pip list`, `uv pip show ...`), Python module commands must run as `uv run python -m ...`, Python scripts should run with `uv run {{ sandbox_workspace }}/script.py`, Node commands must start with plain `node ...`, npm commands must start with plain `npm ...` (never `uv npm`, `uv run node`, or `uv run npm`), and after each install, `await asyncio.sleep(5)` before the next step.
+* Use `await run_command("cmd")` for shell commands, package installs, package inspection, and CLI tools; Python packages must be installed/inspected with `uv pip ...` (for example `uv pip install ...`, `uv pip list`, `uv pip show ...`), Python module commands must run as `uv run python -m ...`, Python scripts should run with `uv run ./script.py`, Node commands must start with plain `node ...`, npm commands must start with plain `npm ...` (never `uv npm`, `uv run node`, or `uv run npm`), and after each install, `await asyncio.sleep(5)` before the next step.
 {% endif %}
 * Use real data from tools or existing variables.
 * **Intermediate prints:** Use concise prints between major steps for traceability; **never** print inside loops; **truncate** large lists in any print.

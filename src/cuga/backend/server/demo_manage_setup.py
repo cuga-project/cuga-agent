@@ -36,16 +36,6 @@ def _normalize_demo_sandbox_mode() -> None:
         logger.info("Demo sandbox_mode='native' is only supported on macOS; using 'local' instead.")
 
 
-def _get_filesystem_tool() -> dict[str, Any]:
-    fs_port = int(os.environ.get("DYNACONF_SERVER_PORTS__FILESYSTEM_MCP", "8112"))
-    return {
-        "name": "filesystem",
-        "url": f"http://localhost:{fs_port}/sse",
-        "transport": "sse",
-        "description": "Standard file system operations for workspace management",
-    }
-
-
 def _get_email_tool() -> dict[str, Any]:
     email_port = int(os.environ.get("DYNACONF_SERVER_PORTS__EMAIL_MCP", "8000"))
     return {
@@ -148,6 +138,60 @@ def load_oak_policy_entries() -> list[dict[str, Any]]:
     return list(data.get("policies") or [])
 
 
+def load_cuga_policy_entries_for_demo(cuga_folder: str | None = None) -> list[dict[str, Any]]:
+    """One-way import of local .cuga policy markdown files into demo manage config.
+
+    This intentionally does not initialize PolicyFilesystemSync. The UI can edit the
+    managed config copy without writing changes back to .cuga.
+    """
+    from cuga.backend.cuga_graph.policy.folder_loader import (
+        POLICY_CREATORS,
+        parse_markdown_with_frontmatter,
+    )
+
+    root = Path(cuga_folder or os.getenv("CUGA_FOLDER", settings.policy.cuga_folder))
+    if not root.exists():
+        logger.warning(
+            "Demo policy preload: .cuga folder not found at %s; skipping local policy import",
+            root,
+        )
+        return []
+
+    subfolders = {
+        "playbooks": "playbook",
+        "output_formatters": "output_formatter",
+        "tool_guides": "tool_guide",
+        "intent_guards": "intent_guard",
+        "tool_approvals": "tool_approval",
+    }
+    policies: list[dict[str, Any]] = []
+
+    for subfolder_name, default_policy_type in subfolders.items():
+        subfolder = root / subfolder_name
+        if not subfolder.exists():
+            continue
+
+        for policy_file in sorted(subfolder.glob("*.md")):
+            try:
+                frontmatter, content = parse_markdown_with_frontmatter(str(policy_file))
+                policy_type = frontmatter.get("type", default_policy_type)
+                creator = POLICY_CREATORS.get(policy_type)
+                if creator is None:
+                    raise ValueError(f"Unknown policy type: {policy_type}")
+
+                policy_obj = creator(str(policy_file), frontmatter, content)
+                policy_data = policy_obj.model_dump(mode="json")
+                policy_data["policy_type"] = policy_data.get("type", policy_type)
+                policies.append(policy_data)
+            except Exception as e:
+                logger.warning("Skipping demo policy preload from %s: %s", policy_file, e)
+
+    if policies:
+        logger.info("Preloaded %s local .cuga policy file(s) into demo config", len(policies))
+
+    return policies
+
+
 def _get_docs_tool() -> dict[str, Any]:
     docs_port = int(
         os.environ.get(
@@ -174,8 +218,9 @@ def build_tools_from_apps(
 ) -> list[dict[str, Any]]:
     """Build tools list from enabled app flags."""
     tools: list[dict[str, Any]] = []
-    if filesystem:
-        tools.append(_get_filesystem_tool())
+    # Filesystem is no longer an MCP server — it is provided by the
+    # consolidated runtime filesystem tools. The ``filesystem`` flag is
+    # kept for signature/CLI compatibility but adds no MCP tool.
     if email:
         tools.append(_get_email_tool())
     if crm:
@@ -396,7 +441,7 @@ def get_default_apps_for_preset(preset: str) -> dict[str, bool]:
             "email": False,
             "digital_sales": True,
             "docs": False,
-            "filesystem": False,
+            "filesystem": True,
             "oak_health": False,
             "knowledge": knowledge,
         }
@@ -417,12 +462,14 @@ def setup_demo_manage_config(
     no_email: bool = False,
     tools: list[dict[str, Any]] | None = None,
     reset_knowledge: bool = False,
+    filesystem: bool = True,
 ) -> None:
     """
     Reset config db, then setup agent config (draft + v1) for demo or demo_crm.
-    Uses same SSE links as cli for filesystem, email, crm.
+    Uses same SSE links as cli for email, crm.
     If tools is provided, uses it; otherwise builds from demo_type and no_email.
     When reset_knowledge is True, wipes all knowledge data (vector DB, metadata, files).
+    When filesystem is True, enables runtime filesystem tools (enable_shell_tool=True).
     """
     _normalize_demo_sandbox_mode()
 
@@ -672,6 +719,7 @@ def setup_demo_manage_config(
         _sandbox_mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
         if _sandbox_mode == "local":
             policies.append(DEMO_SKILLS_SHELL_TOOL_APPROVAL)
+    policies.extend(load_cuga_policy_entries_for_demo())
     policies_struct: dict[str, Any] = {"enablePolicies": True, "policies": policies}
     config: dict[str, Any] = {
         "agent": agent_meta,
@@ -687,6 +735,8 @@ def setup_demo_manage_config(
 
     if demo_type == "demo_skills":
         config.setdefault("advanced_features", {})["enable_shell_tool"] = True
+    if filesystem:
+        config.setdefault("advanced_features", {})["enable_filesystem_tools"] = True
 
     async def _setup():
         await save_draft(config, agent_id)
