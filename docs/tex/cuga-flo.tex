@@ -437,18 +437,31 @@ Figure~\ref{fig:architecture} shows the component architecture.
 \begin{tikzpicture}[node distance=1.1cm and 1.6cm, font=\small]
 
 % ── Reasoning side: FlowAgent box (left) ───────────────────
-\coordinate (fa@bl) at (-1.0,1.85);
-\coordinate (fa@tr) at (5.5,5.45);
+\coordinate (fa@bl) at (-1.0,1.65);
+\coordinate (fa@tr) at (5.5,5.55);
 \begin{scope}[on background layer]
   \node[frame, fit=(fa@bl)(fa@tr), inner sep=2pt] (fabox) {};
 \end{scope}
-\node[font=\footnotesize\bfseries\color{teal!60!black}] at (2.2,5.15)
+\node[font=\footnotesize\bfseries\color{teal!60!black}] at (2.2,5.28)
       {FlowAgent (reasoning meta-agent)};
 
-\node[agent] (da) at (0.6, 4.1) {\texttt{Decision}\\[-2pt]\texttt{Agent}};
-\node[agent] (hm) at (3.8, 4.1) {\texttt{Hook}\\[-2pt]\texttt{reasoning}};
-\node[task] (ta) at (2.2, 2.95) {Task\\Agents};
-\node[font=\scriptsize\color{black!55}] at (2.2, 2.18) {CugaAgent$\times n$};
+% DecisionAgent outer box with nested CugaAgent
+\node[agent, minimum height=1.7cm] (da) at (0.6, 4.6) {};
+\node[font=\small, text centered] at (0.6, 5.02) {\texttt{Decision}\\[-2pt]\texttt{Agent}};
+\node[draw=blue!50, fill=blue!6, rounded corners=2pt,
+      minimum width=2.1cm, minimum height=0.4cm, font=\tiny, text centered]
+      at (0.6, 4.18) {\texttt{CugaAgent}};
+
+% TaskAgents outer box with nested CugaAgent
+\node[task, minimum height=1.7cm] (ta) at (0.6, 2.7) {};
+\node[font=\small, text centered] at (0.6, 3.12) {Task\\[-2pt]Agents};
+\node[draw=blue!50, fill=blue!6, rounded corners=2pt,
+      minimum width=2.1cm, minimum height=0.4cm, font=\tiny, text centered]
+      at (0.6, 2.28) {\texttt{CugaAgent}};
+
+% Hook reasoning — plain italic label inside FlowAgent, not a peer box
+\node[font=\small\itshape, text centered, text width=2.0cm,
+      color=purple!60!black] (hm) at (3.8, 3.7) {Hook\\[-2pt]reasoning};
 
 % ── FRAME (below FlowAgent) ────────────────────────────────
 \node[policy] (pt) at (0.1, 0.95) {Task\\Policies};
@@ -471,23 +484,13 @@ Figure~\ref{fig:architecture} shows the component architecture.
       {\texttt{MCPFlow}\\\texttt{Bridge}\\\scriptsize(FastMCP)\\[5pt]
        \tiny execute\_task\\\tiny route\_gateway\\\tiny evaluate\_hook\\\tiny get\_static\_config};
 
-% ── Execution side: compilation + engine (right) ───────────
-\node[draw=black!45, fill=yellow!12, rounded corners=4pt,
-      minimum width=2.6cm, minimum height=0.85cm, text centered, text width=2.4cm]
-      (bpmn) at (10.9,6.6) {BPMN 2.0 Diagram};
-\node[draw=black!45, fill=green!10, rounded corners=4pt,
-      minimum width=2.6cm, minimum height=0.85cm, text centered, text width=2.4cm]
-      (parser) at (10.9,5.35) {\texttt{BPMNParser}};
+% ── Execution side: engine and state (right) ──────────────
 \node[draw=blue!50, fill=blue!8, rounded corners=4pt,
       minimum width=2.6cm, minimum height=1.0cm, text centered, text width=2.4cm]
       (engine) at (10.9,3.7) {\texttt{WorkflowEngine}\\\scriptsize(LangGraph demo)};
 \node[draw=black!45, fill=gray!8, rounded corners=4pt,
       minimum width=2.6cm, minimum height=0.9cm, text centered, text width=2.4cm]
       (fs) at (10.9,2.3) {\texttt{FlowState}\\\scriptsize shared state};
-
-\draw[flow, double] (bpmn) -- (parser);
-\draw[flow, double] (parser) -- (engine)
-      node[midway, xshift=-2.0cm, font=\scriptsize]{compile};
 \draw[flow] (engine) -- (fs);
 
 % ── Bridge connections (bi-directional MCP) ────────────────
@@ -507,15 +510,15 @@ Figure~\ref{fig:architecture} shows the component architecture.
 
 \end{tikzpicture}
 \caption{CUGA FLO architecture. The reasoning side (left)---the \texttt{FlowAgent}
-with its DecisionAgent, hook reasoning, and TaskAgents, all governed by the FRAME
-$\mathcal{F}$---is decoupled from the execution side (right) by the
-\texttt{MCPFlowBridge}. The bridge exposes the FlowAgent's reasoning tools
-(\texttt{execute\_task}, \texttt{route\_gateway}, \texttt{evaluate\_hook},
-\texttt{get\_static\_config}) and the engine's \texttt{run\_process} tool. A
-replaceable \texttt{WorkflowEngine} (the included demo is built on LangGraph) parses
-the BPMN, drives execution over \texttt{FlowState}, and calls back into the FlowAgent
-at each control point. The FlowAgent presents a unified \texttt{invoke()} interface
-to a parent \texttt{CugaSupervisor}.}
+with its DecisionAgent, TaskAgents (each backed by a \texttt{CugaAgent}), and hook
+reasoning, all governed by the FRAME $\mathcal{F}$---is decoupled from the execution
+side (right) by the \texttt{MCPFlowBridge}. The bridge exposes the FlowAgent's
+reasoning tools (\texttt{execute\_task}, \texttt{route\_gateway},
+\texttt{evaluate\_hook}, \texttt{get\_static\_config}) and the engine's
+\texttt{run\_process} tool. A replaceable \texttt{WorkflowEngine} (the included demo
+is built on LangGraph) drives execution over \texttt{FlowState} and calls back into
+the FlowAgent at each control point. The FlowAgent presents a unified
+\texttt{invoke()} interface to a parent \texttt{CugaSupervisor}.}
 \label{fig:architecture}
 \end{figure}
 
