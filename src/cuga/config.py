@@ -188,6 +188,8 @@ validators = [
     Validator("execution.workspace_root", default=None),
     Validator("advanced_features.builtin_tools", default=["knowledge"]),
     Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
+    Validator("advanced_features.cuga_lite_bind_tools_max_count", default=128),
+    Validator("advanced_features.cuga_lite_bind_tools_pad_to_cap", default=False),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),
