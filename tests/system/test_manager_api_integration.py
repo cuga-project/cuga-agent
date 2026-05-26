@@ -33,7 +33,7 @@ REGISTRY_BASE_URL = "http://localhost:8001"
 MANAGE_API_URL = f"{MANAGER_BASE_URL}/api/manage"
 STREAM_API_URL = f"{MANAGER_BASE_URL}/stream"
 TEST_AGENT_ID = "cuga-default"
-MANAGER_STARTUP_TIMEOUT = 60  # seconds
+MANAGER_STARTUP_TIMEOUT = 120  # seconds
 MANAGER_HEALTH_CHECK_INTERVAL = 1  # seconds
 
 

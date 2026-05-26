@@ -213,6 +213,45 @@ class CugaSupervisorNode(BaseNode):
             f"  - state.supervisor_chat_messages: {len(state.supervisor_chat_messages) if state.supervisor_chat_messages else 0} messages"
         )
 
+        # Tool-approval HITL resume (Slice B). Kept separate from the
+        # AGENT_APPROVAL block below because the approval interrupt sets
+        # final_answer, which that block's `not final_answer` guard would
+        # skip. Additive: only fires for TOOL_APPROVAL, which never occurs
+        # for Supervisor unless settings.policy.enabled.
+        if (
+            state.sender == "WaitForResponse"
+            and state.hitl_response
+            and state.hitl_response.action_id == ActionIds.TOOL_APPROVAL
+        ):
+            if state.hitl_response.confirmed:
+                logger.info("User approved supervisor tool execution - resuming subgraph")
+                sd = state.model_dump()
+                if not sd.get("supervisor_chat_messages"):
+                    sd["supervisor_chat_messages"] = []
+                sd["supervisor_metadata"] = {
+                    **(sd.get("supervisor_metadata") or {}),
+                    "approval_required": False,
+                    "user_approved": True,
+                }
+                sd["hitl_action"] = None
+                sd["hitl_response"] = None
+                sd["final_answer"] = ""  # clear approval message so the subgraph runs
+                return Command(
+                    update=CugaSupervisorState(**sd).model_dump(),
+                    goto="CugaSupervisorSubgraph",
+                )
+            else:
+                logger.warning("User denied supervisor tool execution - stopping")
+                policy_name = (state.supervisor_metadata or {}).get("policy_name", "Tool Approval")
+                state.final_answer = (
+                    f"❌ **Execution Cancelled**\n\nYou denied execution required by "
+                    f"**{policy_name}**. The supervisor will not proceed with this task."
+                )
+                state.execution_complete = True
+                state.hitl_response = None
+                state.sender = self.name
+                return Command(update=state.model_dump(), goto="FinalAnswerAgent")
+
         # Handle human-in-the-loop responses (when coming back from WaitForResponse)
         # Only process if we don't already have a final_answer (to prevent loops)
         if state.sender == "WaitForResponse" and state.hitl_response and not state.final_answer:
@@ -257,9 +296,15 @@ class CugaSupervisorNode(BaseNode):
                     state.sender = self.name
                     return Command(update=state.model_dump(), goto="FinalAnswerAgent")
 
-        # Check if we need to route to HITL for agent approval (first time, after subgraph)
-        if state.hitl_action and state.hitl_action.action_id == ActionIds.AGENT_APPROVAL:
-            logger.info("Agent approval required - routing to SuggestHumanActions")
+        # Route to HITL for agent OR tool approval (first time, after subgraph).
+        # TOOL_APPROVAL is additive (Slice B) — it never fires for Supervisor
+        # unless settings.policy.enabled and a ToolApproval policy matched;
+        # AGENT_APPROVAL behavior is unchanged.
+        if state.hitl_action and state.hitl_action.action_id in (
+            ActionIds.AGENT_APPROVAL,
+            ActionIds.TOOL_APPROVAL,
+        ):
+            logger.info("Approval required - routing to SuggestHumanActions")
             # Set sender so WaitForResponse knows where to return to
             state.sender = self.name
             logger.info(f"Set sender to: {state.sender}")

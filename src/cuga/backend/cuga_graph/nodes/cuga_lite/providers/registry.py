@@ -1,23 +1,24 @@
-"""
-Tool Registry Provider
+"""Tool Registry Provider
 
 Provides tools from the MCP registry (separate process).
 """
 
-import aiohttp
-import json
-import asyncio
-from typing import List, Dict, Any, Optional
-from loguru import logger
-from pydantic import create_model, Field
-from langchain_core.tools import StructuredTool
+from __future__ import annotations
 
-from cuga.backend.tools_env.registry.utils.api_utils import get_apis, get_apps, get_registry_base_url
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_args import merge_tool_call_args
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
-    ToolProviderInterface,
+import asyncio
+import json
+from typing import Any, Dict, List, Optional
+import aiohttp
+from langchain_core.tools import StructuredTool
+from loguru import logger
+from pydantic import Field, create_model
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.arguments import merge_tool_call_args
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
+    ToolProviderInterface,
 )
+from cuga.backend.tools_env.registry.utils.api_utils import get_apis, get_apps, get_registry_base_url
 from cuga.config import settings
 
 
@@ -41,21 +42,21 @@ async def call_api(
         The API response
     """
     import time
-    from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import ToolCallTracker
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import ToolCallTracker
 
     if args is None:
         args = {}
 
     registry_base = get_registry_base_url()
-    registry_host = f'{registry_base}/functions/call'
+    registry_host = f"{registry_base}/functions/call"
 
     # Add agent_id query parameter if provided
     if agent_id:
-        registry_host += f'?agent_id={agent_id}'
+        registry_host += f"?agent_id={agent_id}"
 
     payload = {"function_name": api_name, "app_name": app_name, "args": args}
 
-    timeout_seconds = getattr(settings.advanced_features, 'tool_call_timeout', 30)
+    timeout_seconds = getattr(settings.advanced_features, "tool_call_timeout", 30)
     start_time = time.time()
     result = None
     error_msg = None
@@ -115,30 +116,30 @@ def _convert_openapi_params_to_json_schema(parameters: List[Dict[str, Any]]) -> 
     required = []
 
     for param in parameters:
-        param_name = param.get('name', '')
+        param_name = param.get("name", "")
         if not param_name:
             continue
 
         properties[param_name] = {
-            'type': param.get('type', 'string'),
-            'description': param.get('description', ''),
+            "type": param.get("type", "string"),
+            "description": param.get("description", ""),
         }
 
         # Handle default values
-        default_val = param.get('default')
+        default_val = param.get("default")
         if default_val is not None:
-            properties[param_name]['default'] = default_val
+            properties[param_name]["default"] = default_val
 
         # Handle constraints
-        constraints = param.get('constraints', [])
+        constraints = param.get("constraints", [])
         if constraints:
-            properties[param_name]['constraints'] = constraints
+            properties[param_name]["constraints"] = constraints
 
         # Handle required
-        if param.get('required', False):
+        if param.get("required", False):
             required.append(param_name)
 
-    return {'properties': properties, 'required': required}
+    return {"properties": properties, "required": required}
 
 
 def create_tool_from_api_dict(
@@ -155,10 +156,10 @@ def create_tool_from_api_dict(
     Returns:
         StructuredTool instance with .func attribute
     """
-    description = tool_def.get('description', '')
-    parameters = tool_def.get('parameters', {})
-    response_schemas = tool_def.get('response_schemas', {})
-    operation_id = tool_def.get('operation_id')  # Original OpenAPI operationId
+    description = tool_def.get("description", "")
+    parameters = tool_def.get("parameters", {})
+    response_schemas = tool_def.get("response_schemas", {})
+    operation_id = tool_def.get("operation_id")  # Original OpenAPI operationId
 
     # Convert OpenAPI parameter format to JSON schema format if needed
     if isinstance(parameters, list):
@@ -167,37 +168,37 @@ def create_tool_from_api_dict(
     field_definitions = {}
     param_constraints = {}
     if isinstance(parameters, dict):
-        if 'properties' in parameters:
-            props = parameters['properties']
-            required = parameters.get('required', [])
+        if "properties" in parameters:
+            props = parameters["properties"]
+            required = parameters.get("required", [])
             for param_name, param_schema in props.items():
-                param_type = param_schema.get('type', 'string')
-                param_desc = param_schema.get('description', '')
+                param_type = param_schema.get("type", "string")
+                param_desc = param_schema.get("description", "")
 
                 # Handle type that might be a list (e.g., ['string', 'null'])
                 if isinstance(param_type, list):
                     # Take the first non-null type, or default to 'string'
-                    param_type = next((t for t in param_type if t != 'null'), 'string')
+                    param_type = next((t for t in param_type if t != "null"), "string")
 
                 type_mapping = {
-                    'string': str,
-                    'integer': int,
-                    'number': float,
-                    'boolean': bool,
-                    'array': list,
-                    'object': dict,
+                    "string": str,
+                    "integer": int,
+                    "number": float,
+                    "boolean": bool,
+                    "array": list,
+                    "object": dict,
                 }
                 python_type = type_mapping.get(param_type, str)
 
                 # Store constraints for later use in prompt
-                constraints = param_schema.get('constraints', [])
+                constraints = param_schema.get("constraints", [])
                 if constraints:
                     param_constraints[param_name] = constraints
 
                 if param_name in required:
                     field_definitions[param_name] = (python_type, Field(..., description=param_desc))
                 else:
-                    default_val = param_schema.get('default', None)
+                    default_val = param_schema.get("default", None)
                     # Make sure default values are hashable if needed
                     if isinstance(default_val, list):
                         default_val = None  # Skip unhashable defaults
@@ -241,10 +242,10 @@ def create_tool_from_api_dict(
 
     tool.func = tool_func
 
-    if not hasattr(tool.func, '_response_schemas'):
+    if not hasattr(tool.func, "_response_schemas"):
         tool.func._response_schemas = response_schemas
 
-    if not hasattr(tool.func, '_param_constraints'):
+    if not hasattr(tool.func, "_param_constraints"):
         tool.func._param_constraints = param_constraints
 
     # Store metadata for tool call tracking
@@ -255,16 +256,14 @@ def create_tool_from_api_dict(
 
 
 class ToolRegistryProvider(ToolProviderInterface):
-    """
-    Tool provider that loads tools from the MCP registry.
+    """Tool provider that loads tools from the MCP registry.
 
     This provider connects to the registry server to get apps and tools.
     Tools are loaded from OpenAPI specs, MCP servers, or TRM services.
     """
 
     def __init__(self, app_names: Optional[List[str]] = None, agent_id: Optional[str] = None):
-        """
-        Initialize the registry provider.
+        """Initialize the registry provider.
 
         Args:
             app_names: Optional list of specific app names to load. If None, loads all.
@@ -290,14 +289,14 @@ class ToolRegistryProvider(ToolProviderInterface):
                 raise Exception(f"None of the requested apps found: {self.app_names}")
             self.apps = [
                 AppDefinition(
-                    name=app.name, url=app.url, description=app.description, type=getattr(app, 'type', 'api')
+                    name=app.name, url=app.url, description=app.description, type=getattr(app, "type", "api")
                 )
                 for app in filtered_apps
             ]
         else:
             self.apps = [
                 AppDefinition(
-                    name=app.name, url=app.url, description=app.description, type=getattr(app, 'type', 'api')
+                    name=app.name, url=app.url, description=app.description, type=getattr(app, "type", "api")
                 )
                 for app in all_apps
             ]
@@ -312,8 +311,7 @@ class ToolRegistryProvider(ToolProviderInterface):
         return self.apps
 
     async def get_tools(self, app_name: str) -> List[StructuredTool]:
-        """
-        Get tools for a specific application.
+        """Get tools for a specific application.
 
         Args:
             app_name: Name of the application

@@ -1,35 +1,36 @@
-"""
-Tool Call Tracker
+"""Tool Call Tracker
 
 Tracks tool/API calls during agent execution for observability.
 Uses contextvars for thread-safe tracking across async execution.
 
 For custom tool providers, use the `tracked_tool` decorator:
 
-    from cuga.backend.cuga_graph.nodes.cuga_lite.tool_call_tracker import tracked_tool
+    from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
 
-    @tracked_tool(operation_id="getUsers", app_name="my_api")
+    @tracked_tool(app_name="my_api")
     async def get_users(limit: int = 10) -> list:
         return await fetch_users(limit)
 """
 
+from __future__ import annotations
+
+import asyncio
 import contextvars
 import functools
 import time
 from datetime import datetime
-from typing import List, Dict, Any, Optional, Callable, TypeVar
+from typing import Any, Callable, Dict, List, Optional, TypeVar
 from loguru import logger
 
-
 _tool_calls_context: contextvars.ContextVar[List[Dict[str, Any]]] = contextvars.ContextVar(
-    'tool_calls', default=None
+    "tool_calls", default=None
 )
 
 _tracking_enabled_context: contextvars.ContextVar[bool] = contextvars.ContextVar(
-    'tracking_enabled', default=False
+    "tracking_enabled", default=False
 )
 
-F = TypeVar('F', bound=Callable[..., Any])
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 class ToolCallTracker:
@@ -118,8 +119,7 @@ def tracked_tool(
     *,
     app_name: Optional[str] = None,
 ) -> Callable[[F], F]:
-    """
-    Decorator to automatically track tool calls in custom tool providers.
+    """Decorator to automatically track tool calls in custom tool providers.
 
     Use this decorator on tool functions to enable tracking when
     `track_tool_calls=True` is passed to `agent.invoke()`.
@@ -139,7 +139,7 @@ def tracked_tool(
         # With app_name for grouping
         @tracked_tool(app_name="calculator")
         def add(a: int, b: int) -> int:
-            return a + b
+            return a * b
 
         # Works with async functions too
         @tracked_tool(app_name="user_service")
@@ -214,8 +214,6 @@ def tracked_tool(
                     duration_ms=duration_ms,
                     error=error_msg,
                 )
-
-        import asyncio
 
         if asyncio.iscoroutinefunction(func):
             return async_wrapper  # type: ignore

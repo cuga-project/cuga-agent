@@ -12,7 +12,7 @@ from cuga.backend.cuga_graph.policy.models import (
     NaturalLanguageTrigger,
 )
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 
 from .helpers import (
     setup_policy_storage,
