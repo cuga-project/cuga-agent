@@ -56,7 +56,7 @@ async def test_cuga_lite_evolve_guidelines_are_injected_independently_of_legacy_
             False,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.apply_context_summarization",
+            "cuga.backend.cuga_graph.utils.context_management_utils.apply_context_summarization",
             new=AsyncMock(side_effect=lambda messages, *args, **kwargs: messages),
         ),
         patch(
@@ -112,7 +112,7 @@ async def test_multi_user_params_flow_end_to_end():
             False,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.apply_context_summarization",
+            "cuga.backend.cuga_graph.utils.context_management_utils.apply_context_summarization",
             new=AsyncMock(side_effect=lambda messages, *args, **kwargs: messages),
         ),
         patch(
@@ -164,7 +164,7 @@ async def test_multi_user_params_flow_with_none_values():
             False,
         ),
         patch(
-            "cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph.apply_context_summarization",
+            "cuga.backend.cuga_graph.utils.context_management_utils.apply_context_summarization",
             new=AsyncMock(side_effect=lambda messages, *args, **kwargs: messages),
         ),
         patch(
