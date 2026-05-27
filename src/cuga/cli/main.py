@@ -808,6 +808,7 @@ def validate_service(service: str):
         "demo_health",
         "demo_knowledge",
         "demo_supervisor",
+        "flow_agent_inline",
         "travel_agent",
         "manager",
         "registry",
@@ -846,7 +847,11 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_skills, demo_knowledge, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, appworld, or memory",
+        help="Service to start: demo, demo_skills, demo_knowledge, demo_crm, demo_docs, demo_health, demo_supervisor, flow_agent_inline, manager, registry, appworld, or memory",
+    ),
+    process_name: Optional[str] = typer.Argument(
+        None,
+        help="For flow_agent_inline: process name (loan_approval, receive_order, trip_planner)",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -957,7 +962,68 @@ def start(
       cuga start demo --sandbox           # with remote sandbox
       cuga start registry                 # registry only
       cuga start appworld                 # AppWorld servers
+      cuga start flow_agent_inline loan_approval   # run loan approval flow
+      cuga start flow_agent_inline receive_order   # run receive order flow
+      cuga start flow_agent_inline trip_planner    # run trip planner flow
     """
+    if service == "flow_agent_inline":
+        import asyncio
+        import json
+        from pathlib import Path as _Path
+        from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import FlowConfig
+
+        valid_processes = ["loan_approval", "receive_order", "trip_planner"]
+        if not process_name:
+            console.print(
+                f"[red]flow_agent_inline requires a process name.[/red]\n"
+                f"Usage: cuga start flow_agent_inline <process>\n"
+                f"Available: {', '.join(valid_processes)}"
+            )
+            raise typer.Exit(1)
+        if process_name not in valid_processes:
+            console.print(
+                f"[red]Unknown process '{process_name}'.[/red] "
+                f"Available: {', '.join(valid_processes)}"
+            )
+            raise typer.Exit(1)
+
+        _cli_dir = _Path(__file__).resolve().parent
+        inline_dir = (_cli_dir / ".." / ".." / ".." / "docs" / "examples" / "flow_agent_app_inline").resolve()
+        base = inline_dir / process_name
+        configs = list((base / "config").glob("*_config.yaml"))
+        if not configs:
+            console.print(f"[red]No *_config.yaml found in {base / 'config'}[/red]")
+            raise typer.Exit(1)
+
+        config_file = str(configs[0])
+        console.print(f"[cyan]Process:[/cyan] {process_name}")
+        console.print(f"[cyan]Config:[/cyan]  {config_file}")
+
+        try:
+            flow_config = FlowConfig.from_yaml(config_file)
+            agent = flow_config.to_flow_agent()
+        except Exception as exc:
+            logger.error(f"Failed to load flow config: {exc}")
+            raise typer.Exit(1) from exc
+
+        initial_inputs: dict = {}
+        if hasattr(flow_config, "variables") and flow_config.variables:
+            initial_inputs = dict(flow_config.variables)
+
+        console.print(f"[cyan]Inputs:[/cyan]  {initial_inputs}\n")
+
+        try:
+            result = asyncio.run(agent.invoke(initial_inputs))
+        except Exception as exc:
+            logger.error(f"Flow execution failed: {exc}")
+            raise typer.Exit(1) from exc
+
+        if hasattr(result, "model_dump"):
+            console.print_json(json.dumps(result.model_dump(mode="json"), default=str))
+        else:
+            console.print(result)
+        return
+
     validate_service(service)
 
     if reset and service != "demo_knowledge":
@@ -1971,6 +2037,76 @@ def evaluate(
         stop_direct_processes()
         raise typer.Exit(1)
     return
+
+
+@app.command(help="Run an inline flow agent process from YAML config", short_help="Run flow process")
+def flow(
+    process: str = typer.Argument(..., help="Process name to run, e.g. loan_approval"),
+    config_dir: Optional[str] = typer.Option(
+        None,
+        "--config-dir",
+        help="Directory containing process sub-folders (default: docs/examples/flow_agent_app_inline)",
+    ),
+):
+    """
+    Run a BPMN flow agent process defined in docs/examples/flow_agent_app_inline/.
+
+    Examples:
+      cuga flow loan_approval
+      cuga flow receive_order
+      cuga flow trip_planner
+      cuga flow loan_approval --config-dir /path/to/my/processes
+    """
+    import asyncio
+    import json
+    from pathlib import Path as _Path
+
+    from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import FlowConfig
+
+    if config_dir is None:
+        _cli_dir = _Path(__file__).resolve().parent
+        config_dir = str(
+            (_cli_dir / ".." / ".." / ".." / "docs" / "examples" / "flow_agent_app_inline").resolve()
+        )
+
+    base = _Path(config_dir) / process
+    if not base.is_dir():
+        console.print(f"[red]Process directory not found: {base}[/red]")
+        raise typer.Exit(1)
+
+    configs = list((base / "config").glob("*_config.yaml"))
+    if not configs:
+        console.print(f"[red]No *_config.yaml found in {base / 'config'}[/red]")
+        raise typer.Exit(1)
+
+    config_file = str(configs[0])
+    console.print(f"[cyan]Config:[/cyan]  {config_file}")
+
+    try:
+        flow_config = FlowConfig.from_yaml(config_file)
+        agent = flow_config.to_flow_agent()
+    except Exception as exc:
+        logger.error(f"Failed to load flow config: {exc}")
+        raise typer.Exit(1) from exc
+
+    initial_inputs: dict = {}
+    if hasattr(flow_config, "variables") and flow_config.variables:
+        initial_inputs = dict(flow_config.variables)
+
+    console.print(f"[cyan]Process:[/cyan] {process}")
+    console.print(f"[cyan]Inputs:[/cyan]  {initial_inputs}")
+    console.print()
+
+    try:
+        result = asyncio.run(agent.invoke(initial_inputs))
+    except Exception as exc:
+        logger.error(f"Flow execution failed: {exc}")
+        raise typer.Exit(1) from exc
+
+    if hasattr(result, "model_dump"):
+        console.print_json(json.dumps(result.model_dump(mode="json"), default=str))
+    else:
+        console.print(result)
 
 
 if __name__ == "__main__":

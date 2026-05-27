@@ -139,7 +139,6 @@ class Hook:
         location: Where the hook is attached (edge_id, node_id, etc.)
         condition: Optional condition for hook activation
         handler: Function that evaluates the hook
-        priority: Execution priority (higher = earlier)
         enabled: Whether the hook is active
     """
 

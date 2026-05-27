@@ -102,7 +102,6 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                         fromlist=["HookType"],
                     ).HookType(h["hook_type"]),
                     location=h["location"],
-                    priority=h.get("priority", 0),
                     enabled=h.get("enabled", True),
                     handler=lambda s: HookResult(action=HookAction.CONTINUE),
                 )
@@ -305,8 +304,17 @@ class LangGraphWorkflowEngine(WorkflowEngine):
         # Build internal edges (skips start_event flows — handled by START routing below)
         self._add_edges_with_hooks(graph, process, overlay, flows_by_source)
 
-        # Collect hook node IDs added during edge building
-        hook_node_ids = [f"hook_{flow.id}" for flow in process.flows]
+        # Collect hook node IDs that were actually added during edge building.
+        # Only non-start-event flows with a registered hook get hook nodes in the graph.
+        _hm_check = HookManager()
+        for h in overlay.hooks:
+            _hm_check.register_hook(h)
+        start_event_flow_ids = {f.id for f in process.flows if f.source_ref == process.start_event}
+        hook_node_ids = [
+            f"hook_{flow.id}" for flow in process.flows
+            if flow.id not in start_event_flow_ids
+            and _hm_check.get_hook_at_location(flow.id) is not None
+        ]
         all_entry_targets = {nid: nid for nid in graph_node_ids + hook_node_ids}
 
         # Determine the natural first entry node (successor of the start event)
@@ -641,7 +649,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                 logger.debug(f"  Hook {hook.id} condition not met, skipping")
                 return Command(update=state.model_dump(), goto=normal_target)
 
-            try:
+                try:
                     if overlay.hook_evaluator:
                         result = await overlay.hook_evaluator(hook, ctx)
                     elif hook.handler:

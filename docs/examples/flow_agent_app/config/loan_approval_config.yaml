@@ -77,7 +77,6 @@ hooks:
   - id: "audit_credit_decision"
     type: "pre_edge"
     location: "Flow_0ybszcv"
-    priority: 0
     policy: "policies/hook-audit_credit_decision.md"
 
 # Made with Bob

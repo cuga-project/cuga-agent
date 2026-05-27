@@ -244,7 +244,6 @@ class FlowAgent:
                 "id": h.id,
                 "hook_type": h.hook_type.value,
                 "location": h.location,
-                "priority": h.priority,
                 "enabled": h.enabled,
             }
             for h in self.hooks

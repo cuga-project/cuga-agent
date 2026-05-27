@@ -65,5 +65,4 @@ hooks:
   - id: "post_receival_check"
     type: "pre_edge"
     location: "Flow_1ji6b0i"
-    priority: 0
     policy: "../policies/hook-post_receival.md"

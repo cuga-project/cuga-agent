@@ -292,7 +292,6 @@ class FlowConfig:
                 location = hook_config.get("location")
                 condition_str = hook_config.get("condition")
                 action_str = hook_config.get("action", "continue")
-                priority = hook_config.get("priority", 0)
                 policy_path = hook_config.get("policy", "")
 
                 if not hook_id or not location:
@@ -329,7 +328,6 @@ class FlowConfig:
                     location=location,
                     handler=handler,
                     condition=condition_func,
-                    priority=priority,
                     policy=policy_text,
                 )
 
