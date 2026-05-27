@@ -31,7 +31,7 @@ _VISION_REJECTION_MARKERS = (
 )
 
 
-def _looks_like_vision_rejection(exc: BaseException) -> bool:
+def _looks_like_vision_rejection(exc: Exception) -> bool:
     """Heuristic: did the endpoint reject the request because of image content?"""
     msg = str(exc).lower()
     return any(marker in msg for marker in _VISION_REJECTION_MARKERS)
@@ -73,10 +73,15 @@ class BrowserPlannerAgent(BaseAgent):
         else:
             data["variables_history"] = ""
         image_attached = False
-        if self.use_vision_effective and getattr(tracker, "images", None):
-            # Only attach an image if one has been captured
-            if len(tracker.images) > 0:
-                data['img'] = tracker.images[-1]
+        if self.use_vision_effective:
+            # Atomic snapshot: a length-check then ``[-1]`` race-conditions
+            # against ``ActivityTracker.collect_image`` (singleton, no lock).
+            try:
+                last_image = tracker.images[-1]
+            except (AttributeError, IndexError, TypeError):
+                last_image = None
+            if last_image is not None:
+                data['img'] = last_image
                 image_attached = True
         try:
             return await self.chain.ainvoke(data)
@@ -86,8 +91,9 @@ class BrowserPlannerAgent(BaseAgent):
             # Endpoint rejected the multimodal payload — disable vision for
             # subsequent calls on this agent and retry with a text-only message.
             logger.warning(
-                "Vision request rejected ({}); disabling vision for this agent and retrying text-only.",
+                "Vision request rejected ({}: {}); disabling vision for this agent and retrying text-only.",
                 type(exc).__name__,
+                exc,
             )
             self.use_vision_effective = False
             data["use_vision"] = False
