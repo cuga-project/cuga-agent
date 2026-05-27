@@ -3,11 +3,6 @@
 ## Goal
 Finalise and disburse the approved loan to the applicant.
 
-## Pre-conditions (verify before acting)
-1. `approved` is `true` — never process a loan that was not explicitly approved.
-2. `credit_score` is present and above 0.6.
-3. `loan_amount` is a positive number.
-
 ## Required Actions
 1. Record the disbursement in the system with the applicant's `applicant_id` and `loan_amount`.
 2. Set `loan_granted = true` once disbursement is confirmed.
