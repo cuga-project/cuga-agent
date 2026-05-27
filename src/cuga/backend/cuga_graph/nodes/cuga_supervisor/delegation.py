@@ -9,6 +9,14 @@ from loguru import logger
 
 from cuga.config import settings
 
+try:
+    from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent import FlowAgent
+
+    HAS_FLOW_AGENT = True
+except Exception:
+    FlowAgent = None  # type: ignore[assignment,misc]
+    HAS_FLOW_AGENT = False
+
 
 def resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]:
     """Resolve names from the delegated code's caller frame.
@@ -73,6 +81,23 @@ def create_agent_delegation_func(
                 if bridged:
                     logger.info("Bridged %d variable(s) from %s: %s", len(bridged), agent_name, bridged)
             return result.answer if hasattr(result, "answer") else str(result)
+
+        if HAS_FLOW_AGENT and FlowAgent is not None and isinstance(agent_or_config, FlowAgent):
+            vars_to_pass = {}
+            if variables is not None:
+                vars_to_pass = resolve_names_from_caller_frame(variables)
+            result = await agent_or_config.invoke(
+                input_data=task, process_variables=vars_to_pass if vars_to_pass else None
+            )
+            # FlowAgent returns FlowState — extract the most useful text representation
+            if hasattr(result, "messages") and result.messages:
+                last_msg = result.messages[-1]
+                if isinstance(last_msg, dict):
+                    return last_msg.get("content", str(result))
+                return getattr(last_msg, "content", str(result))
+            if hasattr(result, "process_variables"):
+                return str(result.process_variables)
+            return str(result)
 
         if isinstance(agent_or_config, dict) and agent_or_config.get("type") == "external":
             a2a_config = agent_or_config.get("config", {}).get("a2a_protocol", {})
