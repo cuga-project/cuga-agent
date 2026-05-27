@@ -7,7 +7,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import (
     CugaLiteState,
     create_cuga_lite_graph,
 )
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import (
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
     AppDefinition,
     ToolProviderInterface,
 )

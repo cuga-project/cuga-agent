@@ -11,7 +11,7 @@ from langchain_core.tools import tool, StructuredTool
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
-from cuga.backend.cuga_graph.nodes.cuga_lite.cuga_lite_graph import make_tool_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
 
 
 @pytest.fixture
