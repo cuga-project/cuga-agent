@@ -8,7 +8,7 @@ import sys
 import threading
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 import httpx
 import psutil
@@ -967,61 +967,135 @@ def start(
       cuga start flow_agent_inline trip_planner    # run trip planner flow
     """
     if service == "flow_agent_inline":
-        import asyncio
-        import json
-        from pathlib import Path as _Path
-        from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import FlowConfig
-
-        valid_processes = ["loan_approval", "receive_order", "trip_planner"]
-        if not process_name:
-            console.print(
-                f"[red]flow_agent_inline requires a process name.[/red]\n"
-                f"Usage: cuga start flow_agent_inline <process>\n"
-                f"Available: {', '.join(valid_processes)}"
-            )
-            raise typer.Exit(1)
-        if process_name not in valid_processes:
-            console.print(
-                f"[red]Unknown process '{process_name}'.[/red] "
-                f"Available: {', '.join(valid_processes)}"
-            )
-            raise typer.Exit(1)
-
-        _cli_dir = _Path(__file__).resolve().parent
-        inline_dir = (_cli_dir / ".." / ".." / ".." / "docs" / "examples" / "flow_agent_app_inline").resolve()
-        base = inline_dir / process_name
-        configs = list((base / "config").glob("*_config.yaml"))
-        if not configs:
-            console.print(f"[red]No *_config.yaml found in {base / 'config'}[/red]")
-            raise typer.Exit(1)
-
-        config_file = str(configs[0])
-        console.print(f"[cyan]Process:[/cyan] {process_name}")
-        console.print(f"[cyan]Config:[/cyan]  {config_file}")
-
         try:
-            flow_config = FlowConfig.from_yaml(config_file)
-            agent = flow_config.to_flow_agent()
-        except Exception as exc:
-            logger.error(f"Failed to load flow config: {exc}")
-            raise typer.Exit(1) from exc
+            import asyncio
+            from pathlib import Path as _Path
 
-        initial_inputs: dict = {}
-        if hasattr(flow_config, "variables") and flow_config.variables:
-            initial_inputs = dict(flow_config.variables)
+            os.environ["DYNACONF_SUPERVISOR__ENABLED"] = "true"
+            _cli_dir = _Path(__file__).resolve().parent
+            inline_root = (
+                _cli_dir / ".." / ".." / ".." / "docs" / "examples" / "flow_agent_app_inline"
+            ).resolve()
 
-        console.print(f"[cyan]Inputs:[/cyan]  {initial_inputs}\n")
+            available = sorted(
+                d.name for d in inline_root.iterdir() if d.is_dir() and (d / "config").is_dir()
+            )
 
-        try:
-            result = asyncio.run(agent.invoke(initial_inputs))
-        except Exception as exc:
-            logger.error(f"Flow execution failed: {exc}")
-            raise typer.Exit(1) from exc
+            if not process_name:
+                if len(available) == 1:
+                    chosen = available[0]
+                    logger.info(f"Defaulting to the only available example: '{chosen}'")
+                else:
+                    logger.error("Specify an example: cuga start flow_agent_inline <example>")
+                    logger.error(
+                        f"Available: {', '.join(available) if available else '(none found)'}"
+                    )
+                    raise typer.Exit(1)
+            else:
+                if process_name not in available:
+                    logger.error(f"Example '{process_name}' not found under {inline_root}")
+                    logger.error(
+                        f"Available: {', '.join(available) if available else '(none found)'}"
+                    )
+                    raise typer.Exit(1)
+                chosen = process_name
 
-        if hasattr(result, "model_dump"):
-            console.print_json(json.dumps(result.model_dump(mode="json"), default=str))
-        else:
-            console.print(result)
+            config_dir_path = inline_root / chosen / "config"
+            supervisor_candidates = sorted(config_dir_path.glob("supervisor*.yaml"))
+            if not supervisor_candidates:
+                logger.error(f"No supervisor*.yaml found in {config_dir_path}")
+                raise typer.Exit(1)
+            supervisor_config_path = str(supervisor_candidates[0])
+
+            os.environ["DYNACONF_SUPERVISOR__CONFIG_PATH"] = supervisor_config_path
+            settings.reload()
+            logger.info(f"FlowAgent (inline) supervisor config: {supervisor_config_path}")
+
+            os.environ["CUGA_MANAGER_MODE"] = "true"
+            os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+            os.environ["MCP_SERVERS_FILE"] = "none"
+            os.environ["CUGA_AGENT_NAME"] = "FlowAgent"
+            os.environ["CUGA_AGENT_DESCRIPTION"] = "BPMN-based workflow orchestration agent (inline)"
+
+            from cuga.backend.server.config_store import reset_config_db, save_config, save_draft
+
+            ensure_managed_mcp_file_exists(get_managed_mcp_path())
+            reset_config_db()
+
+            llm_api_key_ref = ""
+            try:
+                from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+                llm_api_key_ref = resolve_llm_api_key_ref()
+            except Exception:
+                pass
+
+            llm_cfg: Any = {"model": os.environ.get("MODEL_NAME", "")}
+            if llm_api_key_ref:
+                llm_cfg["api_key"] = llm_api_key_ref
+
+            flow_agent_config: Any = {
+                "agent": {
+                    "name": "FlowAgent",
+                    "description": "BPMN-based workflow orchestration agent (inline)",
+                },
+                "tools": [],
+                "llm": llm_cfg,
+                "homescreen": {
+                    "isOn": True,
+                    "greeting": f"Welcome to the {chosen.replace('_', ' ').title()} workflow. How can I help you?",
+                    "starters": [],
+                },
+            }
+
+            async def _save_flow_config():
+                await save_draft(flow_agent_config, "cuga-default")
+                await save_config(flow_agent_config, "cuga-default")
+
+            asyncio.run(_save_flow_config())
+            logger.info("FlowAgent (inline) config saved (model: %s)", llm_cfg.get("model") or "(default)")
+
+            app_mgr = _make_app_manager()
+            kill_processes_by_port([app_mgr.registry_port, settings.server_ports.demo])
+
+            os.environ["CUGA_HOST"] = host
+            if sandbox:
+                os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
+
+            registry_process = app_mgr.start_registry(host)
+            if registry_process is None or registry_process.poll() is not None:
+                logger.error("Registry service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            demo_process = app_mgr.start_demo(host, sandbox=sandbox)
+            if demo_process is None or demo_process.poll() is not None:
+                logger.error("Demo service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            if direct_processes:
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Service", style="bold white")
+                table.add_column("URL", style="cyan")
+                table.add_row("Registry:", f"http://localhost:{app_mgr.registry_port}")
+                table.add_row("Demo:", f"http://localhost:{settings.server_ports.demo}")
+
+                console.print()
+                console.print(
+                    Panel(
+                        table,
+                        title=f"[bold yellow]FlowAgent (inline) — {chosen} — running. Press Ctrl+C to stop[/bold yellow]",
+                        border_style="cyan",
+                        padding=(1, 2),
+                        expand=False,
+                    )
+                )
+                wait_for_direct_processes()
+
+        except Exception as e:
+            logger.error(f"Error starting FlowAgent (inline): {e}")
+            stop_direct_processes()
+            raise typer.Exit(1)
         return
 
     validate_service(service)
