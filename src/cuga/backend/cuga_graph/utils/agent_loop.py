@@ -677,6 +677,8 @@ class AgentLoop:
         event_stream = self.get_stream(state, resume)
         event = {}
         session_tagged = False  # Track if we've set session.id yet
+        # Baseline step count so we can drain only steps added during this run.
+        last_step_count = len(self.tracker.steps)
 
         async for event in event_stream:
             # Tag session.id on the first event (when spans are active)
@@ -690,8 +692,23 @@ class AgentLoop:
                 logger.debug(
                     f"Skipping empty event: name='{event_msg.name}', data='{event_msg.data[:50] if event_msg.data else ''}'"
                 )
+                # Drain FlowAgent reasoning steps that were collected while this
+                # node ran but produced no StreamEvent of their own.  Only steps
+                # whose names begin with a FlowAgent-specific prefix are emitted;
+                # internal CugaAgent steps (Raw_Assistant_Response, Assistant_code,
+                # NL_Auto_Continue_Classifier, etc.) accumulate in the same
+                # tracker singleton and must be excluded here.
+                _FLOW_STEP_PREFIXES = ("Task: ", "Gateway ", "Hook ", "Hook: ")
+                current_step_count = len(self.tracker.steps)
+                for step in self.tracker.steps[last_step_count:current_step_count]:
+                    if step.name and step.data and any(step.name.startswith(p) for p in _FLOW_STEP_PREFIXES):
+                        yield StreamEvent(name=step.name, data=step.data).format()
+                last_step_count = current_step_count
                 continue
-            # logger.debug(f"current event: {event_msg.format()}")
+
+            # Advance the baseline past steps produced by this known node so
+            # they are not re-emitted by the drain on a later empty event.
+            last_step_count = len(self.tracker.steps)
             yield event_msg.format()
         yield self.get_output(event)
 
