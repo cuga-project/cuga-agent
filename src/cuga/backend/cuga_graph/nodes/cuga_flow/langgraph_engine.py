@@ -649,144 +649,144 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                 logger.debug(f"  Hook {hook.id} condition not met, skipping")
                 return Command(update=state.model_dump(), goto=normal_target)
 
-                try:
-                    if overlay.hook_evaluator:
-                        result = await overlay.hook_evaluator(hook, ctx)
-                    elif hook.handler:
-                        result = hook.handler(state)
-                    else:
-                        result = HookResult(action=HookAction.CONTINUE)
+            try:
+                if overlay.hook_evaluator:
+                    result = await overlay.hook_evaluator(hook, ctx)
+                elif hook.handler:
+                    result = hook.handler(state)
+                else:
+                    result = HookResult(action=HookAction.CONTINUE)
 
-                    action_val = result.action.value
-                    if permitted and action_val not in permitted:
-                        logger.warning(
-                            f"  Hook {hook.id} action '{action_val}' not in permitted_actions — CONTINUE"
-                        )
-                        result = HookResult(
-                            action=HookAction.CONTINUE,
-                            message=f"Action '{action_val}' not permitted",
-                        )
-                    elif action_val in prohibited:
-                        logger.warning(f"  Hook {hook.id} action '{action_val}' is prohibited — CONTINUE")
-                        result = HookResult(
-                            action=HookAction.CONTINUE,
-                            message=f"Action '{action_val}' is prohibited",
-                        )
-
-                    state.add_hook_evaluation(
-                        hook_id=hook.id,
-                        edge_id=edge_id,
-                        action=result.action.value,
-                        reason=result.message or "Hook evaluated",
+                action_val = result.action.value
+                if permitted and action_val not in permitted:
+                    logger.warning(
+                        f"  Hook {hook.id} action '{action_val}' not in permitted_actions — CONTINUE"
                     )
-                    logger.info(f"  Hook {hook.id} → {result.action.value}: {result.message}")
+                    result = HookResult(
+                        action=HookAction.CONTINUE,
+                        message=f"Action '{action_val}' not permitted",
+                    )
+                elif action_val in prohibited:
+                    logger.warning(f"  Hook {hook.id} action '{action_val}' is prohibited — CONTINUE")
+                    result = HookResult(
+                        action=HookAction.CONTINUE,
+                        message=f"Action '{action_val}' is prohibited",
+                    )
 
-                    if result.state_updates:
-                        state.process_variables.update(result.state_updates)
+                state.add_hook_evaluation(
+                    hook_id=hook.id,
+                    edge_id=edge_id,
+                    action=result.action.value,
+                    reason=result.message or "Hook evaluated",
+                )
+                logger.info(f"  Hook {hook.id} → {result.action.value}: {result.message}")
 
-                    if result.action == HookAction.TERMINATE:
-                        state.halt(result.message or "Hook terminated process")
+                if result.state_updates:
+                    state.process_variables.update(result.state_updates)
+
+                if result.action == HookAction.TERMINATE:
+                    state.halt(result.message or "Hook terminated process")
+                    return Command(update=state.model_dump(), goto=END)
+
+                elif result.action == HookAction.SKIP_NODE:
+                    state.process_variables["_skip_next_node"] = True
+                    return Command(update=state.model_dump(), goto=normal_target)
+
+                elif result.action == HookAction.SKIP_TO:
+                    target = result.skip_to_node
+                    if target:
+                        logger.info(f"  Hook issuing Command(goto={target!r})")
+                        state.add_graph_modification(
+                            hook_id=hook.id,
+                            modification_type="skip_to",
+                            details={"target": target},
+                            reason=result.message or f"Hook routed to {target}",
+                        )
+                        return Command(update=state.model_dump(), goto=target)
+
+                elif result.action == HookAction.REQUEST_USER_INPUT:
+                    prompt = result.user_prompt or "Input required before continuing."
+                    state.process_variables["_user_input_requested"] = True
+                    state.process_variables["_user_input_prompt"] = prompt
+                    state.halt(f"user_input_required: {prompt}")
+                    return Command(update=state.model_dump(), goto=END)
+
+                elif result.action == HookAction.SWAP_NODES:
+                    pair = result.swap_nodes
+                    if pair and len(pair) == 2:
+                        node_a, node_b = pair
+                        target = node_b if normal_target == node_a else node_a
+                        logger.info(f"  SWAP_NODES: {node_a} ↔ {node_b}, routing to {target!r}")
+                        state.add_graph_modification(
+                            hook_id=hook.id,
+                            modification_type="swap_nodes",
+                            details={
+                                "node_a": node_a,
+                                "node_b": node_b,
+                                "routed_to": target,
+                            },
+                            reason=result.message or f"Hook shuffled {node_a} ↔ {node_b}",
+                        )
+                        return Command(update=state.model_dump(), goto=target)
+
+                elif result.action == HookAction.REMOVE_NODE:
+                    target = result.remove_node
+                    if target:
+                        logger.info(f"  REMOVE_NODE: scheduling graph rebuild to remove node {target!r}")
+                        state.add_graph_modification(
+                            hook_id=hook.id,
+                            modification_type="remove_node",
+                            details={"removed": target},
+                            reason=result.message or f"Hook removed node {target}",
+                        )
+                        # Determine where the rebuilt graph should resume.
+                        # If the target is the immediate next node, skip past it to
+                        # its successor; otherwise resume at normal_target as usual.
+                        if target == normal_target:
+                            successors = [
+                                f.target_ref for f in process.flows
+                                if f.source_ref == target
+                                and f.target_ref not in (process.end_events or [])
+                            ]
+                            resume_from = successors[0] if successors else None
+                        else:
+                            resume_from = normal_target
+                        state.process_variables["_graph_rebuild_spec"] = {
+                            "type": "remove_node",
+                            "node_id": target,
+                        }
+                        if resume_from:
+                            state.process_variables["_resume_from_node"] = resume_from
                         return Command(update=state.model_dump(), goto=END)
 
-                    elif result.action == HookAction.SKIP_NODE:
-                        state.process_variables["_skip_next_node"] = True
-                        return Command(update=state.model_dump(), goto=normal_target)
-
-                    elif result.action == HookAction.SKIP_TO:
-                        target = result.skip_to_node
-                        if target:
-                            logger.info(f"  Hook issuing Command(goto={target!r})")
-                            state.add_graph_modification(
-                                hook_id=hook.id,
-                                modification_type="skip_to",
-                                details={"target": target},
-                                reason=result.message or f"Hook routed to {target}",
-                            )
-                            return Command(update=state.model_dump(), goto=target)
-
-                    elif result.action == HookAction.REQUEST_USER_INPUT:
-                        prompt = result.user_prompt or "Input required before continuing."
-                        state.process_variables["_user_input_requested"] = True
-                        state.process_variables["_user_input_prompt"] = prompt
-                        state.halt(f"user_input_required: {prompt}")
-                        return Command(update=state.model_dump(), goto=END)
-
-                    elif result.action == HookAction.SWAP_NODES:
-                        pair = result.swap_nodes
-                        if pair and len(pair) == 2:
-                            node_a, node_b = pair
-                            target = node_b if normal_target == node_a else node_a
-                            logger.info(f"  SWAP_NODES: {node_a} ↔ {node_b}, routing to {target!r}")
-                            state.add_graph_modification(
-                                hook_id=hook.id,
-                                modification_type="swap_nodes",
-                                details={
-                                    "node_a": node_a,
-                                    "node_b": node_b,
-                                    "routed_to": target,
-                                },
-                                reason=result.message or f"Hook shuffled {node_a} ↔ {node_b}",
-                            )
-                            return Command(update=state.model_dump(), goto=target)
-
-                    elif result.action == HookAction.REMOVE_NODE:
-                        target = result.remove_node
-                        if target:
-                            logger.info(f"  REMOVE_NODE: scheduling graph rebuild to remove node {target!r}")
-                            state.add_graph_modification(
-                                hook_id=hook.id,
-                                modification_type="remove_node",
-                                details={"removed": target},
-                                reason=result.message or f"Hook removed node {target}",
-                            )
-                            # Determine where the rebuilt graph should resume.
-                            # If the target is the immediate next node, skip past it to
-                            # its successor; otherwise resume at normal_target as usual.
-                            if target == normal_target:
-                                successors = [
-                                    f.target_ref for f in process.flows
-                                    if f.source_ref == target
-                                    and f.target_ref not in (process.end_events or [])
-                                ]
-                                resume_from = successors[0] if successors else None
-                            else:
-                                resume_from = normal_target
-                            state.process_variables["_graph_rebuild_spec"] = {
-                                "type": "remove_node",
-                                "node_id": target,
-                            }
-                            if resume_from:
-                                state.process_variables["_resume_from_node"] = resume_from
-                            return Command(update=state.model_dump(), goto=END)
-
-                    elif result.action == HookAction.ADD_NODE:
-                        add_spec = result.add_node
-                        if add_spec and add_spec.get("node_id"):
-                            new_node_id = add_spec["node_id"]
-                            instruction = add_spec.get("task_instruction", "")
-                            logger.info(f"  ADD_NODE: scheduling graph rebuild to insert node {new_node_id!r} before {normal_target!r}")
-                            state.add_graph_modification(
-                                hook_id=hook.id,
-                                modification_type="add_node",
-                                details={
-                                    "node_id": new_node_id,
-                                    "before": normal_target,
-                                    "task_instruction": instruction,
-                                },
-                                reason=result.message or f"Hook inserted node {new_node_id}",
-                            )
-                            state.process_variables["_graph_rebuild_spec"] = {
-                                "type": "add_node",
+                elif result.action == HookAction.ADD_NODE:
+                    add_spec = result.add_node
+                    if add_spec and add_spec.get("node_id"):
+                        new_node_id = add_spec["node_id"]
+                        instruction = add_spec.get("task_instruction", "")
+                        logger.info(f"  ADD_NODE: scheduling graph rebuild to insert node {new_node_id!r} before {normal_target!r}")
+                        state.add_graph_modification(
+                            hook_id=hook.id,
+                            modification_type="add_node",
+                            details={
                                 "node_id": new_node_id,
-                                "task_instruction": instruction,
                                 "before": normal_target,
-                            }
-                            # Resume at the newly inserted node in the rebuilt graph
-                            state.process_variables["_resume_from_node"] = new_node_id
-                            return Command(update=state.model_dump(), goto=END)
+                                "task_instruction": instruction,
+                            },
+                            reason=result.message or f"Hook inserted node {new_node_id}",
+                        )
+                        state.process_variables["_graph_rebuild_spec"] = {
+                            "type": "add_node",
+                            "node_id": new_node_id,
+                            "task_instruction": instruction,
+                            "before": normal_target,
+                        }
+                        # Resume at the newly inserted node in the rebuilt graph
+                        state.process_variables["_resume_from_node"] = new_node_id
+                        return Command(update=state.model_dump(), goto=END)
 
-                except Exception as e:
-                    logger.error(f"  Error evaluating hook {hook.id}: {e}")
+            except Exception as e:
+                logger.error(f"  Error evaluating hook {hook.id}: {e}")
 
             return Command(update=state.model_dump(), goto=normal_target)
 
