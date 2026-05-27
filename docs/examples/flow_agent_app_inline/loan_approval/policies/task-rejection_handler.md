@@ -3,12 +3,6 @@
 ## Goal
 Notify the applicant of the loan rejection in a professional, empathetic manner, and record the outcome.
 
-## Pre-conditions (verify before acting)
-1. `approved` is `false`.
-2. Check `rejection_reason` in process variables:
-   - If `rejection_reason` is `"regulatory_policy_restriction"` (set by a policy override hook), proceed under the **Policy Override** path below.
-   - If `rejection_reason` is empty or missing, set it to `"credit_score_insufficient"` before proceeding.
-
 ## Policy Override Path (when `rejection_reason == "regulatory_policy_restriction"`)
 - The rejection was triggered by a compliance rule, not by the credit score.
 - Do **not** reference the credit score as the reason.
