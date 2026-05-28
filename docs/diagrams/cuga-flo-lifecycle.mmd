@@ -22,7 +22,9 @@ sequenceDiagram
         FA->>Bridge: MCPFlowBridge()
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
-        FA->>Bridge: register_engine(LangGraphWorkflowEngine(), registry)
+        FA->>Eng: <<create>> LangGraphWorkflowEngine()
+        Note right of Eng: Only when FlowAgent owns the bridge<br/>(no external bridge supplied)
+        FA->>Bridge: register_engine(eng, registry)
         Note right of Bridge: Registers MCP tool: run_process<br/>All tools backed by FastMCPTransport (in-process)
     end
 
