@@ -66,9 +66,11 @@ sequenceDiagram
         Note right of FA: str input_data → initial_inputs["_user_message"]<br/>dict input_data → merged into initial_inputs
         FA->>Bridge: get_client() — Client(FastMCPTransport)
         FA->>Bridge: call_tool("run_process", {process_key, initial_inputs})
+        Bridge->>Eng: run_process(process_key, initial_inputs)
+        Eng->>Bridge: call_tool("get_bpmn_process", {process_key})
         Bridge->>Reg: get_bpmn_process(process_key)
         Reg-->>Bridge: BPMNProcess
-        Bridge->>Eng: run_process(bpmn, initial_inputs)
+        Bridge-->>Eng: BPMNProcess dict → from_dict()
         Eng->>Bridge: call_tool("get_static_config", {})
         Bridge->>FA: _get_static_config()
         FA-->>Bridge: {agentic_task_ids, decision_gateway_ids, task_instructions, hooks,<br/>flow_conditions, tool_tasks, action_permissions}

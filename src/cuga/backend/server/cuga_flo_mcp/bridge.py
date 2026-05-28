@@ -161,8 +161,7 @@ class MCPFlowBridge:
 
         async def run_process(process_key: str, initial_inputs: dict) -> dict:
             """Execute a BPMN process via the WorkflowEngine. Returns {state, bpmn}."""
-            bpmn = self._registry.get_bpmn_process(process_key)
-            state = await engine._run_via_mcp(bpmn, initial_inputs, _mcp_server)
+            state, bpmn = await engine._run_via_mcp(process_key, initial_inputs, _mcp_server)
             return {"state": state.model_dump(mode="json"), "bpmn": bpmn.to_dict()}
 
         self._mcp.tool(name="run_process")(run_process)

@@ -76,15 +76,20 @@ class LangGraphWorkflowEngine(WorkflowEngine):
 
     async def _run_via_mcp(
         self,
-        process: BPMNProcess,
+        process_key: str,
         initial_inputs: Dict[str, Any],
         mcp_server: Any,
-    ) -> FlowState:
+    ) -> tuple:
         """
-        Fetch static config from FlowAgent via MCP, build an internal _ControlOverlay
+        Fetch BPMNProcess and static config via MCP, build an internal _ControlOverlay
         with MCP-backed handlers, then execute the LangGraph.
+
+        Returns (FlowState, BPMNProcess).
         """
         async with Client(FastMCPTransport(mcp_server)) as c:
+            bpmn_result = await c.call_tool("get_bpmn_process", {"process_key": process_key})
+            process = BPMNProcess.from_dict(bpmn_result.data)
+
             config_result = await c.call_tool("get_static_config", {})
             static = config_result.data
 
@@ -149,7 +154,8 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                 action_permissions=action_permissions,
             )
 
-            return await self._run_graph(process, initial_inputs, overlay, mcp_client=c)
+            state = await self._run_graph(process, initial_inputs, overlay, mcp_client=c)
+        return state, process
 
     async def _run_graph(
         self,
