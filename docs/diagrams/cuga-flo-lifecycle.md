@@ -24,7 +24,7 @@ sequenceDiagram
         SC->>FC: load_flow_from_yaml(flow_config_path)
         Note right of FC: Parses YAML (tasks, gateways,<br/>hooks, policies, action_permissions)<br/>+ BPMN file via BPMNParser
         FC->>Reg: <<create>> ProcessRegistry()
-        FC->>Reg: register BPMNProcess + FlowConfig under process_key
+        FC->>Reg: register_flow(key, bpmn, definition, config=self)
         FC->>Bridge: <<create>> MCPFlowBridge()
         Reg->>Bridge: register_registry(self)
         Note right of Bridge: Registers MCP tool: get_bpmn_process<br/>Bridge holds internal Reg reference
