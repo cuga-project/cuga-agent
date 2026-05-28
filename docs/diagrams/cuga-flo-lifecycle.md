@@ -25,14 +25,13 @@ sequenceDiagram
         Note right of FC: Parses YAML (tasks, gateways,<br/>hooks, policies, action_permissions)<br/>+ BPMN file via BPMNParser
         FC->>Reg: <<create>> ProcessRegistry()
         FC->>Reg: register BPMNProcess + FlowConfig under process_key
-        FC->>FA: <<create>> FlowAgent(process_key, registry)
+        FC->>Bridge: <<create>> MCPFlowBridge()
+        FC->>FA: <<create>> FlowAgent(process_key, registry, bridge)
         Note right of FA: Reads FlowConfig from registry:<br/>creates task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions
-        FA->>Bridge: <<create>> MCPFlowBridge()
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
-        FA->>Eng: <<create>> LangGraphWorkflowEngine()
-        Note right of Eng: Only when FlowAgent owns the bridge<br/>(no external bridge supplied)
-        FA->>Bridge: register_engine(eng, registry)
+        FC->>Eng: <<create>> LangGraphWorkflowEngine()
+        FC->>Bridge: register_engine(eng, registry)
         Note right of Bridge: Registers MCP tool: run_process<br/>All tools backed by FastMCPTransport (in-process)
     end
 

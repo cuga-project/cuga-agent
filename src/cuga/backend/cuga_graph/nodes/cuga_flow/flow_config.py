@@ -466,6 +466,9 @@ class FlowConfig:
         bpmn_file = self.get_bpmn_file()
         process_key = flow_id or self.get_flow_name() or "process"
 
+        from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
+        from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
+
         registry = ProcessRegistry()
         registry._definitions[process_key] = ProcessDefinition(
             key=process_key,
@@ -478,11 +481,14 @@ class FlowConfig:
         # Cache self so FlowAgent's registry.get_flow_config() returns this instance
         registry._config_cache[process_key] = self
 
+        bridge = MCPFlowBridge()
         flow_agent = FlowAgent(
             process_key=process_key,
             registry=registry,
             model_name=self.get_model_name(),
+            bridge=bridge,
         )
+        bridge.register_engine(LangGraphWorkflowEngine(), registry)
 
         logger.info(f"FlowAgent created: {flow_agent.get_process_info()}")
         return flow_agent
