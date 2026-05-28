@@ -488,7 +488,8 @@ class FlowConfig:
             model_name=self.get_model_name(),
             bridge=bridge,
         )
-        bridge.register_engine(LangGraphWorkflowEngine(), registry)
+        engine = LangGraphWorkflowEngine()
+        engine.register_with_bridge(bridge, registry)
 
         logger.info(f"FlowAgent created: {flow_agent.get_process_info()}")
         return flow_agent

@@ -66,6 +66,10 @@ class _ControlOverlay:
 class LangGraphWorkflowEngine(WorkflowEngine):
     """LangGraph-backed WorkflowEngine.  Uses the MCP bridge for all harness callbacks."""
 
+    def register_with_bridge(self, bridge: Any, registry: Any) -> None:
+        """Register this engine's run_process tool with the given MCPFlowBridge."""
+        bridge.register_engine(self, registry)
+
     # ──────────────────────────────────────────────────────────────
     # Primary entry point (called by MCPFlowBridge's run_process tool)
     # ──────────────────────────────────────────────────────────────
