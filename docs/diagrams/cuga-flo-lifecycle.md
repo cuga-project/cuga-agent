@@ -16,12 +16,11 @@ sequenceDiagram
 
     rect rgb(230, 240, 255)
         Note over App,Reg: STARTUP
-        App->>Reg: register_from_directory("flow_agent_app_inline/")
-        Note right of Reg: auto-discovers loan_approval,<br/>receive_order, trip_planner
-        App->>FA: FlowAgent(process_key, registry)
-        FA->>Reg: get_flow_config(process_key)
-        Reg-->>FA: FlowConfig (tasks, gateways, hooks)
-        Note right of FA: Loads durable agent bindings:<br/>task_agents, gateway_agents<br/>task_instructions (WHAT from YAML)<br/>task_policies, hooks, action_permissions
+        App->>App: cuga start flow_agent_inline — sets DYNACONF_SUPERVISOR__CONFIG_PATH
+        App->>Reg: supervisor_config.py reads YAML<br/>finds type: flow_agent → load_flow_from_yaml(flow_config_path)
+        Note right of Reg: FlowConfig parses YAML + BPMN file<br/>creates ProcessRegistry, caches BPMNProcess<br/>and FlowConfig under process_key
+        Reg->>FA: FlowConfig.create_flow_agent() → FlowAgent(process_key, registry)
+        Note right of FA: Reads FlowConfig from registry:<br/>creates task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions
         FA->>Bridge: MCPFlowBridge()
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
