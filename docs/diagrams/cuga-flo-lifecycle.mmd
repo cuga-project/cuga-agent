@@ -24,7 +24,8 @@ sequenceDiagram
         FC->>Reg: register BPMNProcess + FlowConfig under process_key
         FC->>Bridge: <<create>> MCPFlowBridge()
         FC->>FA: <<create>> FlowAgent(process_key, registry, bridge)
-        Note right of FA: Reads FlowConfig from registry:<br/>creates task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions
+        FA->>Reg: get_flow_config(process_key)
+        Note right of FA: Builds task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions from FlowConfig
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
         FC->>Eng: <<create>> LangGraphWorkflowEngine(bridge, registry)
@@ -49,7 +50,9 @@ sequenceDiagram
         Note right of FA: str input_data → initial_inputs["_user_message"]<br/>dict input_data → merged into initial_inputs
         FA->>Bridge: get_client() — Client(FastMCPTransport)
         FA->>Bridge: call_tool("run_process", {process_key, initial_inputs})
-        Bridge->>Eng: run_process tool handler
+        Bridge->>Reg: get_bpmn_process(process_key)
+        Reg-->>Bridge: BPMNProcess
+        Bridge->>Eng: run_process(bpmn, initial_inputs)
         Eng->>Bridge: call_tool("get_static_config", {})
         Bridge->>FA: _get_static_config()
         FA-->>Bridge: {agentic_task_ids, decision_gateway_ids, task_instructions, hooks,<br/>flow_conditions, tool_tasks, action_permissions}
@@ -120,6 +123,8 @@ sequenceDiagram
         alt not is_halted
             FA->>FS: mark_complete()
         end
+        FA->>Reg: get_bpmn_process(process_key)
+        Reg-->>FA: BPMNProcess
         FA->>FA: _build_completion_message(final_state, bpmn_process)
         FA->>FS: messages.append(summary)
         FA-->>App: FlowState
