@@ -22,6 +22,8 @@ tasks:
 
   - id: "Activity_0oydey5"
     mode: task_agent
+    output_mapping:
+      credit_score: credit_score
     agent:
       name: "credit_checker"
       system_instruction: "Analyses applicant information and returns a credit score 0.0–1.0"

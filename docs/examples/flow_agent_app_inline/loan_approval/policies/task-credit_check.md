@@ -4,7 +4,13 @@
 Analyse the applicant's financial profile and produce a normalised credit score in the range **0.0 – 1.0**.
 
 ## Required Output
-You **must** set the process variable `credit_score` to a float between 0.0 and 1.0 before completing your task.  Do not omit or leave this variable unset.
+You **must** respond with a JSON object containing at least `credit_score` (a float 0.0–1.0) and `explanation` (a short string). Example:
+
+```json
+{"credit_score": 0.82, "explanation": "Strong payment history and low debt ratio."}
+```
+
+Do not omit `credit_score` or wrap the JSON in extra prose.
 
 ## Scoring Criteria
 | Factor | Weight |
