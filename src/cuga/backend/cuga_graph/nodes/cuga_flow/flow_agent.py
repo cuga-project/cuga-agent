@@ -157,11 +157,10 @@ class FlowAgent:
         from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
         from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
 
-        _owns_bridge = bridge is None
         self.bridge: MCPFlowBridge = bridge or MCPFlowBridge()
         self.bridge.register_flow_agent(self)
-        if _owns_bridge:
-            self.bridge.register_engine(LangGraphWorkflowEngine(), self.registry)
+        if bridge is None:
+            LangGraphWorkflowEngine(bridge=self.bridge, registry=self.registry)
 
         logger.info(
             f"FlowAgent initialised for process '{self.process_key}' "

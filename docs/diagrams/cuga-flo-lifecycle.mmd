@@ -27,8 +27,7 @@ sequenceDiagram
         Note right of FA: Reads FlowConfig from registry:<br/>creates task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
-        FC->>Eng: <<create>> LangGraphWorkflowEngine()
-        FC->>Eng: register_with_bridge(bridge, registry)
+        FC->>Eng: <<create>> LangGraphWorkflowEngine(bridge, registry)
         Eng->>Bridge: register_engine(self, registry)
         Note right of Bridge: Registers MCP tool: run_process<br/>All tools backed by FastMCPTransport (in-process)
     end
