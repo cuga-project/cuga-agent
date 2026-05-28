@@ -88,7 +88,7 @@ class FlowAgent:
             self.process_key = process_key
             self.registry = registry
 
-            config = registry.get_flow_config(process_key)
+            config = registry.get_flow_annotations(process_key)
             self.task_agents: Dict[str, TaskAgent] = task_agents or config.create_task_agents()
             self.tool_tasks: Dict[str, Optional[str]] = tool_tasks or config.create_tool_tasks()
             self.gateway_agents: Dict[str, DecisionAgent] = gateway_agents or config.create_gateway_agents()

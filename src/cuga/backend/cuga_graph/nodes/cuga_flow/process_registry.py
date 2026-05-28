@@ -83,7 +83,7 @@ class ProcessRegistry:
             logger.debug(f"ProcessRegistry: parsed BPMN for '{key}'")
         return self._bpmn_cache[key]
 
-    def get_flow_config(self, key: str) -> FlowConfig:
+    def get_flow_annotations(self, key: str) -> FlowConfig:
         if key not in self._config_cache:
             defn = self._get_definition(key)
             self._config_cache[key] = FlowConfig.from_yaml(defn.config_path)
