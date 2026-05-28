@@ -416,16 +416,16 @@ Respond ONLY with a JSON object:
         elif isinstance(input_data, dict):
             initial_inputs.update(input_data)
 
+        bpmn_process = None
         try:
             async with self.bridge.get_client() as c:
-                bpmn_data = await c.call_tool("get_bpmn_process", {"process_key": self.process_key})
-                bpmn_process = BPMNProcess.from_dict(bpmn_data.data)
-                logger.info(f"Invoking process '{bpmn_process.name}' via MCPFlowBridge")
                 result = await c.call_tool(
                     "run_process",
                     {"process_key": self.process_key, "initial_inputs": initial_inputs},
                 )
-            final_state = FlowState.model_validate(result.data)
+            bpmn_process = BPMNProcess.from_dict(result.data["bpmn"])
+            logger.info(f"Invoking process '{bpmn_process.name}' via MCPFlowBridge")
+            final_state = FlowState.model_validate(result.data["state"])
             if not final_state.is_halted:
                 final_state.mark_complete()
             summary = self._build_completion_message(final_state, bpmn_process)
@@ -439,8 +439,8 @@ Respond ONLY with a JSON object:
         except Exception as e:
             logger.error(f"Error executing process: {e}")
             error_state = FlowState(
-                process_id=bpmn_process.id,
-                process_name=bpmn_process.name,
+                process_id=bpmn_process.id if bpmn_process else self.process_key,
+                process_name=bpmn_process.name if bpmn_process else self.process_key,
                 process_variables=initial_inputs,
             )
             error_state.halt(f"Execution error: {str(e)}")
