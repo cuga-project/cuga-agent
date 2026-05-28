@@ -22,9 +22,9 @@ sequenceDiagram
         App->>SC: load supervisor YAML
         SC->>SC: finds agent entry with type: flow_agent
         SC->>FC: load_flow_from_yaml(flow_config_path)
-        FC->>Reg: <<create>> ProcessRegistry()
         FC->>Bridge: <<create>> MCPFlowBridge()
-        FC->>Bridge: register_registry(registry)
+        FC->>Reg: <<create>> ProcessRegistry(bridge)
+        Reg->>Bridge: register_registry(self)
         Note right of Bridge: Registers MCP tools: register_flow, get_bpmn_process<br/>Bridge holds internal Reg reference
         FC->>Bridge: load_flow(config_path)
         Bridge->>Reg: register_flow(config_path)

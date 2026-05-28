@@ -460,9 +460,8 @@ class FlowConfig:
         from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
         from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
 
-        registry = ProcessRegistry()
         bridge = MCPFlowBridge()
-        bridge.register_registry(registry)
+        registry = ProcessRegistry(bridge=bridge)
         process_key = bridge.load_flow(self.config_path)
         flow_agent = FlowAgent(process_key=process_key, registry=registry, bridge=bridge)
         LangGraphWorkflowEngine(bridge=bridge)

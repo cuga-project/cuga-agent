@@ -7,7 +7,7 @@ BPMNProcess and FlowConfig, with a parsed+cached BPMN object per key.
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 import yaml
 from loguru import logger
@@ -28,10 +28,12 @@ class ProcessDefinition:
 class ProcessRegistry:
     """Catalog of BPMN process definitions. Loaded at startup; read-only at runtime."""
 
-    def __init__(self) -> None:
+    def __init__(self, bridge: Any = None) -> None:
         self._definitions: Dict[str, ProcessDefinition] = {}
         self._bpmn_cache: Dict[str, BPMNProcess] = {}
         self._config_cache: Dict[str, FlowConfig] = {}
+        if bridge is not None:
+            bridge.register_registry(self)
 
     def register(
         self,

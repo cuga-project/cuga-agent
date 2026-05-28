@@ -83,6 +83,12 @@ class FlowAgent:
         process_variables: Optional[Dict[str, Any]] = None,
         action_permissions: Optional[Dict[str, List[str]]] = None,
     ):
+        from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
+        from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
+
+        _bridge_owned = bridge is None
+        self.bridge: MCPFlowBridge = bridge or MCPFlowBridge()
+
         if process_key and registry:
             # ── Registry-based init ─────────────────────────────────────────
             self.process_key = process_key
@@ -113,7 +119,7 @@ class FlowAgent:
             if _proc is None:
                 raise ValueError("bpmn_process must not be None")
 
-            _reg = ProcessRegistry()
+            _reg = ProcessRegistry(bridge=self.bridge if _bridge_owned else None)
             _key = _proc.id or "anonymous"
             _reg._register_preloaded(
                 key=_key,
@@ -154,17 +160,8 @@ class FlowAgent:
 
         self._llm = LLMManager().get_model(settings.agent.planner.model)
 
-        # ── MCP bridge setup ────────────────────────────────────────────────
-        # If a bridge is provided (shared/external), the caller is responsible for
-        # registering the engine on it.  If created here, we wire everything automatically.
-        from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
-        from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
-
-        self.bridge: MCPFlowBridge = bridge or MCPFlowBridge()
-        if bridge is None:
-            self.bridge.register_registry(self.registry)
         self.bridge.register_flow_agent(self)
-        if bridge is None:
+        if _bridge_owned:
             LangGraphWorkflowEngine(bridge=self.bridge)
 
         logger.info(
