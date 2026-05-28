@@ -64,9 +64,8 @@ sequenceDiagram
         Note over App,Eng: INVOCATION
         App->>FA: invoke(input_data, process_variables)
         Note right of FA: str input_data → initial_inputs["_user_message"]<br/>dict input_data → merged into initial_inputs
-        FA->>Bridge: get_client() — Client(FastMCPTransport)
-        FA->>Bridge: call_tool("run_process", {process_key, initial_inputs})
-        Bridge->>Eng: run_process(process_key, initial_inputs)
+        FA->>Bridge: run_process(process_key, initial_inputs)
+        Bridge->>Eng: _run_via_mcp(process_key, initial_inputs, mcp_server)
         Eng->>Bridge: call_tool("get_bpmn_process", {process_key})
         Bridge->>Reg: get_bpmn_process(process_key)
         Reg-->>Bridge: BPMNProcess
@@ -134,14 +133,14 @@ sequenceDiagram
 
     rect rgb(240, 255, 240)
         Note over Eng,App: COMPLETION
-        Eng-->>Bridge: {state: FlowState.model_dump(), bpmn: bpmn.to_dict()}
-        Bridge-->>FA: result.data {state, bpmn}
-        FA->>FS: FlowState.model_validate(result.data["state"])
+        Eng-->>Bridge: (FlowState, BPMNProcess)
+        Bridge-->>FA: {state: FlowState.model_dump(), bpmn: bpmn.to_dict()}
+        FA->>FS: FlowState.model_validate(result["state"])
         Note right of FA: FA does NOT store FlowState<br/>Ready for next invoke() call
         alt not is_halted
             FA->>FS: mark_complete()
         end
-        FA->>FA: _build_completion_message(final_state, BPMNProcess.from_dict(result.data["bpmn"]))
+        FA->>FA: _build_completion_message(final_state, BPMNProcess.from_dict(result["bpmn"]))
         FA->>FS: messages.append(summary)
         FA-->>App: FlowState
     end
