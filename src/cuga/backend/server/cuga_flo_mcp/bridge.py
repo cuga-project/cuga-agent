@@ -28,22 +28,44 @@ if TYPE_CHECKING:
 class MCPFlowBridge:
     """
     Shared FastMCP server mediating bi-directional messaging between
-    FlowAgent and WorkflowEngine.
+    FlowAgent, WorkflowEngine, and ProcessRegistry.
 
     Usage:
         bridge = MCPFlowBridge()
+        bridge.register_registry(registry)
         bridge.register_flow_agent(fa)
-        bridge.register_engine(engine, registry)
+        bridge.register_engine(engine)
         # FlowAgent.invoke() calls bridge.get_client() internally
     """
 
     def __init__(self, name: str = "cuga-flo-mcp") -> None:
         self._mcp = FastMCP(name)
+        self._registry: "ProcessRegistry | None" = None
         logger.debug(f"MCPFlowBridge created: {name!r}")
 
     # ──────────────────────────────────────────────────────────────
     # Registration
     # ──────────────────────────────────────────────────────────────
+
+    def register_registry(self, registry: "ProcessRegistry") -> None:
+        """
+        Register ProcessRegistry services as MCP tools.
+
+        Tools registered:
+          get_bpmn_process(process_key) → dict  (serialised BPMNProcess)
+
+        The bridge also holds an internal reference so register_engine() can
+        resolve BPMN models without a direct registry dependency.
+        """
+        self._registry = registry
+
+        async def get_bpmn_process(process_key: str) -> dict:
+            """Fetch and serialise a BPMNProcess from the registry."""
+            bpmn = registry.get_bpmn_process(process_key)
+            return bpmn.to_dict()
+
+        self._mcp.tool(name="get_bpmn_process")(get_bpmn_process)
+        logger.info("MCPFlowBridge: registered ProcessRegistry tools")
 
     def register_flow_agent(self, fa: "FlowAgent") -> None:
         """
@@ -92,22 +114,20 @@ class MCPFlowBridge:
 
         logger.info(f"MCPFlowBridge: registered FlowAgent tools for process '{fa.process_key}'")
 
-    def register_engine(
-        self,
-        engine: "LangGraphWorkflowEngine",
-        registry: "ProcessRegistry",
-    ) -> None:
+    def register_engine(self, engine: "LangGraphWorkflowEngine") -> None:
         """
         Register WorkflowEngine's run_process as an MCP tool.
 
         Tool registered:
           run_process(process_key, initial_inputs) → dict  (FlowState serialised)
+
+        BPMN lookup is done via self._registry (set by register_registry).
         """
         _mcp_server = self._mcp  # captured for closure
 
         async def run_process(process_key: str, initial_inputs: dict) -> dict:
             """Execute a BPMN process via the WorkflowEngine."""
-            bpmn = registry.get_bpmn_process(process_key)
+            bpmn = self._registry.get_bpmn_process(process_key)
             state = await engine._run_via_mcp(bpmn, initial_inputs, _mcp_server)
             return state.model_dump(mode="json")
 

@@ -121,6 +121,44 @@ class BPMNProcess:
     start_event: Optional[str] = None
     end_events: List[str] = None
 
+    def to_dict(self) -> dict:
+        import dataclasses
+        return dataclasses.asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "BPMNProcess":
+        elements = {
+            k: BPMNElement(
+                id=e["id"],
+                name=e["name"],
+                element_type=e["element_type"],
+                attributes=e.get("attributes", {}),
+                tool_binding=e.get("tool_binding"),
+                agent_binding=e.get("agent_binding"),
+                condition_tool=e.get("condition_tool"),
+                decision_agent=e.get("decision_agent"),
+            )
+            for k, e in data.get("elements", {}).items()
+        }
+        flows = [
+            BPMNFlow(
+                id=f["id"],
+                name=f["name"],
+                source_ref=f["source_ref"],
+                target_ref=f["target_ref"],
+                condition=f.get("condition"),
+            )
+            for f in data.get("flows", [])
+        ]
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            elements=elements,
+            flows=flows,
+            start_event=data.get("start_event"),
+            end_events=data.get("end_events") or [],
+        )
+
 
 class BPMNParser:
     """

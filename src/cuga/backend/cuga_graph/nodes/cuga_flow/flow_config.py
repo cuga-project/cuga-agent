@@ -482,6 +482,7 @@ class FlowConfig:
         registry._config_cache[process_key] = self
 
         bridge = MCPFlowBridge()
+        bridge.register_registry(registry)
         flow_agent = FlowAgent(
             process_key=process_key,
             registry=registry,

@@ -26,13 +26,14 @@ sequenceDiagram
         FC->>Reg: <<create>> ProcessRegistry()
         FC->>Reg: register BPMNProcess + FlowConfig under process_key
         FC->>Bridge: <<create>> MCPFlowBridge()
+        Reg->>Bridge: register_registry(self)
+        Note right of Bridge: Registers MCP tool: get_bpmn_process<br/>Bridge holds internal Reg reference
         FC->>FA: <<create>> FlowAgent(process_key, registry, bridge)
-        FA->>Reg: get_flow_config(process_key)
         Note right of FA: Builds task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions from FlowConfig
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
-        FC->>Eng: <<create>> LangGraphWorkflowEngine(bridge, registry)
-        Eng->>Bridge: register_engine(self, registry)
+        FC->>Eng: <<create>> LangGraphWorkflowEngine(bridge)
+        Eng->>Bridge: register_engine(self)
         Note right of Bridge: Registers MCP tool: run_process<br/>All tools backed by FastMCPTransport (in-process)
     end
 
@@ -52,6 +53,10 @@ sequenceDiagram
         App->>FA: invoke(input_data, process_variables)
         Note right of FA: str input_data → initial_inputs["_user_message"]<br/>dict input_data → merged into initial_inputs
         FA->>Bridge: get_client() — Client(FastMCPTransport)
+        FA->>Bridge: call_tool("get_bpmn_process", {process_key})
+        Bridge->>Reg: get_bpmn_process(process_key)
+        Reg-->>Bridge: BPMNProcess
+        Bridge-->>FA: BPMNProcess dict → from_dict()
         FA->>Bridge: call_tool("run_process", {process_key, initial_inputs})
         Bridge->>Reg: get_bpmn_process(process_key)
         Reg-->>Bridge: BPMNProcess
@@ -126,8 +131,7 @@ sequenceDiagram
         alt not is_halted
             FA->>FS: mark_complete()
         end
-        FA->>Reg: get_bpmn_process(process_key)
-        Reg-->>FA: BPMNProcess
+        Note right of FA: bpmn_process already held from INVOCATION<br/>get_bpmn_process fetched once per invoke()
         FA->>FA: _build_completion_message(final_state, bpmn_process)
         FA->>FS: messages.append(summary)
         FA-->>App: FlowState

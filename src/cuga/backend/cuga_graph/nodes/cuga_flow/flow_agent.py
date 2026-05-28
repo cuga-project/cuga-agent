@@ -158,9 +158,11 @@ class FlowAgent:
         from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
 
         self.bridge: MCPFlowBridge = bridge or MCPFlowBridge()
+        if bridge is None:
+            self.bridge.register_registry(self.registry)
         self.bridge.register_flow_agent(self)
         if bridge is None:
-            LangGraphWorkflowEngine(bridge=self.bridge, registry=self.registry)
+            LangGraphWorkflowEngine(bridge=self.bridge)
 
         logger.info(
             f"FlowAgent initialised for process '{self.process_key}' "
@@ -411,8 +413,7 @@ Respond ONLY with a JSON object:
         Returns:
             Terminal FlowState after the process completes or halts.
         """
-        bpmn_process = self.registry.get_bpmn_process(self.process_key)
-        logger.info(f"Invoking process '{bpmn_process.name}' via MCPFlowBridge")
+        from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNProcess
 
         initial_inputs: Dict[str, Any] = dict(self.initial_variables)
         initial_inputs.update(process_variables or {})
@@ -423,6 +424,9 @@ Respond ONLY with a JSON object:
 
         try:
             async with self.bridge.get_client() as c:
+                bpmn_data = await c.call_tool("get_bpmn_process", {"process_key": self.process_key})
+                bpmn_process = BPMNProcess.from_dict(bpmn_data.data)
+                logger.info(f"Invoking process '{bpmn_process.name}' via MCPFlowBridge")
                 result = await c.call_tool(
                     "run_process",
                     {"process_key": self.process_key, "initial_inputs": initial_inputs},
