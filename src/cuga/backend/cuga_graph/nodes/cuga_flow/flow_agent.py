@@ -50,12 +50,6 @@ class FlowAgent:
     Communication with the WorkflowEngine uses MCPFlowBridge — both sides register
     their services on a shared FastMCP server and call each other via MCP tool calls.
 
-    Usage (registry-based — recommended):
-        registry = ProcessRegistry()
-        registry.register_from_directory("flow_agent_app_inline/")
-        agent = FlowAgent(process_key="receive_order", registry=registry)
-        state = await agent.invoke("Order ID 42, priority HIGH")
-
     Usage (backward-compatible, direct bpmn_file):
         agent = FlowAgent(bpmn_file="process.bpmn", task_agents={...}, ...)
         state = await agent.invoke("Start approval for $15 000")
