@@ -6,6 +6,8 @@ sequenceDiagram
     participant Sup as Supervisor (CugaAgent)
     participant Deleg as delegation.py
     participant App as Application
+    participant SC as supervisor_config.py
+    participant FC as FlowConfig
     participant Reg as ProcessRegistry
     participant FA as FlowAgent
     participant Bridge as MCPFlowBridge
@@ -16,12 +18,16 @@ sequenceDiagram
 
     rect rgb(230, 240, 255)
         Note over App,Reg: STARTUP
-        App->>App: cuga start flow_agent_inline — sets DYNACONF_SUPERVISOR__CONFIG_PATH
-        App->>Reg: supervisor_config.py reads YAML<br/>finds type: flow_agent → load_flow_from_yaml(flow_config_path)
-        Note right of Reg: FlowConfig parses YAML + BPMN file<br/>creates ProcessRegistry, caches BPMNProcess<br/>and FlowConfig under process_key
-        Reg->>FA: FlowConfig.create_flow_agent() → FlowAgent(process_key, registry)
+        App->>App: cuga start flow_agent_inline<br/>sets DYNACONF_SUPERVISOR__CONFIG_PATH
+        App->>SC: load supervisor YAML
+        SC->>SC: finds agent entry with type: flow_agent
+        SC->>FC: load_flow_from_yaml(flow_config_path)
+        Note right of FC: Parses YAML (tasks, gateways,<br/>hooks, policies, action_permissions)<br/>+ BPMN file via BPMNParser
+        FC->>Reg: <<create>> ProcessRegistry()
+        FC->>Reg: register BPMNProcess + FlowConfig under process_key
+        FC->>FA: <<create>> FlowAgent(process_key, registry)
         Note right of FA: Reads FlowConfig from registry:<br/>creates task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions
-        FA->>Bridge: MCPFlowBridge()
+        FA->>Bridge: <<create>> MCPFlowBridge()
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
         FA->>Eng: <<create>> LangGraphWorkflowEngine()
