@@ -71,21 +71,21 @@ class ProcessRegistry:
             self._config_cache[key] = config
         logger.info(f"ProcessRegistry: registered pre-loaded flow '{key}'")
 
-    def get_definition(self, key: str) -> ProcessDefinition:
+    def _get_definition(self, key: str) -> ProcessDefinition:
         if key not in self._definitions:
             raise KeyError(f"Process '{key}' not registered. Available: {list(self._definitions)}")
         return self._definitions[key]
 
     def get_bpmn_process(self, key: str) -> BPMNProcess:
         if key not in self._bpmn_cache:
-            defn = self.get_definition(key)
+            defn = self._get_definition(key)
             self._bpmn_cache[key] = BPMNParser().parse_file(defn.bpmn_path)
             logger.debug(f"ProcessRegistry: parsed BPMN for '{key}'")
         return self._bpmn_cache[key]
 
     def get_flow_config(self, key: str) -> FlowConfig:
         if key not in self._config_cache:
-            defn = self.get_definition(key)
+            defn = self._get_definition(key)
             self._config_cache[key] = FlowConfig.from_yaml(defn.config_path)
             logger.debug(f"ProcessRegistry: loaded FlowConfig for '{key}'")
         return self._config_cache[key]

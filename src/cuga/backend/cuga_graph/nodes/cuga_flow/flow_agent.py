@@ -468,22 +468,6 @@ Respond ONLY with a JSON object:
                 parts.append(f"\n{task_name}: Skipped — {result.get('reason', '')}")
         return "\n".join(parts)
 
-    def get_process_info(self) -> Dict[str, Any]:
-        """Return metadata about this FlowAgent's process binding."""
-        defn = None
-        try:
-            defn = self.registry.get_definition(self.process_key)
-        except Exception:
-            pass
-        return {
-            "process_key": self.process_key,
-            "process_name": defn.name if defn else self.process_key,
-            "bridge": type(self.bridge).__name__,
-            "registered_task_agents": list(self.task_agents.keys()),
-            "registered_gateway_agents": list(self.gateway_agents.keys()),
-            "registered_hooks": len(self.hooks),
-        }
-
     # ──────────────────────────────────────────────────────────────
     # Backward-compat helpers (used by tests / existing callers)
     # ──────────────────────────────────────────────────────────────

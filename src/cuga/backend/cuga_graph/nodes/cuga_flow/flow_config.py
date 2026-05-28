@@ -466,7 +466,6 @@ class FlowConfig:
         flow_agent = FlowAgent(process_key=process_key, registry=registry, bridge=bridge)
         LangGraphWorkflowEngine(bridge=bridge)
 
-        logger.info(f"FlowAgent created: {flow_agent.get_process_info()}")
         return flow_agent
 
 
