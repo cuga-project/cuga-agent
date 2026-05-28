@@ -42,12 +42,8 @@ FLIGHT_GUARD_CONFIG = {
 ### Policy Rules
 - Customers with "regular" membership cannot book a flight with more than 3 passengers
 - Gold and silver members have no passenger restrictions
-- This policy ensures fair resource allocation and encourages membership upgrades
 
-### Validation Requirements
-- Always check user membership level before booking
-- Reject bookings that violate passenger limits
-- Provide clear error messages when restrictions apply
+
 """,
     "description": "Membership-based restrictions for flight bookings to ensure fair resource allocation",
 }
@@ -162,7 +158,8 @@ async def main() -> None:
         print("\n💻 Generating tool guard code…")
         guard_code = await agent.policies.generate_tool_guard_code(
             policy_id=policy_id,
-            target_tool=target_tool
+            target_tool=target_tool,
+            app_name="cuga_app"  # Explicitly specify for direct Python tools
         )
         print(f"   ✓ Generated code for tool guard")
         if guard_code:
@@ -238,10 +235,10 @@ async def main() -> None:
         
         print("\n   💻 Generated Guard Code:")
         print("   " + "-"*76)
-        for line in guard_code.split('\n')[:20]:  # Show first 20 lines
+        for line in guard_code.split('\n')[:200]:  # Show first 20 lines
             print(f"   {line}")
-        if len(guard_code.split('\n')) > 20:
-            print(f"   ... ({len(guard_code.split('\n')) - 20} more lines)")
+        if len(guard_code.split('\n')) > 200:
+            print(f"   ... ({len(guard_code.split('\n')) - 200} more lines)")
         print("   " + "-"*76)
     else:
         print("   Skipped generation (USE_TOOLGUARD=False)")
@@ -250,7 +247,7 @@ async def main() -> None:
     print(f"\n   Initial Query: {FLIGHT_TEST_CASE['query'][:80]}...")
     print(f"   Initial Response: {result_initial.answer[:150]}...")
     print(f"\n   Follow-up Query: {FLIGHT_TEST_CASE['followup'][:80]}...")
-    print(f"   Follow-up Response: {result_followup.answer[:150]}...")
+    print(f"   Follow-up Response: {result_followup.answer[:1500]}...")
     
     print("\n✅ Tool guard workflow completed successfully!")
     print("   - Created tool guard for flight booking membership policy")

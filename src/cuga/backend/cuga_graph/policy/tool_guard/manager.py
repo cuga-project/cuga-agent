@@ -153,6 +153,27 @@ class ToolGuardManager:
         
         return app_name
 
+    def _infer_app_name_from_tool(self, target_tool: str) -> str:
+        """
+        Infer app_name from tool metadata or use default.
+        
+        Args:
+            target_tool: Name of the tool to infer app_name for
+            
+        Returns:
+            App name from tool metadata or default "cuga_app"
+        """
+        for tool in self.langchain_tools:
+            if tool.name == target_tool:
+                # Check if tool has _app_name attribute (from registry)
+                if tool.func and hasattr(tool.func, '_app_name'):
+                    app_name = getattr(tool.func, '_app_name')
+                    logger.debug(f"Inferred app_name '{app_name}' from tool '{target_tool}' metadata")
+                    return app_name
+        
+        logger.debug(f"No app_name metadata found for tool '{target_tool}', using default 'cuga_app'")
+        return "cuga_app"
+
     def _build_description(self, policy: ToolGuide) -> str:
         """Build description from policy, concatenating guide_content if present."""
         description = policy.description
@@ -288,7 +309,7 @@ class ToolGuardManager:
         self,
         policy: ToolGuide,
         target_tool: str,
-        app_name: str = "cuga_app"
+        app_name: Optional[str] = None
     ) -> str:
         """
         Generate guard code for a specific tool in a ToolGuide policy.
@@ -300,7 +321,8 @@ class ToolGuardManager:
         Args:
             policy: ToolGuide policy to generate guard code for
             target_tool: Specific tool name to generate guard code for
-            app_name: Application name for the generated code (default: "cuga_app")
+            app_name: Application name for the generated code. If None, will be auto-detected
+                     from tool metadata or default to "cuga_app"
 
         Returns:
             String containing the generated guard code
@@ -314,10 +336,15 @@ class ToolGuardManager:
         self._ensure_initialized()
         self._validate_policy_and_tool(policy, target_tool)
         
+        # Auto-detect app_name if not provided
+        if app_name is None:
+            app_name = self._infer_app_name_from_tool(target_tool)
+            logger.info(f"Auto-detected app_name '{app_name}' for tool '{target_tool}'")
+        
         # Validate app_name to prevent path traversal attacks
         app_name = self._validate_app_name(app_name)
 
-        logger.info(f"Generating guard code for tool '{target_tool}'...")
+        logger.info(f"Generating guard code for tool '{target_tool}' with app_name '{app_name}'...")
 
         # Check if policy has tool_guards for this specific tool
         tool_guard = None

@@ -1395,7 +1395,7 @@ class PoliciesManager:
         self,
         policy_id: str,
         target_tool: str,
-        app_name: str = "cuga_app"
+        app_name: Optional[str] = None
     ) -> str:
         """
         Generate guard code for a specific tool in a policy.
@@ -1406,7 +1406,8 @@ class PoliciesManager:
         Args:
             policy_id: The ID of the policy to generate guard code for
             target_tool: The specific tool name to generate guard code for
-            app_name: Application name for the generated code (default: "cuga_app")
+            app_name: Application name for the generated code. If None, will be auto-detected
+                     from tool metadata or default to "cuga_app"
             
         Returns:
             String containing the generated guard code
@@ -1444,7 +1445,7 @@ class PoliciesManager:
                 }
             )
             
-            # Generate guard code
+            # Generate guard code (app_name auto-detected from tool metadata)
             guard_code = await agent.policies.generate_tool_guard_code(
                 policy_id=policy_id,
                 target_tool="delete_file"
