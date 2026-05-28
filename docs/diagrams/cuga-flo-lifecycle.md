@@ -24,6 +24,7 @@ sequenceDiagram
         SC->>FC: load_flow_from_yaml(flow_config_path)
         FC->>Bridge: <<create>> MCPFlowBridge()
         FC->>Reg: <<create>> ProcessRegistry(bridge)
+        Note right of Reg: Services: register_flow(config_path)<br/>get_bpmn_process(key), get_flow_config(key)<br/>get_definition(key), list_keys()
         Reg->>Bridge: register_registry(self)
         Note right of Bridge: Registers MCP tools: register_flow, get_bpmn_process<br/>Bridge holds internal Reg reference
         FC->>Bridge: load_flow(config_path)
