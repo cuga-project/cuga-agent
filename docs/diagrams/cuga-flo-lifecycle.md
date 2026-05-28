@@ -8,9 +8,9 @@ sequenceDiagram
     participant App as Application
     participant SC as supervisor_config.py
     participant FC as FlowConfig
-    participant Reg as ProcessRegistry
     participant FA as FlowAgent
     participant Bridge as MCPFlowBridge
+    participant Reg as ProcessRegistry
     participant Eng as LangGraphWorkflowEngine
     participant FS as FlowState
     participant TA as TaskAgent
