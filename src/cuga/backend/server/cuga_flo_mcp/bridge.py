@@ -52,20 +52,38 @@ class MCPFlowBridge:
         Register ProcessRegistry services as MCP tools.
 
         Tools registered:
-          get_bpmn_process(process_key) → dict  (serialised BPMNProcess)
+          register_flow(flow_config_path) → str   (parse YAML+BPMN, returns process key)
+          get_bpmn_process(process_key)   → dict  (serialised BPMNProcess)
 
-        The bridge also holds an internal reference so register_engine() can
-        resolve BPMN models without a direct registry dependency.
+        The bridge also holds an internal reference so load_flow() and
+        register_engine() can reach the registry without a direct dependency.
         """
         self._registry = registry
+
+        async def register_flow(flow_config_path: str) -> str:
+            """Parse YAML + BPMN and register the process. Returns the process key."""
+            return registry.register_flow(flow_config_path)
 
         async def get_bpmn_process(process_key: str) -> dict:
             """Fetch and serialise a BPMNProcess from the registry."""
             bpmn = registry.get_bpmn_process(process_key)
             return bpmn.to_dict()
 
+        self._mcp.tool(name="register_flow")(register_flow)
         self._mcp.tool(name="get_bpmn_process")(get_bpmn_process)
         logger.info("MCPFlowBridge: registered ProcessRegistry tools")
+
+    def load_flow(self, flow_config_path: str) -> str:
+        """
+        Parse YAML + BPMN and register the process via the registry.
+
+        Sync bridge method — mediates the call so FlowConfig never touches
+        the registry directly.  The same operation is also exposed as the
+        MCP tool 'register_flow' for async callers.
+
+        Returns the process key derived from the YAML.
+        """
+        return self._registry.register_flow(flow_config_path)
 
     def register_flow_agent(self, fa: "FlowAgent") -> None:
         """
