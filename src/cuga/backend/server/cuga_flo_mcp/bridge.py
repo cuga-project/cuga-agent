@@ -69,8 +69,15 @@ class MCPFlowBridge:
             bpmn = registry.get_bpmn_process(process_key)
             return bpmn.to_dict()
 
+        async def get_flow_annotations(process_key: str) -> dict:
+            """Fetch and serialise a FlowConfig from the registry."""
+            from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import FlowConfig
+            config = registry.get_flow_annotations(process_key)
+            return config.to_dict()
+
         self._mcp.tool(name="register_flow")(register_flow)
         self._mcp.tool(name="get_bpmn_process")(get_bpmn_process)
+        self._mcp.tool(name="get_flow_annotations")(get_flow_annotations)
         logger.info("MCPFlowBridge: registered ProcessRegistry tools")
 
     def load_flow(self, flow_config_path: str) -> str:
@@ -84,6 +91,15 @@ class MCPFlowBridge:
         Returns the process key derived from the YAML.
         """
         return self._registry.register_flow(flow_config_path)
+
+    def get_flow_annotations(self, process_key: str) -> "FlowConfig":
+        """
+        Fetch a FlowConfig from the registry.
+
+        Sync bridge method — mediates the call so FlowAgent never touches
+        the registry directly.  Also exposed as the MCP tool 'get_flow_annotations'.
+        """
+        return self._registry.get_flow_annotations(process_key)
 
     def register_flow_agent(self, fa: "FlowAgent") -> None:
         """

@@ -21,15 +21,17 @@ sequenceDiagram
         SC->>FC: load_flow_from_yaml(flow_config_path)
         FC->>Bridge: <<create>> MCPFlowBridge()
         FC->>Reg: <<create>> ProcessRegistry(bridge)
-        Note right of Reg: Services: register_flow(config_path)<br/>get_bpmn_process(key), get_flow_annotations(key)<br/>get_definition(key), list_keys()
+        Note right of Reg: Services: register_flow(config_path)<br/>get_bpmn_process(key), get_flow_annotations(key)<br/>list_keys()
         Reg->>Bridge: register_registry(self)
-        Note right of Bridge: Registers MCP tools: register_flow, get_bpmn_process<br/>Bridge holds internal Reg reference
+        Note right of Bridge: Registers MCP tools: register_flow, get_bpmn_process, get_flow_annotations<br/>Bridge holds internal Reg reference
         FC->>Bridge: load_flow(config_path)
         Bridge->>Reg: register_flow(config_path)
         Note right of Reg: Parses YAML (tasks, gateways,<br/>hooks, policies, action_permissions)<br/>+ BPMN file via BPMNParser<br/>Stores FlowConfig + BPMNProcess in cache
         FC->>FA: <<create>> FlowAgent(process_key, registry, bridge)
-        FA->>Reg: get_flow_annotations(process_key)
-        Reg-->>FA: FlowConfig
+        FA->>Bridge: get_flow_annotations(process_key)
+        Bridge->>Reg: get_flow_annotations(process_key)
+        Reg-->>Bridge: FlowConfig
+        Bridge-->>FA: FlowConfig
         Note right of FA: Builds task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions from FlowConfig
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config

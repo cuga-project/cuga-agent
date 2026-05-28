@@ -106,6 +106,10 @@ class FlowConfig:
         instance.config_path = yaml_file
         return instance
 
+    def to_dict(self) -> dict:
+        """Serialise to the raw config dict (for MCP transport)."""
+        return self.config
+
     def get_bpmn_file(self) -> str:
         """Get BPMN file path from configuration, resolving relative paths."""
         bpmn_file = self.flow_config.get("bpmn_file")
