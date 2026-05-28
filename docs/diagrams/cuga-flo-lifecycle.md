@@ -35,7 +35,13 @@ sequenceDiagram
         Bridge->>Reg: get_flow_annotations(process_key)
         Reg-->>Bridge: FlowConfig
         Bridge-->>FA: FlowConfig
-        Note right of FA: Builds task_agents, gateway_agents<br/>task_instructions, task_policies<br/>hooks, action_permissions from FlowConfig
+        loop per agentic task (mode: task_agent)
+            FA->>TA: <<create>> TaskAgent(task_id, CugaAgent(tools, system_instruction))
+        end
+        loop per decision gateway (mode: decision_agent)
+            FA->>DA: <<create>> DecisionAgent(gateway_id, policy, flow_decisions)
+        end
+        Note right of FA: Also builds task_instructions, task_policies<br/>hooks, action_permissions from FlowConfig
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
         FC->>Eng: <<create>> LangGraphWorkflowEngine(bridge)
