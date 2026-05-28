@@ -232,30 +232,6 @@ class FlowAgent:
         )
         return result
 
-    def _get_static_config(self) -> dict:
-        """Return static config the engine needs at graph-build time."""
-        hooks_data = [
-            {
-                "id": h.id,
-                "hook_type": h.hook_type.value,
-                "location": h.location,
-                "enabled": h.enabled,
-            }
-            for h in self.hooks
-        ]
-        return {
-            "agentic_task_ids": list(self.task_agents.keys()),
-            "decision_gateway_ids": list(self.gateway_agents.keys()),
-            "task_instructions": dict(self.task_instructions),
-            "hooks": hooks_data,
-            "flow_conditions": dict(self.flow_conditions),
-            "tool_tasks": {k: v for k, v in self.tool_tasks.items()},
-            "action_permissions": {
-                "permitted_actions": list(self._permitted_actions),
-                "prohibited_actions": list(self._prohibited_actions),
-            },
-        }
-
     # ──────────────────────────────────────────────────────────────
     # Task input builder
     # ──────────────────────────────────────────────────────────────

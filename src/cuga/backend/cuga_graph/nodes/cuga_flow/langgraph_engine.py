@@ -90,7 +90,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             bpmn_result = await c.call_tool("get_bpmn_process", {"process_key": process_key})
             process = BPMNProcess.from_dict(bpmn_result.data)
 
-            config_result = await c.call_tool("get_static_config", {})
+            config_result = await c.call_tool("get_flow_annotations", {"process_key": process_key})
             static = config_result.data
 
             agentic_task_ids: List[str] = static.get("agentic_task_ids", [])

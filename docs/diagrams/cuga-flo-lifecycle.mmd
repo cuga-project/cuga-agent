@@ -40,7 +40,7 @@ sequenceDiagram
         end
         Note right of FA: Also builds task_instructions, task_policies<br/>hooks, action_permissions from FlowConfig
         FA->>Bridge: register_flow_agent(self)
-        Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway<br/>evaluate_hook, get_static_config
+        Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway, evaluate_hook
         FC->>Eng: <<create>> LangGraphWorkflowEngine(bridge)
         Eng->>Bridge: register_engine(self)
         Note right of Bridge: Registers MCP tool: run_process<br/>All tools backed by FastMCPTransport (in-process)
@@ -68,10 +68,10 @@ sequenceDiagram
         Bridge->>Reg: get_bpmn_process(process_key)
         Reg-->>Bridge: BPMNProcess
         Bridge-->>Eng: BPMNProcess dict → from_dict()
-        Eng->>Bridge: call_tool("get_static_config", {})
-        Bridge->>FA: _get_static_config()
-        FA-->>Bridge: {agentic_task_ids, decision_gateway_ids, task_instructions, hooks,<br/>flow_conditions, tool_tasks, action_permissions}
-        Bridge-->>Eng: static config dict
+        Eng->>Bridge: call_tool("get_flow_annotations", {process_key})
+        Bridge->>Reg: get_flow_annotations(process_key)
+        Reg-->>Bridge: FlowConfig.to_engine_config()
+        Bridge-->>Eng: {agentic_task_ids, decision_gateway_ids, task_instructions, hooks,<br/>flow_conditions, tool_tasks, action_permissions}
         Note right of Eng: Builds _ControlOverlay with<br/>MCP-backed handlers for each<br/>task / gateway / hook
         Eng->>FS: FlowState(process_id, process_variables)
         Note right of Eng: Engine owns FlowState<br/>Compiles + begins StateGraph execution

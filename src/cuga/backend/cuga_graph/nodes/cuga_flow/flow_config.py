@@ -107,8 +107,69 @@ class FlowConfig:
         return instance
 
     def to_dict(self) -> dict:
-        """Serialise to the raw config dict (for MCP transport)."""
+        """Serialise to the raw config dict."""
         return self.config
+
+    def to_engine_config(self) -> dict:
+        """
+        Return the engine-consumable config derived from the YAML annotations.
+
+        Produces the same structure the engine previously received from
+        FlowAgent._get_static_config, but sourced directly from the registry
+        rather than from FlowAgent's runtime state.
+        """
+        agentic_task_ids = []
+        tool_tasks: Dict[str, Optional[str]] = {}
+        task_instructions: Dict[str, str] = {}
+
+        for task in self.tasks_config:
+            task_id = task.get("id")
+            if not task_id:
+                continue
+            mode = task.get("mode", "")
+            has_agent = bool(task.get("agent"))
+            agent_cfg = task.get("agent", {})
+            instruction = agent_cfg.get("system_instruction") or task.get("instruction", "")
+            if instruction:
+                task_instructions[task_id] = instruction
+            if mode == "task_agent" or (mode != "tool" and has_agent):
+                agentic_task_ids.append(task_id)
+            else:
+                tool_tasks[task_id] = task.get("tool") or None
+
+        decision_gateway_ids = [
+            gw_id for gw_id, gw_cfg in self.gateways_config.items()
+            if isinstance(gw_cfg, dict) and gw_cfg.get("mode", "tool") == "decision_agent"
+        ]
+
+        flow_conditions: Dict[str, str] = {}
+        for gw_cfg in self.gateways_config.values():
+            if not isinstance(gw_cfg, dict):
+                continue
+            for flow_id, flow_cfg in gw_cfg.get("flows", {}).items():
+                if isinstance(flow_cfg, dict) and flow_cfg.get("condition"):
+                    flow_conditions[flow_id] = flow_cfg["condition"]
+
+        hooks_data = [
+            {
+                "id": h.get("id"),
+                "hook_type": h.get("type", "pre_edge"),
+                "location": h.get("location"),
+                "enabled": h.get("enabled", True),
+            }
+            for h in self.hooks_config
+            if h.get("id") and h.get("location")
+        ]
+
+        return {
+            "agentic_task_ids": agentic_task_ids,
+            "decision_gateway_ids": decision_gateway_ids,
+            "task_instructions": task_instructions,
+            "hooks": hooks_data,
+            "flow_conditions": flow_conditions,
+            "tool_tasks": tool_tasks,
+            "action_permissions": self.get_action_permissions(),
+        }
 
     def get_bpmn_file(self) -> str:
         """Get BPMN file path from configuration, resolving relative paths."""

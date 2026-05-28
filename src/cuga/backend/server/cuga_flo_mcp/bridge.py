@@ -2,7 +2,7 @@
 MCPFlowBridge - Shared FastMCP server for CUGA FLO bi-directional messaging.
 
 Both FlowAgent and WorkflowEngine register their services here:
-  - FlowAgent registers: execute_task, route_gateway, evaluate_hook, get_static_config
+  - FlowAgent registers: execute_task, route_gateway, evaluate_hook
   - WorkflowEngine registers: run_process
 
 Both sides communicate exclusively via MCP tool calls using get_client(),
@@ -70,10 +70,9 @@ class MCPFlowBridge:
             return bpmn.to_dict()
 
         async def get_flow_annotations(process_key: str) -> dict:
-            """Fetch and serialise a FlowConfig from the registry."""
-            from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import FlowConfig
+            """Fetch engine-consumable config derived from the registry's FlowConfig."""
             config = registry.get_flow_annotations(process_key)
-            return config.to_dict()
+            return config.to_engine_config()
 
         self._mcp.tool(name="register_flow")(register_flow)
         self._mcp.tool(name="get_bpmn_process")(get_bpmn_process)
@@ -109,7 +108,6 @@ class MCPFlowBridge:
           execute_task(task_id, ctx)     → dict   (agentic task execution)
           route_gateway(gateway_id, ctx) → str    (gateway routing)
           evaluate_hook(hook_id, ctx)    → dict   (hook evaluation)
-          get_static_config()            → dict   (static config for engine graph-build)
         """
         from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import ControlPointContext
 
@@ -134,15 +132,10 @@ class MCPFlowBridge:
             result = await fa._handle_hook(hook, ctx_obj)
             return result.to_dict()
 
-        def get_static_config() -> dict:
-            """Return static config the engine needs at graph-build time."""
-            return fa._get_static_config()
-
         for fn, tool_name in [
             (execute_task, "execute_task"),
             (route_gateway, "route_gateway"),
             (evaluate_hook, "evaluate_hook"),
-            (get_static_config, "get_static_config"),
         ]:
             self._mcp.tool(name=tool_name)(fn)
 
