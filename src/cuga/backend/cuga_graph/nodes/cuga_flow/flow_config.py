@@ -67,6 +67,7 @@ class FlowConfig:
         """
         self.config = config_dict
         self.config_file_dir = config_file_dir
+        self.config_path: Optional[str] = None  # set by from_yaml()
         self.flow_config = config_dict.get("flow", {})
         self.llm_config = config_dict.get("llm", {})
         self.tasks_config = config_dict.get("tasks", [])
@@ -100,10 +101,10 @@ class FlowConfig:
         with open(yaml_file, 'r') as f:
             config_dict = yaml.safe_load(f)
 
-        # Store the directory of the config file for resolving relative paths
         config_file_dir = str(Path(yaml_file).parent)
-
-        return cls(config_dict, config_file_dir)
+        instance = cls(config_dict, config_file_dir)
+        instance.config_path = yaml_file
+        return instance
 
     def get_bpmn_file(self) -> str:
         """Get BPMN file path from configuration, resolving relative paths."""
@@ -449,49 +450,23 @@ class FlowConfig:
         Returns:
             Configured FlowAgent instance
         """
-        from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import (
-            ProcessDefinition,
-            ProcessRegistry,
-        )
-        from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNParser
+        if not self.config_path:
+            raise ValueError(
+                "to_flow_agent() requires a FlowConfig loaded via from_yaml(); "
+                "use load_flow_from_yaml() or FlowConfig.from_yaml()."
+            )
 
-        flow_id = self.get_flow_id()
-        flow_version = self.get_flow_version()
-        logger.info(
-            "Creating FlowAgent from configuration"
-            + (f" id={flow_id}" if flow_id else "")
-            + (f" version={flow_version}" if flow_version else "")
-        )
-
-        bpmn_file = self.get_bpmn_file()
-        process_key = flow_id or self.get_flow_name() or "process"
-
+        from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import ProcessRegistry
         from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
         from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
 
         registry = ProcessRegistry()
-        registry.register_flow(
-            key=process_key,
-            bpmn=BPMNParser().parse_file(bpmn_file),
-            definition=ProcessDefinition(
-                key=process_key,
-                name=self.get_flow_name() or process_key,
-                bpmn_path=bpmn_file,
-                config_path=str(Path(self.config_file_dir) / "dummy.yaml") if self.config_file_dir else "",
-                policies_dir="",
-            ),
-            config=self,
-        )
+        process_key = registry.register_flow(self.config_path)
 
         bridge = MCPFlowBridge()
         bridge.register_registry(registry)
-        flow_agent = FlowAgent(
-            process_key=process_key,
-            registry=registry,
-            model_name=self.get_model_name(),
-            bridge=bridge,
-        )
-        LangGraphWorkflowEngine(bridge=bridge, registry=registry)
+        flow_agent = FlowAgent(process_key=process_key, registry=registry, bridge=bridge)
+        LangGraphWorkflowEngine(bridge=bridge)
 
         logger.info(f"FlowAgent created: {flow_agent.get_process_info()}")
         return flow_agent

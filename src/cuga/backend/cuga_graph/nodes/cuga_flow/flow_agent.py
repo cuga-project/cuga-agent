@@ -115,7 +115,7 @@ class FlowAgent:
 
             _reg = ProcessRegistry()
             _key = _proc.id or "anonymous"
-            _reg.register_flow(
+            _reg._register_preloaded(
                 key=_key,
                 bpmn=_proc,
                 definition=ProcessDefinition(

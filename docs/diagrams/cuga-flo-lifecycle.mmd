@@ -19,9 +19,9 @@ sequenceDiagram
         App->>SC: load supervisor YAML
         SC->>SC: finds agent entry with type: flow_agent
         SC->>FC: load_flow_from_yaml(flow_config_path)
-        Note right of FC: Parses YAML (tasks, gateways,<br/>hooks, policies, action_permissions)<br/>+ BPMN file via BPMNParser
         FC->>Reg: <<create>> ProcessRegistry()
-        FC->>Reg: register_flow(key, bpmn, definition, config=self)
+        FC->>Reg: register_flow(config_path)
+        Note right of Reg: Parses YAML (tasks, gateways,<br/>hooks, policies, action_permissions)<br/>+ BPMN file via BPMNParser<br/>Stores FlowConfig + BPMNProcess in cache
         FC->>Bridge: <<create>> MCPFlowBridge()
         Reg->>Bridge: register_registry(self)
         Note right of Bridge: Registers MCP tool: get_bpmn_process<br/>Bridge holds internal Reg reference

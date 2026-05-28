@@ -50,14 +50,37 @@ class ProcessRegistry:
         )
         logger.info(f"ProcessRegistry: registered '{key}'")
 
-    def register_flow(
+    def register_flow(self, flow_config_path: str) -> str:
+        """
+        Parse YAML + BPMN from flow_config_path and register the process.
+
+        Returns the process key derived from flow.id / flow.name in the YAML.
+        """
+        config = FlowConfig.from_yaml(flow_config_path)
+        process_key = config.get_flow_id() or config.get_flow_name() or "process"
+        bpmn_file = config.get_bpmn_file()
+        config_dir = Path(flow_config_path).parent
+        policies_path = config_dir / "policies"
+        self._definitions[process_key] = ProcessDefinition(
+            key=process_key,
+            name=config.get_flow_name() or process_key,
+            bpmn_path=bpmn_file,
+            config_path=flow_config_path,
+            policies_dir=str(policies_path) if policies_path.is_dir() else "",
+        )
+        self._bpmn_cache[process_key] = BPMNParser().parse_file(bpmn_file)
+        self._config_cache[process_key] = config
+        logger.info(f"ProcessRegistry: registered flow '{process_key}' from {flow_config_path}")
+        return process_key
+
+    def _register_preloaded(
         self,
         key: str,
         bpmn: BPMNProcess,
         definition: ProcessDefinition,
         config: Optional["FlowConfig"] = None,
     ) -> None:
-        """Register a pre-parsed process, bypassing on-demand file loading."""
+        """Register pre-parsed objects directly. Used by the backward-compat bpmn_file path."""
         self._definitions[key] = definition
         self._bpmn_cache[key] = bpmn
         if config is not None:
