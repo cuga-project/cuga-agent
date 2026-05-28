@@ -362,7 +362,8 @@ async def main() -> None:
         print("\n💻 Generating tool guard code…")
         guard_code = await agent.policies.generate_tool_guard_code(
             policy_id=policy_id,
-            target_tool=target_tool
+            target_tool=target_tool,
+            app_name="crm"  # Must match the app name from CombinedToolProvider
         )
         print(f"   ✓ Generated code for tool guard")
         if guard_code:
@@ -485,7 +486,8 @@ async def main() -> None:
         print("\n💻 Re-generating tool guard code after update…")
         guard_code_updated = await agent.policies.generate_tool_guard_code(
             policy_id=policy_id,
-            target_tool=target_tool
+            target_tool=target_tool,
+            app_name="crm"  # Must match the app name from CombinedToolProvider
         )
         print(f"   ✓ Generated updated code for tool guard")
         if guard_code_updated:
@@ -554,10 +556,10 @@ async def main() -> None:
         
         print("\n   💻 Generated Guard Code:")
         print("   " + "-"*76)
-        for line in guard_code.split('\n')[:20]:  # Show first 20 lines
+        for line in guard_code.split('\n')[:200]:  # Show first 20 lines
             print(f"   {line}")
-        if len(guard_code.split('\n')) > 20:
-            print(f"   ... ({len(guard_code.split('\n')) - 20} more lines)")
+        if len(guard_code.split('\n')) > 200:
+            print(f"   ... ({len(guard_code.split('\n')) - 200} more lines)")
         print("   " + "-"*76)
     else:
         print("   Skipped generation (USE_TOOLGUARD=False)")
@@ -566,7 +568,7 @@ async def main() -> None:
     print(f"\n   Initial Query: {FINANCE_TEST_CASE['query'][:80]}...")
     print(f"   Initial Response: {result1_initial.answer[:150]}...")
     print(f"\n   Follow-up Query: {FINANCE_TEST_CASE['followup'][:80]}...")
-    print(f"   Follow-up Response: {result1_followup.answer[:150]}...")
+    print(f"   Follow-up Response: {result1_followup.answer[:1500]}...")
     
     print("\n🟢 PHASE 2 - Finance Industry Tool Guard (After Update):")
     print(f"   Tool Guard Active: {updated_config['name']}")
@@ -587,10 +589,10 @@ async def main() -> None:
         
         print("\n   💻 Re-generated Guard Code:")
         print("   " + "-"*76)
-        for line in guard_code_updated.split('\n')[:20]:  # Show first 20 lines
+        for line in guard_code_updated.split('\n')[:200]:  # Show first 20 lines
             print(f"   {line}")
-        if len(guard_code_updated.split('\n')) > 20:
-            print(f"   ... ({len(guard_code_updated.split('\n')) - 20} more lines)")
+        if len(guard_code_updated.split('\n')) > 200:
+            print(f"   ... ({len(guard_code_updated.split('\n')) - 200} more lines)")
         print("   " + "-"*76)
     else:
         print("   Skipped regeneration (USE_TOOLGUARD=False)")
@@ -599,10 +601,10 @@ async def main() -> None:
     print(f"\n   Initial Query: {FINANCE_TEST_CASE['query'][:80]}...")
     print(f"   Initial Response: {result2_initial.answer[:150]}...")
     print(f"\n   Follow-up Query: {FINANCE_TEST_CASE['followup'][:80]}...")
-    print(f"   Follow-up Response: {result2_followup.answer[:150]}...")
+    print(f"   Follow-up Response: {result2_followup.answer[:1500]}...")
     
     print("\n✅ Tool guard workflow completed successfully!")
-    print("   - Created tool guard")
+    print("   - Created tool guide")
     if USE_TOOLGUARD:
         print("   - Generated examples and code")
     print("   - Updated tool guard")
