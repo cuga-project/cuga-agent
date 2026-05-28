@@ -95,3 +95,6 @@ scripts/registry.env
 
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh
+*/md2pptx/
+# Graphviz intermediates (regenerated from build_*.py scripts)
+*.dot
