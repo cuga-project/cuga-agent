@@ -22,7 +22,7 @@ sequenceDiagram
         App->>SC: load supervisor YAML
         SC->>SC: finds agent entry with type: flow_agent
         SC->>FC: load_flow_from_yaml(flow_config_path)
-        FC->>Bridge: <<create>> MCPFlowBridge()
+        FC->>Bridge: <<create>> MCPFlowBridge(name="cuga-flo-bridge")
         FC->>Reg: <<create>> ProcessRegistry(bridge)
         Note right of Reg: Services: register_flow(config_path)<br/>get_bpmn_process(key), get_flow_annotations(key)<br/>list_keys()
         Reg->>Bridge: register_registry(self)
