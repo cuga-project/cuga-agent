@@ -1043,7 +1043,7 @@ def start(
                 "homescreen": {
                     "isOn": True,
                     "greeting": f"Welcome to the {chosen.replace('_', ' ').title()} workflow. How can I help you?",
-                    "starters": [],
+                    "starters": ["What can you do for me?"],
                 },
             }
 
