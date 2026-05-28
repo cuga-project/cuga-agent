@@ -87,6 +87,8 @@ run_pytest \
     tests/unit/test_chat_knowledge_mode.py \
     tests/unit/test_chat_agent_knowledge_toggle.py \
     tests/integration/test_knowledge_integration.py
+echo "Running cuga_lite bind_tools tests..."
+run_pytest tests/unit/test_cuga_lite_bind_tools.py
 echo "✅ All unit tests passed!"
 
 # Check for test type flag

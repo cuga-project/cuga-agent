@@ -24,6 +24,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.response_utils import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.sandbox_node import create_sandbox_node
 from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.bind_tools import resolve_model_with_bind_tools
+from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.find_tools import _first_user_message_text
 from cuga.backend.cuga_graph.nodes.cuga_lite.nl_auto_continue_classifier import (
     classify_nl_auto_continue,
     normalize_assistant_text,
@@ -127,7 +128,11 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 configurable=configurable,
                 tools_context_ref=self._tools_context_ref,
                 tool_provider=self._base_tool_provider,
+                query=_first_user_message_text(getattr(state, "chat_messages", None)),
             )
+        except RuntimeError:
+            # Cap/shortlist failures surface intentionally — do not silently fall back.
+            raise
         except Exception as exc:
             logger.warning("AgentGraphAdapter.resolve_bind_tools failed: %s", exc)
         return None
