@@ -50,6 +50,20 @@ class ProcessRegistry:
         )
         logger.info(f"ProcessRegistry: registered '{key}'")
 
+    def register_flow(
+        self,
+        key: str,
+        bpmn: BPMNProcess,
+        definition: ProcessDefinition,
+        config: Optional["FlowConfig"] = None,
+    ) -> None:
+        """Register a pre-parsed process, bypassing on-demand file loading."""
+        self._definitions[key] = definition
+        self._bpmn_cache[key] = bpmn
+        if config is not None:
+            self._config_cache[key] = config
+        logger.info(f"ProcessRegistry: registered pre-loaded flow '{key}'")
+
     def register_from_directory(self, root_dir: str) -> None:
         """
         Auto-discover process subdirs that contain a config/ folder with a

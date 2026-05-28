@@ -470,16 +470,18 @@ class FlowConfig:
         from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
 
         registry = ProcessRegistry()
-        registry._definitions[process_key] = ProcessDefinition(
+        registry.register_flow(
             key=process_key,
-            name=self.get_flow_name() or process_key,
-            bpmn_path=bpmn_file,
-            config_path=str(Path(self.config_file_dir) / "dummy.yaml") if self.config_file_dir else "",
-            policies_dir="",
+            bpmn=BPMNParser().parse_file(bpmn_file),
+            definition=ProcessDefinition(
+                key=process_key,
+                name=self.get_flow_name() or process_key,
+                bpmn_path=bpmn_file,
+                config_path=str(Path(self.config_file_dir) / "dummy.yaml") if self.config_file_dir else "",
+                policies_dir="",
+            ),
+            config=self,
         )
-        registry._bpmn_cache[process_key] = BPMNParser().parse_file(bpmn_file)
-        # Cache self so FlowAgent's registry.get_flow_config() returns this instance
-        registry._config_cache[process_key] = self
 
         bridge = MCPFlowBridge()
         bridge.register_registry(registry)

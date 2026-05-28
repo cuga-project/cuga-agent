@@ -115,14 +115,17 @@ class FlowAgent:
 
             _reg = ProcessRegistry()
             _key = _proc.id or "anonymous"
-            _reg._definitions[_key] = ProcessDefinition(
+            _reg.register_flow(
                 key=_key,
-                name=_proc.name or _key,
-                bpmn_path=bpmn_file or "",
-                config_path="",
-                policies_dir="",
+                bpmn=_proc,
+                definition=ProcessDefinition(
+                    key=_key,
+                    name=_proc.name or _key,
+                    bpmn_path=bpmn_file or "",
+                    config_path="",
+                    policies_dir="",
+                ),
             )
-            _reg._bpmn_cache[_key] = _proc
 
             self.process_key = _key
             self.registry = _reg
