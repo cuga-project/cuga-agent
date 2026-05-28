@@ -528,10 +528,82 @@ class FlowConfig:
         bridge = MCPFlowBridge()
         registry = ProcessRegistry(bridge=bridge)
         process_key = bridge.load_flow(self.config_path)
-        flow_agent = FlowAgent(process_key=process_key, registry=registry, bridge=bridge)
+        flow_agent = FlowAgent(process_key=process_key, bridge=bridge)
         LangGraphWorkflowEngine(bridge=bridge)
 
         return flow_agent
+
+    def to_ordo_flow_agent(self, ordo_workflow_id: str) -> FlowAgent:
+        """
+        Create a FlowAgent wired to MCPOrdo via the MCP2MCPMediator.
+
+        OrdoEngine is the stub workflow engine served by MCPOrdo.
+        MCP2MCPMediator is registered in both MCP servers:
+          • MCPFlowBridge — provides run_process (via _MediatorEngineAdapter)
+          • MCPOrdo       — provides execute_task_proxy / route_gateway_proxy /
+                            evaluate_hook_proxy
+
+        Args:
+            ordo_workflow_id: Workflow ID served by OrdoEngine inside MCPOrdo
+                              (e.g. 'loan_approval_stub').
+
+        Returns:
+            Configured FlowAgent backed by MCPOrdo + MCP2MCPMediator.
+        """
+        from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNProcess
+        from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
+        from cuga.backend.server.cuga_flo_mcp.mediator import MCP2MCPMediator
+        from cuga.backend.server.cuga_flo_mcp.ordo import MCPOrdo
+
+        bridge = MCPFlowBridge(name="cuga-flo-bridge-ordo")
+
+        task_agents = self.create_task_agents()
+        task_policies = self.create_task_policies()
+        initial_variables = self.get_initial_variables()
+
+        stub_bpmn = BPMNProcess(
+            id=ordo_workflow_id, name=ordo_workflow_id, elements={}, flows=[]
+        )
+
+        # FlowAgent registers execute_task / route_gateway / evaluate_hook on bridge.
+        # Bridge passed explicitly → no auto LangGraphWorkflowEngine.
+        flow_agent = FlowAgent(
+            bpmn_process=stub_bpmn,
+            task_agents=task_agents,
+            task_policies=task_policies,
+            process_variables=initial_variables,
+            bridge=bridge,
+        )
+
+        # MCPOrdo serves OrdoEngine (the stub workflow engine).
+        ordo = MCPOrdo()
+
+        # MCP2MCPMediator registers in BOTH servers:
+        #   bridge side → run_process (via _MediatorEngineAdapter)
+        #   ordo side   → execute_task_proxy / route_gateway_proxy / evaluate_hook_proxy
+        mediator = MCP2MCPMediator(bridge, ordo, ordo_workflow_id)
+        mediator.register()
+
+        logger.info(
+            f"FlowConfig: ordo FlowAgent ready — workflow_id='{ordo_workflow_id}', "
+            f"{len(task_agents)} task agent(s)"
+        )
+        return flow_agent
+
+
+def load_ordo_flow_from_yaml(yaml_file: str, ordo_workflow_id: str) -> FlowAgent:
+    """
+    Load a FlowAgent backed by MCPOrdo from a YAML task-only configuration.
+
+    Args:
+        yaml_file: Path to the ordo_config.yaml (tasks only, no bpmn_file needed).
+        ordo_workflow_id: Workflow ID registered in MCPOrdo (e.g. 'loan_approval_stub').
+
+    Returns:
+        Configured FlowAgent wired to MCPOrdo + MCP2MCPMediator.
+    """
+    config = FlowConfig.from_yaml(yaml_file)
+    return config.to_ordo_flow_agent(ordo_workflow_id)
 
 
 def load_flow_from_yaml(yaml_file: str) -> FlowAgent:

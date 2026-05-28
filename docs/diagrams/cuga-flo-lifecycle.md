@@ -30,7 +30,7 @@ sequenceDiagram
         FC->>Bridge: load_flow(config_path)
         Bridge->>Reg: register_flow(config_path)
         Note right of Reg: Parses YAML (tasks, gateways,<br/>hooks, policies, action_permissions)<br/>+ BPMN file via BPMNParser<br/>Stores FlowConfig + BPMNProcess in cache
-        FC->>FA: <<create>> FlowAgent(process_key, registry, bridge)
+        FC->>FA: <<create>> FlowAgent(process_key, bridge)
         FA->>Bridge: get_flow_annotations(process_key)
         Bridge->>Reg: get_flow_annotations(process_key)
         Reg-->>Bridge: FlowConfig

@@ -59,7 +59,6 @@ class FlowAgent:
         self,
         # ── Primary interface (registry-based) ──────────────────────────────
         process_key: Optional[str] = None,
-        registry: Optional[Any] = None,  # ProcessRegistry, typed as Any to avoid circular import
         bridge: Optional[Any] = None,  # MCPFlowBridge; created automatically if None
         # ── Direct / backward-compatible interface ──────────────────────────
         bpmn_file: Optional[str] = None,
@@ -83,10 +82,9 @@ class FlowAgent:
         _bridge_owned = bridge is None
         self.bridge: MCPFlowBridge = bridge or MCPFlowBridge()
 
-        if process_key and registry:
+        if process_key:
             # ── Registry-based init ─────────────────────────────────────────
             self.process_key = process_key
-            self.registry = registry
 
             config = self.bridge.get_flow_annotations(process_key)
             self.task_agents: Dict[str, TaskAgent] = task_agents or config.create_task_agents()
@@ -128,7 +126,6 @@ class FlowAgent:
             )
 
             self.process_key = _key
-            self.registry = _reg
             self.task_agents = task_agents or {}
             self.tool_tasks = tool_tasks or {}
             self.gateway_agents = gateway_agents or {}
@@ -142,7 +139,7 @@ class FlowAgent:
             _perms = action_permissions or {}
 
         else:
-            raise ValueError("Either (process_key + registry) or (bpmn_file / bpmn_process) must be provided")
+            raise ValueError("Either process_key or (bpmn_file / bpmn_process) must be provided")
 
         _perms_dict = _perms if isinstance(_perms, dict) else {}
         self._permitted_actions: List[str] = _perms_dict.get("permitted_actions", [])
