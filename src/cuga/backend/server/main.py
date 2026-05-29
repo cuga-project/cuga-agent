@@ -1162,7 +1162,7 @@ async def _next_event_or_stop(stream, stop_event):
         return None, "done"
 
 
-def apply_request_user_context(state: AgentState, user_id: str) -> None:
+def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> None:
     """Propagate the authenticated user and service scope onto the graph state."""
     from cuga.config import get_service_instance_id, get_tenant_id
 

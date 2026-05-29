@@ -65,6 +65,9 @@ class EvolveIntegration:
         if not cls.is_enabled():
             return None
         try:
+            user_id = normalize_evolve_identifier(user_id)
+            namespace_id = normalize_evolve_identifier(namespace_id)
+            session_id = normalize_evolve_identifier(session_id)
             args: dict = {"task": task}
             if user_id:
                 args["user_id"] = user_id
@@ -158,6 +161,9 @@ class EvolveIntegration:
             return
 
         try:
+            user_id = normalize_evolve_identifier(user_id)
+            namespace_id = normalize_evolve_identifier(namespace_id)
+            session_id = normalize_evolve_identifier(session_id)
             logger.debug(
                 f"Evolve: Converting {len(chat_messages)} chat_messages. "
                 f"Types: {[type(m).__name__ for m in chat_messages[:10]]}"

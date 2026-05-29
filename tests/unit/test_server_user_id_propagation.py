@@ -36,6 +36,7 @@ def test_apply_request_user_context_handles_none_user_id():
 
     assert local_state.user_id is None
     assert local_state.service_scope["tenant_id"] == "tenant-456"
+    assert local_state.service_scope["instance_id"] == "instance-789"
 
 
 def test_apply_request_user_context_overwrites_existing_values():
