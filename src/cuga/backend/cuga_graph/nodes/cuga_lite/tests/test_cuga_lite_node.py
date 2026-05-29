@@ -134,7 +134,8 @@ async def test_callback_node_handles_missing_multi_user_params():
         final_answer="Task completed successfully.",
         sub_task="task_1",
         # No user_id, thread_id, or service_scope explicitly set
-        # Note: AgentState has user_id default to "default"
+        # AgentState.user_id defaults to the "default" sentinel, which must be
+        # normalized to None before reaching Evolve.
     )
     node = CugaLiteNode()
 
@@ -154,8 +155,8 @@ async def test_callback_node_handles_missing_multi_user_params():
     assert result.goto == "FinalAnswerAgent"
     mock_save_trajectory.assert_awaited_once()
 
-    # Verify keyword arguments - user_id defaults to "default" in AgentState
+    # Verify keyword arguments - the "default" sentinel is normalized to None
     kwargs = mock_save_trajectory.await_args.kwargs
-    assert kwargs["user_id"] == "default"  # AgentState default value
+    assert kwargs["user_id"] is None  # "default" sentinel normalized away
     assert kwargs["namespace_id"] is None
     assert kwargs["session_id"] is None

@@ -71,9 +71,8 @@ class CugaLiteState(BaseModel):
     # Shared keys (compatible with AgentState)
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
-    user_id: Optional[str] = None
-    thread_id: Optional[str] = None
     user_id: Optional[str] = None  # Shared with AgentState; None means unset (no user context sent to Evolve)
+    thread_id: Optional[str] = None
     service_scope: Optional[Dict[str, str]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""}
     )

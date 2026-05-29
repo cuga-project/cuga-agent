@@ -16,6 +16,21 @@ from langchain_core.messages import BaseMessage, HumanMessage, AIMessage
 
 from cuga.config import settings
 
+# Placeholder user identifiers that must not reach Evolve as real users:
+# "default" is AgentState.user_id's default; "default_user" is the server's
+# DEFAULT_USER_ID for unauthenticated requests.
+_EVOLVE_SENTINEL_IDS = {"default", "default_user"}
+
+
+def normalize_evolve_identifier(value: Optional[str]) -> Optional[str]:
+    """Return None for empty or sentinel placeholders so Evolve only sees real ids."""
+    if value is None:
+        return None
+    stripped = str(value).strip()
+    if not stripped or stripped in _EVOLVE_SENTINEL_IDS:
+        return None
+    return stripped
+
 
 class EvolveIntegration:
     """Client wrapper for interacting with the Evolve MCP server."""

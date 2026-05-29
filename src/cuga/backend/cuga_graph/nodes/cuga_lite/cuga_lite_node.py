@@ -385,7 +385,7 @@ class CugaLiteNode(BaseNode):
             )
 
         # Save trajectory to Evolve if enabled
-        from cuga.backend.evolve.integration import EvolveIntegration
+        from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 
         if EvolveIntegration.is_enabled() and state.chat_messages:
             import asyncio as _asyncio
@@ -394,7 +394,7 @@ class CugaLiteNode(BaseNode):
             state_error = getattr(state, "error", None)
             success = not (self._has_error(state.final_answer or "") or bool(state_error))
             messages_snapshot = list(state.chat_messages)
-            _evolve_user_id = state.user_id or None
+            _evolve_user_id = normalize_evolve_identifier(state.user_id)
             _evolve_namespace_id = (state.service_scope or {}).get("tenant_id") or None
             _evolve_session_id = state.thread_id or None
             if settings.evolve.async_save:
