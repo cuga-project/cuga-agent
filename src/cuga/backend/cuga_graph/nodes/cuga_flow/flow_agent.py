@@ -25,6 +25,7 @@ from typing import Any, Callable, Dict, List, Optional, Union
 
 from loguru import logger
 
+from cuga.backend.server.cuga_flo_mcp.mcp_logger import mcp_in, mcp_out
 from cuga.backend.cuga_graph.nodes.cuga_flow.decision_agent import DecisionAgent
 from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
 from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import (
@@ -83,8 +84,10 @@ class FlowAgent:
         _bridge_owned = bridge is None
         self.bridge: MCPFlowBridge = bridge or MCPFlowBridge()
 
-        if process_key and registry:
+        if process_key:
             # ── Registry-based init ─────────────────────────────────────────
+            # registry may be None when bridge._registry was set externally
+            # (e.g. ordo mode where ProcessRegistry is created before FlowAgent).
             self.process_key = process_key
             self.registry = registry
 
@@ -142,7 +145,7 @@ class FlowAgent:
             _perms = action_permissions or {}
 
         else:
-            raise ValueError("Either (process_key + registry) or (bpmn_file / bpmn_process) must be provided")
+            raise ValueError("Either process_key or (bpmn_file / bpmn_process) must be provided")
 
         _perms_dict = _perms if isinstance(_perms, dict) else {}
         self._permitted_actions: List[str] = _perms_dict.get("permitted_actions", [])
@@ -171,13 +174,21 @@ class FlowAgent:
 
     async def _handle_task(self, task_id: str, ctx: ControlPointContext) -> dict:
         """Execute an agentic task.  ENGINE provides WHAT; FlowAgent provides WHO+HOW."""
+        mcp_in("FlowAgent", "handle_task",
+               task_id=task_id,
+               process_id=ctx.current_state.process_id,
+               element_name=ctx.element_name,
+               has_instruction=bool(ctx.task_instruction),
+               var_keys=list(ctx.current_state.process_variables.keys()))
         agent = self.task_agents.get(task_id)
         if agent is None:
-            return {
+            result = {
                 "execution_path": [task_id],
                 "process_variables": ctx.current_state.process_variables,
                 "task_results": {task_id: {"status": "failed", "error": f"No agent for task {task_id!r}"}},
             }
+            mcp_out("FlowAgent", "handle_task", task_id=task_id, status="failed", reason="no_agent")
+            return result
 
         task_input = self._build_task_input(task_id, ctx)
         tracker.collect_step(
@@ -186,21 +197,31 @@ class FlowAgent:
                 data=task_input,
             )
         )
-        result = await agent.execute(ctx.current_state, task_input)
-        output = result.get("output", result.get("error", ""))
+        agent_result = await agent.execute(ctx.current_state, task_input)
+        output = agent_result.get("output", agent_result.get("error", ""))
         tracker.collect_step(Step(name=ctx.element_name or task_id, data=str(output)))
-        return {
+        result = {
             "execution_path": [task_id],
             "process_variables": ctx.current_state.process_variables,
-            "task_results": {task_id: result},
+            "task_results": {task_id: agent_result},
         }
+        mcp_out("FlowAgent", "handle_task",
+                task_id=task_id,
+                status=agent_result.get("status"),
+                output_len=len(str(output)))
+        return result
 
     async def _handle_gateway(self, gateway_id: str, ctx: ControlPointContext) -> str:
         """Route a gateway via DecisionAgent."""
+        mcp_in("FlowAgent", "handle_gateway",
+               gateway_id=gateway_id,
+               available_flows=[f.id for f in (ctx.available_flows or [])])
         agent = self.gateway_agents.get(gateway_id)
         flows = ctx.available_flows or []
         if agent is None:
-            return flows[0].id if flows else ""
+            flow_id = flows[0].id if flows else ""
+            mcp_out("FlowAgent", "handle_gateway", gateway_id=gateway_id, selected_flow=flow_id, reason="no_agent")
+            return flow_id
         try:
             flow_id = await agent.route(flows, ctx.current_state)
             tracker.collect_step(
@@ -209,14 +230,22 @@ class FlowAgent:
                     data=f"Routed to flow: {flow_id}",
                 )
             )
+            mcp_out("FlowAgent", "handle_gateway", gateway_id=gateway_id, selected_flow=flow_id)
             return flow_id
         except Exception as e:
             logger.error(f"  DecisionAgent error for {gateway_id}: {e}")
-            return flows[0].id if flows else ""
+            flow_id = flows[0].id if flows else ""
+            mcp_out("FlowAgent", "handle_gateway", gateway_id=gateway_id, selected_flow=flow_id, error=str(e))
+            return flow_id
 
     async def _handle_hook(self, hook: Hook, ctx: ControlPointContext) -> HookResult:
         """Evaluate a hook — check condition, then apply policy or handler."""
+        mcp_in("FlowAgent", "handle_hook",
+               hook_id=hook.id,
+               hook_type=hook.hook_type.value if hasattr(hook.hook_type, "value") else str(hook.hook_type),
+               has_policy=bool(hook.policy))
         if hook.condition and not hook.condition(ctx.current_state):
+            mcp_out("FlowAgent", "handle_hook", hook_id=hook.id, action="CONTINUE", reason="condition_false")
             return HookResult(action=HookAction.CONTINUE)
         if hook.policy:
             result = self._llm_hook_decision(hook, ctx)
@@ -230,6 +259,7 @@ class FlowAgent:
                 data=result.message or result.action.value,
             )
         )
+        mcp_out("FlowAgent", "handle_hook", hook_id=hook.id, action=result.action.value)
         return result
 
     # ──────────────────────────────────────────────────────────────
@@ -392,6 +422,12 @@ Respond ONLY with a JSON object:
         elif isinstance(input_data, dict):
             initial_inputs.update(input_data)
 
+        mcp_in("FlowAgent", "invoke",
+               process_key=self.process_key,
+               input_type=type(input_data).__name__,
+               input_keys=list(initial_inputs.keys()),
+               task_agents=list(self.task_agents.keys()))
+
         bpmn_process = None
         try:
             result = await self.bridge.run_process(self.process_key, initial_inputs)
@@ -407,9 +443,17 @@ Respond ONLY with a JSON object:
                 final_state.messages = list(final_state.messages)
             final_state.messages.append({"role": "assistant", "content": summary})
             logger.info(f"Process execution completed: is_complete={final_state.is_complete}")
+            mcp_out("FlowAgent", "invoke",
+                    process_key=self.process_key,
+                    is_complete=final_state.is_complete,
+                    is_halted=final_state.is_halted,
+                    task_results=list(final_state.task_results.keys()) if final_state.task_results else [])
             return final_state
         except Exception as e:
             logger.error(f"Error executing process: {e}")
+            mcp_out("FlowAgent", "invoke",
+                    process_key=self.process_key,
+                    error=str(e))
             error_state = FlowState(
                 process_id=bpmn_process.id if bpmn_process else self.process_key,
                 process_name=bpmn_process.name if bpmn_process else self.process_key,
