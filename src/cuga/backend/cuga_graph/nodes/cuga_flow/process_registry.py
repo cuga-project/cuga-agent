@@ -60,13 +60,15 @@ class ProcessRegistry:
     def _register_preloaded(
         self,
         key: str,
-        bpmn: BPMNProcess,
-        definition: ProcessDefinition,
+        bpmn: Optional[BPMNProcess] = None,
+        definition: Optional[ProcessDefinition] = None,
         config: Optional["FlowConfig"] = None,
     ) -> None:
         """Register pre-parsed objects directly. Used by the backward-compat bpmn_file path."""
-        self._definitions[key] = definition
-        self._bpmn_cache[key] = bpmn
+        if definition is not None:
+            self._definitions[key] = definition
+        if bpmn is not None:
+            self._bpmn_cache[key] = bpmn
         if config is not None:
             self._config_cache[key] = config
         logger.info(f"ProcessRegistry: registered pre-loaded flow '{key}'")
