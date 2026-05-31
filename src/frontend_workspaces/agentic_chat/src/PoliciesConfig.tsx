@@ -121,6 +121,19 @@ interface PoliciesConfigData {
   policies: Policy[];
 }
 
+interface FlowPolicy {
+  filename: string;
+  name: string;
+  content: string;
+}
+
+interface FlowPoliciesData {
+  tasks: FlowPolicy[];
+  decisions: FlowPolicy[];
+  hooks: FlowPolicy[];
+  available: boolean;
+}
+
 interface PoliciesConfigProps {
   onClose: () => void;
   draftMode?: boolean;
@@ -226,10 +239,15 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const [availableApps, setAvailableApps] = useState<AppInfo[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ kind: "success" | "error" | "warning"; title: string; subtitle: string } | null>(null);
+  const [flowPolicies, setFlowPolicies] = useState<FlowPoliciesData>({ tasks: [], decisions: [], hooks: [], available: false });
+  const [flowPoliciesLoading, setFlowPoliciesLoading] = useState(true);
+  const [savingFlowPolicy, setSavingFlowPolicy] = useState<string | null>(null);
+  const [editedFlowPolicies, setEditedFlowPolicies] = useState<Record<string, string>>({});
 
   useEffect(() => {
     loadConfig();
     loadTools();
+    loadFlowPolicies();
   }, []);
 
   const loadConfig = async () => {
@@ -282,6 +300,51 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
       console.error("[PoliciesConfig] Error loading tools:", error);
     } finally {
       setToolsLoading(false);
+    }
+  };
+
+  const loadFlowPolicies = async () => {
+    setFlowPoliciesLoading(true);
+    try {
+      const response = await api.apiFetch("/api/manage/flow/policies");
+      if (response.ok) {
+        const data: FlowPoliciesData = await response.json();
+        setFlowPolicies(data);
+        const initial: Record<string, string> = {};
+        [...data.tasks, ...data.decisions, ...data.hooks].forEach((p) => {
+          initial[p.filename] = p.content;
+        });
+        setEditedFlowPolicies(initial);
+      }
+    } catch (error) {
+      console.error("[PoliciesConfig] Error loading flow policies:", error);
+    } finally {
+      setFlowPoliciesLoading(false);
+    }
+  };
+
+  const saveFlowPolicy = async (filename: string) => {
+    setSavingFlowPolicy(filename);
+    try {
+      const response = await api.apiFetch("/api/manage/flow/policies", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ filename, content: editedFlowPolicies[filename] ?? "" }),
+      });
+      if (response.ok) {
+        setToastMessage({ kind: "success", title: "Policy saved", subtitle: filename });
+        setFlowPolicies((prev) => {
+          const update = (list: FlowPolicy[]) =>
+            list.map((p) => (p.filename === filename ? { ...p, content: editedFlowPolicies[filename] ?? p.content } : p));
+          return { ...prev, tasks: update(prev.tasks), decisions: update(prev.decisions), hooks: update(prev.hooks) };
+        });
+      } else {
+        setToastMessage({ kind: "error", title: "Save failed", subtitle: filename });
+      }
+    } catch {
+      setToastMessage({ kind: "error", title: "Save failed", subtitle: filename });
+    } finally {
+      setSavingFlowPolicy(null);
     }
   };
 
@@ -680,7 +743,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                 </Tile>
               )}
 
-              {/* Centralized Carbon Native Tabs */}
+              {/* All policy tabs in one block */}
               {!isLoading && (
                 <Tabs>
                   <TabList aria-label="Policy Types">
@@ -689,6 +752,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                     <Tab>Tool Guide ({ToolGuides.length})</Tab>
                     <Tab>Tool Approval ({toolApprovals.length})</Tab>
                     <Tab>Output Formatter ({outputFormatters.length})</Tab>
+                    <Tab>Task Agents ({flowPolicies.tasks.length})</Tab>
+                    <Tab>Decision Agents ({flowPolicies.decisions.length})</Tab>
+                    <Tab>Hooks ({flowPolicies.hooks.length})</Tab>
                   </TabList>
                   <TabPanels>
                     <TabPanel>{renderIntentGuards()}</TabPanel>
@@ -696,6 +762,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                     <TabPanel>{renderToolGuides()}</TabPanel>
                     <TabPanel>{renderToolApprovals()}</TabPanel>
                     <TabPanel>{renderOutputFormatters()}</TabPanel>
+                    <TabPanel>{renderFlowPolicyList(flowPolicies.tasks, "No task agent policies found. Add task-*.md files to your policies directory.")}</TabPanel>
+                    <TabPanel>{renderDecisionPolicies()}</TabPanel>
+                    <TabPanel>{renderFlowPolicyList(flowPolicies.hooks, "No hook policies found. Add hook-*.md files to your policies directory.")}</TabPanel>
                   </TabPanels>
                 </Tabs>
               )}
@@ -1585,6 +1654,96 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
               );
             })}
           </Stack>
+        )}
+      </Stack>
+    );
+  }
+
+  function renderFlowPolicyList(policies: FlowPolicy[], emptyMessage: string) {
+    if (policies.length === 0) {
+      return (
+        <Tile style={{ marginTop: "1rem" }}>
+          <p style={{ color: "var(--cds-text-secondary)" }} dangerouslySetInnerHTML={{ __html: emptyMessage }} />
+        </Tile>
+      );
+    }
+    return (
+      <Stack gap={4} style={{ paddingTop: "1rem" }}>
+        {policies.map((policy) => {
+          const isDirty = editedFlowPolicies[policy.filename] !== policy.content;
+          const isSaving = savingFlowPolicy === policy.filename;
+          return (
+            <Tile key={policy.filename} style={{ border: "1px solid var(--cds-border-subtle)", padding: 0 }}>
+              <Stack gap={0}>
+                <div style={{ padding: "0.75rem 1rem", backgroundColor: "var(--cds-layer-01)", borderBottom: "1px solid var(--cds-border-subtle)" }}>
+                  <Stack orientation="horizontal" style={{ justifyContent: "space-between", alignItems: "center" }}>
+                    <Stack gap={1}>
+                      <span style={{ fontWeight: 600, fontSize: "0.875rem" }}>{policy.name}</span>
+                      <span style={{ color: "var(--cds-text-secondary)", fontSize: "0.75rem" }}>{policy.filename}</span>
+                    </Stack>
+                    <Button
+                      kind="primary"
+                      size="sm"
+                      renderIcon={Save}
+                      onClick={() => saveFlowPolicy(policy.filename)}
+                      disabled={!isDirty || isSaving}
+                    >
+                      {isSaving ? "Saving..." : "Save"}
+                    </Button>
+                  </Stack>
+                </div>
+                <div style={{ padding: "1rem" }}>
+                  <TextArea
+                    id={`flow-policy-${policy.filename}`}
+                    labelText="Policy Content (Markdown)"
+                    value={editedFlowPolicies[policy.filename] ?? policy.content}
+                    onChange={(e) =>
+                      setEditedFlowPolicies((prev) => ({ ...prev, [policy.filename]: e.target.value }))
+                    }
+                    rows={12}
+                    helperText="Markdown instructions guiding this agent's behavior"
+                  />
+                </div>
+              </Stack>
+            </Tile>
+          );
+        })}
+      </Stack>
+    );
+  }
+
+  function renderDecisionPolicies() {
+    return (
+      <Stack gap={5} style={{ paddingTop: "1rem" }}>
+        <Tile style={{ backgroundColor: "var(--cds-layer-01)", border: "1px solid var(--cds-border-subtle)" }}>
+          <Stack gap={3}>
+            <Stack orientation="horizontal" gap={3} style={{ alignItems: "center" }}>
+              <div
+                style={{
+                  background: "var(--cds-interactive)",
+                  color: "white",
+                  borderRadius: "4px",
+                  padding: "2px 8px",
+                  fontSize: "0.75rem",
+                  fontWeight: 600,
+                  whiteSpace: "nowrap",
+                }}
+              >
+                Built-in Tool
+              </div>
+              <span style={{ fontWeight: 600, fontSize: "0.875rem", fontFamily: "monospace" }}>evaluate_condition</span>
+            </Stack>
+            <p style={{ fontSize: "0.875rem", color: "var(--cds-text-secondary)", margin: 0 }}>
+              All Decision Agents are automatically equipped with the <code>evaluate_condition</code> tool. It safely evaluates
+              BPMN condition expressions (e.g. <code>{"${amount} > 10000"}</code>) against the current process variables
+              without using <code>eval()</code>. The LLM calls this tool first, then uses the decision policy below to
+              select the outgoing flow.
+            </p>
+          </Stack>
+        </Tile>
+        {renderFlowPolicyList(
+          flowPolicies.decisions,
+          "No decision agent policies found. Add <code>decision-*.md</code> files to your policies directory."
         )}
       </Stack>
     );

@@ -45,6 +45,11 @@ interface ToolsConfigProps {
 const TOOLS_PREVIEW_COUNT = 3;
 const DEFAULT_BUILTIN_TOOLS = ["knowledge"];
 
+const BUILTIN_TOOL_DESCRIPTIONS: Record<string, string> = {
+  knowledge: "Document retrieval from the agent knowledge base",
+  evaluate_condition: "Evaluates BPMN gateway condition expressions against process variables (built-in Decision Agent tool)",
+};
+
 function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools = [], agentId = "cuga-default", builtinTools = DEFAULT_BUILTIN_TOOLS, onError, onOpenSecrets }: ToolsConfigProps) {
   const builtinSet = useMemo(() => new Set(builtinTools.map(n => n.toLowerCase())), [builtinTools]);
   const [modalOpen, setModalOpen] = useState(false);
@@ -147,11 +152,14 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
   };
 
   // Get list of available tools that are NOT yet configured
-  const configuredNames = new Set(tools.map(t => t.name));
+  const configuredNames = new Set(tools.map(t => t.name?.toLowerCase()));
   const availableToAdd = connectedApps.filter(app => !configuredNames.has(app.name));
 
   // Runtime built-in apps (injected by Cuga Lite, not user-configured)
   const runtimeApps = connectedApps.filter(app => app.type === "CUGA_LITE");
+
+  // Built-in tools declared in feature flags but not present in the configured tools list
+  const builtinOnlyTools = builtinTools.filter(name => !configuredNames.has(name.toLowerCase()) && name !== "knowledge");
 
   const displayTools = showAllTools ? tools : tools.slice(0, TOOLS_PREVIEW_COUNT);
 
@@ -245,6 +253,24 @@ function ToolsConfigInner({ tools, onChange, connectedApps = [], connectedTools 
               </Tile>
             );
           })}
+        </Stack>
+      )}
+
+      {builtinOnlyTools.length > 0 && (
+        <Stack gap={3} orientation="vertical" className="tools-config-list">
+          {builtinOnlyTools.map((name) => (
+            <Tile key={name} className="tools-config-tile">
+              <div className="tools-config-tile-main">
+                <div className="tools-config-tile-info">
+                  <span className="tools-config-tile-name">{name}</span>
+                  <Tag type="purple" size="sm">Built-in</Tag>
+                </div>
+              </div>
+              {BUILTIN_TOOL_DESCRIPTIONS[name] && (
+                <p className="tools-config-tile-source">{BUILTIN_TOOL_DESCRIPTIONS[name]}</p>
+              )}
+            </Tile>
+          ))}
         </Stack>
       )}
 
