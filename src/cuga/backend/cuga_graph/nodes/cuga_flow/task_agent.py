@@ -10,6 +10,7 @@ FlowAgent orchestration layer.
 from typing import Dict, List, Any, Optional, Callable
 from loguru import logger
 
+from cuga.backend.server.cuga_flo_mcp.mcp_logger import mcp_in, mcp_out
 from cuga.sdk import CugaAgent
 from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
 from langchain_core.tools import BaseTool
@@ -91,6 +92,14 @@ class TaskAgent:
             Dict containing task execution results
         """
         logger.info(f"Executing task: {self.task_id} ({self.task_name})")
+        mcp_in("TaskAgent", "execute",
+               task_id=self.task_id,
+               task_name=self.task_name,
+               process_id=state.process_id,
+               input_provided=task_input is not None,
+               input_mapping=list(self.input_mapping.keys()),
+               output_mapping=list(self.output_mapping.keys()),
+               var_keys=list(state.process_variables.keys()))
 
         try:
             # Pre-execution hook
@@ -115,10 +124,19 @@ class TaskAgent:
                 self.post_execute(state, task_result)
 
             logger.info(f"Task completed: {self.task_id}")
+            mcp_out("TaskAgent", "execute",
+                    task_id=self.task_id,
+                    status=task_result.get("status"),
+                    output_len=len(str(task_result.get("output", ""))),
+                    mapped_vars=list(self.output_mapping.values()) if self.output_mapping else [])
             return task_result
 
         except Exception as e:
             logger.error(f"Error executing task {self.task_id}: {e}")
+            mcp_out("TaskAgent", "execute",
+                    task_id=self.task_id,
+                    status="failed",
+                    error=str(e))
             error_result = {"status": "failed", "success": False, "error": str(e), "task_id": self.task_id}
             state.record_task_result(self.task_id, error_result)
             return error_result
