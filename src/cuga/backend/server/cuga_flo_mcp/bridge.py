@@ -21,6 +21,8 @@ from fastmcp import Client, FastMCP
 from fastmcp.client.transports import FastMCPTransport
 from loguru import logger
 
+from cuga.backend.server.cuga_flo_mcp.mcp_logger import mcp_in, mcp_out
+
 if TYPE_CHECKING:
     from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent import FlowAgent
     from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
@@ -65,17 +67,26 @@ class MCPFlowBridge:
 
         async def register_flow(flow_config_path: str) -> str:
             """Parse YAML + BPMN and register the process. Returns the process key."""
-            return registry.register_flow(flow_config_path)
+            mcp_in("MCPFlowBridge", "register_flow", path=flow_config_path)
+            result = registry.register_flow(flow_config_path)
+            mcp_out("MCPFlowBridge", "register_flow", process_key=result)
+            return result
 
         async def get_bpmn_process(process_key: str) -> dict:
             """Fetch and serialise a BPMNProcess from the registry."""
+            mcp_in("MCPFlowBridge", "get_bpmn_process", process_key=process_key)
             bpmn = registry.get_bpmn_process(process_key)
-            return bpmn.to_dict()
+            result = bpmn.to_dict()
+            mcp_out("MCPFlowBridge", "get_bpmn_process", bpmn_id=result.get("id"))
+            return result
 
         async def get_flow_annotations(process_key: str) -> dict:
             """Fetch engine-consumable config derived from the registry's FlowConfig."""
+            mcp_in("MCPFlowBridge", "get_flow_annotations", process_key=process_key)
             config = registry.get_flow_annotations(process_key)
-            return config.to_engine_config()
+            result = config.to_engine_config()
+            mcp_out("MCPFlowBridge", "get_flow_annotations", keys=list(result.keys()))
+            return result
 
         self._mcp.tool(name="register_flow")(register_flow)
         self._mcp.tool(name="get_bpmn_process")(get_bpmn_process)
@@ -92,7 +103,10 @@ class MCPFlowBridge:
 
         Returns the process key derived from the YAML.
         """
-        return self._registry.register_flow(flow_config_path)
+        mcp_in("MCPFlowBridge", "load_flow[sync]", path=flow_config_path)
+        result = self._registry.register_flow(flow_config_path)
+        mcp_out("MCPFlowBridge", "load_flow[sync]", process_key=result)
+        return result
 
     def get_flow_annotations(self, process_key: str) -> "FlowConfig":
         """
@@ -101,7 +115,10 @@ class MCPFlowBridge:
         Sync bridge method — mediates the call so FlowAgent never touches
         the registry directly.  Also exposed as the MCP tool 'get_flow_annotations'.
         """
-        return self._registry.get_flow_annotations(process_key)
+        mcp_in("MCPFlowBridge", "get_flow_annotations[sync]", process_key=process_key)
+        result = self._registry.get_flow_annotations(process_key)
+        mcp_out("MCPFlowBridge", "get_flow_annotations[sync]", config_type=type(result).__name__)
+        return result
 
     async def run_process(self, process_key: str, initial_inputs: dict) -> dict:
         """
@@ -111,8 +128,11 @@ class MCPFlowBridge:
         the engine directly.  Also exposed as the MCP tool 'run_process' for
         remote callers.  Returns {state, bpmn}.
         """
+        mcp_in("MCPFlowBridge", "run_process[sync]", process_key=process_key, input_keys=list(initial_inputs.keys()))
         state, bpmn = await self._engine._run_via_mcp(process_key, initial_inputs, self._mcp)
-        return {"state": state.model_dump(mode="json"), "bpmn": bpmn.to_dict()}
+        result = {"state": state.model_dump(mode="json"), "bpmn": bpmn.to_dict()}
+        mcp_out("MCPFlowBridge", "run_process[sync]", process_key=process_key, is_complete=state.is_complete, is_halted=state.is_halted)
+        return result
 
     def register_flow_agent(self, fa: "FlowAgent") -> None:
         """
@@ -127,24 +147,45 @@ class MCPFlowBridge:
 
         async def execute_task(task_id: str, ctx: dict) -> dict:
             """Execute an agentic task via FlowAgent."""
+            mcp_in("MCPFlowBridge", "execute_task",
+                   task_id=task_id,
+                   process_id=ctx.get("current_state", {}).get("process_id"),
+                   element_name=ctx.get("element_name"),
+                   session=ctx.get("process_instance_id"))
             ctx_obj = ControlPointContext.from_dict(ctx)
-            return await fa._handle_task(task_id, ctx_obj)
+            result = await fa._handle_task(task_id, ctx_obj)
+            mcp_out("MCPFlowBridge", "execute_task",
+                    task_id=task_id,
+                    result_keys=list(result.keys()),
+                    task_status=result.get("task_results", {}).get(task_id, {}).get("status"))
+            return result
 
         async def route_gateway(gateway_id: str, ctx: dict) -> str:
             """Route a gateway via FlowAgent's DecisionAgent."""
+            mcp_in("MCPFlowBridge", "route_gateway",
+                   gateway_id=gateway_id,
+                   process_id=ctx.get("current_state", {}).get("process_id"))
             ctx_obj = ControlPointContext.from_dict(ctx)
-            return await fa._handle_gateway(gateway_id, ctx_obj)
+            result = await fa._handle_gateway(gateway_id, ctx_obj)
+            mcp_out("MCPFlowBridge", "route_gateway", gateway_id=gateway_id, selected_flow=result)
+            return result
 
         async def evaluate_hook(hook_id: str, ctx: dict) -> dict:
             """Evaluate a hook via FlowAgent's hook evaluator."""
+            mcp_in("MCPFlowBridge", "evaluate_hook",
+                   hook_id=hook_id,
+                   process_id=ctx.get("current_state", {}).get("process_id"))
             ctx_obj = ControlPointContext.from_dict(ctx)
             hook = next((h for h in fa.hooks if h.id == hook_id), None)
             if hook is None:
                 from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookAction, HookResult
-
-                return HookResult(action=HookAction.CONTINUE, message=f"Hook {hook_id!r} not found").to_dict()
-            result = await fa._handle_hook(hook, ctx_obj)
-            return result.to_dict()
+                result = HookResult(action=HookAction.CONTINUE, message=f"Hook {hook_id!r} not found").to_dict()
+                mcp_out("MCPFlowBridge", "evaluate_hook", hook_id=hook_id, action="CONTINUE", reason="not_found")
+                return result
+            result_obj = await fa._handle_hook(hook, ctx_obj)
+            result = result_obj.to_dict()
+            mcp_out("MCPFlowBridge", "evaluate_hook", hook_id=hook_id, action=result.get("action"))
+            return result
 
         for fn, tool_name in [
             (execute_task, "execute_task"),
@@ -169,8 +210,11 @@ class MCPFlowBridge:
 
         async def run_process(process_key: str, initial_inputs: dict) -> dict:
             """Execute a BPMN process via the WorkflowEngine. Returns {state, bpmn}."""
+            mcp_in("MCPFlowBridge", "run_process[tool]", process_key=process_key, input_keys=list(initial_inputs.keys()))
             state, bpmn = await engine._run_via_mcp(process_key, initial_inputs, _mcp_server)
-            return {"state": state.model_dump(mode="json"), "bpmn": bpmn.to_dict()}
+            result = {"state": state.model_dump(mode="json"), "bpmn": bpmn.to_dict()}
+            mcp_out("MCPFlowBridge", "run_process[tool]", process_key=process_key, is_complete=state.is_complete, is_halted=state.is_halted)
+            return result
 
         self._mcp.tool(name="run_process")(run_process)
         logger.info("MCPFlowBridge: registered WorkflowEngine run_process tool")
