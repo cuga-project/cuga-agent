@@ -7,48 +7,43 @@ sequenceDiagram
     participant FC as FlowConfig
     participant FA as FlowAgent
     participant Bridge as MCPFlowBridge
-    participant Reg as ProcessRegistry
-    participant Eng as LangGraphWorkflowEngine
+    participant Med as MCP2MCPMediator
+    participant Ordo as MCPOrdo
     participant FS as FlowState
     participant TA as TaskAgent
-    participant DA as DecisionAgent
 
     rect rgb(230, 240, 255)
-        Note over App,Reg: STARTUP
-        App->>App: cuga start flow_agent_inline<br/>sets DYNACONF_SUPERVISOR__CONFIG_PATH
-        App->>SC: load supervisor YAML
-        SC->>SC: finds agent entry with type: flow_agent
-        SC->>FC: load_flow_from_yaml(flow_config_path)
-        FC->>Bridge: <<create>> MCPFlowBridge()
-        FC->>Reg: <<create>> ProcessRegistry(bridge)
-        Note right of Reg: Services: register_flow(config_path)<br/>get_bpmn_process(key), get_flow_annotations(key)<br/>list_keys()
-        Reg->>Bridge: register_registry(self)
-        Note right of Bridge: Registers MCP tools: register_flow, get_bpmn_process, get_flow_annotations<br/>Bridge holds internal Reg reference
-        FC->>Bridge: load_flow(config_path)
-        Bridge->>Reg: register_flow(config_path)
-        Note right of Reg: Parses YAML (tasks, gateways,<br/>hooks, policies, action_permissions)<br/>+ BPMN file via BPMNParser<br/>Stores FlowConfig + BPMNProcess in cache
-        FC->>FA: <<create>> FlowAgent(process_key, registry, bridge)
+        Note over App,Ordo: STARTUP — CUGA FLO to ORDO Lifecycle
+        App->>App: sets DYNACONF_SUPERVISOR__CONFIG_PATH<br/>= supervisor_ordo.yaml
+        App->>SC: load_supervisor_config(supervisor_ordo.yaml)
+        SC->>SC: finds agent entry with type: flow_agent_ordo<br/>reads process_key: "loan_approval_stub"
+        SC->>FC: load_ordo_flow_from_yaml(ordo_config.yaml, process_key)
+        FC->>Bridge: <<create>> MCPFlowBridge(name="cuga-flo-bridge-ordo")
+        Note right of Bridge: Empty FastMCP server — no registry, no engine yet
+        FC->>Ordo: <<create>> MCPOrdo()
+        Note right of Ordo: FastMCP server backed by WorkflowStubStore<br/>Acts as BOTH remote workflow engine AND process registry<br/>(API strictly based on external_mcp_engine/server.py)<br/>Tools: get_workflows, register_workflow,<br/>run_workflow, resume_workflow,<br/>stop_workflow, get_run_status
+        FC->>Med: <<create>> MCP2MCPMediator(bridge, ordo, process_key)
+        Med->>Bridge: register_registry(OrdoRegistryAdapter)
+        Note right of Bridge: OrdoRegistryAdapter satisfies bridge's registry interface<br/>without ProcessRegistry — routes to MCPOrdo instead<br/>Adds MCP tools: register_flow, get_bpmn_process, get_flow_annotations
+        Med->>Bridge: register_engine(_MediatorEngineAdapter)
+        Note right of Bridge: Adds MCP tool: run_process<br/>Sets bridge._engine = _MediatorEngineAdapter
+        FC->>Bridge: load_flow(ordo_config.yaml)
+        Bridge->>Bridge: OrdoRegistryAdapter.register_flow()<br/>→ parses YAML, caches FlowConfig<br/>→ notify_fn(process_key, name)
+        Bridge->>Med: _register_workflow_on_ordo(workflow_id, name)
+        Med->>Ordo: ordo.store.register_workflow(workflow_id=process_key)
+        Note right of Ordo: WorkflowSummary registered for "loan_approval_stub"<br/>Bridge has no direct MCPOrdo ref — mediator owns all MCPOrdo calls
+        FC->>FA: <<create>> FlowAgent(process_key, bridge)
         FA->>Bridge: get_flow_annotations(process_key)
-        Bridge->>Reg: get_flow_annotations(process_key)
-        Reg-->>Bridge: FlowConfig
-        Bridge-->>FA: FlowConfig
-        loop per agentic task (mode: task_agent)
-            FA->>TA: <<create>> TaskAgent(task_id, CugaAgent(tools, system_instruction))
-        end
-        loop per decision gateway (mode: decision_agent)
-            FA->>DA: <<create>> DecisionAgent(gateway_id, policy, flow_decisions)
-        end
-        Note right of FA: Also builds task_instructions, task_policies<br/>hooks, action_permissions from FlowConfig
+        Bridge-->>FA: FlowConfig (from OrdoRegistryAdapter cache)
+        FA->>FA: config.create_task_agents() → task_agents<br/>config.create_task_policies() → task_policies
+        Note right of FA: FlowAgent owns agent creation via bridge→OrdoRegistryAdapter→FlowConfig<br/>gateway_agents={}, hooks=[] (routing owned by remote engine)<br/>bridge passed explicitly → no auto-engine
         FA->>Bridge: register_flow_agent(self)
         Note right of Bridge: Registers MCP tools:<br/>execute_task, route_gateway, evaluate_hook
-        FC->>Eng: <<create>> LangGraphWorkflowEngine(bridge)
-        Eng->>Bridge: register_engine(self)
-        Note right of Bridge: Registers MCP tool: run_process<br/>All tools backed by FastMCPTransport (in-process)
     end
 
     rect rgb(220, 235, 255)
-        Note over Sup,FA: SUPERVISOR DELEGATION (optional path)
-        Sup->>Deleg: create_agent_delegation_func(adapter, agent_name, flow_agent)
+        Note over Sup,FA: SUPERVISOR DELEGATION
+        Sup->>Deleg: create_agent_delegation_func(adapter, "ordo_flow_agent", flow_agent)
         Note right of Deleg: agent_or_config is FlowAgent instance<br/>Detected via isinstance(agent_or_config, FlowAgent)
         Sup->>Deleg: delegate_to_agent(task, variables)
         Deleg->>FA: invoke(input_data=task, process_variables=vars_to_pass)
@@ -58,86 +53,50 @@ sequenceDiagram
     end
 
     rect rgb(230, 255, 230)
-        Note over App,Eng: INVOCATION
-        App->>FA: invoke(input_data, process_variables)
-        Note right of FA: str input_data → initial_inputs["_user_message"]<br/>dict input_data → merged into initial_inputs
-        FA->>Bridge: run_process(process_key, initial_inputs)
-        Bridge->>Eng: _run_via_mcp(process_key, initial_inputs, mcp_server)
-        Eng->>Bridge: call_tool("get_bpmn_process", {process_key})
-        Bridge->>Reg: get_bpmn_process(process_key)
-        Reg-->>Bridge: BPMNProcess
-        Bridge-->>Eng: BPMNProcess dict → from_dict()
-        Eng->>Bridge: call_tool("get_flow_annotations", {process_key})
-        Bridge->>Reg: get_flow_annotations(process_key)
-        Reg-->>Bridge: FlowConfig.to_engine_config()
-        Bridge-->>Eng: {agentic_task_ids, decision_gateway_ids, task_instructions, hooks,<br/>flow_conditions, tool_tasks, action_permissions}
-        Note right of Eng: Builds _ControlOverlay with<br/>MCP-backed handlers for each<br/>task / gateway / hook
-        Eng->>FS: FlowState(process_id, process_variables)
-        Note right of Eng: Engine owns FlowState<br/>Compiles + begins StateGraph execution
+        Note over FA,Ordo: INVOCATION
+        FA->>FA: invoke(input_data, process_variables)
+        Note right of FA: Merges initial_variables + process_variables<br/>Sets initial_inputs["_user_message"] if str
+        FA->>Bridge: run_process("loan_approval_stub", initial_inputs)
+        Bridge->>Med: _MediatorEngineAdapter._run_via_mcp(...)<br/>→ Med._mediation_loop(process_key, initial_inputs, bridge._mcp)
+        Note right of Med: Workflow already registered in MCPOrdo during STARTUP<br/>Opens async context: Client(FastMCPTransport(ordo._mcp))
+        Med->>Ordo: call_tool("run_workflow", {workflow_id: "loan_approval_stub"})
+        Note right of Ordo: WorkflowStubStore creates session_id<br/>Builds AgentGoal {agent_name: "credit_checker"}<br/>session status = "paused"
+        Ordo-->>Med: RunResult {agent_goal: AgentGoal}
     end
 
     rect rgb(255, 245, 220)
-        Note over Eng,TA: ENGINE EXECUTION — Agentic Task Node
-        Eng->>Eng: _create_task_node(task_id)
-        Note right of Eng: Builds ControlPointContext:<br/>current_state — engine-held FS<br/>execution_history — engine-held path<br/>process_model_summary — inspect_model()<br/>task_instruction — static config[task_id]
-        Eng->>Bridge: call_tool("execute_task", {task_id, ctx.to_dict()})
-        Bridge->>FA: _handle_task(task_id, ctx)
-        Note right of FA: WHO: self.task_agents[task_id]<br/>HOW: self.task_policies[task_id]<br/>WHAT: ctx.task_instruction (engine disclosed)
-        FA->>FA: _build_task_input(task_id, ctx)
-        Note right of FA: combines task_instruction + policy +<br/>user_msg + process_variables + task_results
-        FA->>TA: execute(ctx.current_state, task_input)
-        Note right of TA: _process_output applies output_mapping:<br/>parses JSON from LLM output<br/>calls state.set_process_variable(var, val)<br/>for each output_key → process_var mapping
-        TA-->>FA: task result dict (process_variables already updated in-place)
-        FA-->>Bridge: partial dict {execution_path, task_results, process_variables}
-        Bridge-->>Eng: result dict
-        Eng->>FS: merge partial dict via reducers
-    end
-
-    rect rgb(255, 235, 235)
-        Note over Eng,DA: ENGINE EXECUTION — Gateway Node (two paths)
-        Eng->>Eng: _create_gateway_node(gateway_id)
-        Note right of Eng: Builds ControlPointContext:<br/>available_flows — outgoing BPMNFlows with<br/>flow_conditions overlaid from static config<br/>current_state — engine-held FS
-
-        alt mode: decision_agent (overlay.gateway_handlers present)
-            Eng->>Bridge: call_tool("route_gateway", {gateway_id, ctx.to_dict()})
-            Bridge->>FA: _handle_gateway(gateway_id, ctx)
-            FA->>DA: route(ctx.available_flows, ctx.current_state)
-            Note right of DA: eval_condition → decide StateGraph<br/>LLM reads condition result + policy<br/>returns chosen flow_id
-            DA-->>FA: chosen flow_id
-            FA-->>Bridge: flow_id string
-            Bridge-->>Eng: flow_id
-        else mode: tool (merge / pass-through, no gateway handler)
-            Eng->>Eng: _tool_route_gateway(gateway_id, flows, state, overlay)
-            Note right of Eng: eval_condition on each outgoing flow<br/>Returns first matched flow_id<br/>No MCP round-trip — pure engine logic
+        Note over Med,TA: MEDIATED TASK EXECUTION (per agent_goal pause)
+        loop while RunResult.agent_goal is not None
+            Med->>Med: _build_ctx(goal, process_key, accumulated_vars)
+            Note right of Med: Synthesises ControlPointContext from AgentGoal:<br/>element_id = goal.agent_name ("credit_checker")<br/>current_state.process_variables = merged vars<br/>process_instance_id = goal.workflow_session_id
+            Note right of Med: Opens nested client: Client(FastMCPTransport(bridge._mcp))
+            Med->>Bridge: call_tool("execute_task", {task_id, ctx})
+            Bridge->>FA: _handle_task("credit_checker", ctx)
+            Note right of FA: WHO: self.task_agents["credit_checker"]<br/>HOW: self.task_policies["credit_checker"]<br/>WHAT: ctx.current_state.process_variables
+            FA->>FA: _build_task_input(task_id, ctx)
+            FA->>TA: execute(ctx.current_state, task_input)
+            Note right of TA: CugaAgent runs with credit-check policy<br/>Returns JSON with credit_score + explanation<br/>output_mapping: credit_score → process_variables
+            TA-->>FA: task result dict
+            FA-->>Bridge: partial dict {task_results, process_variables}
+            Bridge-->>Med: agent_response (task result dict)
+            Med->>Med: merge output_variables into accumulated_vars
+            Med->>Ordo: call_tool("resume_workflow", {session_id, agent_response})
+            Note right of Ordo: WorkflowStubStore updates session to "completed"<br/>Builds final_response string
+            Ordo-->>Med: RunResult {final_response: "Workflow completed..."}
         end
-
-        Eng->>FS: gateway_decisions[gw_id] = flow_id
-        Note right of Eng: Routes conditional edge
-    end
-
-    rect rgb(245, 230, 255)
-        Note over Eng,FA: ENGINE EXECUTION — Hook Node (PRE_EDGE)
-        Eng->>Eng: _create_hook_node(edge_id, hook, normal_target, process, overlay)
-        Note right of Eng: Builds ControlPointContext:<br/>edge_id — intercepted flow ID<br/>current_state — engine-held FS<br/>execution_history — engine-held path<br/>(no task_instruction)
-        Note right of Eng: If hook.condition set and not met → skip,<br/>Command(goto=normal_target)
-        Eng->>Bridge: call_tool("evaluate_hook", {hook_id, ctx.to_dict()})
-        Bridge->>FA: _handle_hook(hook, ctx)
-        Note right of FA: Checks hook.condition against state<br/>If policy: _llm_hook_decision(hook, ctx)<br/>  → LLM reads policy + process_variables<br/>  → returns {action, target_node, state_updates}<br/>If handler: hook.handler(state)<br/>Returns HookResult
-        FA-->>Bridge: HookResult dict {action, skip_to_node, state_updates, ...}
-        Bridge-->>Eng: HookResult dict
-        Note right of Eng: Enforces action_permissions<br/>Applies state_updates to process_variables<br/>SKIP_TO → Command(goto=skip_to_node)<br/>CONTINUE → Command(goto=normal_target)
     end
 
     rect rgb(240, 255, 240)
-        Note over Eng,App: COMPLETION
-        Eng-->>Bridge: (FlowState, BPMNProcess)
-        Bridge-->>FA: {state: FlowState.model_dump(), bpmn: bpmn.to_dict()}
+        Note over Med,FA: COMPLETION
+        Med->>FS: FlowState(process_id, process_variables=accumulated_vars, is_complete=True)
+        Med->>FS: messages = [{role: assistant, content: final_response}]
+        Med-->>Bridge: (FlowState, stub BPMNProcess)
+        Bridge-->>FA: {state: FlowState.model_dump(), bpmn: stub_bpmn.to_dict()}
         FA->>FS: FlowState.model_validate(result["state"])
-        Note right of FA: FA does NOT store FlowState<br/>Ready for next invoke() call
         alt not is_halted
             FA->>FS: mark_complete()
         end
         FA->>FA: _build_completion_message(final_state, BPMNProcess.from_dict(result["bpmn"]))
         FA->>FS: messages.append(summary)
-        FA-->>App: FlowState
+        FA-->>Deleg: FlowState
     end
