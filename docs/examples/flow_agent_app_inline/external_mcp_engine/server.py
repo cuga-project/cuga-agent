@@ -11,7 +11,7 @@ from uuid import uuid4
 from fastmcp import FastMCP
 from loguru import logger
 
-from cuga.backend.cuga_graph.nodes.cuga_flow.remote.schemas import (
+from cuga.backend.cuga_graph.nodes.cuga_flow.remote import (
     AgentGoal,
     RunResult,
     RunStatus,
