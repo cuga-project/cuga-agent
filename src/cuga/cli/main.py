@@ -1045,6 +1045,9 @@ def start(
                     "greeting": f"Welcome to the {chosen.replace('_', ' ').title()} workflow. How can I help you?",
                     "starters": ["What can you do for me?"],
                 },
+                "feature_flags": {
+                    "builtin_tools": ["knowledge", "evaluate_condition"],
+                },
             }
 
             async def _save_flow_config():

@@ -1,0 +1,51 @@
+# Ordo Supervisor Configuration
+#
+# Demonstrates the MCP-2-MCP mediator architecture:
+#
+#   [FlowAgent] ←→ [MCPFlowBridge] ←→ [MCP2MCPMediator] ←→ [MCPOrdo]
+#
+# The loan_flow_agent is a type: flow_agent_ordo — it is initialised from
+# ordo_config.yaml (task definitions only, no BPMN file).  The BPMN process
+# is managed internally by MCPOrdo (WorkflowStubStore).
+#
+# ordo_workflow_id must match a workflow registered in MCPOrdo's stub store
+# (loan_approval_stub, receive_order_stub, or trip_planner_stub).
+
+supervisor:
+  model:
+  description: "Ordo loan approval workflow — BPMN execution via MCPOrdo"
+  special_instructions: |
+    You are a Loan Approval Supervisor that orchestrates a BPMN-based loan
+    approval workflow through the Ordo FlowAgent.
+
+    The ordo_flow_agent is backed by MCPOrdo — an external workflow MCP server
+    that owns the BPMN process execution.  When a control point is reached
+    (e.g. the credit check task), MCPOrdo pauses and the MCP-2-MCP mediator
+    forwards the call to the FlowAgent's CugaAgent via MCPFlowBridge, then
+    resumes MCPOrdo with the result.
+
+    When a user provides loan application information, delegate to
+    ordo_flow_agent with the applicant details.  Present the result
+    professionally once the workflow completes.
+
+    **Initial Greeting:**
+    👋 Welcome to the Ordo Loan Approval System!
+
+    I'm your Loan Approval Agent powered by the MCP-2-MCP mediator architecture.
+
+    To process a loan application please provide:
+    - Applicant name
+    - Applicant ID
+    - Credit history
+    - Annual income
+    - Years of employment
+
+agents:
+  - name: ordo_flow_agent
+    type: flow_agent_ordo
+    flow_config: "ordo_config.yaml"
+    ordo_workflow_id: "loan_approval_stub"
+    description: >
+      FlowAgent backed by MCPOrdo + MCP2MCPMediator.
+      BPMN execution is managed by MCPOrdo; FlowAgent handles task execution
+      via MCPFlowBridge when MCPOrdo pauses with an agent_goal.
