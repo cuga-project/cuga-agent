@@ -1,6 +1,7 @@
 {
   "version": "0.2.0",
   "configurations": [
+
     {
       "name": "API Registry Appworld",
       "type": "python",
@@ -83,6 +84,57 @@
       },
       "console": "integratedTerminal",
       "python": "${workspaceFolder}/.venv/bin/python",
+      "stopOnEntry": false,
+      "justMyCode": false,
+      "redirectOutput": true,
+      "showReturnValue": true,
+      "subProcess": true
+    },
+    
+    {
+      "name": "Debug SDK CRM Tool Guard Update",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/cuga/sdk_core/debug_sdk_crm_tool_guard_update.py",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "MCP_SERVERS_FILE": "none",
+        "CUGA_MANAGER_MODE": "true",
+        "DYNACONF_POLICY__FILESYSTEM_SYNC": "false",
+        "DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL": "false",
+        "DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX": "false",
+        "DYNACONF_SKILLS__ENABLED": "false",
+        "DYNACONF_SUPERVISOR__ENABLED": "false"
+      },
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "envFile": "${workspaceFolder}/.env",
+      "stopOnEntry": false,
+      "justMyCode": false,
+      "redirectOutput": true,
+      "showReturnValue": true,
+      "subProcess": true
+    },
+    {
+      "name": "Debug SDK Flight Booking Tool Guard",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/src/cuga/sdk_core/debug_sdk_flight_booking_tool_guard.py",
+      "cwd": "${workspaceFolder}",
+      "env": {
+        "PYTHONUNBUFFERED": "1",
+        "MCP_SERVERS_FILE": "none",
+        "CUGA_MANAGER_MODE": "false",
+        "DYNACONF_POLICY__FILESYSTEM_SYNC": "false",
+        "DYNACONF_ADVANCED_FEATURES__ENABLE_SHELL_TOOL": "false",
+        "DYNACONF_ADVANCED_FEATURES__OPENSANDBOX_SANDBOX": "false",
+        "DYNACONF_SKILLS__ENABLED": "false",
+        "DYNACONF_SUPERVISOR__ENABLED": "false"
+      },
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/bin/python",
+      "envFile": "${workspaceFolder}/.env",
       "stopOnEntry": false,
       "justMyCode": false,
       "redirectOutput": true,

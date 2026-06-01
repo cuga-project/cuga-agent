@@ -49,6 +49,10 @@ _processes: dict[str, subprocess.Popen] = {}
 # If True, generates examples and code, then updates the tool guard
 USE_TOOLGUARD = True
 
+# If True, deletes all existing policies before adding new ones
+# Useful for clean test runs without policy accumulation
+DELETE_ALL_POLICIES = True
+
 
 # ── Tool Guard Configurations ─────────────────────────────────────────────────
 FINANCE_GUARD_CONFIG = {
@@ -273,7 +277,8 @@ async def main() -> None:
     print("🔌 Initializing tool provider with policy enforcement enabled…")
     provider = CombinedToolProvider(
         app_names=["crm", "filesystem", "email"],
-        enable_policies=True  # Enable tool guard policy enforcement
+        enable_policies=True,  # Enable tool guard policy enforcement
+        cuga_folder=os.path.join(workspace, ".cuga")  # Use workspace .cuga folder
     )
     await provider.initialize()
     
@@ -303,6 +308,64 @@ async def main() -> None:
     if agent._policy_system and agent._policy_system.storage:
         provider.policy_storage = agent._policy_system.storage
         print("   ✓ Shared policy storage with tool provider for guard enforcement")
+
+    # ── Delete all existing policies if flag is set ───────────────────────────
+    if DELETE_ALL_POLICIES:
+        print("\n🗑️  DELETE_ALL_POLICIES flag is True - removing all existing policies…")
+        
+        # First, delete policy files from filesystem to prevent auto-reload
+        policy_dir = os.path.join(workspace, ".cuga")
+        if os.path.exists(policy_dir):
+            print(f"   🗂️  Deleting policy files from {policy_dir}…")
+            import shutil
+            try:
+                shutil.rmtree(policy_dir)
+                print(f"   ✓ Deleted policy directory: {policy_dir}")
+            except Exception as e:
+                print(f"   ✗ Failed to delete policy directory: {e}")
+        
+        # Recreate the .cuga directory to prevent warnings
+        os.makedirs(policy_dir, exist_ok=True)
+        print(f"   ✓ Recreated empty policy directory: {policy_dir}")
+        
+        # Then delete from memory/storage
+        existing_policies = await agent.policies.list()
+        if existing_policies:
+            print(f"   Found {len(existing_policies)} existing policies in memory to delete")
+            deleted_count = 0
+            failed_count = 0
+            for policy in existing_policies:
+                try:
+                    policy_id = policy.get("id") if isinstance(policy, dict) else getattr(policy, "id", None)
+                    policy_name = policy.get("name", "Unknown") if isinstance(policy, dict) else getattr(policy, "name", "Unknown")
+                    if policy_id:
+                        await agent.policies.delete(policy_id)
+                        print(f"   ✓ Deleted policy from memory: {policy_name} (ID: {policy_id})")
+                        deleted_count += 1
+                    else:
+                        print(f"   ✗ Skipped policy with no ID: {policy_name}")
+                        failed_count += 1
+                except Exception as e:
+                    policy_id_str = policy.get("id", "unknown") if isinstance(policy, dict) else getattr(policy, "id", "unknown")
+                    print(f"   ✗ Failed to delete policy {policy_id_str}: {e}")
+                    failed_count += 1
+            
+            # Verify deletion by re-listing policies
+            print(f"\n   📊 Deletion summary: {deleted_count} deleted, {failed_count} failed")
+            print("   🔍 Verifying deletion by re-listing policies…")
+            remaining_policies = await agent.policies.list()
+            if remaining_policies:
+                print(f"   ⚠️  WARNING: {len(remaining_policies)} policies still exist after deletion!")
+                for policy in remaining_policies:
+                    policy_id = policy.get("id") if isinstance(policy, dict) else getattr(policy, "id", "unknown")
+                    policy_name = policy.get("name", "Unknown") if isinstance(policy, dict) else getattr(policy, "name", "Unknown")
+                    print(f"      - {policy_name} (ID: {policy_id})")
+            else:
+                print(f"   ✓ Verified: All policies successfully deleted")
+        else:
+            print("   No existing policies found in memory")
+    else:
+        print("\n📋 DELETE_ALL_POLICIES flag is False - keeping existing policies")
 
     # ══════════════════════════════════════════════════════════════════════════
     # PHASE 1: Create Finance industry tool guard
@@ -409,125 +472,9 @@ async def main() -> None:
     print(f"\n✅ Agent Response (Follow-up):\n{result1_followup.answer}\n")
     print("="*80)
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # PHASE 2: Update tool guard content
-    # ══════════════════════════════════════════════════════════════════════════
+   
     
-    print("\n" + "="*80)
-    print("PHASE 2: UPDATE TOOL GUARD CONTENT")
-    print("="*80)
     
-    print("\n🔄 Updating tool guard content using agent.policies.update_tool_guide()…")
-    
-    # Update the tool guard with modified configuration
-    updated_config = {
-        "name": "Finance eligibility revenue requirements (Updated)",
-        "content": """## Accounts cannot be created for companies from the Finance industry with annual revenue under $100,000.
-
-### Additional Requirements
-- Companies must have been in business for at least 2 years
-- Must have a valid business registration number
-""",
-        "description": "Updated: Accounts cannot be created for companies from the Finance industry with annual revenue under $100,000, plus additional business requirements.",
-    }
-    
-    print(f"   • Updating tool guard with enhanced configuration…")
-    await agent.policies.update_tool_guide(
-        policy_id=policy_id,
-        name=updated_config["name"],
-        description=updated_config["description"],
-        guide_content=updated_config["content"]
-    )
-    
-    print(f"   ✓ Tool guard content updated: {updated_config['name']}")
-    
-    # Verify update
-    policies_after = await agent.policies.list()
-    print(f"   ✓ Total policies in system: {len(policies_after)}")
-    updated_policy = await agent.policies.get(policy_id)
-    if updated_policy:
-        print(f"   ✓ Updated policy confirmed: {updated_policy['name']}")
-    
-    # Initialize variables for later use
-    violating_examples_updated = []
-    compliance_examples_updated = []
-    guard_code_updated = ""
-    
-    if USE_TOOLGUARD:
-        # Re-generate examples with updated guard
-        print("\n🔧 Re-generating tool guard examples after update…")
-        violating_examples_updated, compliance_examples_updated = await agent.policies.generate_tool_guard_examples(
-            policy_id=policy_id,
-            target_tool=target_tool
-        )
-        print(f"   ✓ Generated {len(violating_examples_updated)} updated violating examples")
-        print(f"   ✓ Generated {len(compliance_examples_updated)} updated compliance examples")
-        if violating_examples_updated:
-            print("\n   Updated violating example:")
-            print(f"   - {violating_examples_updated[0][:80]}...")
-        if compliance_examples_updated:
-            print("\n   Updated compliance example:")
-            print(f"   - {compliance_examples_updated[0][:80]}...")
-        
-        # Update policy with new examples
-        print("\n📝 Updating policy with regenerated examples…")
-        await agent.policies.update_tool_guard(
-            policy_id=policy_id,
-            tool_guards={
-                target_tool: {
-                    "violating_examples": violating_examples_updated,
-                    "compliance_examples": compliance_examples_updated
-                }
-            }
-        )
-        print(f"   ✓ Policy updated with new examples")
-        
-        # Re-generate code with updated guard
-        print("\n💻 Re-generating tool guard code after update…")
-        guard_code_updated = await agent.policies.generate_tool_guard_code(
-            policy_id=policy_id,
-            target_tool=target_tool,
-            app_name="crm"  # Must match the app name from CombinedToolProvider
-        )
-        print(f"   ✓ Generated updated code for tool guard")
-        if guard_code_updated:
-            code_preview = guard_code_updated[:200].replace('\n', '\n   ')
-            print(f"\n   Updated code preview:\n   {code_preview}...")
-        
-        # Update policy with new code
-        print("\n📝 Updating policy with regenerated code…")
-        await agent.policies.update_tool_guard(
-            policy_id=policy_id,
-            tool_guards={
-                target_tool: {
-                    "violating_examples": violating_examples_updated,
-                    "compliance_examples": compliance_examples_updated,
-                    "policy_code": guard_code_updated
-                }
-            }
-        )
-        print(f"   ✓ Policy updated with new guard code")
-    else:
-        print("\n⏭️  Skipping example and code regeneration (USE_TOOLGUARD=False)")
-    
-    # Run Finance test with updated Finance policy (should still be blocked)
-    print("\n" + "="*80)
-    print(f"🧪 TEST 2: Finance Company with Updated Tool Guard (SHOULD BE BLOCKED)")
-    print("="*80)
-    print("Testing Finance company with updated Finance industry tool guard...")
-    print("Expected: Account creation should still be blocked (updated guard has stricter requirements)")
-    
-    # Initial query
-    print(f"\n📝 Query: {FINANCE_TEST_CASE['query']}\n")
-    result2_initial = await agent.invoke(FINANCE_TEST_CASE['query'])
-    print(f"\n✅ Agent Response (Initial):\n{result2_initial.answer}\n")
-    
-    # Follow-up query attempting to override policy
-    print("-"*80)
-    print(f"\n📝 Follow-up Query: {FINANCE_TEST_CASE['followup']}\n")
-    result2_followup = await agent.invoke(FINANCE_TEST_CASE['followup'])
-    print(f"\n✅ Agent Response (Follow-up):\n{result2_followup.answer}\n")
-    print("="*80)
     
     # ══════════════════════════════════════════════════════════════════════════
     # Summary
@@ -570,48 +517,7 @@ async def main() -> None:
     print(f"\n   Follow-up Query: {FINANCE_TEST_CASE['followup'][:80]}...")
     print(f"   Follow-up Response: {result1_followup.answer[:1500]}...")
     
-    print("\n🟢 PHASE 2 - Finance Industry Tool Guard (After Update):")
-    print(f"   Tool Guard Active: {updated_config['name']}")
-    print(f"   USE_TOOLGUARD: {USE_TOOLGUARD}")
-    
-    if USE_TOOLGUARD:
-        print(f"   Re-generated Violating Examples: {len(violating_examples_updated)}")
-        print(f"   Re-generated Compliance Examples: {len(compliance_examples_updated)}")
-        print(f"   Re-generated Code: {'Yes' if guard_code_updated else 'No'}")
-        
-        print("\n   📝 Re-generated Violating Examples:")
-        for i, example in enumerate(violating_examples_updated, 1):
-            print(f"      {i}. {example}")
-        
-        print("\n   ✅ Re-generated Compliance Examples:")
-        for i, example in enumerate(compliance_examples_updated, 1):
-            print(f"      {i}. {example}")
-        
-        print("\n   💻 Re-generated Guard Code:")
-        print("   " + "-"*76)
-        for line in guard_code_updated.split('\n')[:200]:  # Show first 20 lines
-            print(f"   {line}")
-        if len(guard_code_updated.split('\n')) > 200:
-            print(f"   ... ({len(guard_code_updated.split('\n')) - 200} more lines)")
-        print("   " + "-"*76)
-    else:
-        print("   Skipped regeneration (USE_TOOLGUARD=False)")
-    
-    print(f"\n   Test: Finance Company with Updated Guard (SHOULD BE BLOCKED)")
-    print(f"\n   Initial Query: {FINANCE_TEST_CASE['query'][:80]}...")
-    print(f"   Initial Response: {result2_initial.answer[:150]}...")
-    print(f"\n   Follow-up Query: {FINANCE_TEST_CASE['followup'][:80]}...")
-    print(f"   Follow-up Response: {result2_followup.answer[:1500]}...")
-    
-    print("\n✅ Tool guard workflow completed successfully!")
-    print("   - Created tool guide")
-    if USE_TOOLGUARD:
-        print("   - Generated examples and code")
-    print("   - Updated tool guard")
-    if USE_TOOLGUARD:
-        print("   - Re-generated examples and code")
-    print("   - Tested enforcement before and after update")
-    print("="*80)
+   
 
 
 if __name__ == "__main__":
