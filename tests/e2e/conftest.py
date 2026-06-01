@@ -2,29 +2,22 @@
 
 Provides:
 - CaptureChatModel: hermetic mock LLM that records inputs and replays scripted responses
-- KnowledgeToolProvider: minimal tool provider that exposes a stub knowledge tool,
-  triggering the knowledge-awareness injection path in prepare_tools_and_apps
-- knowledge_engine fixture: isolated KnowledgeEngine (fastembed + sqlite-vec, tmp_path)
-- Helpers: write_skill, poll_task, extract_system_content
+- Helpers: write_skill, extract_system_content
 """
 
 from __future__ import annotations
 
-import asyncio
+import sys
 from pathlib import Path
 from typing import Any
 
 import pytest
-import pytest_asyncio
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
-from langchain_core.tools import tool
 from pydantic import Field, PrivateAttr
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
-from cuga.backend.knowledge.config import KnowledgeConfig
-from cuga.backend.knowledge.engine import KnowledgeEngine
 
 
 # ---------------------------------------------------------------------------
@@ -110,57 +103,6 @@ class MinimalToolProvider(ToolProviderInterface):
         return []
 
 
-class KnowledgeToolProvider(MinimalToolProvider):
-    """Tool provider that exposes a stub 'knowledge_search_knowledge' tool.
-
-    CugaLite's prepare_tools_and_apps detects tools whose names start with
-    'knowledge_' in tools_for_execution (cuga_lite_graph.py:1493-1495) and
-    activates the knowledge-awareness injection path. This provider makes that
-    detection fire without requiring a full MCP server or HTTP routes.
-
-    If the detection predicate changes (e.g., moves to a decorator or type
-    annotation), this provider may stop triggering awareness injection —
-    update the tool name to match the new predicate.
-    """
-
-    async def get_all_tools(self) -> list:
-        @tool
-        def knowledge_search_knowledge(query: str) -> str:
-            """Search the knowledge base for relevant documents."""
-            return "[]"
-
-        return [knowledge_search_knowledge]
-
-
-class RealSearchKnowledgeToolProvider(MinimalToolProvider):
-    """Tool provider with a real knowledge_search_knowledge tool backed by KnowledgeEngine.
-
-    Unlike KnowledgeToolProvider (stub that always returns '[]'), this provider calls
-    engine.search() so the RAG retrieval path — ingest → search → return chunks — can
-    be tested at the tool boundary without a running MCP server or HTTP routes.
-
-    The tool name intentionally matches the detection predicate in cuga_lite_graph.py
-    (startswith 'knowledge_') so it also activates the awareness injection path when
-    used in Tier 2 graph tests.
-    """
-
-    def __init__(self, engine: KnowledgeEngine, collection: str) -> None:
-        self._engine = engine
-        self._collection = collection
-
-    async def get_all_tools(self) -> list:
-        engine = self._engine
-        collection = self._collection
-
-        @tool
-        async def knowledge_search_knowledge(query: str) -> str:
-            """Search the knowledge base for relevant documents."""
-            results = await engine.search(collection, query, limit=5)
-            return "\n".join(r.text for r in results) if results else "[]"
-
-        return [knowledge_search_knowledge]
-
-
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -185,16 +127,6 @@ def write_skill(
     return skill_file
 
 
-async def poll_task(engine: KnowledgeEngine, task_id: str, max_iters: int = 60) -> dict:
-    """Poll an ingest task until it completes or times out."""
-    for _ in range(max_iters):
-        task = await engine.get_task(task_id)
-        if task and task.get("status") in ("completed", "failed", "error"):
-            return task
-        await asyncio.sleep(0.5)
-    raise TimeoutError(f"Task {task_id} did not complete within {max_iters * 0.5}s")
-
-
 def extract_system_content(messages: list) -> str:
     """Return the content of the first system message from a LangChain message list."""
     for msg in messages:
@@ -211,28 +143,57 @@ def extract_system_content(messages: list) -> str:
 # ---------------------------------------------------------------------------
 
 
-@pytest_asyncio.fixture
-async def knowledge_engine(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> KnowledgeEngine:
-    """Isolated KnowledgeEngine backed by fastembed + sqlite-vec in a temp dir."""
-    isolated_db = str(tmp_path / "cuga_storage.db")
-    monkeypatch.setattr(
-        "cuga.backend.knowledge.engine.get_storage_connection_params",
-        lambda: ("local", isolated_db, ""),
+@pytest.fixture
+def real_llm():
+    """Real LLM model for Tier 3 e2e tests, built from the project's own settings.
+
+    Uses LLMManager with settings.agent.code.model — the same model and credentials
+    that cuga uses in production.  The platform, model name, base URL, and API key
+    are all read from the AGENT_SETTING_CONFIG toml loaded by config.py (which also
+    loads .env from the repo root).  If credentials are absent the test will fail
+    at inference time with an auth error, not at collection time.
+    """
+    from cuga.backend.llm.models import LLMManager
+    from cuga.config import settings
+
+    return LLMManager().get_model(settings.agent.code.model)
+
+
+# ---------------------------------------------------------------------------
+# End-of-session summary for Tier 3 LLM e2e tests
+# ---------------------------------------------------------------------------
+
+
+def _find_module(name: str):
+    return (
+        sys.modules.get(f"tests.e2e.{name}")
+        or sys.modules.get(name)
+        or next((v for k, v in sys.modules.items() if k.endswith(name)), None)
     )
-    config = KnowledgeConfig(
-        enabled=True,
-        persist_dir=tmp_path / "knowledge",
-        embedding_provider="fastembed",
-        embedding_model="",
-        chunk_size=200,
-        chunk_overlap=50,
-        max_ingest_workers=1,
-        max_pending_tasks=5,
-    )
-    engine = KnowledgeEngine(config)
-    await engine.warmup()
-    yield engine
-    try:
-        await engine.aclose()
-    finally:
-        engine.shutdown()
+
+
+def pytest_terminal_summary(terminalreporter, exitstatus, config) -> None:  # noqa: ARG001
+    """Print a summary table of all Tier 3 e2e skill test results."""
+    results: list[dict] = []
+    for mod_name in ("test_skills_llm_e2e", "test_skills_sdk_e2e"):
+        mod = _find_module(mod_name)
+        if mod:
+            results.extend(getattr(mod, "_RESULTS", []))
+    if not results:
+        return
+
+    width = 84
+    sep = "=" * width
+    print(f"\n{sep}")
+    print("  TIER 3 E2E SKILLS — SUMMARY")
+    print(sep)
+    print(f"  {'Skill':<36} {'Expected':<16}  {'':6}  Actual (excerpt)")
+    print(f"  {'─' * (width - 2)}")
+    for r in results:
+        skill = r["skill"][:35]
+        expected = repr(r["expected"])[:15]
+        tag = "NOT in" if r["negative"] else "in    "
+        verdict = "PASS" if r["passed"] else "FAIL"
+        actual_excerpt = r["actual"][:45].replace("\n", " ")
+        print(f"  {skill:<36} {expected:<16}  {tag}  {verdict}  {actual_excerpt}")
+    print(sep)

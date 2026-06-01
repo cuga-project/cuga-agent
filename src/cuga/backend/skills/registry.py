@@ -37,10 +37,12 @@ class SkillRegistry:
             if pip_pkgs:
                 setup_lines.append(f"await run_command('uv pip install --quiet {' '.join(pip_pkgs)}')")
                 setup_lines.append("await asyncio.sleep(5)")
+                setup_lines.append(f"await run_command('uv pip show {' '.join(pip_pkgs)}')")
             if npm_pkgs:
                 # Install locally in the working dir so require() resolves correctly
                 setup_lines.append(f"await run_command('npm install {' '.join(npm_pkgs)}')")
                 setup_lines.append("await asyncio.sleep(5)")
+                setup_lines.append(f"await run_command('npm list {' '.join(npm_pkgs)}')")
             setup_script = "\n".join(setup_lines)
             parts.append(
                 "⚠️ STEP 1 — INSTALL REQUIREMENTS (MANDATORY — your very first code block, no exceptions):\n"

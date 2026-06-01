@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Iterable, List, Sequence
 
@@ -14,6 +15,21 @@ from cuga.backend.skills.registry import SkillEntry
 
 DEFAULT_GLOBAL_SKILLS_ROOT = "~/.config/agents/skills"
 LEGACY_GLOBAL_SKILLS_ROOT = "~/.config/cuga/skills"
+
+# Matches Jinja2 expression/block/comment delimiters used in the system-prompt template.
+# Stripping these at parse time prevents prompt-injection via malicious SKILL.md frontmatter.
+_JINJA_RE = re.compile(r"\{\{.*?\}\}|\{%.*?%\}|\{#.*?#\}", re.DOTALL)
+
+
+def _sanitize_for_prompt(value: str, field: str, source: Path) -> str:
+    """Strip Jinja2 template delimiters from a skill frontmatter string."""
+    sanitized = _JINJA_RE.sub("", value)
+    if sanitized != value:
+        logger.warning(
+            f"Skill {source}: {field!r} contained Jinja2 template syntax and was sanitized. "
+            "This may indicate a malicious or misconfigured SKILL.md."
+        )
+    return sanitized
 
 
 def _resolve_path(path: str | Path) -> Path:
@@ -122,9 +138,16 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
         logger.warning(f"Skill {path} missing name or description in frontmatter")
         return None
 
+    name_str = _sanitize_for_prompt(str(name).strip(), "name", path)
+    if re.search(r'[/\\]|\.\.', name_str):
+        logger.warning(f"Skill {path} has unsafe name {name_str!r} (path separators or '..' not allowed), skipping")
+        return None
+
+    description_str = _sanitize_for_prompt(str(description).strip(), "description", path)
+
     return SkillEntry(
-        name=str(name).strip(),
-        description=str(description).strip(),
+        name=name_str,
+        description=description_str,
         body=body.strip(),
         source=str(path),
         requirements=_normalize_requirements(frontmatter.get("requirements")),
@@ -147,6 +170,10 @@ def discover_skills(
         for path in _iter_skill_files(skills_dir):
             entry = _parse_skill_file(path)
             if entry:
+                if entry.name in by_name:
+                    logger.debug(
+                        f"Skill '{entry.name}' from {path} overrides earlier entry from {by_name[entry.name].source}"
+                    )
                 by_name[entry.name] = entry
 
     return list(by_name.values())

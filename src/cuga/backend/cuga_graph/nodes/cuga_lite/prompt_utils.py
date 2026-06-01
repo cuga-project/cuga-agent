@@ -642,6 +642,11 @@ def create_mcp_prompt(
     processed_apps = format_apps_for_prompt(apps)
 
     if not enable_shell_tool:
+        if skills_enabled:
+            logger.warning(
+                "Skills are enabled but enable_shell_tool=False; the skills block will be suppressed. "
+                "Set advanced_features.enable_shell_tool=true to activate skills."
+            )
         skills_enabled = False
         skills_prompt_section = ""
 
