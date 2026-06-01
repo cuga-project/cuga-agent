@@ -224,6 +224,7 @@ class MCP2MCPMediator:
 
         workflow_id = self._process_key
         accumulated_vars: Dict[str, Any] = dict(initial_inputs)
+        accumulated_task_results: Dict[str, Any] = {}
 
         async with self._ordo.get_client() as ordo_client:
             # Workflow was already registered during bridge.load_flow() via
@@ -263,12 +264,14 @@ class MCP2MCPMediator:
                 agent_response: Any = self._extract_dict(task_raw)
                 mcp_out("MCP2MCPMediator", "MCPFlowBridge.execute_task",
                         task_id=agent_name,
-                        response_keys=list(agent_response.keys()) if isinstance(agent_response, dict) else None)
+                        response_keys=list(agent_response.keys()) if isinstance(agent_response, dict) else None,
+                        task_status=agent_response.get("task_results", {}).get(agent_name, {}).get("status") if isinstance(agent_response, dict) else None)
 
-                # Merge any output variables back into accumulated state
+                # Merge process variables and task results back into accumulated state
                 try:
                     if isinstance(agent_response, dict):
-                        accumulated_vars.update(agent_response.get("output_variables", {}))
+                        accumulated_vars.update(agent_response.get("process_variables", {}))
+                        accumulated_task_results.update(agent_response.get("task_results", {}))
                 except Exception:
                     pass
 
@@ -288,11 +291,12 @@ class MCP2MCPMediator:
                         has_agent_goal=result.agent_goal is not None,
                         final_response=result.final_response)
 
-        # Build terminal FlowState
+        # Build terminal FlowState with all accumulated variables and task results
         final_state = FlowState(
             process_id=workflow_id,
             process_name=workflow_id,
             process_variables=accumulated_vars,
+            task_results=accumulated_task_results,
             is_complete=True,
         )
         final_state.messages = [
