@@ -180,8 +180,16 @@ validators = [
     Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
     Validator("skills.enabled", default=False),
+    # Phase 6: explicit execution axes — override advanced_features when set.
+    # None (default) means "read from advanced_features" (full backward-compat).
+    Validator("execution.python_backend", default=None),
+    Validator("execution.shell_backend", default=None),
+    Validator("execution.filesystem_backend", default=None),
+    Validator("execution.workspace_root", default=None),
     Validator("advanced_features.builtin_tools", default=["knowledge"]),
     Validator("advanced_features.cuga_lite_bind_tools_tool_names", default=[]),
+    Validator("advanced_features.cuga_lite_bind_tools_max_count", default=128),
+    Validator("advanced_features.cuga_lite_bind_tools_pad_to_cap", default=False),
     # Evolve integration
     Validator("evolve.enabled", default=False),
     Validator("evolve.url", default="http://127.0.0.1:8201/sse"),

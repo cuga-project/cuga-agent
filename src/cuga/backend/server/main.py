@@ -676,7 +676,7 @@ async def lifespan(app: FastAPI):
         if settings.advanced_features.langfuse_tracing and CallbackHandler is not None
         else None
     )
-    from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
+    from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
     from cuga.backend.server.config_store import load_config, load_draft
 
     # Load the latest published config so both agents start with the correct LLM.

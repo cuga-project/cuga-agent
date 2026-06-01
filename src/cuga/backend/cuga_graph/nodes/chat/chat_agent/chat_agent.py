@@ -14,7 +14,7 @@ from mcp.client.sse import sse_client
 from mcp import ClientSession
 
 from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
-from cuga.backend.cuga_graph.nodes.cuga_lite.combined_tool_provider import CombinedToolProvider
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.combined import CombinedToolProvider
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
 
