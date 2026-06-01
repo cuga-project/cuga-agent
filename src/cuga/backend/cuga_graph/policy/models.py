@@ -201,6 +201,26 @@ class IntentGuard(BaseModel):
         return self
 
 
+class ToolGuard(BaseModel):
+    """Guard configuration for a specific tool with compliance rules."""
+
+    violating_examples: List[str] = Field(
+        default_factory=list, description="Examples of violating usage patterns"
+    )
+    compliance_examples: List[str] = Field(
+        default_factory=list, description="Examples of compliant usage patterns"
+    )
+    policy_code: str = Field(
+        default="",
+        description=(
+            "Python code that validates tool usage compliance. "
+            "This code is executed in a sandboxed environment using the toolguard library. "
+            "Only trusted administrators with manage access should be allowed to modify policy code. "
+            "While sandboxed, policy code should still be reviewed for correctness and performance."
+        )
+    )
+
+
 class ToolGuide(BaseModel):
     """Policy that enriches tool descriptions with additional markdown content."""
 
@@ -215,6 +235,9 @@ class ToolGuide(BaseModel):
     )
     guide_content: str = Field(..., description="Markdown content to append to tool descriptions")
     prepend: bool = Field(False, description="Whether to prepend content instead of appending")
+    tool_guards: Optional[Dict[str, ToolGuard]] = Field(
+        default=None, description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)"
+    )
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     priority: int = Field(0, description="Priority when multiple guides match (higher = more important)")
     enabled: bool = Field(True, description="Whether this guide is active")

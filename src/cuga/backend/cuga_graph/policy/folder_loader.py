@@ -210,6 +210,16 @@ def create_tool_guide_from_markdown(
     if not triggers:
         triggers = [AlwaysTrigger()]
 
+    # Parse tool_guards if present
+    tool_guards = None
+    tool_guards_data = frontmatter.get('tool_guards')
+    if tool_guards_data and isinstance(tool_guards_data, dict):
+        from cuga.backend.cuga_graph.policy.models import ToolGuard
+        tool_guards = {
+            tool_name: ToolGuard(**guard_data)
+            for tool_name, guard_data in tool_guards_data.items()
+        }
+
     return ToolGuide(
         id=frontmatter.get('id', f"tool_guide_{Path(file_path).stem}"),
         name=name,
@@ -219,6 +229,7 @@ def create_tool_guide_from_markdown(
         target_apps=frontmatter.get('target_apps'),
         guide_content=content,
         prepend=frontmatter.get('prepend', False),
+        tool_guards=tool_guards,
         priority=frontmatter.get('priority', 50),
         enabled=frontmatter.get('enabled', True),
     )

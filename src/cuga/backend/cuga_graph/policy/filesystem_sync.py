@@ -134,6 +134,12 @@ class PolicyFilesystemSync:
             if policy.target_apps:
                 frontmatter['target_apps'] = policy.target_apps
             frontmatter['prepend'] = policy.prepend
+            if policy.tool_guards:
+                # Convert ToolGuard objects to dict for YAML serialization
+                frontmatter['tool_guards'] = {
+                    tool_name: guard.model_dump()
+                    for tool_name, guard in policy.tool_guards.items()
+                }
             content = policy.guide_content or ""
         elif isinstance(policy, IntentGuard):
             if policy.response:

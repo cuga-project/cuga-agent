@@ -177,6 +177,14 @@ class PolicyStorage:
                     text_parts.append(policy.guide_content[:300])
                 if policy.target_tools and "*" not in policy.target_tools:
                     text_parts.append(f"Tools: {', '.join(policy.target_tools[:10])}")
+                if policy.tool_guards:
+                    # Add tool guard information to search text
+                    for tool_name, guard in policy.tool_guards.items():
+                        text_parts.append(f"Guard for {tool_name}")
+                        if guard.violating_examples:
+                            text_parts.append(f"Violations: {' '.join(guard.violating_examples[:3])}")
+                        if guard.compliance_examples:
+                            text_parts.append(f"Compliance: {' '.join(guard.compliance_examples[:3])}")
 
             elif isinstance(policy, OutputFormatter):
                 # OutputFormatter-specific content
