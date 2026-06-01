@@ -199,7 +199,7 @@ class FlowAgent:
         )
         agent_result = await agent.execute(ctx.current_state, task_input)
         output = agent_result.get("output", agent_result.get("error", ""))
-        tracker.collect_step(Step(name=ctx.element_name or task_id, data=str(output)))
+        tracker.collect_step(Step(name=f"Task result: {ctx.element_name or task_id}", data=str(output)))
         result = {
             "execution_path": [task_id],
             "process_variables": ctx.current_state.process_variables,
