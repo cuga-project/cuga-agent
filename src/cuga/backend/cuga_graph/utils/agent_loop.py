@@ -698,7 +698,7 @@ class AgentLoop:
                 # internal CugaAgent steps (Raw_Assistant_Response, Assistant_code,
                 # NL_Auto_Continue_Classifier, etc.) accumulate in the same
                 # tracker singleton and must be excluded here.
-                _FLOW_STEP_PREFIXES = ("Task: ", "Gateway ", "Hook ", "Hook: ")
+                _FLOW_STEP_PREFIXES = ("Task: ", "Task result: ", "Gateway ", "Hook ", "Hook: ")
                 current_step_count = len(self.tracker.steps)
                 for step in self.tracker.steps[last_step_count:current_step_count]:
                     if step.name and step.data and any(step.name.startswith(p) for p in _FLOW_STEP_PREFIXES):
@@ -706,9 +706,15 @@ class AgentLoop:
                 last_step_count = current_step_count
                 continue
 
-            # Advance the baseline past steps produced by this known node so
-            # they are not re-emitted by the drain on a later empty event.
-            last_step_count = len(self.tracker.steps)
+            # Drain any FlowAgent steps that accumulated before this non-empty event
+            # (e.g. steps collected during a tool call / agent delegation).
+            # Must run before advancing last_step_count, otherwise the steps are lost.
+            _FLOW_STEP_PREFIXES = ("Task: ", "Task result: ", "Gateway ", "Hook ", "Hook: ")
+            current_step_count = len(self.tracker.steps)
+            for step in self.tracker.steps[last_step_count:current_step_count]:
+                if step.name and step.data and any(step.name.startswith(p) for p in _FLOW_STEP_PREFIXES):
+                    yield StreamEvent(name=step.name, data=step.data).format()
+            last_step_count = current_step_count
             yield event_msg.format()
         yield self.get_output(event)
 
