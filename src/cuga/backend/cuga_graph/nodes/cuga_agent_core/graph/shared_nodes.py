@@ -57,6 +57,10 @@ def create_call_model_node(
     async def call_model(state: Any, config: RunnableConfig = None) -> Command:
         configurable: dict = config.get("configurable", {}) if config else {}
 
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
+
+        sync_langfuse_callbacks_from_config(config)
+
         # ── Tool-approval HITL resumption ──────────────────────────────────
         if settings.policy.enabled and ToolApprovalHandler.is_returning_from_approval(adapter, state):
             return ToolApprovalHandler.handle_approval_resumption(adapter, state)

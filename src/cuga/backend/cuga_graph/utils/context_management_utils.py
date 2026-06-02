@@ -52,6 +52,12 @@ async def apply_context_summarization(
 
     model_name = getattr(model, 'model_name', 'gpt-4')
 
+    from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
+
+    lf_config = get_langfuse_invoke_config()
+    if lf_config.get("callbacks") and hasattr(model, "with_config"):
+        model = model.with_config(lf_config)
+
     try:
         # Create temporary AgentState with a copy of messages
         # Only pass optional parameters if they are not None

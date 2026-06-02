@@ -42,6 +42,13 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 return denial_command
 
         configurable = config.get("configurable", {}) if config else {}
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import (
+            get_langfuse_invoke_config,
+            sync_langfuse_callbacks_from_config,
+        )
+
+        sync_langfuse_callbacks_from_config(config)
+        lf_invoke_config = get_langfuse_invoke_config()
         max_steps = configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
         if "thread_id" in configurable:
             current_thread_id = configurable["thread_id"]
@@ -146,7 +153,8 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                             "skills_enabled": state.reflection_skills_enabled,
                             "skills_prompt_section": state.reflection_skills_prompt_section,
                             "force_autonomous_mode": settings.advanced_features.force_autonomous_mode,
-                        }
+                        },
+                        config=lf_invoke_config,
                     )
                     reflection_output = reflection_result.content
                     logger.debug(f"Reflection output:\n{reflection_output}")

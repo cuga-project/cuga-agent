@@ -36,6 +36,9 @@ async def apply_output_formatter_policies(
     try:
         from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
         from cuga.backend.cuga_graph.policy.models import PolicyType
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
+
+        sync_langfuse_callbacks_from_config(config)
 
         logger.debug(f"{context}: Checking OutputFormatter policies...")
         command, metadata = await PolicyEnactment.check_and_enact(

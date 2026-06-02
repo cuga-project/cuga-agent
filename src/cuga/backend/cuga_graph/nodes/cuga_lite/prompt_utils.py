@@ -301,6 +301,7 @@ class PromptUtils:
             ShortListerOutputLite,
         )
         from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
 
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
@@ -311,7 +312,8 @@ class PromptUtils:
                 "all_apps": apps_as_dict,
                 "all_tools": tools_as_dict,
                 "instructions": "",
-            }
+            },
+            config=get_langfuse_invoke_config(),
         )
 
         enriched_tools = []
