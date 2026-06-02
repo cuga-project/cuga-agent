@@ -15,21 +15,32 @@ from typing import Any, Optional
 _langfuse_callbacks: ContextVar[Optional[list[Any]]] = ContextVar("langfuse_callbacks", default=None)
 
 
-def _as_callback_list(value: Any) -> list[Any]:
+def _flatten_callbacks(value: Any) -> list[Any]:
+    """Expand LangGraph/LangChain callback managers into handler instances."""
     if value is None:
         return []
-    return list(value) if isinstance(value, list) else [value]
+    handlers = getattr(value, "handlers", None)
+    if handlers is not None and not isinstance(value, (list, tuple)):
+        return list(handlers)
+    if isinstance(value, (list, tuple)):
+        out: list[Any] = []
+        for item in value:
+            out.extend(_flatten_callbacks(item))
+        return out
+    return [value]
 
 
 def collect_langfuse_callbacks_from_config(config: Any = None) -> list[Any]:
-    """Return merged LangChain callbacks from a LangGraph ``config`` dict."""
+    """Return merged Langfuse callback handlers from a LangGraph ``config`` dict."""
     if not config or not hasattr(config, "get"):
         return []
     configurable = config.get("configurable") or {}
     merged: list[Any] = []
     seen: set[int] = set()
     for source in (config.get("callbacks"), configurable.get("callbacks")):
-        for cb in _as_callback_list(source):
+        for cb in _flatten_callbacks(source):
+            if not is_langfuse_callback_handler(cb):
+                continue
             key = id(cb)
             if key not in seen:
                 seen.add(key)

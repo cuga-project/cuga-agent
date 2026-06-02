@@ -52,7 +52,7 @@ class TestLangfuseTracingHelpers:
         assert get_langfuse_invoke_config() == {"callbacks": [cb]}
 
     def test_collect_merges_top_level_and_configurable(self):
-        a, b = _RecordingCallback("a"), _RecordingCallback("b")
+        a, b = _fake_langfuse_handler(), _fake_langfuse_handler()
         config = {
             "callbacks": [a],
             "configurable": {"callbacks": [b]},
@@ -60,8 +60,18 @@ class TestLangfuseTracingHelpers:
         merged = collect_langfuse_callbacks_from_config(config)
         assert merged == [a, b]
 
+    def test_collect_ignores_non_langfuse_handlers(self):
+        lf = _fake_langfuse_handler()
+        config = {"callbacks": [_RecordingCallback("other"), lf]}
+        assert collect_langfuse_callbacks_from_config(config) == [lf]
+
+    def test_collect_flattens_callback_manager(self):
+        lf = _fake_langfuse_handler()
+        manager = type("AsyncCallbackManager", (), {"handlers": [lf, _RecordingCallback("x")]})()
+        assert collect_langfuse_callbacks_from_config({"callbacks": manager}) == [lf]
+
     def test_sync_from_config_populates_context(self):
-        cb = _RecordingCallback("from-config")
+        cb = _fake_langfuse_handler()
         sync_langfuse_callbacks_from_config({"configurable": {"callbacks": [cb]}})
         assert get_langfuse_invoke_config() == {"callbacks": [cb]}
 
