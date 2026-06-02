@@ -52,11 +52,11 @@ async def apply_context_summarization(
 
     model_name = getattr(model, 'model_name', 'gpt-4')
 
-    from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
-
-    lf_config = get_langfuse_invoke_config()
-    if lf_config.get("callbacks") and hasattr(model, "with_config"):
-        model = model.with_config(lf_config)
+    # Do not use model.with_config(callbacks=...) here: it wraps the model in
+    # RunnableBinding and breaks ContextSummarizer._setup_model_profile (profile field).
+    # Langfuse callbacks for summarization LLM calls are propagated via the
+    # contextvar set in call_model (sync_langfuse_callbacks_from_config) before
+    # this runs; middleware wiring is tracked separately.
 
     try:
         # Create temporary AgentState with a copy of messages

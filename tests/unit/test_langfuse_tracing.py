@@ -186,20 +186,18 @@ class TestNestedCallSites:
         assert kwargs.get("config") == {"callbacks": [cb]}
 
     @pytest.mark.asyncio
-    async def test_context_summarization_binds_model_with_callbacks(self):
+    async def test_context_summarization_does_not_wrap_model_with_config(self):
+        """with_config(callbacks) breaks ContextSummarizer profile setup; use contextvar instead."""
         from langchain_core.messages import HumanMessage
 
         from cuga.backend.cuga_graph.utils.context_management_utils import (
             apply_context_summarization,
         )
 
-        cb = _RecordingCallback("summarize")
-        set_langfuse_callbacks([cb])
+        set_langfuse_callbacks([_RecordingCallback("summarize")])
 
         base_model = MagicMock()
-        bound_model = MagicMock()
-        base_model.with_config.return_value = bound_model
-
+        base_model.model_name = "gpt-4"
         messages = [HumanMessage(content="hello")]
 
         with patch("cuga.backend.cuga_graph.utils.context_management_utils.AgentState") as mock_state_cls:
@@ -218,6 +216,6 @@ class TestNestedCallSites:
                     message_list_name="chat_messages",
                 )
 
-        base_model.with_config.assert_called_once_with({"callbacks": [cb]})
+        base_model.with_config.assert_not_called()
         mock_manage.assert_awaited_once()
         assert result == messages
