@@ -13,8 +13,94 @@ ordo/
 ├── run_with_mcp.py
 └── config/
     ├── ordo_config.yaml
-    └── supervisor_ordo.yaml
+    ├── ordo_config_eog.yaml
+    ├── supervisor_ordo.yaml
+    └── supervisor_ordo_eog.yaml
 ```
+
+## Paths to configure before running
+
+Some example configs intentionally contain placeholder paths because the RO repository, ITBench-Lite data, and virtual environments may live outside this CUGA checkout. Before running the examples, review these files:
+
+### `config/ordo_config.yaml`
+
+Configure the RO source file for the hello-world workflow:
+
+```yaml
+flow:
+  ro_source_file: "path-to-clone/examples/hello-world/hello-world.ro"
+```
+
+- Replace `path-to-clone` with the path to your RO repository clone.
+- This can be an absolute path, for example `/Users/<you>/path/to/ro/examples/hello-world/hello-world.ro`.
+- Relative paths are resolved from `docs/examples/flow_agent_app_inline/ordo/config/`.
+- If you want to run the bundled local workflow in this directory instead, set:
+
+```yaml
+flow:
+  ro_source_file: "../hello-world.ro"
+```
+
+### `config/supervisor_ordo.yaml`
+
+Check the FlowAgent config path and the RO MCP command:
+
+```yaml
+agents:
+  - flow_config: "ordo_config.yaml"
+    mcp_server:
+      command: "ro"
+      args: ["mcp"]
+```
+
+- `flow_config` should point to `ordo_config.yaml`. The default value is correct for the checked-in layout.
+- `mcp_server.command` must resolve to the RO executable. Use `"ro"` if `ro` is on your `PATH`, or set an absolute path to the binary, for example `/Users/<you>/.cargo/bin/ro`.
+
+### `config/ordo_config_eog.yaml`
+
+Configure all RO / ITBench-Lite paths for the SBP-EoG workflow:
+
+```yaml
+flow:
+  ro_source_file: "/path-to-clone/examples/itbench-lite/sbp-eog.ro"
+  input_args:
+    data_dir: "/path-to-clone/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+
+mcpServers:
+  sre_utils:
+    command: "/path-to-clone/examples/itbench-lite/start_sre_mcp.sh"
+    env:
+      PYTHON: "/<path-to-root>/.venv/bin/python"
+
+variables:
+  data_dir: "/path-to-clone/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+```
+
+Update these values as follows:
+
+- `flow.ro_source_file`: absolute path to `examples/itbench-lite/sbp-eog.ro` in your RO repository clone.
+- `flow.input_args.data_dir`: absolute path to the ITBench-Lite Scenario-1 data directory.
+- `variables.data_dir`: set this to the same Scenario-1 data directory as `flow.input_args.data_dir`.
+- `mcpServers.sre_utils.command`: absolute path to `examples/itbench-lite/start_sre_mcp.sh` in your RO repository clone.
+- `mcpServers.sre_utils.env.PYTHON`: absolute path to the Python executable that can run the SRE MCP server, usually the RO repo virtualenv Python or this repo's `.venv/bin/python`.
+
+The EOG data directory should contain files such as `application_architecture.json`. If it does not, download or initialize the ITBench-Lite data from the RO repository first.
+
+### `config/supervisor_ordo_eog.yaml`
+
+Check the EOG FlowAgent config path and RO MCP command:
+
+```yaml
+agents:
+  - flow_config: "ordo_config_eog.yaml"
+    mcp_server:
+      command: "ro"
+      args: ["mcp"]
+```
+
+- `flow_config` should point to `ordo_config_eog.yaml`. The default value is correct for the checked-in layout.
+- `mcp_server.command` must resolve to the RO executable. Use `"ro"` if `ro` is on your `PATH`, or set an absolute path to the binary, for example `/Users/<you>/.cargo/bin/ro`.
+- `process_key` should stay aligned with `flow.id` in `ordo_config_eog.yaml` (`sbp-eog` by default).
 
 ### `hello-world.ro`
 
