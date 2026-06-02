@@ -17,6 +17,8 @@ _LANGFUSE_HANDLER_CLASSES: tuple[type, ...] | None = None
 
 _langfuse_callbacks: ContextVar[Optional[list[Any]]] = ContextVar("langfuse_callbacks", default=None)
 _langfuse_trace_id: ContextVar[Optional[str]] = ContextVar("langfuse_trace_id", default=None)
+_langfuse_primary_handler: ContextVar[Optional[Any]] = ContextVar("langfuse_primary_handler", default=None)
+_TRACE_SCOPED_HANDLER_CLASS: type | None = None
 
 
 def _flatten_callbacks(value: Any) -> list[Any]:
@@ -62,13 +64,100 @@ def set_langfuse_trace_id(trace_id: Optional[str]) -> None:
     _langfuse_trace_id.set(trace_id)
 
 
-def create_trace_langfuse_handler(trace_id: str, *, parent_span_id: str | None = None) -> Any | None:
-    """Return a Langfuse handler scoped to *trace_id* (one trace per eval task)."""
+def _trace_context_for_id(trace_id: str, *, parent_span_id: str | None = None) -> dict[str, str]:
     trace_context: dict[str, str] = {"trace_id": trace_id}
     if parent_span_id:
         trace_context["parent_span_id"] = parent_span_id
-    for handler_cls in _langfuse_handler_classes():
-        return handler_cls(trace_context=trace_context)
+    return trace_context
+
+
+def _handler_trace_id(handler: Any) -> str | None:
+    ctx = getattr(handler, "_trace_context", None)
+    if isinstance(ctx, dict):
+        tid = ctx.get("trace_id")
+        return str(tid) if tid else None
+    return None
+
+
+def _trace_scoped_handler_class() -> type | None:
+    """Langfuse handler that always links orphan LLM runs to the eval trace id."""
+    global _TRACE_SCOPED_HANDLER_CLASS
+    if _TRACE_SCOPED_HANDLER_CLASS is not None:
+        return _TRACE_SCOPED_HANDLER_CLASS
+
+    base_classes = _langfuse_handler_classes()
+    if not base_classes:
+        return None
+
+    base_cls = base_classes[0]
+
+    class TraceScopedLangfuseCallbackHandler(base_cls):  # type: ignore[misc,valid-type]
+        def __on_llm_action(
+            self,
+            serialized: Any,
+            run_id: Any,
+            prompts: list[Any],
+            parent_run_id: Any = None,
+            tags: Any = None,
+            metadata: Any = None,
+            **kwargs: Any,
+        ) -> None:
+            trace_ctx = getattr(self, "_trace_context", None)
+            if trace_ctx is None:
+                tid = _langfuse_trace_id.get()
+                if tid:
+                    trace_ctx = _trace_context_for_id(tid)
+            parent_missing = parent_run_id is None or parent_run_id not in getattr(self, "_runs", {})
+            if trace_ctx is not None and parent_missing:
+                original = self._trace_context
+                self._trace_context = trace_ctx
+                try:
+                    super().__on_llm_action(
+                        serialized,
+                        run_id,
+                        prompts,
+                        parent_run_id=parent_run_id,
+                        tags=tags,
+                        metadata=metadata,
+                        **kwargs,
+                    )
+                finally:
+                    self._trace_context = original
+                return
+            super().__on_llm_action(
+                serialized,
+                run_id,
+                prompts,
+                parent_run_id=parent_run_id,
+                tags=tags,
+                metadata=metadata,
+                **kwargs,
+            )
+
+    TraceScopedLangfuseCallbackHandler.__name__ = "TraceScopedLangfuseCallbackHandler"
+    _TRACE_SCOPED_HANDLER_CLASS = TraceScopedLangfuseCallbackHandler
+    return _TRACE_SCOPED_HANDLER_CLASS
+
+
+def create_trace_langfuse_handler(trace_id: str, *, parent_span_id: str | None = None) -> Any | None:
+    """Return a Langfuse handler scoped to *trace_id* (one trace per eval task)."""
+    handler_cls = _trace_scoped_handler_class()
+    if handler_cls is None:
+        return None
+    return handler_cls(trace_context=_trace_context_for_id(trace_id, parent_span_id=parent_span_id))
+
+
+def _remember_primary_handler(callbacks: list[Any]) -> None:
+    for cb in callbacks:
+        if is_langfuse_callback_handler(cb):
+            _langfuse_primary_handler.set(cb)
+            return
+
+
+def _primary_handler_for_trace(trace_id: str) -> Any | None:
+    handler = _langfuse_primary_handler.get()
+    if handler is not None and _handler_trace_id(handler) == trace_id:
+        return handler
     return None
 
 
@@ -81,9 +170,12 @@ def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
     if trace_id:
         set_langfuse_trace_id(trace_id)
     callbacks = collect_langfuse_callbacks_from_config(config)
-    if not callbacks and trace_id:
-        handler = create_trace_langfuse_handler(trace_id)
+    if callbacks:
+        _remember_primary_handler(callbacks)
+    elif trace_id:
+        handler = _primary_handler_for_trace(trace_id) or create_trace_langfuse_handler(trace_id)
         if handler:
+            _langfuse_primary_handler.set(handler)
             callbacks = [handler]
     set_langfuse_callbacks(callbacks or None)
 
@@ -105,8 +197,9 @@ def get_langfuse_invoke_config() -> dict[str, Any]:
         return {"callbacks": callbacks}
     trace_id = _langfuse_trace_id.get()
     if trace_id:
-        handler = create_trace_langfuse_handler(trace_id)
+        handler = _primary_handler_for_trace(trace_id) or create_trace_langfuse_handler(trace_id)
         if handler:
+            _langfuse_primary_handler.set(handler)
             return {"callbacks": [handler]}
     return {}
 

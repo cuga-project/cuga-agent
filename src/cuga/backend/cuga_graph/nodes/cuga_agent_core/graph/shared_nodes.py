@@ -11,7 +11,7 @@ Differences handled via hooks:
 - System content augmentation (todos): ``adapter.prepare_system_content``
 - Variable storage key: ``adapter.get_variables_storage``
 - Activity tracker: ``adapter.get_tracker``
-- Langfuse callbacks: ``adapter.get_invoke_config``
+- Langfuse: pass full LangGraph ``config`` into ``ainvoke`` (preserves parent run ids)
 - Bind-tools model: ``adapter.resolve_bind_tools``
 - Response normalisation: ``adapter.normalize_response``
 - Tracker side-effects: ``adapter.on_response_processed``
@@ -173,7 +173,9 @@ def create_call_model_node(
         bound = await adapter.resolve_bind_tools(state, active_model, configurable) or active_model
 
         # ── Model invocation ───────────────────────────────────────────────
-        invoke_config = adapter.get_invoke_config(configurable)
+        # Pass the full node config so LangChain keeps parent_run_id linkage for
+        # Langfuse. Passing only {"callbacks": [...]} starts orphan root traces.
+        invoke_config = config if config is not None else {}
         response = await adapter.ainvoke_model(bound, messages_for_model, invoke_config)
 
         # ── Normalise response ─────────────────────────────────────────────

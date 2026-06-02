@@ -38,11 +38,15 @@ def _fake_langfuse_handler():
 
 @pytest.fixture(autouse=True)
 def _clear_langfuse_context():
+    from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
+
     set_langfuse_callbacks(None)
     set_langfuse_trace_id(None)
+    mod._langfuse_primary_handler.set(None)
     yield
     set_langfuse_callbacks(None)
     set_langfuse_trace_id(None)
+    mod._langfuse_primary_handler.set(None)
 
 
 class TestLangfuseTracingHelpers:
@@ -104,6 +108,32 @@ class TestLangfuseTracingHelpers:
     def test_is_langfuse_callback_handler_detects_langfuse_types(self):
         assert is_langfuse_callback_handler(_fake_langfuse_handler())
         assert not is_langfuse_callback_handler(_RecordingCallback())
+
+    def test_get_invoke_config_reuses_primary_handler_for_trace_id(self):
+        from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
+
+        first = _fake_langfuse_handler()
+        first._trace_context = {"trace_id": "trace-reuse"}
+        mod._langfuse_primary_handler.set(first)
+        set_langfuse_trace_id("trace-reuse")
+        with patch(
+            "cuga.backend.cuga_graph.utils.langfuse_tracing.create_trace_langfuse_handler",
+        ) as create_mock:
+            assert get_langfuse_invoke_config() == {"callbacks": [first]}
+            create_mock.assert_not_called()
+
+    def test_sync_reuses_primary_handler_instead_of_creating_duplicates(self):
+        from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
+
+        existing = _fake_langfuse_handler()
+        existing._trace_context = {"trace_id": "abc123"}
+        mod._langfuse_primary_handler.set(existing)
+        with patch(
+            "cuga.backend.cuga_graph.utils.langfuse_tracing.create_trace_langfuse_handler",
+        ) as create_mock:
+            sync_langfuse_callbacks_from_config({"configurable": {"langfuse_trace_id": "abc123"}})
+            create_mock.assert_not_called()
+            assert get_langfuse_invoke_config() == {"callbacks": [existing]}
 
 
 class TestSdkCallbackDedup:
