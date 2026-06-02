@@ -1,0 +1,280 @@
+# Ordo Flow Configuration — SBP-EoG
+#
+# Task-only config: no bpmn_file required.
+# Workflow execution is delegated to the real ro MCP server.
+#
+# ro_source_file points to the .ro workflow definition passed to register_workflow.
+# input_args is optional and is passed to register_workflow as json.input_args.
+#
+# Task IDs must match each `kind: goal` `name:` in the .ro program so the
+# mediator can route RO goal pauses to the right FlowAgent task.
+
+flow:
+  name: "SBP-EoG"
+  id: "sbp-eog"
+  ro_source_file: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/sbp-eog.ro"
+  input_args:
+    data_dir: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+
+# Shared MCP server pool. Tools are loaded once, but each task agent only
+# receives the subset explicitly listed under that task's agent.tools.
+mcpServers:
+  sre_utils:
+    command: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/start_sre_mcp.sh"
+    args: []
+    env:
+      PYTHON: "/Users/offerakrabi/Desktop/Work/Cuga/cuga-agent-external/.venv/bin/python"
+
+variables:
+  data_dir: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+  namespace_scope: ""
+  budget: 30
+  k_thresh: 3
+
+  topology: ""
+  alerts: ""
+  golden_signals: {}
+  investigation_window: ""
+  raw_events: ""
+  filtered_events: ""
+  raw_spec_anomalies: ""
+  filtered_spec_anomalies: ""
+  candidates: []
+  context: ""
+  classification: {}
+  origin_verification: {}
+  neighbors_in_eg: []
+  frontier: []
+  confidence_check: {}
+  sanity_check: {}
+  report: ""
+
+tasks:
+  - id: "build-topology"
+    mode: task_agent
+    output_mapping:
+      topology: topology
+    agent:
+      name: "build-topology"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools:
+        - build_topology
+
+  - id: "get-alerts"
+    mode: task_agent
+    output_mapping:
+      alerts: alerts
+    agent:
+      name: "get-alerts"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools:
+        - alert_summary
+        - alert_analysis
+
+  - id: "extract-golden-signals"
+    mode: task_agent
+    output_mapping:
+      golden_signals: golden_signals
+    agent:
+      name: "extract-golden-signals"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools:
+        - alert_summary
+        - alert_analysis
+        - metric_analysis
+        - get_trace_error_tree
+
+  - id: "select-investigation-window"
+    mode: task_agent
+    output_mapping:
+      investigation_window: investigation_window
+    agent:
+      name: "select-investigation-window"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "get-events"
+    mode: task_agent
+    output_mapping:
+      raw_events: raw_events
+    agent:
+      name: "get-events"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools:
+        - event_analysis
+
+  - id: "filter-events"
+    mode: task_agent
+    output_mapping:
+      filtered_events: filtered_events
+    agent:
+      name: "filter-events"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools:
+        - event_analysis
+
+  - id: "get-spec-anomalies"
+    mode: task_agent
+    output_mapping:
+      raw_spec_anomalies: raw_spec_anomalies
+    agent:
+      name: "get-spec-anomalies"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools:
+        - k8s_spec_change_analysis
+        - get_k8_spec
+
+  - id: "filter-spec-anomalies"
+    mode: task_agent
+    output_mapping:
+      filtered_spec_anomalies: filtered_spec_anomalies
+    agent:
+      name: "filter-spec-anomalies"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools:
+        - k8s_spec_change_analysis
+        - get_k8_spec
+
+  - id: "select-candidates"
+    mode: task_agent
+    output_mapping:
+      candidates: candidates
+    agent:
+      name: "select-candidates"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "reorder-candidates"
+    mode: task_agent
+    output_mapping:
+      candidates: candidates
+    agent:
+      name: "reorder-candidates"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "get-context-contract"
+    mode: task_agent
+    output_mapping:
+      context: context
+    agent:
+      name: "get-context-contract"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools:
+        - get_context_contract
+        - topology_analysis
+        - event_analysis
+        - alert_analysis
+        - get_metric_anomalies
+        - get_k8_spec
+        - k8s_spec_change_analysis
+
+  - id: "classify-revisit"
+    mode: task_agent
+    output_mapping:
+      classification: classification
+    agent:
+      name: "classify-revisit"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "classify-first-visit"
+    mode: task_agent
+    output_mapping:
+      classification: classification
+    agent:
+      name: "classify-first-visit"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "verify-origin"
+    mode: task_agent
+    output_mapping:
+      origin_verification: origin_verification
+    agent:
+      name: "verify-origin"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "find-neighbors"
+    mode: task_agent
+    output_mapping:
+      neighbors_in_eg: neighbors_in_eg
+    agent:
+      name: "find-neighbors"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "compute-frontier"
+    mode: task_agent
+    output_mapping:
+      frontier: frontier
+    agent:
+      name: "compute-frontier"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "confirm-root-cause"
+    mode: task_agent
+    output_mapping:
+      confidence_check: confidence_check
+    agent:
+      name: "confirm-root-cause"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "sanity-check"
+    mode: task_agent
+    output_mapping:
+      sanity_check: sanity_check
+    agent:
+      name: "sanity-check"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []
+
+  - id: "generate-report"
+    mode: task_agent
+    output_mapping:
+      report: report
+    agent:
+      name: "generate-report"
+      system_instruction: >
+        Fulfill the RO goal using the goal description and process variables.
+        Return only the schema-valid goal result, with no explanatory wrapper.
+      tools: []

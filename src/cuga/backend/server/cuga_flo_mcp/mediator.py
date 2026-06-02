@@ -221,6 +221,10 @@ class MCP2MCPMediator:
         """
         from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNProcess
         from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
+        from cuga.backend.server.cuga_flo_mcp.ordo import MCPOrdoExternal
+
+        if isinstance(self._ordo, MCPOrdoExternal):
+            return await self._mediation_loop_ro(process_key, initial_inputs, mcp_server)
 
         workflow_id = self._process_key
         accumulated_vars: Dict[str, Any] = dict(initial_inputs)
@@ -312,6 +316,170 @@ class MCP2MCPMediator:
         )
         return final_state, stub_bpmn
 
+    async def _mediation_loop_ro(
+        self,
+        process_key: str,
+        initial_inputs: Dict[str, Any],
+        mcp_server: Any,
+    ) -> tuple["FlowState", "BPMNProcess"]:
+        """
+        Drive a real ``ro mcp`` workflow using its workflow/session API.
+
+        Real ro tool flow:
+          1. register_workflow(json={source, input_args, force}, workflow_id)
+          2. run_workflow(workflow_id, dispatch="mcp") -> external GOAL payload
+          3. MCPFlowBridge.execute_task(goal.name, ctx)
+          4. complete_goal(workflow_id, session_id, goal_id, result)
+          5. run_workflow(workflow_id, session_id, dispatch="mcp") until completion
+        """
+        from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNProcess
+        from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
+
+        workflow_id = self._process_key
+        flow_config = self._bridge.get_flow_annotations(process_key)
+        ro_source = flow_config.get_ro_source()
+
+        accumulated_vars: Dict[str, Any] = dict(initial_inputs)
+        accumulated_task_results: Dict[str, Any] = {}
+        final_response = "Workflow completed."
+        session_id: str | None = None
+
+        # Only pass explicit flow.input_args to ro register_workflow.
+        #
+        # Do not blindly forward FlowAgent process variables here: ordo_config
+        # variables are CUGA-side working state defaults and may include partial
+        # placeholders (for example `{}` for record-typed RO state fields). RO
+        # validates input_args against the .ro schema during registration, so
+        # forwarding those placeholders can make workflow initialization fail.
+        input_args = flow_config.get_ro_input_args()
+        user_message = initial_inputs.get("_user_message")
+        if user_message and (not input_args.get("name") or input_args.get("name") == "world"):
+            input_args["name"] = user_message
+
+        async with self._ordo.get_client() as ordo_client:
+            mcp_in("MCP2MCPMediator", "RO.register_workflow",
+                   workflow_id=workflow_id, input_keys=list(input_args.keys()))
+            raw = await ordo_client.call_tool(
+                "register_workflow",
+                {
+                    "workflow_id": workflow_id,
+                    "json": {
+                        "source": ro_source,
+                        "input_args": input_args,
+                        "force": True,
+                    },
+                },
+            )
+            reg_result = self._extract_dict(raw)
+            mcp_out("MCP2MCPMediator", "RO.register_workflow",
+                    workflow_id=workflow_id, status=reg_result.get("status"))
+
+            run_args: Dict[str, Any] = {"workflow_id": workflow_id, "dispatch": "mcp"}
+
+            while True:
+                mcp_in("MCP2MCPMediator", "RO.run_workflow",
+                       workflow_id=workflow_id, session_id=session_id)
+                raw = await ordo_client.call_tool("run_workflow", run_args)
+                ro_result = self._extract_dict(raw)
+                session_id = ro_result.get("session_id") or session_id
+                mcp_out("MCP2MCPMediator", "RO.run_workflow",
+                        workflow_id=workflow_id,
+                        session_id=session_id,
+                        payload_type=ro_result.get("type"),
+                        goal_name=ro_result.get("name"),
+                        status=ro_result.get("status"))
+
+                # A single external GOAL payload.
+                if ro_result.get("type") == "goal" and ro_result.get("goal_id"):
+                    goal_payloads = [ro_result]
+                # Future-proof concurrent mode: ro may return a batch of goals.
+                elif ro_result.get("goal_batch"):
+                    goal_payloads = ro_result.get("goal_batch") or []
+                else:
+                    final_response = (
+                        ro_result.get("final_response")
+                        or ro_result.get("response")
+                        or ro_result.get("status")
+                        or final_response
+                    )
+                    break
+
+                for goal_payload in goal_payloads:
+                    goal_id = goal_payload.get("goal_id")
+                    agent_name = goal_payload.get("name")
+                    if not goal_id or not agent_name:
+                        continue
+
+                    accumulated_vars.update(goal_payload.get("given") or {})
+                    ctx = self._build_ctx_ro(goal_payload, process_key, accumulated_vars)
+
+                    mcp_in("MCP2MCPMediator", "MCPFlowBridge.execute_task",
+                           task_id=agent_name,
+                           session_id=session_id,
+                           goal_id=goal_id,
+                           var_keys=list(accumulated_vars.keys()))
+                    async with Client(FastMCPTransport(mcp_server)) as bridge_client:
+                        task_raw = await bridge_client.call_tool(
+                            "execute_task", {"task_id": agent_name, "ctx": ctx}
+                        )
+                    agent_response: Any = self._extract_dict(task_raw)
+                    task_results = agent_response.get("task_results", {}) if isinstance(agent_response, dict) else {}
+                    task_result = task_results.get(agent_name, {}) if isinstance(task_results, dict) else {}
+                    goal_result = task_result.get("output", task_result.get("result", task_result))
+                    mcp_out("MCP2MCPMediator", "MCPFlowBridge.execute_task",
+                            task_id=agent_name,
+                            task_status=task_result.get("status") if isinstance(task_result, dict) else None,
+                            output_len=len(str(goal_result)))
+
+                    if isinstance(agent_response, dict):
+                        accumulated_vars.update(agent_response.get("process_variables", {}))
+                        accumulated_task_results.update(task_results)
+
+                    result_into = goal_payload.get("result_into")
+                    if result_into:
+                        accumulated_vars[result_into] = goal_result
+
+                    mcp_in("MCP2MCPMediator", "RO.complete_goal",
+                           workflow_id=workflow_id,
+                           session_id=session_id,
+                           goal_id=goal_id)
+                    complete_raw = await ordo_client.call_tool(
+                        "complete_goal",
+                        {
+                            "workflow_id": workflow_id,
+                            "session_id": session_id,
+                            "goal_id": goal_id,
+                            "result": goal_result,
+                        },
+                    )
+                    complete_result = self._extract_dict(complete_raw)
+                    mcp_out("MCP2MCPMediator", "RO.complete_goal",
+                            workflow_id=workflow_id,
+                            session_id=session_id,
+                            goal_id=goal_id,
+                            is_error=complete_result.get("isError") if isinstance(complete_result, dict) else None)
+
+                if session_id:
+                    run_args["session_id"] = session_id
+
+        final_state = FlowState(
+            process_id=workflow_id,
+            process_name=workflow_id,
+            process_variables=accumulated_vars,
+            task_results=accumulated_task_results,
+            is_complete=True,
+        )
+        final_state.messages = [
+            {
+                "role": "assistant",
+                "content": str(accumulated_vars.get("greeting") or final_response),
+            }
+        ]
+        logger.info(f"MCP2MCPMediator: ro workflow '{workflow_id}' finished")
+
+        stub_bpmn = BPMNProcess(id=workflow_id, name=workflow_id, elements={}, flows=[])
+        return final_state, stub_bpmn
+
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
@@ -342,6 +510,43 @@ class MCP2MCPMediator:
         if isinstance(text, dict):
             return text
         return _json.loads(text)
+
+    @staticmethod
+    def _build_ctx_ro(
+        goal: Dict[str, Any],
+        process_key: str,
+        accumulated_vars: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Synthesise a ControlPointContext dict from a real ro GoalRequest."""
+        agent_name = goal.get("name", "task_agent")
+        goal_id = goal.get("goal_id", agent_name)
+        merged_vars = {**accumulated_vars, **(goal.get("given") or {})}
+        return {
+            "process_instance_id": goal.get("session_id") or goal_id,
+            "element_id": agent_name,
+            "element_name": agent_name,
+            "current_state": {
+                "process_id": process_key,
+                "process_name": process_key,
+                "process_variables": merged_vars,
+                "execution_path": [],
+                "messages": [],
+                "is_complete": False,
+                "is_halted": False,
+                "current_task": agent_name,
+                "halt_reason": "",
+            },
+            "execution_history": [],
+            "process_model_summary": {
+                "process_id": process_key,
+                "elements": {
+                    agent_name: {"type": "task", "name": agent_name}
+                },
+            },
+            "task_instruction": goal.get("description") or goal.get("suggested_prompt"),
+            "available_flows": None,
+            "edge_id": None,
+        }
 
     @staticmethod
     def _build_ctx(

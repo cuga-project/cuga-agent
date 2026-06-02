@@ -163,6 +163,167 @@ class WorkflowStubStore:
         return parsed
 
 
+# ── _NoOpWorkflowStore — stub store for external MCP servers ─────────────────
+
+
+class _NoOpWorkflowStore:
+    """
+    No-op store used by MCPOrdoExternal.
+
+    The real workflow engine manages its own registry; we do not need to
+    register workflows dynamically.  Any call to register_workflow() is
+    silently ignored so MCP2MCPMediator._register_workflow_on_ordo() can
+    continue to use the same code path without modification.
+    """
+
+    def register_workflow(self, workflow_json: "dict[str, Any] | str") -> None:  # noqa: F821
+        logger.debug(
+            "MCPOrdoExternal: skipping register_workflow "
+            "(real engine manages its own registry)"
+        )
+
+
+# ── MCPOrdoExternal — client wrapper for a real external MCP server ───────────
+
+
+class MCPOrdoExternal:
+    """
+    Drop-in replacement for MCPOrdo that connects to a *real* external
+    workflow engine running as an MCP server.
+
+    Instead of spinning up an in-process FastMCP server backed by
+    WorkflowStubStore, this class wraps a fastmcp ``Client`` that speaks
+    to the external process via stdio (or any other transport fastmcp
+    supports).
+
+    Typical usage::
+
+        # Python (standalone script)
+        from cuga.backend.server.cuga_flo_mcp.ordo import MCPOrdoExternal
+
+        ordo = MCPOrdoExternal(command="ro", args=["mcp"])
+        flow_agent = flow_config.to_ordo_flow_agent(process_key="...", ordo=ordo)
+
+        # YAML (supervisor_ordo.yaml)
+        agents:
+          - name: ordo_flow_agent
+            type: flow_agent_ordo
+            flow_config: "ordo_config.yaml"
+            process_key: "loan_approval_stub"
+            mcp_server:
+              command: "ro"
+              args: ["mcp"]
+
+    The ``store`` property exposes a :class:`_NoOpWorkflowStore` so that
+    ``MCP2MCPMediator._register_workflow_on_ordo`` can call
+    ``store.register_workflow()`` without modification — the call is
+    simply ignored because the real engine already knows its workflows.
+    """
+
+    # Common user-local binary directories that are often missing from the
+    # minimal PATH a uvicorn/gunicorn subprocess inherits.
+    _EXTRA_SEARCH_DIRS: "list[str]" = [
+        "~/.cargo/bin",
+        "~/.local/bin",
+        "~/.npm/bin",
+        "/opt/homebrew/bin",
+        "/opt/homebrew/sbin",
+        "/usr/local/bin",
+    ]
+
+    def __init__(
+        self,
+        command: str,
+        args: "list[str] | None" = None,
+        env: "dict[str, str] | None" = None,
+    ) -> None:
+        self._command = self._resolve_command(command)
+        self._args = args or []
+        self._env = env
+        self._store = _NoOpWorkflowStore()
+        logger.info(
+            f"MCPOrdoExternal created: command={self._command!r} args={self._args}"
+            + (f" (resolved from {command!r})" if self._command != command else "")
+        )
+
+    @classmethod
+    def _resolve_command(cls, command: str) -> str:
+        """
+        Resolve a command name to its absolute path.
+
+        The demo/registry server is a subprocess that inherits a minimal PATH
+        (typically ``/usr/bin:/bin``).  Tools installed via pip/cargo/npm into
+        ``~/.local/bin`` or ``/opt/homebrew/bin`` are often missing.
+
+        Resolution order:
+          1. Absolute path already → return as-is.
+          2. ``shutil.which(command)`` on the current process PATH.
+          3. Walk :attr:`_EXTRA_SEARCH_DIRS` (expanded, glob-safe).
+          4. Fall back to the bare name and let the subprocess raise a clear error.
+        """
+        import glob
+        import os
+        import shutil
+
+        if os.path.isabs(command):
+            return command
+
+        # Prefer explicit known install locations first.  This avoids using an
+        # older cached/user-local binary (for example ~/.local/bin/ro) when a
+        # freshly rebuilt binary exists in ~/.cargo/bin.
+        for raw_dir in cls._EXTRA_SEARCH_DIRS:
+            for expanded in glob.glob(os.path.expanduser(raw_dir)):
+                candidate = os.path.join(expanded, command)
+                if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+                    logger.debug(
+                        f"MCPOrdoExternal: resolved {command!r} → {candidate!r} "
+                        f"(extra search dir)"
+                    )
+                    return candidate
+
+        logger.warning(
+            f"MCPOrdoExternal: could not resolve {command!r} — "
+            "will pass the bare name to fastmcp and hope it is on PATH"
+        )
+        return command
+
+    def get_client(self) -> "Client":
+        """
+        Return a fastmcp Client connected to the external MCP server via
+        stdio transport.
+
+        fastmcp >= 3.2 expects the Claude-Desktop / MCP config format when a
+        dict is passed to ``Client()``.  The dict must use the top-level
+        ``mcpServers`` key; a bare ``{"command": ..., "args": [...]}`` dict
+        causes a "No MCP servers defined in the config" error::
+
+            {
+                "mcpServers": {
+                    "ro": {"command": "ro", "args": ["mcp"]}
+                }
+            }
+
+        An optional ``env`` dict is forwarded to the child process.
+        """
+        server_entry: dict[str, Any] = {
+            "command": self._command,
+            "args": self._args,
+        }
+        if self._env:
+            server_entry["env"] = self._env
+        config: dict[str, Any] = {
+            "mcpServers": {
+                self._command: server_entry,
+            }
+        }
+        logger.debug(f"MCPOrdoExternal: creating stdio client {config}")
+        return Client(config)
+
+    @property
+    def store(self) -> _NoOpWorkflowStore:
+        return self._store
+
+
 # ── MCPOrdo — FastMCP server serving WorkflowStubStore ───────────────────────
 
 

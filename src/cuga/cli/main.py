@@ -918,6 +918,14 @@ def start(
         "--cuga-workspace",
         help="Path to cuga workspace; when set, configures policy env so all file operations use this dir (manager/demo_crm)",
     ),
+    supervisor_config: Optional[str] = typer.Option(
+        None,
+        "--supervisor-config",
+        help=(
+            "For flow_agent_inline: supervisor YAML filename/path. "
+            "Defaults to the first supervisor*.yaml in the example config directory."
+        ),
+    ),
 ):
     """
     Start the specified service.
@@ -965,6 +973,7 @@ def start(
       cuga start flow_agent_inline loan_approval   # run loan approval flow
       cuga start flow_agent_inline receive_order   # run receive order flow
       cuga start flow_agent_inline trip_planner    # run trip planner flow
+      cuga start flow_agent_inline ordo --supervisor-config supervisor_ordo_eog.yaml
     """
     if service == "flow_agent_inline":
         try:
@@ -1005,7 +1014,20 @@ def start(
             if not supervisor_candidates:
                 logger.error(f"No supervisor*.yaml found in {config_dir_path}")
                 raise typer.Exit(1)
-            supervisor_config_path = str(supervisor_candidates[0])
+
+            if supervisor_config:
+                supervisor_path = _Path(supervisor_config)
+                if not supervisor_path.is_absolute():
+                    supervisor_path = config_dir_path / supervisor_path
+                if not supervisor_path.is_file():
+                    available_supervisors = ", ".join(p.name for p in supervisor_candidates)
+                    logger.error(f"Supervisor config '{supervisor_config}' not found at {supervisor_path}")
+                    logger.error(f"Available supervisor configs: {available_supervisors}")
+                    raise typer.Exit(1)
+                supervisor_config_path = str(supervisor_path)
+            else:
+                # Preserve existing default behavior: pick the first supervisor*.yaml.
+                supervisor_config_path = str(supervisor_candidates[0])
 
             os.environ["DYNACONF_SUPERVISOR__CONFIG_PATH"] = supervisor_config_path
             settings.reload()

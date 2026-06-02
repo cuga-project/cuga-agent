@@ -1,34 +1,34 @@
 # Ordo Flow Configuration
 #
 # Task-only config: no bpmn_file required.
-# Workflow execution is delegated to MCPOrdo (external workflow MCP server).
-# Task IDs match MCPOrdo's agent_goal.agent_name values so no ID
-# translation is needed in the mediator.
+# Workflow execution is delegated to the real ro MCP server.
+#
+# Task IDs must match the `name:` of each `kind: goal` step in the .ro
+# program so the mediator can route agent_goal pauses to the right agent.
+#
+# hello-world.ro goal step: name: "compose-greeting"
 
 flow:
-  name: "Ordo Loan Approval"
-  id: "loan_approval_stub"
+  name: "Hello World"
+  id: "hello-world"
+  ro_source_file: "/Users/offerakrabi/Desktop/Work/RO/examples/hello-world/hello-world.ro"
+  input_args:
+    name: "world"
 
 variables:
-  applicant_name: ""
-  applicant_id: ""
-  loan_amount: 1000
-  credit_score: 0.0
-  approved: false
-  rejection_reason: ""
-  loan_granted: false
+  # Mirrors the `state:` block in hello-world.ro
+  name: "world"
+  greeting: ""
 
 tasks:
-  # Task ID == agent_name reported in MCPOrdo's AgentGoal.
-  - id: "credit_checker"
+  # Task ID == the `name:` of the goal step in hello-world.ro
+  - id: "compose-greeting"
     mode: task_agent
     output_mapping:
-      credit_score: credit_score
+      greeting: greeting
     agent:
-      name: "credit_checker"
+      name: "compose-greeting"
       system_instruction: >
-        Analyse the applicant's financial profile and produce a normalised
-        credit score in the range 0.0–1.0. Respond with a JSON object
-        containing at least 'credit_score' (float) and 'explanation' (str).
+        Write a short, friendly greeting for the provided name.
+        Return only the greeting string — no explanation, no JSON wrapper.
       tools: []
-      policy: "../../loan_approval/policies/task-credit_check.md"

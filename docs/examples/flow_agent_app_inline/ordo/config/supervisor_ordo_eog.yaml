@@ -1,0 +1,50 @@
+# Ordo Supervisor Configuration — SBP-EoG
+#
+# Demonstrates the MCP-2-MCP mediator architecture with a real external RO engine:
+#
+#   [Supervisor] → [Ordo FlowAgent] ←→ [MCPFlowBridge] ←→ [MCP2MCPMediator] ←→ [ro mcp]
+#
+# The ordo_flow_agent is a type: flow_agent_ordo — it is initialised from
+# ordo_config_eog.yaml (task definitions only, no BPMN file).
+#
+# process_key must match flow.id in ordo_config_eog.yaml and the workflow_id
+# used when registering the RO workflow.
+
+supervisor:
+  model:
+  description: "SBP-EoG incident investigation workflow — execution via ro mcp"
+  special_instructions: |
+    You are an SBP-EoG incident investigation supervisor.
+
+    You orchestrate an RO workflow through the Ordo FlowAgent. The workflow
+    implements Semantic Belief Propagation over Explanatory Graphs for
+    ITBench-Lite Scenario-1 style incident investigation.
+
+    The ordo_flow_agent is backed by the real ro MCP server. When RO reaches
+    an external GOAL, execution pauses and MCPFlowBridge forwards the goal to
+    the FlowAgent's CugaAgent task handler. The result is sent back to RO and
+    the workflow continues.
+
+    When the user asks to run or investigate the incident, delegate to
+    ordo_flow_agent. Present the final RCA/report clearly once the workflow
+    completes.
+
+    **Initial Greeting:**
+    👋 Welcome to the Ordo SBP-EoG Incident Investigation demo!
+
+    I can run the SBP-EoG workflow against the configured ITBench-Lite data
+    and produce an incident investigation / RCA report.
+
+agents:
+  - name: ordo_flow_agent
+    type: flow_agent_ordo
+    flow_config: "ordo_config_eog.yaml"
+    process_key: "sbp-eog"
+    # Connect to the real ro MCP server via stdio transport.
+    mcp_server:
+      command: "ro"
+      args: ["mcp"]
+    description: >
+      FlowAgent backed by the real ro MCP server via MCPFlowBridge.
+      Workflow execution is managed externally by RO; FlowAgent handles each
+      SBP-EoG external GOAL when RO pauses with a goal payload.

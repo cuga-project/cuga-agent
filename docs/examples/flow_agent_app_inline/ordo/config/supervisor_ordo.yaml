@@ -1,51 +1,48 @@
 # Ordo Supervisor Configuration
 #
-# Demonstrates the MCP-2-MCP mediator architecture:
+# Demonstrates the MCP-2-MCP mediator architecture with a real external engine:
 #
-#   [FlowAgent] ←→ [MCPFlowBridge] ←→ [MCP2MCPMediator] ←→ [MCPOrdo]
+#   [FlowAgent] ←→ [MCPFlowBridge] ←→ [MCP2MCPMediator] ←→ [ro mcp]
 #
-# The loan_flow_agent is a type: flow_agent_ordo — it is initialised from
-# ordo_config.yaml (task definitions only, no BPMN file).  The BPMN process
-# is managed internally by MCPOrdo (WorkflowStubStore).
+# The ordo_flow_agent is a type: flow_agent_ordo — it is initialised from
+# ordo_config.yaml (task definitions only, no BPMN file).
 #
-# process_key must match a workflow registered in MCPOrdo's stub store
-# (loan_approval_stub, receive_order_stub, or trip_planner_stub).
+# The hello-world.ro program must be registered on the ro mcp server before
+# a session can be started.  run_with_mcp.py handles that step.
+#
+# process_key must match the workflow_id used when registering the program
+# (i.e. the `name:` field in hello-world.ro → "hello-world").
 
 supervisor:
   model:
-  description: "Ordo loan approval workflow — Workflow execution via MCPOrdo"
+  description: "Hello World workflow — execution via ro mcp (real Ordo engine)"
   special_instructions: |
-    You are a Loan Approval Supervisor that orchestrates a loan
-    approval workflow through the Ordo FlowAgent.
+    You orchestrate the hello-world workflow through the Ordo FlowAgent.
 
-    The ordo_flow_agent is backed by MCPFlowBridge — an external workflow MCP server
-    that owns the workflow process execution.  When a control point is reached
-    (e.g. the credit check task), workflow execution pauses and the MCPFlowBridge 
-    forwards the call to the FlowAgent's CugaAgent, then
-    resumes MCPFlowBridge with the result.
+    The ordo_flow_agent is backed by the real ro MCP server.  When the
+    workflow reaches the compose-greeting goal, execution pauses and
+    MCPFlowBridge forwards the task to the FlowAgent's CugaAgent, which
+    composes the greeting, then resumes the workflow with the result.
 
-    When a user provides loan application information, delegate to
-    ordo_flow_agent with the applicant details.  Present the result
-    professionally once the workflow completes.
+    When a user provides a name, delegate to ordo_flow_agent and present
+    the resulting greeting once the workflow completes.
 
     **Initial Greeting:**
-    👋 Welcome to the ORDO Loan Approval System!
+    👋 Welcome to the Ordo Hello-World demo!
 
-    I'm your Loan Approval Agent.
-
-    To process a loan application please provide:
-    - Applicant name
-    - Applicant ID
-    - Credit history
-    - Annual income
-    - Years of employment
+    Tell me a name and I'll run the hello-world workflow to compose a greeting for it.
 
 agents:
   - name: ordo_flow_agent
     type: flow_agent_ordo
     flow_config: "ordo_config.yaml"
-    process_key: "loan_approval_stub"
+    process_key: "hello-world"
+    # Connect to the real ro MCP server via stdio transport.
+    # Remove or comment out this block to fall back to the in-process stub.
+    mcp_server:
+      command: "ro"
+      args: ["mcp"]
     description: >
-      FlowAgent backed by workflow engine via MCPFlowBridge.
-      Workflow execution is managed by MCPOrdo; FlowAgent handles task execution
-      via MCPFlowBridge when MCPOrdo pauses with an agent_goal.
+      FlowAgent backed by the real ro MCP server via MCPFlowBridge.
+      Workflow execution is managed externally; FlowAgent handles the
+      compose-greeting goal when ro pauses with an agent_goal.
