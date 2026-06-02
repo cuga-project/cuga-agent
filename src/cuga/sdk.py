@@ -1387,6 +1387,10 @@ class CugaAgent:
         caller-supplied callbacks in run_config, writing the result to both the
         top-level and ``configurable`` slots.
 
+        Only ``run_config["callbacks"]`` is read for caller-supplied handlers;
+        any pre-existing ``run_config["configurable"]["callbacks"]`` is replaced
+        by the merged list so both locations stay identical for LangGraph nodes.
+
         When the caller passes a trace-scoped Langfuse handler (eval harness),
         drop agent-level Langfuse handlers so each LLM call nests under one trace.
         """

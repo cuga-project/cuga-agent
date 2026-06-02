@@ -58,7 +58,7 @@ Key assertions:
 
 - `test_nl_auto_continue_passes_invoke_config` — nested `ainvoke` receives parent callbacks
 - `test_output_formatter_ainvoke_receives_callbacks` — policy formatter LLM uses same callbacks
-- `test_context_summarization_binds_model_with_callbacks` — summarization model gets `with_config(callbacks=...)`
+- `test_context_summarization_does_not_wrap_model_with_config` — summarization relies on the contextvar set in `call_model` instead of `with_config(callbacks=...)` (avoids breaking `_setup_model_profile`)
 - `test_apply_callbacks_drops_agent_langfuse_when_trace_id_set` — SDK dedupes duplicate Langfuse handlers
 
 ## Manual verification (Langfuse UI — optional but convincing)

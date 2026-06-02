@@ -101,6 +101,23 @@ class TestSdkCallbackDedup:
         assert id(agent_level) not in callback_ids
         assert run_config["configurable"]["callbacks"] == run_config["callbacks"]
 
+    def test_apply_callbacks_reads_only_top_level_callbacks(self):
+        from cuga.sdk import CugaAgent
+
+        caller = _RecordingCallback("caller")
+        config_only = _RecordingCallback("configurable-only")
+        agent = CugaAgent.__new__(CugaAgent)
+        agent._callbacks = []
+
+        run_config = {
+            "callbacks": [caller],
+            "configurable": {"callbacks": [config_only]},
+        }
+        agent._apply_callbacks(run_config)
+        assert caller in run_config["callbacks"]
+        assert config_only not in run_config["callbacks"]
+        assert run_config["configurable"]["callbacks"] == run_config["callbacks"]
+
 
 class TestNestedCallSites:
     @pytest.mark.asyncio

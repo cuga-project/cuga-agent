@@ -9,8 +9,11 @@ per logical run instead of many sibling root traces.
 
 from __future__ import annotations
 
+import importlib
 from contextvars import ContextVar
 from typing import Any, Optional
+
+_LANGFUSE_HANDLER_CLASSES: tuple[type, ...] | None = None
 
 _langfuse_callbacks: ContextVar[Optional[list[Any]]] = ContextVar("langfuse_callbacks", default=None)
 
@@ -69,8 +72,33 @@ def get_langfuse_invoke_config() -> dict[str, Any]:
     return {"callbacks": callbacks} if callbacks else {}
 
 
+def _langfuse_handler_classes() -> tuple[type, ...]:
+    global _LANGFUSE_HANDLER_CLASSES
+    if _LANGFUSE_HANDLER_CLASSES is not None:
+        return _LANGFUSE_HANDLER_CLASSES
+    classes: list[type] = []
+    for module_name, class_name in (
+        ("langfuse.langchain", "CallbackHandler"),
+        ("langfuse.callback", "CallbackHandler"),
+    ):
+        try:
+            mod = importlib.import_module(module_name)
+            cls = getattr(mod, class_name, None)
+            if isinstance(cls, type):
+                classes.append(cls)
+        except ImportError:
+            continue
+    _LANGFUSE_HANDLER_CLASSES = tuple(classes)
+    return _LANGFUSE_HANDLER_CLASSES
+
+
 def is_langfuse_callback_handler(cb: Any) -> bool:
     """True if *cb* is a Langfuse LangChain callback handler."""
-    mod = getattr(type(cb), "__module__", "") or ""
     name = type(cb).__name__
-    return mod.startswith("langfuse") and name in ("CallbackHandler", "LangchainCallbackHandler")
+    if name not in ("CallbackHandler", "LangchainCallbackHandler"):
+        return False
+    for handler_cls in _langfuse_handler_classes():
+        if isinstance(cb, handler_cls):
+            return True
+    mod = getattr(type(cb), "__module__", "") or ""
+    return "langfuse" in mod
