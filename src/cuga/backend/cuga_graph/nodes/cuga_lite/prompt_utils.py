@@ -472,6 +472,8 @@ class PromptUtils:
         )
         tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
 
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
+
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
         chain = BaseAgent.get_chain(prompt, model, ShortListerOutputLite)
@@ -481,7 +483,8 @@ class PromptUtils:
                 "all_apps": apps_as_dict,
                 "all_tools": tools_as_dict,
                 "instructions": effective_instructions,
-            }
+            },
+            config=get_langfuse_invoke_config(),
         )
 
         valid_names = {t.name for t in all_tools}

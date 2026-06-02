@@ -16,6 +16,7 @@ from typing import Any, Optional
 _LANGFUSE_HANDLER_CLASSES: tuple[type, ...] | None = None
 
 _langfuse_callbacks: ContextVar[Optional[list[Any]]] = ContextVar("langfuse_callbacks", default=None)
+_langfuse_trace_id: ContextVar[Optional[str]] = ContextVar("langfuse_trace_id", default=None)
 
 
 def _flatten_callbacks(value: Any) -> list[Any]:
@@ -56,9 +57,35 @@ def set_langfuse_callbacks(callbacks: Optional[list[Any]]) -> None:
     _langfuse_callbacks.set(list(callbacks) if callbacks else None)
 
 
+def set_langfuse_trace_id(trace_id: Optional[str]) -> None:
+    """Remember the eval harness trace id for nested calls in this async context."""
+    _langfuse_trace_id.set(trace_id)
+
+
+def create_trace_langfuse_handler(trace_id: str, *, parent_span_id: str | None = None) -> Any | None:
+    """Return a Langfuse handler scoped to *trace_id* (one trace per eval task)."""
+    trace_context: dict[str, str] = {"trace_id": trace_id}
+    if parent_span_id:
+        trace_context["parent_span_id"] = parent_span_id
+    for handler_cls in _langfuse_handler_classes():
+        return handler_cls(trace_context=trace_context)
+    return None
+
+
 def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
-    """Copy callbacks from LangGraph config into the current async context."""
-    set_langfuse_callbacks(collect_langfuse_callbacks_from_config(config))
+    """Copy Langfuse trace id and handlers from LangGraph config into this context."""
+    if not config or not hasattr(config, "get"):
+        return
+    configurable = config.get("configurable") or {}
+    trace_id = configurable.get("langfuse_trace_id")
+    if trace_id:
+        set_langfuse_trace_id(trace_id)
+    callbacks = collect_langfuse_callbacks_from_config(config)
+    if not callbacks and trace_id:
+        handler = create_trace_langfuse_handler(trace_id)
+        if handler:
+            callbacks = [handler]
+    set_langfuse_callbacks(callbacks or None)
 
 
 def get_langfuse_callbacks() -> list[Any]:
@@ -67,9 +94,21 @@ def get_langfuse_callbacks() -> list[Any]:
 
 
 def get_langfuse_invoke_config() -> dict[str, Any]:
-    """LangChain ``config`` dict for nested ``ainvoke`` calls, or empty."""
-    callbacks = get_langfuse_callbacks()
-    return {"callbacks": callbacks} if callbacks else {}
+    """LangChain ``config`` for nested ``ainvoke`` (find_tools, reflection, etc.).
+
+    Reuse handlers synced from the parent ``agent.invoke`` config when present so
+    repeated shortlister calls share one trace-scoped handler. Otherwise build
+    from ``langfuse_trace_id`` (sandbox paths that only receive the trace id).
+    """
+    callbacks = [cb for cb in get_langfuse_callbacks() if is_langfuse_callback_handler(cb)]
+    if callbacks:
+        return {"callbacks": callbacks}
+    trace_id = _langfuse_trace_id.get()
+    if trace_id:
+        handler = create_trace_langfuse_handler(trace_id)
+        if handler:
+            return {"callbacks": [handler]}
+    return {}
 
 
 def _langfuse_handler_classes() -> tuple[type, ...]:

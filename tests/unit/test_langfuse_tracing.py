@@ -19,6 +19,7 @@ from cuga.backend.cuga_graph.utils.langfuse_tracing import (
     get_langfuse_invoke_config,
     is_langfuse_callback_handler,
     set_langfuse_callbacks,
+    set_langfuse_trace_id,
     sync_langfuse_callbacks_from_config,
 )
 
@@ -38,8 +39,10 @@ def _fake_langfuse_handler():
 @pytest.fixture(autouse=True)
 def _clear_langfuse_context():
     set_langfuse_callbacks(None)
+    set_langfuse_trace_id(None)
     yield
     set_langfuse_callbacks(None)
+    set_langfuse_trace_id(None)
 
 
 class TestLangfuseTracingHelpers:
@@ -47,9 +50,13 @@ class TestLangfuseTracingHelpers:
         assert get_langfuse_invoke_config() == {}
 
     def test_set_callbacks_visible_in_invoke_config(self):
-        cb = _RecordingCallback("trace-scoped")
+        cb = _fake_langfuse_handler()
         set_langfuse_callbacks([cb])
         assert get_langfuse_invoke_config() == {"callbacks": [cb]}
+
+    def test_non_langfuse_callbacks_are_not_propagated(self):
+        set_langfuse_callbacks([_RecordingCallback("token-tracker")])
+        assert get_langfuse_invoke_config() == {}
 
     def test_collect_merges_top_level_and_configurable(self):
         a, b = _fake_langfuse_handler(), _fake_langfuse_handler()
@@ -74,6 +81,25 @@ class TestLangfuseTracingHelpers:
         cb = _fake_langfuse_handler()
         sync_langfuse_callbacks_from_config({"configurable": {"callbacks": [cb]}})
         assert get_langfuse_invoke_config() == {"callbacks": [cb]}
+
+    def test_sync_trace_id_builds_handler_when_no_callbacks(self):
+        handler = _fake_langfuse_handler()
+        with patch(
+            "cuga.backend.cuga_graph.utils.langfuse_tracing.create_trace_langfuse_handler",
+            return_value=handler,
+        ):
+            sync_langfuse_callbacks_from_config({"configurable": {"langfuse_trace_id": "abc123"}})
+            assert get_langfuse_invoke_config() == {"callbacks": [handler]}
+
+    def test_get_invoke_config_ignores_non_langfuse_callbacks(self):
+        set_langfuse_callbacks([_RecordingCallback("stale")])
+        set_langfuse_trace_id("trace-99")
+        fresh = _fake_langfuse_handler()
+        with patch(
+            "cuga.backend.cuga_graph.utils.langfuse_tracing.create_trace_langfuse_handler",
+            return_value=fresh,
+        ):
+            assert get_langfuse_invoke_config() == {"callbacks": [fresh]}
 
     def test_is_langfuse_callback_handler_detects_langfuse_types(self):
         assert is_langfuse_callback_handler(_fake_langfuse_handler())
@@ -125,7 +151,7 @@ class TestNestedCallSites:
         from cuga.backend.cuga_graph.nodes.cuga_lite import nl_auto_continue_classifier as mod
         from cuga.config import settings
 
-        cb = _RecordingCallback("nl")
+        cb = _fake_langfuse_handler()
         set_langfuse_callbacks([cb])
 
         mock_llm = MagicMock()
@@ -171,7 +197,7 @@ class TestNestedCallSites:
         from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
         from cuga.backend.cuga_graph.policy.models import OutputFormatter
 
-        cb = _RecordingCallback("formatter")
+        cb = _fake_langfuse_handler()
         set_langfuse_callbacks([cb])
 
         policy = OutputFormatter(

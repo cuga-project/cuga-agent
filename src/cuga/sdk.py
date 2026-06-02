@@ -1414,6 +1414,10 @@ class CugaAgent:
         run_config["callbacks"] = merged
         run_config["configurable"]["callbacks"] = merged
 
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
+
+        sync_langfuse_callbacks_from_config(run_config)
+
     async def _ensure_initialized(self):
         """Ensure tool provider is initialized."""
         if not hasattr(self.tool_provider, 'initialized') or not self.tool_provider.initialized:
