@@ -73,6 +73,7 @@ class ToolGuardBuildtimeManager:
         self._initialized = False
         self._init_lock = asyncio.Lock()
         
+
     async def _ensure_initialized(self):
         """Ensure the manager is initialized with tools."""
         async with self._init_lock:
@@ -253,7 +254,7 @@ class ToolGuardBuildtimeManager:
         from toolguard.buildtime import ToolGuardSpec, generate_guard_examples
         spec = ToolGuardSpec(
             tool_name=target_tool,
-            policy_items=[spec_item]
+            policy_items=[spec_item],
         )
 
         # Generate examples using toolguard
@@ -263,7 +264,8 @@ class ToolGuardBuildtimeManager:
                     tools=self._tools_dict,  # Pass the OpenAPI dict
                     tool_specs=[spec],
                     llm=self.llm,  # type: ignore
-                    work_dir=str(tmp_dir)
+                    work_dir=str(tmp_dir),
+                    example_number=3,
                 )
 
                 # Extract examples from the updated spec
@@ -430,4 +432,3 @@ class ToolGuardBuildtimeManager:
                 )
                 raise RuntimeError(f"Failed to generate guard code for tool '{target_tool}'") from e
 
-# Made with Bob
