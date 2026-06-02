@@ -11,7 +11,7 @@
 flow:
   name: "Hello World"
   id: "hello-world"
-  ro_source_file: "/Users/offerakrabi/Desktop/Work/RO/examples/hello-world/hello-world.ro"
+  ro_source_file: "path-to-clone/examples/hello-world/hello-world.ro"
   input_args:
     name: "world"
 

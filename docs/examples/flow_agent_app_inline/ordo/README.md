@@ -290,9 +290,9 @@ The EOG workflow expects ITBench-Lite Scenario-1 data under the `data_dir` confi
 ```yaml
 flow:
   id: "sbp-eog"
-  ro_source_file: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/sbp-eog.ro"
+  ro_source_file: "/path-to-clone/examples/itbench-lite/sbp-eog.ro"
   input_args:
-    data_dir: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+    data_dir: "/path-to-clone/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
 ```
 
 If that directory is missing, SRE MCP tools may fail with errors such as:
@@ -304,7 +304,7 @@ Architecture file not found: <data_dir>/application_architecture.json
 Set up the data from the RO repo first, for example:
 
 ```bash
-cd /Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite
+cd /path-to-clone/examples/itbench-lite
 ./download-data.sh
 ```
 
@@ -317,10 +317,10 @@ EOG task agents need tools from the `sre_utils` MCP server. `ordo_config_eog.yam
 ```yaml
 mcpServers:
   sre_utils:
-    command: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/start_sre_mcp.sh"
+    command: "/path-to-clone/examples/itbench-lite/start_sre_mcp.sh"
     args: []
     env:
-      PYTHON: "/Users/offerakrabi/Desktop/Work/Cuga/cuga-agent-external/.venv/bin/python"
+      PYTHON: "/<path to root>/.venv/bin/python"
 ```
 
 The tools are **not** automatically exposed to every task. Each task gets only the subset explicitly listed under that task's `agent.tools`, for example:

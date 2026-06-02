@@ -12,21 +12,21 @@
 flow:
   name: "SBP-EoG"
   id: "sbp-eog"
-  ro_source_file: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/sbp-eog.ro"
+  ro_source_file: "/path-to-clone/examples/itbench-lite/sbp-eog.ro"
   input_args:
-    data_dir: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+    data_dir: "/path-to-clone/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
 
 # Shared MCP server pool. Tools are loaded once, but each task agent only
 # receives the subset explicitly listed under that task's agent.tools.
 mcpServers:
   sre_utils:
-    command: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/start_sre_mcp.sh"
+    command: "/path-to-clone/examples/itbench-lite/start_sre_mcp.sh"
     args: []
     env:
-      PYTHON: "/Users/offerakrabi/Desktop/Work/Cuga/cuga-agent-external/.venv/bin/python"
+      PYTHON: "/<path-to-root>l/.venv/bin/python"
 
 variables:
-  data_dir: "/Users/offerakrabi/Desktop/Work/RO/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+  data_dir: "/path-to-clone/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
   namespace_scope: ""
   budget: 30
   k_thresh: 3

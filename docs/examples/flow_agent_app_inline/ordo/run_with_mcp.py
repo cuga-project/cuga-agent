@@ -38,7 +38,6 @@ if _env_file.is_file():
 def _resolve_ro() -> str:
     """Resolve ro, preferring the freshly rebuilt cargo binary."""
     for candidate in (
-        Path("/Users/offerakrabi/.cargo/bin/ro"),
         Path.home() / ".cargo" / "bin" / "ro",
         Path.home() / ".local" / "bin" / "ro",
     ):
