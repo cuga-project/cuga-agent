@@ -143,7 +143,7 @@ def _convert_openapi_params_to_json_schema(parameters: List[Dict[str, Any]]) -> 
 
 
 def create_tool_from_api_dict(
-    tool_name: str, tool_def: Dict[str, Any], app_name: str, agent_id: Optional[str] = None
+    tool_name: str, tool_def: Dict[str, Any], app_name: str, agent_id: Optional[str] = None, enable_toolguard_policies: bool = True, toolguard_policy_storage = None
 ) -> StructuredTool:
     """Create a StructuredTool from an API definition dict.
 
