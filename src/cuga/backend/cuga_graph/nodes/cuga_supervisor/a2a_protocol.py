@@ -47,10 +47,19 @@ def _agent_card_description(agent_card: "AgentCard") -> str:
         parts.append(str(agent_card.description))
     caps = getattr(agent_card, "capabilities", None)
     if caps:
-        parts.append(f"Capabilities: {', '.join(caps)}")
+        # AgentCapabilities is a pydantic model; in pydantic v1 iterating it yields
+        # (field_name, value) tuples — extract only the enabled boolean flags.
+        try:
+            enabled = [k for k, v in caps if isinstance(v, bool) and v]
+            if enabled:
+                parts.append(f"Capabilities: {', '.join(enabled)}")
+        except TypeError:
+            pass
     skills = getattr(agent_card, "skills", None)
     if skills:
-        parts.append(f"Skills: {', '.join(skills)}")
+        # AgentSkill objects — use name or id, not the object repr.
+        skill_names = [getattr(s, "name", None) or getattr(s, "id", None) or str(s) for s in skills]
+        parts.append(f"Skills: {', '.join(skill_names)}")
     return " ".join(parts) if parts else "A2A agent"
 
 
