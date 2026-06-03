@@ -128,9 +128,6 @@ class AgentGraphAdapter(CoreGraphAdapter):
         configurable: dict,
         config: Any = None,
     ) -> Any:
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import stash_langgraph_run_config
-
-        stash_langgraph_run_config(self._tools_context_ref, config)
         try:
             return await resolve_model_with_bind_tools(
                 active_model,

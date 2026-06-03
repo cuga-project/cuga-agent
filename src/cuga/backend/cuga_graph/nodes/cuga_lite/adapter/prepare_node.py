@@ -71,9 +71,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         or ``cuga_lite_enable_few_shots`` in configurable (skips prefix chat few-shots).
         """
         configurable = config.get("configurable", {}) if config else {}
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import stash_langgraph_run_config
-
-        stash_langgraph_run_config(lc_bind_tools_meta, config)
         enable_todos = (
             configurable.get("enable_todos")
             if "enable_todos" in configurable
@@ -208,7 +205,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 app_to_tools_map=app_to_tools_map,
                 llm=active_model,
                 initial_user_message=_first_user_message_text(state.chat_messages),
-                tools_context_ref=lc_bind_tools_meta,
             )
             tools_for_prompt = [find_tool]
             # Add find_tools to tools context for sandbox execution

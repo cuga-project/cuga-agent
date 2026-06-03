@@ -120,7 +120,9 @@ async def test_bind_tools_mode_all_shortlists_when_over_cap():
     provider.get_apps = AsyncMock(return_value=[])
     model = MagicMock()
 
-    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def fake_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         return [t.name for t in all_tools[: min(top_k, 3)]]
 
     with (
@@ -241,7 +243,9 @@ async def test_bind_tools_cap_does_not_pad_by_default():
     provider.get_apps = AsyncMock(return_value=[])
     model = MagicMock()
 
-    async def stingy_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def stingy_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         return ["tool_007"]
 
     with (
@@ -280,7 +284,9 @@ async def test_bind_tools_cap_pads_when_opt_in():
     provider.get_apps = AsyncMock(return_value=[])
     model = MagicMock()
 
-    async def stingy_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def stingy_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         return ["tool_007"]
 
     with (
@@ -329,7 +335,9 @@ async def test_bind_tools_cap_not_violated_when_at_boundary_with_find_tools():
 
     captured_top_k = {}
 
-    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def fake_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         captured_top_k["value"] = top_k
         return [t.name for t in all_tools[:top_k]]
 
@@ -378,7 +386,9 @@ async def test_bind_tools_cap_guarantees_find_tools_when_in_overlay_bound():
 
     captured = {}
 
-    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def fake_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         captured["top_k"] = top_k
         captured["pool_names"] = [t.name for t in all_tools]
         # Adversarial: rank find_tools out if it appears in the input. With the fix it shouldn't.
@@ -434,7 +444,9 @@ async def test_bind_tools_include_find_tools_false_strips_overlay_find_tools():
 
     captured = {}
 
-    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def fake_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         captured["pool_names"] = [t.name for t in all_tools]
         return [t.name for t in all_tools[:top_k]]
 
@@ -480,7 +492,9 @@ async def test_bind_tools_cap_raises_when_shortlist_names_dont_match_pool():
     provider.get_apps = AsyncMock(return_value=[])
     model = MagicMock()
 
-    async def hallucinating_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def hallucinating_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         return ["nonexistent_tool_a", "nonexistent_tool_b"]
 
     with (
@@ -515,7 +529,9 @@ async def test_bind_tools_cap_clamps_shortlist_when_llm_returns_too_many():
     provider.get_apps = AsyncMock(return_value=[])
     model = MagicMock()
 
-    async def overlong_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def overlong_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         # Deliberately ignore top_k — return every pool name.
         return [t.name for t in all_tools]
 
@@ -555,7 +571,9 @@ async def test_bind_tools_cap_clamps_shortlist_with_find_tools_slot():
     provider.get_apps = AsyncMock(return_value=[])
     model = MagicMock()
 
-    async def overlong_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def overlong_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         return [t.name for t in all_tools]
 
     with (
@@ -629,7 +647,9 @@ async def test_bind_tools_cap_reserves_slot_for_find_tools():
 
     captured_top_k = {}
 
-    async def fake_shortlist(query, all_tools, all_apps, llm=None, top_k=4, instructions=None):
+    async def fake_shortlist(
+        query, all_tools, all_apps, llm=None, top_k=4, instructions=None, run_config=None
+    ):
         captured_top_k["value"] = top_k
         return [t.name for t in all_tools[:top_k]]
 

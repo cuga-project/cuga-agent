@@ -18,6 +18,7 @@ _LANGFUSE_HANDLER_CLASSES: tuple[type, ...] | None = None
 _langfuse_callbacks: ContextVar[Optional[list[Any]]] = ContextVar("langfuse_callbacks", default=None)
 _langfuse_trace_id: ContextVar[Optional[str]] = ContextVar("langfuse_trace_id", default=None)
 _langfuse_primary_handler: ContextVar[Optional[Any]] = ContextVar("langfuse_primary_handler", default=None)
+_langgraph_run_config: ContextVar[Optional[Any]] = ContextVar("langgraph_run_config", default=None)
 _TRACE_SCOPED_HANDLER_CLASS: type | None = None
 
 
@@ -162,9 +163,10 @@ def _primary_handler_for_trace(trace_id: str) -> Any | None:
 
 
 def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
-    """Copy Langfuse trace id and handlers from LangGraph config into this context."""
+    """Copy Langfuse trace id, handlers, and RunnableConfig into this async context."""
     if not config or not hasattr(config, "get"):
         return
+    _langgraph_run_config.set(config)
     configurable = config.get("configurable") or {}
     trace_id = configurable.get("langfuse_trace_id")
     if trace_id:
@@ -185,19 +187,13 @@ def get_langfuse_callbacks() -> list[Any]:
     return list(_langfuse_callbacks.get() or [])
 
 
-def stash_langgraph_run_config(
-    tools_context_ref: dict[str, Any] | None,
-    config: Any,
-) -> None:
-    """Store the current LangGraph node config for runtime ``find_tools`` (sandbox closure)."""
-    if tools_context_ref is not None and config is not None and hasattr(config, "get"):
-        tools_context_ref["_langgraph_run_config"] = config
-
-
 def nested_langgraph_invoke_config(run_config: Any = None) -> dict[str, Any]:
-    """Prefer the parent node's full ``RunnableConfig``; fall back to contextvar callbacks."""
+    """Prefer explicit or context-synced ``RunnableConfig``; fall back to callbacks-only dict."""
     if run_config is not None and hasattr(run_config, "get"):
         return run_config
+    ctx_config = _langgraph_run_config.get()
+    if ctx_config is not None and hasattr(ctx_config, "get"):
+        return ctx_config
     return get_langfuse_invoke_config()
 
 

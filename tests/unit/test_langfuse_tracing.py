@@ -21,7 +21,6 @@ from cuga.backend.cuga_graph.utils.langfuse_tracing import (
     nested_langgraph_invoke_config,
     set_langfuse_callbacks,
     set_langfuse_trace_id,
-    stash_langgraph_run_config,
     sync_langfuse_callbacks_from_config,
 )
 
@@ -45,10 +44,12 @@ def _clear_langfuse_context():
     set_langfuse_callbacks(None)
     set_langfuse_trace_id(None)
     mod._langfuse_primary_handler.set(None)
+    mod._langgraph_run_config.set(None)
     yield
     set_langfuse_callbacks(None)
     set_langfuse_trace_id(None)
     mod._langfuse_primary_handler.set(None)
+    mod._langgraph_run_config.set(None)
 
 
 class TestLangfuseTracingHelpers:
@@ -121,11 +122,13 @@ class TestLangfuseTracingHelpers:
         set_langfuse_callbacks([cb])
         assert nested_langgraph_invoke_config(None) == {"callbacks": [cb]}
 
-    def test_stash_langgraph_run_config(self):
-        ref: dict = {}
-        cfg = {"configurable": {"langfuse_trace_id": "abc"}}
-        stash_langgraph_run_config(ref, cfg)
-        assert ref["_langgraph_run_config"] is cfg
+    def test_sync_stores_run_config_in_contextvar(self):
+        from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
+
+        cfg = {"callbacks": [_fake_langfuse_handler()], "configurable": {"thread_id": "t1"}}
+        mod._langgraph_run_config.set(None)
+        sync_langfuse_callbacks_from_config(cfg)
+        assert nested_langgraph_invoke_config(None) is cfg
 
     def test_get_invoke_config_reuses_primary_handler_for_trace_id(self):
         from cuga.backend.cuga_graph.utils import langfuse_tracing as mod

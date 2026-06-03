@@ -42,13 +42,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 return denial_command
 
         configurable = config.get("configurable", {}) if config else {}
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import (
-            stash_langgraph_run_config,
-            sync_langfuse_callbacks_from_config,
-        )
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
 
         sync_langfuse_callbacks_from_config(config)
-        stash_langgraph_run_config(getattr(adapter, "_tools_context_ref", None), config)
         max_steps = configurable.get("cuga_lite_max_steps") if "cuga_lite_max_steps" in configurable else None
         if "thread_id" in configurable:
             current_thread_id = configurable["thread_id"]
