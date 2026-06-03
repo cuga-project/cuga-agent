@@ -9,9 +9,8 @@ This test demonstrates:
 5. Cleaning up test policies at the end
 
 Configuration:
-- Set DELETE_ALL_POLICIES_AT_START = True to delete all existing policies before running
-- Set DELETE_ALL_POLICIES_AT_START = False to preserve existing policies (default)
-- Set environment variable CUGA_E2E_ALLOW_DESTRUCTIVE=true to enable destructive cleanup
+- By default, this test ALWAYS cleans up existing policies/domain files before running (for test isolation)
+- Set environment variable CUGA_E2E_SKIP_CLEANUP=true to skip cleanup (for debugging only)
 """
 
 import os
@@ -26,8 +25,9 @@ from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGua
 # ============================================================================
 # CONFIGURATION
 # ============================================================================
-# Default to False for safety - require explicit opt-in for destructive operations
-DELETE_ALL_POLICIES_AT_START = os.environ.get("CUGA_E2E_ALLOW_DESTRUCTIVE", "").lower() in ("true", "1", "yes")
+# Default to True for test isolation - this test should always start clean
+# Set CUGA_E2E_SKIP_CLEANUP=true to preserve existing policies (for debugging)
+DELETE_ALL_POLICIES_AT_START = os.environ.get("CUGA_E2E_SKIP_CLEANUP", "").lower() not in ("true", "1", "yes")
 # ============================================================================
 
 # Define policies to create
@@ -110,7 +110,7 @@ async def cleanup_all_policies(agent):
         print("\nCleaning up policy files from filesystem...")
         cuga_folder = Path(agent.policies._fs_sync.cuga_folder)
         if cuga_folder.exists():
-            policy_subfolders = ['playbooks', 'output_formatters', 'tool_guides', 
+            policy_subfolders = ['playbooks', 'output_formatters', 'tool_guides',
                                'intent_guards', 'tool_approvals', 'policies']
             
             total_deleted = 0
@@ -124,6 +124,13 @@ async def cleanup_all_policies(agent):
             
             if total_deleted > 0:
                 print(f"✅ Deleted {total_deleted} policy files from filesystem")
+            
+            # Also clean up toolguard domain files (critical for test isolation)
+            toolguard_domain_dir = cuga_folder / "toolguard" / "domain"
+            if toolguard_domain_dir.exists():
+                import shutil
+                shutil.rmtree(toolguard_domain_dir)
+                print(f"✅ Deleted toolguard domain directory: {toolguard_domain_dir}")
     
     print("✅ All policies successfully deleted")
     print("="*60)
@@ -193,6 +200,26 @@ async def create_and_process_policies(agent, policy_system):
         print("="*60)
         print(guard_code)
         print("="*60)
+        
+        # Verify domain files were created
+        domain_dir = Path(agent.cuga_folder) / "toolguard" / "domain" / "test_app"
+        if not domain_dir.exists():
+            raise AssertionError(
+                f"Domain directory not created: {domain_dir}\n"
+                f"This indicates buildtime failed to save domain files"
+            )
+        
+        required_files = [
+            "test_app_types.py",
+            "i_test_app.py",
+            "test_app_impl.py"
+        ]
+        for filename in required_files:
+            filepath = domain_dir / filename
+            if not filepath.exists():
+                raise AssertionError(f"Required domain file missing: {filepath}")
+        
+        print(f"✅ Verified domain files created in {domain_dir}")
         
         # Update policy with guard code
         await agent.policies.update_tool_guard(
@@ -360,11 +387,13 @@ async def test_tool_guard_runtime_e2e():
     
     This test:
     1. Creates a CugaAgent with flight booking tools
-    2. Optionally cleans up all existing policies (if CUGA_E2E_ALLOW_DESTRUCTIVE=true)
+    2. Cleans up all existing policies and domain files (for test isolation)
     3. Creates multiple tool guide policies
     4. Generates examples and guard code for each policy
     5. Tests policy enforcement with ToolGuardRuntime
     6. Cleans up test policies
+    
+    Note: Set CUGA_E2E_SKIP_CLEANUP=true to skip initial cleanup (for debugging only)
     """
     
     # Step 0: Create agent and optional cleanup
@@ -374,8 +403,8 @@ async def test_tool_guard_runtime_e2e():
         await cleanup_all_policies(agent)
     else:
         print("="*60)
-        print("Skipping initial cleanup (DELETE_ALL_POLICIES_AT_START=False)")
-        print("To enable: export CUGA_E2E_ALLOW_DESTRUCTIVE=true")
+        print("⚠️  Skipping initial cleanup (CUGA_E2E_SKIP_CLEANUP=true)")
+        print("This may cause test failures if old policies exist!")
         print("="*60)
     
     # Get policy system

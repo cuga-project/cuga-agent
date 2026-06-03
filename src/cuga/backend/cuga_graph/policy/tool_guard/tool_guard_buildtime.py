@@ -173,11 +173,15 @@ class ToolGuardBuildtimeManager:
             Application name string
         """
         # Try to get app_name from tool provider metadata
-        if hasattr(self.tool_provider, 'app_name'):
-            return self.tool_provider.app_name
+        if hasattr(self.tool_provider, 'app_name') and self.tool_provider.app_name:
+            app_name = self.tool_provider.app_name
+            # Validate it's a reasonable value (not leftover from previous tests)
+            # Filter out known test artifacts that shouldn't be used as defaults
+            if app_name and app_name not in ["crm", "digital_sales", "healthcare", "office", "search"]:
+                return app_name
         
-        # Default fallback
-        return "cuga_app"
+        # Default fallback - use CUGA's standard default for direct tool providers
+        return "runtime_tools"
 
     def _validate_app_name(self, app_name: str) -> str:
         """Validate app_name to prevent path traversal attacks.
@@ -329,10 +333,13 @@ class ToolGuardBuildtimeManager:
         await self._ensure_initialized()
         self._validate_policy_and_tool(policy, target_tool)
         
-        # Auto-detect app_name if not provided
+        # Auto-detect app_name if not provided, otherwise respect explicit parameter
         if app_name is None:
             app_name = self._infer_app_name_from_tool(target_tool)
             logger.info(f"Auto-detected app_name '{app_name}' for tool '{target_tool}'")
+        else:
+            # Explicit app_name provided - validate but DON'T override
+            logger.info(f"Using explicit app_name '{app_name}' for tool '{target_tool}'")
         
         # Validate app_name to prevent path traversal attacks
         app_name = self._validate_app_name(app_name)

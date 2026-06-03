@@ -322,25 +322,19 @@ class ToolGuardRuntime:
         """
         self._validate_domain_directory(self.domain_dir)
 
-        # Try exact match first
+        # Try exact match only - fuzzy matching causes more confusion than it solves
         selected_domain = self._find_complete_domain_for_app(self.domain_dir, app_name)
         
-        # If exact match not found, try fuzzy match (e.g., "crm" -> "crm_demo")
-        if selected_domain is None:
-            logger.debug(f"Exact domain match not found for '{app_name}', trying fuzzy match...")
-            for dir_path in self.domain_dir.iterdir():
-                if dir_path.is_dir() and app_name in dir_path.name:
-                    candidate_name = dir_path.name
-                    selected_domain = self._find_complete_domain_for_app(self.domain_dir, candidate_name)
-                    if selected_domain:
-                        logger.info(f"Found domain for app '{app_name}' using fuzzy match: '{candidate_name}'")
-                        break
-
         if selected_domain is None:
             available_apps = [d.name for d in self.domain_dir.iterdir() if d.is_dir()]
             raise RuntimeError(
                 f"No complete ToolGuard domain found for app '{app_name}' under {self.domain_dir}. "
-                f"Available apps: {', '.join(available_apps) if available_apps else 'none'}"
+                f"Available apps: {', '.join(available_apps) if available_apps else 'none'}. "
+                f"\n\nThis usually means:"
+                f"\n1. Guard code was generated with a different app_name"
+                f"\n2. Domain files weren't saved during code generation"
+                f"\n3. The .cuga/toolguard/domain directory was cleared"
+                f"\n\nTo fix: Regenerate guard code with app_name='{app_name}' or use one of the available apps."
             )
 
         return self._create_runtime_domain(self.domain_dir, selected_domain)
@@ -654,8 +648,15 @@ class ToolGuardRuntime:
             logger.info(f"✅ Runtime initialized for app '{app_name}'")
             return runtime
         except Exception as e:
+            available_apps = []
+            if self.domain_dir.exists():
+                available_apps = [d.name for d in self.domain_dir.iterdir() if d.is_dir()]
+            
             logger.error(
-                f"Failed to initialize runtime for app '{app_name}': {e}",
+                f"Failed to initialize runtime for app '{app_name}': {e}\n"
+                f"Domain directory: {self.domain_dir}\n"
+                f"Available apps: {', '.join(available_apps) if available_apps else 'directory does not exist'}\n"
+                f"Hint: Ensure guard code was generated with app_name='{app_name}'",
                 exc_info=True
             )
             # Cache None to avoid repeated failed attempts
