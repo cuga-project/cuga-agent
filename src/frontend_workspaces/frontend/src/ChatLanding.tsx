@@ -965,8 +965,6 @@ export function ChatLanding() {
         <ConfigHeader
           onToggleLeftSidebar={handleToggleLeft}
           onToggleWorkspace={handleToggleWorkspace}
-          leftSidebarCollapsed={!leftOpen}
-          workspaceOpen={rightOpen}
         />
 
       {/* ── Full-width chat — panels float on top ─────────────────────────── */}

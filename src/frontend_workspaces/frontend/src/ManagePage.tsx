@@ -32,7 +32,7 @@ import {
   RadioButton,
   TextArea,
 } from "@carbon/react";
-import { CugaHeader } from "agentic_chat/CugaHeader";
+import { CugaHeader } from "./CugaHeader";
 import {
   Save,
   Time as HistoryIcon,

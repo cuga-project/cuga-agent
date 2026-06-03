@@ -1,12 +1,8 @@
 import React, { useState, useEffect } from "react";
 import { CugaHeader } from "./CugaHeader";
-import MemoryConfig from "./MemoryConfig";
-import KnowledgeConfig from "./KnowledgeConfig";
 import ToolsConfig from "./ToolsConfig";
 import SubAgentsConfig from "./SubAgentsConfig";
-import ModelConfig from "./ModelConfig";
 import PoliciesConfig from "./PoliciesConfig";
-import AgentHumanConfig from "./AgentHumanConfig";
 import * as api from "../../frontend/src/api";
 
 interface ConfigHeaderProps {
@@ -29,7 +25,6 @@ export function ConfigHeader({
   onToggleLeftSidebar,
   onToggleWorkspace,
   onToggleKnowledge,
-  knowledgeOpen,
   knowledgeDocCount,
   knowledgeEnabled,
 }: ConfigHeaderProps) {
@@ -46,7 +41,6 @@ export function ConfigHeader({
             agent_id: agentId,
             config_version: data.config_version ?? null,
           });
-          // Set agent ID for knowledge API calls
           api.setKnowledgeAgentId(agentId);
         }
       })
@@ -69,26 +63,14 @@ export function ConfigHeader({
         ]}
       />
 
-      {activeModal === "knowledge" && (
-        <KnowledgeConfig onClose={() => setActiveModal(null)} />
-      )}
-      {activeModal === "memory" && (
-        <MemoryConfig onClose={() => setActiveModal(null)} />
-      )}
       {activeModal === "subagents" && (
         <SubAgentsConfig onClose={() => setActiveModal(null)} />
       )}
       {activeModal === "tools" && (
         <ToolsConfig onClose={() => setActiveModal(null)} />
       )}
-      {activeModal === "model" && (
-        <ModelConfig onClose={() => setActiveModal(null)} />
-      )}
       {activeModal === "policies" && (
         <PoliciesConfig onClose={() => setActiveModal(null)} />
-      )}
-      {activeModal === "agenthuman" && (
-        <AgentHumanConfig onClose={() => setActiveModal(null)} />
       )}
     </>
   );
