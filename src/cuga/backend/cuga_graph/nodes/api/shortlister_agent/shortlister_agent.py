@@ -24,7 +24,6 @@ llm_manager = LLMManager()
 
 
 # Example usage:
-# response = get_petstore_apis()
 # print(json.dumps(response, indent=2))
 class ShortlisterAgent(BaseAgent):
     def __init__(

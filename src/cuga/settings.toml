@@ -185,7 +185,6 @@ filesystem_mcp = 8112
 docs_mcp = 8113
 digital_sales_api = 8000
 mcp_server = 8000
-petstore_api = 8081
 graph_visualization = 8080
 orchestrate_url = 4321
 trm_url = 8080
