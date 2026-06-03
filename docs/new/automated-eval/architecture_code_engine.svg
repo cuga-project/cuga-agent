@@ -1,0 +1,145 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 820" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#374151"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font-size: 20px; font-weight: 700; fill: #111827; }
+      .subtitle { font-size: 12px; fill: #6b7280; }
+      .box { fill: #ffffff; stroke: #374151; stroke-width: 1.5; }
+      .ce  { fill: #eff6ff; stroke: #1d4ed8; stroke-width: 1.5; }
+      .app { fill: #dbeafe; stroke: #1d4ed8; stroke-width: 1.5; }
+      .job { fill: #fffbeb; stroke: #b45309; stroke-width: 1.5; }
+      .reporter { fill: #fef3c7; stroke: #92400e; stroke-width: 1.5; }
+      .github { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
+      .store  { fill: #ecfdf5; stroke: #047857; stroke-width: 1.5; }
+      .mute  { fill: #4b5563; font-size: 11px; }
+      .edge  { fill: none; stroke: #374151; stroke-width: 1.5; }
+      .edgeBlue { fill: none; stroke: #2563eb; stroke-width: 1.5; }
+      .edgeLabel { fill: #374151; font-size: 11px; }
+      .edgeLabelBlue { fill: #2563eb; font-size: 11px; }
+      .containerLabel { fill: #1d4ed8; font-weight: 600; font-size: 12px; }
+    </style>
+  </defs>
+
+  <text x="40" y="36" class="title">Architecture B — IBM Code Engine</text>
+  <text x="40" y="56" class="subtitle">Scale-to-zero Application receives webhook → submits JobRuns (array-sharded) → reporter aggregates and posts to PR</text>
+
+  <!-- GitHub -->
+  <rect x="40" y="100" width="200" height="120" rx="8" class="github"/>
+  <text x="140" y="128" text-anchor="middle" font-weight="600">GitHub</text>
+  <text x="140" y="152" text-anchor="middle" class="mute">PR opened / synced</text>
+  <text x="140" y="170" text-anchor="middle" class="mute">PR body ☑ checkbox</text>
+  <text x="140" y="188" text-anchor="middle" class="mute">/bench comment</text>
+  <text x="140" y="206" text-anchor="middle" class="mute">receives status + comment</text>
+
+  <!-- Code Engine container -->
+  <rect x="290" y="90" width="700" height="600" rx="10" class="ce"/>
+  <text x="310" y="115" class="containerLabel">IBM Code Engine project</text>
+
+  <!-- Dispatcher App -->
+  <rect x="320" y="140" width="280" height="120" rx="6" class="app"/>
+  <text x="460" y="164" text-anchor="middle" font-weight="600">Application: bench-dispatcher</text>
+  <text x="460" y="184" text-anchor="middle" class="mute">scale-to-zero HTTP</text>
+  <text x="460" y="202" text-anchor="middle" class="mute">verifies HMAC, parses ☑ / /bench</text>
+  <text x="460" y="220" text-anchor="middle" class="mute">sets commit status = pending</text>
+  <text x="460" y="238" text-anchor="middle" class="mute">submits JobRun via CE API</text>
+
+  <!-- Runner Job -->
+  <rect x="320" y="300" width="640" height="200" rx="6" class="job"/>
+  <text x="640" y="324" text-anchor="middle" font-weight="600">Job: bench-runner  (array JobRun, shards 0..N)</text>
+  <text x="640" y="344" text-anchor="middle" class="mute">image: ghcr.io/.../cuga-bench:tag   env: PR_SHA, BENCH, SHARD_INDEX, BASELINE_SHA</text>
+
+  <rect x="345" y="365" width="190" height="115" rx="6" class="box"/>
+  <text x="440" y="388" text-anchor="middle" font-weight="600">shard 0 — vakra</text>
+  <text x="440" y="408" text-anchor="middle" class="mute">checkout PR SHA</text>
+  <text x="440" y="424" text-anchor="middle" class="mute">setup → run slice</text>
+  <text x="440" y="440" text-anchor="middle" class="mute">score → upload</text>
+  <text x="440" y="460" text-anchor="middle" class="mute">scorecard-0.json</text>
+
+  <rect x="545" y="365" width="190" height="115" rx="6" class="box"/>
+  <text x="640" y="388" text-anchor="middle" font-weight="600">shard 1 — appworld</text>
+  <text x="640" y="408" text-anchor="middle" class="mute">checkout PR SHA</text>
+  <text x="640" y="424" text-anchor="middle" class="mute">setup → run slice</text>
+  <text x="640" y="440" text-anchor="middle" class="mute">score → upload</text>
+  <text x="640" y="460" text-anchor="middle" class="mute">scorecard-1.json</text>
+
+  <rect x="755" y="365" width="190" height="115" rx="6" class="box"/>
+  <text x="850" y="388" text-anchor="middle" font-weight="600">shard N — appworld</text>
+  <text x="850" y="408" text-anchor="middle" class="mute">parallel container</text>
+  <text x="850" y="424" text-anchor="middle" class="mute">independent instance</text>
+  <text x="850" y="440" text-anchor="middle" class="mute">fits per-job timeout</text>
+  <text x="850" y="460" text-anchor="middle" class="mute">scorecard-N.json</text>
+
+  <!-- Reporter Job -->
+  <rect x="320" y="540" width="640" height="130" rx="6" class="reporter"/>
+  <text x="640" y="564" text-anchor="middle" font-weight="600">Job: bench-reporter</text>
+  <text x="640" y="586" text-anchor="middle" class="mute">triggered on JobRun completion (or last-shard signal in COS)</text>
+  <text x="640" y="606" text-anchor="middle" class="mute">aggregates shard scorecards · diffs vs baseline (main@merge-base)</text>
+  <text x="640" y="624" text-anchor="middle" class="mute">posts PR comment + commit status · uploads final report</text>
+
+  <!-- COS -->
+  <rect x="1020" y="320" width="160" height="180" rx="8" class="store"/>
+  <text x="1100" y="344" text-anchor="middle" font-weight="600">IBM COS</text>
+  <text x="1100" y="368" text-anchor="middle" class="mute">/runs/{pr}-{sha}/</text>
+  <text x="1100" y="386" text-anchor="middle" class="mute">  vakra/...</text>
+  <text x="1100" y="404" text-anchor="middle" class="mute">  appworld/...</text>
+  <text x="1100" y="426" text-anchor="middle" class="mute">scorecard shards</text>
+  <text x="1100" y="444" text-anchor="middle" class="mute">logs, traces</text>
+  <text x="1100" y="466" text-anchor="middle" class="mute">baseline cache</text>
+  <text x="1100" y="486" text-anchor="middle" class="mute">final report</text>
+
+  <!-- GitHub API -->
+  <rect x="1020" y="540" width="160" height="120" rx="8" class="github"/>
+  <text x="1100" y="566" text-anchor="middle" font-weight="600">GitHub API</text>
+  <text x="1100" y="590" text-anchor="middle" class="mute">commit status</text>
+  <text x="1100" y="608" text-anchor="middle" class="mute">PR comment</text>
+  <text x="1100" y="626" text-anchor="middle" class="mute">check-run output</text>
+  <text x="1100" y="644" text-anchor="middle" class="mute">artifact links</text>
+
+  <!-- Edges -->
+  <!-- GitHub -> Dispatcher -->
+  <path d="M 240,160 L 320,180" class="edge" marker-end="url(#arr)"/>
+  <text x="252" y="155" class="edgeLabel">webhook (HMAC)</text>
+
+  <!-- Dispatcher -> Runner Job -->
+  <path d="M 460,260 L 460,300" class="edge" marker-end="url(#arr)"/>
+  <text x="470" y="285" class="edgeLabel">submit JobRun (array)</text>
+
+  <!-- Dispatcher -> GitHub API (pending status) -->
+  <path d="M 600,200 C 800,200 1020,400 1020,560" class="edgeBlue" marker-end="url(#arrBlue)" stroke-dasharray="4 3"/>
+  <text x="820" y="215" class="edgeLabelBlue">status = pending</text>
+
+  <!-- Runner shards -> COS -->
+  <path d="M 535,420 C 700,420 950,400 1020,400" class="edge" marker-end="url(#arr)"/>
+  <text x="700" y="395" class="edgeLabel">upload shard scorecard</text>
+
+  <!-- Runner -> Reporter -->
+  <path d="M 640,500 L 640,540" class="edge" marker-end="url(#arr)"/>
+  <text x="650" y="525" class="edgeLabel">on completion</text>
+
+  <!-- Reporter -> COS read -->
+  <path d="M 960,580 L 1020,500" class="edge" marker-end="url(#arr)"/>
+  <text x="970" y="540" class="edgeLabel">read scorecards</text>
+
+  <!-- Reporter -> GitHub API -->
+  <path d="M 960,615 L 1020,600" class="edgeBlue" marker-end="url(#arrBlue)"/>
+  <text x="965" y="605" class="edgeLabelBlue">post results</text>
+
+  <!-- GitHub API -> GitHub PR surface -->
+  <path d="M 1100,540 C 1100,80 600,60 140,100" class="edgeBlue" marker-end="url(#arrBlue)" stroke-dasharray="4 3"/>
+  <text x="600" y="76" class="edgeLabelBlue">status + comment surface on PR</text>
+
+  <!-- Legend -->
+  <g transform="translate(40, 720)">
+    <text x="0" y="0" font-weight="600" fill="#111827">Flow</text>
+    <text x="0" y="20" class="mute">1. GitHub webhook → Code Engine Application (scales from zero) verifies HMAC, parses checkboxes / slash command.</text>
+    <text x="0" y="38" class="mute">2. App sets commit status=pending and submits a JobRun (array-indexed for long benchmarks that need parallel shards).</text>
+    <text x="0" y="56" class="mute">3. Each shard container clones the PR SHA, runs its slice, writes scorecard-N.json + logs to IBM COS.</text>
+    <text x="0" y="74" class="mute">4. bench-reporter aggregates shard scorecards, diffs vs baseline, and posts PR comment + commit status via GitHub API.</text>
+  </g>
+</svg>

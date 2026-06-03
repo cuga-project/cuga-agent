@@ -1,0 +1,152 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1280 840" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#374151"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font-size: 20px; font-weight: 700; fill: #111827; }
+      .subtitle { font-size: 12px; fill: #6b7280; }
+      .box { fill: #ffffff; stroke: #374151; stroke-width: 1.5; }
+      .ce  { fill: #eff6ff; stroke: #1d4ed8; stroke-width: 1.5; }
+      .app { fill: #dbeafe; stroke: #1d4ed8; stroke-width: 1.5; }
+      .job { fill: #fffbeb; stroke: #b45309; stroke-width: 1.5; }
+      .innerproc { fill: #ffffff; stroke: #b45309; stroke-width: 1.2; }
+      .reporter { fill: #fef3c7; stroke: #92400e; stroke-width: 1.5; }
+      .github { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
+      .store  { fill: #ecfdf5; stroke: #047857; stroke-width: 1.5; }
+      .mute  { fill: #4b5563; font-size: 11px; }
+      .edge  { fill: none; stroke: #374151; stroke-width: 1.5; }
+      .edgeBlue { fill: none; stroke: #2563eb; stroke-width: 1.5; }
+      .edgeLabel { fill: #374151; font-size: 11px; }
+      .edgeLabelBlue { fill: #2563eb; font-size: 11px; }
+      .containerLabel { fill: #1d4ed8; font-weight: 600; font-size: 12px; }
+      .note { fill: #92400e; font-size: 11px; }
+    </style>
+  </defs>
+
+  <text x="40" y="36" class="title">Revised Architecture B — Code Engine (B1: collapsed Vakra fleet)</text>
+  <text x="40" y="56" class="subtitle">No Docker daemon in CE jobs → fold Vakra's 4 capability backends into one image as supervised subprocesses. cuga-eval drives MCP via local stdio.</text>
+
+  <!-- GitHub -->
+  <rect x="40" y="100" width="200" height="120" rx="8" class="github"/>
+  <text x="140" y="128" text-anchor="middle" font-weight="600">GitHub</text>
+  <text x="140" y="152" text-anchor="middle" class="mute">PR opened / synced</text>
+  <text x="140" y="170" text-anchor="middle" class="mute">PR body ☑ checkbox</text>
+  <text x="140" y="188" text-anchor="middle" class="mute">/bench comment</text>
+  <text x="140" y="206" text-anchor="middle" class="mute">receives status + comment</text>
+
+  <!-- Code Engine container -->
+  <rect x="290" y="90" width="760" height="640" rx="10" class="ce"/>
+  <text x="310" y="115" class="containerLabel">IBM Code Engine project</text>
+
+  <!-- Orchestrator App -->
+  <rect x="320" y="140" width="320" height="120" rx="6" class="app"/>
+  <text x="480" y="164" text-anchor="middle" font-weight="600">Application: bench-orchestrator</text>
+  <text x="480" y="184" text-anchor="middle" class="mute">scale-to-zero HTTP</text>
+  <text x="480" y="202" text-anchor="middle" class="mute">verifies HMAC · parses ☑ / /bench</text>
+  <text x="480" y="220" text-anchor="middle" class="mute">sets commit status = pending</text>
+  <text x="480" y="238" text-anchor="middle" class="mute">submits JobRun (PR_SHA, BENCH)</text>
+
+  <!-- Runner Job (collapsed) -->
+  <rect x="320" y="300" width="700" height="280" rx="6" class="job"/>
+  <text x="670" y="324" text-anchor="middle" font-weight="600">Job: bench-runner   (one JobRun per benchmark)</text>
+  <text x="670" y="344" text-anchor="middle" class="mute">image: cuga-bench:tag   — cuga-eval + collapsed Vakra fleet baked together</text>
+
+  <rect x="345" y="365" width="320" height="195" rx="6" class="innerproc"/>
+  <text x="505" y="388" text-anchor="middle" font-weight="600">cuga-eval (entrypoint)</text>
+  <text x="505" y="408" text-anchor="middle" class="mute">git checkout PR @ SHA</text>
+  <text x="505" y="426" text-anchor="middle" class="mute">./scripts/eval.sh --benchmark vakra</text>
+  <text x="505" y="444" text-anchor="middle" class="mute">./scripts/eval.sh --benchmark appworld</text>
+  <text x="505" y="464" text-anchor="middle" class="mute">spawns MCP servers via local stdio</text>
+  <text x="505" y="482" text-anchor="middle" class="mute">runs CUGA agent against tasks</text>
+  <text x="505" y="500" text-anchor="middle" class="mute">writes evaluation_bundle</text>
+  <text x="505" y="520" text-anchor="middle" class="mute">uploads to COS</text>
+  <text x="505" y="544" text-anchor="middle" class="note">AppWorld runs as a subprocess inside this same container</text>
+
+  <rect x="680" y="365" width="320" height="195" rx="6" class="innerproc" stroke-dasharray="4 3"/>
+  <text x="840" y="388" text-anchor="middle" font-weight="600">collapsed Vakra fleet (supervised)</text>
+  <text x="840" y="406" text-anchor="middle" class="mute">supervisord / tini — 4 capability backends as local processes</text>
+  <rect x="700" y="418" width="140" height="58" rx="6" class="box"/>
+  <text x="770" y="438" text-anchor="middle" font-weight="600">cap1</text>
+  <text x="770" y="456" text-anchor="middle" class="mute">Router MCP · SQLite</text>
+  <rect x="850" y="418" width="140" height="58" rx="6" class="box"/>
+  <text x="920" y="438" text-anchor="middle" font-weight="600">cap2</text>
+  <text x="920" y="456" text-anchor="middle" class="mute">FastAPI MCP · M3</text>
+  <rect x="700" y="486" width="140" height="58" rx="6" class="box"/>
+  <text x="770" y="506" text-anchor="middle" font-weight="600">cap3</text>
+  <text x="770" y="524" text-anchor="middle" class="mute">BPO FastMCP</text>
+  <rect x="850" y="486" width="140" height="58" rx="6" class="box"/>
+  <text x="920" y="506" text-anchor="middle" font-weight="600">cap4</text>
+  <text x="920" y="524" text-anchor="middle" class="mute">Combined · Chroma</text>
+
+  <!-- Reporter -->
+  <rect x="320" y="610" width="700" height="100" rx="6" class="reporter"/>
+  <text x="670" y="634" text-anchor="middle" font-weight="600">Job: bench-reporter  (small, fast)</text>
+  <text x="670" y="654" text-anchor="middle" class="mute">triggered on bench-runner completion (or invoked inline at end of runner)</text>
+  <text x="670" y="672" text-anchor="middle" class="mute">parses evaluation_bundle · diffs vs baseline · POST PR comment + commit status</text>
+  <text x="670" y="692" text-anchor="middle" class="mute">— if kept inline in runner, you can skip this Job entirely</text>
+
+  <!-- COS -->
+  <rect x="1080" y="320" width="170" height="200" rx="8" class="store"/>
+  <text x="1165" y="346" text-anchor="middle" font-weight="600">IBM COS</text>
+  <text x="1165" y="370" text-anchor="middle" class="mute">/runs/{pr}-{sha}/</text>
+  <text x="1165" y="388" text-anchor="middle" class="mute">  vakra/...</text>
+  <text x="1165" y="406" text-anchor="middle" class="mute">  appworld/...</text>
+  <text x="1165" y="426" text-anchor="middle" class="mute">evaluation_bundle.zip</text>
+  <text x="1165" y="444" text-anchor="middle" class="mute">scorecard.json</text>
+  <text x="1165" y="462" text-anchor="middle" class="mute">logs, traces</text>
+  <text x="1165" y="484" text-anchor="middle" class="mute">baseline cache</text>
+  <text x="1165" y="504" text-anchor="middle" class="mute">final report</text>
+
+  <!-- GitHub API -->
+  <rect x="1080" y="560" width="170" height="140" rx="8" class="github"/>
+  <text x="1165" y="586" text-anchor="middle" font-weight="600">GitHub API</text>
+  <text x="1165" y="610" text-anchor="middle" class="mute">commit status</text>
+  <text x="1165" y="628" text-anchor="middle" class="mute">PR comment</text>
+  <text x="1165" y="646" text-anchor="middle" class="mute">check-run output</text>
+  <text x="1165" y="664" text-anchor="middle" class="mute">artifact links</text>
+
+  <!-- Edges -->
+  <path d="M 240,160 L 320,180" class="edge" marker-end="url(#arr)"/>
+  <text x="252" y="155" class="edgeLabel">webhook (HMAC)</text>
+
+  <path d="M 480,260 L 480,300" class="edge" marker-end="url(#arr)"/>
+  <text x="490" y="285" class="edgeLabel">submit JobRun</text>
+
+  <path d="M 640,200 C 850,200 1080,400 1080,580" class="edgeBlue" marker-end="url(#arrBlue)" stroke-dasharray="4 3"/>
+  <text x="850" y="216" class="edgeLabelBlue">status = pending</text>
+
+  <!-- runner -> caps stdio -->
+  <path d="M 665,462 L 700,462" class="edge" marker-end="url(#arr)"/>
+  <text x="638" y="454" class="edgeLabel">local MCP stdio</text>
+
+  <!-- runner -> COS -->
+  <path d="M 1020,460 L 1080,420" class="edge" marker-end="url(#arr)"/>
+  <text x="1025" y="450" class="edgeLabel">upload bundle</text>
+
+  <!-- runner -> reporter -->
+  <path d="M 670,580 L 670,610" class="edge" marker-end="url(#arr)"/>
+  <text x="680" y="600" class="edgeLabel">on completion</text>
+
+  <!-- reporter -> COS read -->
+  <path d="M 1020,635 L 1080,510" class="edge" marker-end="url(#arr)"/>
+  <text x="1025" y="565" class="edgeLabel">read bundle</text>
+
+  <!-- reporter -> GitHub API -->
+  <path d="M 1020,665 L 1080,625" class="edgeBlue" marker-end="url(#arrBlue)"/>
+  <text x="1025" y="660" class="edgeLabelBlue">post results</text>
+
+  <!-- GitHub API -> PR surface -->
+  <path d="M 1165,560 C 1165,80 600,60 140,100" class="edgeBlue" marker-end="url(#arrBlue)" stroke-dasharray="4 3"/>
+  <text x="600" y="76" class="edgeLabelBlue">status + comment surface on PR</text>
+
+  <!-- B2 callout -->
+  <g transform="translate(40, 760)">
+    <text x="0" y="0" font-weight="600" fill="#111827">Variant B2 (only if you must keep capabilities separate):</text>
+    <text x="0" y="18" class="mute">expose each Vakra capability as its own scale-to-zero CE Application speaking MCP over HTTP/SSE; bench-runner Job calls them over the network instead of local stdio. More moving parts but each capability scales/sizes independently.</text>
+  </g>
+</svg>

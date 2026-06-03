@@ -1,0 +1,146 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 760" font-family="Inter, Helvetica, Arial, sans-serif" font-size="13">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#374151"/>
+    </marker>
+    <marker id="arrBlue" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="8" markerHeight="8" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/>
+    </marker>
+    <style>
+      .title { font-size: 20px; font-weight: 700; fill: #111827; }
+      .subtitle { font-size: 12px; fill: #6b7280; }
+      .box { fill: #ffffff; stroke: #374151; stroke-width: 1.5; }
+      .vm  { fill: #eef2ff; stroke: #4338ca; stroke-width: 1.5; }
+      .stack { fill: #fef3c7; stroke: #92400e; stroke-width: 1.5; }
+      .cap { fill: #ffffff; stroke: #b45309; stroke-width: 1.5; }
+      .runner { fill: #fffbeb; stroke: #b45309; stroke-width: 1.5; }
+      .github { fill: #f9fafb; stroke: #111827; stroke-width: 1.5; }
+      .store  { fill: #ecfdf5; stroke: #047857; stroke-width: 1.5; }
+      .orch { fill: #dbeafe; stroke: #1d4ed8; stroke-width: 1.5; }
+      .mute  { fill: #4b5563; font-size: 11px; }
+      .edge  { fill: none; stroke: #374151; stroke-width: 1.5; }
+      .edgeBlue { fill: none; stroke: #2563eb; stroke-width: 1.5; }
+      .edgeLabel { fill: #374151; font-size: 11px; }
+      .edgeLabelBlue { fill: #2563eb; font-size: 11px; }
+      .containerLabel { fill: #4338ca; font-weight: 600; font-size: 12px; }
+      .stackLabel { fill: #92400e; font-weight: 600; font-size: 12px; }
+    </style>
+  </defs>
+
+  <text x="40" y="36" class="title">Revised Architecture A — VM with per-run docker-compose stack</text>
+  <text x="40" y="56" class="subtitle">One orchestrator + cuga-eval harness + Vakra's native 4-capability fleet brought up per run via docker compose</text>
+
+  <!-- GitHub -->
+  <rect x="40" y="100" width="200" height="120" rx="8" class="github"/>
+  <text x="140" y="128" text-anchor="middle" font-weight="600">GitHub</text>
+  <text x="140" y="152" text-anchor="middle" class="mute">PR opened / synced</text>
+  <text x="140" y="170" text-anchor="middle" class="mute">PR body ☑ checkbox</text>
+  <text x="140" y="188" text-anchor="middle" class="mute">/bench comment</text>
+  <text x="140" y="206" text-anchor="middle" class="mute">receives status + comment</text>
+
+  <!-- VM container -->
+  <rect x="290" y="90" width="710" height="580" rx="10" class="vm"/>
+  <text x="310" y="115" class="containerLabel">VM (always on) — Docker daemon</text>
+
+  <!-- Orchestrator -->
+  <rect x="320" y="140" width="280" height="120" rx="6" class="orch"/>
+  <text x="460" y="164" text-anchor="middle" font-weight="600">orchestrator (FastAPI)</text>
+  <text x="460" y="184" text-anchor="middle" class="mute">verifies HMAC, parses ☑ / /bench</text>
+  <text x="460" y="202" text-anchor="middle" class="mute">sets commit status = pending</text>
+  <text x="460" y="220" text-anchor="middle" class="mute">checkout PR SHA</text>
+  <text x="460" y="238" text-anchor="middle" class="mute">docker compose up (per run)</text>
+
+  <!-- Per-run stack -->
+  <rect x="320" y="290" width="640" height="290" rx="6" class="stack"/>
+  <text x="640" y="314" text-anchor="middle" class="stackLabel">per-run docker-compose stack (torn down after run)</text>
+
+  <!-- eval-runner -->
+  <rect x="345" y="330" width="280" height="220" rx="6" class="runner"/>
+  <text x="485" y="354" text-anchor="middle" font-weight="600">cuga-eval runner</text>
+  <text x="485" y="374" text-anchor="middle" class="mute">image: cuga-eval:tag</text>
+  <text x="485" y="394" text-anchor="middle" class="mute">./scripts/eval.sh --benchmark vakra</text>
+  <text x="485" y="412" text-anchor="middle" class="mute">./scripts/eval.sh --benchmark appworld</text>
+  <text x="485" y="438" text-anchor="middle" class="mute">drives Vakra via docker exec MCP stdio</text>
+  <text x="485" y="456" text-anchor="middle" class="mute">runs CUGA agent against tasks</text>
+  <text x="485" y="482" text-anchor="middle" class="mute">writes evaluation_bundles/...</text>
+  <text x="485" y="500" text-anchor="middle" class="mute">  metadata, per-task JSON, logs</text>
+  <text x="485" y="526" text-anchor="middle" class="mute">(AppWorld runs as subprocess here)</text>
+
+  <!-- Vakra cap containers -->
+  <rect x="645" y="330" width="295" height="220" rx="6" class="stack" stroke-dasharray="4 3"/>
+  <text x="792" y="354" text-anchor="middle" class="stackLabel">Vakra fleet (benchmark_environ image x4)</text>
+
+  <rect x="660" y="368" width="130" height="78" rx="6" class="cap"/>
+  <text x="725" y="390" text-anchor="middle" font-weight="600">cap1</text>
+  <text x="725" y="408" text-anchor="middle" class="mute">Router MCP</text>
+  <text x="725" y="424" text-anchor="middle" class="mute">SQLite</text>
+
+  <rect x="795" y="368" width="130" height="78" rx="6" class="cap"/>
+  <text x="860" y="390" text-anchor="middle" font-weight="600">cap2</text>
+  <text x="860" y="408" text-anchor="middle" class="mute">FastAPI MCP</text>
+  <text x="860" y="424" text-anchor="middle" class="mute">M3 REST :8000</text>
+
+  <rect x="660" y="458" width="130" height="78" rx="6" class="cap"/>
+  <text x="725" y="480" text-anchor="middle" font-weight="600">cap3</text>
+  <text x="725" y="498" text-anchor="middle" class="mute">BPO FastMCP</text>
+  <text x="725" y="514" text-anchor="middle" class="mute">multi-hop API</text>
+
+  <rect x="795" y="458" width="130" height="78" rx="6" class="cap"/>
+  <text x="860" y="480" text-anchor="middle" font-weight="600">cap4</text>
+  <text x="860" y="498" text-anchor="middle" class="mute">Combined MCP</text>
+  <text x="860" y="514" text-anchor="middle" class="mute">SQLite + Chroma</text>
+
+  <!-- Artifacts -->
+  <rect x="320" y="600" width="300" height="55" rx="6" class="store"/>
+  <text x="470" y="622" text-anchor="middle" font-weight="600">artifacts (NFS / COS)</text>
+  <text x="470" y="641" text-anchor="middle" class="mute">evaluation_bundle.zip + scorecard.json</text>
+
+  <rect x="640" y="600" width="320" height="55" rx="6" class="store"/>
+  <text x="800" y="622" text-anchor="middle" font-weight="600">baseline cache</text>
+  <text x="800" y="641" text-anchor="middle" class="mute">scorecard(main@merge-base, benchmark)</text>
+
+  <!-- GitHub API -->
+  <rect x="1030" y="290" width="180" height="160" rx="8" class="github"/>
+  <text x="1120" y="316" text-anchor="middle" font-weight="600">GitHub API</text>
+  <text x="1120" y="340" text-anchor="middle" class="mute">commit status</text>
+  <text x="1120" y="358" text-anchor="middle" class="mute">PR comment</text>
+  <text x="1120" y="376" text-anchor="middle" class="mute">check-run output</text>
+  <text x="1120" y="394" text-anchor="middle" class="mute">artifact links</text>
+  <text x="1120" y="418" text-anchor="middle" class="mute">+ bundle URL</text>
+
+  <!-- Edges -->
+  <path d="M 240,160 L 320,180" class="edge" marker-end="url(#arr)"/>
+  <text x="252" y="155" class="edgeLabel">webhook (HMAC)</text>
+
+  <path d="M 460,260 L 460,290" class="edge" marker-end="url(#arr)"/>
+  <text x="470" y="280" class="edgeLabel">compose up</text>
+
+  <!-- runner <-> caps docker exec -->
+  <path d="M 625,440 L 660,440" class="edge" marker-end="url(#arr)"/>
+  <text x="600" y="430" class="edgeLabel">docker exec MCP</text>
+
+  <!-- runner -> artifacts -->
+  <path d="M 470,550 L 470,600" class="edge" marker-end="url(#arr)"/>
+  <text x="480" y="585" class="edgeLabel">upload bundle</text>
+
+  <!-- orchestrator -> artifacts read for diff -->
+  <path d="M 600,200 L 800,600" class="edge" stroke-dasharray="4 3"/>
+  <text x="700" y="305" class="edgeLabel">read baseline / write final</text>
+
+  <!-- orchestrator -> GitHub API -->
+  <path d="M 600,200 C 800,200 1030,250 1080,290" class="edgeBlue" marker-end="url(#arrBlue)"/>
+  <text x="820" y="218" class="edgeLabelBlue">status + comment</text>
+
+  <!-- GitHub API -> GitHub -->
+  <path d="M 1120,290 C 1120,80 600,60 140,100" class="edgeBlue" marker-end="url(#arrBlue)" stroke-dasharray="4 3"/>
+  <text x="600" y="76" class="edgeLabelBlue">status + comment surface on PR</text>
+
+  <!-- Legend -->
+  <g transform="translate(40, 700)">
+    <text x="0" y="0" font-weight="600" fill="#111827">Flow</text>
+    <text x="0" y="18" class="mute">1. Webhook → orchestrator parses ☑ / /bench → sets commit status=pending → checks out PR SHA.</text>
+    <text x="0" y="36" class="mute">2. Orchestrator brings up per-run compose stack (cuga-eval runner + 4 Vakra cap containers); runner drives caps via docker exec MCP stdio.</text>
+    <text x="0" y="54" class="mute">3. cuga-eval produces an evaluation_bundle (metadata + per-task JSON + logs) → uploaded to NFS/COS; orchestrator diffs vs baseline and posts to GitHub. Stack is torn down.</text>
+  </g>
+</svg>
