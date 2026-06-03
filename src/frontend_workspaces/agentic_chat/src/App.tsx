@@ -241,9 +241,6 @@ export function App() {
             onToggleLeftSidebar={() => setLeftSidebarCollapsed(!leftSidebarCollapsed)}
             onToggleWorkspace={() => setWorkspacePanelOpen(!workspacePanelOpen)}
             onToggleKnowledge={() => setKnowledgePanelOpen(!knowledgePanelOpen)}
-            leftSidebarCollapsed={leftSidebarCollapsed}
-            workspaceOpen={workspacePanelOpen}
-            knowledgeOpen={knowledgePanelOpen}
             knowledgeDocCount={knowledgeDocCount}
             knowledgeEnabled={knowledgeEnabled}
           />

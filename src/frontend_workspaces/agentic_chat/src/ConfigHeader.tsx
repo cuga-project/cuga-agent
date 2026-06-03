@@ -9,9 +9,6 @@ interface ConfigHeaderProps {
   onToggleLeftSidebar: () => void;
   onToggleWorkspace: () => void;
   onToggleKnowledge: () => void;
-  leftSidebarCollapsed: boolean;
-  workspaceOpen: boolean;
-  knowledgeOpen: boolean;
   knowledgeDocCount: number;
   knowledgeEnabled?: boolean | null;
 }
