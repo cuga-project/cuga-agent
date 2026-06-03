@@ -185,6 +185,22 @@ def get_langfuse_callbacks() -> list[Any]:
     return list(_langfuse_callbacks.get() or [])
 
 
+def stash_langgraph_run_config(
+    tools_context_ref: dict[str, Any] | None,
+    config: Any,
+) -> None:
+    """Store the current LangGraph node config for runtime ``find_tools`` (sandbox closure)."""
+    if tools_context_ref is not None and config is not None and hasattr(config, "get"):
+        tools_context_ref["_langgraph_run_config"] = config
+
+
+def nested_langgraph_invoke_config(run_config: Any = None) -> dict[str, Any]:
+    """Prefer the parent node's full ``RunnableConfig``; fall back to contextvar callbacks."""
+    if run_config is not None and hasattr(run_config, "get"):
+        return run_config
+    return get_langfuse_invoke_config()
+
+
 def get_langfuse_invoke_config() -> dict[str, Any]:
     """LangChain ``config`` for nested ``ainvoke`` (find_tools, reflection, etc.).
 
@@ -227,7 +243,7 @@ def _langfuse_handler_classes() -> tuple[type, ...]:
 def is_langfuse_callback_handler(cb: Any) -> bool:
     """True if *cb* is a Langfuse LangChain callback handler."""
     name = type(cb).__name__
-    if name not in ("CallbackHandler", "LangchainCallbackHandler"):
+    if name not in ("CallbackHandler", "LangchainCallbackHandler", "TraceScopedLangfuseCallbackHandler"):
         return False
     for handler_cls in _langfuse_handler_classes():
         if isinstance(cb, handler_cls):

@@ -26,6 +26,7 @@ Branch: `fix/langfuse-nested-callback-propagation`
 Commit: `5591085a` — `fix(tracing): propagate Langfuse callbacks to nested LLM calls`
 
 - New `langfuse_tracing.py`: contextvar + `sync_langfuse_callbacks_from_config()` + `get_langfuse_invoke_config()`
+- Prefer explicit LangGraph `RunnableConfig` for reflection, bind-time shortlister, and runtime `find_tools` (see [#288](https://github.com/cuga-project/cuga-agent/issues/288)); contextvar remains fallback for paths without `config`
 - Wire nested call sites listed above
 - `sdk._apply_callbacks`: drop agent-level Langfuse handler when `langfuse_trace_id` or per-invoke trace handler is present
 - Unit tests: `tests/unit/test_langfuse_tracing.py`

@@ -57,6 +57,7 @@ async def create_find_tools_tool(
     app_to_tools_map: Optional[Dict[str, List[StructuredTool]]] = None,
     llm: Optional[Any] = None,
     initial_user_message: Optional[str] = None,
+    tools_context_ref: Optional[Dict[str, Any]] = None,
 ) -> StructuredTool:
     """Create a find_tools StructuredTool for tool discovery.
 
@@ -99,9 +100,14 @@ async def create_find_tools_tool(
 
         shortlister_query = _compose_find_tools_shortlister_query(query, initial_user_message)
 
+        run_config = (tools_context_ref or {}).get("_langgraph_run_config")
         try:
             return await PromptUtils.find_tools(
-                query=shortlister_query, all_tools=filtered_tools, all_apps=filtered_apps, llm=llm
+                query=shortlister_query,
+                all_tools=filtered_tools,
+                all_apps=filtered_apps,
+                llm=llm,
+                run_config=run_config,
             )
         except OutputParserException as e:
             logger.bind(

@@ -18,8 +18,10 @@ from cuga.backend.cuga_graph.utils.langfuse_tracing import (
     collect_langfuse_callbacks_from_config,
     get_langfuse_invoke_config,
     is_langfuse_callback_handler,
+    nested_langgraph_invoke_config,
     set_langfuse_callbacks,
     set_langfuse_trace_id,
+    stash_langgraph_run_config,
     sync_langfuse_callbacks_from_config,
 )
 
@@ -108,6 +110,22 @@ class TestLangfuseTracingHelpers:
     def test_is_langfuse_callback_handler_detects_langfuse_types(self):
         assert is_langfuse_callback_handler(_fake_langfuse_handler())
         assert not is_langfuse_callback_handler(_RecordingCallback())
+
+    def test_nested_langgraph_invoke_config_prefers_run_config(self):
+        node_config = {"callbacks": [_fake_langfuse_handler()], "configurable": {"thread_id": "t1"}}
+        set_langfuse_callbacks([])
+        assert nested_langgraph_invoke_config(node_config) is node_config
+
+    def test_nested_langgraph_invoke_config_falls_back_to_contextvar(self):
+        cb = _fake_langfuse_handler()
+        set_langfuse_callbacks([cb])
+        assert nested_langgraph_invoke_config(None) == {"callbacks": [cb]}
+
+    def test_stash_langgraph_run_config(self):
+        ref: dict = {}
+        cfg = {"configurable": {"langfuse_trace_id": "abc"}}
+        stash_langgraph_run_config(ref, cfg)
+        assert ref["_langgraph_run_config"] is cfg
 
     def test_get_invoke_config_reuses_primary_handler_for_trace_id(self):
         from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
@@ -267,6 +285,39 @@ class TestNestedCallSites:
         mock_llm.ainvoke.assert_awaited_once()
         _args, kwargs = mock_llm.ainvoke.call_args
         assert kwargs.get("config") == {"callbacks": [cb]}
+
+    @pytest.mark.asyncio
+    async def test_shortlist_passes_explicit_run_config(self):
+        from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import PromptUtils
+
+        node_config = {
+            "callbacks": [_fake_langfuse_handler()],
+            "configurable": {"thread_id": "bind-cap"},
+        }
+        set_langfuse_callbacks([])
+
+        api_detail = type("APIDetails", (), {"name": "tool_a", "reasoning": "r"})()
+        mock_chain = MagicMock()
+        mock_chain.ainvoke = AsyncMock(return_value=MagicMock(result=[api_detail]))
+        tool = MagicMock()
+        tool.name = "tool_a"
+
+        with patch(
+            "cuga.backend.cuga_graph.nodes.shared.base_agent.BaseAgent.get_chain",
+            return_value=mock_chain,
+        ):
+            with patch("cuga.backend.llm.models.LLMManager"):
+                ranked = await PromptUtils.shortlist_tool_names(
+                    query="list users",
+                    all_tools=[tool],
+                    all_apps=[],
+                    top_k=1,
+                    run_config=node_config,
+                )
+
+        assert ranked == ["tool_a"]
+        _args, kwargs = mock_chain.ainvoke.call_args
+        assert kwargs.get("config") is node_config
 
     @pytest.mark.asyncio
     async def test_context_summarization_does_not_wrap_model_with_config(self):

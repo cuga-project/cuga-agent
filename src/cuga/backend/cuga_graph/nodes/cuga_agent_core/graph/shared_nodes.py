@@ -170,7 +170,7 @@ def create_call_model_node(
         )
 
         # ── Resolve bound model (bind-tools, Lite-only) ────────────────────
-        bound = await adapter.resolve_bind_tools(state, active_model, configurable) or active_model
+        bound = await adapter.resolve_bind_tools(state, active_model, configurable, config) or active_model
 
         # ── Model invocation ───────────────────────────────────────────────
         # Pass the full node config so LangChain keeps parent_run_id linkage for

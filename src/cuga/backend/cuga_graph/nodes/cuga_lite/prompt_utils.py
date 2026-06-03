@@ -260,6 +260,7 @@ class PromptUtils:
         all_tools: List[StructuredTool],
         all_apps: List[AppDefinition],
         llm: Optional[Any] = None,
+        run_config: Optional[Any] = None,
     ) -> str:
         """
         Search tools from given applications and return the top 4 matching tools with reasoning.
@@ -301,7 +302,7 @@ class PromptUtils:
             ShortListerOutputLite,
         )
         from cuga.backend.cuga_graph.nodes.shared.base_agent import BaseAgent
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
 
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
@@ -313,7 +314,7 @@ class PromptUtils:
                 "all_tools": tools_as_dict,
                 "instructions": "",
             },
-            config=get_langfuse_invoke_config(),
+            config=nested_langgraph_invoke_config(run_config),
         )
 
         enriched_tools = []
@@ -426,6 +427,7 @@ class PromptUtils:
         llm: Optional[Any] = None,
         top_k: int = 4,
         instructions: Optional[str] = None,
+        run_config: Optional[Any] = None,
     ) -> List[str]:
         """Rank tools by relevance to ``query`` and return up to ``top_k`` names (best-first).
 
@@ -472,7 +474,7 @@ class PromptUtils:
         )
         tools_as_dict, apps_as_dict = PromptUtils._build_shortlister_payload(all_tools, all_apps)
 
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
 
         llm_manager = LLMManager()
         model = llm or llm_manager.get_model(settings.agent.code.model)
@@ -484,7 +486,7 @@ class PromptUtils:
                 "all_tools": tools_as_dict,
                 "instructions": effective_instructions,
             },
-            config=get_langfuse_invoke_config(),
+            config=nested_langgraph_invoke_config(run_config),
         )
 
         valid_names = {t.name for t in all_tools}
