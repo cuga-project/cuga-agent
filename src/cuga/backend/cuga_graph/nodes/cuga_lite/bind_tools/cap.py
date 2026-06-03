@@ -131,6 +131,7 @@ async def _run_shortlister(
     top_k: int,
     mode: str,
     max_count: int,
+    run_config: Any = None,
 ) -> List[str]:
     """Run :meth:`PromptUtils.shortlist_tool_names` and validate the result.
 
@@ -158,6 +159,7 @@ async def _run_shortlister(
             all_apps=all_apps,
             llm=llm,
             top_k=top_k,
+            run_config=run_config,
         )
     except Exception as e:
         raise RuntimeError(
@@ -251,6 +253,7 @@ async def apply_bind_tools_cap_and_merge(
     include_find_tools: bool,
     tools_context_ref: Optional[Dict[str, Any]],
     mode: str,
+    run_config: Any = None,
 ) -> List[StructuredTool]:
     """Enforce the provider-safe ``max_count`` and optionally merge ``find_tools``.
 
@@ -321,6 +324,7 @@ async def apply_bind_tools_cap_and_merge(
         top_k=target_k,
         mode=mode,
         max_count=max_count,
+        run_config=run_config,
     )
     shortlisted, seen_short = _materialize_shortlist(
         ranked_names,

@@ -52,6 +52,12 @@ async def apply_context_summarization(
 
     model_name = getattr(model, 'model_name', 'gpt-4')
 
+    # Do not use model.with_config(callbacks=...) here: it wraps the model in
+    # RunnableBinding and breaks ContextSummarizer._setup_model_profile (profile field).
+    # Langfuse callbacks for summarization LLM calls are propagated via the
+    # contextvar set in call_model (sync_langfuse_callbacks_from_config) before
+    # this runs; middleware wiring is tracked separately.
+
     try:
         # Create temporary AgentState with a copy of messages
         # Only pass optional parameters if they are not None

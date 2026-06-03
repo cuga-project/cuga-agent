@@ -99,9 +99,15 @@ async def create_find_tools_tool(
 
         shortlister_query = _compose_find_tools_shortlister_query(query, initial_user_message)
 
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import nested_langgraph_invoke_config
+
         try:
             return await PromptUtils.find_tools(
-                query=shortlister_query, all_tools=filtered_tools, all_apps=filtered_apps, llm=llm
+                query=shortlister_query,
+                all_tools=filtered_tools,
+                all_apps=filtered_apps,
+                llm=llm,
+                run_config=nested_langgraph_invoke_config(),
             )
         except OutputParserException as e:
             logger.bind(

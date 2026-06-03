@@ -1386,6 +1386,13 @@ class CugaAgent:
         Merge built-in callbacks (TokenUsageTracker + user callbacks) with any
         caller-supplied callbacks in run_config, writing the result to both the
         top-level and ``configurable`` slots.
+
+        Only ``run_config["callbacks"]`` is read for caller-supplied handlers;
+        any pre-existing ``run_config["configurable"]["callbacks"]`` is replaced
+        by the merged list so both locations stay identical for LangGraph nodes.
+
+        When the caller passes a trace-scoped Langfuse handler (eval harness),
+        drop agent-level Langfuse handlers so each LLM call nests under one trace.
         """
         built_callbacks = self._build_callbacks()
 
@@ -1394,11 +1401,22 @@ class CugaAgent:
                 return []
             return list(value) if isinstance(value, list) else [value]
 
-        existing = _as_list(run_config.get("callbacks"))
-        existing_configurable = _as_list(run_config["configurable"].get("callbacks"))
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import is_langfuse_callback_handler
 
-        run_config["callbacks"] = built_callbacks + existing
-        run_config["configurable"]["callbacks"] = built_callbacks + existing_configurable
+        existing = _as_list(run_config.get("callbacks"))
+        trace_id = run_config["configurable"].get("langfuse_trace_id")
+        per_call_langfuse = any(is_langfuse_callback_handler(cb) for cb in existing)
+
+        if trace_id or per_call_langfuse:
+            built_callbacks = [cb for cb in built_callbacks if not is_langfuse_callback_handler(cb)]
+
+        merged = built_callbacks + existing
+        run_config["callbacks"] = merged
+        run_config["configurable"]["callbacks"] = merged
+
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
+
+        sync_langfuse_callbacks_from_config(run_config)
 
     async def _ensure_initialized(self):
         """Ensure tool provider is initialized."""
