@@ -189,6 +189,8 @@ class CombinedToolProvider(ToolProviderInterface):
         app_names: Optional[List[str]] = None,
         get_include_by_app: Optional[Callable[[], Tuple[Optional[Dict[str, List[str]]], int]]] = None,
         agent_id: Optional[str] = None,
+        enable_toolguard_policies: bool = True,
+        toolguard_policy_storage = None
     ):
         """Initialize the combined tool provider.
 
@@ -198,10 +200,14 @@ class CombinedToolProvider(ToolProviderInterface):
                 If provided, only tools whose name is in include_by_app[app_name] are returned
                 (when that list is non-empty). Version change clears the tools cache.
             agent_id: Optional agent ID for database mode. If None, uses environment variable or defaults.
+            enable_toolguard_policies: Whether to enable policy-based tool guard validation. Defaults to True.
+            toolguard_policy_storage: Optional shared PolicyStorage instance for tool guards.
         """
         self.app_names = app_names
         self.get_include_by_app = get_include_by_app
         self.agent_id = agent_id
+        self.enable_toolguard_policies = enable_toolguard_policies
+        self.toolguard_policy_storage = toolguard_policy_storage
         self.apps: List[AppDefinition] = []
         self.tools_cache: Dict[str, List[StructuredTool]] = {}
         self._last_include_version: int = -1
@@ -365,7 +371,8 @@ class CombinedToolProvider(ToolProviderInterface):
                 for tool_name, tool_def in tracker_tools_dict.items():
                     try:
                         tool = create_tool_from_api_dict(
-                            tool_name, tool_def, app_name, agent_id=self.agent_id
+                            tool_name, tool_def, app_name, agent_id=self.agent_id, enable_toolguard_policies=self.enable_toolguard_policies,
+                              toolguard_policy_storage=self.toolguard_policy_storage
                         )
                         all_tools.append(tool)
                     except Exception as e:
@@ -397,8 +404,9 @@ class CombinedToolProvider(ToolProviderInterface):
                                         continue
                                     try:
                                         tool = create_tool_from_api_dict(
-                                            tool_name, tool_def, app_name, agent_id=self.agent_id
-                                        )
+                            tool_name, tool_def, app_name, agent_id=self.agent_id, enable_toolguard_policies=self.enable_toolguard_policies,
+                              toolguard_policy_storage=self.toolguard_policy_storage
+                        )
                                         all_tools.append(tool)
                                         logger.debug(f"  ✓ {tool_name}")
                                     except Exception as e:
