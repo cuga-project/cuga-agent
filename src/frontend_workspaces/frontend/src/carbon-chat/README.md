@@ -5,8 +5,7 @@ This folder contains the Carbon AI Chat component with reasoning steps support, 
 ## Files
 
 - **CarbonChat.tsx** - Main React component that initializes and renders the Carbon AI Chat interface
-- **scenarios.ts** - Contains different reasoning scenarios (reasoning steps, controlled reasoning, reasoning content, chain of thought)
-- **customSendMessage.ts** - Custom message handler that processes user input and triggers appropriate scenarios
+- **customSendMessage.ts** - Custom message handler that processes user input and streams agent responses
 - **index.tsx** - Barrel export file for easy imports
 
 ## Features
@@ -32,14 +31,3 @@ function MyComponent() {
 
 - `className` (optional): Additional CSS classes to apply to the container
 - `theme` (optional): 'light' or 'dark' theme (default: 'light')
-
-## Scenarios
-
-Users can select from a dropdown menu to see different reasoning patterns:
-
-1. **Reasoning steps** - Default behavior with auto-opening steps
-2. **Controlled reasoning steps** - Closed steps with loading indicator
-3. **Reasoning content** - Long-form rationale without expandable steps
-4. **Chain of thought** - Raw debugging traces
-
-Each scenario demonstrates how the UI responds to different mocked streaming patterns.
