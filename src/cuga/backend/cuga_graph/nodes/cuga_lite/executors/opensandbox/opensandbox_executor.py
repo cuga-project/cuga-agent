@@ -279,13 +279,20 @@ class OpenSandboxExecutor(RemoteExecutor):
 
         return run_command
 
-    def create_sandbox_tools(self, thread_id: Optional[str] = None) -> list[StructuredTool]:
+    def create_sandbox_tools(
+        self,
+        thread_id: Optional[str] = None,
+        cuga_folder: Optional[str] = None,
+        skills_enabled: Optional[bool] = None,
+    ) -> list[StructuredTool]:
         """Return the run_command StructuredTool bound to thread_id.
 
         Filesystem tools (read/write/list/edit/...) now come from the
         consolidated ``filesystem`` package via a ``RemoteSandboxBackend``
         (wired in ``cuga_lite_graph``); they are no longer produced here.
         """
+        key = thread_id or "_default"
+        self._skills_config[key] = (cuga_folder, skills_enabled)
         return [
             StructuredTool.from_function(
                 coroutine=self.create_run_command_tool(thread_id),
