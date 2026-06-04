@@ -174,10 +174,7 @@ _SCORER_SKILL_BODY = (
     "- The constant offset 22 is the Acme baseline risk factor\n\n"
     'Report the result as: "Acme CRS: <number>"'
 )
-_SCORER_TASK = (
-    "Compute the Acme compliance risk score for: "
-    "3 violations, 45 days overdue, 8 controls passed."
-)
+_SCORER_TASK = "Compute the Acme compliance risk score for: 3 violations, 45 days overdue, 8 controls passed."
 
 
 @pytest.mark.asyncio
@@ -225,8 +222,7 @@ async def test_compliance_scorer_produces_correct_score(
 
     _report(skill="acme_compliance_scorer", task=_SCORER_TASK, expected="159", actual=final_answer)
     assert "159" in final_answer, (
-        f"Expected CRS=159 in final answer (3*14 + 45*3 - 8*5 + 22 = 159). "
-        f"Got: {final_answer[:500]!r}"
+        f"Expected CRS=159 in final answer (3*14 + 45*3 - 8*5 + 22 = 159). Got: {final_answer[:500]!r}"
     )
 
 
@@ -257,7 +253,13 @@ async def test_compliance_scorer_cannot_produce_correct_score_without_skill(
         thread_id=f"e2e_crs_neg_{uuid.uuid4().hex[:8]}",
     )
 
-    _report(skill="acme_compliance_scorer (no skill)", task=_SCORER_TASK, expected="159", actual=final_answer, negative=True)
+    _report(
+        skill="acme_compliance_scorer (no skill)",
+        task=_SCORER_TASK,
+        expected="159",
+        actual=final_answer,
+        negative=True,
+    )
     assert "159" not in final_answer, (
         "LLM produced 159 without the skill — the skill is not gating this capability. "
         f"Got: {final_answer[:500]!r}"
@@ -357,7 +359,13 @@ async def test_parts_catalog_cannot_return_code_without_skill(
         thread_id=f"e2e_parts_neg_{uuid.uuid4().hex[:8]}",
     )
 
-    _report(skill="parts_catalog_lookup (no skill)", task=_PARTS_TASK, expected="PRU-2267-K", actual=final_answer, negative=True)
+    _report(
+        skill="parts_catalog_lookup (no skill)",
+        task=_PARTS_TASK,
+        expected="PRU-2267-K",
+        actual=final_answer,
+        negative=True,
+    )
     assert "PRU-2267-K" not in final_answer, (
         "LLM produced the fabricated part code without the skill — "
         "the skill is not gating this capability. "
@@ -449,8 +457,7 @@ async def test_vendor_onboarding_uses_internal_system_names(
     )
     for system in _ONBOARDING_SYSTEMS:
         assert system in final_answer, (
-            f"Expected internal system name '{system}' in final answer. "
-            f"Got: {final_answer[:500]!r}"
+            f"Expected internal system name '{system}' in final answer. Got: {final_answer[:500]!r}"
         )
 
 
@@ -489,6 +496,5 @@ async def test_vendor_onboarding_lacks_internal_names_without_skill(
     )
     found = [s for s in _ONBOARDING_SYSTEMS if s in final_answer]
     assert not found, (
-        f"LLM produced fabricated system names without the skill: {found}. "
-        f"Got: {final_answer[:500]!r}"
+        f"LLM produced fabricated system names without the skill: {found}. Got: {final_answer[:500]!r}"
     )

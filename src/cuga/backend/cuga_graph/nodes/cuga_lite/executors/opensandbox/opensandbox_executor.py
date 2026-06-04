@@ -195,7 +195,11 @@ class OpenSandboxExecutor(RemoteExecutor):
         from opensandbox.models import WriteEntry  # type: ignore[import]
         from cuga.backend.skills.loader import discover_skills
 
-        resolved_folder = cuga_folder or (os.getenv("CUGA_FOLDER") or "").strip() or (settings.policy.cuga_folder or "").strip()
+        resolved_folder = (
+            cuga_folder
+            or (os.getenv("CUGA_FOLDER") or "").strip()
+            or (settings.policy.cuga_folder or "").strip()
+        )
         skill_entries = discover_skills(resolved_folder or None)
 
         entries_by_path: dict[str, WriteEntry] = {}

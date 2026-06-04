@@ -55,7 +55,9 @@ def _report(*, skill: str, expected: str | list[str], actual: str, negative: boo
     terms = expected if isinstance(expected, list) else [expected]
     passed = all(t not in actual for t in terms) if negative else all(t in actual for t in terms)
     display = repr(terms[0]) + (f" (+{len(terms) - 1} more)" if len(terms) > 1 else "")
-    _RESULTS.append({"skill": skill, "expected": display, "actual": actual, "negative": negative, "passed": passed})
+    _RESULTS.append(
+        {"skill": skill, "expected": display, "actual": actual, "negative": negative, "passed": passed}
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -162,8 +164,7 @@ class TestSkillsSdkConfiguration:
         cfg = captured[0].get("configurable", {})
         result = cfg.get("skills_folder", "")
         assert result == already_suffixed, (
-            f"SDK must not double-append '.cuga'. "
-            f"Expected {already_suffixed!r}, got {result!r}"
+            f"SDK must not double-append '.cuga'. Expected {already_suffixed!r}, got {result!r}"
         )
         assert not result.endswith(".cuga/.cuga"), (
             "skills_folder was double-suffixed — discovery will resolve to the wrong directory."
@@ -344,7 +345,9 @@ async def test_sdk_compliance_scorer_cannot_produce_correct_score_without_skill(
     )
 
     print(f"\n[sdk_crs_neg] answer: {result.answer[:400]}")
-    _report(skill="sdk/acme_compliance_scorer (no skill)", expected="159", actual=result.answer, negative=True)
+    _report(
+        skill="sdk/acme_compliance_scorer (no skill)", expected="159", actual=result.answer, negative=True
+    )
     assert "159" not in result.answer, (
         "LLM produced 159 without the skill via SDK — skill is not gating this capability. "
         f"Got: {result.answer[:500]!r}"
@@ -407,7 +410,9 @@ async def test_sdk_parts_catalog_cannot_return_code_without_skill(
 
     print(f"\n[sdk_parts_neg] answer: {result.answer[:400]}")
     normalized = _normalize_hyphens(result.answer)
-    _report(skill="sdk/parts_catalog_lookup (no skill)", expected="PRU-2267-K", actual=normalized, negative=True)
+    _report(
+        skill="sdk/parts_catalog_lookup (no skill)", expected="PRU-2267-K", actual=normalized, negative=True
+    )
     assert "PRU-2267-K" not in normalized, (
         f"LLM produced the fabricated part code via SDK without the skill. Got: {result.answer[:500]!r}"
     )
@@ -469,7 +474,12 @@ async def test_sdk_vendor_onboarding_lacks_internal_names_without_skill(
 
     print(f"\n[sdk_onboard_neg] answer: {result.answer[:400]}")
     found = [s for s in _ONBOARDING_SYSTEMS if s in result.answer]
-    _report(skill="sdk/acme_vendor_onboarding (no skill)", expected=list(_ONBOARDING_SYSTEMS), actual=result.answer, negative=True)
+    _report(
+        skill="sdk/acme_vendor_onboarding (no skill)",
+        expected=list(_ONBOARDING_SYSTEMS),
+        actual=result.answer,
+        negative=True,
+    )
     assert not found, (
         f"LLM produced fabricated system names without the skill via SDK: {found}. "
         f"Got: {result.answer[:500]!r}"

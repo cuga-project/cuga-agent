@@ -140,7 +140,9 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
 
     name_str = _sanitize_for_prompt(str(name).strip(), "name", path)
     if re.search(r'[/\\]|\.\.', name_str):
-        logger.warning(f"Skill {path} has unsafe name {name_str!r} (path separators or '..' not allowed), skipping")
+        logger.warning(
+            f"Skill {path} has unsafe name {name_str!r} (path separators or '..' not allowed), skipping"
+        )
         return None
 
     description_str = _sanitize_for_prompt(str(description).strip(), "description", path)

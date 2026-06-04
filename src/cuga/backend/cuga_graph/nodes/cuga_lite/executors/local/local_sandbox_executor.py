@@ -151,9 +151,11 @@ class LocalSandboxExecutor:
         except Exception:
             return
 
-        resolved_folder = cuga_folder or (os.getenv("CUGA_FOLDER") or "").strip() or (
-            getattr(settings.policy, "cuga_folder", None) or ""
-        ).strip()
+        resolved_folder = (
+            cuga_folder
+            or (os.getenv("CUGA_FOLDER") or "").strip()
+            or (getattr(settings.policy, "cuga_folder", None) or "").strip()
+        )
         skill_entries = discover_skills(resolved_folder or None)
 
         copied = 0

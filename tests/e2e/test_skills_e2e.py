@@ -397,9 +397,7 @@ class TestSkillRegistry:
 
         loaded = registry.load_skill("img")
 
-        assert "npm list" in loaded, (
-            "Expected 'npm list <package>' verification command after npm install"
-        )
+        assert "npm list" in loaded, "Expected 'npm list <package>' verification command after npm install"
         assert "sharp" in loaded
 
     def test_verification_appears_after_install_and_before_step2(self) -> None:

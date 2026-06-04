@@ -134,9 +134,7 @@ async def test_concurrent_creation_calls_sandbox_create_exactly_once() -> None:
         f"Sandbox.create should be called once under concurrent access, "
         f"but was called {counter['create_calls']} times"
     )
-    assert results[0] is results[1], (
-        "Both coroutines should receive the same cached interpreter"
-    )
+    assert results[0] is results[1], "Both coroutines should receive the same cached interpreter"
 
 
 @pytest.mark.asyncio
@@ -208,15 +206,13 @@ async def test_sandbox_cached_even_when_upload_fails(tmp_path, monkeypatch) -> N
     executor = OpenSandboxExecutor()
     executor._skills_config["thread-B"] = (str(tmp_path / ".cuga"), True)
 
-
     with patch(
         "cuga.backend.cuga_graph.nodes.cuga_lite.executors.opensandbox.opensandbox_executor.logger"
     ) as mock_logger:
         result = await executor._get_or_create_interpreter("thread-B")
 
     assert "thread-B" in executor._sandboxes, (
-        "Sandbox must be cached even after an upload failure — "
-        "otherwise the remote container is orphaned."
+        "Sandbox must be cached even after an upload failure — otherwise the remote container is orphaned."
     )
     assert result is interpreter
 

@@ -154,8 +154,7 @@ def test_copy_skills_to_workspace_is_noop_when_disabled(tmp_path: Path, monkeypa
 
     skills_dir = workspace_root / "skills"
     assert not skills_dir.exists(), (
-        "Expected no skills to be copied when skills_enabled=False, "
-        f"but found files under {skills_dir}"
+        f"Expected no skills to be copied when skills_enabled=False, but found files under {skills_dir}"
     )
 
 
