@@ -39,6 +39,49 @@ def _emit(event_name: str, data: dict) -> None:
 # Shared future store: future_id → {"status": "running"|"done"|"error", "result": str|None, "error": str|None}
 _spawn_futures: Dict[str, Any] = {}
 
+# Process-level caches — keyed by descriptor name.
+# _agent_cache: compiled CugaAgent instances, keyed by (name, model, frozenset(tool_names)).
+# _static_tools_cache: assembled skill+definition StructuredTools, keyed by descriptor name.
+# Parent tools are always resolved fresh because they come from the mutable _parent_tools_context.
+_agent_cache: Dict[tuple, Any] = {}
+_static_tools_cache: Dict[str, List[Any]] = {}
+
+
+def clear_runtime_caches() -> None:
+    """Clear process-level spawn caches (use in tests or after descriptor changes)."""
+    _agent_cache.clear()
+    _static_tools_cache.clear()
+
+
+async def prewarm_agent_for_entry(
+    entry: AgentDescriptorEntry,
+    parent_tools_context: Dict[str, Any],
+    parent_config: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Pre-build and pre-compile a CugaAgent for a descriptor in the background.
+
+    Fired as a background task from prepare_node so graph compilation runs
+    concurrently with the parent LLM call. By the time spawn_agent is invoked,
+    the compiled graph is already in _agent_cache — eliminating the compilation
+    delay on the first spawn.
+    """
+    import os
+    if os.environ.get("CUGA_AGENT_SPAWN_NO_CACHE"):
+        return
+    try:
+        rt = SpawnAgentRuntime(entry, parent_tools_context, parent_config)
+        tools = rt._assemble_tools()
+        cache_key = (entry.name, str(entry.model), frozenset(t.name for t in tools))
+        cached = _agent_cache.get(cache_key)
+        if cached is not None and getattr(cached, "_compiled_graph", None) is not None:
+            return  # already fully warm
+        agent = rt._build_agent(tools)  # populates _agent_cache on miss
+        # Force graph compilation off the event loop so it doesn't block LLM I/O.
+        if getattr(agent, "_compiled_graph", None) is None:
+            await asyncio.to_thread(lambda: agent.graph)  # type: ignore[attr-defined]
+    except Exception as e:
+        logger.debug(f"agent_spawn: prewarm skipped for {entry.name!r}: {e}")
+
 
 class SpawnAgentRuntime:
     def __init__(
@@ -80,7 +123,6 @@ class SpawnAgentRuntime:
     def _build_skill_tools(self) -> List[StructuredTool]:
         """Load skill_tools entries from SKILL.md tools: blocks."""
         from cuga.backend.skills.loader import discover_skills
-        from cuga.backend.agent_spawn.tool_builder import build_tools_from_skill_tool_definitions
 
         if not self._entry.skill_tools:
             return []
@@ -103,13 +145,29 @@ class SpawnAgentRuntime:
             out.append(build_tool_from_definition(defn))
         return out
 
+    def _build_static_tools(self) -> List[StructuredTool]:
+        """Build and cache skill + definition tools for this descriptor.
+
+        These tools are deterministic for a given descriptor (no parent context
+        dependency), so they are cached for the process lifetime by descriptor name.
+        Parent tools are always resolved fresh in _resolve_parent_tools().
+        """
+        import os
+        if os.environ.get("CUGA_AGENT_SPAWN_NO_CACHE"):
+            return self._build_skill_tools() + self._build_definition_tools()
+        cached = _static_tools_cache.get(self._entry.name)
+        if cached is not None:
+            return cached
+        result = self._build_skill_tools() + self._build_definition_tools()
+        _static_tools_cache[self._entry.name] = result
+        return result
+
     def _assemble_tools(self) -> List[StructuredTool]:
         """Merge parent + skill + definition tools; definition tools win on name collision."""
         base = self._resolve_parent_tools() if self._entry.inherit_parent_tools else []
-        skill = self._build_skill_tools()
-        defn = self._build_definition_tools()
+        static = self._build_static_tools()
         by_name: dict[str, StructuredTool] = {t.name: t for t in base}
-        for t in skill + defn:
+        for t in static:
             by_name[t.name] = t
         return list(by_name.values())
 
@@ -118,13 +176,36 @@ class SpawnAgentRuntime:
         return f"{self._entry.thread_id_prefix}_{uuid4().hex[:8]}"
 
     def _build_agent(self, tools: List[StructuredTool]):
+        """Return a CugaAgent for the given tool set, reusing a cached instance when possible.
+
+        The compiled LangGraph graph is stateless — thread_id is passed at invoke
+        time — so the same CugaAgent can safely serve multiple spawns of the same
+        descriptor. Cache key includes tool names so changes to the tool list (e.g.
+        in tests) still produce a fresh agent.
+        """
+        import os
         from cuga.sdk import CugaAgent
+
+        no_cache = os.environ.get("CUGA_AGENT_SPAWN_NO_CACHE")
+        if not no_cache:
+            cache_key = (
+                self._entry.name,
+                str(self._entry.model),
+                frozenset(t.name for t in tools),
+            )
+            cached = _agent_cache.get(cache_key)
+            if cached is not None:
+                return cached
 
         agent_kwargs: dict = {"tools": tools}
         if self._entry.model:
             from cuga.backend.llm.models import LLMManager
             agent_kwargs["model"] = LLMManager().get_model(self._entry.model)
-        return CugaAgent(**agent_kwargs)
+        agent = CugaAgent(**agent_kwargs)
+
+        if not no_cache:
+            _agent_cache[cache_key] = agent  # type: ignore[possibly-undefined]
+        return agent
 
     def _build_invoke_config(self) -> dict:
         from cuga.backend.cuga_graph.utils.langfuse_tracing import (
