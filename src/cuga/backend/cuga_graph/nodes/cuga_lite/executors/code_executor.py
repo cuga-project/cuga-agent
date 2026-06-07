@@ -186,7 +186,7 @@ class CodeExecutor:
                 result = await executor.execute(
                     wrapped_code=wrapped_code,
                     context_locals=_locals,
-                    timeout=30,
+                    timeout=settings.advanced_features.tool_call_timeout,
                 )
 
         except Exception as e:
@@ -300,7 +300,7 @@ async def _async_main():
             result = await executor.execute(
                 wrapped_code=wrapped_code,
                 context_locals=context_locals,
-                timeout=30,
+                timeout=settings.advanced_features.tool_call_timeout,
             )
             return result, {}
         except Exception as e:
