@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 from pathlib import Path
 from typing import Any, Callable, Optional
@@ -345,6 +346,15 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                     f"agent_spawn: loaded {len(_agent_entries)} descriptor(s), "
                     "injected spawn_agent + get_agent_result tools"
                 )
+                # Pre-warm sub-agent graphs in the background so graph compilation
+                # runs concurrently with the parent LLM call. By the time spawn_agent
+                # is invoked, _compiled_graph is already set in _agent_cache.
+                from cuga.backend.agent_spawn.runtime import prewarm_agent_for_entry
+                for _entry in _agent_entries:
+                    asyncio.create_task(
+                        prewarm_agent_for_entry(_entry, adapter._tools_context, config),
+                        name=f"prewarm_{_entry.name}",
+                    )
         # ── end agent_spawn ────────────────────────────────────────────────────────
 
         for tool in agent_spawn_tools:
