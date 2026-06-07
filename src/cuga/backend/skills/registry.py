@@ -13,6 +13,7 @@ class SkillEntry:
     body: str
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
+    tool_definitions: tuple[dict, ...] = ()  # raw dicts from the tools: frontmatter block
 
 
 class SkillRegistry:

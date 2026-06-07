@@ -122,12 +122,28 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
         logger.warning(f"Skill {path} missing name or description in frontmatter")
         return None
 
+    raw_tool_defs = frontmatter.get("tools") or []
+    tool_definitions: tuple[dict, ...] = ()
+    if isinstance(raw_tool_defs, list):
+        validated: list[dict] = []
+        for d in raw_tool_defs:
+            if not isinstance(d, dict):
+                continue
+            if not d.get("name") or not d.get("module") or not d.get("function"):
+                logger.warning(
+                    f"Skill {path}: tool_definitions entry missing name/module/function, skipping"
+                )
+                continue
+            validated.append(d)
+        tool_definitions = tuple(validated)
+
     return SkillEntry(
         name=str(name).strip(),
         description=str(description).strip(),
         body=body.strip(),
         source=str(path),
         requirements=_normalize_requirements(frontmatter.get("requirements")),
+        tool_definitions=tool_definitions,
     )
 
 
