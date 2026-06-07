@@ -12,21 +12,21 @@
 flow:
   name: "SBP-EoG"
   id: "sbp-eog"
-  ro_source_file: "/path-to-clone/examples/itbench-lite/sbp-eog.ro"
+  ro_source_file: "<path-to-clone>/examples/itbench-lite/sbp-eog.ro"
   input_args:
-    data_dir: "/path-to-clone/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+    data_dir: "<path-to-clone>/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
 
 # Shared MCP server pool. Tools are loaded once, but each task agent only
 # receives the subset explicitly listed under that task's agent.tools.
 mcpServers:
   sre_utils:
-    command: "/path-to-clone/examples/itbench-lite/start_sre_mcp.sh"
+    command: "<path-to-clone>/examples/itbench-lite/start_sre_mcp.sh"
     args: []
     env:
-      PYTHON: "/<path-to-root>l/.venv/bin/python"
+      PYTHON: "/<path-to-root>/.venv/bin/python"
 
 variables:
-  data_dir: "/path-to-clone/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
+  data_dir: "<path-to-clone>/examples/itbench-lite/test_data/snapshots/sre/v0.2-B96DF826-4BB2-4B62-97AB-6D84254C53D7/Scenario-1"
   namespace_scope: ""
   budget: 30
   k_thresh: 3
@@ -59,6 +59,9 @@ tasks:
       system_instruction: >
         Fulfill the RO goal using the goal description and process variables.
         Return only the schema-valid goal result, with no explanatory wrapper.
+        
+        Tool Arguments:
+        - build_topology: Requires arch_file (path to application architecture JSON), k8s_objects_file (path to Kubernetes objects TSV), output_file (path to write topology JSON output)
       tools:
         - build_topology
 
@@ -71,6 +74,10 @@ tasks:
       system_instruction: >
         Fulfill the RO goal using the goal description and process variables.
         Return only the schema-valid goal result, with no explanatory wrapper.
+        
+        Tool Arguments:
+        - alert_summary: Requires base_dir (path to alerts directory). Optional: time_basis (snapshot/activeAt), start_time, end_time, state_filter, min_duration_min, limit
+        - alert_analysis: Requires base_dir (path to alerts directory). Optional: time_basis (snapshot/activeAt), filters (dict), group_by (string/array), agg, sort_by, limit, offset, start_time, end_time
       tools:
         - alert_summary
         - alert_analysis
@@ -84,6 +91,12 @@ tasks:
       system_instruction: >
         Fulfill the RO goal using the goal description and process variables.
         Return only the schema-valid goal result, with no explanatory wrapper.
+        
+        Tool Arguments:
+        - alert_summary: Requires base_dir. Optional: time_basis, start_time, end_time, state_filter, min_duration_min, limit
+        - alert_analysis: Requires base_dir. Optional: time_basis, filters, group_by, agg, sort_by, limit, offset, start_time, end_time
+        - metric_analysis: Requires base_dir (path to metrics directory). Optional: k8_object_name, object_pattern, metric_names (array), eval, filters, group_by, agg, start_time, end_time, verbosity, limit, sort_by, include_tags, include_buckets, labels_keep
+        - get_trace_error_tree: Requires trace_file (path to OTEL traces TSV). Optional: service_name, span_kind, pivot_time, delta_time, error_threshold_pct, latency_threshold_pct
       tools:
         - alert_summary
         - alert_analysis
@@ -110,6 +123,9 @@ tasks:
       system_instruction: >
         Fulfill the RO goal using the goal description and process variables.
         Return only the schema-valid goal result, with no explanatory wrapper.
+        
+        Tool Arguments:
+        - event_analysis: Requires events_file (path to Kubernetes events TSV). Optional: filters (dict), group_by (string/array), agg, sort_by, limit, offset, start_time, end_time
       tools:
         - event_analysis
 
@@ -122,6 +138,9 @@ tasks:
       system_instruction: >
         Fulfill the RO goal using the goal description and process variables.
         Return only the schema-valid goal result, with no explanatory wrapper.
+        
+        Tool Arguments:
+        - event_analysis: Requires events_file (path to Kubernetes events TSV). Optional: filters (dict), group_by (string/array), agg, sort_by, limit, offset, start_time, end_time
       tools:
         - event_analysis
 
@@ -134,6 +153,10 @@ tasks:
       system_instruction: >
         Fulfill the RO goal using the goal description and process variables.
         Return only the schema-valid goal result, with no explanatory wrapper.
+        
+        Tool Arguments:
+        - k8s_spec_change_analysis: Requires k8s_objects_file (path to K8s objects TSV). Optional: k8_object_name, start_time, end_time, max_changes_per_diff, include_reference_spec, include_flat_change_items, limit, offset, include_no_change
+        - get_k8_spec: Requires k8s_objects_file, k8_object_name (namespace/kind/name format preferred). Optional: return_all_observations, include_metadata
       tools:
         - k8s_spec_change_analysis
         - get_k8_spec
@@ -147,6 +170,10 @@ tasks:
       system_instruction: >
         Fulfill the RO goal using the goal description and process variables.
         Return only the schema-valid goal result, with no explanatory wrapper.
+        
+        Tool Arguments:
+        - k8s_spec_change_analysis: Requires k8s_objects_file (path to K8s objects TSV). Optional: k8_object_name, start_time, end_time, max_changes_per_diff, include_reference_spec, include_flat_change_items, limit, offset, include_no_change
+        - get_k8_spec: Requires k8s_objects_file, k8_object_name (namespace/kind/name format preferred). Optional: return_all_observations, include_metadata
       tools:
         - k8s_spec_change_analysis
         - get_k8_spec
@@ -182,6 +209,15 @@ tasks:
       system_instruction: >
         Fulfill the RO goal using the goal description and process variables.
         Return only the schema-valid goal result, with no explanatory wrapper.
+        
+        Tool Arguments:
+        - get_context_contract: Requires k8_object (namespace/kind/name format preferred), snapshot_dir (path to snapshot directory). Optional: topology_file, start_time, end_time, page, deps_per_page
+        - topology_analysis: Requires topology_file (path to topology JSON), entity (name or partial match)
+        - event_analysis: Requires events_file. Optional: filters, group_by, agg, sort_by, limit, offset, start_time, end_time
+        - alert_analysis: Requires base_dir. Optional: time_basis, filters, group_by, agg, sort_by, limit, offset, start_time, end_time
+        - get_metric_anomalies: Requires k8_object_name, base_dir (path to metrics directory). Optional: metric_name_filter, start_time, end_time, raw_content
+        - get_k8_spec: Requires k8s_objects_file, k8_object_name. Optional: return_all_observations, include_metadata
+        - k8s_spec_change_analysis: Requires k8s_objects_file. Optional: k8_object_name, start_time, end_time, max_changes_per_diff, include_reference_spec, include_flat_change_items, limit, offset, include_no_change
       tools:
         - get_context_contract
         - topology_analysis

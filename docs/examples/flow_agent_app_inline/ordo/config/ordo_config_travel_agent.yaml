@@ -1,0 +1,229 @@
+# Ordo Flow Configuration — Corporate Travel Agent
+#
+# Task-only config: no bpmn_file required.
+# Workflow execution is delegated to the real ro MCP server.
+#
+# ro_source_file points to the .ro workflow definition passed to register_workflow.
+# input_args is optional and is passed to register_workflow as json.input_args.
+#
+# Task IDs must match each `kind: goal` `name:` in the .ro program so the
+# mediator can route RO goal pauses to the right FlowAgent task.
+
+flow:
+  name: "Corporate Travel Agent"
+  id: "corporate-travel-agentflow-v2"
+  ro_source_file: "<path-to-clone>/examples/travel_agent/corporate-travel-agentflow-v2.ro"
+  # input_args defines the schema for RO workflow registration
+  # These empty defaults will be overridden by supervisor at runtime
+  input_args:
+    request:
+      traveler: ""
+      origin: ""
+      destination: ""
+      start_date: ""
+      end_date: ""
+      cabin_preference: ""
+  # Fallback used only when structured process variables are not provided by the
+  # supervisor/delegation layer. The mediator parses the original user message
+  # into the request input schema before registering the workflow with RO.
+  input_extraction:
+    target: request
+    source: _user_message
+    mode: travel_request
+
+# Shared MCP server pool for travel agent tools
+mcpServers:
+  travel_agent:
+    command: "python"
+    args: ["<path-to-clone>/examples/travel_agent/travel_agent_mcp.py"]
+
+variables:  
+  # Request input
+  request:
+    traveler: ""
+    origin: ""
+    destination: ""
+    start_date: ""
+    end_date: ""
+    cabin_preference: ""
+  origin: ""
+  destination: ""
+  start_date: ""
+  end_date: ""
+  cabin_preference: ""
+  
+  # Weather API output
+  weather_result:
+    weather_safe: false
+    severe_weather: false
+    risk_level: ""
+    summary: ""
+    alerts: []
+  weather_safe: false
+  severe_weather: false
+  
+  # Agent outputs
+  flight_result:
+    carrier: ""
+    flight_number: ""
+    cabin: ""
+    cost: 0
+    refundable: false
+    summary: ""
+  
+  hotel_result:
+    hotel_name: ""
+    nightly_rate: 0
+    nights: 0
+    total_cost: 0
+    refundable: false
+    summary: ""
+  
+  policy_check_result:
+    policy_result: ""
+    total_trip_cost: 0
+    violations: []
+    summary: ""
+  
+  policy_result: ""
+  
+  approval_result:
+    approval_decision: ""
+    approver: ""
+    reasoning: ""
+    conditions: []
+  approval_decision: ""
+  
+  booking_result:
+    booked: false
+    confirmation_id: ""
+    flight_confirmation: ""
+    hotel_confirmation: ""
+    total_cost: 0
+    summary: ""
+  
+  terminal_status: "IDLE"
+  terminal_reason: ""
+
+tasks:
+  # Flight Agent - selects suitable flight after weather check
+  - id: "flight-agent"
+    mode: task_agent
+    output_mapping:
+      flight_result: flight_result
+    agent:
+      name: "flight-agent"
+      system_instruction: |
+        You are the Flight Agent for corporate travel booking.
+        
+        Your task is to select a suitable flight for the corporate trip after weather
+        has been deemed safe. You should prefer policy-compliant, cost-effective,
+        refundable options. Respect cabin preference when it is policy-compliant;
+        otherwise explain the policy concern in the summary.
+        
+        AVAILABLE WORKFLOW VARIABLES:
+        - origin: departure city/airport code
+        - destination: arrival city/airport code
+        - start_date: departure date in YYYY-MM-DD format
+        - end_date: return date in YYYY-MM-DD format
+        - cabin_preference: preferred cabin class (economy, premium_economy, business, first)
+        
+        TOOL USAGE:
+        Use the search_flights tool with these exact parameter mappings:
+        - origin: use the 'origin' variable value
+        - destination: use the 'destination' variable value
+        - departure_date: use the 'start_date' variable value
+        - return_date: use the 'end_date' variable value
+        - cabin_preference: use the 'cabin_preference' variable value
+        
+        CRITICAL: You MUST return a valid JSON object (not a string). Do not wrap the JSON in quotes or markdown code blocks.
+        
+        Required format:
+        {
+          "carrier": "American Airlines",
+          "flight_number": "AA123",
+          "cabin": "economy",
+          "cost": 450,
+          "refundable": true,
+          "summary": "Direct flight, policy compliant"
+        }
+        
+        Return ONLY the raw JSON object above, nothing else.
+      tools:
+        - search_flights
+
+  # Hotel Agent - selects suitable hotel accommodation
+  - id: "hotel-agent"
+    mode: task_agent
+    output_mapping:
+      hotel_result: hotel_result
+    agent:
+      name: "hotel-agent"
+      system_instruction: |
+        You are the Hotel Agent for corporate travel booking.
+        
+        Your task is to select a suitable hotel for the corporate trip. You should
+        prefer policy-compliant, cost-effective, refundable options near the
+        destination or meeting location. Flag luxury or over-budget options.
+        
+        AVAILABLE WORKFLOW VARIABLES:
+        - destination: city where hotel is needed
+        - start_date: check-in date in YYYY-MM-DD format
+        - end_date: check-out date in YYYY-MM-DD format
+        - flight_result: selected flight information (for context)
+        
+        TOOL USAGE:
+        Use the search_hotels tool with these exact parameter mappings:
+        - location: use the 'destination' variable value
+        - check_in_date: use the 'start_date' variable value
+        - check_out_date: use the 'end_date' variable value
+        
+        CRITICAL: You MUST return a valid JSON object (not a string). Do not wrap the JSON in quotes or markdown code blocks.
+        
+        Required format:
+        {
+          "hotel_name": "Marriott Downtown",
+          "nightly_rate": 150,
+          "nights": 5,
+          "total_cost": 750,
+          "refundable": true,
+          "summary": "Near meeting location, policy compliant"
+        }
+        
+        Return ONLY the raw JSON object above, nothing else.
+      tools:
+        - search_hotels
+
+  # Approval Agent - reviews trips requiring policy exceptions
+  - id: "approval-agent"
+    mode: task_agent
+    output_mapping:
+      approval_result: approval_result
+    agent:
+      name: "approval-agent"
+      system_instruction: |
+        You are the Approval Agent for corporate travel booking.
+        
+        Your task is to review trips that require policy exceptions. You should
+        approve only if exceptions are justified by business need and risk is
+        acceptable. Reject if the trip remains out of policy.
+        
+        You have access to the complete trip details including request, weather,
+        flight, hotel selections, and policy check results.
+        
+        CRITICAL: You MUST return a valid JSON object (not a string). Do not wrap the JSON in quotes or markdown code blocks.
+        
+        Required format:
+        {
+          "approval_decision": "approve",
+          "approver": "Manager Name",
+          "reasoning": "Business justification for approval or rejection",
+          "conditions": ["Condition 1", "Condition 2"]
+        }
+        
+        The approval_decision must be exactly "approve" or "reject".
+        Return ONLY the raw JSON object above, nothing else.
+      tools: []
+      policy: "../policies/task-approval_agent.md"
+
+# Made with Bob
