@@ -81,6 +81,7 @@ async function customLoadHistory(
     const history: HistoryItem[] = [];
     let currentSteps: ReasoningStep[] = [];
     let currentAnswerText = "";
+    const subAgentAccumulators: Map<string, Array<{ title: string; content: string }>> = new Map();
 
     for (const event of events) {
       console.log(`Processing event: ${event.event_name}`, event);
@@ -133,6 +134,52 @@ async function customLoadHistory(
           break;
         }
 
+        case "SubAgent": {
+          let subAgentData: any = {};
+          try { subAgentData = typeof actualData === "string" ? JSON.parse(actualData) : (actualData || {}); } catch { /* ignore */ }
+
+          const agentName = subAgentData.agent_name || "sub-agent";
+          const agentLabel = `Sub-Agent: ${agentName}`;
+
+          if (!subAgentAccumulators.has(agentName)) {
+            subAgentAccumulators.set(agentName, []);
+          }
+          const iterations = subAgentAccumulators.get(agentName)!;
+
+          let newIteration: { title: string; content: string } | null = null;
+          if (subAgentData.type === "start") {
+            newIteration = { title: "Task", content: subAgentData.task || "" };
+          } else if (subAgentData.type === "result") {
+            const answer = subAgentData.answer || "";
+            newIteration = {
+              title: "Result",
+              content: `**Execution Output:**\n\`\`\`\n${answer}\n\`\`\``,
+            };
+          } else if (subAgentData.code || subAgentData.execution_output) {
+            const parsed = parseReasoningStepContent(actualData, "");
+            newIteration = {
+              title: subAgentData.code ? "Code" : "Execution Output",
+              content: parsed.content,
+            };
+          }
+
+          if (!newIteration) break;
+          iterations.push(newIteration);
+
+          // Replace or append the sub-agent step in currentSteps
+          const existingIdx = currentSteps.findIndex((s) => s.title === agentLabel);
+          const nestedContent = iterations
+            .map(({ title, content }) => `<details>\n<summary>${title}</summary>\n\n${content}\n\n</details>`)
+            .join("\n\n");
+          const updatedStep = createReasoningStep(agentLabel, nestedContent);
+          if (existingIdx >= 0) {
+            currentSteps[existingIdx] = updatedStep;
+          } else {
+            currentSteps.push(updatedStep);
+          }
+          break;
+        }
+
         case "Answer":
         case "FinalAnswer": {
           const parsed = parseAnswerEventData(actualData, currentAnswerText);
@@ -175,6 +222,7 @@ async function customLoadHistory(
 
           currentSteps = [];
           currentAnswerText = "";
+          subAgentAccumulators.clear();
           break;
         }
 

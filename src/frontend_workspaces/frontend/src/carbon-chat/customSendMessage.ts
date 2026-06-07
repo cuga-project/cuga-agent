@@ -179,6 +179,8 @@ export async function customSendMessage(
     let accumulatedText = "";
     let currentStepTitle = "";
     let currentStepContent = "";
+    let currentSubAgentName = "";
+    const subAgentAccumulators: Map<string, Array<{ title: string; content: string }>> = new Map();
 
     // Build headers
     const headers: Record<string, string> = {
@@ -234,6 +236,7 @@ export async function customSendMessage(
 
       switch (event.name) {
         case "CodeAgent":
+          currentSubAgentName = "";
           if (currentStepTitle && currentStepContent) {
             collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
           }
@@ -259,10 +262,79 @@ export async function customSendMessage(
           }
           break;
 
+        case "SubAgent": {
+          let subAgentData: any = {};
+          try { subAgentData = typeof event.data === "string" ? JSON.parse(event.data) : (event.data || {}); } catch { /* ignore */ }
+
+          const agentName = subAgentData.agent_name || "sub-agent";
+          const agentLabel = `Sub-Agent: ${agentName}`;
+
+          // Switching to a different sub-agent or entering for the first time — flush pending step
+          if (currentSubAgentName !== agentName) {
+            if (currentStepTitle && currentStepContent) {
+              collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
+              currentStepTitle = "";
+              currentStepContent = "";
+            }
+            currentSubAgentName = agentName;
+            if (!subAgentAccumulators.has(agentName)) {
+              subAgentAccumulators.set(agentName, []);
+            }
+          }
+
+          const iterations = subAgentAccumulators.get(agentName)!;
+          let newIteration: { title: string; content: string } | null = null;
+
+          if (subAgentData.type === "start") {
+            newIteration = { title: "Task", content: subAgentData.task || "" };
+          } else if (subAgentData.type === "result") {
+            const answer = subAgentData.answer || "";
+            newIteration = {
+              title: "Result",
+              content: `**Execution Output:**\n\`\`\`\n${answer}\n\`\`\``,
+            };
+          } else if (subAgentData.code || subAgentData.execution_output) {
+            const parsed = parseReasoningStepContent(event.data || "", "");
+            newIteration = {
+              title: subAgentData.code ? "Code" : "Execution Output",
+              content: parsed.content,
+            };
+          } else {
+            break;
+          }
+
+          iterations.push(newIteration);
+
+          // Each iteration becomes a <details> block — gives a second-level dropdown inside the step
+          const nestedContent = iterations
+            .map(({ title, content }) => `<details>\n<summary>${title}</summary>\n\n${content}\n\n</details>`)
+            .join("\n\n");
+
+          currentStepTitle = agentLabel;
+          currentStepContent = nestedContent;
+
+          instance.messaging.addMessageChunk({
+            partial_item: {
+              response_type: MessageResponseTypes.TEXT,
+              text: " ",
+              streaming_metadata: { id: "text-stream", cancellable: true },
+            },
+            partial_response: {
+              message_options: {
+                reasoning: { steps: [...collectedSteps, createReasoningStep(currentStepTitle, currentStepContent)] },
+                response_user_profile: RESPONSE_USER_PROFILE,
+              },
+            },
+            streaming_metadata: { response_id: responseID },
+          } as StreamChunk);
+          break;
+        }
+
         case "CodeAgent_Reasoning":
         case "Thinking":
         case "Planning":
         case "Analyzing":
+          currentSubAgentName = "";
           if (currentStepTitle && currentStepContent) {
             collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
           }
