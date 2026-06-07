@@ -513,12 +513,6 @@ class AgentLoop:
         logger.debug("Current Agent: {}".format(list(event.keys())))
         return StreamEvent(name=str(first_key), data=event_val or "")
 
-    # SpawnAgent and SpawnAgentResult events are emitted via the callback registered with
-    # cuga.backend.agent_spawn.runtime.set_event_callback. To route them into the SSE stream,
-    # wire set_event_callback() inside get_stream() before entering the event loop, push
-    # events into a local asyncio.Queue, and yield them interleaved with graph events.
-    # Deferred: touches the streaming loop and is out of scope for the initial spawn implementation.
-
     def get_stream(self, state, resume=None):
         both_none = state is None and resume is None
 
@@ -716,27 +710,54 @@ class AgentLoop:
     async def run_stream(self, state: Optional[AgentState] = None, resume=None):
         from cuga.backend.agent_spawn import runtime as _spawn_runtime
 
-        spawn_queue: asyncio.Queue = asyncio.Queue()
+        _SPAWN_TAG = "spawn"
+        _GRAPH_TAG = "graph"
+        _DONE_TAG = "done"
+
+        unified_queue: asyncio.Queue = asyncio.Queue()
         agent_spawn_enabled = getattr(settings.agent_spawn, "enabled", False)
 
         def _on_spawn_event(name: str, data: dict) -> None:
-            spawn_queue.put_nowait((name, data))
+            unified_queue.put_nowait((_SPAWN_TAG, name, data))
 
         if agent_spawn_enabled:
             _spawn_runtime.set_event_callback(_on_spawn_event)
 
-        event_stream = self.get_stream(state, resume)
+        async def _feed_graph():
+            exc_to_raise = None
+            try:
+                async for graph_event in self.get_stream(state, resume):
+                    await unified_queue.put((_GRAPH_TAG, graph_event))
+            except Exception as exc:
+                exc_to_raise = exc
+            finally:
+                await unified_queue.put((_DONE_TAG, exc_to_raise))
+
+        graph_task = asyncio.create_task(_feed_graph())
         event = {}
         session_tagged = False
 
         try:
-            async for event in event_stream:
-                # Drain spawn events emitted during the previous graph step
-                while not spawn_queue.empty():
-                    sname, sdata = spawn_queue.get_nowait()
+            while True:
+                item = await unified_queue.get()
+                tag = item[0]
+
+                if tag == _DONE_TAG:
+                    _, exc = item
+                    if exc is not None:
+                        raise exc
+                    break
+
+                if tag == _SPAWN_TAG:
+                    _, sname, sdata = item
                     spawn_evt = _spawn_to_stream_event(sname, sdata)
                     if spawn_evt:
                         yield spawn_evt.format()
+                    continue
+
+                # _GRAPH_TAG
+                _, graph_event = item
+                event = graph_event
 
                 if not session_tagged:
                     set_session_attribute(self.thread_id)
@@ -751,16 +772,24 @@ class AgentLoop:
                 yield event_msg.format()
 
             # Drain any remaining spawn events after the graph finishes
-            while not spawn_queue.empty():
-                sname, sdata = spawn_queue.get_nowait()
-                spawn_evt = _spawn_to_stream_event(sname, sdata)
-                if spawn_evt:
-                    yield spawn_evt.format()
+            while not unified_queue.empty():
+                item = unified_queue.get_nowait()
+                if item[0] == _SPAWN_TAG:
+                    _, sname, sdata = item
+                    spawn_evt = _spawn_to_stream_event(sname, sdata)
+                    if spawn_evt:
+                        yield spawn_evt.format()
 
             yield self.get_output(event)
         finally:
             if agent_spawn_enabled:
                 _spawn_runtime.set_event_callback(None)
+            if not graph_task.done():
+                graph_task.cancel()
+                try:
+                    await graph_task
+                except (asyncio.CancelledError, Exception):
+                    pass
 
     def get_output_of_obj(self, dict):
         msg = ""
