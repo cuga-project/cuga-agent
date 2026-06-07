@@ -47,6 +47,9 @@ Architecture:
 
 from __future__ import annotations
 
+from copy import deepcopy
+from datetime import datetime
+import re
 from typing import TYPE_CHECKING, Any, Callable, Dict
 
 from fastmcp import Client
@@ -61,6 +64,278 @@ if TYPE_CHECKING:
     from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
     from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
     from cuga.backend.server.cuga_flo_mcp.ordo import MCPOrdo
+
+
+def _has_runtime_value(value: Any) -> bool:
+    """Return True when a runtime value should override an RO input default."""
+    return value is not None and value != ""
+
+
+def _is_effectively_empty(value: Any) -> bool:
+    """Return True when a schema value still looks like an unfilled default."""
+    if isinstance(value, dict):
+        return all(_is_effectively_empty(v) for v in value.values())
+    if isinstance(value, list):
+        return len(value) == 0
+    return not _has_runtime_value(value)
+
+
+def _normalize_travel_date(value: str) -> str:
+    """Normalize common travel-agent demo date formats to YYYY-MM-DD when possible."""
+    raw = value.strip().rstrip(".,")
+    if not raw:
+        return ""
+
+    for fmt in ("%Y-%m-%d", "%d/%m/%Y", "%m/%d/%Y", "%d-%m-%Y", "%m-%d-%Y"):
+        try:
+            return datetime.strptime(raw, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            continue
+
+    # Prefer DD/MM/YYYY for ambiguous slash dates in the examples.
+    match = re.fullmatch(r"(\d{1,2})/(\d{1,2})/(\d{4})", raw)
+    if match:
+        day, month, year = match.groups()
+        try:
+            return datetime(int(year), int(month), int(day)).strftime("%Y-%m-%d")
+        except ValueError:
+            return raw
+
+    return raw
+
+
+def _parse_month_range(start_day: str, end_day: str, month: str, year: str) -> tuple[str, str]:
+    start_raw = f"{month} {start_day}, {year}"
+    end_raw = f"{month} {end_day}, {year}"
+    try:
+        return (
+            datetime.strptime(start_raw, "%B %d, %Y").strftime("%Y-%m-%d"),
+            datetime.strptime(end_raw, "%B %d, %Y").strftime("%Y-%m-%d"),
+        )
+    except ValueError:
+        try:
+            return (
+                datetime.strptime(start_raw, "%b %d, %Y").strftime("%Y-%m-%d"),
+                datetime.strptime(end_raw, "%b %d, %Y").strftime("%Y-%m-%d"),
+            )
+        except ValueError:
+            return start_raw, end_raw
+
+
+def _extract_travel_request_from_message(message: str) -> Dict[str, str]:
+    """
+    Extract the travel-agent demo request fields from the user's original message.
+
+    This intentionally supports the formats documented in
+    ``supervisor_ordo_travel_agent.yaml`` and is enabled only by explicit flow
+    configuration.
+    """
+    text = (message or "").strip()
+    if not text:
+        return {}
+
+    # Documented compact format:
+    # "John Doe, New York, Boston, 22/6/2026, 26/6/2026, economy"
+    parts = [part.strip() for part in text.split(",")]
+    if len(parts) >= 6:
+        return {
+            "traveler": parts[0],
+            "origin": parts[1],
+            "destination": parts[2],
+            "start_date": _normalize_travel_date(parts[3]),
+            "end_date": _normalize_travel_date(parts[4]),
+            "cabin_preference": parts[5].replace(" class", "").strip().lower(),
+        }
+
+    # Actual supervisor delegation format observed in mcp_debug.log:
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if len(lines) >= 6:
+        return {
+            "traveler": lines[0],
+            "origin": lines[1],
+            "destination": lines[2],
+            "start_date": _normalize_travel_date(lines[3]),
+            "end_date": _normalize_travel_date(lines[4]),
+            "cabin_preference": lines[5].replace(" class", "").strip().lower(),
+        }
+
+    # Documented natural-ish format:
+    # "Book a trip for Sarah Chen from NYC to SFO, March 15-20, 2024, economy class"
+    natural = re.search(
+        r"for\s+(?P<traveler>.+?)\s+from\s+(?P<origin>.+?)\s+to\s+"
+        r"(?P<destination>.+?),\s+"
+        r"(?P<month>[A-Za-z]+)\s+(?P<start_day>\d{1,2})\s*-\s*(?P<end_day>\d{1,2}),\s+"
+        r"(?P<year>\d{4}),\s+(?P<cabin>[A-Za-z]+)(?:\s+class)?",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if natural:
+        start_date, end_date = _parse_month_range(
+            natural.group("start_day"),
+            natural.group("end_day"),
+            natural.group("month"),
+            natural.group("year"),
+        )
+        return {
+            "traveler": natural.group("traveler").strip(),
+            "origin": natural.group("origin").strip(),
+            "destination": natural.group("destination").strip(),
+            "start_date": start_date,
+            "end_date": end_date,
+            "cabin_preference": natural.group("cabin").strip().lower(),
+        }
+
+    return {}
+
+
+def _describe_ro_input_extraction_skip(
+    input_args: Dict[str, Any],
+    initial_inputs: Dict[str, Any],
+    extraction_config: Dict[str, Any] | None,
+) -> str:
+    """Explain why optional RO input extraction would not run."""
+    if not extraction_config:
+        return "no_extraction_config"
+
+    target = extraction_config.get("target")
+    source = extraction_config.get("source", "_user_message")
+    mode = extraction_config.get("mode")
+
+    if not target:
+        return "missing_target"
+    if target not in input_args:
+        return f"target_not_in_input_args:{target}"
+    if not isinstance(input_args[target], dict):
+        return f"target_not_mapping:{target}"
+    if not _is_effectively_empty(input_args[target]):
+        return f"target_already_populated:{target}"
+
+    source_value = initial_inputs.get(source)
+    if not isinstance(source_value, str):
+        return f"source_not_string:{source}"
+    if not source_value.strip():
+        return f"source_empty:{source}"
+
+    if mode != "travel_request":
+        return f"unsupported_mode:{mode}"
+
+    extracted = _extract_travel_request_from_message(source_value)
+    if not extracted:
+        return "parser_returned_empty"
+
+    return "unknown"
+
+
+def _apply_ro_input_extraction(
+    input_args: Dict[str, Any],
+    initial_inputs: Dict[str, Any],
+    extraction_config: Dict[str, Any] | None,
+) -> tuple[Dict[str, Any], list[Dict[str, Any]]]:
+    """Apply optional config-driven extraction from user text into RO input args."""
+    if not extraction_config:
+        return input_args, []
+
+    target = extraction_config.get("target")
+    source = extraction_config.get("source", "_user_message")
+    mode = extraction_config.get("mode")
+
+    if not target or target not in input_args or not isinstance(input_args[target], dict):
+        return input_args, []
+    if not _is_effectively_empty(input_args[target]):
+        return input_args, []
+
+    source_value = initial_inputs.get(source)
+    if not isinstance(source_value, str) or not source_value.strip():
+        return input_args, []
+
+    if mode != "travel_request":
+        return input_args, []
+
+    extracted = _extract_travel_request_from_message(source_value)
+    if not extracted:
+        return input_args, []
+
+    merged = deepcopy(input_args)
+    applied_keys = []
+    for key in merged[target]:
+        value = extracted.get(key)
+        if _has_runtime_value(value):
+            merged[target][key] = value
+            applied_keys.append(key)
+
+    if not applied_keys:
+        return input_args, []
+
+    return merged, [
+        {
+            "type": "input_extraction",
+            "key": target,
+            "source": source,
+            "mode": mode,
+            "merged_keys": applied_keys,
+        }
+    ]
+
+
+def _merge_ro_input_args(
+    input_args: Dict[str, Any],
+    initial_inputs: Dict[str, Any],
+) -> tuple[Dict[str, Any], list[Dict[str, Any]]]:
+    """
+    Merge CUGA runtime process variables into the RO ``input_args`` schema.
+
+    ``flow.input_args`` defines the shape expected by RO. Runtime values can
+    arrive either in the same shape, for example ``{"request": {"origin": ...}}``,
+    or as top-level process variables, for example ``{"origin": ...}``. The
+    latter form is lifted into matching nested input-arg mappings so callers do
+    not have to duplicate RO's exact nesting.
+    """
+    merged = deepcopy(input_args)
+    merge_events: list[Dict[str, Any]] = []
+
+    # First, merge exact schema keys. This preserves the existing behaviour and
+    # gives an explicitly provided nested object (e.g. "request") precedence.
+    for key, value in initial_inputs.items():
+        if key.startswith("_") or key not in merged:
+            continue
+
+        if isinstance(merged[key], dict) and isinstance(value, dict):
+            merged_keys = []
+            for nested_key, nested_value in value.items():
+                if _has_runtime_value(nested_value):
+                    merged[key][nested_key] = nested_value
+                    merged_keys.append(nested_key)
+            if merged_keys:
+                merge_events.append(
+                    {"type": "deep_merge", "key": key, "merged_keys": merged_keys}
+                )
+        elif _has_runtime_value(value):
+            merged[key] = value
+            merge_events.append(
+                {"type": "simple_assign", "key": key, "value_type": type(value).__name__}
+            )
+
+    # Then, lift top-level runtime variables into nested RO input schemas when
+    # the nested slot is still empty/defaulted. This handles inputs such as
+    # {"origin": "NYC"} for input_args {"request": {"origin": ""}}.
+    for parent_key, parent_value in merged.items():
+        if not isinstance(parent_value, dict):
+            continue
+
+        lifted_keys = []
+        for key, value in initial_inputs.items():
+            if key.startswith("_") or key in merged or key not in parent_value:
+                continue
+            if _has_runtime_value(value) and not _has_runtime_value(parent_value.get(key)):
+                parent_value[key] = value
+                lifted_keys.append(key)
+
+        if lifted_keys:
+            merge_events.append(
+                {"type": "top_level_lift", "key": parent_key, "merged_keys": lifted_keys}
+            )
+
+    return merged, merge_events
 
 
 # ── OrdoRegistryAdapter ──────────────────────────────────────────────────────
@@ -344,21 +619,95 @@ class MCP2MCPMediator:
         final_response = "Workflow completed."
         session_id: str | None = None
 
-        # Only pass explicit flow.input_args to ro register_workflow.
+        # Merge runtime inputs from FlowAgent into RO input_args.
         #
-        # Do not blindly forward FlowAgent process variables here: ordo_config
-        # variables are CUGA-side working state defaults and may include partial
-        # placeholders (for example `{}` for record-typed RO state fields). RO
-        # validates input_args against the .ro schema during registration, so
-        # forwarding those placeholders can make workflow initialization fail.
+        # Start with flow.input_args from config (schema/defaults), then override
+        # with runtime values from initial_inputs (provided by supervisor/user).
+        # Runtime values may arrive either in the exact RO schema shape or as
+        # top-level process variables that match nested schema fields.
         input_args = flow_config.get_ro_input_args()
+
+        mcp_in("MCP2MCPMediator", "merge_input_args",
+               input_args_keys=list(input_args.keys()),
+               initial_inputs_keys=list(initial_inputs.keys()),
+               request_in_initial=("request" in initial_inputs),
+               request_value=str(initial_inputs.get("request", "NOT_FOUND"))[:100])
+
+        input_args, merge_events = _merge_ro_input_args(input_args, initial_inputs)
+        extraction_config = flow_config.flow_config.get("input_extraction")
+        extraction_source = (
+            extraction_config.get("source", "_user_message")
+            if isinstance(extraction_config, dict)
+            else "_user_message"
+        )
+        extraction_target = (
+            extraction_config.get("target")
+            if isinstance(extraction_config, dict)
+            else None
+        )
+        mcp_in("MCP2MCPMediator", "input_extraction_check",
+               extraction_config=extraction_config,
+               source=extraction_source,
+               source_preview=initial_inputs.get(extraction_source),
+               target=extraction_target,
+               target_before=input_args.get(extraction_target) if extraction_target else None,
+               target_empty=_is_effectively_empty(input_args.get(extraction_target))
+               if extraction_target in input_args
+               else None)
+        input_args, extraction_events = _apply_ro_input_extraction(
+            input_args,
+            initial_inputs,
+            extraction_config,
+        )
+        if extraction_events:
+            mcp_out("MCP2MCPMediator", "input_extraction_check",
+                    applied=True,
+                    events=extraction_events,
+                    target_after=input_args.get(extraction_target) if extraction_target else None)
+        else:
+            mcp_out("MCP2MCPMediator", "input_extraction_check",
+                    applied=False,
+                    reason=_describe_ro_input_extraction_skip(
+                        input_args,
+                        initial_inputs,
+                        extraction_config,
+                    ))
+        merge_events.extend(extraction_events)
+        if extraction_events:
+            accumulated_vars.update(input_args)
+        for event in merge_events:
+            if event["type"] == "input_extraction":
+                mcp_out("MCP2MCPMediator", "merge_input_args.input_extraction",
+                        key=event["key"],
+                        source=event["source"],
+                        mode=event["mode"],
+                        merged_keys=event["merged_keys"])
+                continue
+            if event["type"] == "deep_merge":
+                mcp_out("MCP2MCPMediator", "merge_input_args.deep_merge",
+                        key=event["key"], merged_keys=event["merged_keys"])
+            elif event["type"] == "simple_assign":
+                mcp_out("MCP2MCPMediator", "merge_input_args.simple_assign",
+                        key=event["key"], value_type=event["value_type"])
+            elif event["type"] == "top_level_lift":
+                mcp_out("MCP2MCPMediator", "merge_input_args.top_level_lift",
+                        key=event["key"], merged_keys=event["merged_keys"])
+        mcp_out("MCP2MCPMediator", "merge_input_args",
+               merged_count=len(merge_events),
+               final_input_args_keys=list(input_args.keys()),
+               final_request=str(input_args.get("request", {}))[:100])
+        
+        # Legacy: handle _user_message -> name mapping for simple workflows
         user_message = initial_inputs.get("_user_message")
-        if user_message and (not input_args.get("name") or input_args.get("name") == "world"):
+        if user_message and "name" in input_args and (not input_args.get("name") or input_args.get("name") == "world"):
             input_args["name"] = user_message
 
         async with self._ordo.get_client() as ordo_client:
             mcp_in("MCP2MCPMediator", "RO.register_workflow",
-                   workflow_id=workflow_id, input_keys=list(input_args.keys()))
+                   workflow_id=workflow_id,
+                   input_keys=list(input_args.keys()),
+                   request_payload=input_args.get("request"),
+                   input_args_payload=input_args)
             raw = await ordo_client.call_tool(
                 "register_workflow",
                 {
@@ -387,7 +736,10 @@ class MCP2MCPMediator:
                         session_id=session_id,
                         payload_type=ro_result.get("type"),
                         goal_name=ro_result.get("name"),
-                        status=ro_result.get("status"))
+                        status=ro_result.get("status"),
+                        ro_result_keys=list(ro_result.keys()),
+                        final_response=ro_result.get("final_response"),
+                        response=ro_result.get("response"))
 
                 # A single external GOAL payload.
                 if ro_result.get("type") == "goal" and ro_result.get("goal_id"):
@@ -402,6 +754,31 @@ class MCP2MCPMediator:
                         or ro_result.get("status")
                         or final_response
                     )
+                    
+                    # Extract final state variables from RO result
+                    ro_state = ro_result.get("state", {})
+                    if isinstance(ro_state, dict) and ro_state.get("value"):
+                        state_value = ro_state.get("value", {})
+                        if isinstance(state_value, dict):
+                            # Update accumulated_vars with final state from RO
+                            accumulated_vars.update(state_value)
+                            
+                            # Extract approval_result details for logging
+                            approval_result = state_value.get("approval_result", {})
+                            reasoning = approval_result.get("reasoning", "") if isinstance(approval_result, dict) else ""
+                            
+                            mcp_out("MCP2MCPMediator", "RO.state_extracted",
+                                    workflow_id=workflow_id,
+                                    state_keys=list(state_value.keys()),
+                                    approval_decision=state_value.get("approval_decision"),
+                                    reasoning=reasoning,
+                                    terminal_status=state_value.get("terminal_status"),
+                                    terminal_reason=state_value.get("terminal_reason"))
+                    
+                    mcp_out("MCP2MCPMediator", "RO.workflow_completed",
+                            workflow_id=workflow_id,
+                            final_response=final_response,
+                            ro_result_full=ro_result)
                     break
 
                 for goal_payload in goal_payloads:
@@ -475,6 +852,13 @@ class MCP2MCPMediator:
                 "content": str(accumulated_vars.get("greeting") or final_response),
             }
         ]
+        mcp_out("MCP2MCPMediator", "final_state_created",
+                workflow_id=workflow_id,
+                process_variables=accumulated_vars,
+                final_response=final_response,
+                terminal_status=accumulated_vars.get("terminal_status"),
+                terminal_reason=accumulated_vars.get("terminal_reason"),
+                approval_decision=accumulated_vars.get("approval_decision"))
         logger.info(f"MCP2MCPMediator: ro workflow '{workflow_id}' finished")
 
         stub_bpmn = BPMNProcess(id=workflow_id, name=workflow_id, elements={}, flows=[])
