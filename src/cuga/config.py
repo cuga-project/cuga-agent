@@ -200,6 +200,12 @@ validators = [
     Validator("evolve.save_on_failure", default=True),
     Validator("evolve.async_save", default=True),
     Validator("evolve.timeout", default=30.0),
+    # Agent spawning
+    Validator("agent_spawn.enabled", default=False),
+    Validator("agent_spawn.agents_dir", default=".agents/agents"),
+    Validator("agent_spawn.inherit_parent_tools", default=False),
+    Validator("agent_spawn.max_spawn_depth", default=2),
+    Validator("agent_spawn.forward_sync_subagent_events", default=True),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")
