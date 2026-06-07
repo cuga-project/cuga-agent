@@ -1,0 +1,29 @@
+REJECTED BY WEATHER ALERT
+
+John Doe
+New York
+Boston
+22/6/2026
+26/6/2026
+economy
+
+ALWAYS AUTO-APPROVEs
+
+John Doe
+New York
+Austin
+22/6/2026
+26/6/2026
+economy
+
+
+ALWAYS TRIGGERS APPROVAL AGENT
+
+John Doe
+New York
+Las Vegas
+22/6/2026
+26/6/2026
+economy
+
+
