@@ -102,6 +102,43 @@ agents:
 - `mcp_server.command` must resolve to the RO executable. Use `"ro"` if `ro` is on your `PATH`, or set an absolute path to the binary, for example `/Users/<you>/.cargo/bin/ro`.
 - `process_key` should stay aligned with `flow.id` in `ordo_config_eog.yaml` (`sbp-eog` by default).
 
+### `config/ordo_config_travel_agent.yaml`
+
+Configure all RO / Travel Agent paths for the Corporate Travel Agent workflow:
+
+```yaml
+flow:
+  ro_source_file: "<path-to-clone>/examples/travel_agent/corporate-travel-agentflow-v2.ro"
+
+mcpServers:
+  travel_agent:
+    command: "python"
+    args: ["<path-to-clone>/examples/travel_agent/travel_agent_mcp.py"]
+```
+
+Update these values as follows:
+
+- `flow.ro_source_file`: absolute path to `examples/travel_agent/corporate-travel-agentflow-v2.ro` in your RO repository clone.
+- `mcpServers.travel_agent.args[0]`: absolute path to `examples/travel_agent/travel_agent_mcp.py` in your RO repository clone.
+
+### `config/supervisor_ordo_travel_agent.yaml`
+
+Check the Travel Agent FlowAgent config path and RO MCP command:
+
+```yaml
+agents:
+  - flow_config: "ordo_config_travel_agent.yaml"
+    mcp_server:
+      command: "sh"
+      args:
+        - "-c"
+        - "cd <path to clone> && ro mcp"
+```
+
+- `flow_config` should point to `ordo_config_travel_agent.yaml`. The default value is correct for the checked-in layout.
+- `mcp_server.args[2]` must include the correct path to your RO repository clone. Replace `<path to clone>` with the absolute path, for example `cd /Users/<you>/path/to/ro && ro mcp`.
+- `process_key` should stay aligned with `flow.id` in `ordo_config_travel_agent.yaml` (`corporate-travel-agentflow-v2` by default).
+
 ### `hello-world.ro`
 
 The actual RO workflow program.
