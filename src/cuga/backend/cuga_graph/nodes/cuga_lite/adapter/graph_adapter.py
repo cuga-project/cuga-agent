@@ -56,6 +56,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
         tools_context: Optional[Dict[str, Any]] = None,
         static_prompt: Any = None,
         thread_id: Any = None,
+        spawn_futures_ref: Optional[Dict[str, Any]] = None,
     ) -> None:
         self._tracker = tracker
         self._base_callbacks = base_callbacks or []
@@ -69,6 +70,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
         self._tools_context = tools_context if tools_context is not None else {}
         self._static_prompt = static_prompt
         self._thread_id = thread_id
+        self._spawn_futures: Dict[str, Any] = spawn_futures_ref if spawn_futures_ref is not None else {}
 
     def get_messages(self, state: Any) -> List[BaseMessage]:
         return list(state.chat_messages or [])

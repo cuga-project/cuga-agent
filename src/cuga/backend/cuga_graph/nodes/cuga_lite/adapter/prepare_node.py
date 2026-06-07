@@ -293,7 +293,12 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             (config or {}).get("configurable", {}).get("special_instructions") if config else None
         )
         effective_special = adapter._special_instructions or configurable_special or ""
-        skills_cfg_on = getattr(settings.skills, "enabled", False)
+        # Skills and agent-spawning are parent-agent concerns. Skip both when running
+        # inside a sub-agent so the sub-agent doesn't inherit spawn/skill tools and
+        # inadvertently trigger recursive spawning.
+        from cuga.backend.agent_spawn.runtime import _spawn_depth as _agent_spawn_depth
+        _is_subagent = _agent_spawn_depth.get() > 0
+        skills_cfg_on = getattr(settings.skills, "enabled", False) and not _is_subagent
         cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
         if skills_cfg_on:
             skill_entries = discover_skills(cuga_folder_for_skills)
@@ -308,6 +313,46 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                     f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
                     "~/.config/cuga/skills fallbacks"
                 )
+
+        # ── agent_spawn ────────────────────────────────────────────────────────────
+        agent_spawn_tools = []
+        agents_prompt_section = ""
+        agents_enabled = False
+        if getattr(settings, "agent_spawn", None) and settings.agent_spawn.enabled and not _is_subagent:
+            from cuga.backend.agent_spawn import (
+                AgentDescriptorRegistry,
+                discover_agents,
+                create_spawn_tools,
+                format_available_agents_block,
+            )
+
+            _agents_dir = os.getenv("CUGA_FOLDER", "")
+            _agents_base = _agents_dir or os.getcwd()
+            _agents_path = os.path.join(_agents_base, settings.agent_spawn.agents_dir)
+            _agent_entries = discover_agents(_agents_path)
+            if _agent_entries:
+                _agent_registry = AgentDescriptorRegistry(_agent_entries)
+                agent_spawn_tools = create_spawn_tools(
+                    registry=_agent_registry,
+                    parent_tools_context=adapter._tools_context,
+                    spawn_futures=adapter._spawn_futures,
+                    parent_config=config,
+                )
+                tools_for_prompt.extend(agent_spawn_tools)
+                agents_prompt_section = format_available_agents_block(_agent_registry)
+                agents_enabled = True
+                logger.info(
+                    f"agent_spawn: loaded {len(_agent_entries)} descriptor(s), "
+                    "injected spawn_agent + get_agent_result tools"
+                )
+        # ── end agent_spawn ────────────────────────────────────────────────────────
+
+        for tool in agent_spawn_tools:
+            tool_func = (
+                tool.coroutine if (hasattr(tool, "coroutine") and tool.coroutine) else tool.func
+            )
+            if tool_func:
+                adapter._tools_context[tool.name] = make_tool_awaitable(tool_func)
 
         # Resolve thread_id early for per-thread workspace selection.
         _cfg_for_thread = config.get("configurable", {}) if config else {}
@@ -599,6 +644,8 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 has_knowledge=has_knowledge_tools,
                 few_shot_examples=few_shot_examples,
                 few_shots_enabled=few_shots_enabled,
+                agents_enabled=agents_enabled,
+                agents_prompt_section=agents_prompt_section,
             )
             logger.info(
                 "Prepared CugaLite prompt: enable_find_tools={} few_shot_message_turns={} "

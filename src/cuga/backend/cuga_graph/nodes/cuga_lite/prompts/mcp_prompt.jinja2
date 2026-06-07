@@ -57,6 +57,9 @@ The following applications are available for you, you can view their tools and p
 {% endif %}
 {% if enable_todos %}- **create_update_todos(todos)**: Create or update a todo list for complex multi-step tasks. Pass a list: `create_update_todos([{'text': '...', 'status': 'pending'}, ...])` or a dict: `create_update_todos({'todos': [...]})`. After each run that calls it, the latest todo list is **re-appended to the bottom of your system prompt** under **Current Plan** (each item labeled by status).
 {% endif %}
+{% if agents_enabled %}- **spawn_agent(name, task, mode)**: Delegate a task to a named sub-agent.
+- **get_agent_result(future_id, timeout)**: Retrieve an async sub-agent result.
+{% endif %}
 
 {% if skills_enabled %}
 ## Agent skills
@@ -74,6 +77,17 @@ The following applications are available for you, you can view their tools and p
 > 3. **STEP 2:** Follow the skill instructions from the output. If the loaded `SKILL.md` points to relative companion files, select and read the relevant file(s) based on the situation before implementing that workflow. Markdown links in loaded skill instructions are routing instructions, not decorative references.
 >
 > Never skip or defer requirement installation. Never combine install commands with other tool calls. Never re-read `SKILL.md` after `load_skill`; the `load_skill` output is the full skill content and is authoritative. Do not implement from memory when a matching skill exists; follow the full chain: `load_skill` → install requirements if provided → read relevant companion file(s) when referenced → implement → run skill QA.
+
+{% endif %}
+{% if agents_enabled %}
+## Sub-Agents
+
+{{ agents_prompt_section }}
+
+> **AGENTS — USAGE:** When a task requires specialized sub-capabilities,
+> delegate using `await spawn_agent(name="<agent_name>", task="<task>")`.
+> Use `mode='async'` for fire-and-forget and `await get_agent_result(future_id)`
+> to retrieve the result. Sub-agents run isolated with their own tools.
 
 {% endif %}
 # INSTRUCTIONS
