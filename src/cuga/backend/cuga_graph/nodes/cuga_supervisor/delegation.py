@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
+from cuga.backend.server.cuga_flo_mcp.mcp_logger import mcp_in, mcp_out
 from cuga.config import settings
 
 try:
@@ -19,23 +20,29 @@ except Exception:
 
 
 def resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]:
-    """Resolve names from the delegated code's caller frame.
+    """Resolve names from the delegated code's caller stack.
 
-    LocalExecutor injects supervisor context into ``_async_main``'s globals; only
-    using ``f_locals`` missed those bindings, so sub-agents received no variables
-    and tasks showed e.g. ``amount=None``.
+    LocalExecutor injects supervisor context into ``_async_main``'s globals, and
+    generated code often creates request variables in ``_async_main``'s locals
+    before calling a delegation function.  The resolver is called from inside the
+    delegation helper, so checking only the immediate caller frame sees
+    ``delegate_to_agent`` rather than the generated code frame. Walk outward until
+    the requested names are found.
     """
     resolved: Dict[str, Any] = {}
+    wanted = set(variable_names)
     frame = inspect.currentframe()
     try:
         caller = frame.f_back if frame is not None else None
-        if caller is None:
-            return resolved
-        for name in variable_names:
-            if name in caller.f_locals:
-                resolved[name] = caller.f_locals[name]
-            elif name in caller.f_globals:
-                resolved[name] = caller.f_globals[name]
+        while caller is not None and wanted - set(resolved):
+            for name in variable_names:
+                if name in resolved:
+                    continue
+                if name in caller.f_locals:
+                    resolved[name] = caller.f_locals[name]
+                elif name in caller.f_globals:
+                    resolved[name] = caller.f_globals[name]
+            caller = caller.f_back
     finally:
         del frame
     return resolved
@@ -86,8 +93,29 @@ def create_agent_delegation_func(
             vars_to_pass = {}
             if variables is not None:
                 vars_to_pass = resolve_names_from_caller_frame(variables)
+            mcp_in(
+                "SupervisorDelegation",
+                "flow_agent_delegate",
+                agent_name=agent_name,
+                task_preview=task[:1000] if isinstance(task, str) else str(task)[:1000],
+                requested_variables=variables,
+                resolved_var_keys=list(vars_to_pass.keys()),
+                resolved_request_preview=vars_to_pass.get("request"),
+            )
             result = await agent_or_config.invoke(
                 input_data=task, process_variables=vars_to_pass if vars_to_pass else None
+            )
+            mcp_out(
+                "SupervisorDelegation",
+                "flow_agent_delegate",
+                agent_name=agent_name,
+                has_messages=bool(getattr(result, "messages", None)),
+                process_var_keys=list(getattr(result, "process_variables", {}).keys())
+                if hasattr(result, "process_variables")
+                else None,
+                request_preview=getattr(result, "process_variables", {}).get("request")
+                if hasattr(result, "process_variables")
+                else None,
             )
             # FlowAgent returns FlowState — extract the most useful text representation
             if hasattr(result, "messages") and result.messages:
