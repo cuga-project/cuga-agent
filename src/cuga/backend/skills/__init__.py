@@ -17,7 +17,7 @@ Enable OpenSandbox via settings.toml:
     # uv add opensandbox opensandbox-code-interpreter
 """
 
-from cuga.backend.skills.loader import discover_skills
+from cuga.backend.skills.loader import discover_skills, clear_skills_cache
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
 from cuga.backend.skills.tools import create_skill_tools, format_available_skills_block
 
@@ -25,6 +25,7 @@ __all__ = [
     "SkillEntry",
     "SkillRegistry",
     "discover_skills",
+    "clear_skills_cache",
     "create_skill_tools",
     "format_available_skills_block",
 ]

@@ -147,12 +147,34 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
     )
 
 
+_discover_skills_cache: dict[tuple, List[SkillEntry]] = {}
+
+
+def clear_skills_cache() -> None:
+    """Clear the process-level discover_skills cache (use in tests or after hot-reloading skills)."""
+    _discover_skills_cache.clear()
+
+
 def discover_skills(
     cuga_folder: str | None,
     global_skills_root: str | None = None,
     legacy_global_skills_root: str | None = None,
 ) -> List[SkillEntry]:
-    """Scan skills so preferred .agents paths override legacy .cuga fallback paths."""
+    """Scan skills so preferred .agents paths override legacy .cuga fallback paths.
+
+    Results are cached for the process lifetime keyed by the resolved search-root
+    tuple. Call clear_skills_cache() in tests that add/remove SKILL.md files, or set
+    CUGA_AGENT_SPAWN_NO_CACHE=1 to disable caching entirely.
+    """
+    import os
+    if not os.environ.get("CUGA_AGENT_SPAWN_NO_CACHE"):
+        roots = get_skill_search_roots(cuga_folder, global_skills_root, legacy_global_skills_root)
+        cache_key = tuple(str(r) for r in roots)
+        if cache_key in _discover_skills_cache:
+            return _discover_skills_cache[cache_key]
+    else:
+        cache_key = None  # type: ignore[assignment]
+
     by_name: dict[str, SkillEntry] = {}
 
     for skills_dir in get_skill_search_roots(
@@ -165,4 +187,7 @@ def discover_skills(
             if entry:
                 by_name[entry.name] = entry
 
-    return list(by_name.values())
+    result = list(by_name.values())
+    if cache_key is not None:
+        _discover_skills_cache[cache_key] = result
+    return result
