@@ -182,21 +182,11 @@ class TaskAgent:
         else:
             content = str(result)
 
-        task_result = {
-            "status": "completed",
-            "success": True,
-            "task_id": self.task_id,
-            "task_name": self.task_name,
-            "output": content,
-        }
-
-        # Apply output mapping to process variables
-        if self.output_mapping:
+        # Try to parse the output as JSON so individual keys can be extracted.
+        # Use JSONDecoder.raw_decode to handle preamble text before the JSON object.
+        parsed_output = None
+        if isinstance(content, str):
             import json as _json
-
-            # Try to parse the output as JSON so individual keys can be extracted.
-            # Use JSONDecoder.raw_decode to handle preamble text before the JSON object.
-            parsed_output = None
             try:
                 raw = content.strip()
                 # Strip markdown code fences if present
@@ -217,6 +207,20 @@ class TaskAgent:
             except (ValueError, TypeError):
                 pass
 
+        # If we successfully parsed JSON, use the parsed object as output
+        # This ensures RO receives a proper JSON object, not a stringified version
+        output_value = parsed_output if parsed_output is not None else content
+
+        task_result = {
+            "status": "completed",
+            "success": True,
+            "task_id": self.task_id,
+            "task_name": self.task_name,
+            "output": output_value,
+        }
+
+        # Apply output mapping to process variables
+        if self.output_mapping:
             logger.info(f"Task '{self.task_id}' output_mapping — parsed_output: {parsed_output}")
 
             for output_key, process_var in self.output_mapping.items():
@@ -225,7 +229,7 @@ class TaskAgent:
                 elif isinstance(parsed_output, dict) and output_key in parsed_output:
                     value = parsed_output[output_key]
                 else:
-                    value = content
+                    value = output_value
 
                 state.set_process_variable(process_var, value)
                 logger.info(f"  set_process_variable('{process_var}', {value!r})")

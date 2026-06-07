@@ -426,6 +426,14 @@ Respond ONLY with a JSON object:
                process_key=self.process_key,
                input_type=type(input_data).__name__,
                input_keys=list(initial_inputs.keys()),
+               process_variables_provided=process_variables is not None,
+               user_message_preview=initial_inputs.get("_user_message"),
+               request_preview=initial_inputs.get("request"),
+               origin=initial_inputs.get("origin"),
+               destination=initial_inputs.get("destination"),
+               start_date=initial_inputs.get("start_date"),
+               end_date=initial_inputs.get("end_date"),
+               cabin_preference=initial_inputs.get("cabin_preference"),
                task_agents=list(self.task_agents.keys()))
 
         bpmn_process = None
@@ -468,6 +476,28 @@ Respond ONLY with a JSON object:
     # ──────────────────────────────────────────────────────────────
 
     def _build_completion_message(self, state: FlowState, process: Any) -> str:
+        # Check for rejection/terminal status first
+        terminal_status = state.process_variables.get("terminal_status", "")
+        terminal_reason = state.process_variables.get("terminal_reason", "")
+        approval_decision = state.process_variables.get("approval_decision", "")
+        
+        if terminal_status == "REJECTED" or approval_decision == "reject":
+            parts = [f"Workflow '{state.process_name}' was REJECTED."]
+            if terminal_reason:
+                parts.append(f"Reason: {terminal_reason}")
+            
+            # Include approval details if available
+            approval_result = state.process_variables.get("approval_result", {})
+            if isinstance(approval_result, dict):
+                approver = approval_result.get("approver")
+                if approver:
+                    parts.append(f"Rejected by: {approver}")
+                reasoning = approval_result.get("reasoning")
+                if reasoning:
+                    parts.append(f"Details: {reasoning}")
+            return "\n".join(parts)
+        
+        # Default completion message
         parts = [f"Workflow '{state.process_name}' completed."]
         if state.is_halted:
             parts.append(f"Process was halted: {state.halt_reason}")
