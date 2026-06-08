@@ -70,6 +70,15 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
         or ``cuga_lite_enable_few_shots`` in configurable (skips prefix chat few-shots).
         """
+        # The adapter's task_todos_ref is closure-scoped per compiled graph and
+        # outlives a single .invoke(); state.task_todos can also persist via a
+        # thread-keyed checkpointer. Reset both at the start of a new
+        # conversation so a previous task's plan doesn't leak into this one's
+        # turn-1 system prompt.
+        if len(state.chat_messages or []) <= 1:
+            adapter._task_todos_ref.clear()
+            state.task_todos = None
+
         configurable = config.get("configurable", {}) if config else {}
         enable_todos = (
             configurable.get("enable_todos")
