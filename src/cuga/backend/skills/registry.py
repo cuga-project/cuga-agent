@@ -14,6 +14,7 @@ class SkillEntry:
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
     tool_definitions: tuple[dict, ...] = ()  # raw dicts from the tools: frontmatter block
+    agent_descriptors: tuple = ()  # AgentDescriptorEntry instances from agents: frontmatter key
 
 
 class SkillRegistry:

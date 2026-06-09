@@ -288,6 +288,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 logger.debug("No tool guides found in metadata")
 
         skill_tools = []
+        skill_entries = []
         skills_prompt_section = ""
         skills_enabled = False
         configurable_special = (
@@ -316,41 +317,65 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 )
 
         # ── agent_spawn ────────────────────────────────────────────────────────────
+        # Collect agents declared inside SKILL.md files via the `agents:` key.
+        # These are activated regardless of settings.agent_spawn.enabled so a skill
+        # is self-contained: declaring an agent in a skill makes it spawnable.
+        _skill_agent_entries = []
+        if not _is_subagent:
+            for _se in skill_entries:
+                _skill_agent_entries.extend(_se.agent_descriptors)
+
         agent_spawn_tools = []
         agents_prompt_section = ""
         agents_enabled = False
+
+        # Directory-based discovery (requires agent_spawn.enabled=True)
+        _dir_agent_entries = []
         if getattr(settings, "agent_spawn", None) and settings.agent_spawn.enabled and not _is_subagent:
-            from cuga.backend.agent_spawn import (
-                AgentDescriptorRegistry,
-                discover_agents,
-                create_spawn_tools,
-                format_available_agents_block,
-            )
+            from cuga.backend.agent_spawn import discover_agents
 
             _agents_dir = os.getenv("CUGA_FOLDER", "")
             _agents_base = _agents_dir or os.getcwd()
             _agents_path = os.path.join(_agents_base, settings.agent_spawn.agents_dir)
-            _agent_entries = discover_agents(_agents_path)
-            if _agent_entries:
-                _agent_registry = AgentDescriptorRegistry(_agent_entries)
-                agent_spawn_tools = create_spawn_tools(
-                    registry=_agent_registry,
-                    parent_tools_context=adapter._tools_context,
-                    spawn_futures=adapter._spawn_futures,
-                    parent_config=config,
-                )
-                tools_for_prompt.extend(agent_spawn_tools)
-                agents_prompt_section = format_available_agents_block(_agent_registry)
-                agents_enabled = True
-                logger.info(
-                    f"agent_spawn: loaded {len(_agent_entries)} descriptor(s), "
-                    "injected spawn_agent + get_agent_result tools"
-                )
-                # Pre-warm sub-agent graphs in the background so graph compilation
-                # runs concurrently with the parent LLM call. By the time spawn_agent
-                # is invoked, _compiled_graph is already set in _agent_cache.
+            _dir_agent_entries = discover_agents(_agents_path)
+
+        # Merge: skill-embedded agents are the base; directory-discovered agents override on collision.
+        _all_agent_entries: list
+        if _skill_agent_entries or _dir_agent_entries:
+            _by_name = {e.name: e for e in _skill_agent_entries}
+            for _e in _dir_agent_entries:
+                _by_name[_e.name] = _e
+            _all_agent_entries = list(_by_name.values())
+        else:
+            _all_agent_entries = []
+
+        if _all_agent_entries:
+            from cuga.backend.agent_spawn import (
+                AgentDescriptorRegistry,
+                create_spawn_tools,
+                format_available_agents_block,
+            )
+
+            _agent_registry = AgentDescriptorRegistry(_all_agent_entries)
+            agent_spawn_tools = create_spawn_tools(
+                registry=_agent_registry,
+                parent_tools_context=adapter._tools_context,
+                spawn_futures=adapter._spawn_futures,
+                parent_config=config,
+            )
+            tools_for_prompt.extend(agent_spawn_tools)
+            agents_prompt_section = format_available_agents_block(_agent_registry)
+            agents_enabled = True
+            logger.info(
+                f"agent_spawn: loaded {len(_all_agent_entries)} descriptor(s) "
+                f"({len(_skill_agent_entries)} from skills, {len(_dir_agent_entries)} from directory), "
+                "injected spawn_agent + get_agent_result tools"
+            )
+            # Pre-warm sub-agent graphs in the background so graph compilation
+            # runs concurrently with the parent LLM call.
+            if getattr(settings, "agent_spawn", None) and settings.agent_spawn.enabled:
                 from cuga.backend.agent_spawn.runtime import prewarm_agent_for_entry
-                for _entry in _agent_entries:
+                for _entry in _all_agent_entries:
                     asyncio.create_task(
                         prewarm_agent_for_entry(_entry, adapter._tools_context, config),
                         name=f"prewarm_{_entry.name}",
