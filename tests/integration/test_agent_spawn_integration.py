@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 FIXTURE_AGENTS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "agents"
+FIXTURE_SKILLS_DIR = Path(__file__).resolve().parents[1] / "fixtures" / "skills"
 
 
 def _monkeypatch_cuga_agent(monkeypatch, answer: str = "count=3 sum=6"):
@@ -149,3 +150,151 @@ def test_data_analyst_descriptor_runs_in_ci_without_live_llm():
     assert len(entry.tool_definitions) == 1
     tool = build_tool_from_definition(entry.tool_definitions[0])
     assert tool.name == "summarise_list"
+
+
+# ── Skill-embedded agent tests ─────────────────────────────────────────────
+
+
+def test_skill_agents_merged_into_spawn_registry(tmp_path):
+    """Agents declared in SKILL.md agents: key are available for spawning.
+
+    This test verifies the full chain:
+      discover_skills → SkillEntry.agent_descriptors → AgentDescriptorRegistry
+    without requiring a live LLM.
+    """
+    from cuga.backend.skills.loader import discover_skills, clear_skills_cache
+    from cuga.backend.agent_spawn.registry import AgentDescriptorRegistry
+    from cuga.backend.agent_spawn.tools import create_spawn_tools
+
+    # Skill directory that declares two sub-agents
+    skill_dir = tmp_path / ".agents" / "skills" / "number_theory"
+    skill_dir.mkdir(parents=True)
+
+    # Write AGENT.md files as sub-directories next to SKILL.md
+    for name, desc in [
+        ("worker_alpha", "Alpha worker agent"),
+        ("worker_beta", "Beta worker agent"),
+    ]:
+        agent_dir = skill_dir / "agents" / name
+        agent_dir.mkdir(parents=True)
+        (agent_dir / "AGENT.md").write_text(
+            f"---\nname: {name}\ndescription: {desc}\n---\nBody.\n",
+            encoding="utf-8",
+        )
+
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: number_theory\n"
+        "description: orchestrates sub-agents\n"
+        "agents:\n"
+        "  - agents/worker_alpha\n"
+        "  - agents/worker_beta\n"
+        "---\nUse spawn_agent to delegate work.\n",
+        encoding="utf-8",
+    )
+
+    import os
+    clear_skills_cache()
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        entries = discover_skills(None)
+    finally:
+        os.chdir(original_cwd)
+        clear_skills_cache()
+
+    nt = next((e for e in entries if e.name == "number_theory"), None)
+    assert nt is not None, "number_theory skill not found"
+    assert len(nt.agent_descriptors) == 2
+
+    agent_names = {d.name for d in nt.agent_descriptors}
+    assert agent_names == {"worker_alpha", "worker_beta"}
+
+    # Build registry from skill-embedded descriptors and verify spawn tools work
+    registry = AgentDescriptorRegistry(list(nt.agent_descriptors))
+    tools = create_spawn_tools(registry=registry, parent_tools_context={}, spawn_futures={})
+    tool_names = {t.name for t in tools}
+    assert "spawn_agent" in tool_names
+    assert "get_agent_result" in tool_names
+
+
+@pytest.mark.asyncio
+async def test_skill_agents_spawn_agent_tool_callable(tmp_path, monkeypatch):
+    """spawn_agent created from skill-embedded agents actually routes to the right agent."""
+    from cuga.sdk import CugaAgent
+
+    # Use the correct stream format: (namespace, {node: state}) tuples
+    async def _mock_stream(self, message, thread_id=None, config=None, action_response=None):
+        yield ((), {"FinalAnswerAgent": {"final_answer": "phi=138240"}})
+
+    monkeypatch.setattr(CugaAgent, "stream", _mock_stream)
+
+    from cuga.backend.skills.loader import discover_skills, clear_skills_cache
+    from cuga.backend.agent_spawn.registry import AgentDescriptorRegistry
+    from cuga.backend.agent_spawn.tools import create_spawn_tools
+
+    skill_dir = tmp_path / ".agents" / "skills" / "nt"
+    skill_dir.mkdir(parents=True)
+
+    agent_dir = skill_dir / "agents" / "number_worker"
+    agent_dir.mkdir(parents=True)
+    (agent_dir / "AGENT.md").write_text(
+        "---\nname: number_worker\ndescription: Does math\n---\nBody.\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\n"
+        "name: nt\n"
+        "description: number theory\n"
+        "agents:\n"
+        "  - agents/number_worker\n"
+        "---\nBody.\n",
+        encoding="utf-8",
+    )
+
+    import os
+    clear_skills_cache()
+    original_cwd = os.getcwd()
+    try:
+        os.chdir(tmp_path)
+        entries = discover_skills(None)
+    finally:
+        os.chdir(original_cwd)
+        clear_skills_cache()
+
+    nt = next(e for e in entries if e.name == "nt")
+    registry = AgentDescriptorRegistry(list(nt.agent_descriptors))
+    tools = create_spawn_tools(registry=registry, parent_tools_context={}, spawn_futures={})
+    spawn = next(t for t in tools if t.name == "spawn_agent")
+
+    result = await spawn.coroutine(name="number_worker", task="compute totient", mode="sync")
+    assert result == "phi=138240"
+
+
+def test_number_theory_production_skill_agents_load():
+    """The production .agents/skills/number_theory SKILL.md bundles real agent AGENT.md files."""
+    from pathlib import Path as _Path
+    from cuga.backend.skills.loader import _parse_skill_file
+    from cuga.backend.agent_spawn.tool_builder import build_tool_from_definition
+
+    skill_md = (
+        _Path(__file__).resolve().parents[2]
+        / ".agents"
+        / "skills"
+        / "number_theory"
+        / "SKILL.md"
+    )
+    if not skill_md.is_file():
+        pytest.skip("production number_theory SKILL.md not found")
+
+    entry = _parse_skill_file(skill_md)
+    assert entry is not None
+    names = {d.name for d in entry.agent_descriptors}
+    assert "prime_factorizer" in names, f"prime_factorizer not in {names}"
+    assert "modular_solver" in names, f"modular_solver not in {names}"
+
+    # Verify the tools referenced in the AGENT.md are importable and buildable
+    for descriptor in entry.agent_descriptors:
+        for td in descriptor.tool_definitions:
+            tool = build_tool_from_definition(td)
+            assert tool is not None
