@@ -1629,6 +1629,42 @@ app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 
 
+if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
+    # The A2A package is only imported when explicitly enabled in settings,
+    # so disabled deployments pay no import-time cost for it.
+    from cuga.backend.server.a2a import build_router as _build_a2a_router  # noqa: E402
+
+    class _PlaceholderA2ARunner:
+        """Minimal runner used until production graph wiring lands.
+
+        Yields a single placeholder event so an A2A client gets a clean
+        lifecycle (working → completed) instead of a hung task.
+        """
+
+        async def run(self, message, context_id=None):
+            class _Ev:
+                def __init__(self, name, data, final=False):
+                    self.name = name
+                    self.data = data
+                    self.final = final
+
+            yield _Ev(
+                "final_answer",
+                {"text": "A2A inbound endpoint reached, but graph runner is not yet wired."},
+                final=True,
+            )
+
+    _a2a_settings_dict = {
+        "agent_name": getattr(settings.a2a, "agent_name", "cuga"),
+        "agent_description": getattr(settings.a2a, "agent_description", "CUGA agent exposed over A2A."),
+        "agent_version": getattr(settings.a2a, "agent_version", "0.0.0"),
+        "agent_url": getattr(settings.a2a, "agent_url", "http://localhost:8000"),
+        "auth_required": getattr(settings.a2a, "auth_required", False),
+        "skill_ids": list(getattr(settings.a2a, "skill_ids", []) or []),
+    }
+    app.include_router(_build_a2a_router(runner=_PlaceholderA2ARunner(), settings=_a2a_settings_dict))
+
+
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok", "subsystems": app_state.get_subsystem_statuses()})

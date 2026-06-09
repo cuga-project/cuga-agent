@@ -223,3 +223,12 @@ save_on_success = true       # Save trajectory on successful task completion
 save_on_failure = true       # Save trajectory on failed task completion
 async_save = true            # Fire-and-forget trajectory saving (non-blocking)
 timeout = 30.0               # Timeout in seconds for Evolve MCP calls
+
+[a2a]
+enabled = false                                              # Master toggle. When false, the A2A router is not mounted and the package is never imported.
+agent_name = "cuga"                                          # The name advertised in the AgentCard.
+agent_description = "CUGA agent exposed over A2A."           # Free-text description for the AgentCard.
+agent_version = "0.0.0"                                      # Version string for the AgentCard.
+agent_url = "http://localhost:8000"                          # Public URL clients should hit. Override per-deployment.
+auth_required = false                                        # When true, the AgentCard advertises a bearer security scheme.
+skill_ids = ["delegate_task"]                                # Skill IDs surfaced in the AgentCard.
