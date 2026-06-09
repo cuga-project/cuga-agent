@@ -136,20 +136,42 @@ async def fetch_agent_card(
 def _agent_card_rpc_url(agent_card: "AgentCard", fallback_base: Optional[str] = None) -> str:
     """Pick the JSON-RPC endpoint to POST to.
 
-    The v0.3 AgentCard's ``url`` field points at the agent's RPC endpoint.
-    Some servers advertise the base host instead; in that case we append
-    ``/a2a`` (the convention used by CUGA's own router). If neither is
-    usable, fall back to the caller-supplied base.
+    Two AgentCard shapes are in play depending on which class the caller
+    hands us:
+
+    - v0.3 pydantic (``a2a.compat.v0_3.types.AgentCard``) — has a
+      top-level ``url`` field pointing at the agent's RPC endpoint.
+    - v1.0 protobuf (``a2a.types.a2a_pb2.AgentCard``) — what
+      ``A2ACardResolver.get_agent_card`` actually returns on SDK 1.x.
+      No top-level ``url``; the URL lives in
+      ``supported_interfaces[0].url`` along with a ``protocol_binding``
+      ("JSONRPC", "GRPC", …) and ``protocol_version``.
+
+    We try both shapes, prefer a JSONRPC-bound interface when there are
+    multiple, and fall back to ``fallback_base`` if neither yields a URL.
+    Once we have a base, we append ``/a2a`` unless the URL already ends
+    in a recognized transport path.
     """
-    url = (getattr(agent_card, "url", None) or fallback_base or "").rstrip("/")
+    url = (getattr(agent_card, "url", None) or "").strip()
+
+    if not url:
+        for iface in getattr(agent_card, "supported_interfaces", None) or []:
+            iface_url = (getattr(iface, "url", None) or "").strip()
+            binding = (getattr(iface, "protocol_binding", None) or "").upper()
+            if not iface_url:
+                continue
+            if binding == "JSONRPC":
+                url = iface_url
+                break
+            if not url:
+                url = iface_url  # remember first interface; keep looking for JSONRPC
+
+    url = (url or fallback_base or "").rstrip("/")
     if not url:
         raise RuntimeError("Agent card carries no URL and no fallback was supplied.")
-    if url.endswith("/a2a"):
+    if any(url.endswith(p) for p in ("/a2a", "/jsonrpc", "/rpc")):
         return url
-    # Heuristic: an agent card usually points at the agent's chat URL,
-    # not the JSON-RPC endpoint. Append /a2a if it doesn't already end in
-    # one of the standard transport paths.
-    return url if any(url.endswith(p) for p in ("/jsonrpc", "/rpc")) else f"{url}/a2a"
+    return f"{url}/a2a"
 
 
 async def delegate_task_via_a2a_sdk(

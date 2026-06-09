@@ -72,6 +72,45 @@ def test_agent_card_rpc_url_appends_a2a_when_card_points_at_base():
     assert _agent_card_rpc_url(_Card()) == "https://peer.example/a2a"
 
 
+def test_agent_card_rpc_url_extracts_from_supported_interfaces_proto_shape():
+    """SDK 1.x's A2ACardResolver returns a *protobuf* AgentCard whose
+    URL lives in ``supported_interfaces[0].url`` rather than ``.url``.
+    This is how every real outbound delegation gets its endpoint, so
+    if this test breaks, every cross-process A2A call breaks with it."""
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import _agent_card_rpc_url
+
+    class _Iface:
+        url = "http://peer.example:8002"
+        protocol_binding = "JSONRPC"
+        protocol_version = "0.3.0"
+
+    class _ProtoCard:
+        url = ""  # absent on protobuf
+        supported_interfaces = [_Iface()]
+
+    assert _agent_card_rpc_url(_ProtoCard()) == "http://peer.example:8002/a2a"
+
+
+def test_agent_card_rpc_url_prefers_jsonrpc_interface_when_multiple_present():
+    """When a peer advertises both gRPC and JSONRPC interfaces, we must
+    pick JSONRPC — that's the wire we actually speak."""
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import _agent_card_rpc_url
+
+    class _Grpc:
+        url = "grpc://peer.example:50051"
+        protocol_binding = "GRPC"
+
+    class _Json:
+        url = "https://peer.example/a2a"
+        protocol_binding = "JSONRPC"
+
+    class _Card:
+        url = ""
+        supported_interfaces = [_Grpc(), _Json()]
+
+    assert _agent_card_rpc_url(_Card()) == "https://peer.example/a2a"
+
+
 def test_agent_card_rpc_url_uses_fallback_when_card_has_no_url():
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import _agent_card_rpc_url
 
