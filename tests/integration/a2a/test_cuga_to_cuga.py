@@ -55,40 +55,39 @@ async def test_client_cuga_fetches_server_cuga_agent_card(server_asgi_client):
     assert len(card.skills) >= 1
 
 
-async def test_client_cuga_delegates_simple_task_to_server_cuga(server_asgi_client, scripted_runner):
+async def test_client_cuga_delegates_simple_task_to_server_cuga(app_with_a2a, scripted_runner):
     """The full delegation path: discover card, send message, receive
-    response. Reuses the existing client helpers in
-    a2a_protocol.py so we're testing what production would actually run."""
-    pytest.importorskip("cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol")
+    response. This drives the actual production delegate_task_via_a2a_sdk
+    helper at the in-process server CUGA via ASGI transport — same code
+    path real cross-process delegation would take, just without the TCP
+    hop. If this passes, both halves of CUGA's A2A surface agree."""
+    from unittest.mock import patch
+
     from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import (
         delegate_task_via_a2a_sdk,
     )
 
-    payload = {
-        "jsonrpc": "2.0",
-        "id": str(uuid4()),
-        "method": "message/send",
-        "params": {
-            "message": {
-                "role": "user",
-                "parts": [{"kind": "text", "text": "please summarize"}],
-                "messageId": uuid4().hex,
-            }
-        },
-    }
-    resp = await server_asgi_client.post("/a2a", json=payload)
-    assert resp.status_code == 200
-    body = resp.json()
-    assert body.get("error") is None
-    # Round-trip the result through the SDK's pydantic Task — the same
-    # validation a real client would apply.
-    task = a2a_types.Task.model_validate(body["result"])
-    assert task.status.state == a2a_types.TaskState.completed
-    # Server's scripted graph received the user's task verbatim.
+    transport = httpx.ASGITransport(app=app_with_a2a)
+    real_async_client = httpx.AsyncClient
+
+    def _factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    class _Card:
+        url = "http://server-cuga.local"
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol.httpx.AsyncClient",
+        side_effect=_factory,
+    ):
+        result = await delegate_task_via_a2a_sdk(_Card(), "please summarize")
+
+    # The supervisor helper got a real answer back from the in-process server.
+    assert result["status"] == "success"
+    assert "42" in result["result"]  # scripted_runner replies with "the answer is 42"
+    # And the server's scripted graph received the user's task verbatim.
     assert any("please summarize" in msg for (msg, _ctx) in scripted_runner.received)
-    # Sanity: the helper module is importable and its public API still exists
-    # (regression guard — if that module breaks, real delegation breaks too).
-    assert callable(delegate_task_via_a2a_sdk)
 
 
 async def test_streaming_events_propagate_end_to_end(server_asgi_client):

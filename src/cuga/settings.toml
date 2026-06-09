@@ -232,3 +232,4 @@ agent_version = "0.0.0"                                      # Version string fo
 agent_url = "http://localhost:8000"                          # Public URL clients should hit. Override per-deployment.
 auth_required = false                                        # When true, the AgentCard advertises a bearer security scheme.
 skill_ids = ["delegate_task"]                                # Skill IDs surfaced in the AgentCard.
+supervisor_config_path = ""                                  # YAML config for the CugaSupervisor that handles A2A inbound. When empty, a placeholder runner is used.

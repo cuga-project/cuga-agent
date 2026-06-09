@@ -1634,23 +1634,69 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
     # so disabled deployments pay no import-time cost for it.
     from cuga.backend.server.a2a import build_router as _build_a2a_router  # noqa: E402
 
-    class _PlaceholderA2ARunner:
-        """Minimal runner used until production graph wiring lands.
+    class _A2AStreamEvent:
+        """Duck-typed event the A2A task adapter consumes."""
 
-        Yields a single placeholder event so an A2A client gets a clean
-        lifecycle (working → completed) instead of a hung task.
+        __slots__ = ("name", "data", "final")
+
+        def __init__(self, name, data=None, final=False):
+            self.name = name
+            self.data = data
+            self.final = final
+
+    class _SupervisorA2ARunner:
+        """Run inbound A2A messages through a lazily-created CugaSupervisor.
+
+        We instantiate the supervisor on first use rather than during
+        lifespan startup so deployments that enable A2A but never receive
+        a request pay no init cost. The supervisor is cached on
+        ``app_state.a2a_supervisor`` afterward.
+        """
+
+        def __init__(self, app_state_ref, supervisor_config_path: str):
+            self._app_state = app_state_ref
+            self._yaml_path = supervisor_config_path
+            self._lock = asyncio.Lock()
+
+        async def _ensure_supervisor(self):
+            existing = getattr(self._app_state, "a2a_supervisor", None)
+            if existing is not None:
+                return existing
+            async with self._lock:
+                existing = getattr(self._app_state, "a2a_supervisor", None)
+                if existing is not None:
+                    return existing
+                from cuga.sdk import CugaSupervisor
+
+                supervisor = await CugaSupervisor.from_yaml(self._yaml_path)
+                self._app_state.a2a_supervisor = supervisor
+                return supervisor
+
+        async def run(self, message, context_id=None):
+            try:
+                supervisor = await self._ensure_supervisor()
+                result = await supervisor.invoke(message, thread_id=context_id)
+                answer = getattr(result, "answer", None) or str(result)
+                error = getattr(result, "error", None)
+                if error:
+                    yield _A2AStreamEvent("error", {"text": f"Supervisor error: {error}"}, final=True)
+                    return
+                yield _A2AStreamEvent("final_answer", {"text": answer}, final=True)
+            except Exception as exc:  # surface failures across the wire
+                logger.exception("A2A inbound delegation failed")
+                yield _A2AStreamEvent("error", {"text": f"A2A handler error: {exc}"}, final=True)
+
+    class _PlaceholderA2ARunner:
+        """Used when ``a2a.supervisor_config_path`` is unset.
+
+        Returns a clear "endpoint reached but unconfigured" terminal event
+        so callers get a well-formed Task envelope instead of a 5xx.
         """
 
         async def run(self, message, context_id=None):
-            class _Ev:
-                def __init__(self, name, data, final=False):
-                    self.name = name
-                    self.data = data
-                    self.final = final
-
-            yield _Ev(
+            yield _A2AStreamEvent(
                 "final_answer",
-                {"text": "A2A inbound endpoint reached, but graph runner is not yet wired."},
+                {"text": "A2A inbound endpoint reached, but settings.a2a.supervisor_config_path is not set."},
                 final=True,
             )
 
@@ -1662,7 +1708,14 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
         "auth_required": getattr(settings.a2a, "auth_required", False),
         "skill_ids": list(getattr(settings.a2a, "skill_ids", []) or []),
     }
-    app.include_router(_build_a2a_router(runner=_PlaceholderA2ARunner(), settings=_a2a_settings_dict))
+    _a2a_supervisor_cfg = getattr(settings.a2a, "supervisor_config_path", "") or ""
+    if _a2a_supervisor_cfg:
+        _a2a_runner: Any = _SupervisorA2ARunner(app_state, _a2a_supervisor_cfg)
+        logger.info(f"A2A inbound: routing requests through supervisor at {_a2a_supervisor_cfg}")
+    else:
+        _a2a_runner = _PlaceholderA2ARunner()
+        logger.warning("A2A inbound enabled but settings.a2a.supervisor_config_path is empty; using placeholder runner.")
+    app.include_router(_build_a2a_router(runner=_a2a_runner, settings=_a2a_settings_dict))
 
 
 @app.get("/health")

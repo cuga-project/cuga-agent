@@ -1,9 +1,12 @@
 """
 A2A Protocol - Agent-to-Agent communication.
 
-HTTP transport uses a2a-sdk (A2ACardResolver, A2AClient): fetch agent card from
-well-known path, send message with task only (no variables). Other transports
-use legacy A2AProtocol.
+HTTP transport speaks A2A v0.3 JSON-RPC directly to the peer's ``/a2a``
+endpoint. We pull pydantic types from ``a2a.compat.v0_3.types`` (the
+installed ``a2a-sdk`` 1.x ships v0.3 wire shapes there) and use the
+SDK's ``A2ACardResolver`` for the well-known agent-card lookup. Other
+transports (sse/websocket/stdio) still use the legacy ``A2AProtocol``
+class below.
 """
 
 from __future__ import annotations
@@ -16,27 +19,42 @@ from loguru import logger
 
 try:
     import httpx
-    from a2a.client import A2ACardResolver, A2AClient
-    from a2a.types import (
+    from a2a.client import A2ACardResolver
+    from a2a.compat.v0_3.types import (
         AgentCard,
-        JSONRPCErrorResponse,
-        Message,
-        MessageSendParams,
-        Part,
-        Role,
-        SendMessageRequest,
         Task,
-        TextPart,
     )
     from a2a.utils.constants import AGENT_CARD_WELL_KNOWN_PATH
-    from a2a.utils.message import get_message_text
 
     HAS_A2A_SDK = True
 except ImportError:
     HAS_A2A_SDK = False
     AgentCard = None
     Task = None
-    JSONRPCErrorResponse = None
+
+
+def _extract_text_from_task(task_dict: Dict[str, Any]) -> str:
+    """Pull human-readable text from a v0.3 Task envelope.
+
+    Prefers the most recent agent message in ``history`` since A2A returns
+    the full conversation; falls back to the status message, then to the
+    raw JSON if all else fails.
+    """
+    history = task_dict.get("history") or []
+    for msg in reversed(history):
+        if msg.get("role") != "agent":
+            continue
+        for part in msg.get("parts") or []:
+            text = part.get("text") if isinstance(part, dict) else None
+            if isinstance(text, str) and text:
+                return text
+    status = task_dict.get("status") or {}
+    status_msg = status.get("message") or {}
+    for part in status_msg.get("parts") or []:
+        text = part.get("text") if isinstance(part, dict) else None
+        if isinstance(text, str) and text:
+            return text
+    return ""
 
 
 def _agent_card_description(agent_card: "AgentCard") -> str:
@@ -115,51 +133,82 @@ async def fetch_agent_card(
     return card
 
 
+def _agent_card_rpc_url(agent_card: "AgentCard", fallback_base: Optional[str] = None) -> str:
+    """Pick the JSON-RPC endpoint to POST to.
+
+    The v0.3 AgentCard's ``url`` field points at the agent's RPC endpoint.
+    Some servers advertise the base host instead; in that case we append
+    ``/a2a`` (the convention used by CUGA's own router). If neither is
+    usable, fall back to the caller-supplied base.
+    """
+    url = (getattr(agent_card, "url", None) or fallback_base or "").rstrip("/")
+    if not url:
+        raise RuntimeError("Agent card carries no URL and no fallback was supplied.")
+    if url.endswith("/a2a"):
+        return url
+    # Heuristic: an agent card usually points at the agent's chat URL,
+    # not the JSON-RPC endpoint. Append /a2a if it doesn't already end in
+    # one of the standard transport paths.
+    return url if any(url.endswith(p) for p in ("/jsonrpc", "/rpc")) else f"{url}/a2a"
+
+
 async def delegate_task_via_a2a_sdk(
     agent_card: "AgentCard",
     task: str,
     auth: Optional[Dict[str, str]] = None,
     timeout: float = 30.0,
     variables: Optional[Dict[str, Any]] = None,
+    rpc_url: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    Delegate by sending a user message. Optionally pass variables in request metadata (extension).
-    Returns dict with keys: result (str), variables (dict), status (str).
+    """Delegate a task to a remote A2A agent over v0.3 JSON-RPC.
+
+    Returns dict with keys: ``result`` (str), ``variables`` (dict),
+    ``status`` (str). When ``variables`` is provided, it is forwarded in
+    request metadata as the A2A ``variables`` extension.
+
+    ``rpc_url`` overrides the URL discovered from the agent card; mostly
+    useful when callers already know the endpoint and want to skip the
+    inference step.
     """
     if not HAS_A2A_SDK:
         raise ImportError("a2a-sdk is required. Install with: uv add a2a-sdk")
-    headers = {}
+
+    target_url = rpc_url or _agent_card_rpc_url(agent_card)
+
+    headers: Dict[str, str] = {"Content-Type": "application/json"}
     if auth and auth.get("type") == "bearer" and auth.get("token"):
         headers["Authorization"] = f"Bearer {auth['token']}"
-    message_id = uuid4().hex
-    user_msg = Message(
-        role=Role.user,
-        parts=[Part(root=TextPart(text=task))],
-        message_id=message_id,
-    )
-    metadata = {"variables": variables} if variables else None
-    params = MessageSendParams(message=user_msg, metadata=metadata)
-    request = SendMessageRequest(id=str(uuid4()), params=params)
-    async with httpx.AsyncClient(timeout=timeout) as httpx_client:
-        client = A2AClient(httpx_client=httpx_client, agent_card=agent_card)
-        response = await client.send_message(
-            request,
-            http_kwargs={"headers": headers} if headers else None,
-        )
-    root = getattr(response, "root", response)
-    if isinstance(root, JSONRPCErrorResponse) and getattr(root, "error", None):
-        raise RuntimeError(f"A2A send_message failed: {root.error}")
-    result_obj = getattr(root, "result", None)
-    if result_obj is None:
+
+    payload = {
+        "jsonrpc": "2.0",
+        "id": str(uuid4()),
+        "method": "message/send",
+        "params": {
+            "message": {
+                "role": "user",
+                "parts": [{"kind": "text", "text": task}],
+                "messageId": uuid4().hex,
+            }
+        },
+    }
+    if variables:
+        payload["params"]["metadata"] = {"variables": variables}
+
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.post(target_url, json=payload, headers=headers)
+        resp.raise_for_status()
+        body = resp.json()
+
+    err = body.get("error") if isinstance(body, dict) else None
+    if err:
+        raise RuntimeError(f"A2A send_message failed: {err}")
+
+    result_obj = body.get("result") if isinstance(body, dict) else None
+    if not isinstance(result_obj, dict):
         return {"result": "", "variables": {}, "status": "success"}
-    if isinstance(result_obj, Message):
-        text = get_message_text(result_obj)
-    elif isinstance(result_obj, Task) and result_obj.history:
-        texts = [get_message_text(m) for m in result_obj.history if isinstance(m, Message)]
-        text = "\n".join(texts) if texts else ""
-    else:
-        text = str(result_obj) if result_obj else ""
-    return {"result": text or "", "variables": {}, "status": "success"}
+
+    text = _extract_text_from_task(result_obj)
+    return {"result": text, "variables": {}, "status": "success"}
 
 
 class A2AProtocol:
