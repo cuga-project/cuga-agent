@@ -27,11 +27,13 @@ _HITL_HINTS = ("approval", "input_required", "user_input", "interrupt", "hitl")
 
 
 def _is_hitl(event: Any) -> bool:
+    """Return True when ``event.name`` looks like a human-in-the-loop interrupt."""
     name = str(getattr(event, "name", "") or "").lower()
     return any(hint in name for hint in _HITL_HINTS)
 
 
 def _is_final(event: Any) -> bool:
+    """Return True when ``event`` should close the A2A task."""
     if bool(getattr(event, "final", False)):
         return True
     name = str(getattr(event, "name", "") or "").lower()
@@ -39,6 +41,12 @@ def _is_final(event: Any) -> bool:
 
 
 def _event_text(event: Any) -> str:
+    """Best-effort extract the user-visible text payload from an event.
+
+    Probes the common shapes CUGA's graph emits (a raw string, or a dict
+    with one of ``text``/``message``/``prompt``/``content``), falling
+    back to the event name so the A2A frame is never empty.
+    """
     data = getattr(event, "data", None)
     if isinstance(data, str):
         return data
@@ -51,6 +59,7 @@ def _event_text(event: Any) -> str:
 
 
 def _message(text: str, message_id: str, context_id: str) -> Message:
+    """Build an agent-role A2A Message wrapping ``text`` as a single TextPart."""
     return Message(
         role=Role.agent,
         parts=[Part(root=TextPart(text=text))],

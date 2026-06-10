@@ -18,6 +18,13 @@ from cuga.backend.server.a2a._a2a_types import (
 
 
 def _coerce_skill(spec: Mapping[str, Any]) -> AgentSkill:
+    """Build an ``AgentSkill`` from a loose mapping.
+
+    Accepts whatever the caller has lying around (config dict, registry
+    entry, hand-written test fixture) and produces a valid SDK skill.
+    Falls back to the skill id for any missing display fields so the
+    output round-trips through the SDK's pydantic model.
+    """
     skill_id = spec["id"]
     return AgentSkill(
         id=skill_id,

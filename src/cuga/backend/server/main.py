@@ -1640,6 +1640,7 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
         __slots__ = ("name", "data", "final")
 
         def __init__(self, name, data=None, final=False):
+            """Capture an event name + payload + terminal-flag triple."""
             self.name = name
             self.data = data
             self.final = final
@@ -1654,11 +1655,13 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
         """
 
         def __init__(self, app_state_ref, supervisor_config_path: str):
+            """Stash the app_state and YAML path; no I/O until ``run()``."""
             self._app_state = app_state_ref
             self._yaml_path = supervisor_config_path
             self._lock = asyncio.Lock()
 
         async def _ensure_supervisor(self):
+            """Return the cached supervisor or build one under a lock (double-checked)."""
             existing = getattr(self._app_state, "a2a_supervisor", None)
             if existing is not None:
                 return existing
@@ -1673,6 +1676,7 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
                 return supervisor
 
         async def run(self, message, context_id=None):
+            """Invoke the supervisor and emit one terminal event with its answer."""
             try:
                 supervisor = await self._ensure_supervisor()
                 result = await supervisor.invoke(message, thread_id=context_id)
@@ -1694,6 +1698,7 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
         """
 
         async def run(self, message, context_id=None):
+            """Yield a single terminal event explaining the missing config."""
             yield _A2AStreamEvent(
                 "final_answer",
                 {"text": "A2A inbound endpoint reached, but settings.a2a.supervisor_config_path is not set."},
@@ -1714,7 +1719,9 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
         logger.info(f"A2A inbound: routing requests through supervisor at {_a2a_supervisor_cfg}")
     else:
         _a2a_runner = _PlaceholderA2ARunner()
-        logger.warning("A2A inbound enabled but settings.a2a.supervisor_config_path is empty; using placeholder runner.")
+        logger.warning(
+            "A2A inbound enabled but settings.a2a.supervisor_config_path is empty; using placeholder runner."
+        )
     app.include_router(_build_a2a_router(runner=_a2a_runner, settings=_a2a_settings_dict))
 
 

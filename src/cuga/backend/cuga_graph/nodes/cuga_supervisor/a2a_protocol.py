@@ -58,6 +58,7 @@ def _extract_text_from_task(task_dict: Dict[str, Any]) -> str:
 
 
 def _agent_card_description(agent_card: "AgentCard") -> str:
+    """Render a one-line summary of an AgentCard for prompt embedding."""
     parts = []
     if getattr(agent_card, "name", None):
         parts.append(str(agent_card.name))
@@ -116,6 +117,12 @@ async def fetch_agent_card(
     auth: Optional[Dict[str, str]] = None,
     timeout: float = 30.0,
 ) -> "AgentCard":
+    """Fetch the peer's AgentCard from its well-known path.
+
+    Uses the SDK's ``A2ACardResolver`` (still works on a2a-sdk 1.x), so
+    the returned card is a protobuf instance whose URL lives in
+    ``supported_interfaces`` rather than as a top-level ``url`` attribute.
+    """
     if not HAS_A2A_SDK:
         raise ImportError("a2a-sdk is required for A2A HTTP. Install with: uv add a2a-sdk")
     headers = {}
@@ -246,6 +253,7 @@ class A2AProtocol:
         auth: Optional[Dict[str, str]] = None,
         timeout: int = 30,
     ):
+        """Configure the legacy protocol client; no I/O until ``connect()``."""
         self.endpoint = endpoint
         self.transport = transport.lower()
         self.auth = auth or {}
@@ -255,6 +263,7 @@ class A2AProtocol:
         self._ws = None
 
     async def connect(self) -> None:
+        """Open the underlying transport (http session, sse, websocket, …)."""
         if self.transport == "http":
             try:
                 import aiohttp
@@ -288,6 +297,7 @@ class A2AProtocol:
             raise ValueError(f"Unsupported transport type: {self.transport}")
 
     async def disconnect(self) -> None:
+        """Close the transport opened by ``connect()``; safe to call twice."""
         if self.transport == "http" and self._session:
             await self._session.close()
             self._session = None
@@ -302,6 +312,7 @@ class A2AProtocol:
             logger.info("Closed WebSocket connection")
 
     def _get_auth_headers(self) -> Dict[str, str]:
+        """Build the ``Authorization`` header dict for the configured auth."""
         headers = {}
         if self.auth.get("type") == "bearer" and self.auth.get("token"):
             headers["Authorization"] = f"Bearer {self.auth['token']}"
@@ -314,6 +325,7 @@ class A2AProtocol:
         context: Dict[str, Any],
         variables: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
+        """Send a ``task_delegation`` message and return the peer's response."""
         message = {
             "protocol_version": "1.0",
             "message_type": "task_delegation",
@@ -363,6 +375,7 @@ class A2AProtocol:
         variables: Optional[Dict[str, Any]] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """Push a ``result_sharing`` message to ``target_agent`` (fire-and-forget)."""
         message = {
             "protocol_version": "1.0",
             "message_type": "result_sharing",
@@ -393,6 +406,7 @@ class A2AProtocol:
             logger.warning("STDIO transport for result sharing not fully implemented")
 
     async def discover_capabilities(self, agent_name: str) -> List[str]:
+        """Ask ``agent_name`` for its supported capabilities; ``[]`` on failure."""
         message = {
             "protocol_version": "1.0",
             "message_type": "capability_query",
@@ -430,6 +444,7 @@ class A2AProtocol:
             return []
 
     async def get_agent_status(self, agent_name: str) -> Dict[str, Any]:
+        """Probe ``agent_name`` for liveness/status; ``{'status': 'unknown'}`` on failure."""
         message = {
             "protocol_version": "1.0",
             "message_type": "status_query",

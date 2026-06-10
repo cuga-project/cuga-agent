@@ -42,6 +42,7 @@ class GraphRunner(Protocol):
     """
 
     def run(self, message: str, context_id: str | None = None) -> AsyncIterator[Any]:  # pragma: no cover
+        """Yield graph events for ``message`` on the given thread."""
         ...
 
 
@@ -54,6 +55,7 @@ _INTERNAL_ERROR = -32603
 
 
 def _rpc_error(rid: Any, code: int, message: str, data: Any | None = None) -> dict[str, Any]:
+    """Build a JSON-RPC 2.0 error envelope echoing the request id."""
     err: dict[str, Any] = {"code": code, "message": message}
     if data is not None:
         err["data"] = data
@@ -61,10 +63,12 @@ def _rpc_error(rid: Any, code: int, message: str, data: Any | None = None) -> di
 
 
 def _rpc_result(rid: Any, result: Any) -> dict[str, Any]:
+    """Build a JSON-RPC 2.0 success envelope echoing the request id."""
     return {"jsonrpc": "2.0", "id": rid, "result": result}
 
 
 def _extract_message_text(params: MessageSendParams) -> str:
+    """Concatenate every text part of the inbound message in order."""
     parts = []
     for p in params.message.parts:
         root = getattr(p, "root", p)
@@ -75,6 +79,7 @@ def _extract_message_text(params: MessageSendParams) -> str:
 
 
 def _ensure_context_id(params: MessageSendParams) -> str:
+    """Return the caller-supplied contextId, or mint a fresh one."""
     return params.message.context_id or uuid.uuid4().hex
 
 
@@ -91,6 +96,7 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
     skills = [{"id": s, "name": s, "description": s} for s in skill_specs]
 
     async def _agent_card_response() -> JSONResponse:
+        """Serialize the AgentCard with camelCase aliases for SDK clients."""
         card = build_agent_card(settings, skills)
         return JSONResponse(card.model_dump(mode="json", exclude_none=True, by_alias=True))
 
@@ -99,13 +105,16 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
     # resolver fetches. Older clients keep working, newer clients work too.
     @router.get("/.well-known/agent.json")
     async def agent_card_endpoint_legacy() -> JSONResponse:
+        """Serve the AgentCard at the v0.3 well-known path."""
         return await _agent_card_response()
 
     @router.get("/.well-known/agent-card.json")
     async def agent_card_endpoint() -> JSONResponse:
+        """Serve the AgentCard at the path the 1.x SDK resolver fetches."""
         return await _agent_card_response()
 
     async def _run_and_collect(message_text: str, context_id: str, task_id: str) -> Task:
+        """Drive the runner to completion and fold the events into a Task."""
         agen = runner.run(message_text, context_id)
         events = []
         async for ev in agen:
@@ -124,7 +133,10 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             history=history,
         )
 
-    async def _sse_stream(message_text: str, context_id: str, task_id: str, rpc_id: Any) -> AsyncIterator[dict]:
+    async def _sse_stream(
+        message_text: str, context_id: str, task_id: str, rpc_id: Any
+    ) -> AsyncIterator[dict]:
+        """Yield SSE frames carrying JSON-RPC envelopes per task update."""
         agen = runner.run(message_text, context_id)
         events = []
         async for ev in agen:
@@ -135,6 +147,14 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
 
     @router.post("/a2a")
     async def jsonrpc_endpoint(request: Request):
+        """Dispatch a JSON-RPC 2.0 request to the right A2A method.
+
+        Returns a JSON envelope for ``message/send`` and an SSE stream
+        for ``message/stream``. Malformed JSON, non-object payloads, and
+        unknown methods are mapped to standard JSON-RPC error codes
+        (-32700 / -32600 / -32601 / -32602) rather than HTTP 5xx, so
+        SDK clients can parse the failure mode.
+        """
         raw = await request.body()
         try:
             payload = json.loads(raw)

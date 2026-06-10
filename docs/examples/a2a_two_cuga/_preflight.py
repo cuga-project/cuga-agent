@@ -33,6 +33,13 @@ COLUMN = "config_json"
 
 
 def _load_dotenv_into_environ() -> None:
+    """Load ``.env`` keys into ``os.environ`` without overriding the shell.
+
+    Bash does not auto-source ``.env`` for child processes; the run
+    scripts already do, but we also do it here so the preflight works
+    when invoked directly. Existing exported values win — we never
+    clobber what the operator set in their shell.
+    """
     env_file = REPO_ROOT / ".env"
     if not env_file.exists():
         return
@@ -48,6 +55,14 @@ def _load_dotenv_into_environ() -> None:
 
 
 def _patch_saved_llm_model(model_name: str) -> None:
+    """Rewrite every saved ``llm.model`` in cuga.db to ``model_name``.
+
+    Workaround for cuga-project/cuga-agent#322: at lifespan startup,
+    ``_apply_published_config`` calls ``os.environ.pop('MODEL_NAME')``
+    when the saved row's ``llm.model`` is empty, wiping the operator's
+    configured model. By writing ``model_name`` into the saved row we
+    keep the env var alive. Idempotent — running twice is a no-op.
+    """
     if not DB_PATH.exists():
         print(f"[preflight] no cuga.db at {DB_PATH} — nothing to patch")
         return
@@ -80,6 +95,7 @@ def _patch_saved_llm_model(model_name: str) -> None:
 
 
 def main() -> int:
+    """Run the .env load + DB patch and report what was done."""
     _load_dotenv_into_environ()
     model_name = os.environ.get("MODEL_NAME") or os.environ.get("OPENAI_MODEL") or ""
     if not model_name:
