@@ -14,6 +14,14 @@ class SkillEntry:
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
 
+    @property
+    def pip_packages(self) -> list[str]:
+        return [r for r in self.requirements if not r.startswith("npm:")]
+
+    @property
+    def npm_packages(self) -> list[str]:
+        return [r[4:] for r in self.requirements if r.startswith("npm:")]
+
 
 class SkillRegistry:
     def __init__(self, entries: List[SkillEntry]):
@@ -31,8 +39,8 @@ class SkillRegistry:
         parts: list[str] = []
 
         if entry.requirements:
-            pip_pkgs = [r for r in entry.requirements if not r.startswith("npm:")]
-            npm_pkgs = [r[4:] for r in entry.requirements if r.startswith("npm:")]
+            pip_pkgs = entry.pip_packages
+            npm_pkgs = entry.npm_packages
             setup_lines: list[str] = []
             if pip_pkgs:
                 setup_lines.append(f"await run_command('uv pip install --quiet {' '.join(pip_pkgs)}')")

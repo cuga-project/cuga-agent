@@ -129,31 +129,28 @@ def _normalize_requirements(value: Any) -> tuple[str, ...]:
 def _parse_skill_file(path: Path) -> SkillEntry | None:
     try:
         frontmatter, body = parse_markdown_with_frontmatter(str(path))
+        name = frontmatter.get("name")
+        description = frontmatter.get("description")
+        if not name or not description:
+            raise ValueError("missing name or description in frontmatter")
+
+        name_str = _sanitize_for_prompt(str(name).strip(), "name", path)
+        if re.search(r'[/\\]|\.\.', name_str):
+            raise ValueError(
+                f"unsafe skill name {name_str!r}: path separators and '..' are not allowed"
+            )
+
+        description_str = _sanitize_for_prompt(str(description).strip(), "description", path)
+        return SkillEntry(
+            name=name_str,
+            description=description_str,
+            body=body.strip(),
+            source=str(path),
+            requirements=_normalize_requirements(frontmatter.get("requirements")),
+        )
     except Exception as e:
         logger.warning(f"Skipping invalid skill file {path}: {e}")
         return None
-    name = frontmatter.get("name")
-    description = frontmatter.get("description")
-    if not name or not description:
-        logger.warning(f"Skill {path} missing name or description in frontmatter")
-        return None
-
-    name_str = _sanitize_for_prompt(str(name).strip(), "name", path)
-    if re.search(r'[/\\]|\.\.', name_str):
-        logger.warning(
-            f"Skill {path} has unsafe name {name_str!r} (path separators or '..' not allowed), skipping"
-        )
-        return None
-
-    description_str = _sanitize_for_prompt(str(description).strip(), "description", path)
-
-    return SkillEntry(
-        name=name_str,
-        description=description_str,
-        body=body.strip(),
-        source=str(path),
-        requirements=_normalize_requirements(frontmatter.get("requirements")),
-    )
 
 
 def discover_skills(
