@@ -121,7 +121,13 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 return _FakeResponse()
             raise
 
-    async def resolve_bind_tools(self, state: Any, active_model: Any, configurable: dict) -> Any:
+    async def resolve_bind_tools(
+        self,
+        state: Any,
+        active_model: Any,
+        configurable: dict,
+        config: Any = None,
+    ) -> Any:
         try:
             return await resolve_model_with_bind_tools(
                 active_model,
@@ -129,6 +135,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
                 tools_context_ref=self._tools_context_ref,
                 tool_provider=self._base_tool_provider,
                 query=_first_user_message_text(getattr(state, "chat_messages", None)),
+                run_config=config,
             )
         except RuntimeError:
             # Cap/shortlist failures surface intentionally — do not silently fall back.

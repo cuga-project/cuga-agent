@@ -11,23 +11,6 @@ from loguru import logger
 tracker = ActivityTracker()
 
 
-def run_petstore():
-    server_module = "agent/api/example_api_servers/petstore.py"
-    from cuga.config import settings
-
-    subprocess.run(
-        [
-            "uv",
-            "run",
-            "fastapi",
-            "dev",
-            server_module,
-            "--no-reload",
-            f"--port={settings.server_ports.petstore_api}",
-        ]
-    )
-
-
 def run_api_registry_base(mode):
     """Run the FastAPI server."""
     if mode == "appworld":

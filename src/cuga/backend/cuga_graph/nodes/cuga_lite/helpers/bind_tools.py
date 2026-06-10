@@ -147,6 +147,7 @@ async def resolve_model_with_bind_tools(
     tool_provider: Optional[ToolProviderInterface],
     model_name: Optional[str] = None,
     query: Optional[str] = None,
+    run_config: Any = None,
 ) -> BaseChatModel:
     """Optionally wrap ``active_model`` with ``bind_tools`` for native tool-calling tests.
 
@@ -205,6 +206,7 @@ async def resolve_model_with_bind_tools(
             include_find_tools=include_find_tools,
             tools_context_ref=tools_context_ref,
             mode=mode,
+            run_config=run_config,
         )
 
     if mode in ("", "none", "false", "0", "off"):

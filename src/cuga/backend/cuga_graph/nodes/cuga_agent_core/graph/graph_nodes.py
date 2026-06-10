@@ -100,10 +100,20 @@ class CoreGraphAdapter(ABC):
         Default: ``{}``; Lite overrides to include Langfuse callbacks."""
         return {}
 
-    async def resolve_bind_tools(self, state: Any, active_model: Any, configurable: dict) -> Any:
+    async def resolve_bind_tools(
+        self,
+        state: Any,
+        active_model: Any,
+        configurable: dict,
+        config: Any = None,
+    ) -> Any:
         """Return a model instance with tools bound, or ``None`` to use the
         plain model without binding.  Default: ``None`` (Supervisor never
-        binds tools; only AgentGraphAdapter overrides this)."""
+        binds tools; only AgentGraphAdapter overrides this).
+
+        *config* is the LangGraph node ``RunnableConfig`` (Lite passes it for
+        nested shortlister / bind-tools LLM calls).
+        """
         return None
 
     async def ainvoke_model(self, bound: Any, messages: list, invoke_config: dict) -> Any:

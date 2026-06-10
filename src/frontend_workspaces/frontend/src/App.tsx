@@ -3,7 +3,6 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
-import { CarbonChat } from "./carbon-chat";
 import { ChatLanding } from "./ChatLanding";
 import { UnauthorizedPage } from "./UnauthorizedPage";
 import { AuthProvider, useAuth } from "./AuthContext";

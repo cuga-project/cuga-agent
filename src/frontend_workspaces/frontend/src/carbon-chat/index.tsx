@@ -8,5 +8,4 @@
  */
 
 export { default as CarbonChat } from './CarbonChat';
-export * from './scenarios';
 export * from './customSendMessage';

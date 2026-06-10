@@ -192,7 +192,6 @@ system_tests = ["**/*.py", "**/*.yaml", "**/*.sh"]
 
 [project.scripts]
 load_specs = "scripts.api_utils.load_openapi_specs:main"
-petstore = "scripts.commands:run_petstore"
 demo = "scripts.commands:run_demo"
 registry = "scripts.commands:run_api_registry"
 registry_appworld = "scripts.commands:run_api_registry_appworld"

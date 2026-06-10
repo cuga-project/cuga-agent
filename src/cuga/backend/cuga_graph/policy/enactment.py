@@ -786,6 +786,9 @@ You have been provided with a step-by-step playbook for this task. Follow these 
         """
         from langchain_core.messages import HumanMessage, SystemMessage
         from cuga.backend.llm.models import LLMManager
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import get_langfuse_invoke_config
+
+        lf_invoke_config = get_langfuse_invoke_config()
 
         logger.info(f"Formatting output using policy: {policy_match.policy.name}")
 
@@ -876,7 +879,7 @@ Please reformat this response according to the instructions above."""
                     + [HumanMessage(content=user_prompt)]
                 )
 
-            formatted_response = await llm.ainvoke(messages)
+            formatted_response = await llm.ainvoke(messages, config=lf_invoke_config)
             formatted_content = formatted_response.content
 
         else:  # json_schema
@@ -919,7 +922,7 @@ Extract and format the information from this response as JSON according to the s
                 try:
                     # Use with_structured_output with json_schema method
                     structured_llm = llm.with_structured_output(schema, method="json_schema")
-                    formatted_response = await structured_llm.ainvoke(messages)
+                    formatted_response = await structured_llm.ainvoke(messages, config=lf_invoke_config)
 
                     # Structured output returns a dict, convert to JSON string
                     if isinstance(formatted_response, dict):
@@ -954,7 +957,7 @@ Important:
                             + [HumanMessage(content=user_prompt)]
                         )
 
-                    formatted_response = await llm.ainvoke(messages_fallback)
+                    formatted_response = await llm.ainvoke(messages_fallback, config=lf_invoke_config)
                     formatted_content = formatted_response.content
 
             except json.JSONDecodeError:
