@@ -25,7 +25,7 @@ Use test_skills_sdk_e2e.py for hard-gated negative controls with fabricated data
 
 How to run
 ----------
-    uv run pytest tests/e2e/test_skills_real_e2e.py -m e2e -v -s
+    uv run pytest tests/e2e/skills/test_skills_real_e2e.py -m e2e -v -s
 
 Skip reason when GitHub is unreachable:
     Tests are skipped automatically if the raw.githubusercontent.com download fails.

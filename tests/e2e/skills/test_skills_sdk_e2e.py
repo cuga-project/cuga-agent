@@ -18,11 +18,11 @@ How to run
 ----------
 Tier 1 only (fast, no LLM):
 
-    uv run pytest tests/e2e/test_skills_sdk_e2e.py::TestSkillsSdkConfiguration -v
+    uv run pytest tests/e2e/skills/test_skills_sdk_e2e.py::TestSkillsSdkConfiguration -v
 
 Tier 3 only (real LLM):
 
-    uv run pytest tests/e2e/test_skills_sdk_e2e.py -m e2e -v -s
+    uv run pytest tests/e2e/skills/test_skills_sdk_e2e.py -m e2e -v -s
 """
 
 from __future__ import annotations
@@ -34,6 +34,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from .conftest import write_skill
+from .skills_artifact import COMPLIANCE_SCORER, PARTS_CATALOG, VENDOR_ONBOARDING
 
 if TYPE_CHECKING:
     from cuga.sdk import CugaAgent
@@ -199,63 +200,9 @@ class TestSkillsSdkConfiguration:
 
 
 # ---------------------------------------------------------------------------
-# Tier 3 – real LLM via SDK
+# Tier 3 - real LLM via SDK
 # ---------------------------------------------------------------------------
-#
-# Same three skills as test_skills_llm_e2e.py so the gating guarantees carry
-# over.  The SDK surface is what changes: CugaAgent.invoke() instead of the
-# raw graph helper _run_graph().
-
-_SCORER_SKILL_BODY = (
-    "## Acme Corp Compliance Risk Score Calculator\n\n"
-    "Use this proprietary formula to compute the CRS (Compliance Risk Score):\n\n"
-    "    CRS = (violations * 14) + (days_overdue * 3) - (controls_passed * 5) + 22\n\n"
-    "Where:\n"
-    "- violations: number of distinct policy violations found\n"
-    "- days_overdue: number of calendar days past the remediation deadline\n"
-    "- controls_passed: number of controls that passed review in the same audit cycle\n"
-    "- The constant offset 22 is the Acme baseline risk factor\n\n"
-    'Report the result as: "Acme CRS: <number>"'
-)
-_SCORER_TASK = "Compute the Acme compliance risk score for: 3 violations, 45 days overdue, 8 controls passed."
-
-_PARTS_SKILL_BODY = (
-    "## Acme Corp Parts Catalog — Internal Reference\n\n"
-    "Return the exact internal part code for the requested product.\n\n"
-    "| Product Description             | Internal Part Code |\n"
-    "|---------------------------------|--------------------|\n"
-    "| Thermal Bypass Valve            | TBV-9143-X         |\n"
-    "| Pressure Relief Unit            | PRU-2267-K         |\n"
-    "| Flow Control Module             | FCM-5508-J         |\n"
-    "| Rotary Actuator Assembly Type-3 | RAA-7712-Q         |\n"
-    "| Solenoid Isolation Block        | SIB-3391-N         |\n\n"
-    'If the product is not listed, respond: "Part code not found in catalog."'
-)
-_PARTS_TASK = "What is the Acme Corp internal part code for the Pressure Relief Unit?"
-
-_ONBOARDING_SKILL_BODY = (
-    "## Acme Corp Vendor Onboarding — Standard Process v4.2\n\n"
-    "Complete all steps in order. Do not skip or reorder.\n\n"
-    "Step 1 — NEXUS Compliance Screen\n"
-    "  Submit vendor details to the NEXUS compliance portal (portal ID: NX-VENDOR).\n"
-    "  Await NEXUS clearance code before proceeding.\n\n"
-    "Step 2 — CERBERUS Authentication Setup\n"
-    "  Create vendor account in CERBERUS (internal IAM system).\n"
-    "  Assign role: VENDOR_EXTERNAL_L1.\n\n"
-    "Step 3 — IRONGATE Financial Vetting\n"
-    "  Submit bank details and tax forms to IRONGATE (finance validation system).\n"
-    "  Record the IRONGATE approval reference number.\n\n"
-    "Step 4 — Master Agreement via DOCUVAULT\n"
-    "  Send the standard MSA template via DOCUVAULT (contract management portal).\n"
-    "  DOCUVAULT signatures only — do not use email attachments.\n\n"
-    "Step 5 — Activation Confirmation\n"
-    "  Confirm all prior steps, then issue activation. Reference the NEXUS clearance\n"
-    "  code, CERBERUS activation token, and IRONGATE reference number.\n\n"
-    "Always name all four internal systems in your summary: "
-    "NEXUS, CERBERUS, IRONGATE, DOCUVAULT."
-)
-_ONBOARDING_TASK = "Walk me through the Acme Corp vendor onboarding process."
-_ONBOARDING_SYSTEMS = ("NEXUS", "CERBERUS", "IRONGATE", "DOCUVAULT")
+# Same three skills as test_skills_llm_e2e.py — imported from skills_artifact.
 
 
 def _make_sdk_agent(
@@ -299,12 +246,7 @@ async def test_sdk_compliance_scorer_produces_correct_score(
 
     Expected: "159" in result.answer  (3*14 + 45*3 - 8*5 + 22 = 159).
     """
-    write_skill(
-        tmp_path,
-        "acme_compliance_scorer",
-        "Computes the Acme Corp proprietary compliance risk score for audit findings",
-        _SCORER_SKILL_BODY,
-    )
+    write_skill(tmp_path, COMPLIANCE_SCORER.name, COMPLIANCE_SCORER.description, COMPLIANCE_SCORER.body)
     agent = _make_sdk_agent(
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
@@ -313,13 +255,13 @@ async def test_sdk_compliance_scorer_produces_correct_score(
     )
 
     result = await agent.invoke(
-        _SCORER_TASK,
+        COMPLIANCE_SCORER.task,
         thread_id=f"sdk_crs_{uuid.uuid4().hex[:8]}",
     )
 
     print(f"\n[sdk_crs] answer: {result.answer[:400]}")
-    _report(skill="sdk/acme_compliance_scorer", expected="159", actual=result.answer)
-    assert "159" in result.answer, (
+    _report(skill=f"sdk/{COMPLIANCE_SCORER.name}", expected=COMPLIANCE_SCORER.expected, actual=result.answer)
+    assert COMPLIANCE_SCORER.expected in result.answer, (
         f"Expected CRS=159 in SDK answer (3*14 + 45*3 - 8*5 + 22 = 159). Got: {result.answer[:500]!r}"
     )
 
@@ -340,15 +282,18 @@ async def test_sdk_compliance_scorer_cannot_produce_correct_score_without_skill(
     )
 
     result = await agent.invoke(
-        _SCORER_TASK,
+        COMPLIANCE_SCORER.task,
         thread_id=f"sdk_crs_neg_{uuid.uuid4().hex[:8]}",
     )
 
     print(f"\n[sdk_crs_neg] answer: {result.answer[:400]}")
     _report(
-        skill="sdk/acme_compliance_scorer (no skill)", expected="159", actual=result.answer, negative=True
+        skill=f"sdk/{COMPLIANCE_SCORER.name} (no skill)",
+        expected=COMPLIANCE_SCORER.expected,
+        actual=result.answer,
+        negative=True,
     )
-    assert "159" not in result.answer, (
+    assert COMPLIANCE_SCORER.expected not in result.answer, (
         "LLM produced 159 without the skill via SDK — skill is not gating this capability. "
         f"Got: {result.answer[:500]!r}"
     )
@@ -362,12 +307,7 @@ async def test_sdk_parts_catalog_returns_internal_code(
     real_llm,
 ) -> None:
     """SDK: LLM returns fabricated internal code PRU-2267-K from the skill body."""
-    write_skill(
-        tmp_path,
-        "parts_catalog_lookup",
-        "Returns internal part codes from the Acme Corp industrial parts catalog",
-        _PARTS_SKILL_BODY,
-    )
+    write_skill(tmp_path, PARTS_CATALOG.name, PARTS_CATALOG.description, PARTS_CATALOG.body)
     agent = _make_sdk_agent(
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
@@ -376,14 +316,14 @@ async def test_sdk_parts_catalog_returns_internal_code(
     )
 
     result = await agent.invoke(
-        _PARTS_TASK,
+        PARTS_CATALOG.task,
         thread_id=f"sdk_parts_{uuid.uuid4().hex[:8]}",
     )
 
     print(f"\n[sdk_parts] answer: {result.answer[:400]}")
     normalized = _normalize_hyphens(result.answer)
-    _report(skill="sdk/parts_catalog_lookup", expected="PRU-2267-K", actual=normalized)
-    assert "PRU-2267-K" in normalized, (
+    _report(skill=f"sdk/{PARTS_CATALOG.name}", expected=PARTS_CATALOG.expected, actual=normalized)
+    assert PARTS_CATALOG.expected in normalized, (
         f"Expected part code 'PRU-2267-K' in SDK answer. Got: {result.answer[:500]!r}"
     )
 
@@ -404,16 +344,19 @@ async def test_sdk_parts_catalog_cannot_return_code_without_skill(
     )
 
     result = await agent.invoke(
-        _PARTS_TASK,
+        PARTS_CATALOG.task,
         thread_id=f"sdk_parts_neg_{uuid.uuid4().hex[:8]}",
     )
 
     print(f"\n[sdk_parts_neg] answer: {result.answer[:400]}")
     normalized = _normalize_hyphens(result.answer)
     _report(
-        skill="sdk/parts_catalog_lookup (no skill)", expected="PRU-2267-K", actual=normalized, negative=True
+        skill=f"sdk/{PARTS_CATALOG.name} (no skill)",
+        expected=PARTS_CATALOG.expected,
+        actual=normalized,
+        negative=True,
     )
-    assert "PRU-2267-K" not in normalized, (
+    assert PARTS_CATALOG.expected not in normalized, (
         f"LLM produced the fabricated part code via SDK without the skill. Got: {result.answer[:500]!r}"
     )
 
@@ -426,12 +369,7 @@ async def test_sdk_vendor_onboarding_uses_internal_system_names(
     real_llm,
 ) -> None:
     """SDK: LLM produces onboarding guide naming all four fabricated internal systems."""
-    write_skill(
-        tmp_path,
-        "acme_vendor_onboarding",
-        "Guides the Acme Corp vendor onboarding process with all required internal steps",
-        _ONBOARDING_SKILL_BODY,
-    )
+    write_skill(tmp_path, VENDOR_ONBOARDING.name, VENDOR_ONBOARDING.description, VENDOR_ONBOARDING.body)
     agent = _make_sdk_agent(
         tmp_path=tmp_path,
         monkeypatch=monkeypatch,
@@ -440,13 +378,13 @@ async def test_sdk_vendor_onboarding_uses_internal_system_names(
     )
 
     result = await agent.invoke(
-        _ONBOARDING_TASK,
+        VENDOR_ONBOARDING.task,
         thread_id=f"sdk_onboard_{uuid.uuid4().hex[:8]}",
     )
 
     print(f"\n[sdk_onboard] answer: {result.answer[:400]}")
-    _report(skill="sdk/acme_vendor_onboarding", expected=list(_ONBOARDING_SYSTEMS), actual=result.answer)
-    for system in _ONBOARDING_SYSTEMS:
+    _report(skill=f"sdk/{VENDOR_ONBOARDING.name}", expected=list(VENDOR_ONBOARDING.expected), actual=result.answer)
+    for system in VENDOR_ONBOARDING.expected:
         assert system in result.answer, (
             f"Expected internal system name '{system}' in SDK answer. Got: {result.answer[:500]!r}"
         )
@@ -468,15 +406,15 @@ async def test_sdk_vendor_onboarding_lacks_internal_names_without_skill(
     )
 
     result = await agent.invoke(
-        _ONBOARDING_TASK,
+        VENDOR_ONBOARDING.task,
         thread_id=f"sdk_onboard_neg_{uuid.uuid4().hex[:8]}",
     )
 
     print(f"\n[sdk_onboard_neg] answer: {result.answer[:400]}")
-    found = [s for s in _ONBOARDING_SYSTEMS if s in result.answer]
+    found = [s for s in VENDOR_ONBOARDING.expected if s in result.answer]
     _report(
-        skill="sdk/acme_vendor_onboarding (no skill)",
-        expected=list(_ONBOARDING_SYSTEMS),
+        skill=f"sdk/{VENDOR_ONBOARDING.name} (no skill)",
+        expected=list(VENDOR_ONBOARDING.expected),
         actual=result.answer,
         negative=True,
     )

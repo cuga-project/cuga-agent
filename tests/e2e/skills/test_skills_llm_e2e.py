@@ -18,11 +18,11 @@ How to run
 ----------
 Run all Tier 3 tests:
 
-    uv run pytest tests/e2e/test_skills_llm_e2e.py -v -s -m e2e
+    uv run pytest tests/e2e/skills/test_skills_llm_e2e.py -v -s -m e2e
 
 Run a single test:
 
-    uv run pytest tests/e2e/test_skills_llm_e2e.py::test_compliance_scorer_produces_correct_score -v -s
+    uv run pytest tests/e2e/skills/test_skills_llm_e2e.py::test_compliance_scorer_produces_correct_score -v -s
 
 The -s flag is required to see the expected/actual output printed by each test.
 
@@ -59,6 +59,7 @@ import pytest
 from langchain_core.messages import HumanMessage
 
 from .conftest import MinimalToolProvider, write_skill
+from .skills_artifact import COMPLIANCE_SCORER, PARTS_CATALOG, VENDOR_ONBOARDING
 
 
 # ---------------------------------------------------------------------------
@@ -152,29 +153,8 @@ async def _run_graph(model, human_message: str, thread_id: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Skill 1: Proprietary compliance risk score
+# Skill 1: Proprietary compliance risk score (CRS = 159 for the test inputs)
 # ---------------------------------------------------------------------------
-#
-# Formula: CRS = (violations * 14) + (days_overdue * 3) - (controls_passed * 5) + 22
-#
-# For violations=3, days_overdue=45, controls_passed=8:
-#   CRS = (3*14) + (45*3) - (8*5) + 22 = 42 + 135 - 40 + 22 = 159
-#
-# The coefficients 14, 3, 5 and the constant 22 are invented.  No LLM can
-# produce 159 without reading the skill body.
-
-_SCORER_SKILL_BODY = (
-    "## Acme Corp Compliance Risk Score Calculator\n\n"
-    "Use this proprietary formula to compute the CRS (Compliance Risk Score):\n\n"
-    "    CRS = (violations * 14) + (days_overdue * 3) - (controls_passed * 5) + 22\n\n"
-    "Where:\n"
-    "- violations: number of distinct policy violations found\n"
-    "- days_overdue: number of calendar days past the remediation deadline\n"
-    "- controls_passed: number of controls that passed review in the same audit cycle\n"
-    "- The constant offset 22 is the Acme baseline risk factor\n\n"
-    'Report the result as: "Acme CRS: <number>"'
-)
-_SCORER_TASK = "Compute the Acme compliance risk score for: 3 violations, 45 days overdue, 8 controls passed."
 
 
 @pytest.mark.asyncio
@@ -201,12 +181,7 @@ async def test_compliance_scorer_produces_correct_score(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CUGA_FOLDER", str(tmp_path / ".cuga"))
-    write_skill(
-        tmp_path,
-        "acme_compliance_scorer",
-        "Computes the Acme Corp proprietary compliance risk score for audit findings",
-        _SCORER_SKILL_BODY,
-    )
+    write_skill(tmp_path, COMPLIANCE_SCORER.name, COMPLIANCE_SCORER.description, COMPLIANCE_SCORER.body)
     monkeypatch.setattr(settings.skills, "enabled", True)
     monkeypatch.setattr(settings.advanced_features, "enable_shell_tool", True)
     monkeypatch.setattr(settings.advanced_features, "cuga_lite_bind_tools_mode", "tools")
@@ -216,12 +191,12 @@ async def test_compliance_scorer_produces_correct_score(
 
     final_answer = await _run_graph(
         model=real_llm,
-        human_message=_SCORER_TASK,
+        human_message=COMPLIANCE_SCORER.task,
         thread_id=f"e2e_crs_{uuid.uuid4().hex[:8]}",
     )
 
-    _report(skill="acme_compliance_scorer", task=_SCORER_TASK, expected="159", actual=final_answer)
-    assert "159" in final_answer, (
+    _report(skill=COMPLIANCE_SCORER.name, task=COMPLIANCE_SCORER.task, expected=COMPLIANCE_SCORER.expected, actual=final_answer)
+    assert COMPLIANCE_SCORER.expected in final_answer, (
         f"Expected CRS=159 in final answer (3*14 + 45*3 - 8*5 + 22 = 159). Got: {final_answer[:500]!r}"
     )
 
@@ -249,43 +224,26 @@ async def test_compliance_scorer_cannot_produce_correct_score_without_skill(
 
     final_answer = await _run_graph(
         model=real_llm,
-        human_message=_SCORER_TASK,
+        human_message=COMPLIANCE_SCORER.task,
         thread_id=f"e2e_crs_neg_{uuid.uuid4().hex[:8]}",
     )
 
     _report(
-        skill="acme_compliance_scorer (no skill)",
-        task=_SCORER_TASK,
-        expected="159",
+        skill=f"{COMPLIANCE_SCORER.name} (no skill)",
+        task=COMPLIANCE_SCORER.task,
+        expected=COMPLIANCE_SCORER.expected,
         actual=final_answer,
         negative=True,
     )
-    assert "159" not in final_answer, (
+    assert COMPLIANCE_SCORER.expected not in final_answer, (
         "LLM produced 159 without the skill — the skill is not gating this capability. "
         f"Got: {final_answer[:500]!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Skill 2: Internal parts catalog lookup
+# Skill 2: Internal parts catalog lookup (PRU-2267-K is a fabricated code)
 # ---------------------------------------------------------------------------
-#
-# PRU-2267-K is an invented identifier absent from all public training data.
-# Without the skill the model will refuse or produce a different code.
-
-_PARTS_SKILL_BODY = (
-    "## Acme Corp Parts Catalog — Internal Reference\n\n"
-    "Return the exact internal part code for the requested product.\n\n"
-    "| Product Description             | Internal Part Code |\n"
-    "|---------------------------------|--------------------|\n"
-    "| Thermal Bypass Valve            | TBV-9143-X         |\n"
-    "| Pressure Relief Unit            | PRU-2267-K         |\n"
-    "| Flow Control Module             | FCM-5508-J         |\n"
-    "| Rotary Actuator Assembly Type-3 | RAA-7712-Q         |\n"
-    "| Solenoid Isolation Block        | SIB-3391-N         |\n\n"
-    'If the product is not listed, respond: "Part code not found in catalog."'
-)
-_PARTS_TASK = "What is the Acme Corp internal part code for the Pressure Relief Unit?"
 
 
 @pytest.mark.asyncio
@@ -312,12 +270,7 @@ async def test_parts_catalog_returns_internal_code(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CUGA_FOLDER", str(tmp_path / ".cuga"))
-    write_skill(
-        tmp_path,
-        "parts_catalog_lookup",
-        "Returns internal part codes from the Acme Corp industrial parts catalog",
-        _PARTS_SKILL_BODY,
-    )
+    write_skill(tmp_path, PARTS_CATALOG.name, PARTS_CATALOG.description, PARTS_CATALOG.body)
     monkeypatch.setattr(settings.skills, "enabled", True)
     monkeypatch.setattr(settings.advanced_features, "enable_shell_tool", True)
     monkeypatch.setattr(settings.advanced_features, "cuga_lite_bind_tools_mode", "tools")
@@ -327,12 +280,12 @@ async def test_parts_catalog_returns_internal_code(
 
     final_answer = await _run_graph(
         model=real_llm,
-        human_message=_PARTS_TASK,
+        human_message=PARTS_CATALOG.task,
         thread_id=f"e2e_parts_{uuid.uuid4().hex[:8]}",
     )
 
-    _report(skill="parts_catalog_lookup", task=_PARTS_TASK, expected="PRU-2267-K", actual=final_answer)
-    assert "PRU-2267-K" in final_answer, (
+    _report(skill=PARTS_CATALOG.name, task=PARTS_CATALOG.task, expected=PARTS_CATALOG.expected, actual=final_answer)
+    assert PARTS_CATALOG.expected in final_answer, (
         f"Expected part code 'PRU-2267-K' in final answer. Got: {final_answer[:500]!r}"
     )
 
@@ -355,54 +308,26 @@ async def test_parts_catalog_cannot_return_code_without_skill(
 
     final_answer = await _run_graph(
         model=real_llm,
-        human_message=_PARTS_TASK,
+        human_message=PARTS_CATALOG.task,
         thread_id=f"e2e_parts_neg_{uuid.uuid4().hex[:8]}",
     )
 
     _report(
-        skill="parts_catalog_lookup (no skill)",
-        task=_PARTS_TASK,
-        expected="PRU-2267-K",
+        skill=f"{PARTS_CATALOG.name} (no skill)",
+        task=PARTS_CATALOG.task,
+        expected=PARTS_CATALOG.expected,
         actual=final_answer,
         negative=True,
     )
-    assert "PRU-2267-K" not in final_answer, (
-        "LLM produced the fabricated part code without the skill — "
-        "the skill is not gating this capability. "
+    assert PARTS_CATALOG.expected not in final_answer, (
+        "LLM produced the fabricated part code without the skill. "
         f"Got: {final_answer[:500]!r}"
     )
 
 
 # ---------------------------------------------------------------------------
-# Skill 3: Internal vendor onboarding process
+# Skill 3: Internal vendor onboarding (NEXUS/CERBERUS/IRONGATE/DOCUVAULT are fabricated)
 # ---------------------------------------------------------------------------
-#
-# The skill body uses four invented system names: NEXUS, CERBERUS, IRONGATE,
-# DOCUVAULT.  A generic onboarding answer contains none of these names.
-
-_ONBOARDING_SKILL_BODY = (
-    "## Acme Corp Vendor Onboarding — Standard Process v4.2\n\n"
-    "Complete all steps in order. Do not skip or reorder.\n\n"
-    "Step 1 — NEXUS Compliance Screen\n"
-    "  Submit vendor details to the NEXUS compliance portal (portal ID: NX-VENDOR).\n"
-    "  Await NEXUS clearance code before proceeding.\n\n"
-    "Step 2 — CERBERUS Authentication Setup\n"
-    "  Create vendor account in CERBERUS (internal IAM system).\n"
-    "  Assign role: VENDOR_EXTERNAL_L1.\n\n"
-    "Step 3 — IRONGATE Financial Vetting\n"
-    "  Submit bank details and tax forms to IRONGATE (finance validation system).\n"
-    "  Record the IRONGATE approval reference number.\n\n"
-    "Step 4 — Master Agreement via DOCUVAULT\n"
-    "  Send the standard MSA template via DOCUVAULT (contract management portal).\n"
-    "  DOCUVAULT signatures only — do not use email attachments.\n\n"
-    "Step 5 — Activation Confirmation\n"
-    "  Confirm all prior steps, then issue activation. Reference the NEXUS clearance\n"
-    "  code, CERBERUS activation token, and IRONGATE reference number.\n\n"
-    "Always name all four internal systems in your summary: "
-    "NEXUS, CERBERUS, IRONGATE, DOCUVAULT."
-)
-_ONBOARDING_TASK = "Walk me through the Acme Corp vendor onboarding process."
-_ONBOARDING_SYSTEMS = ("NEXUS", "CERBERUS", "IRONGATE", "DOCUVAULT")
 
 
 @pytest.mark.asyncio
@@ -430,12 +355,7 @@ async def test_vendor_onboarding_uses_internal_system_names(
 
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("CUGA_FOLDER", str(tmp_path / ".cuga"))
-    write_skill(
-        tmp_path,
-        "acme_vendor_onboarding",
-        "Guides the Acme Corp vendor onboarding process with all required internal steps",
-        _ONBOARDING_SKILL_BODY,
-    )
+    write_skill(tmp_path, VENDOR_ONBOARDING.name, VENDOR_ONBOARDING.description, VENDOR_ONBOARDING.body)
     monkeypatch.setattr(settings.skills, "enabled", True)
     monkeypatch.setattr(settings.advanced_features, "enable_shell_tool", True)
     monkeypatch.setattr(settings.advanced_features, "cuga_lite_bind_tools_mode", "tools")
@@ -445,17 +365,17 @@ async def test_vendor_onboarding_uses_internal_system_names(
 
     final_answer = await _run_graph(
         model=real_llm,
-        human_message=_ONBOARDING_TASK,
+        human_message=VENDOR_ONBOARDING.task,
         thread_id=f"e2e_onboard_{uuid.uuid4().hex[:8]}",
     )
 
     _report(
-        skill="acme_vendor_onboarding",
-        task=_ONBOARDING_TASK,
-        expected=list(_ONBOARDING_SYSTEMS),
+        skill=VENDOR_ONBOARDING.name,
+        task=VENDOR_ONBOARDING.task,
+        expected=list(VENDOR_ONBOARDING.expected),
         actual=final_answer,
     )
-    for system in _ONBOARDING_SYSTEMS:
+    for system in VENDOR_ONBOARDING.expected:
         assert system in final_answer, (
             f"Expected internal system name '{system}' in final answer. Got: {final_answer[:500]!r}"
         )
@@ -483,18 +403,18 @@ async def test_vendor_onboarding_lacks_internal_names_without_skill(
 
     final_answer = await _run_graph(
         model=real_llm,
-        human_message=_ONBOARDING_TASK,
+        human_message=VENDOR_ONBOARDING.task,
         thread_id=f"e2e_onboard_neg_{uuid.uuid4().hex[:8]}",
     )
 
     _report(
-        skill="acme_vendor_onboarding (no skill)",
-        task=_ONBOARDING_TASK,
-        expected=list(_ONBOARDING_SYSTEMS),
+        skill=f"{VENDOR_ONBOARDING.name} (no skill)",
+        task=VENDOR_ONBOARDING.task,
+        expected=list(VENDOR_ONBOARDING.expected),
         actual=final_answer,
         negative=True,
     )
-    found = [s for s in _ONBOARDING_SYSTEMS if s in final_answer]
+    found = [s for s in VENDOR_ONBOARDING.expected if s in final_answer]
     assert not found, (
         f"LLM produced fabricated system names without the skill: {found}. Got: {final_answer[:500]!r}"
     )

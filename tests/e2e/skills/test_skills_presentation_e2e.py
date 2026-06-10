@@ -19,7 +19,7 @@ What happens end-to-end
 
 Run with
 --------
-    uv run pytest tests/e2e/test_skills_presentation_e2e.py -m e2e -v -s
+    uv run pytest tests/e2e/skills/test_skills_presentation_e2e.py -m e2e -v -s
 
 After the test open the file path printed to stdout.
 """
@@ -37,7 +37,7 @@ from typing import TYPE_CHECKING, Any
 import pytest
 from langchain_core.tools import tool
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 
 if TYPE_CHECKING:
     from cuga.sdk import CugaAgent

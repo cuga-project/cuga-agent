@@ -17,7 +17,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from pydantic import Field, PrivateAttr
 
-from cuga.backend.cuga_graph.nodes.cuga_lite.tool_provider_interface import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
 
 
 # ---------------------------------------------------------------------------
@@ -166,7 +166,7 @@ def real_llm():
 
 def _find_module(name: str):
     return (
-        sys.modules.get(f"tests.e2e.{name}")
+        sys.modules.get(f"tests.e2e.skills.{name}")
         or sys.modules.get(name)
         or next((v for k, v in sys.modules.items() if k.endswith(name)), None)
     )
