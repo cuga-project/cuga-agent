@@ -292,7 +292,14 @@ class OpenSandboxExecutor(RemoteExecutor):
         (wired in ``cuga_lite_graph``); they are no longer produced here.
         """
         key = thread_id or "_default"
-        self._skills_config[key] = (cuga_folder, skills_enabled)
+        requested = (cuga_folder, skills_enabled)
+        active = self._active_skills_config.get(key)
+        if key in self._sandboxes and active is not None and requested != active:
+            logger.warning(
+                f"[OpenSandboxExecutor] Skills config changed for a live sandbox (thread={key}); "
+                "the new cuga_folder/skills_enabled will not take effect until release_sandbox() is called."
+            )
+        self._skills_config[key] = requested
         return [
             StructuredTool.from_function(
                 coroutine=self.create_run_command_tool(thread_id),
