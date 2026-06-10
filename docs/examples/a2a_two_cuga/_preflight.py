@@ -75,7 +75,11 @@ def _patch_saved_llm_model(model_name: str) -> None:
         for rowid, raw in rows:
             try:
                 cfg = json.loads(raw)
-            except Exception:
+            except json.JSONDecodeError as exc:
+                print(
+                    f"[preflight] skipped rowid={rowid}: invalid JSON ({exc})",
+                    file=sys.stderr,
+                )
                 continue
             llm = cfg.get("llm")
             if not isinstance(llm, dict):

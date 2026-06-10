@@ -86,7 +86,7 @@ def test_agent_card_rpc_url_extracts_from_supported_interfaces_proto_shape():
 
     class _ProtoCard:
         url = ""  # absent on protobuf
-        supported_interfaces = [_Iface()]
+        supported_interfaces = (_Iface(),)
 
     assert _agent_card_rpc_url(_ProtoCard()) == "http://peer.example:8002/a2a"
 
@@ -106,7 +106,7 @@ def test_agent_card_rpc_url_prefers_jsonrpc_interface_when_multiple_present():
 
     class _Card:
         url = ""
-        supported_interfaces = [_Grpc(), _Json()]
+        supported_interfaces = (_Grpc(), _Json())
 
     assert _agent_card_rpc_url(_Card()) == "https://peer.example/a2a"
 

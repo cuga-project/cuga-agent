@@ -8,7 +8,7 @@ returns the answer.
 
 ## Architecture
 
-```
+```text
        ┌──────────────────────────┐                  ┌──────────────────────────┐
  user  │  CUGA-1 (consumer)       │   A2A v0.3       │  CUGA-2 (provider)       │
  ──→   │  http://localhost:7860/  │  ─JSON-RPC──→    │  http://localhost:8002/  │
