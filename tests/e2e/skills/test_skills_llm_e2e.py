@@ -195,7 +195,12 @@ async def test_compliance_scorer_produces_correct_score(
         thread_id=f"e2e_crs_{uuid.uuid4().hex[:8]}",
     )
 
-    _report(skill=COMPLIANCE_SCORER.name, task=COMPLIANCE_SCORER.task, expected=COMPLIANCE_SCORER.expected, actual=final_answer)
+    _report(
+        skill=COMPLIANCE_SCORER.name,
+        task=COMPLIANCE_SCORER.task,
+        expected=COMPLIANCE_SCORER.expected,
+        actual=final_answer,
+    )
     assert COMPLIANCE_SCORER.expected in final_answer, (
         f"Expected CRS=159 in final answer (3*14 + 45*3 - 8*5 + 22 = 159). Got: {final_answer[:500]!r}"
     )
@@ -284,7 +289,12 @@ async def test_parts_catalog_returns_internal_code(
         thread_id=f"e2e_parts_{uuid.uuid4().hex[:8]}",
     )
 
-    _report(skill=PARTS_CATALOG.name, task=PARTS_CATALOG.task, expected=PARTS_CATALOG.expected, actual=final_answer)
+    _report(
+        skill=PARTS_CATALOG.name,
+        task=PARTS_CATALOG.task,
+        expected=PARTS_CATALOG.expected,
+        actual=final_answer,
+    )
     assert PARTS_CATALOG.expected in final_answer, (
         f"Expected part code 'PRU-2267-K' in final answer. Got: {final_answer[:500]!r}"
     )
@@ -320,8 +330,7 @@ async def test_parts_catalog_cannot_return_code_without_skill(
         negative=True,
     )
     assert PARTS_CATALOG.expected not in final_answer, (
-        "LLM produced the fabricated part code without the skill. "
-        f"Got: {final_answer[:500]!r}"
+        f"LLM produced the fabricated part code without the skill. Got: {final_answer[:500]!r}"
     )
 
 

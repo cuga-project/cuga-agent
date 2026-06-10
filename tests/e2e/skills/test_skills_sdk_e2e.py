@@ -383,7 +383,9 @@ async def test_sdk_vendor_onboarding_uses_internal_system_names(
     )
 
     print(f"\n[sdk_onboard] answer: {result.answer[:400]}")
-    _report(skill=f"sdk/{VENDOR_ONBOARDING.name}", expected=list(VENDOR_ONBOARDING.expected), actual=result.answer)
+    _report(
+        skill=f"sdk/{VENDOR_ONBOARDING.name}", expected=list(VENDOR_ONBOARDING.expected), actual=result.answer
+    )
     for system in VENDOR_ONBOARDING.expected:
         assert system in result.answer, (
             f"Expected internal system name '{system}' in SDK answer. Got: {result.answer[:500]!r}"
