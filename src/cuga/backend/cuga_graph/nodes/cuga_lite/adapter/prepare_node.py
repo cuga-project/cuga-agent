@@ -70,12 +70,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
         or ``cuga_lite_enable_few_shots`` in configurable (skips prefix chat few-shots).
         """
-        # The adapter's task_todos_ref is closure-scoped per compiled graph and
+        # Reset cross-task state at the start of a fresh conversation.
+        # adapter._task_todos_ref is closure-scoped per compiled graph and
         # outlives a single .invoke(); state.task_todos can also persist via a
-        # thread-keyed checkpointer. Reset both at the start of a new
-        # conversation so a previous task's plan doesn't leak into this one's
-        # turn-1 system prompt.
-        if len(state.chat_messages or []) <= 1:
+        # thread-keyed checkpointer. We detect "fresh conversation" by message
+        # count (<=1 means just the user's initial message).
+        # The closure ref is cleared in place; state.task_todos is propagated
+        # via every Command.update returned below because in-place state
+        # mutation does not persist through LangGraph.
+        # Note: this does not cover "new task as a follow-up turn on the same
+        # thread" (chat_messages > 1 with a topic change) — tracked separately.
+        is_fresh_conversation = len(state.chat_messages or []) <= 1
+        if is_fresh_conversation:
             adapter._task_todos_ref.clear()
             state.task_todos = None
 
@@ -117,6 +123,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
             # If policy returned a command (e.g., BLOCK_INTENT), execute it immediately
             if command:
+                # Propagate the task_todos reset through the policy-returned
+                # Command so LangGraph persists it; the in-place state mutation
+                # above does not survive the node return.
+                if is_fresh_conversation and isinstance(getattr(command, "update", None), dict):
+                    command.update.setdefault("task_todos", None)
                 return command
 
             # If policy returned metadata (e.g., playbook guidance), store it
@@ -627,19 +638,23 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
 
-        return Command(
-            goto="call_model",
-            update={
-                "tools_prepared": True,
-                "prepared_prompt": dynamic_prompt,
-                "step_count": 0,
-                "cuga_lite_metadata": state.cuga_lite_metadata,
-                "reflection_apps": reflection_apps_snapshot,
-                "reflection_enable_find_tools": enable_find_tools,
-                "reflection_skills_enabled": skills_enabled,
-                "reflection_skills_prompt_section": skills_prompt_section,
-                "mcp_few_shot_messages": few_shot_examples,
-            },
-        )
+        update_payload: dict[str, Any] = {
+            "tools_prepared": True,
+            "prepared_prompt": dynamic_prompt,
+            "step_count": 0,
+            "cuga_lite_metadata": state.cuga_lite_metadata,
+            "reflection_apps": reflection_apps_snapshot,
+            "reflection_enable_find_tools": enable_find_tools,
+            "reflection_skills_enabled": skills_enabled,
+            "reflection_skills_prompt_section": skills_prompt_section,
+            "mcp_few_shot_messages": few_shot_examples,
+        }
+        if is_fresh_conversation:
+            # Carry the task_todos reset through LangGraph state so the
+            # state.task_todos fallback path in prepare_system_content sees an
+            # empty value on the next turn.
+            update_payload["task_todos"] = None
+
+        return Command(goto="call_model", update=update_payload)
 
     return prepare_tools_and_apps
