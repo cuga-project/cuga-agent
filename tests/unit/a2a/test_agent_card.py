@@ -8,6 +8,8 @@ the cheapest place to catch breakage.
 
 from __future__ import annotations
 
+from urllib.parse import urlparse
+
 import pytest
 
 a2a_types = pytest.importorskip("a2a.compat.v0_3.types")
@@ -36,7 +38,9 @@ def test_agent_card_minimal_fields(agent_card_module, base_settings):
     assert card.name == "cuga"
     assert card.description == "CUGA exposed over A2A."
     assert card.version == "1.2.3"
-    assert str(card.url).startswith("https://cuga.example")
+    parsed_url = urlparse(str(card.url))
+    assert parsed_url.scheme == "https"
+    assert parsed_url.hostname == "cuga.example"
 
 
 def test_agent_card_capabilities_streaming_true(agent_card_module, base_settings):
