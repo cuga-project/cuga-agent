@@ -162,6 +162,11 @@ def _agent_card_rpc_url(agent_card: "AgentCard", fallback_base: Optional[str] = 
     url = (getattr(agent_card, "url", None) or "").strip()
 
     if not url:
+        # Pick the first JSONRPC interface; if none, fall back to the first
+        # *HTTP(S)* interface so we never POST to a grpc:// (or otherwise
+        # unsupported) URL — that would fail confusingly downstream in
+        # httpx.
+        http_fallback = ""
         for iface in getattr(agent_card, "supported_interfaces", None) or []:
             iface_url = (getattr(iface, "url", None) or "").strip()
             binding = (getattr(iface, "protocol_binding", None) or "").upper()
@@ -170,8 +175,10 @@ def _agent_card_rpc_url(agent_card: "AgentCard", fallback_base: Optional[str] = 
             if binding == "JSONRPC":
                 url = iface_url
                 break
-            if not url:
-                url = iface_url  # remember first interface; keep looking for JSONRPC
+            if not http_fallback and iface_url.lower().startswith(("http://", "https://")):
+                http_fallback = iface_url
+        if not url:
+            url = http_fallback
 
     url = (url or fallback_base or "").rstrip("/")
     if not url:
@@ -234,10 +241,18 @@ async def delegate_task_via_a2a_sdk(
 
     result_obj = body.get("result") if isinstance(body, dict) else None
     if not isinstance(result_obj, dict):
-        return {"result": "", "variables": {}, "status": "success"}
+        # The peer answered 200 but with no recognizable Task envelope —
+        # treat as a transport-level failure rather than silently flattening.
+        raise RuntimeError("A2A response is missing a valid `result` task envelope")
 
     text = _extract_text_from_task(result_obj)
-    return {"result": text, "variables": {}, "status": "success"}
+    state = str(((result_obj.get("status") or {}).get("state") or "")).lower()
+    # Map peer's TaskState to caller-visible status. Anything that smells like
+    # failure becomes status="failed" so upstream callers can distinguish a
+    # successful delegation from one whose remote execution actually errored.
+    normalized_status = "failed" if ("fail" in state or "error" in state) else "success"
+    out_vars = (result_obj.get("metadata") or {}).get("variables") or {}
+    return {"result": text, "variables": out_vars, "status": normalized_status}
 
 
 class A2AProtocol:

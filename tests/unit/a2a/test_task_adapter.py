@@ -141,3 +141,36 @@ def test_empty_stream_emits_at_least_terminal_state(adapter):
     # Either completed or failed is acceptable; what's not acceptable is
     # an open-ended task with no terminal event.
     assert any("complet" in s or "fail" in s for s in states)
+
+
+def test_error_terminal_event_maps_to_failed_not_completed(adapter):
+    """When the runner yields a terminal `error` event, A2A clients must
+    see TaskState.failed — otherwise upstream callers can't tell a
+    successful run from a crashed one. Earlier revisions silently mapped
+    every terminal to `completed`, masking real failures."""
+    out = list(
+        adapter.stream_events_to_a2a(
+            [_Ev("error", {"text": "kaboom"}, final=True)],
+            task_id="t-1",
+            context_id="c-1",
+        )
+    )
+    states = _states(out)
+    assert any("fail" in s for s in states), f"expected failed state in {states!r}"
+    assert not any("complet" in s for s in states), f"unexpected completed in {states!r}"
+
+
+def test_named_error_event_without_final_flag_still_terminates(adapter):
+    """Even when the runner forgot to set `final=True`, an event named
+    `error` / `failed` / `failure` / `exception` must close the task
+    with state=failed. This is what protected the demo when the provider
+    surfaced a model-access 401 as a single un-flagged error event."""
+    out = list(
+        adapter.stream_events_to_a2a(
+            [_Ev("failure", {"text": "remote refused"})],
+            task_id="t-1",
+            context_id="c-1",
+        )
+    )
+    states = _states(out)
+    assert any("fail" in s for s in states), f"expected failed state in {states!r}"

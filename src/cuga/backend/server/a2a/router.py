@@ -16,6 +16,7 @@ area.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, AsyncIterator, Mapping, Protocol
 
@@ -32,6 +33,8 @@ from cuga.backend.server.a2a._a2a_types import (
 )
 from cuga.backend.server.a2a.agent_card import build_agent_card
 from cuga.backend.server.a2a.task_adapter import stream_events_to_a2a
+
+logger = logging.getLogger(__name__)
 
 
 class GraphRunner(Protocol):
@@ -136,14 +139,24 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
     async def _sse_stream(
         message_text: str, context_id: str, task_id: str, rpc_id: Any
     ) -> AsyncIterator[dict]:
-        """Yield SSE frames carrying JSON-RPC envelopes per task update."""
-        agen = runner.run(message_text, context_id)
-        events = []
-        async for ev in agen:
-            events.append(ev)
-        for upd in stream_events_to_a2a(events, task_id=task_id, context_id=context_id):
-            frame = _rpc_result(rpc_id, upd.model_dump(mode="json", exclude_none=True, by_alias=True))
-            yield {"data": json.dumps(frame)}
+        """Yield SSE frames carrying JSON-RPC envelopes per task update.
+
+        If the runner or adapter raises, we still emit one final JSON-RPC
+        error frame before closing — otherwise clients see a half-open
+        stream and can't distinguish a network drop from a server bug.
+        """
+        try:
+            agen = runner.run(message_text, context_id)
+            events = []
+            async for ev in agen:
+                events.append(ev)
+            for upd in stream_events_to_a2a(events, task_id=task_id, context_id=context_id):
+                frame = _rpc_result(rpc_id, upd.model_dump(mode="json", exclude_none=True, by_alias=True))
+                yield {"data": json.dumps(frame)}
+        except Exception as exc:
+            logger.exception("A2A SSE stream failed for task %s", task_id)
+            err_frame = _rpc_error(rpc_id, _INTERNAL_ERROR, f"Internal error: {type(exc).__name__}")
+            yield {"data": json.dumps(err_frame)}
 
     @router.post("/a2a")
     async def jsonrpc_endpoint(request: Request):
@@ -182,7 +195,13 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             try:
                 task = await _run_and_collect(message_text, context_id, task_id)
             except Exception as exc:  # graph blew up
-                return JSONResponse(_rpc_error(rpc_id, _INTERNAL_ERROR, "Internal error", str(exc)))
+                # Don't echo raw exception text across the wire (paths,
+                # config, etc.). Keep details in server logs; tell the
+                # caller only the exception class so they can route it.
+                logger.exception("A2A message/send graph run failed for task %s", task_id)
+                return JSONResponse(
+                    _rpc_error(rpc_id, _INTERNAL_ERROR, f"Internal error: {type(exc).__name__}")
+                )
             return JSONResponse(
                 _rpc_result(rpc_id, task.model_dump(mode="json", exclude_none=True, by_alias=True))
             )

@@ -159,6 +159,103 @@ async def test_streaming_subscribe_yields_lifecycle(asgi_client):
     assert "completed" in serialized or "final" in serialized
 
 
+async def test_sse_stream_emits_jsonrpc_error_when_runner_raises(fake_event_factory, a2a_settings):
+    """If the runner blows up mid-stream, clients must still receive a
+    parseable JSON-RPC error frame — not a half-open stream they can't
+    distinguish from a network drop. Earlier the SSE generator just
+    propagated the exception and SSE silently terminated."""
+    pytest.importorskip("cuga.backend.server.a2a")
+    from fastapi import FastAPI
+
+    from cuga.backend.server.a2a import build_router
+
+    class _BlowingRunner:
+        async def run(self, message, context_id=None):
+            raise RuntimeError("simulated graph crash")
+            yield  # pragma: no cover — mark as async generator
+
+    app = FastAPI()
+    app.include_router(build_router(runner=_BlowingRunner(), settings=a2a_settings))
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test.local") as client:
+        payload = {
+            "jsonrpc": "2.0",
+            "id": "stream-err",
+            "method": "message/stream",
+            "params": {
+                "message": {
+                    "role": "user",
+                    "parts": [{"kind": "text", "text": "boom"}],
+                    "messageId": "m-1",
+                }
+            },
+        }
+        chunks = []
+        async with client.stream("POST", "/a2a", json=payload) as resp:
+            assert resp.status_code == 200
+            async for line in resp.aiter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                if line.startswith("data:"):
+                    line = line[len("data:") :].strip()
+                try:
+                    chunks.append(json.loads(line))
+                except json.JSONDecodeError:
+                    continue
+    assert chunks, "expected at least one frame, got an empty stream"
+    error_frames = [c for c in chunks if "error" in c]
+    assert error_frames, f"expected a JSON-RPC error frame, got {chunks!r}"
+    err = error_frames[-1]["error"]
+    assert err["code"] == -32603  # internal error
+    # Wire message must NOT contain the raw exception text.
+    assert "simulated graph crash" not in err.get("message", "")
+
+
+async def test_jsonrpc_send_does_not_leak_raw_exception_text(fake_event_factory, a2a_settings):
+    """When the runner raises during ``message/send``, the JSON envelope
+    must surface a generic message (plus exception class) — never the
+    raw ``str(exc)`` which can leak paths/config."""
+    pytest.importorskip("cuga.backend.server.a2a")
+    from fastapi import FastAPI
+
+    from cuga.backend.server.a2a import build_router
+
+    class _BlowingRunner:
+        async def run(self, message, context_id=None):
+            raise RuntimeError("/secret/path/leak")
+            yield  # pragma: no cover
+
+    app = FastAPI()
+    app.include_router(build_router(runner=_BlowingRunner(), settings=a2a_settings))
+
+    httpx = pytest.importorskip("httpx")
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test.local") as client:
+        resp = await client.post(
+            "/a2a",
+            json={
+                "jsonrpc": "2.0",
+                "id": "leak-check",
+                "method": "message/send",
+                "params": {
+                    "message": {
+                        "role": "user",
+                        "parts": [{"kind": "text", "text": "go"}],
+                        "messageId": "m-1",
+                    }
+                },
+            },
+        )
+    body = resp.json()
+    assert "error" in body
+    assert body["error"]["code"] == -32603
+    assert "/secret/path/leak" not in body["error"]["message"]
+    assert "RuntimeError" in body["error"]["message"]  # class is fine; details aren't
+
+
 async def test_context_id_propagates_to_graph_runner(asgi_client, scripted_runner):
     """contextId in the A2A request must be passed to the graph runner so
     multi-turn conversations land on the same thread."""

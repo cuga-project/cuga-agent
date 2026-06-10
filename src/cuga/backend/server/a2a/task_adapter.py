@@ -37,7 +37,18 @@ def _is_final(event: Any) -> bool:
     if bool(getattr(event, "final", False)):
         return True
     name = str(getattr(event, "name", "") or "").lower()
-    return name in {"final_answer", "task_complete", "completed", "done"}
+    return name in {"final_answer", "task_complete", "completed", "done"} or _is_error(event)
+
+
+def _is_error(event: Any) -> bool:
+    """Return True when ``event`` represents a terminal failure.
+
+    Used by ``_is_final`` to recognize the event AND by the dispatch
+    branch to distinguish ``TaskState.failed`` from ``TaskState.completed``
+    — without this, error terminals were silently mapped to success.
+    """
+    name = str(getattr(event, "name", "") or "").lower()
+    return name in {"error", "failed", "failure", "exception"}
 
 
 def _event_text(event: Any) -> str:
@@ -106,12 +117,13 @@ def stream_events_to_a2a(
 
         if _is_final(ev):
             saw_terminal = True
+            terminal_state = TaskState.failed if _is_error(ev) else TaskState.completed
             yield TaskStatusUpdateEvent(
                 task_id=task_id,
                 context_id=context_id,
                 final=True,
                 status=TaskStatus(
-                    state=TaskState.completed,
+                    state=terminal_state,
                     message=_message(_event_text(ev) or "", f"{task_id}-final", context_id),
                 ),
             )

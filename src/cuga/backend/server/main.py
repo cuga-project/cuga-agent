@@ -1687,8 +1687,16 @@ if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
                     return
                 yield _A2AStreamEvent("final_answer", {"text": answer}, final=True)
             except Exception as exc:  # surface failures across the wire
+                # Don't expose raw exception text (paths, config, runtime
+                # state) to the remote caller. Class name is enough to
+                # triage; the full traceback is captured server-side by
+                # logger.exception.
                 logger.exception("A2A inbound delegation failed")
-                yield _A2AStreamEvent("error", {"text": f"A2A handler error: {exc}"}, final=True)
+                yield _A2AStreamEvent(
+                    "error",
+                    {"text": f"A2A handler error: {type(exc).__name__}"},
+                    final=True,
+                )
 
     class _PlaceholderA2ARunner:
         """Used when ``a2a.supervisor_config_path`` is unset.

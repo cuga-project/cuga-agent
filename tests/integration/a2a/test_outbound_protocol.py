@@ -195,3 +195,90 @@ async def test_delegate_surfaces_jsonrpc_error_as_runtime_error():
     ):
         with pytest.raises(RuntimeError, match="A2A send_message failed"):
             await delegate_task_via_a2a_sdk(_Card(), "anything")
+
+
+async def test_delegate_surfaces_peer_task_failure_as_failed_status():
+    """When the peer answers 200 with a Task whose state=failed, the
+    helper must return status='failed' instead of the prior bug where
+    every shaped 200 was flattened to status='success'."""
+    from fastapi import FastAPI
+
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import (
+        delegate_task_via_a2a_sdk,
+    )
+
+    failing_app = FastAPI()
+
+    @failing_app.post("/a2a")
+    async def _peer_task_failed():
+        # Shape mirrors what our own router emits when a graph errors.
+        return {
+            "jsonrpc": "2.0",
+            "id": "x",
+            "result": {
+                "id": "task-1",
+                "contextId": "ctx-1",
+                "status": {"state": "failed"},
+                "history": [
+                    {
+                        "role": "agent",
+                        "parts": [{"kind": "text", "text": "remote LLM 401"}],
+                        "messageId": "m-final",
+                    }
+                ],
+            },
+        }
+
+    transport = httpx.ASGITransport(app=failing_app)
+    real_async_client = httpx.AsyncClient
+
+    def _factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    class _Card:
+        url = "http://test.local"
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol.httpx.AsyncClient",
+        side_effect=_factory,
+    ):
+        result = await delegate_task_via_a2a_sdk(_Card(), "anything")
+
+    assert result["status"] == "failed"
+    assert "remote LLM 401" in result["result"]
+
+
+async def test_delegate_raises_when_response_lacks_task_envelope():
+    """If the peer answers 200 with neither error nor a dict result, the
+    earlier code returned status='success' with empty text — making the
+    failure indistinguishable from a successful empty answer. The helper
+    must raise instead so callers can route the failure."""
+    from fastapi import FastAPI
+
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol import (
+        delegate_task_via_a2a_sdk,
+    )
+
+    bogus_app = FastAPI()
+
+    @bogus_app.post("/a2a")
+    async def _bogus():
+        return {"jsonrpc": "2.0", "id": "x", "result": "not-a-task-object"}
+
+    transport = httpx.ASGITransport(app=bogus_app)
+    real_async_client = httpx.AsyncClient
+
+    def _factory(*args, **kwargs):
+        kwargs["transport"] = transport
+        return real_async_client(*args, **kwargs)
+
+    class _Card:
+        url = "http://test.local"
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_supervisor.a2a_protocol.httpx.AsyncClient",
+        side_effect=_factory,
+    ):
+        with pytest.raises(RuntimeError, match="missing a valid"):
+            await delegate_task_via_a2a_sdk(_Card(), "anything")
