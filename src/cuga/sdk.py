@@ -2307,6 +2307,11 @@ class CugaSupervisor:
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
         special_instructions: Optional[str] = None,
+        policy_system: Optional[PolicyConfigurable] = None,
+        cuga_folder: Optional[str] = None,
+        auto_load_policies: Optional[bool] = None,
+        reset_policy_storage: bool = False,
+        filesystem_sync: Optional[bool] = None,
     ):
         """
         Initialize supervisor.
@@ -2323,7 +2328,14 @@ class CugaSupervisor:
             special_instructions: Optional workflow instructions injected into the supervisor's
                 system prompt. Use this to guide the supervisor's multi-turn behaviour
                 (e.g. "search first, then present results, then wait for user selection").
+            policy_system: Optional PolicyConfigurable instance (auto-created if not provided)
+            cuga_folder: Path to .cuga folder containing policy markdown files
+            auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke
+            reset_policy_storage: If True, clears all existing policies from storage on init
+            filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
         """
+        from cuga.config import settings
+
         self._agents = agents or {}
         self._model = model
         self._description = description
@@ -2333,6 +2345,17 @@ class CugaSupervisor:
         self._graph = None
         self._compiled_graph = None
         self._supervisor_state = None
+        self._policy_system = policy_system
+        self._policies_manager = None
+
+        self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
+        self._auto_load_policies = (
+            auto_load_policies if auto_load_policies is not None else settings.policy.auto_load_policies
+        )
+        self._filesystem_sync = (
+            filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
+        )
+        self._reset_policy_storage = reset_policy_storage
 
         # Initialize model from settings if not provided
         if not self._model:
@@ -2367,6 +2390,19 @@ class CugaSupervisor:
         )
 
     @property
+    def policies(self) -> PoliciesManager:
+        """Get the policies manager for this supervisor."""
+        if self._policies_manager is None:
+            self._policies_manager = PoliciesManager(self)
+        return self._policies_manager
+
+    async def initialize(self):
+        """Initialize policy system and other lazy resources."""
+        if self._auto_load_policies and (not hasattr(self, "_policy_system") or self._policy_system is None):
+            await self.policies._ensure_policy_system()
+            logger.debug("Supervisor policy system auto-initialized during initialize()")
+
+    @property
     def graph(self):
         """
         Get the underlying LangGraph StateGraph (compiled).
@@ -2385,6 +2421,7 @@ class CugaSupervisor:
                 supervisor_model=self._model,
                 agents=self._agents,
                 special_instructions=self._special_instructions,
+                callbacks=self._callbacks,
             )
 
             # Compile with checkpointer
@@ -2414,6 +2451,10 @@ class CugaSupervisor:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
+        if self._auto_load_policies and (not hasattr(self, "_policy_system") or self._policy_system is None):
+            await self.policies._ensure_policy_system()
+            logger.debug("Supervisor policy system auto-initialized during invoke()")
+
         import uuid
         from langchain_core.messages import HumanMessage
 
@@ -2425,6 +2466,8 @@ class CugaSupervisor:
         config = {"configurable": {"thread_id": thread_id}}
         if self._callbacks:
             config["callbacks"] = self._callbacks
+        if self._policy_system:
+            config["configurable"]["policy_system"] = self._policy_system
 
         # Handle resume case
         if message is None or action_response is not None:
