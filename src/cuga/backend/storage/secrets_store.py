@@ -140,8 +140,6 @@ async def get_secret(
     except Exception as e:
         logger.debug("get_secret failed: {}", e)
         return None
-    finally:
-        await store.close()
 
 
 def get_secret_sync(
@@ -205,36 +203,33 @@ async def set_secret(
     encrypted = fernet.encrypt(value.encode("utf-8"))
     now = datetime.utcnow().isoformat()
     tags_json = json.dumps(tags) if tags else None
-    try:
-        await ensure_schema(store)
-        is_prod = _is_prod(store)
-        ph = _placeholders_pg if is_prod else _placeholders_sqlite
-        await store.execute(
-            ph(
-                """
-                INSERT INTO secrets (tenant_id, instance_id, agent_id, version, id, created_by, encrypted_value, description, tags, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                ON CONFLICT(tenant_id, instance_id, agent_id, version, id)
-                DO UPDATE SET encrypted_value = excluded.encrypted_value, description = excluded.description, tags = excluded.tags, updated_at = excluded.updated_at
-                """
-            ),
-            (
-                tenant_id,
-                instance_id,
-                agent_id,
-                version,
-                secret_id,
-                created_by,
-                encrypted,
-                description or "",
-                tags_json,
-                now,
-                now,
-            ),
-        )
-        await store.commit()
-    finally:
-        await store.close()
+    await ensure_schema(store)
+    is_prod = _is_prod(store)
+    ph = _placeholders_pg if is_prod else _placeholders_sqlite
+    await store.execute(
+        ph(
+            """
+            INSERT INTO secrets (tenant_id, instance_id, agent_id, version, id, created_by, encrypted_value, description, tags, created_at, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(tenant_id, instance_id, agent_id, version, id)
+            DO UPDATE SET encrypted_value = excluded.encrypted_value, description = excluded.description, tags = excluded.tags, updated_at = excluded.updated_at
+            """
+        ),
+        (
+            tenant_id,
+            instance_id,
+            agent_id,
+            version,
+            secret_id,
+            created_by,
+            encrypted,
+            description or "",
+            tags_json,
+            now,
+            now,
+        ),
+    )
+    await store.commit()
 
 
 async def list_secrets(
@@ -246,40 +241,37 @@ async def list_secrets(
     tenant_id = tenant_id or _tenant_id()
     instance_id = instance_id or _instance_id()
     store = _get_store()
-    try:
-        await ensure_schema(store)
-        ph = _placeholders_pg if _is_prod(store) else _placeholders_sqlite
-        if agent_id is not None:
-            rows = await store.fetchall(
-                ph(
-                    "SELECT id, agent_id, version, created_by, description, tags, created_at, updated_at FROM secrets "
-                    "WHERE tenant_id = ? AND instance_id = ? AND (agent_id = ? OR agent_id = '*')"
-                ),
-                (tenant_id, instance_id, agent_id),
-            )
-        else:
-            rows = await store.fetchall(
-                ph(
-                    "SELECT id, agent_id, version, created_by, description, tags, created_at, updated_at FROM secrets "
-                    "WHERE tenant_id = ? AND instance_id = ?"
-                ),
-                (tenant_id, instance_id),
-            )
-        return [
-            {
-                "id": r["id"] if isinstance(r, dict) else r[0],
-                "agent_id": r["agent_id"] if isinstance(r, dict) else r[1],
-                "version": r["version"] if isinstance(r, dict) else r[2],
-                "created_by": r["created_by"] if isinstance(r, dict) else r[3],
-                "description": r["description"] if isinstance(r, dict) else r[4],
-                "tags": _parse_tags(r["tags"] if isinstance(r, dict) else r[5]),
-                "created_at": r["created_at"] if isinstance(r, dict) else r[6],
-                "updated_at": r["updated_at"] if isinstance(r, dict) else r[7],
-            }
-            for r in rows
-        ]
-    finally:
-        await store.close()
+    await ensure_schema(store)
+    ph = _placeholders_pg if _is_prod(store) else _placeholders_sqlite
+    if agent_id is not None:
+        rows = await store.fetchall(
+            ph(
+                "SELECT id, agent_id, version, created_by, description, tags, created_at, updated_at FROM secrets "
+                "WHERE tenant_id = ? AND instance_id = ? AND (agent_id = ? OR agent_id = '*')"
+            ),
+            (tenant_id, instance_id, agent_id),
+        )
+    else:
+        rows = await store.fetchall(
+            ph(
+                "SELECT id, agent_id, version, created_by, description, tags, created_at, updated_at FROM secrets "
+                "WHERE tenant_id = ? AND instance_id = ?"
+            ),
+            (tenant_id, instance_id),
+        )
+    return [
+        {
+            "id": r["id"] if isinstance(r, dict) else r[0],
+            "agent_id": r["agent_id"] if isinstance(r, dict) else r[1],
+            "version": r["version"] if isinstance(r, dict) else r[2],
+            "created_by": r["created_by"] if isinstance(r, dict) else r[3],
+            "description": r["description"] if isinstance(r, dict) else r[4],
+            "tags": _parse_tags(r["tags"] if isinstance(r, dict) else r[5]),
+            "created_at": r["created_at"] if isinstance(r, dict) else r[6],
+            "updated_at": r["updated_at"] if isinstance(r, dict) else r[7],
+        }
+        for r in rows
+    ]
 
 
 async def delete_secret(
@@ -295,19 +287,16 @@ async def delete_secret(
     agent_id = agent_id or "*"
     version = version or "*"
     store = _get_store()
-    try:
-        await ensure_schema(store)
-        ph = _placeholders_pg if _is_prod(store) else _placeholders_sqlite
-        await store.execute(
-            ph(
-                "DELETE FROM secrets WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version = ? AND id = ?"
-            ),
-            (tenant_id, instance_id, agent_id, version, secret_id),
-        )
-        await store.commit()
-        return getattr(store, "_last_rowcount", 0) > 0
-    finally:
-        await store.close()
+    await ensure_schema(store)
+    ph = _placeholders_pg if _is_prod(store) else _placeholders_sqlite
+    await store.execute(
+        ph(
+            "DELETE FROM secrets WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version = ? AND id = ?"
+        ),
+        (tenant_id, instance_id, agent_id, version, secret_id),
+    )
+    await store.commit()
+    return getattr(store, "_last_rowcount", 0) > 0
 
 
 async def get_secret_metadata(
@@ -323,28 +312,25 @@ async def get_secret_metadata(
     agent_id = agent_id or "*"
     version = version or "*"
     store = _get_store()
-    try:
-        await ensure_schema(store)
-        ph = _placeholders_pg if _is_prod(store) else _placeholders_sqlite
-        row = await store.fetchone(
-            ph(
-                "SELECT id, agent_id, version, created_by, description, tags, created_at, updated_at FROM secrets "
-                "WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version = ? AND id = ?"
-            ),
-            (tenant_id, instance_id, agent_id, version, secret_id),
-        )
-        if not row:
-            return None
-        r = row
-        return {
-            "id": r["id"] if isinstance(r, dict) else r[0],
-            "agent_id": r["agent_id"] if isinstance(r, dict) else r[1],
-            "version": r["version"] if isinstance(r, dict) else r[2],
-            "created_by": r["created_by"] if isinstance(r, dict) else r[3],
-            "description": r["description"] if isinstance(r, dict) else r[4],
-            "tags": _parse_tags(r["tags"] if isinstance(r, dict) else r[5]),
-            "created_at": r["created_at"] if isinstance(r, dict) else r[6],
-            "updated_at": r["updated_at"] if isinstance(r, dict) else r[7],
-        }
-    finally:
-        await store.close()
+    await ensure_schema(store)
+    ph = _placeholders_pg if _is_prod(store) else _placeholders_sqlite
+    row = await store.fetchone(
+        ph(
+            "SELECT id, agent_id, version, created_by, description, tags, created_at, updated_at FROM secrets "
+            "WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND version = ? AND id = ?"
+        ),
+        (tenant_id, instance_id, agent_id, version, secret_id),
+    )
+    if not row:
+        return None
+    r = row
+    return {
+        "id": r["id"] if isinstance(r, dict) else r[0],
+        "agent_id": r["agent_id"] if isinstance(r, dict) else r[1],
+        "version": r["version"] if isinstance(r, dict) else r[2],
+        "created_by": r["created_by"] if isinstance(r, dict) else r[3],
+        "description": r["description"] if isinstance(r, dict) else r[4],
+        "tags": _parse_tags(r["tags"] if isinstance(r, dict) else r[5]),
+        "created_at": r["created_at"] if isinstance(r, dict) else r[6],
+        "updated_at": r["updated_at"] if isinstance(r, dict) else r[7],
+    }
