@@ -5,13 +5,13 @@ Pins three behaviors:
 2. VariableBridge.bridge copies values into a target VariablesManager.
 3. InvokeResult carries a `variables` field (default empty, populated from
    sub-agent graph state after invocation).
-4. Mechanism test: delegate_to_agent bridges variables via the shared VM ref
-   that execute_agent_tool populates before each code run.
+4. Mechanism test: delegate_to_agent bridges variables via the per-run
+   execution context that execute_agent_tool injects into code locals.
 """
 
 from __future__ import annotations
 
-from typing import Any, List
+from types import SimpleNamespace
 
 from cuga.backend.cuga_graph.state.agent_state import VariablesManager
 
@@ -110,40 +110,38 @@ def test_invoke_result_variables_accepts_name_value_dict():
 # ── Mechanism: shared VM ref bridges variables from sub-agent ─────────────
 
 
-def test_shared_vm_ref_allows_delegate_to_write_into_supervisor_vm():
-    """VariableBridge.bridge called with a ref populated at execution time writes to the target VM.
+def test_execution_context_allows_delegate_to_write_into_supervisor_vm():
+    """VariableBridge.bridge called with execution context writes to the target VM.
 
-    This is the mechanism test for the _shared_vm_ref[0] pattern:
-    - execute_agent_tool sets _shared_vm_ref[0] = state.supervisor_variables_manager
-    - delegate_to_agent reads _shared_vm_ref[0] and calls VariableBridge.bridge(...)
-    - The target VM accumulates the bridged variables
+    execute_agent_tool injects ``SupervisorExecutionContext`` into code locals;
+    delegate_to_agent reads ``variable_manager`` from that context and bridges
+    sub-agent variables into the supervisor namespace.
     """
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
-
-    _shared_vm_ref: List[Any] = [None]
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import SupervisorExecutionContext
+    from cuga.backend.cuga_graph.state.agent_state import VariablesManager
 
     supervisor_vm = VariablesManager()
-    _shared_vm_ref[0] = supervisor_vm  # simulate execute_agent_tool setting the ref
+    exec_ctx = SupervisorExecutionContext(state=SimpleNamespace(), variable_manager=supervisor_vm)
 
-    # simulate delegate_to_agent bridging after sub-agent returns variables
     sub_agent_vars = {"order_id": "ORD-42", "total": 199.99}
-    if _shared_vm_ref[0] is not None:
-        VariableBridge.bridge(sub_agent_vars, _shared_vm_ref[0], description_prefix="from order_agent")
+    if exec_ctx.variable_manager is not None:
+        VariableBridge.bridge(
+            sub_agent_vars, exec_ctx.variable_manager, description_prefix="from order_agent"
+        )
 
     assert "order_id" in supervisor_vm.get_variable_names()
     assert supervisor_vm.get_variable("order_id") == "ORD-42"
     assert "total" in supervisor_vm.get_variable_names()
 
 
-def test_shared_vm_ref_none_skips_bridge_gracefully():
-    """When _shared_vm_ref[0] is None (before first execute), bridge is skipped."""
+def test_execution_context_none_skips_bridge_gracefully():
+    """When execution context has no variable manager, bridge is skipped."""
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import VariableBridge
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import SupervisorExecutionContext
 
-    _shared_vm_ref: List[Any] = [None]
+    exec_ctx = SupervisorExecutionContext(state=SimpleNamespace(), variable_manager=None)
     sub_agent_vars = {"result": "ok"}
 
-    # Guard: only bridge when ref is set (not None)
-    if _shared_vm_ref[0] is not None:
-        VariableBridge.bridge(sub_agent_vars, _shared_vm_ref[0])
-
-    # No exception; nothing to assert (VM was never written)
+    if exec_ctx.variable_manager is not None:
+        VariableBridge.bridge(sub_agent_vars, exec_ctx.variable_manager)

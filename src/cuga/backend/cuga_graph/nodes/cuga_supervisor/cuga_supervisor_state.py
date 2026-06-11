@@ -52,6 +52,10 @@ class CugaSupervisorState(AgentState):
     # Metadata for tracking
     supervisor_metadata: Dict[str, Any] = Field(default_factory=dict)
 
+    task_todos: Optional[List[Dict[str, Any]]] = Field(default=None)
+    metrics: Dict[str, Any] = Field(default_factory=dict)
+    tool_calls: List[Dict[str, Any]] = Field(default_factory=list)
+
     cuga_lite_max_steps: Optional[int] = None
 
     model_config = ConfigDict(arbitrary_types_allowed=True)

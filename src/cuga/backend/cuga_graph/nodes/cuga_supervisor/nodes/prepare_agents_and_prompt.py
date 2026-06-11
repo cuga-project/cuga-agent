@@ -39,6 +39,16 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
     ) -> Command:
         logger.info("Preparing agents and prompt for supervisor conversational mode")
 
+        is_fresh_conversation = len(state.supervisor_chat_messages or []) <= 1
+        if is_fresh_conversation:
+            adapter._task_todos_ref.clear()
+            state.task_todos = None
+
+        cfg = config.get("configurable", {}) if config else {}
+        enable_todos = (
+            cfg.get("enable_todos") if "enable_todos" in cfg else settings.advanced_features.enable_todos
+        )
+
         if settings.policy.enabled and not ToolApprovalHandler.should_skip_policy_check(adapter, state):
             from cuga.backend.cuga_graph.policy.enactment import PolicyEnactment
             from cuga.backend.cuga_graph.policy.models import PolicyType
@@ -54,6 +64,8 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                 adapter=adapter,
             )
             if policy_command:
+                if is_fresh_conversation and isinstance(getattr(policy_command, "update", None), dict):
+                    policy_command.update.setdefault("task_todos", None)
                 return policy_command
             if policy_metadata:
                 adapter.set_metadata(state, policy_metadata)
@@ -148,7 +160,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                 }
             agent_tools_for_prompt.append(tool_info)
 
-        todos_tool = await create_update_todos_tool()
+        todos_tool = await create_update_todos_tool(todos_store_ref=adapter._task_todos_ref)
         adapter._agent_tools_context["create_update_todos"] = make_tool_awaitable(todos_tool.func)
         agent_tools_for_prompt.append(
             {
@@ -162,7 +174,6 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             }
         )
 
-        cfg = config.get("configurable", {}) if config else {}
         runtime_thread_id = cfg.get("thread_id") or state.thread_id
         runtime_backends = resolve_runtime_backends(settings, cfg)
         runtime_bundle = build_runtime_tools(thread_id=runtime_thread_id, backends=runtime_backends)
@@ -222,28 +233,30 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
 
         template = Template(prompt_template_str)
         dynamic_prompt = template.render(
-            base_prompt=None,
+            base_prompt=adapter._static_prompt,
             agents=agent_list,
             tools=agent_tools_for_prompt,
             is_autonomous_subtask=is_autonomous_subtask,
             instructions=instructions,
-            enable_todos=True,
+            enable_todos=enable_todos,
             special_instructions=effective_special_instructions,
         )
 
+        update_payload = {
+            "tools_prepared": True,
+            "prepared_prompt": dynamic_prompt,
+            "step_count": 0,
+            "available_agents": {
+                name: AgentInfo(name=name, type=info["type"], description=info["description"]).model_dump()
+                for name, info in zip([a["name"] for a in agent_list], agent_list)
+            },
+        }
+        if is_fresh_conversation:
+            update_payload["task_todos"] = None
+
         return Command(
             goto="call_model",
-            update={
-                "tools_prepared": True,
-                "prepared_prompt": dynamic_prompt,
-                "step_count": 0,
-                "available_agents": {
-                    name: AgentInfo(
-                        name=name, type=info["type"], description=info["description"]
-                    ).model_dump()
-                    for name, info in zip([a["name"] for a in agent_list], agent_list)
-                },
-            },
+            update=update_payload,
         )
 
     return prepare_agents_and_prompt
