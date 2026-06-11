@@ -382,18 +382,12 @@ class ConversationHistoryDB:
                 (tenant_id, inst_id, agent_id, thread_id, user_id),
             )
             if existing:
-                row = await store.fetchone(
-                    "SELECT events FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
-                    (tenant_id, inst_id, agent_id, thread_id, user_id),
-                )
-                existing_events = json.loads(row["events"]) if row and row["events"] else []
-                combined_events = existing_events + events
                 await store.execute(
                     """
                     UPDATE stream_events SET events = ?, updated_at = ?
                     WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
                     """,
-                    (json.dumps(combined_events), now, tenant_id, inst_id, agent_id, thread_id, user_id),
+                    (events_json, now, tenant_id, inst_id, agent_id, thread_id, user_id),
                 )
             else:
                 await store.execute(

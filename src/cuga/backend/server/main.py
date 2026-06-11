@@ -854,6 +854,8 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Application is shutting down...")
 
+    await _await_pending_history_saves()
+
     from cuga.backend.storage import get_storage
 
     try:
@@ -989,6 +991,25 @@ async def setup_page_info(state: AgentState, env: ExtensionEnv | BrowserEnvGymAs
     state.current_app_description = f"web application for '{title}' and url '{url_app_name}'"
 
 
+_history_save_tasks: set[asyncio.Task] = set()
+_history_save_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+_history_save_locks_guard = asyncio.Lock()
+
+
+async def _conversation_save_lock(agent_id: str, thread_id: str, user_id: str) -> asyncio.Lock:
+    key = (agent_id, thread_id, user_id)
+    async with _history_save_locks_guard:
+        if key not in _history_save_locks:
+            _history_save_locks[key] = asyncio.Lock()
+        return _history_save_locks[key]
+
+
+async def _await_pending_history_saves() -> None:
+    pending = list(_history_save_tasks)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 async def _save_conversation_and_events_async(
     agent_id: str,
     thread_id: str,
@@ -996,22 +1017,24 @@ async def _save_conversation_and_events_async(
     state: AgentState,
     events: List[Dict[str, Any]],
     user_attachments: Optional[List[Dict[str, Any]]] = None,
-):
+) -> None:
     """Save conversation history and stream events asynchronously."""
-    try:
-        await save_conversation_to_db(
-            agent_id,
-            thread_id,
-            state,
-            user_id,
-            user_attachments=user_attachments,
-        )
-        if events:
-            conversation_db = get_conversation_db()
-            await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
-            logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
-    except Exception as e:
-        logger.error(f"Error in async save: {e}")
+    save_lock = await _conversation_save_lock(agent_id, thread_id, user_id)
+    async with save_lock:
+        try:
+            await save_conversation_to_db(
+                agent_id,
+                thread_id,
+                state,
+                user_id,
+                user_attachments=user_attachments,
+            )
+            if events:
+                conversation_db = get_conversation_db()
+                await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
+                logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
+        except Exception as e:
+            logger.error(f"Error in async save: {e}")
 
 
 def _get_graph_state_values_sync(graph, thread_id: str):
@@ -1047,8 +1070,10 @@ def _schedule_history_save(
         ),
         name=f"save-history-{thread_id}",
     )
+    _history_save_tasks.add(task)
 
     def _on_done(save_task: asyncio.Task) -> None:
+        _history_save_tasks.discard(save_task)
         try:
             save_task.result()
         except asyncio.CancelledError:

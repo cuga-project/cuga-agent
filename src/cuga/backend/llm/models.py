@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatResult
 from loguru import logger
 
-from cuga.backend.llm.load_test_mock import get_load_test_mock_chat_model, is_mock_llm_enabled
+from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
 from cuga.config import settings
 
@@ -831,7 +831,7 @@ class LLMManager:
         assert max_tokens is not None, "max_tokens must be specified in model_settings"
 
         if is_mock_llm_enabled():
-            mock = get_load_test_mock_chat_model()
+            mock = clone_load_test_mock_chat_model()
             return self._update_model_parameters(
                 mock, temperature=0.1, max_tokens=max_tokens, max_completion_tokens=max_tokens
             )
@@ -896,7 +896,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         max_tokens = 16000
 
     if is_mock_llm_enabled():
-        mock = get_load_test_mock_chat_model()
+        mock = clone_load_test_mock_chat_model()
         return mgr._update_model_parameters(
             mock, temperature=0.1, max_tokens=max_tokens, max_completion_tokens=max_tokens
         )

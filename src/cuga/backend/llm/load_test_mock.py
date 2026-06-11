@@ -213,3 +213,8 @@ def get_load_test_mock_chat_model() -> LoadTestMockChatModel:
         _load_test_mock_singleton = LoadTestMockChatModel()
         logger.info("Initialized LoadTestMockChatModel (CUGA_MOCK_LLM enabled)")
     return _load_test_mock_singleton
+
+
+def clone_load_test_mock_chat_model() -> LoadTestMockChatModel:
+    """Return a fresh mock instance so per-request parameter updates stay isolated."""
+    return get_load_test_mock_chat_model().model_copy(deep=True)

@@ -143,5 +143,10 @@ def test_execution_context_none_skips_bridge_gracefully():
     exec_ctx = SupervisorExecutionContext(state=SimpleNamespace(), variable_manager=None)
     sub_agent_vars = {"result": "ok"}
 
+    assert exec_ctx.variable_manager is None
+
+    bridged_names: list[str] = []
     if exec_ctx.variable_manager is not None:
-        VariableBridge.bridge(sub_agent_vars, exec_ctx.variable_manager)
+        bridged_names = VariableBridge.bridge(sub_agent_vars, exec_ctx.variable_manager)
+
+    assert bridged_names == []
