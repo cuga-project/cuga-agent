@@ -6,6 +6,11 @@ from langchain_core.runnables import RunnableConfig
 from langchain_core.tools import BaseTool, tool
 from cuga.backend.browser_env.tools.providers import BrowserToolImplProvider
 from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.alert import Alert
+from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.webmcp import (
+    execute_tool,
+    webmcp_advanced_enabled,
+    webmcp_enabled,
+)
 
 
 # ----------------------------------------------------------------------------
@@ -113,6 +118,35 @@ async def type(bid: str, value: str, press_enter: bool, config: RunnableConfig) 
     return await _type(bid=bid, value=value, press_enter=press_enter, config=config)
 
 
+@tool
+async def webmcp_call(tool: str, params: str = "{}", config: RunnableConfig = None) -> str:
+    """
+    Call a WebMCP tool exposed by the current page.
+
+    Examples:
+        webmcp_call('search_map', '{"query": "London"}')
+        webmcp_call('list_issues', '{"state": "opened"}')
+    """
+    page = config["configurable"]["page"]
+    return await execute_tool(page=page, tool=tool, params=params)
+
+
+@tool
+async def observe_page() -> str:
+    """
+    Request the full page observation in advanced WebMCP mode.
+    """
+    return "Full page observation requested."
+
+
+@tool
+def answer(text: str) -> str:
+    """
+    Provide the final answer for the task.
+    """
+    return text
+
+
 def format_tools(tools: List[ToolCall]):
     res = []
     for t in tools:
@@ -179,16 +213,31 @@ def scroll(state) -> str:
 # ----------------------------------------------------------------------------
 
 
-def setup_tools() -> Dict[str, BaseTool]:
+def _normal_browser_tools() -> Dict[str, BaseTool]:
+    return {
+        "click": click,
+        "type": type,  # Now refers to the @tool decorated function, not builtin type
+        "go_back": go_back,
+        "select_option": select_option,
+        "answer": answer,
+    }
+
+
+def setup_tools(stage: str = "standard") -> Dict[str, BaseTool]:
     """
     Set up and return all available tools for the action agent.
     This function is placed at the end of the file to ensure all tool functions
     are defined before being referenced, avoiding the name collision with Python's
     built-in 'type' function.
     """
-    return {
-        "click": click,
-        "type": type,  # Now refers to the @tool decorated function, not builtin type
-        "go_back": go_back,
-        "select_option": select_option,
-    }
+    if webmcp_advanced_enabled() and stage == "tool_stage":
+        return {
+            "webmcp_call": webmcp_call,
+            "observe_page": observe_page,
+            "answer": answer,
+        }
+
+    tools = _normal_browser_tools()
+    if webmcp_enabled() and not (webmcp_advanced_enabled() and stage == "page_fallback"):
+        tools["webmcp_call"] = webmcp_call
+    return tools

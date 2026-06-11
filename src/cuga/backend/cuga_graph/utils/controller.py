@@ -13,6 +13,13 @@ from cuga.backend.browser_env.browser.gym_obs.http_stream_comm import ChromeExte
 from cuga.backend.browser_env.tools.providers import BrowserToolImplProvider
 from cuga.backend.cuga_graph.graph import DynamicAgentGraph
 from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import setup_tools
+from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.webmcp import (
+    discover_tools,
+    format_tools_for_prompt,
+    seed_local_state_for_webmcp,
+    webmcp_advanced_enabled,
+    webmcp_enabled,
+)
 from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
     ActionAgentEventProcessor,
 )
@@ -34,6 +41,44 @@ except ImportError:
         LangfuseCallbackHandler = None
 
 tracker = ActivityTracker()
+
+
+def legacy_nocodeui_extension_args() -> list[str]:
+    extension_dir = os.path.join(
+        PACKAGE_ROOT, "backend", "browser_env", "browser", "nocodeui_obs", "prod"
+    )
+    manifest_path = os.path.join(extension_dir, "manifest.json")
+    if not os.path.isfile(manifest_path):
+        logger.warning(
+            "Skipping legacy NoCodeUI Chrome extension because manifest.json was not found at "
+            f"{manifest_path}"
+        )
+        return []
+    return [
+        f"--disable-extensions-except={extension_dir}",
+        f"--load-extension={extension_dir}",
+    ]
+
+
+async def normalize_osm_first_run_state(page) -> None:
+    try:
+        for _ in range(3):
+            await page.evaluate(
+                """() => {
+                    const looksLikeOsmMap =
+                        document.querySelector("#map") ||
+                        document.querySelector(".welcome") ||
+                        document.querySelector('form[action="/search"]');
+                    if (!looksLikeOsmMap) return;
+                    document.cookie = "_osm_welcome=hide; path=/; SameSite=Lax";
+                    for (const el of document.querySelectorAll(".welcome.visible")) {
+                        el.classList.remove("visible");
+                    }
+                }"""
+            )
+            await page.wait_for_timeout(250)
+    except Exception as exc:
+        logger.debug(f"OSM first-run normalization skipped: {exc}")
 
 
 class ExperimentResult(BaseModel):
@@ -83,6 +128,33 @@ class AgentRunner:
     async def initialize_webarena_env(self, task_id):
         from evaluation.tasks.task import GenericWebArenaTask
 
+        user_data_dir = None
+        pw_chromium_kwargs = {}
+        pw_extra_args = [
+            *settings.get("PLAYWRIGHT_ARGS", []),
+            *legacy_nocodeui_extension_args(),
+        ]
+        if webmcp_enabled():
+            logging_dir = os.environ.get("CUGA_LOGGING_DIR") or os.getcwd()
+            user_data_dir = os.path.join(logging_dir, "webmcp-profile")
+            seed_local_state_for_webmcp(user_data_dir)
+            pw_extra_args.extend(
+                [
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                    "--enable-features=WebMCPTesting,DevToolsWebMCPSupport",
+                ]
+            )
+            secure_origins = os.environ.get("BROWSERGYM_WEBMCP_SECURE_ORIGINS", "").strip()
+            if secure_origins:
+                pw_extra_args.append(f"--unsafely-treat-insecure-origin-as-secure={secure_origins}")
+            chrome_executable = os.environ.get("BROWSERGYM_CHROME_EXECUTABLE")
+            if not chrome_executable:
+                default_chrome = os.path.join(os.path.expanduser("~"), "Chrome149", "chrome.exe")
+                chrome_executable = default_chrome if os.path.exists(default_chrome) else ""
+            if chrome_executable:
+                pw_chromium_kwargs["executable_path"] = chrome_executable
+
         self.env = BrowserEnvGymAsync(
             GenericWebArenaTask,
             headless=settings.eval_config.headless,
@@ -90,15 +162,14 @@ class AgentRunner:
             enable_playwright_tracing=True,
             feedback=[],
             task_kwargs={"task_id": task_id},
+            user_data_dir=user_data_dir,
             enable_nocodeui_pu=True,
-            pw_extra_args=[
-                *settings.get("PLAYWRIGHT_ARGS", []),
-                f"--disable-extensions-except={os.path.join(PACKAGE_ROOT, './cuga/backend/browser_env/browser/nocodeui_obs/prod')}",
-                f"--load-extension={os.path.join(PACKAGE_ROOT, './cuga/backend/browser_env/browser/nocodeui_obs/prod')}",
-            ],
+            pw_extra_args=pw_extra_args,
+            pw_chromium_kwargs=pw_chromium_kwargs,
         )
 
         self.obs, self.info = await self.env.reset()
+        await normalize_osm_first_run_state(self.env.page)
 
     async def setup_page_info(self, state: AgentState, env):
         """Setup page URL, app name, and description from environment."""
@@ -159,6 +230,35 @@ class AgentRunner:
         state.focused_element_bid = pu_answer.focused_element_bid
         tracker.collect_image(pu_answer.img)
         state.read_page = pu_answer.page_content
+        tools = await discover_tools(self.env.page) if webmcp_enabled() else []
+        if webmcp_enabled() and (not webmcp_advanced_enabled() or not state.webmcp_page_observed):
+            state.webmcp_tools = format_tools_for_prompt(tools)
+        else:
+            state.webmcp_tools = ""
+        if webmcp_advanced_enabled():
+            if tools and not state.webmcp_page_observed:
+                state.webmcp_prompt_stage = "tool_stage"
+            else:
+                state.webmcp_prompt_stage = "page_fallback"
+        else:
+            state.webmcp_prompt_stage = "standard"
+
+    @staticmethod
+    def apply_action_feedback(state: AgentState, feedback: List[dict]) -> bool:
+        observe_page_requested = False
+        for feedback_entry in feedback:
+            if feedback_entry['status'] == "alert":
+                logger.warning(f"Adding to stm the alert {feedback_entry['message']}")
+                state.stm_steps_history.append(
+                    "Response of (ActionAgent): {}".format(feedback_entry['message'])
+                )
+            elif feedback_entry.get("action") in {"webmcp_call", "observe_page"} and feedback_entry.get("message"):
+                state.stm_steps_history.append(
+                    "Response of (ActionAgent): {}".format(feedback_entry["message"])
+                )
+            if feedback_entry.get("action") == "observe_page" and feedback_entry.get("status") != "error":
+                observe_page_requested = True
+        return observe_page_requested
 
     def get_current_state(self) -> AgentState:
         """
@@ -212,6 +312,7 @@ class AgentRunner:
         state.pi = tracker.pi
         agent_response = await self.agent_loop_obj.run(state=state)
         reward = 0.0
+        early_success = False
         i = 0
         while True:
             if agent_response.has_tools:
@@ -221,39 +322,47 @@ class AgentRunner:
                     state.messages[-1].tool_calls,
                     state.elements,
                     self.env.page,
-                    self.env.tool_implementation_provider,
                     session_id=session_id,
                     tool_provider=self.env.tool_implementation_provider,
                 )
                 state.feedback = state.feedback + feedback
-                if len(feedback) > 0 and feedback[-1]['status'] == "alert":
-                    logger.warning(f"Adding to stm the alert {feedback[-1]['message']}")
-                    state.stm_steps_history.append(
-                        "Response of (ActionAgent): {}".format(feedback[-1]['message'])
-                    )
+                observe_page_requested = self.apply_action_feedback(state, feedback)
                 self.env.messages = state.messages
+                if observe_page_requested and webmcp_advanced_enabled():
+                    state.webmcp_page_observed = True
+                    await self.browser_update_state(state)
+                    self.agent_loop_obj.graph.update_state(
+                        {"configurable": {"thread_id": self.thread_id}}, state
+                    )
+                    agent_response = await self.agent_loop_obj.run(state=None)
+                    continue
                 obs, reward, terminated, truncated, info = await self.env.step("")
-                if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
+                if eval_mode and reward == 1.0:
+                    early_success = True
                     break
+                if len(tracker.steps) >= settings.evaluation.max_steps:
+                    break
+                state.webmcp_page_observed = False
                 await self.browser_update_state(state)
                 self.agent_loop_obj.graph.update_state({"configurable": {"thread_id": self.thread_id}}, state)
                 agent_response = await self.agent_loop_obj.run(state=None)
+            elif agent_response.interrupt:
+                agent_response = await self.agent_loop_obj.run(state=None)
             elif agent_response.end:
                 tracker.final_answer = agent_response.answer
-                if self.env:
-                    obs, reward, terminated, truncated, info = await self.env.step("")
                 break
             else:
                 raise Exception("Agent stopped but no tools or finish.")
 
         if eval_mode:
-            if self.env.chat:
+            if len(tracker.steps) >= settings.evaluation.max_steps and not tracker.final_answer:
+                tracker.final_answer = "N/A"
+            if self.env.chat and (tracker.final_answer or not early_success):
                 await self.env.chat.add_message(
                     role="assistant",
-                    msg="Final answer: {}".format(tracker.final_answer),
+                    msg=str(tracker.final_answer),
                 )
-            if len(tracker.steps) >= settings.evaluation.max_steps:
-                tracker.final_answer = "N/A"
+                self.env.messages = list(self.env.chat.messages)
                 obs, reward, terminated, truncated, info = await self.env.step("")
             if sites and len(sites) > 1:
                 logger.debug("Sleep on finish if multi site")
@@ -340,15 +449,19 @@ class AgentRunner:
                             session_id=session_id,
                         )
                         state.feedback = state.feedback + feedback
-                        if len(feedback) > 0 and feedback[-1]['status'] == "alert":
-                            logger.warning(f"Adding to stm the alert {feedback[-1]['message']}")
-                            state.stm_steps_history.append(
-                                "Response of (ActionAgent): {}".format(feedback[-1]['message'])
-                            )
+                        observe_page_requested = self.apply_action_feedback(state, feedback)
                         self.env.messages = state.messages
+                        if observe_page_requested and webmcp_advanced_enabled():
+                            state.webmcp_page_observed = True
+                            await self.browser_update_state(state)
+                            self.agent_loop_obj.graph.update_state(
+                                {"configurable": {"thread_id": self.thread_id}}, state
+                            )
+                            break
                         obs, reward, terminated, truncated, info = await self.env.step("")
                         if eval_mode and reward == 1.0 or len(tracker.steps) >= settings.evaluation.max_steps:
                             break  # Break to handle final result outside the loop
+                        state.webmcp_page_observed = False
                         await self.browser_update_state(state)
                         self.agent_loop_obj.graph.update_state(
                             {"configurable": {"thread_id": self.thread_id}}, state

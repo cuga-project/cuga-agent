@@ -131,6 +131,19 @@ class ActionNode(BaseNode):
 
         if not result.tool_calls:
             logger.warning("No tool calls by action agent")
+            state.feedback.append(
+                {
+                    "action": "ActionAgent",
+                    "status": "error",
+                    "message": (
+                        "ActionAgent returned no executable tool call. Retry with exactly one "
+                        "available tool call for the current step."
+                    ),
+                }
+            )
+            state.stm_steps_history.append(
+                "Response of (ActionAgent): no executable tool call was returned."
+            )
             state.sender = name
             state.messages.append(result)
             return state
@@ -147,6 +160,12 @@ class ActionNode(BaseNode):
                     ),
                 )
             )
+
+            if call["name"] == "answer":
+                result.content = f"FINAL ANSWER \n {call['args']}"
+                state.messages.append(result)
+                state.sender = "END"
+                return state
 
             if call["name"] in NO_BID_ACTIONS:
                 if 'human_in_the_loop' in call["name"]:
@@ -191,11 +210,6 @@ class ActionNode(BaseNode):
 
             action_state = call["args"]
 
-            if call["name"] == "answer":
-                result.content = f"FINAL ANSWER \n {action_state}"
-                state.messages.append(result)
-                state.sender = "END"
-                return state
             element_predicted = extract_element_predicted(action_state)
             if not is_valid_element(element_predicted):
                 feedback = {

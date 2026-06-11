@@ -1,0 +1,153 @@
+[agent.task_decomposition.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.planner.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.chat.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.shortlister.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.plan_controller.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.final_answer.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.code.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.code_planner.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.qa.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 16000
+
+[agent.action.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 1000
+
+[memory.mem0.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 1000
+
+[memory.milvus.step_processing.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 1000
+
+[memory.milvus.fact_extraction.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 1000
+
+[memory.tips_extractor.model]
+platform = "openai"
+model_name = "qwen3.6-flash"
+url = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+api_key = "QWEN_API_KEY"
+enable_format = true
+enable_vision = true
+extra_body = { enable_thinking = false }
+temperature = 0.1
+max_tokens = 5000

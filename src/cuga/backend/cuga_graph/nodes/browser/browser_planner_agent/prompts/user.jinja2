@@ -23,10 +23,24 @@ Use this variable history in order to get values based on original task and curr
 
 **Current URL**: {{url}}.
 
+{% if webmcp_tools %}
+**Current WebMCP Tools**:
+"""
+{{webmcp_tools}}
+"""
+{% endif %}
+
+{% if webmcp_prompt_stage == "tool_stage" %}
+**Page observation**:
+"""
+Withheld for advanced WebMCP tool stage. Prefer ActionAgent with webmcp_call when a listed tool directly serves the next step. Ask for observe_page only when the accessibility tree or ordinary browser actions are needed.
+"""
+{% else %}
 **Elements accessibility tree**:
 """
 {{elements_as_string}}
 """
+{% endif %}
 
 **Original task**:
 """

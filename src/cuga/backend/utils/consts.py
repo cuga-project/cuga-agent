@@ -24,6 +24,8 @@ ONLY_VALUE_ACTIONS = ['update_plan', 'answer', 'human_in_the_loop', 'send_msg_to
 NO_BID_ACTIONS = [
     'update_plan',
     'answer',
+    'webmcp_call',
+    'observe_page',
     'human_in_the_loop',
     'send_msg_to_user',
     'read_page',

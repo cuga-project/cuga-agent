@@ -61,6 +61,13 @@ def _structured_output_missing_parsed_field(exc: BaseException) -> bool:
     )
 
 
+def _structured_output_markdown_json(exc: BaseException) -> bool:
+    if not isinstance(exc, ValidationError):
+        return False
+    msg = str(exc)
+    return "Invalid JSON" in msg and "```" in msg
+
+
 def create_partial(func, **kwargs):
     partial_func = functools.partial(func, **kwargs)
 
@@ -119,10 +126,10 @@ class BaseAgent(ABC):
                 output = await json_schema_chain.ainvoke(inputs)
                 return BaseAgent.validate_and_retry_output(output, schema)
             except Exception as exc:
-                if _structured_output_missing_parsed_field(exc):
+                if _structured_output_missing_parsed_field(exc) or _structured_output_markdown_json(exc):
                     logger.warning(
                         "json_schema structured output not supported by this model endpoint "
-                        "(parsed=None, refusal=None); falling back to json_mode parser"
+                        "(parsed=None, refusal=None, or fenced JSON); falling back to json_mode parser"
                     )
                     output = await json_mode_chain.ainvoke(inputs)
                     return BaseAgent.validate_and_retry_output(output, schema)

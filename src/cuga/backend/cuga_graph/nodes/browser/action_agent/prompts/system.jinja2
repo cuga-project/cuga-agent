@@ -41,11 +41,17 @@ To systematically progress towards task completion by selecting the most appropr
   - **click(element_id)**: Click on buttons or links.
   - **go_back(element_id)**: Go back to previous page.
   - **type(element_id, text)**: Input text into fields.
+  - **webmcp_call(tool, params)**: If listed in Available Tools, call a WebMCP tool from the Current WebMCP Tools section using a JSON string for params.
+  - **observe_page()**: In advanced WebMCP mode, request the full page observation when the listed tools are not enough.
+  - **answer(text)**: Provide the final answer when the task is complete.
 - **Provide Exact Arguments**:
   - Ensure tool arguments match the required format.
 - **Examples**:
   - **click('element_id')**
   - **type('element_id', '12/31/2022')**
+  - **webmcp_call('tool_name', '{}')**
+  - **observe_page()**
+  - **answer('final answer')**
   - **open_dropdown('element_id')**
 
 **Adaptability**:

@@ -219,6 +219,90 @@ async def check_for_alert(page: Page) -> Optional[str]:
     return None
 
 
+async def _is_visible(elem: Any) -> bool:
+    try:
+        return await elem.is_visible(timeout=300)
+    except TypeError:
+        return await elem.is_visible()
+    except Exception:
+        return False
+
+
+async def _resolve_visible_counterpart(page: Page, elem: Any) -> Any:
+    """Use the visible copy when a responsive page duplicates a control."""
+    if await _is_visible(elem):
+        return elem
+
+    try:
+        attrs = await elem.evaluate(
+            """(e) => ({
+                tag: e.tagName ? e.tagName.toLowerCase() : "",
+                id: e.id || "",
+                name: e.getAttribute("name") || "",
+                type: e.getAttribute("type") || "",
+                placeholder: e.getAttribute("placeholder") || "",
+                ariaLabel: e.getAttribute("aria-label") || "",
+                value: e.getAttribute("value") || "",
+                title: e.getAttribute("title") || ""
+            })"""
+        )
+        handle = await page.evaluate_handle(
+            """(attrs) => {
+                const visible = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+                const same = (e) => {
+                    if (!visible(e)) return false;
+                    if (attrs.id && e.id !== attrs.id) return false;
+                    if (attrs.name && e.getAttribute("name") !== attrs.name) return false;
+                    if (attrs.type && e.getAttribute("type") !== attrs.type) return false;
+                    if (attrs.placeholder && e.getAttribute("placeholder") !== attrs.placeholder) return false;
+                    if (attrs.ariaLabel && e.getAttribute("aria-label") !== attrs.ariaLabel) return false;
+                    if (attrs.value && e.getAttribute("value") !== attrs.value) return false;
+                    if (attrs.title && e.getAttribute("title") !== attrs.title) return false;
+                    return true;
+                };
+                return Array.from(document.querySelectorAll(attrs.tag || "*")).find(same) || null;
+            }""",
+            attrs,
+        )
+        candidate = handle.as_element()
+        if candidate:
+            logger.info("Using visible counterpart for hidden duplicated control")
+            return candidate
+    except Exception as exc:
+        logger.debug(f"Visible counterpart lookup failed: {exc}")
+
+    return elem
+
+
+async def _should_submit_search_after_type(elem: Any) -> bool:
+    try:
+        return bool(
+            await elem.evaluate(
+                """(e) => {
+                    const form = e.form;
+                    const type = (e.getAttribute("type") || "").toLowerCase();
+                    const name = (e.getAttribute("name") || "").toLowerCase();
+                    const id = (e.id || "").toLowerCase();
+                    const placeholder = (e.getAttribute("placeholder") || "").toLowerCase();
+                    const inputLooksLikeSearch =
+                        e.tagName && e.tagName.toLowerCase() === "input" &&
+                        ["", "text", "search"].includes(type) &&
+                        (["q", "query", "search"].includes(name) ||
+                         ["q", "query", "search"].includes(id) ||
+                         placeholder.includes("search"));
+                    if (!inputLooksLikeSearch || !form) return false;
+                    const action = (form.getAttribute("action") || "").toLowerCase();
+                    const role = (form.getAttribute("role") || "").toLowerCase();
+                    const klass = (form.getAttribute("class") || "").toLowerCase();
+                    return action.includes("/search") || role === "search" || klass.includes("search");
+                }"""
+            )
+        )
+    except Exception as exc:
+        logger.debug(f"Search-form submit detection failed: {exc}")
+        return False
+
+
 # ---------------------------------------------------------------------------
 # Public command implementations
 # ---------------------------------------------------------------------------
@@ -236,6 +320,7 @@ async def click_impl(
     # demo_mode: str = config.get("configurable", {}).get("demo_mode", "off")
 
     elem = await get_elem_by_bid_async(page, bid, True)
+    elem = await _resolve_visible_counterpart(page, elem)
     await add_animation(page, elem, "loading", "CUGA is clicking...")
 
     try:
@@ -260,12 +345,20 @@ async def type_impl(
     demo_mode: str = config.get("configurable", {}).get("demo_mode", "off")
 
     elem = await get_elem_by_bid_async(page, bid, demo_mode != "off")
+    elem = await _resolve_visible_counterpart(page, elem)
     await add_animation(page, elem, "typing", "CUGA is typing...")
 
     try:
         await elem.fill(value, timeout=1000)
-        if press_enter:
+        submit_search = (not press_enter) and await _should_submit_search_after_type(elem)
+        if press_enter or submit_search:
+            if submit_search:
+                logger.info("Auto-submitting search form after typing into search input")
             await page.keyboard.press("Enter")
+            try:
+                await page.wait_for_load_state("domcontentloaded", timeout=3000)
+            except Exception:
+                pass
 
         alert_str = await check_for_alert(page)
         if alert_str:

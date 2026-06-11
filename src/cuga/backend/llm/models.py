@@ -631,6 +631,10 @@ class LLMManager:
             if base_url:
                 openai_params["openai_api_base"] = base_url
 
+            extra_body = model_settings.get("extra_body")
+            if isinstance(extra_body, dict):
+                openai_params["extra_body"] = extra_body
+
             ssl_verify = self._get_ssl_verify(model_settings)
             if ssl_verify is not True:
                 openai_params["http_client"] = httpx.Client(verify=ssl_verify)
@@ -786,6 +790,9 @@ class LLMManager:
                 litellm_params["custom_llm_provider"] = "openai"
             if base_url:
                 litellm_params["api_base"] = base_url.rstrip("/")
+            extra_body = model_settings.get("extra_body")
+            if isinstance(extra_body, dict):
+                litellm_params["extra_body"] = extra_body
             auth_headers = self._get_auth_headers(model_settings, "openai")
             if auth_headers and "Authorization" in auth_headers:
                 val = auth_headers["Authorization"]
