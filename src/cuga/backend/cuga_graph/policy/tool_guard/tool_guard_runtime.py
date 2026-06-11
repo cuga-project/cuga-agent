@@ -21,7 +21,7 @@ from toolguard.runtime.data_types import (
 )
 from toolguard.runtime.runtime import load_toolguards_from_memory
 
-from cuga.backend.cuga_graph.policy.models import Policy, PolicyType, ToolGuide
+from cuga.backend.cuga_graph.policy.models import PolicyType, ToolGuide
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 from cuga.backend.cuga_graph.policy.tool_guard.tool_invoker import ToolGuardInvoker
 
@@ -43,7 +43,8 @@ class ToolGuardRuntime:
         self,
         tool_provider,
         enable_policies: bool = False,
-        policy_storage: Optional[PolicyStorage] = None
+        policy_storage: Optional[PolicyStorage] = None,
+        cuga_folder: str = ".cuga",
     ) -> None:
         """
         Initialize the ToolGuardRuntime.
@@ -52,10 +53,12 @@ class ToolGuardRuntime:
             tool_provider: CUGA's tool provider instance
             enable_policies: Whether to enable policy enforcement
             policy_storage: Optional PolicyStorage instance (will be created if None and enable_policies=True)
+            cuga_folder: Folder containing ToolGuard domain files
         """
         self.tool_provider = tool_provider
         self.enable_policies = enable_policies
         self.policy_storage = policy_storage
+        self.cuga_folder = cuga_folder
         self.invoker = ToolGuardInvoker(tool_provider)
         self.tool_to_guards: Dict[str, List[ToolGuide]] = {}
         # Per-app runtime mapping to avoid cross-app collisions
@@ -75,7 +78,7 @@ class ToolGuardRuntime:
         3. Filters for policies that have tool_guards with policy_code
         4. Builds the tool_to_guards mapping
         5. Per-app runtimes will be lazily loaded on first use
-        
+
         Raises:
             RuntimeError: If policy system is enabled but storage connection fails (fail-closed)
         """
@@ -87,13 +90,14 @@ class ToolGuardRuntime:
             if self.policy_storage is None:
                 # Create policy storage if not provided
                 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
+
                 self.policy_storage = PolicyStorage()
                 self._policy_storage_owned = True
                 logger.debug("Created PolicyStorage instance")
-            
+
             # Validate policy_storage has required interface
             self._validate_policy_storage()
-            
+
             try:
                 await self.policy_storage.connect()
                 logger.info("✅ Connected policy storage for ToolGuardRuntime")
@@ -101,10 +105,8 @@ class ToolGuardRuntime:
                 logger.error(f"Failed to connect policy storage: {e}")
                 # Fail closed: if policy enforcement is enabled but storage fails,
                 # don't allow the service to start without policy validation
-                raise RuntimeError(
-                    f"Policy system is enabled but PolicyStorage.connect() failed: {e}"
-                ) from e
-        
+                raise RuntimeError(f"Policy system is enabled but PolicyStorage.connect() failed: {e}") from e
+
         # Load policies if storage is available
         if self.policy_storage is not None:
             policies = await self.policy_storage.list_policies(
@@ -120,30 +122,30 @@ class ToolGuardRuntime:
 
         self._initialized = True
         self._log_initialization_summary()
-    
+
     def _validate_policy_storage(self) -> None:
         """
         Validate that policy_storage has the required interface.
-        
+
         Raises:
             ValueError: If policy_storage doesn't implement required methods
         """
         if self.policy_storage is None:
             return
-        
+
         required_methods = ['connect', 'disconnect', 'list_policies', 'get_policy']
         missing_methods = []
-        
+
         for method in required_methods:
             if not hasattr(self.policy_storage, method):
                 missing_methods.append(method)
-        
+
         if missing_methods:
             raise ValueError(
                 f"policy_storage must implement the following methods: {', '.join(missing_methods)}. "
                 f"Provided object type: {type(self.policy_storage).__name__}"
             )
-        
+
         logger.debug("✅ Policy storage interface validation passed")
 
     def _reset_state(self) -> None:
@@ -186,8 +188,7 @@ class ToolGuardRuntime:
         for tool_name, tool_guard in policy.tool_guards.items():
             if not tool_guard.policy_code:
                 logger.debug(
-                    f"Tool guard for '{tool_name}' in policy '{policy.name}' "
-                    f"has no policy_code, skipping"
+                    f"Tool guard for '{tool_name}' in policy '{policy.name}' has no policy_code, skipping"
                 )
                 continue
 
@@ -212,23 +213,19 @@ class ToolGuardRuntime:
 
     def _log_initialization_summary(self) -> None:
         """Log summary of initialization results."""
-        logger.info(
-            f"✅ ToolGuardRuntime initialized with guards for "
-            f"{len(self.tool_to_guards)} tools"
-        )
+        logger.info(f"✅ ToolGuardRuntime initialized with guards for {len(self.tool_to_guards)} tools")
         for tool_name, guards in self.tool_to_guards.items():
             logger.debug(
-                f"  - Tool '{tool_name}': {len(guards)} guard(s) "
-                f"({', '.join(g.name for g in guards)})"
+                f"  - Tool '{tool_name}': {len(guards)} guard(s) ({', '.join(g.name for g in guards)})"
             )
 
     def _build_runtime(self, app_name: str):
         """
         Build an in-memory ToolGuard runtime from registered guard policies for a specific app.
-        
+
         Args:
             app_name: Name of the application to build runtime for
-            
+
         Returns:
             Runtime instance for the specified app
         """
@@ -246,10 +243,11 @@ class ToolGuardRuntime:
         for tool_name, all_guards in self.tool_to_guards.items():
             # Filter guards to only those applicable to this app
             guards = [
-                guard for guard in all_guards
+                guard
+                for guard in all_guards
                 if guard.target_apps is None or not guard.target_apps or app_name in guard.target_apps
             ]
-            
+
             # Skip this tool if no guards apply to this app
             if not guards:
                 logger.debug(
@@ -257,7 +255,7 @@ class ToolGuardRuntime:
                     f"no applicable guards (out of {len(all_guards)} total)"
                 )
                 continue
-            
+
             module_name = self._module_name_for_tool(tool_name)
             guard_fn_name = self._guard_function_name_for_tool(tool_name)
             guard_module_path = Path(*module_name.split(".")).with_suffix(".py")
@@ -314,12 +312,12 @@ class ToolGuardRuntime:
         Raises:
             RuntimeError: If domain directory or files are not found
         """
-        domain_dir = Path.cwd() / ".cuga" / "toolguard" / "domain"
+        domain_dir = Path(self.cuga_folder) / "toolguard" / "domain"
         self._validate_domain_directory(domain_dir)
 
         # Try exact match first
         selected_domain = self._find_complete_domain_for_app(domain_dir, app_name)
-        
+
         # If exact match not found, try fuzzy match (e.g., "crm" -> "crm_demo")
         if selected_domain is None:
             logger.debug(f"Exact domain match not found for '{app_name}', trying fuzzy match...")
@@ -328,7 +326,9 @@ class ToolGuardRuntime:
                     candidate_name = dir_path.name
                     selected_domain = self._find_complete_domain_for_app(domain_dir, candidate_name)
                     if selected_domain:
-                        logger.info(f"Found domain for app '{app_name}' using fuzzy match: '{candidate_name}'")
+                        logger.info(
+                            f"Found domain for app '{app_name}' using fuzzy match: '{candidate_name}'"
+                        )
                         break
 
         if selected_domain is None:
@@ -375,9 +375,7 @@ class ToolGuardRuntime:
             reverse=True,
         )
         if not app_dirs:
-            raise RuntimeError(
-                f"No ToolGuard app directories found under {domain_dir}"
-            )
+            raise RuntimeError(f"No ToolGuard app directories found under {domain_dir}")
         return app_dirs
 
     def _find_complete_domain(
@@ -509,9 +507,7 @@ class ToolGuardRuntime:
         guard_calls: List[str] = []
 
         for index, policy in enumerate(guards):
-            self._process_policy_guard(
-                policy, tool_name, index, guard_blocks, guard_calls
-            )
+            self._process_policy_guard(policy, tool_name, index, guard_blocks, guard_calls)
 
         return self._generate_module_content(guard_fn_name, guard_blocks, guard_calls)
 
@@ -535,16 +531,12 @@ class ToolGuardRuntime:
         """
         tool_guard = policy.tool_guards.get(tool_name) if policy.tool_guards else None
         if not tool_guard or not tool_guard.policy_code:
-            logger.warning(
-                f"Policy '{policy.name}' missing tool_guard for '{tool_name}', skipping"
-            )
+            logger.warning(f"Policy '{policy.name}' missing tool_guard for '{tool_name}', skipping")
             return
 
         guard_func_name = self._extract_guard_function_name(tool_guard.policy_code)
         if not guard_func_name:
-            logger.warning(
-                f"Could not find guard function in policy code for '{policy.name}', skipping"
-            )
+            logger.warning(f"Could not find guard function in policy code for '{policy.name}', skipping")
             return
 
         validate_alias = f"_guard_validate_{index}"
@@ -558,19 +550,21 @@ class ToolGuardRuntime:
 
         # Sanitize policy name for safe embedding in generated Python code
         policy_name_literal = repr(policy.name)
-        
-        guard_calls.extend([
-            "    try:",
-            f"        await {validate_alias}(api=api, args=args)",
-            "    except PolicyViolationException as e:",
-            "        error_msg = str(e)",
-            "        # Check if error already contains policy name to avoid duplication",
-            f"        _policy_name = {policy_name_literal}",
-            "        _prefix = f\"[{_policy_name}]\"",
-            "        if not error_msg.startswith(_prefix):",
-            "            error_msg = f\"{_prefix} {error_msg}\"",
-            "        violations.append(error_msg)",
-        ])
+
+        guard_calls.extend(
+            [
+                "    try:",
+                f"        await {validate_alias}(api=api, args=args)",
+                "    except PolicyViolationException as e:",
+                "        error_msg = str(e)",
+                "        # Check if error already contains policy name to avoid duplication",
+                f"        _policy_name = {policy_name_literal}",
+                "        _prefix = f\"[{_policy_name}]\"",
+                "        if not error_msg.startswith(_prefix):",
+                "            error_msg = f\"{_prefix} {error_msg}\"",
+                "        violations.append(error_msg)",
+            ]
+        )
 
     def _extract_guard_function_name(self, policy_code: str) -> Optional[str]:
         """
@@ -663,71 +657,63 @@ class ToolGuardRuntime:
         import hashlib
 
         # Create readable normalized portion
-        normalized = "".join(
-            ch if ch.isalnum() else "_" for ch in name.lower()
-        ).strip("_")
-        
+        normalized = "".join(ch if ch.isalnum() else "_" for ch in name.lower()).strip("_")
+
         # Use "tool" as base if normalization results in empty string
         base = normalized if normalized else "tool"
-        
+
         # Add short hash suffix for disambiguation
         name_hash = hashlib.sha256(name.encode()).hexdigest()[:8]
-        
+
         return f"{base}_{name_hash}"
 
     async def _get_or_create_runtime_for_app(self, app_name: str):
         """
         Get or lazily create a runtime for the specified app.
-        
+
         Args:
             app_name: Name of the application
-            
+
         Returns:
             Runtime instance for the app, or None if it cannot be created
         """
         # Return cached runtime if available
         if app_name in self._runtimes_by_app:
             return self._runtimes_by_app[app_name]
-        
+
         # Try to load and build runtime for this app
         try:
             logger.info(f"Loading runtime domain for app '{app_name}'...")
             runtime_domain = self._load_runtime_domain(app_name)
             self._runtime_domains_by_app[app_name] = runtime_domain
-            
+
             logger.info(f"Building runtime for app '{app_name}'...")
             runtime = self._build_runtime(app_name)
             self._runtimes_by_app[app_name] = runtime
-            
+
             logger.info(f"✅ Runtime initialized for app '{app_name}'")
             return runtime
         except Exception as e:
-            logger.error(
-                f"Failed to initialize runtime for app '{app_name}': {e}",
-                exc_info=True
-            )
+            logger.error(f"Failed to initialize runtime for app '{app_name}': {e}", exc_info=True)
             # Cache None to avoid repeated failed attempts
             self._runtimes_by_app[app_name] = None
             return None
 
     def _type_cast_arguments(
-        self,
-        arguments: Dict[str, Any],
-        app_name: str,
-        function_name: str
+        self, arguments: Dict[str, Any], app_name: str, function_name: str
     ) -> Dict[str, Any]:
         """
         Type-cast string arguments to their proper types based on the tool schema.
-        
+
         This is necessary because LLM outputs and some tool invocation paths may
         convert all arguments to strings, but guard code expects proper types
         (e.g., float for annual_revenue, not string).
-        
+
         Args:
             arguments: Raw arguments dictionary
             app_name: Name of the application
             function_name: Name of the tool/function
-            
+
         Returns:
             Type-casted arguments dictionary
         """
@@ -736,34 +722,36 @@ class ToolGuardRuntime:
         if not runtime_domain:
             logger.debug(f"No runtime domain for app '{app_name}', skipping type casting")
             return arguments
-        
+
         # Parse the types file to extract parameter types from Pydantic models
         try:
             import re
-            
+
             typed_arguments = {}
             types_content = runtime_domain.app_types.content
-            
+
             # Convert function_name to the Args class name
             # e.g., crm_create_account_accounts_post -> CrmCreateAccountAccountsPostArgs
             parts = function_name.split('_')
             args_class_name = ''.join(word.capitalize() for word in parts) + 'Args'
-            
+
             # Find the class definition in the types file
             class_pattern = rf'class\s+{re.escape(args_class_name)}\s*\([^)]*\):\s*\n((?:\s+.*\n)*)'
             class_match = re.search(class_pattern, types_content)
-            
+
             if not class_match:
-                logger.debug(f"Could not find Args class '{args_class_name}' for '{function_name}', skipping type casting")
+                logger.debug(
+                    f"Could not find Args class '{args_class_name}' for '{function_name}', skipping type casting"
+                )
                 return arguments
-            
+
             class_body = class_match.group(1)
-            
+
             # Extract field definitions with types
             # Pattern: field_name: type or field_name: type | None = default
             field_pattern = r'^\s+(\w+)\s*:\s*([^=\n]+?)(?:\s*=.*)?$'
             field_matches = re.findall(field_pattern, class_body, re.MULTILINE)
-            
+
             # Build type mapping
             type_map = {}
             for field_name, field_type in field_matches:
@@ -775,22 +763,22 @@ class ToolGuardRuntime:
                 else:
                     base_type = field_type
                 type_map[field_name] = base_type
-            
+
             logger.debug(f"Type map for '{function_name}': {type_map}")
-            
+
             # Type-cast each argument
             for key, value in arguments.items():
                 if key not in type_map:
                     typed_arguments[key] = value
                     continue
-                
+
                 expected_type = type_map[key]
-                
+
                 # Skip if value is None
                 if value is None:
                     typed_arguments[key] = value
                     continue
-                
+
                 # Type-cast string values to their expected types
                 if isinstance(value, str):
                     try:
@@ -799,7 +787,9 @@ class ToolGuardRuntime:
                             logger.debug(f"Cast '{key}' from string '{value}' to int {typed_arguments[key]}")
                         elif expected_type == 'float':
                             typed_arguments[key] = float(value)
-                            logger.debug(f"Cast '{key}' from string '{value}' to float {typed_arguments[key]}")
+                            logger.debug(
+                                f"Cast '{key}' from string '{value}' to float {typed_arguments[key]}"
+                            )
                         elif expected_type == 'bool':
                             typed_arguments[key] = value.lower() in ('true', '1', 'yes')
                             logger.debug(f"Cast '{key}' from string '{value}' to bool {typed_arguments[key]}")
@@ -814,18 +804,18 @@ class ToolGuardRuntime:
                 else:
                     # Value is already the correct type
                     typed_arguments[key] = value
-            
+
             return typed_arguments
-            
+
         except Exception as e:
-            logger.warning(f"Error during type casting for '{function_name}': {e}. Using original arguments.", exc_info=True)
+            logger.warning(
+                f"Error during type casting for '{function_name}': {e}. Using original arguments.",
+                exc_info=True,
+            )
             return arguments
 
     async def guard_tool_call(
-        self,
-        app_name: str,
-        function_name: str,
-        arguments: Dict[str, Any]
+        self, app_name: str, function_name: str, arguments: Dict[str, Any]
     ) -> Optional[str]:
         """
         Validate a tool call against registered guards.
@@ -853,10 +843,11 @@ class ToolGuardRuntime:
         # Filter guards to only those applicable to this app
         all_guards = self.tool_to_guards[function_name]
         guards = [
-            guard for guard in all_guards
+            guard
+            for guard in all_guards
             if guard.target_apps is None or not guard.target_apps or app_name in guard.target_apps
         ]
-        
+
         if not guards:
             logger.debug(
                 f"No guards applicable for tool '{function_name}' on app '{app_name}' "
@@ -869,9 +860,12 @@ class ToolGuardRuntime:
         if runtime is None:
             logger.warning(
                 f"ToolGuard runtime unavailable for app '{app_name}' and tool '{function_name}', "
-                "skipping validation"
+                "blocking validation because applicable guard policies exist"
             )
-            return None
+            return (
+                f"ToolGuard runtime unavailable for '{function_name}' in app '{app_name}'. "
+                "Tool call blocked because an applicable guard policy exists but could not be loaded."
+            )
 
         logger.debug(
             f"Validating tool call '{function_name}' for app '{app_name}' against "
@@ -881,7 +875,7 @@ class ToolGuardRuntime:
         try:
             # Type-cast arguments to their proper types before validation
             typed_arguments = self._type_cast_arguments(arguments, app_name, function_name)
-            
+
             args_obj = SimpleNamespace(**typed_arguments)
             await runtime.guard_toolcall(
                 tool_name=function_name,
@@ -890,20 +884,17 @@ class ToolGuardRuntime:
             )
         except PolicyViolationException as e:
             error = str(e)
-            logger.warning(
-                f"Tool guard blocked call to '{function_name}' for app '{app_name}': {error}"
-            )
+            logger.warning(f"Tool guard blocked call to '{function_name}' for app '{app_name}': {error}")
             return error
         except Exception as e:
             logger.error(
                 f"Error executing umbrella guard for tool '{function_name}' in app '{app_name}': {e}",
-                exc_info=True
+                exc_info=True,
             )
             # Fail closed: treat internal guard errors as a violation so a buggy
             # or malformed guard cannot silently bypass policy enforcement.
             return (
-                f"Internal guard error for '{function_name}': {e}. "
-                "Tool call blocked as a safety precaution."
+                f"Internal guard error for '{function_name}': {e}. Tool call blocked as a safety precaution."
             )
 
         logger.debug(f"Tool call '{function_name}' for app '{app_name}' passed all guards")
@@ -946,7 +937,7 @@ class ToolGuardRuntime:
                     logger.exception(f"Error while shutting down ToolGuard runtime for app '{app_name}'")
         self._runtimes_by_app = {}
         self._runtime_domains_by_app = {}
-        
+
         # Disconnect policy storage if we own it
         if self.policy_storage is not None and self._policy_storage_owned:
             try:
@@ -955,6 +946,6 @@ class ToolGuardRuntime:
             except Exception as e:
                 logger.warning(f"Error disconnecting policy storage during shutdown: {e}")
             self.policy_storage = None
-        
+
         self._initialized = False
         logger.debug("ToolGuardRuntime shutdown complete")

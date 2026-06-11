@@ -220,14 +220,12 @@ async def apply_policies_data_to_storage(
                 tool_guards = (
                     {
                         tool_name: (
-                            guard_config
-                            if isinstance(guard_config, ToolGuard)
-                            else ToolGuard(**guard_config)
+                            guard_config if isinstance(guard_config, ToolGuard) else ToolGuard(**guard_config)
                         )
                         for tool_name, guard_config in raw_tool_guards.items()
                     }
                     if isinstance(raw_tool_guards, dict)
-                    else None
+                    else {}
                 )
                 policy = ToolGuide(
                     id=policy_data["id"],

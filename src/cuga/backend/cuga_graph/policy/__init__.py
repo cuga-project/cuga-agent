@@ -38,7 +38,7 @@ __all__ = [
     "ToolGuide",
     "ToolGuard",
     "ToolApproval",
-    "OutputFormatter"
+    "OutputFormatter",
     "CustomPolicy",
     "PlaybookStep",
     "IntentGuardResponse",

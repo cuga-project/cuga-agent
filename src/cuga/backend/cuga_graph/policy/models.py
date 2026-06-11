@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PolicyType(str, Enum):
@@ -181,7 +181,7 @@ class ToolGuard(BaseModel):
             "This code is executed in a sandboxed environment using the toolguard library. "
             "Only trusted administrators with manage access should be allowed to modify policy code. "
             "While sandboxed, policy code should still be reviewed for correctness and performance."
-        )
+        ),
     )
 
 
@@ -234,13 +234,20 @@ class ToolGuide(BaseModel):
         None, description="List of app names to enrich tools for (optional)"
     )
     guide_content: str = Field(..., description="Markdown content to append to tool descriptions")
-    tool_guards: Optional[Dict[str, ToolGuard]] = Field(
-        default=None, description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)"
+    tool_guards: Dict[str, ToolGuard] = Field(
+        default_factory=dict,
+        description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)",
     )
     prepend: bool = Field(False, description="Whether to prepend content instead of appending")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     priority: int = Field(0, description="Priority when multiple guides match (higher = more important)")
     enabled: bool = Field(True, description="Whether this guide is active")
+
+    @field_validator("tool_guards", mode="before")
+    @classmethod
+    def default_tool_guards(cls, value):
+        """Treat explicit null tool guard config as omitted."""
+        return {} if value is None else value
 
 
 class ToolApproval(BaseModel):
