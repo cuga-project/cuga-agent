@@ -90,6 +90,12 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
     DirectLangChainToolsProvider,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
+    configure_toolguard_provider,
+    ensure_toolguard_provider,
+    invalidate_toolguard_provider,
+    unwrap_tool_provider,
+)
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
     FinalAnswerAppworldOutput,
@@ -107,7 +113,6 @@ from cuga.backend.cuga_graph.policy.models import (
     IntentGuard,
     Playbook,
     ToolGuide,
-    ToolGuard,
     ToolApproval,
     OutputFormatter,
     KeywordTrigger,
@@ -174,6 +179,22 @@ class PoliciesManager:
         """Initialize policies manager with reference to agent."""
         self._agent = agent
         self._fs_sync = None
+
+    def _invalidate_toolguard_runtime(self) -> None:
+        """Invalidate ToolGuard runtime/cache if the agent provider supports it."""
+        invalidate_toolguard_provider(self._agent.tool_provider)
+
+    def _attach_policy_storage_to_toolguard(self) -> None:
+        """Attach current policy storage to the ToolGuard provider wrapper if available."""
+        if (
+            hasattr(self._agent, "_policy_system")
+            and self._agent._policy_system is not None
+            and hasattr(self._agent._policy_system, "storage")
+        ):
+            configure_toolguard_provider(
+                self._agent.tool_provider,
+                policy_storage=self._agent._policy_system.storage,
+            )
 
     async def _ensure_policy_system(self) -> Optional[PolicyConfigurable]:
         """Ensure policy system is initialized if enabled.
@@ -260,6 +281,7 @@ class PoliciesManager:
                 logger.error(f"Failed to auto-load policies from {self._agent.cuga_folder}: {e}")
                 raise e
 
+        self._attach_policy_storage_to_toolguard()
         return self._agent._policy_system
 
     async def add_intent_guard(
@@ -537,8 +559,10 @@ class PoliciesManager:
             except Exception as e:
                 logger.warning(f"Failed to save policy to filesystem: {e}")
 
+        self._invalidate_toolguard_runtime()
         logger.info(f"Added Tool Guide policy: {policy.id}")
         return policy.id
+
     async def update_tool_guide(
         self,
         policy_id: str,
@@ -615,9 +639,9 @@ class PoliciesManager:
             except Exception as e:
                 logger.warning(f"Failed to save updated policy to filesystem: {e}")
 
+        self._invalidate_toolguard_runtime()
         logger.info(f"Updated Tool Guide policy '{policy_id}'")
         return policy_id
-
 
     async def update_tool_guard(
         self,
@@ -668,16 +692,11 @@ class PoliciesManager:
                 f"Policy '{policy_id}' is not a ToolGuide policy (type: {type(existing_policy).__name__})"
             )
 
-        # Convert tool_guards dict to ToolGuard objects
-        tool_guards_obj = {}
-        for tool_name, guard_data in tool_guards.items():
-            tool_guards_obj[tool_name] = ToolGuard(
-                violating_examples=guard_data.get("violating_examples", []),
-                compliance_examples=guard_data.get("compliance_examples", []),
-                policy_code=guard_data.get("policy_code", ""),
-            )
+        from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_policy_updates import merge_tool_guards
 
-        # Create updated policy with new tool_guards (replaces existing)
+        tool_guards_obj = merge_tool_guards(existing_policy.tool_guards, tool_guards)
+
+        # Create updated policy with merged tool_guards
         updated_policy = ToolGuide(
             id=existing_policy.id,
             name=existing_policy.name,
@@ -686,7 +705,7 @@ class PoliciesManager:
             target_tools=existing_policy.target_tools,
             target_apps=existing_policy.target_apps,
             guide_content=existing_policy.guide_content,
-            tool_guards=tool_guards_obj,  # Replace with new tool_guards
+            tool_guards=tool_guards_obj,
             prepend=existing_policy.prepend,
             priority=existing_policy.priority,
             enabled=existing_policy.enabled,
@@ -705,6 +724,7 @@ class PoliciesManager:
             except Exception as e:
                 logger.warning(f"Failed to save updated policy to filesystem: {e}")
 
+        self._invalidate_toolguard_runtime()
         logger.info(f"Updated Tool Guide policy '{policy_id}' with tool_guards")
         return policy_id
 
@@ -923,6 +943,7 @@ class PoliciesManager:
                 except Exception as e:
                     logger.warning(f"Failed to delete policy from filesystem: {e}")
 
+            self._invalidate_toolguard_runtime()
             logger.info(f"Deleted policy: {policy_id}")
             return True
         except Exception as e:
@@ -1046,6 +1067,7 @@ class PoliciesManager:
 
         # Reload policies in the system
         await policy_system.initialize()
+        self._invalidate_toolguard_runtime()
 
         logger.info(f"✅ Loaded {result['count']} policies from {file_path} (enabled: {result['enabled']})")
 
@@ -1081,6 +1103,7 @@ class PoliciesManager:
                 await policy_system.storage.delete_policy(policy.id)
 
             await policy_system.initialize()
+            self._invalidate_toolguard_runtime()
             logger.info(f"Cleared {len(policies)} policies from storage")
             return True
         except Exception as e:
@@ -1182,6 +1205,7 @@ class PoliciesManager:
 
         # Reinitialize policy system after loading
         await policy_system.initialize()
+        self._invalidate_toolguard_runtime()
 
         if result['errors']:
             logger.warning(f"Encountered {len(result['errors'])} errors while loading policies:")
@@ -1315,127 +1339,121 @@ class PoliciesManager:
             }
 
     async def generate_tool_guard_examples(
-        self,
-        policy_id: str,
-        target_tool: str
+        self, policy_id: str, target_tool: str
     ) -> Tuple[List[str], List[str]]:
         """
         Generate violating and compliance examples for a specific tool in a policy.
-        
+
         This method uses the ToolGuardManager to generate examples that demonstrate
         both violations and compliance with the policy guidelines for a specific tool.
-        
+
         Args:
             policy_id: The ID of the policy to generate examples for
             target_tool: The specific tool name to generate examples for
-            
+
         Returns:
             Tuple of (violating_examples, compliance_examples)
-            
+
         Raises:
             ValueError: If policy not found, not a ToolGuide, or target_tool not in policy
             RuntimeError: If ToolGuardManager initialization fails
-            
+
         Example:
             ```python
             agent = CugaAgent(tools=[delete_file])
-            
+
             # Add a tool guide policy
             policy_id = await agent.policies.add_tool_guide(
                 name="File Safety",
                 target_tools=["delete_file"],
                 content="Never delete system files"
             )
-            
+
             # Generate examples
             violating, compliance = await agent.policies.generate_tool_guard_examples(
                 policy_id=policy_id,
                 target_tool="delete_file"
             )
-            
+
             print(f"Violating: {violating}")
             print(f"Compliance: {compliance}")
             ```
         """
         from cuga.backend.cuga_graph.policy.tool_guard.manager import ToolGuardManager
         from cuga.backend.cuga_graph.policy.models import PolicyType
-        
+
         # Ensure policy system is initialized
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             raise RuntimeError("Policy system is disabled")
-        
+
         # Get the policy
         policy_data = await self.get(policy_id)
         if policy_data is None:
             raise ValueError(f"Policy with ID '{policy_id}' not found")
-        
+
         policy = policy_data.get('policy')
         if policy is None:
             raise ValueError(f"Could not retrieve policy object for ID '{policy_id}'")
-        
+
         # Validate policy type
         if policy.type != PolicyType.TOOL_GUIDE:
             raise ValueError(
                 f"Policy must be of type 'tool_guide', got '{policy.type}'. "
                 f"Only tool_guide policies can generate examples."
             )
-        
+
         # Create and initialize ToolGuardManager
         manager = ToolGuardManager(self._agent)
         await manager.initialize()
-        
+
         # Generate examples using the manager
         violating_examples, compliance_examples = await manager.generate_examples(
-            policy=policy,
-            target_tool=target_tool
+            policy=policy, target_tool=target_tool
         )
-        
+
         return violating_examples, compliance_examples
-    
+
     async def generate_tool_guard_code(
-        self,
-        policy_id: str,
-        target_tool: str,
-        app_name: Optional[str] = None
+        self, policy_id: str, target_tool: str, app_name: Optional[str] = None
     ) -> str:
         """
         Generate guard code for a specific tool in a policy.
-        
+
         This method uses the ToolGuardManager to generate executable guard code
         that validates tool usage compliance with the policy guidelines.
-        
+
         Args:
             policy_id: The ID of the policy to generate guard code for
             target_tool: The specific tool name to generate guard code for
             app_name: Application name for the generated code. If None, will be auto-detected
-                     from tool metadata or default to "cuga_app"
-            
+                     from provider apps/tools when unambiguous
+
         Returns:
             String containing the generated guard code
-            
+
         Raises:
             ValueError: If policy not found, not a ToolGuide, target_tool not in policy,
                        or if the policy doesn't have examples for the target tool
             RuntimeError: If ToolGuardManager initialization fails
-            
+
         Example:
             ```python
             agent = CugaAgent(tools=[delete_file])
-            
+
             # Add a tool guide policy with examples
             policy_id = await agent.policies.add_tool_guide(
                 name="File Safety",
                 target_tools=["delete_file"],
                 content="Never delete system files"
             )
-            
+
             # Generate examples first
             violating, compliance = await agent.policies.generate_tool_guard_examples(
                 policy_id=policy_id,
                 target_tool="delete_file"
             )
-            
+
             # Update policy with examples
             await agent.policies.update_tool_guard(
                 policy_id=policy_id,
@@ -1446,51 +1464,49 @@ class PoliciesManager:
                     }
                 }
             )
-            
+
             # Generate guard code (app_name auto-detected from tool metadata)
             guard_code = await agent.policies.generate_tool_guard_code(
                 policy_id=policy_id,
                 target_tool="delete_file"
             )
-            
+
             print(f"Generated guard code:\n{guard_code}")
             ```
         """
         from cuga.backend.cuga_graph.policy.tool_guard.manager import ToolGuardManager
         from cuga.backend.cuga_graph.policy.models import PolicyType
-        
+
         # Ensure policy system is initialized
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             raise RuntimeError("Policy system is disabled")
-        
+
         # Get the policy
         policy_data = await self.get(policy_id)
         if policy_data is None:
             raise ValueError(f"Policy with ID '{policy_id}' not found")
-        
+
         policy = policy_data.get('policy')
         if policy is None:
             raise ValueError(f"Could not retrieve policy object for ID '{policy_id}'")
-        
+
         # Validate policy type
         if policy.type != PolicyType.TOOL_GUIDE:
             raise ValueError(
                 f"Policy must be of type 'tool_guide', got '{policy.type}'. "
                 f"Only tool_guide policies can generate guard code."
             )
-        
+
         # Create and initialize ToolGuardManager
         manager = ToolGuardManager(self._agent)
         await manager.initialize()
-        
+
         # Generate guard code using the manager
         guard_code = await manager.generate_guard_code(
-            policy=policy,
-            target_tool=target_tool,
-            app_name=app_name
+            policy=policy, target_tool=target_tool, app_name=app_name
         )
-        
+
         return guard_code
 
 
@@ -1640,16 +1656,25 @@ class CugaAgent:
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
 
-        # Setup tool provider
+        # Setup tool provider. ToolGuard is installed immediately as a transparent
+        # provider-level decorator so create-agent-first, add-guard-later flows work.
+        policy_storage = self._policy_system.storage if self._policy_system is not None else None
         if tool_provider:
-            self.tool_provider = tool_provider
+            base_provider = tool_provider
             logger.info("Using custom tool provider")
         elif tools:
-            self.tool_provider = DirectLangChainToolsProvider(tools=tools, app_name="runtime_tools")
+            base_provider = DirectLangChainToolsProvider(tools=tools, app_name="runtime_tools")
             logger.info(f"Created DirectLangChainToolsProvider with {len(tools)} tools")
         else:
-            self.tool_provider = DirectLangChainToolsProvider(tools=[], app_name="runtime_tools")
+            base_provider = DirectLangChainToolsProvider(tools=[], app_name="runtime_tools")
             logger.warning("No tools provided - agent will have limited capabilities")
+
+        self.tool_provider = ensure_toolguard_provider(
+            base_provider,
+            policy_storage=policy_storage,
+            cuga_folder=self.cuga_folder,
+            enabled=settings.policy.enabled,
+        )
 
         # Track knowledge auto-injection (lazy — runs on first graph build)
         self._knowledge_auto_injected = False
@@ -1789,8 +1814,9 @@ class CugaAgent:
                     kb_config = KnowledgeConfig.from_settings(settings)
                     kb_enabled = kb_config.enabled
 
-                if kb_enabled and isinstance(self.tool_provider, DirectLangChainToolsProvider):
-                    existing_names = {t.name for t in self.tool_provider.tools}
+                provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
+                if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
+                    existing_names = {t.name for t in provider_for_knowledge.tools}
                     knowledge_tools = self.knowledge.get_langchain_tools()
                     new_tools = [t for t in knowledge_tools if t.name not in existing_names]
                     if new_tools:
@@ -2552,8 +2578,9 @@ class CugaAgent:
         """
         Add a tool to the agent dynamically.
 
-        Note: This only works if using DirectLangChainToolsProvider.
-        The graph will need to be recreated on next invocation.
+        Note: This only works if using DirectLangChainToolsProvider directly or
+        wrapped by ToolGuardingToolProvider. The graph will need to be recreated
+        on next invocation.
 
         Args:
             tool: LangChain tool to add
@@ -2571,15 +2598,19 @@ class CugaAgent:
             result = await agent.invoke("Use new_tool with 5")
             ```
         """
-        if isinstance(self.tool_provider, DirectLangChainToolsProvider):
+        base_provider = unwrap_tool_provider(self.tool_provider)
+        if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
+            self.tool_provider, "add_tool"
+        ):
             self.tool_provider.add_tool(tool)
+            invalidate_toolguard_provider(self.tool_provider)
             # Reset graph so it gets recreated with new tools
             self._graph = None
             self._compiled_graph = None
             logger.info(f"Added tool '{tool.name}' - graph will be recreated on next invocation")
         else:
             raise ValueError(
-                "add_tool() only works with DirectLangChainToolsProvider. "
+                "add_tool() only works with DirectLangChainToolsProvider or compatible wrapped providers. "
                 "Use a custom tool provider for dynamic tool management."
             )
 
