@@ -156,21 +156,38 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 error=error_msg,
             )
 
+    def tool_func_sync(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(tool_func(*args, **kwargs))
+        raise RuntimeError(
+            f"Async tool '{tool_name}' was invoked synchronously while an event loop is running. "
+            "Use ainvoke() for async execution."
+        )
+
     tool_func.__name__ = tool_name
     tool_func.__doc__ = description
+    tool_func_sync.__name__ = tool_name
+    tool_func_sync.__doc__ = description
 
     tool = StructuredTool.from_function(
-        func=tool_func, name=tool_name, description=description, args_schema=InputModel
+        func=tool_func_sync,
+        coroutine=tool_func,
+        name=tool_name,
+        description=description,
+        args_schema=InputModel,
     )
-
-    tool.func = tool_func
 
     if not hasattr(tool.func, "_param_constraints"):
         tool.func._param_constraints = param_constraints
+    if not hasattr(tool.coroutine, "_param_constraints"):
+        tool.coroutine._param_constraints = param_constraints
 
     # Store metadata for tool call tracking
-    tool.func._operation_id = operation_id
-    tool.func._app_name = app_name
+    for target in (tool.func, tool.coroutine, tool):
+        target._operation_id = operation_id
+        target._app_name = app_name
 
     return tool
 
@@ -189,8 +206,6 @@ class CombinedToolProvider(ToolProviderInterface):
         app_names: Optional[List[str]] = None,
         get_include_by_app: Optional[Callable[[], Tuple[Optional[Dict[str, List[str]]], int]]] = None,
         agent_id: Optional[str] = None,
-        enable_toolguard_policies: bool = True,
-        toolguard_policy_storage = None
     ):
         """Initialize the combined tool provider.
 
@@ -200,14 +215,10 @@ class CombinedToolProvider(ToolProviderInterface):
                 If provided, only tools whose name is in include_by_app[app_name] are returned
                 (when that list is non-empty). Version change clears the tools cache.
             agent_id: Optional agent ID for database mode. If None, uses environment variable or defaults.
-            enable_toolguard_policies: Whether to enable policy-based tool guard validation. Defaults to True.
-            toolguard_policy_storage: Optional shared PolicyStorage instance for tool guards.
         """
         self.app_names = app_names
         self.get_include_by_app = get_include_by_app
         self.agent_id = agent_id
-        self.enable_toolguard_policies = enable_toolguard_policies
-        self.toolguard_policy_storage = toolguard_policy_storage
         self.apps: List[AppDefinition] = []
         self.tools_cache: Dict[str, List[StructuredTool]] = {}
         self._last_include_version: int = -1
@@ -371,8 +382,7 @@ class CombinedToolProvider(ToolProviderInterface):
                 for tool_name, tool_def in tracker_tools_dict.items():
                     try:
                         tool = create_tool_from_api_dict(
-                            tool_name, tool_def, app_name, agent_id=self.agent_id, enable_toolguard_policies=self.enable_toolguard_policies,
-                              toolguard_policy_storage=self.toolguard_policy_storage
+                            tool_name, tool_def, app_name, agent_id=self.agent_id
                         )
                         all_tools.append(tool)
                     except Exception as e:
@@ -404,9 +414,8 @@ class CombinedToolProvider(ToolProviderInterface):
                                         continue
                                     try:
                                         tool = create_tool_from_api_dict(
-                            tool_name, tool_def, app_name, agent_id=self.agent_id, enable_toolguard_policies=self.enable_toolguard_policies,
-                              toolguard_policy_storage=self.toolguard_policy_storage
-                        )
+                                            tool_name, tool_def, app_name, agent_id=self.agent_id
+                                        )
                                         all_tools.append(tool)
                                         logger.debug(f"  ✓ {tool_name}")
                                     except Exception as e:
