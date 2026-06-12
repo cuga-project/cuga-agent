@@ -8,6 +8,7 @@ from typing import Literal
 import numpy as np
 import PIL.Image
 import playwright
+import playwright.async_api
 from loguru import logger
 from cuga.backend.utils.consts import BROWSERGYM_ID_ATTRIBUTE as BID_ATTR
 from cuga.backend.utils.consts import BROWSERGYM_SETOFMARKS_ATTRIBUTE as SOM_ATTR
@@ -16,6 +17,12 @@ from cuga.backend.utils.consts import BROWSERGYM_VISIBILITY_ATTRIBUTE as VIS_ATT
 __BID_EXPR = r"([a-zA-Z0-9]+)"
 
 __DATA_REGEXP = re.compile(r"^browsergym_id_" + __BID_EXPR + r"\s?" + r"(.*)")
+TRANSIENT_FRAME_ERRORS = (
+    "Frame was detached",
+    "Frame has been detached",
+    "Frame with the given frameId is not found",
+    "Execution context was destroyed",
+)
 
 
 # Error = playwright._impl._api_types.Error
@@ -24,6 +31,10 @@ __DATA_REGEXP = re.compile(r"^browsergym_id_" + __BID_EXPR + r"\s?" + r"(.*)")
 
 class MarkingError(Exception):
     pass
+
+
+def _is_transient_frame_error(error: Exception) -> bool:
+    return any(msg in str(error) for msg in TRANSIENT_FRAME_ERRORS)
 
 
 async def _pre_extract(
@@ -101,7 +112,7 @@ async def _post_extract(page: playwright.async_api.Page):
 
             await frame.evaluate(js_frame_unmark_elements)
         except playwright.async_api.Error as e:
-            if any(msg in str(e) for msg in ("Frame was detached", "Frame has been detached")):
+            if _is_transient_frame_error(e):
                 pass
             else:
                 raise e

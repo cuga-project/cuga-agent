@@ -12,6 +12,7 @@ from typing import Literal
 import numpy as np
 import PIL.Image
 import playwright
+import playwright.async_api
 from browsergym.core.observation import (
     __DATA_REGEXP,
     MarkingError,
@@ -21,6 +22,16 @@ from loguru import logger
 
 EXTRACT_OBS_MAX_TRIES = 5
 BID_ATTR = "bid"
+TRANSIENT_FRAME_ERRORS = (
+    "Frame was detached",
+    "Frame has been detached",
+    "Frame with the given frameId is not found",
+    "Execution context was destroyed",
+)
+
+
+def _is_transient_frame_error(error: Exception) -> bool:
+    return any(msg in str(error) for msg in TRANSIENT_FRAME_ERRORS)
 
 
 async def _pre_extract(
@@ -98,7 +109,7 @@ async def _post_extract(page: playwright.async_api.Page):
 
             await frame.evaluate(js_frame_unmark_elements)
         except playwright.async_api.Error as e:
-            if any(msg in str(e) for msg in ("Frame was detached", "Frame has been detached")):
+            if _is_transient_frame_error(e):
                 pass
             else:
                 raise e

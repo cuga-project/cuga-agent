@@ -5,11 +5,15 @@ from typing import List, Optional
 import aiohttp
 
 from cuga.backend.tools_env.registry.utils.types import AppDefinition
-from cuga.config import settings
+from cuga.config import resolved_benchmark, settings
 from loguru import logger
 from cuga.backend.activity_tracker.tracker import ActivityTracker
 
 tracker = ActivityTracker()
+
+
+def _registry_optional_for_benchmark() -> bool:
+    return resolved_benchmark() == "webarena"
 
 
 def get_agent_id() -> Optional[str]:
@@ -153,6 +157,9 @@ async def get_apps(agent_id: Optional[str] = None) -> List[AppDefinition]:
         if len(external_apps) > 0:
             logger.warning("registry is not running, using external apps")
             return external_apps
+        elif _registry_optional_for_benchmark():
+            logger.warning("registry is not running in webarena benchmark mode, using no registry apps")
+            return []
         else:
             logger.error("Error while calling registry to get apps")
             raise e
