@@ -139,7 +139,8 @@ class AgentRunner:
         ]
         if webmcp_enabled():
             logging_dir = os.environ.get("CUGA_LOGGING_DIR") or os.getcwd()
-            user_data_dir = os.path.join(logging_dir, "webmcp-profile")
+            profile_id = f"{os.getpid()}-{datetime.datetime.now().strftime('%Y%m%d%H%M%S%f')}"
+            user_data_dir = os.path.join(logging_dir, f"webmcp-profile-{profile_id}")
             seed_local_state_for_webmcp(user_data_dir)
             pw_extra_args.extend(
                 [
@@ -491,6 +492,8 @@ class AgentRunner:
                             tool_result_visible=tracker.webmcp_tool_result_visible,
                         )
                         return  # Exit the entire function
+                    elif event.interrupt:
+                        break
                     else:
                         raise Exception("Agent stopped but no tools or finish.")
                 else:

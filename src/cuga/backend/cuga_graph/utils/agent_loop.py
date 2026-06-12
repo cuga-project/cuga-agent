@@ -128,6 +128,14 @@ class AgentLoopAnswer(BaseModel):
     flow_generalized: Optional[bool] = False
 
 
+def _extract_final_answer(content: Any) -> str:
+    text = "" if content is None else str(content)
+    marker = "FINAL ANSWER"
+    if marker in text:
+        return text.split(marker, 1)[1].strip()
+    return text.strip()
+
+
 class StreamEvent(BaseModel):
     """
     Model representing a stream event.
@@ -556,6 +564,14 @@ class AgentLoop:
         if "__interrupt__" in event_keys:
             logger.debug("Detected __interrupt__ in event_keys")
             answer = ""
+            if getattr(state, "sender", None) == "END":
+                return AgentLoopAnswer(
+                    end=True,
+                    interrupt=False,
+                    has_tools=False,
+                    answer=_extract_final_answer(msg.content if msg else answer),
+                    tools=[],
+                )
             if msg and msg.tool_calls and len(msg.tool_calls) > 0:
                 return AgentLoopAnswer(
                     end=False, interrupt=True, has_tools=True, answer=msg.content, tools=msg.tool_calls

@@ -367,12 +367,12 @@ async def type_impl(
 
     try:
         await elem.fill(value, timeout=1000)
-        if press_enter:
+        if press_enter or await _should_submit_search_after_type(elem):
             await page.keyboard.press("Enter")
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=3000)
-            except Exception:
-                pass
+            except Exception as exc:
+                logger.debug(f"Post-Enter domcontentloaded wait did not complete: {exc}")
 
         alert_str = await check_for_alert(page)
         if alert_str:

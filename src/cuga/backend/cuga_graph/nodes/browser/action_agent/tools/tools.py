@@ -1,5 +1,5 @@
 import inspect
-from typing import Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from langchain_core.messages import ToolCall
 from langchain_core.runnables import RunnableConfig
@@ -11,6 +11,15 @@ from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.webmcp import (
     webmcp_advanced_enabled,
     webmcp_enabled,
 )
+
+
+def _page_from_config(config: RunnableConfig | None):
+    if not isinstance(config, dict):
+        raise ValueError("webmcp_call requires RunnableConfig with configurable.page")
+    configurable = config.get("configurable")
+    if not isinstance(configurable, dict) or configurable.get("page") is None:
+        raise ValueError("webmcp_call requires RunnableConfig with configurable.page")
+    return configurable["page"]
 
 
 # ----------------------------------------------------------------------------
@@ -31,7 +40,7 @@ def get_params_and_values_except(func, exclude_param, *args, **kwargs):
 
 
 # ----------------------------------------------------------
-# Delegation helper – choose implementation set at import time
+# Delegation helper - choose implementation set at import time
 # ----------------------------------------------------------
 
 
@@ -96,7 +105,7 @@ async def click(
 @tool
 async def select_option(bid: str, options: str | list[str], config: RunnableConfig = None) -> Optional[Alert]:
     """
-    Select one or more options in a dropdown – delegate to implementation.
+    Select one or more options in a dropdown - delegate to implementation.
     """
     _select_option = _retrieve_impl(config, 'select_option')
     return await _select_option(bid=bid, options=options, config=config)
@@ -119,20 +128,22 @@ async def type(bid: str, value: str, press_enter: bool, config: RunnableConfig) 
 
 
 @tool
-async def webmcp_call(tool: str, params: str = "{}", config: RunnableConfig = None) -> str:
+async def webmcp_call(
+    tool: str, params: str | Dict[str, Any] = "{}", config: RunnableConfig = None
+) -> str:
     """
     Call a WebMCP tool exposed by the current page.
 
     Examples:
-        webmcp_call('search_map', '{"query": "London"}')
-        webmcp_call('list_issues', '{"state": "opened"}')
+        webmcp_call('search_map', {'query': 'London'})
+        webmcp_call('list_issues', {'state': 'opened'})
     """
-    page = config["configurable"]["page"]
+    page = _page_from_config(config)
     return await execute_tool(page=page, tool=tool, params=params)
 
 
 @tool
-async def observe_page() -> str:
+def observe_page() -> str:
     """
     Request the full page observation in advanced WebMCP mode.
     """

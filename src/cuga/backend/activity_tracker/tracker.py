@@ -535,7 +535,7 @@ class ActivityTracker(object):
 
     def collect_webmcp_feedback(self, feedback_entry: dict[str, Any]) -> None:
         action = feedback_entry.get("action")
-        if feedback_entry.get("status") == "error":
+        if feedback_entry.get("status") in {"error", "alert"}:
             return
         if action == "webmcp_call":
             self.webmcp_calls += 1

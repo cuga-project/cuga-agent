@@ -93,6 +93,7 @@ def test_webmcp_feedback_updates_tracker():
     processor.collect_feedback("webmcp_call", "", {}, error_message="", message="zip code 15213")
     processor.collect_feedback("observe_page", "", {}, error_message="", message="Full page observation requested.")
     processor.collect_feedback("webmcp_call", "", {}, error_message="tool failed")
+    processor.collect_feedback("webmcp_call", "", {}, error_message="tool alert", is_alert=True)
 
     assert tracker.webmcp_calls == 1
     assert tracker.observe_page_calls == 1

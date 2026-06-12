@@ -456,7 +456,7 @@ class LLMManager:
     def _get_base_url(self, model_settings: Dict[str, Any], platform: str) -> str:
         """Get base URL: config (JSON) first, then env, then TOML.
 
-        Groq uses its own fixed endpoint — never apply a base URL for it.
+        Groq uses its own fixed endpoint - never apply a base URL for it.
         """
         # Groq SDK manages its own endpoint; any URL in config is ignored
         if platform == "groq":
@@ -907,6 +907,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         api_key = None
     platform = llm_cfg.get("provider") or "openai"
     model = llm_cfg.get("model") or None
+    extra_body = llm_cfg.get("extra_body")
     if use_env:
         try:
             code_model = settings.agent.code.model
@@ -925,8 +926,15 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
                     platform = toml_platform
                 if toml_model:
                     model = toml_model
+                toml_extra_body = (
+                    code_model.get("extra_body")
+                    if hasattr(code_model, "get")
+                    else getattr(code_model, "extra_body", None)
+                )
+                if extra_body is None:
+                    extra_body = toml_extra_body
                 logger.debug(
-                    "create_llm_from_config: using agent.code from TOML (local mode) — provider=%s model=%s",
+                    "create_llm_from_config: using agent.code from TOML (local mode) - provider=%s model=%s",
                     platform,
                     model,
                 )
@@ -935,7 +943,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
 
     # For non-local/non-force_env modes (e.g. vault), verify the API key is actually
     # resolvable before attempting to instantiate. Providers like openai require a key
-    # and will raise at construction time if it is missing — which would crash startup.
+    # and will raise at construction time if it is missing - which would crash startup.
     if not use_env and platform in ("openai", "azure", "openrouter"):
         apikey_ref = api_key or llm_cfg.get("apikey_name")
         resolved_key = _normalize_secret(resolve_secret(apikey_ref)) if apikey_ref else None
@@ -962,6 +970,8 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         "max_tokens": max_tokens,
         "streaming": False,
     }
+    if isinstance(extra_body, dict):
+        settings_dict["extra_body"] = extra_body
     wrap = _ModelSettingsWrap(settings_dict)
     model = mgr._create_llm_instance(wrap)
     return mgr._update_model_parameters(

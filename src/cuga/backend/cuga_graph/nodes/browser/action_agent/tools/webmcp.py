@@ -61,17 +61,37 @@ async () => {
 
 
 EXECUTE_JS = """
-async ({toolName, paramStr}) => {
+async ({toolName, params, paramsText}) => {
   let api = null;
   if (typeof navigator.modelContextTesting?.executeTool === 'function') api = navigator.modelContextTesting;
   else if (typeof navigator.modelContext?.executeTool === 'function') api = navigator.modelContext;
   else if (typeof document.modelContext?.executeTool === 'function') api = document.modelContext;
   if (!api) return {error: 'WebMCP executeTool is unavailable on this page.'};
+
+  const candidates = [];
+  const addCandidate = (target, args) => {
+    if (target !== undefined && target !== null) candidates.push([target, args]);
+  };
+
   try {
-    return {result: await api.executeTool(toolName, paramStr)};
-  } catch (e) {
-    return {error: (e && e.message) ? e.message : String(e)};
+    const tools = await (api.getTools ? api.getTools() : (api.listTools ? api.listTools() : []));
+    const tool = Array.isArray(tools) ? tools.find((item) => item && item.name === toolName) : null;
+    addCandidate(tool, params);
+    addCandidate(tool, paramsText);
+  } catch (_) {}
+
+  addCandidate(toolName, params);
+  addCandidate(toolName, paramsText);
+
+  let lastError = null;
+  for (const [target, args] of candidates) {
+    try {
+      return {result: await api.executeTool(target, args)};
+    } catch (e) {
+      lastError = e;
+    }
   }
+  return {error: (lastError && lastError.message) ? lastError.message : String(lastError)};
 }
 """
 
@@ -130,9 +150,22 @@ def _flatten_tool_result(value: Any) -> str:
     return "" if result is None else str(result)
 
 
+def _normalize_tool_params(params: str | Dict[str, Any]) -> tuple[Any, str]:
+    if isinstance(params, str):
+        text = params
+        try:
+            return json.loads(params or "{}"), text
+        except json.JSONDecodeError:
+            return {}, text
+    return params or {}, json.dumps(params or {})
+
+
 async def execute_tool(page, tool: str, params: str | Dict[str, Any] = "{}") -> str:
-    param_str = params if isinstance(params, str) else json.dumps(params)
-    raw = await page.evaluate(EXECUTE_JS, {"toolName": tool, "paramStr": param_str})
+    param_value, param_text = _normalize_tool_params(params)
+    raw = await page.evaluate(
+        EXECUTE_JS,
+        {"toolName": tool, "params": param_value, "paramsText": param_text},
+    )
     try:
         await page.wait_for_timeout(500)
     except Exception:
@@ -151,7 +184,7 @@ def format_tools_for_prompt(tools: List[Dict[str, Any]]) -> str:
     lines = [
         "WebMCP tools available on the current page:",
         "Use webmcp_call(tool, params) when one listed tool directly serves the current step.",
-        "Params must be a JSON string matching the input schema.",
+        "Params must be a JSON object matching the input schema.",
         "",
     ]
     for tool in tools:
@@ -171,7 +204,7 @@ def format_tools_for_prompt(tools: List[Dict[str, Any]]) -> str:
                 arg_parts.append(f"{prop_name} ({prop_info.get('type', 'string')}{req})")
             lines.append(f"  args: {', '.join(arg_parts)}")
             example = {prop_name: f"<{prop_name}>" for prop_name in props}
-            lines.append(f"  example: webmcp_call({name!r}, {json.dumps(json.dumps(example))})")
+            lines.append(f"  example: webmcp_call({name!r}, {json.dumps(example)})")
         else:
-            lines.append(f"  example: webmcp_call({name!r}, '{{}}')")
+            lines.append(f"  example: webmcp_call({name!r}, {{}})")
     return "\n".join(lines)

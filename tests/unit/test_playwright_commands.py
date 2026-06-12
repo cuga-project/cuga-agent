@@ -27,6 +27,11 @@ class FakeInput:
         self.filled.append(value)
 
 
+class FakeSearchInput(FakeInput):
+    async def evaluate(self, _script):
+        return True
+
+
 class HiddenAnonymousElement:
     async def is_visible(self, **_kwargs):
         return False
@@ -87,6 +92,40 @@ async def test_type_impl_respects_press_enter_false(monkeypatch):
 
     assert elem.filled == ["Carnegie Mellon"]
     assert page.keyboard.presses == []
+
+
+@pytest.mark.asyncio
+async def test_type_impl_submits_search_input(monkeypatch):
+    elem = FakeSearchInput()
+    page = FakePage()
+
+    async def get_elem_by_bid_async(*_args, **_kwargs):
+        return elem
+
+    async def resolve_visible_counterpart(_page, candidate):
+        return candidate
+
+    async def add_animation(*_args, **_kwargs):
+        return None
+
+    async def check_for_alert(_page):
+        return None
+
+    monkeypatch.setattr(playwright_commands, "get_elem_by_bid_async", get_elem_by_bid_async)
+    monkeypatch.setattr(playwright_commands, "_resolve_visible_counterpart", resolve_visible_counterpart)
+    monkeypatch.setattr(playwright_commands, "add_animation", add_animation)
+    monkeypatch.setattr(playwright_commands, "check_for_alert", check_for_alert)
+    monkeypatch.setattr(playwright_commands, "schedule_clear_animations", lambda _page: None)
+
+    await playwright_commands.type_impl(
+        bid="1",
+        value="Carnegie Mellon",
+        press_enter=False,
+        config={"configurable": {"page": page, "demo_mode": "off"}},
+    )
+
+    assert elem.filled == ["Carnegie Mellon"]
+    assert page.keyboard.presses == ["Enter"]
 
 
 @pytest.mark.asyncio
