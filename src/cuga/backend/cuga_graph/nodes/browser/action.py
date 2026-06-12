@@ -113,6 +113,15 @@ def update_call_with_fixed_element(call: Dict[str, Any]) -> Dict[str, Any]:
         return call  # Return the original call if we can't process it
 
 
+def format_answer_tool_args(args: Any) -> str:
+    if isinstance(args, dict):
+        if "text" in args:
+            return str(args["text"])
+        if len(args) == 1:
+            return str(next(iter(args.values())))
+    return str(args)
+
+
 class ActionNode(BaseNode):
     def __init__(self, action_agent: ActionAgent):
         super().__init__()
@@ -162,7 +171,7 @@ class ActionNode(BaseNode):
             )
 
             if call["name"] == "answer":
-                result.content = f"FINAL ANSWER \n {call['args']}"
+                result.content = f"FINAL ANSWER \n {format_answer_tool_args(call['args'])}"
                 state.messages.append(result)
                 state.sender = "END"
                 return state

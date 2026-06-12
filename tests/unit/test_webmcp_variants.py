@@ -1,5 +1,7 @@
 import pytest
+from langchain_core.messages import AIMessage
 
+from cuga.backend.cuga_graph.nodes.browser.action import ActionNode
 from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import setup_tools
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils import controller as controller_mod
@@ -33,6 +35,14 @@ class FakeEnv:
         return self.page.url
 
 
+class FakeAnswerAgent:
+    def run(self, _state):
+        return AIMessage(
+            content="",
+            tool_calls=[{"name": "answer", "args": {"text": "15213"}, "id": "answer-1"}],
+        )
+
+
 async def fake_discover_tools(page):
     return [
         {
@@ -64,6 +74,15 @@ def test_tool_surface_by_webmcp_mode(monkeypatch):
     assert tool_names("advanced", "tool_stage") == {"answer", "observe_page", "webmcp_call"}
     assert "webmcp_call" not in tool_names("advanced", "page_fallback")
     assert {"click", "type", "answer"}.issubset(tool_names("advanced", "page_fallback"))
+
+
+def test_answer_tool_uses_scalar_text_arg():
+    state = AgentState(input="goal", url="")
+
+    result = ActionNode.node_handler(state, agent=FakeAnswerAgent(), name="ActionAgent")
+
+    assert result.sender == "END"
+    assert result.messages[-1].content == "FINAL ANSWER \n 15213"
 
 
 @pytest.mark.asyncio
