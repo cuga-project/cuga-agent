@@ -1,0 +1,26 @@
+# Provider CUGA — exposes the digital_sales toolset over A2A.
+#
+# This supervisor handles inbound A2A requests on the provider side. The
+# A2A router (mounted by main.py when settings.a2a.enabled is true) routes
+# incoming message/send and message/stream calls through this supervisor's
+# `invoke()` method. The supervisor in turn delegates to the digital_sales
+# internal agent, which calls into the digital_sales registry app.
+
+supervisor:
+  description: "Provider CUGA — fronts the digital_sales toolset for remote A2A clients."
+  special_instructions: |
+    You front a single internal agent, `digital_sales`, that has access to
+    the digital sales CRM tools (territory accounts, TPP client info, job
+    role management, contact sync). For ANY user request that resembles a
+    sales / CRM / customer / account / territory query, delegate to
+    `digital_sales`. Do not refuse simple questions — the goal of this
+    deployment is to expose those tools to remote agents over A2A.
+
+agents:
+  - name: digital_sales
+    description: "Sales / CRM operations: territory accounts, client info, contact sync."
+    apps:
+      - name: digital_sales
+    special_instructions: |
+      Use the digital_sales API tools to answer the user's request directly.
+      Return concise, data-grounded answers. Do not narrate steps.
