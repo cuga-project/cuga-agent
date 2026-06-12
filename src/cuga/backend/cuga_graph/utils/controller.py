@@ -86,6 +86,9 @@ class ExperimentResult(BaseModel):
     messages: List[AIMessage]
     answer: Optional[str] = ""
     number_of_actions: int = 0
+    webmcp_calls: int = 0
+    observe_page_calls: int = 0
+    tool_result_visible: bool = False
     steps: Optional[List[Step]] = []
 
 
@@ -375,6 +378,9 @@ class AgentRunner:
                 messages=state.messages,
                 answer=tracker.final_answer,
                 number_of_actions=tracker.actions_count,
+                webmcp_calls=tracker.webmcp_calls,
+                observe_page_calls=tracker.observe_page_calls,
+                tool_result_visible=tracker.webmcp_tool_result_visible,
                 steps=tracker.steps,
             )
         else:
@@ -383,6 +389,9 @@ class AgentRunner:
                 messages=state.messages,
                 answer=tracker.final_answer,
                 number_of_actions=tracker.actions_count,
+                webmcp_calls=tracker.webmcp_calls,
+                observe_page_calls=tracker.observe_page_calls,
+                tool_result_visible=tracker.webmcp_tool_result_visible,
                 steps=tracker.steps,
             )
 
@@ -477,6 +486,9 @@ class AgentRunner:
                             messages=state.messages,
                             answer=tracker.final_answer,
                             number_of_actions=tracker.actions_count,
+                            webmcp_calls=tracker.webmcp_calls,
+                            observe_page_calls=tracker.observe_page_calls,
+                            tool_result_visible=tracker.webmcp_tool_result_visible,
                         )
                         return  # Exit the entire function
                     else:
@@ -498,6 +510,9 @@ class AgentRunner:
                 messages=state.messages,
                 answer=tracker.final_answer,
                 number_of_actions=tracker.actions_count,
+                webmcp_calls=tracker.webmcp_calls,
+                observe_page_calls=tracker.observe_page_calls,
+                tool_result_visible=tracker.webmcp_tool_result_visible,
             )
 
 

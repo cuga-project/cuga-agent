@@ -257,6 +257,7 @@ class ActionAgentEventProcessor:
             "message": error_message if message is None else message,
         }
         self.feedback_log.append(feedback_entry)
+        tracker.collect_webmcp_feedback(feedback_entry)
         # langfuse_context.update_current_trace(output= self.feedback_log)
 
         logger.debug(f"Feedback collected for action '{action_name}'")

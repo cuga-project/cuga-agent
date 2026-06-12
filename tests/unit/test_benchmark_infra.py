@@ -4,6 +4,10 @@ import pytest
 
 from cuga.backend.browser_env.browser.gym_obs import obs_async
 from cuga.backend.browser_env.page_understanding.extractor_utils import extract_async
+from cuga.backend.activity_tracker.tracker import ActivityTracker
+from cuga.backend.cuga_graph.utils.event_porcessors.action_agent_event_processor import (
+    ActionAgentEventProcessor,
+)
 from cuga.backend.tools_env.registry.utils import api_utils
 
 
@@ -79,3 +83,23 @@ def test_browser_obs_cleanup_treats_navigation_context_as_transient():
 
     assert obs_async._is_transient_frame_error(error)
     assert extract_async._is_transient_frame_error(error)
+
+
+def test_webmcp_feedback_updates_tracker():
+    tracker = ActivityTracker()
+    tracker.reset("unit-test")
+    processor = ActionAgentEventProcessor(page=None, tool_handlers={})
+
+    processor.collect_feedback("webmcp_call", "", {}, error_message="", message="zip code 15213")
+    processor.collect_feedback("observe_page", "", {}, error_message="", message="Full page observation requested.")
+    processor.collect_feedback("webmcp_call", "", {}, error_message="tool failed")
+
+    assert tracker.webmcp_calls == 1
+    assert tracker.observe_page_calls == 1
+    assert tracker.webmcp_tool_result_visible is True
+
+    tracker.reset("unit-test")
+
+    assert tracker.webmcp_calls == 0
+    assert tracker.observe_page_calls == 0
+    assert tracker.webmcp_tool_result_visible is False

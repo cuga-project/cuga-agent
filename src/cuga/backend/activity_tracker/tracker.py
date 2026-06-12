@@ -75,6 +75,9 @@ class ActivityTracker(object):
     final_answer: Optional[str] = None
     task_id: str = "default"
     actions_count: int = 0
+    webmcp_calls: int = 0
+    observe_page_calls: int = 0
+    webmcp_tool_result_visible: bool = False
     token_usage: int = 0
     steps: List[Step] = []
     images: List[str] = []
@@ -375,6 +378,9 @@ class ActivityTracker(object):
         self.steps = []
         self.images = []
         self.actions_count = 0
+        self.webmcp_calls = 0
+        self.observe_page_calls = 0
+        self.webmcp_tool_result_visible = False
         self.final_answer = None
         self.task_id = task_id
         self.intent = intent
@@ -526,6 +532,17 @@ class ActivityTracker(object):
             count (int): The number of times the token is used.
         """
         self.token_usage += count
+
+    def collect_webmcp_feedback(self, feedback_entry: dict[str, Any]) -> None:
+        action = feedback_entry.get("action")
+        if feedback_entry.get("status") == "error":
+            return
+        if action == "webmcp_call":
+            self.webmcp_calls += 1
+            if feedback_entry.get("message"):
+                self.webmcp_tool_result_visible = True
+        elif action == "observe_page":
+            self.observe_page_calls += 1
 
     def collect_image(self, img: str) -> None:
         if not img:
@@ -712,6 +729,9 @@ class ActivityTracker(object):
                     "intent": self.intent,
                     "dataset_name": self.dataset_name,
                     "actions_count": self.actions_count,
+                    "webmcp_calls": self.webmcp_calls,
+                    "observe_page_calls": self.observe_page_calls,
+                    "webmcp_tool_result_visible": self.webmcp_tool_result_visible,
                     "task_id": self.task_id,
                     "eval": self.eval,
                     "steps": [new_step.model_dump()],
@@ -726,6 +746,9 @@ class ActivityTracker(object):
                         "intent": self.intent,
                         "dataset_name": self.dataset_name,
                         "actions_count": self.actions_count,
+                        "webmcp_calls": self.webmcp_calls,
+                        "observe_page_calls": self.observe_page_calls,
+                        "webmcp_tool_result_visible": self.webmcp_tool_result_visible,
                         "task_id": self.task_id,
                         "eval": self.eval,
                         "score": self.score,
@@ -783,6 +806,9 @@ class ActivityTracker(object):
                     "intent": self.intent,
                     "dataset_name": self.dataset_name,
                     "actions_count": self.actions_count,
+                    "webmcp_calls": self.webmcp_calls,
+                    "observe_page_calls": self.observe_page_calls,
+                    "webmcp_tool_result_visible": self.webmcp_tool_result_visible,
                     "task_id": self.task_id,
                     "eval": self.eval,
                     "steps": [d.model_dump() for d in self.steps],
