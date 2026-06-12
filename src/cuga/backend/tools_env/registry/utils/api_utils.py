@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from typing import List, Optional
@@ -14,6 +15,17 @@ tracker = ActivityTracker()
 
 def _registry_optional_for_benchmark() -> bool:
     return resolved_benchmark() == "webarena"
+
+
+def _is_registry_unavailable_error(error: Exception) -> bool:
+    return isinstance(
+        error,
+        (
+            aiohttp.ClientConnectionError,
+            aiohttp.ServerTimeoutError,
+            asyncio.TimeoutError,
+        ),
+    )
 
 
 def get_agent_id() -> Optional[str]:
@@ -157,7 +169,7 @@ async def get_apps(agent_id: Optional[str] = None) -> List[AppDefinition]:
         if len(external_apps) > 0:
             logger.warning("registry is not running, using external apps")
             return external_apps
-        elif _registry_optional_for_benchmark():
+        elif _registry_optional_for_benchmark() and _is_registry_unavailable_error(e):
             logger.warning("registry is not running in webarena benchmark mode, using no registry apps")
             return []
         else:

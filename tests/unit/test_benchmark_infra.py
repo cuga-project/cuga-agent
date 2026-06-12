@@ -1,3 +1,5 @@
+import asyncio
+
 import pytest
 
 from cuga.backend.browser_env.browser.gym_obs import obs_async
@@ -13,7 +15,31 @@ class FailingSession:
         return False
 
     def get(self, *_args, **_kwargs):
-        raise RuntimeError("registry unavailable")
+        raise asyncio.TimeoutError("registry unavailable")
+
+
+class BrokenResponse:
+    status = 500
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    async def text(self):
+        return "registry error"
+
+
+class BrokenResponseSession:
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args):
+        return False
+
+    def get(self, *_args, **_kwargs):
+        return BrokenResponse()
 
 
 @pytest.mark.asyncio
@@ -33,7 +59,18 @@ async def test_get_apps_still_raises_missing_registry_by_default(monkeypatch):
     monkeypatch.setattr(api_utils, "resolved_benchmark", lambda: "default")
     monkeypatch.setattr(api_utils.aiohttp, "ClientSession", FailingSession)
 
-    with pytest.raises(RuntimeError, match="registry unavailable"):
+    with pytest.raises(asyncio.TimeoutError, match="registry unavailable"):
+        await api_utils.get_apps()
+
+
+@pytest.mark.asyncio
+async def test_get_apps_raises_broken_registry_response_for_webarena(monkeypatch):
+    monkeypatch.setattr(api_utils.settings.advanced_features, "registry", True)
+    monkeypatch.setattr(api_utils.tracker, "apps", [])
+    monkeypatch.setattr(api_utils, "resolved_benchmark", lambda: "webarena")
+    monkeypatch.setattr(api_utils.aiohttp, "ClientSession", BrokenResponseSession)
+
+    with pytest.raises(Exception, match="Request failed with status 500"):
         await api_utils.get_apps()
 
 
