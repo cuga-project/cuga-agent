@@ -2,7 +2,7 @@ import asyncio
 import datetime
 import re
 
-from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
+from cuga.backend.activity_tracker.tracker import ActivityTracker, Step, VariantTraceStep
 
 import os
 from typing import Any, List, Optional, Literal, AsyncGenerator, Union
@@ -90,6 +90,7 @@ class ExperimentResult(BaseModel):
     observe_page_calls: int = 0
     tool_result_visible: bool = False
     steps: Optional[List[Step]] = []
+    variant_steps: Optional[List[VariantTraceStep]] = []
 
 
 class AgentRunner:
@@ -191,6 +192,37 @@ class AgentRunner:
         # Create description
         state.current_app_description = f"web application for '{title}' and url '{url_app_name}'"
 
+    @staticmethod
+    def _webmcp_tool_names(tools: list[dict[str, Any]]) -> list[str]:
+        names = []
+        for tool in tools:
+            name = tool.get("name") if isinstance(tool, dict) else None
+            if name:
+                names.append(str(name))
+        return names
+
+    @staticmethod
+    def _action_surface_for_stage(stage: str) -> list[str]:
+        return sorted(setup_tools(stage).keys())
+
+    def record_variant_step(self, state: AgentState, tools: list[dict[str, Any]]) -> None:
+        tool_names = self._webmcp_tool_names(tools) if state.webmcp_tools else []
+        tracker.collect_variant_step(
+            VariantTraceStep(
+                prompt_stage=state.webmcp_prompt_stage or "standard",
+                current_url=state.url,
+                action_surface=self._action_surface_for_stage(state.webmcp_prompt_stage or "standard"),
+                has_full_page_observation=not (
+                    webmcp_advanced_enabled()
+                    and state.webmcp_prompt_stage == "tool_stage"
+                    and bool(tool_names)
+                ),
+                has_webmcp_catalog=bool(tool_names),
+                webmcp_tool_count=len(tool_names),
+                webmcp_tool_names=tool_names,
+            )
+        )
+
     async def initialize_appworld_env(self):
         self.env = BrowserEnvGymAsync(
             OpenEndedTaskAsync,
@@ -246,6 +278,7 @@ class AgentRunner:
                 state.webmcp_prompt_stage = "page_fallback"
         else:
             state.webmcp_prompt_stage = "standard"
+        self.record_variant_step(state, tools)
 
     @staticmethod
     def apply_action_feedback(state: AgentState, feedback: List[dict]) -> bool:
@@ -383,6 +416,7 @@ class AgentRunner:
                 observe_page_calls=tracker.observe_page_calls,
                 tool_result_visible=tracker.webmcp_tool_result_visible,
                 steps=tracker.steps,
+                variant_steps=tracker.variant_steps,
             )
         else:
             return ExperimentResult(
@@ -394,6 +428,7 @@ class AgentRunner:
                 observe_page_calls=tracker.observe_page_calls,
                 tool_result_visible=tracker.webmcp_tool_result_visible,
                 steps=tracker.steps,
+                variant_steps=tracker.variant_steps,
             )
 
     async def run_task_generic_yield(
@@ -490,6 +525,8 @@ class AgentRunner:
                             webmcp_calls=tracker.webmcp_calls,
                             observe_page_calls=tracker.observe_page_calls,
                             tool_result_visible=tracker.webmcp_tool_result_visible,
+                            steps=tracker.steps,
+                            variant_steps=tracker.variant_steps,
                         )
                         return  # Exit the entire function
                     elif event.interrupt:
@@ -516,6 +553,8 @@ class AgentRunner:
                 webmcp_calls=tracker.webmcp_calls,
                 observe_page_calls=tracker.observe_page_calls,
                 tool_result_visible=tracker.webmcp_tool_result_visible,
+                steps=tracker.steps,
+                variant_steps=tracker.variant_steps,
             )
 
 

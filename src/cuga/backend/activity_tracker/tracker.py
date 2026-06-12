@@ -52,6 +52,16 @@ class Step(BaseModel):
     image_before: Optional[str] = ""
 
 
+class VariantTraceStep(BaseModel):
+    prompt_stage: str = "standard"
+    current_url: Optional[str] = ""
+    action_surface: List[str] = Field(default_factory=list)
+    has_full_page_observation: bool = True
+    has_webmcp_catalog: bool = False
+    webmcp_tool_count: int = 0
+    webmcp_tool_names: List[str] = Field(default_factory=list)
+
+
 class TasksMetadata(BaseModel):
     task_ids: List[str]
     description: Optional[str] = ""
@@ -80,6 +90,7 @@ class ActivityTracker(object):
     webmcp_tool_result_visible: bool = False
     token_usage: int = 0
     steps: List[Step] = []
+    variant_steps: List[VariantTraceStep] = []
     images: List[str] = []
     score: float = 0.0
     tools: Dict[str, List[StructuredTool]] = {}
@@ -376,6 +387,7 @@ class ActivityTracker(object):
         self.prompts = []
         self.run_id = ""
         self.steps = []
+        self.variant_steps = []
         self.images = []
         self.actions_count = 0
         self.webmcp_calls = 0
@@ -543,6 +555,13 @@ class ActivityTracker(object):
                 self.webmcp_tool_result_visible = True
         elif action == "observe_page":
             self.observe_page_calls += 1
+
+    def collect_variant_step(self, step: VariantTraceStep | dict[str, Any]) -> None:
+        if not isinstance(step, VariantTraceStep):
+            step = VariantTraceStep(**step)
+        self.variant_steps.append(step)
+        if settings.advanced_features.tracker_enabled:
+            self.to_file()
 
     def collect_image(self, img: str) -> None:
         if not img:
@@ -734,6 +753,7 @@ class ActivityTracker(object):
                     "webmcp_tool_result_visible": self.webmcp_tool_result_visible,
                     "task_id": self.task_id,
                     "eval": self.eval,
+                    "variant_steps": [d.model_dump() for d in self.variant_steps],
                     "steps": [new_step.model_dump()],
                     "score": self.score,
                 }
@@ -751,6 +771,7 @@ class ActivityTracker(object):
                         "webmcp_tool_result_visible": self.webmcp_tool_result_visible,
                         "task_id": self.task_id,
                         "eval": self.eval,
+                        "variant_steps": [d.model_dump() for d in self.variant_steps],
                         "score": self.score,
                     }
                 )
@@ -811,6 +832,7 @@ class ActivityTracker(object):
                     "webmcp_tool_result_visible": self.webmcp_tool_result_visible,
                     "task_id": self.task_id,
                     "eval": self.eval,
+                    "variant_steps": [d.model_dump() for d in self.variant_steps],
                     "steps": [d.model_dump() for d in self.steps],
                     "score": self.score,
                 },

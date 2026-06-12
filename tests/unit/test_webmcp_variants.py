@@ -199,6 +199,7 @@ async def test_execute_tool_passes_object_params_to_page():
 @pytest.mark.asyncio
 async def test_browser_update_state_sets_webmcp_variant_stages(monkeypatch):
     monkeypatch.setattr(controller_mod, "discover_tools", fake_discover_tools)
+    controller_mod.tracker.reset("unit-test")
     runner = AgentRunner()
     runner.env = FakeEnv()
 
@@ -207,6 +208,12 @@ async def test_browser_update_state_sets_webmcp_variant_stages(monkeypatch):
     await runner.browser_update_state(state)
     assert state.webmcp_prompt_stage == "standard"
     assert state.webmcp_tools == ""
+    no_trace = controller_mod.tracker.variant_steps[-1]
+    assert no_trace.prompt_stage == "standard"
+    assert no_trace.has_full_page_observation is True
+    assert no_trace.has_webmcp_catalog is False
+    assert no_trace.webmcp_tool_count == 0
+    assert "webmcp_call" not in no_trace.action_surface
 
     monkeypatch.setenv("CUGA_WEBMCP_MODE", "naive")
     state = AgentState(input="goal", url="")
@@ -214,15 +221,33 @@ async def test_browser_update_state_sets_webmcp_variant_stages(monkeypatch):
     assert state.webmcp_prompt_stage == "standard"
     assert "lookup" in state.webmcp_tools
     assert state.elements_as_string == "[1] button Example"
+    naive_trace = controller_mod.tracker.variant_steps[-1]
+    assert naive_trace.prompt_stage == "standard"
+    assert naive_trace.has_full_page_observation is True
+    assert naive_trace.has_webmcp_catalog is True
+    assert naive_trace.webmcp_tool_names == ["lookup"]
+    assert "webmcp_call" in naive_trace.action_surface
 
     monkeypatch.setenv("CUGA_WEBMCP_MODE", "advanced")
     state = AgentState(input="goal", url="")
     await runner.browser_update_state(state)
     assert state.webmcp_prompt_stage == "tool_stage"
     assert "lookup" in state.webmcp_tools
+    tool_trace = controller_mod.tracker.variant_steps[-1]
+    assert tool_trace.prompt_stage == "tool_stage"
+    assert tool_trace.has_full_page_observation is False
+    assert tool_trace.has_webmcp_catalog is True
+    assert tool_trace.webmcp_tool_names == ["lookup"]
+    assert tool_trace.action_surface == ["answer", "observe_page", "webmcp_call"]
 
     state.webmcp_page_observed = True
     await runner.browser_update_state(state)
     assert state.webmcp_prompt_stage == "page_fallback"
     assert state.webmcp_tools == ""
     assert state.elements_as_string == "[1] button Example"
+    fallback_trace = controller_mod.tracker.variant_steps[-1]
+    assert fallback_trace.prompt_stage == "page_fallback"
+    assert fallback_trace.has_full_page_observation is True
+    assert fallback_trace.has_webmcp_catalog is False
+    assert fallback_trace.webmcp_tool_count == 0
+    assert "webmcp_call" not in fallback_trace.action_surface
