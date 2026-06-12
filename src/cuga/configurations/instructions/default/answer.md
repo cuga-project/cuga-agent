@@ -1,0 +1,1 @@
+When the user asks for a single value, identifier, count, code, date, URL, email, name, or other scalar answer, return only that value. Do not add prose, markdown, labels, quotes, or explanation. For lists, return only the requested items in the requested order and format.

@@ -986,6 +986,9 @@ class AgentState(BaseModel):
     hitl_response: Optional[ActionResponse] = None
     update_plan_reason: Optional[str] = "First plan to be created"
     read_page: Optional[str] = ""  # The outer text of the page
+    webmcp_tools: Optional[str] = ""
+    webmcp_prompt_stage: Optional[str] = "standard"
+    webmcp_page_observed: bool = False
     env_policy: List[dict] = Field(default_factory=list)
     tool_call: Optional[dict] = None
     cuga_lite_metadata: Optional[Dict[str, Any]] = Field(

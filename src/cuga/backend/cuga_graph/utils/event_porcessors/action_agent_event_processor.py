@@ -14,6 +14,8 @@ from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import (
     select_option,
     Alert,
     open_app,
+    observe_page,
+    webmcp_call,
 )
 from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.tools import type as typeaction
 
@@ -202,17 +204,27 @@ class ActionAgentEventProcessor:
                     input=tool_def['args'],
                     config=config,
                 )
+            elif action_name == "webmcp_call":
+                res = await webmcp_call.ainvoke(
+                    input=tool_def['args'],
+                    config=config,
+                )
+            elif action_name == "observe_page":
+                res = await observe_page.ainvoke(input=tool_def.get('args') or {}, config=config)
             elif action_name == "update_plan":
                 pass
             else:
                 self.collect_feedback(action_name, element_name, args, "Unrecognized tool action")
                 return
-            await asyncio.sleep(4)
-            tracker.actions_count += 1
+            if action_name != "observe_page":
+                await asyncio.sleep(4)
+                tracker.actions_count += 1
             if isinstance(res, Alert):
                 self.collect_feedback(
                     action_name, element_name, args, error_message=res.message, is_alert=True
                 )
+            elif action_name in {"webmcp_call", "observe_page"}:
+                self.collect_feedback(action_name, element_name, args, error_message="", message=str(res))
             else:
                 self.collect_feedback(action_name, element_name, args, error_message="")
 
@@ -220,7 +232,13 @@ class ActionAgentEventProcessor:
             self.collect_feedback(action_name, element_name, args, str(e))
 
     def collect_feedback(
-        self, action_name: str, element_name: str, args: Any, error_message: str, is_alert=False
+        self,
+        action_name: str,
+        element_name: str,
+        args: Any,
+        error_message: str,
+        is_alert=False,
+        message: str | None = None,
     ):
         """
         Collects feedback for unrecognized or error-prone tool actions.
@@ -234,9 +252,9 @@ class ActionAgentEventProcessor:
             "status": "alert"
             if is_alert
             else ("error" if error_message and len(error_message) > 0 else "success"),
-            "element_id": args['bid'] if 'bid' in args else "",
+            "element_id": args.get('bid', "") if isinstance(args, dict) else "",
             "element_name": element_name,
-            "message": error_message,
+            "message": error_message if message is None else message,
         }
         self.feedback_log.append(feedback_entry)
         # langfuse_context.update_current_trace(output= self.feedback_log)

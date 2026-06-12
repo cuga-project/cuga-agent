@@ -556,9 +556,17 @@ class AgentLoop:
         if "__interrupt__" in event_keys:
             logger.debug("Detected __interrupt__ in event_keys")
             answer = ""
-            if msg.tool_calls and len(msg.tool_calls) > 0:
+            if msg and msg.tool_calls and len(msg.tool_calls) > 0:
                 return AgentLoopAnswer(
                     end=False, interrupt=True, has_tools=True, answer=msg.content, tools=msg.tool_calls
+                )
+            if getattr(state, "sender", None) == "ActionAgent":
+                return AgentLoopAnswer(
+                    end=False,
+                    interrupt=True,
+                    has_tools=False,
+                    answer=msg.content if msg else answer,
+                    tools=[],
                 )
             else:
                 return AgentLoopAnswer(end=True, interrupt=True, has_tools=False, answer=answer, tools=[])
