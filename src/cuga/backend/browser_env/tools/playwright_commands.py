@@ -22,7 +22,7 @@ from cuga.backend.cuga_graph.nodes.browser.action_agent.tools.alert import Alert
 
 # ---------------------------------------------------------------------------
 # Low-level helpers originally defined inside tools.py (copied here for
-# isolation).  No extension/communicator logic – pure Playwright utilities.
+# isolation).  No extension/communicator logic - pure Playwright utilities.
 # ---------------------------------------------------------------------------
 
 
@@ -243,14 +243,29 @@ async def _resolve_visible_counterpart(page: Page, elem: Any) -> Any:
                 placeholder: e.getAttribute("placeholder") || "",
                 ariaLabel: e.getAttribute("aria-label") || "",
                 value: e.getAttribute("value") || "",
-                title: e.getAttribute("title") || ""
+                title: e.getAttribute("title") || "",
+                text: (e.innerText || e.textContent || "").trim(),
+                label: e.labels ? Array.from(e.labels).map((label) => label.innerText || label.textContent || "").join(" ").trim() : ""
             })"""
         )
+        has_stable_match = any(
+            attrs.get(key)
+            for key in ("id", "name", "placeholder", "ariaLabel", "value", "title", "text", "label")
+        )
+        if not has_stable_match:
+            return elem
         handle = await page.evaluate_handle(
             """(attrs) => {
+                const clean = (value) => (value || "").replace(/\\s+/g, " ").trim();
                 const visible = (e) => !!(e.offsetWidth || e.offsetHeight || e.getClientRects().length);
+                const labelText = (e) => e.labels ? Array.from(e.labels).map((label) => label.innerText || label.textContent || "").join(" ") : "";
                 const same = (e) => {
                     if (!visible(e)) return false;
+                    const hasIdentifier = !!(
+                        attrs.id || attrs.name || attrs.placeholder || attrs.ariaLabel ||
+                        attrs.value || attrs.title || attrs.text || attrs.label
+                    );
+                    if (!hasIdentifier) return false;
                     if (attrs.id && e.id !== attrs.id) return false;
                     if (attrs.name && e.getAttribute("name") !== attrs.name) return false;
                     if (attrs.type && e.getAttribute("type") !== attrs.type) return false;
@@ -258,6 +273,8 @@ async def _resolve_visible_counterpart(page: Page, elem: Any) -> Any:
                     if (attrs.ariaLabel && e.getAttribute("aria-label") !== attrs.ariaLabel) return false;
                     if (attrs.value && e.getAttribute("value") !== attrs.value) return false;
                     if (attrs.title && e.getAttribute("title") !== attrs.title) return false;
+                    if (attrs.text && clean(e.innerText || e.textContent) !== clean(attrs.text)) return false;
+                    if (attrs.label && clean(labelText(e)) !== clean(attrs.label)) return false;
                     return true;
                 };
                 return Array.from(document.querySelectorAll(attrs.tag || "*")).find(same) || null;
@@ -350,10 +367,7 @@ async def type_impl(
 
     try:
         await elem.fill(value, timeout=1000)
-        submit_search = (not press_enter) and await _should_submit_search_after_type(elem)
-        if press_enter or submit_search:
-            if submit_search:
-                logger.info("Auto-submitting search form after typing into search input")
+        if press_enter:
             await page.keyboard.press("Enter")
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=3000)
@@ -380,7 +394,7 @@ async def select_option_impl(
     try:
         await elem.select_option(options, timeout=500)
     except Exception:
-        logger.warning("Exception – select_option failed; trying alternative paths")
+        logger.warning("Exception - select_option failed; trying alternative paths")
         try:
             focused_bid = await extract_focused_element_bid(page)
             if focused_bid:
