@@ -13,7 +13,7 @@ from typing import Any, List, Literal, Optional
 
 from loguru import logger
 from langchain_core.runnables import RunnableConfig
-from playwright.async_api import Page
+from playwright.async_api import Page, TimeoutError as PlaywrightTimeoutError
 
 from cuga.backend.browser_env.page_understanding.extractor_utils.extract_async import (
     extract_focused_element_bid,
@@ -341,7 +341,7 @@ async def click_impl(
     await add_animation(page, elem, "loading", "CUGA is clicking...")
 
     try:
-        await elem.click(modifiers=modifiers, timeout=5000, force=True)
+        await elem.click(button=button, modifiers=modifiers, timeout=5000, force=True)
         alert_str = await check_for_alert(page)
         if alert_str:
             logger.warning("Returning alert value")
@@ -371,8 +371,8 @@ async def type_impl(
             await page.keyboard.press("Enter")
             try:
                 await page.wait_for_load_state("domcontentloaded", timeout=3000)
-            except Exception as exc:
-                logger.debug(f"Post-Enter domcontentloaded wait did not complete: {exc}")
+            except PlaywrightTimeoutError as exc:
+                logger.debug(f"Post-Enter domcontentloaded wait timed out: {exc}")
 
         alert_str = await check_for_alert(page)
         if alert_str:

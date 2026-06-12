@@ -32,6 +32,14 @@ class FakeSearchInput(FakeInput):
         return True
 
 
+class FakeClickable:
+    def __init__(self):
+        self.click_kwargs = None
+
+    async def click(self, **kwargs):
+        self.click_kwargs = kwargs
+
+
 class HiddenAnonymousElement:
     async def is_visible(self, **_kwargs):
         return False
@@ -126,6 +134,44 @@ async def test_type_impl_submits_search_input(monkeypatch):
 
     assert elem.filled == ["Carnegie Mellon"]
     assert page.keyboard.presses == ["Enter"]
+
+
+@pytest.mark.asyncio
+async def test_click_impl_passes_requested_button(monkeypatch):
+    elem = FakeClickable()
+    page = FakePage()
+
+    async def get_elem_by_bid_async(*_args, **_kwargs):
+        return elem
+
+    async def resolve_visible_counterpart(_page, candidate):
+        return candidate
+
+    async def add_animation(*_args, **_kwargs):
+        return None
+
+    async def check_for_alert(_page):
+        return None
+
+    monkeypatch.setattr(playwright_commands, "get_elem_by_bid_async", get_elem_by_bid_async)
+    monkeypatch.setattr(playwright_commands, "_resolve_visible_counterpart", resolve_visible_counterpart)
+    monkeypatch.setattr(playwright_commands, "add_animation", add_animation)
+    monkeypatch.setattr(playwright_commands, "check_for_alert", check_for_alert)
+    monkeypatch.setattr(playwright_commands, "schedule_clear_animations", lambda _page: None)
+
+    await playwright_commands.click_impl(
+        bid="1",
+        button="right",
+        modifiers=["Shift"],
+        config={"configurable": {"page": page}},
+    )
+
+    assert elem.click_kwargs == {
+        "button": "right",
+        "modifiers": ["Shift"],
+        "timeout": 5000,
+        "force": True,
+    }
 
 
 @pytest.mark.asyncio

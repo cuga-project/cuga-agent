@@ -112,10 +112,10 @@ def test_tool_surface_by_webmcp_mode(monkeypatch):
 
 
 def test_webmcp_call_requires_page_config():
-    with pytest.raises(ValueError, match="configurable.page"):
+    with pytest.raises(ValueError, match=r"configurable\.page"):
         _page_from_config(None)
 
-    with pytest.raises(ValueError, match="configurable.page"):
+    with pytest.raises(ValueError, match=r"configurable\.page"):
         _page_from_config({"configurable": {}})
 
     page = object()
