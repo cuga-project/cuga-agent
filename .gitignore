@@ -101,5 +101,8 @@ scripts/registry.env
 # Knowledge demo docs (local only)
 demo_knowledge_docs/
 
+# Local paper drafts
+docs/paper/
+
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh

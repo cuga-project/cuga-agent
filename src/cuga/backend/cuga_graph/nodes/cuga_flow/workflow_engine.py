@@ -1,10 +1,10 @@
 """
 WorkflowEngine - Abstract API for BPMN process execution.
 
-Defines ControlPointContext and the WorkflowEngine ABC.
+Defines ControlPointFlowKnowledge and the WorkflowEngine ABC.
 The engine holds process model, instance state, and execution history.
 It calls back to the FlowAgent harness at annotated control points via MCP,
-embedding full context in each ControlPointContext.
+embedding full context in each ControlPointFlowKnowledge.
 
 ControlOverlay has moved to langgraph_engine.py as a private _ControlOverlay —
 it is an internal LangGraph construct, no longer part of the public API.
@@ -20,7 +20,7 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
 
 
 @dataclass
-class ControlPointContext:
+class ControlPointFlowKnowledge:
     """
     Context the engine embeds in every callback to the FlowAgent harness.
 
@@ -62,7 +62,7 @@ class ControlPointContext:
         }
 
     @classmethod
-    def from_dict(cls, d: Dict[str, Any]) -> "ControlPointContext":
+    def from_dict(cls, d: Dict[str, Any]) -> "ControlPointFlowKnowledge":
         flows = [BPMNFlow(**f) for f in (d.get("available_flows") or [])]
         return cls(
             process_instance_id=d["process_instance_id"],

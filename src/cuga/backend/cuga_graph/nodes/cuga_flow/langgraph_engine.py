@@ -4,7 +4,7 @@ LangGraphWorkflowEngine - Concrete LangGraph backend for BPMN process execution.
 Implements WorkflowEngine using LangGraph StateGraph.  All graph-building logic
 lives here; the FlowAgent harness communicates exclusively via the MCP bridge.
 
-At each annotated control point the engine builds a ControlPointContext — embedding
+At each annotated control point the engine builds a ControlPointFlowKnowledge — embedding
 current state, execution history, process model summary, and (for tasks) the task
 instruction from the YAML — and calls the appropriate MCP tool on the bridge.
 
@@ -33,7 +33,7 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import (
     HookResult,
 )
 from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import (
-    ControlPointContext,
+    ControlPointFlowKnowledge,
     WorkflowEngine,
 )
 
@@ -47,9 +47,9 @@ class _ControlOverlay:
     the MCP client.  In direct/test paths they may be arbitrary callables.
 
     Handler signatures (all async):
-      task_handlers[task_id](ctx: ControlPointContext) → dict
-      gateway_handlers[gw_id](ctx: ControlPointContext) → str  (chosen flow_id)
-      hook_evaluator(hook: Hook, ctx: ControlPointContext) → HookResult  (async)
+      task_handlers[task_id](ctx: ControlPointFlowKnowledge) → dict
+      gateway_handlers[gw_id](ctx: ControlPointFlowKnowledge) → str  (chosen flow_id)
+      hook_evaluator(hook: Hook, ctx: ControlPointFlowKnowledge) → HookResult  (async)
     """
 
     task_handlers: Dict[str, Callable] = field(default_factory=dict)
@@ -121,7 +121,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             task_handlers: Dict[str, Callable] = {}
             for task_id in agentic_task_ids:
 
-                async def _task_handler(ctx: ControlPointContext, _tid: str = task_id) -> dict:
+                async def _task_handler(ctx: ControlPointFlowKnowledge, _tid: str = task_id) -> dict:
                     res = await c.call_tool("execute_task", {"task_id": _tid, "ctx": ctx.to_dict()})
                     return res.data
 
@@ -131,14 +131,14 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             gateway_handlers: Dict[str, Callable] = {}
             for gw_id in decision_gw_ids:
 
-                async def _gw_handler(ctx: ControlPointContext, _gw: str = gw_id) -> str:
+                async def _gw_handler(ctx: ControlPointFlowKnowledge, _gw: str = gw_id) -> str:
                     res = await c.call_tool("route_gateway", {"gateway_id": _gw, "ctx": ctx.to_dict()})
                     return res.data
 
                 gateway_handlers[gw_id] = _gw_handler
 
             # Hook evaluator: call evaluate_hook MCP tool
-            async def hook_evaluator(hook: Hook, ctx: ControlPointContext) -> HookResult:
+            async def hook_evaluator(hook: Hook, ctx: ControlPointFlowKnowledge) -> HookResult:
                 res = await c.call_tool("evaluate_hook", {"hook_id": hook.id, "ctx": ctx.to_dict()})
                 return HookResult.from_dict(res.data)
 
@@ -266,7 +266,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             overlay.task_instructions = dict(overlay.task_instructions)
             overlay.task_instructions[node_id] = instruction
             if mcp_client:
-                async def _dynamic_handler(ctx: ControlPointContext, _tid: str = node_id) -> dict:
+                async def _dynamic_handler(ctx: ControlPointFlowKnowledge, _tid: str = node_id) -> dict:
                     res = await mcp_client.call_tool(
                         "execute_task", {"task_id": _tid, "ctx": ctx.to_dict()}
                     )
@@ -485,7 +485,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                         f.condition = override
                     enriched_flows.append(f)
 
-                ctx = ControlPointContext(
+                ctx = ControlPointFlowKnowledge(
                     process_instance_id=state.process_id,
                     element_id=gateway_id,
                     element_name=element.name or gateway_id,
@@ -561,7 +561,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                     "task_results": {task_id: {"status": "skipped", "reason": "hook requested skip"}},
                 }
 
-            ctx = ControlPointContext(
+            ctx = ControlPointFlowKnowledge(
                 process_instance_id=state.process_id,
                 element_id=task_id,
                 element_name=element.name or task_id,
@@ -643,7 +643,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
 
         async def hook_node(state: FlowState):
             logger.info(f"Executing hook node for edge: {edge_id}")
-            ctx = ControlPointContext(
+            ctx = ControlPointFlowKnowledge(
                 process_instance_id=state.process_id,
                 element_id=edge_id,
                 element_name=edge_id,

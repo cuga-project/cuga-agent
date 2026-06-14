@@ -123,21 +123,21 @@ class MCPFlowBridge:
           route_gateway(gateway_id, ctx) → str    (gateway routing)
           evaluate_hook(hook_id, ctx)    → dict   (hook evaluation)
         """
-        from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import ControlPointContext
+        from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import ControlPointFlowKnowledge
 
         async def execute_task(task_id: str, ctx: dict) -> dict:
             """Execute an agentic task via FlowAgent."""
-            ctx_obj = ControlPointContext.from_dict(ctx)
+            ctx_obj = ControlPointFlowKnowledge.from_dict(ctx)
             return await fa._handle_task(task_id, ctx_obj)
 
         async def route_gateway(gateway_id: str, ctx: dict) -> str:
             """Route a gateway via FlowAgent's DecisionAgent."""
-            ctx_obj = ControlPointContext.from_dict(ctx)
+            ctx_obj = ControlPointFlowKnowledge.from_dict(ctx)
             return await fa._handle_gateway(gateway_id, ctx_obj)
 
         async def evaluate_hook(hook_id: str, ctx: dict) -> dict:
             """Evaluate a hook via FlowAgent's hook evaluator."""
-            ctx_obj = ControlPointContext.from_dict(ctx)
+            ctx_obj = ControlPointFlowKnowledge.from_dict(ctx)
             hook = next((h for h in fa.hooks if h.id == hook_id), None)
             if hook is None:
                 from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookAction, HookResult

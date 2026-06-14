@@ -45,7 +45,7 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import (
     WorkflowEngine,
-    ControlPointContext,
+    ControlPointFlowKnowledge,
 )
 from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
 from cuga.backend.server.cuga_flo_mcp import MCPFlowBridge
@@ -80,7 +80,7 @@ __all__ = [
     "ProcessRegistry",
     "ProcessDefinition",
     "WorkflowEngine",
-    "ControlPointContext",
+    "ControlPointFlowKnowledge",
     "MCPFlowBridge",
     "LangGraphWorkflowEngine",
 ]

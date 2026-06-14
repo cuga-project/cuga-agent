@@ -153,6 +153,7 @@ class Hook:
     # with the policy + current process state to produce the HookResult, replacing
     # the handler entirely with policy-driven reasoning.
     policy: Optional[str] = None
+    policy_path: Optional[str] = None
 
 
 class HookManager:

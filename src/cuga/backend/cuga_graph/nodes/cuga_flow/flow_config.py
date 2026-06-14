@@ -292,7 +292,7 @@ class FlowConfig:
         Extract the task instruction (system_instruction) per task_id from the YAML.
 
         This is the static description of what the task should accomplish.
-        The WorkflowEngine discloses it in ControlPointContext.task_instruction
+        The WorkflowEngine discloses it in ControlPointFlowKnowledge.task_instruction
         at callback time so FlowAgent does not need to re-derive it from the BPMN element.
 
         Returns:
@@ -395,6 +395,7 @@ class FlowConfig:
                     handler=handler,
                     condition=condition_func,
                     policy=policy_text,
+                    policy_path=str(self._resolve_path(policy_path)) if policy_path else None,
                 )
 
                 hooks.append(hook)

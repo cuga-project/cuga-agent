@@ -33,7 +33,7 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import (
     HookResult,
 )
 from cuga.backend.cuga_graph.nodes.cuga_flow.task_agent import TaskAgent
-from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import ControlPointContext
+from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import ControlPointFlowKnowledge
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 
 tracker = ActivityTracker()
@@ -50,21 +50,17 @@ class FlowAgent:
     Communication with the WorkflowEngine uses MCPFlowBridge — both sides register
     their services on a shared FastMCP server and call each other via MCP tool calls.
 
-    Usage (backward-compatible, direct bpmn_file):
-        agent = FlowAgent(bpmn_file="process.bpmn", task_agents={...}, ...)
+    Usage:
+        agent = FlowAgent(process_key="loan_approval", bridge=bridge)
         state = await agent.invoke("Start approval for $15 000")
     """
 
     def __init__(
         self,
-        # ── Primary interface (registry-based) ──────────────────────────────
-        process_key: Optional[str] = None,
+        process_key: str,
         bridge: Optional[Any] = None,  # MCPFlowBridge; created automatically if None
-        # ── Direct / backward-compatible interface ──────────────────────────
-        bpmn_file: Optional[str] = None,
-        bpmn_process: Optional[Any] = None,  # BPMNProcess
         model_name: Optional[str] = None,
-        # ── Agent / tool bindings (overrides for both modes) ─────────────────
+        # ── Agent / tool bindings (overrides) ────────────────────────────────
         task_agents: Optional[Dict[str, TaskAgent]] = None,
         tool_tasks: Optional[Dict[str, Optional[str]]] = None,
         gateway_agents: Optional[Dict[str, DecisionAgent]] = None,
@@ -73,7 +69,6 @@ class FlowAgent:
         task_instructions: Optional[Dict[str, str]] = None,
         tools: Optional[Dict[str, Callable]] = None,
         hooks: Optional[List[Hook]] = None,
-        process_variables: Optional[Dict[str, Any]] = None,
         action_permissions: Optional[Dict[str, List[str]]] = None,
     ):
         from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
@@ -82,74 +77,26 @@ class FlowAgent:
         _bridge_owned = bridge is None
         self.bridge: MCPFlowBridge = bridge or MCPFlowBridge()
 
-        if process_key:
-            # ── Registry-based init ─────────────────────────────────────────
-            self.process_key = process_key
+        self.process_key = process_key
 
-            config = self.bridge.get_flow_annotations(process_key)
-            self.task_agents: Dict[str, TaskAgent] = task_agents or config.create_task_agents()
-            self.tool_tasks: Dict[str, Optional[str]] = tool_tasks or config.create_tool_tasks()
-            self.gateway_agents: Dict[str, DecisionAgent] = gateway_agents or config.create_gateway_agents()
-            self.flow_conditions: Dict[str, str] = flow_conditions or config.create_flow_conditions()
-            self.task_policies: Dict[str, str] = task_policies or config.create_task_policies()
-            self.task_instructions: Dict[str, str] = task_instructions or config.create_task_instructions()
-            self.tools: Dict[str, Callable] = tools or {}
-            _perms = action_permissions or config.get_action_permissions()
-            self.hooks: List[Hook] = hooks or config.create_hooks()
-            self.initial_variables: Dict[str, Any] = config.get_initial_variables()
-            self.model_name: Optional[str] = model_name or config.get_model_name()
-
-        elif bpmn_file or bpmn_process:
-            # ── Backward-compatible direct init ────────────────────────────
-            from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNParser
-            from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import (
-                ProcessDefinition,
-                ProcessRegistry,
-            )
-
-            _proc = BPMNParser().parse_file(bpmn_file) if bpmn_file else bpmn_process
-            if _proc is None:
-                raise ValueError("bpmn_process must not be None")
-
-            _reg = ProcessRegistry(bridge=self.bridge if _bridge_owned else None)
-            _key = _proc.id or "anonymous"
-            _reg._register_preloaded(
-                key=_key,
-                bpmn=_proc,
-                definition=ProcessDefinition(
-                    key=_key,
-                    name=_proc.name or _key,
-                    bpmn_path=bpmn_file or "",
-                    config_path="",
-                    policies_dir="",
-                ),
-            )
-
-            self.process_key = _key
-            self.task_agents = task_agents or {}
-            self.tool_tasks = tool_tasks or {}
-            self.gateway_agents = gateway_agents or {}
-            self.flow_conditions = flow_conditions or {}
-            self.task_policies = task_policies or {}
-            self.task_instructions = task_instructions or {}
-            self.tools = tools or {}
-            self.hooks = hooks or []
-            self.initial_variables = process_variables or {}
-            self.model_name = model_name
-            _perms = action_permissions or {}
-
-        else:
-            raise ValueError("Either process_key or (bpmn_file / bpmn_process) must be provided")
+        config = self.bridge.get_flow_annotations(process_key)
+        self.task_agents: Dict[str, TaskAgent] = task_agents or config.create_task_agents()
+        self.tool_tasks: Dict[str, Optional[str]] = tool_tasks or config.create_tool_tasks()
+        self.gateway_agents: Dict[str, DecisionAgent] = gateway_agents or config.create_gateway_agents()
+        self.flow_conditions: Dict[str, str] = flow_conditions or config.create_flow_conditions()
+        self.task_policies: Dict[str, str] = task_policies or config.create_task_policies()
+        self.task_instructions: Dict[str, str] = task_instructions or config.create_task_instructions()
+        self.tools: Dict[str, Callable] = tools or {}
+        _perms = action_permissions or config.get_action_permissions()
+        self.hooks: List[Hook] = hooks or config.create_hooks()
+        self.initial_variables: Dict[str, Any] = config.get_initial_variables()
+        self.model_name: Optional[str] = model_name or config.get_model_name()
 
         _perms_dict = _perms if isinstance(_perms, dict) else {}
         self._permitted_actions: List[str] = _perms_dict.get("permitted_actions", [])
         self._prohibited_actions: List[str] = _perms_dict.get("prohibited_actions", [])
 
-        # Resolve LLM once for hook policy reasoning
-        from cuga.backend.llm.models import LLMManager
-        from cuga.config import settings
-
-        self._llm = LLMManager().get_model(settings.agent.planner.model)
+        self._hook_agent = None  # CugaAgent for hook policy reasoning — created lazily
 
         self.bridge.register_flow_agent(self)
         if _bridge_owned:
@@ -166,7 +113,7 @@ class FlowAgent:
     # MCP tool handlers (called by MCPFlowBridge tools)
     # ──────────────────────────────────────────────────────────────
 
-    async def _handle_task(self, task_id: str, ctx: ControlPointContext) -> dict:
+    async def _handle_task(self, task_id: str, ctx: ControlPointFlowKnowledge) -> dict:
         """Execute an agentic task.  ENGINE provides WHAT; FlowAgent provides WHO+HOW."""
         agent = self.task_agents.get(task_id)
         if agent is None:
@@ -192,7 +139,7 @@ class FlowAgent:
             "task_results": {task_id: result},
         }
 
-    async def _handle_gateway(self, gateway_id: str, ctx: ControlPointContext) -> str:
+    async def _handle_gateway(self, gateway_id: str, ctx: ControlPointFlowKnowledge) -> str:
         """Route a gateway via DecisionAgent."""
         agent = self.gateway_agents.get(gateway_id)
         flows = ctx.available_flows or []
@@ -211,12 +158,12 @@ class FlowAgent:
             logger.error(f"  DecisionAgent error for {gateway_id}: {e}")
             return flows[0].id if flows else ""
 
-    async def _handle_hook(self, hook: Hook, ctx: ControlPointContext) -> HookResult:
+    async def _handle_hook(self, hook: Hook, ctx: ControlPointFlowKnowledge) -> HookResult:
         """Evaluate a hook — check condition, then apply policy or handler."""
         if hook.condition and not hook.condition(ctx.current_state):
             return HookResult(action=HookAction.CONTINUE)
         if hook.policy:
-            result = self._llm_hook_decision(hook, ctx)
+            result = await self._llm_hook_decision(hook, ctx)
         elif hook.handler:
             result = hook.handler(ctx.current_state)
         else:
@@ -233,7 +180,7 @@ class FlowAgent:
     # Task input builder
     # ──────────────────────────────────────────────────────────────
 
-    def _build_task_input(self, task_id: str, ctx: ControlPointContext) -> str:
+    def _build_task_input(self, task_id: str, ctx: ControlPointFlowKnowledge) -> str:
         """Assemble the task input string from engine-provided context and FlowAgent policy."""
         parts: List[str] = []
         if ctx.task_instruction:
@@ -256,12 +203,39 @@ class FlowAgent:
     # Hook policy reasoning
     # ──────────────────────────────────────────────────────────────
 
-    def _llm_hook_decision(self, hook: Hook, ctx: ControlPointContext) -> HookResult:
+    def _get_hook_agent(self):
+        """Return (or create lazily) the CugaAgent used for hook policy reasoning."""
+        if self._hook_agent is None:
+            from cuga.backend.llm.models import LLMManager
+            from cuga.config import settings
+            from cuga.sdk import CugaAgent
+
+            llm = LLMManager().get_model(settings.agent.planner.model)
+            self._hook_agent = CugaAgent(
+                special_instructions=(
+                    "You are the FlowAgent — a meta-agent overseeing a BPMN process execution. "
+                    "When asked to evaluate a hook, respond ONLY with a valid JSON object "
+                    "as specified in the prompt."
+                ),
+                model=llm,
+                enable_knowledge=False,
+                auto_load_policies=False,
+            )
+        return self._hook_agent
+
+    async def _llm_hook_decision(self, hook: Hook, ctx: ControlPointFlowKnowledge) -> HookResult:
         """
         FlowAgent meta-agent reasoning: use the hook policy + engine-provided context
         to decide what structural intervention (if any) to apply.
         """
-        from langchain_core.messages import HumanMessage
+        from pathlib import Path
+
+        policy_text = hook.policy
+        if hook.policy_path:
+            try:
+                policy_text = Path(hook.policy_path).read_text()
+            except Exception as e:
+                logger.warning(f"  Could not re-read policy file for hook {hook.id}: {e} — using cached policy")
 
         remaining_tasks = {
             eid: info.get("name", eid)
@@ -276,7 +250,7 @@ Your task is to assess the current process state against the hook policy and dec
 what structural action (if any) the FlowAgent should apply.
 
 ## Hook Policy
-{hook.policy}
+{policy_text}
 
 ## Current Process State
 - Execution path so far: {ctx.execution_history}
@@ -315,8 +289,8 @@ Respond ONLY with a JSON object:
 }}
 """
         try:
-            response = self._llm.invoke([HumanMessage(content=prompt)])
-            raw = response.content.strip()
+            agent_result = await self._get_hook_agent().invoke(message=prompt)
+            raw = agent_result.answer.strip()
             if raw.startswith("```"):
                 raw = raw.split("```")[1]
                 if raw.startswith("json"):

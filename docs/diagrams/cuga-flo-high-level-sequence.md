@@ -58,6 +58,18 @@ sequenceDiagram
 
 ---
 
+## Component Roles
+
+| Component | Role |
+|---|---|
+| **FlowAgent** | Orchestrates process execution — receives invocations from the application, drives the WorkflowEngine via MCPFlowBridge, and delegates each node type to the appropriate agent (TaskAgent, DecisionAgent) or handles hooks directly. |
+| **TaskAgent** | Executes a single task node — given a task instruction and process state, it runs the LLM-backed action and returns a status/output result. |
+| **DecisionAgent** | Resolves gateway routing — evaluates conditions deterministically and, when needed, uses an LLM to select exactly one outgoing flow ID based on gateway policy and process state. |
+| **MCPFlowBridge** | Acts as the MCP protocol adapter between CUGA FLO and the WorkflowEngine — exposes `execute_task`, `route_gateway`, and `evaluate_hook` to the engine, and exposes `run_process` back to FlowAgent. |
+| **WorkflowEngine** | Drives BPMN process execution — walks the deterministic flow parts task by task, calling back into MCPFlowBridge at each task, gateway, or hook node, and returns the final FlowState on completion. |
+
+---
+
 ## MCP Service Contracts
 
 ### Services MCPFlowBridge Exposes to WorkflowEngine

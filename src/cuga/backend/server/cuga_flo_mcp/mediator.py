@@ -280,7 +280,7 @@ class MCP2MCPMediator:
         process_key: str,
         accumulated_vars: Dict[str, Any],
     ) -> Dict[str, Any]:
-        """Synthesise a ControlPointContext dict from an AgentGoal."""
+        """Synthesise a ControlPointFlowKnowledge dict from an AgentGoal."""
         merged_vars = {**accumulated_vars, **goal.context.vars}
         return {
             "process_instance_id": goal.workflow_session_id,

@@ -8,6 +8,7 @@ BPMNProcess and FlowConfig, with a parsed+cached BPMN object per key.
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import os
 
 from loguru import logger
 
@@ -31,8 +32,25 @@ class ProcessRegistry:
         self._definitions: Dict[str, ProcessDefinition] = {}
         self._bpmn_cache: Dict[str, BPMNProcess] = {}
         self._config_cache: Dict[str, FlowConfig] = {}
+        self._config_mtimes: Dict[str, float] = {}
         if bridge is not None:
             bridge.register_registry(self)
+
+    def _max_mtime(self, key: str) -> float:
+        """Return the max mtime across the config YAML and all policy .md files for a process key."""
+        defn = self._definitions.get(key)
+        if defn is None:
+            return 0.0
+        paths = [defn.config_path]
+        if defn.policies_dir:
+            paths += [str(p) for p in Path(defn.policies_dir).glob("*.md")]
+        mtimes = []
+        for p in paths:
+            try:
+                mtimes.append(os.path.getmtime(p))
+            except OSError:
+                pass
+        return max(mtimes, default=0.0)
 
     def register_flow(self, flow_config_path: str) -> str:
         """
@@ -54,6 +72,7 @@ class ProcessRegistry:
         )
         self._bpmn_cache[process_key] = BPMNParser().parse_file(bpmn_file)
         self._config_cache[process_key] = config
+        self._config_mtimes[process_key] = self._max_mtime(process_key)
         logger.info(f"ProcessRegistry: registered flow '{process_key}' from {flow_config_path}")
         return process_key
 
@@ -84,10 +103,12 @@ class ProcessRegistry:
         return self._bpmn_cache[key]
 
     def get_flow_annotations(self, key: str) -> FlowConfig:
-        if key not in self._config_cache:
+        current_mtime = self._max_mtime(key)
+        if key not in self._config_cache or current_mtime > self._config_mtimes.get(key, 0.0):
             defn = self._get_definition(key)
             self._config_cache[key] = FlowConfig.from_yaml(defn.config_path)
-            logger.debug(f"ProcessRegistry: loaded FlowConfig for '{key}'")
+            self._config_mtimes[key] = current_mtime
+            logger.info(f"ProcessRegistry: reloaded FlowConfig for '{key}' (policy files changed)")
         return self._config_cache[key]
 
     def list_keys(self) -> List[str]:
