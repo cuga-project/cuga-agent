@@ -108,7 +108,7 @@ class SpawnAgentRuntime:
             sync_langfuse_callbacks_from_config(self._parent_config)
         return get_langfuse_invoke_config()
 
-    async def _run_stream(self, agent, task: str, thread_id: str, cfg: dict) -> str:
+    async def _run_stream(self, agent, task: str, thread_id: str, cfg: dict, spawn_id: str = "") -> str:
         final_answer = ""
         forward = getattr(settings.agent_spawn, "forward_sync_subagent_events", True)
         async for chunk in agent.stream(task, thread_id=thread_id, config=cfg):
@@ -119,13 +119,13 @@ class SpawnAgentRuntime:
             if not isinstance(node_data, dict):
                 continue
             if forward and "script" in node_data:
-                _emit("CodeAgent", {**node_data, "subagent": "SubCuga"})
+                _emit("CodeAgent", {**node_data, "subagent": "SubCuga", "spawn_id": spawn_id})
             candidate = node_data.get("final_answer")
             if candidate:
                 final_answer = candidate
         return final_answer
 
-    async def execute(self, task: str) -> str:
+    async def execute(self, task: str, spawn_id: str = "") -> str:
         """Run the sub-agent synchronously; return its final_answer."""
         depth = _spawn_depth.get()
         max_depth = getattr(settings.agent_spawn, "max_spawn_depth", 2)
@@ -143,14 +143,15 @@ class SpawnAgentRuntime:
         _emit("SpawnAgent", {
             "agent_name": "SubCuga",
             "task": task[:200],
-            "mode": "sync",
+            "mode": "async" if spawn_id else "sync",
             "thread_id": thread_id,
+            "spawn_id": spawn_id,
         })
 
         token = _spawn_depth.set(depth + 1)
         try:
             agent = self._build_agent(tools)
-            answer = await self._run_stream(agent, task, thread_id, invoke_cfg)
+            answer = await self._run_stream(agent, task, thread_id, invoke_cfg, spawn_id=spawn_id)
         finally:
             _spawn_depth.reset(token)
 
@@ -159,6 +160,7 @@ class SpawnAgentRuntime:
             "thread_id": thread_id,
             "status": "success",
             "answer": answer[:500],
+            "spawn_id": spawn_id,
         })
         return answer
 
@@ -175,7 +177,7 @@ class SpawnAgentRuntime:
 
     async def _execute_and_store(self, future_id: str, task: str) -> None:
         try:
-            result = await self.execute(task)
+            result = await self.execute(task, spawn_id=future_id)
             self._spawn_futures[future_id] = {"status": "done", "result": result, "error": None}
         except Exception as e:
             logger.warning(f"agent_spawn: async execute failed for future_id={future_id}: {e}")
