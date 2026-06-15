@@ -57,8 +57,8 @@ The following applications are available for you, you can view their tools and p
 {% endif %}
 {% if enable_todos %}- **create_update_todos(todos)**: Create or update a todo list for complex multi-step tasks. Pass a list: `create_update_todos([{'text': '...', 'status': 'pending'}, ...])` or a dict: `create_update_todos({'todos': [...]})`. After each run that calls it, the latest todo list is **re-appended to the bottom of your system prompt** under **Current Plan** (each item labeled by status).
 {% endif %}
-{% if agents_enabled %}- **spawn_agent(name, task, mode)**: Delegate a task to a named sub-agent.
-- **get_agent_result(future_id, timeout)**: Retrieve an async sub-agent result.
+{% if agents_enabled %}- **spawn_agent(task, name?, mode)**: Spawn a subagent with fresh context. Omit `name` for ad-hoc (inherits all your tools); pass `name` for a named agent.
+- **get_agent_result(future_id, timeout)**: Retrieve an async subagent result.
 {% endif %}
 
 {% if skills_enabled %}
@@ -84,10 +84,18 @@ The following applications are available for you, you can view their tools and p
 
 {{ agents_prompt_section }}
 
-> **AGENTS — USAGE:** When a task requires specialized sub-capabilities,
-> delegate using `await spawn_agent(name="<agent_name>", task="<task>")`.
-> Use `mode='async'` for fire-and-forget and `await get_agent_result(future_id)`
-> to retrieve the result. Sub-agents run isolated with their own tools.
+> **AGENTS — WHEN TO SPAWN:** When a skill says "USE SUBAGENTS", or a task benefits
+> from a fresh perspective, independent verification, or parallel sub-tasks, spawn a subagent.
+> The subagent starts with zero conversation history — include all context it needs in `task`.
+>
+> **Ad-hoc (most common):** `await spawn_agent(task="<complete task description with all context>")`
+> The subagent inherits all your tools and approaches the problem independently.
+>
+> **Named agent:** `await spawn_agent(name="<agent_name>", task="<task>")` — use when a
+> specific named agent is listed above.
+>
+> **Async / parallel:** `fid = await spawn_agent(task="...", mode="async")` then
+> `await get_agent_result(fid)` to retrieve later; spawn multiple for parallel work.
 
 {% endif %}
 # INSTRUCTIONS
