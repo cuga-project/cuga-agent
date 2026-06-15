@@ -302,6 +302,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         _is_subagent = _agent_spawn_depth.get() > 0
         skills_cfg_on = getattr(settings.skills, "enabled", False) and not _is_subagent
         cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        # Skill-defined tools (tools: frontmatter in SKILL.md) that are pre-registered
+        # into CUGA's own context so subagents can inherit them.
+        _skill_specific_tools: list = []
         if skills_cfg_on:
             skill_entries = discover_skills(cuga_folder_for_skills)
             if skill_entries:
@@ -315,11 +318,31 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                     f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
                     "~/.config/cuga/skills fallbacks"
                 )
+                # Pre-register skill tool_definitions into CUGA's own context.
+                # These tools become available to CUGA and are inherited by ad-hoc subagents,
+                # so skills can instruct CUGA to spawn subagents that already have the tools.
+                from cuga.backend.agent_spawn.tool_builder import build_tools_from_skill_tool_definitions
+                for _se in skill_entries:
+                    for _st in build_tools_from_skill_tool_definitions(_se):
+                        _skill_specific_tools.append(_st)
+                        tools_for_prompt.append(_st)
+                        _stfn = (
+                            _st.coroutine
+                            if (hasattr(_st, "coroutine") and _st.coroutine)
+                            else _st.func
+                        )
+                        if _stfn:
+                            adapter._tools_context[_st.name] = make_tool_awaitable(_stfn)
+                if _skill_specific_tools:
+                    logger.info(
+                        f"agent_spawn: pre-registered {len(_skill_specific_tools)} skill tool(s) "
+                        "into CUGA context for subagent inheritance"
+                    )
 
-        # ── agent_spawn ────────────────────────────────────────────────────────────
-        # Collect agents declared inside SKILL.md files via the `agents:` key.
-        # These are activated regardless of settings.agent_spawn.enabled so a skill
-        # is self-contained: declaring an agent in a skill makes it spawnable.
+        # ── agent_spawn: named agent discovery ────────────────────────────────────
+        # Collect named agents from SKILL.md agents: key and from the agents directory.
+        # spawn_agent itself is injected AFTER all tools are registered so the subagent
+        # inherits the complete parent tool set (including runtime tools built below).
         _skill_agent_entries = []
         if not _is_subagent:
             for _se in skill_entries:
@@ -348,46 +371,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             _all_agent_entries = list(_by_name.values())
         else:
             _all_agent_entries = []
-
-        if _all_agent_entries:
-            from cuga.backend.agent_spawn import (
-                AgentDescriptorRegistry,
-                create_spawn_tools,
-                format_available_agents_block,
-            )
-
-            _agent_registry = AgentDescriptorRegistry(_all_agent_entries)
-            agent_spawn_tools = create_spawn_tools(
-                registry=_agent_registry,
-                parent_tools_context=adapter._tools_context,
-                spawn_futures=adapter._spawn_futures,
-                parent_config=config,
-            )
-            tools_for_prompt.extend(agent_spawn_tools)
-            agents_prompt_section = format_available_agents_block(_agent_registry)
-            agents_enabled = True
-            logger.info(
-                f"agent_spawn: loaded {len(_all_agent_entries)} descriptor(s) "
-                f"({len(_skill_agent_entries)} from skills, {len(_dir_agent_entries)} from directory), "
-                "injected spawn_agent + get_agent_result tools"
-            )
-            # Pre-warm sub-agent graphs in the background so graph compilation
-            # runs concurrently with the parent LLM call.
-            if getattr(settings, "agent_spawn", None) and settings.agent_spawn.enabled:
-                from cuga.backend.agent_spawn.runtime import prewarm_agent_for_entry
-                for _entry in _all_agent_entries:
-                    asyncio.create_task(
-                        prewarm_agent_for_entry(_entry, adapter._tools_context, config),
-                        name=f"prewarm_{_entry.name}",
-                    )
-        # ── end agent_spawn ────────────────────────────────────────────────────────
-
-        for tool in agent_spawn_tools:
-            tool_func = (
-                tool.coroutine if (hasattr(tool, "coroutine") and tool.coroutine) else tool.func
-            )
-            if tool_func:
-                adapter._tools_context[tool.name] = make_tool_awaitable(tool_func)
+        # ── end agent_spawn discovery (tools injected after runtime bundle below) ──
 
         # Resolve thread_id early for per-thread workspace selection.
         _cfg_for_thread = config.get("configurable", {}) if config else {}
@@ -448,6 +432,61 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         tools_for_prompt.extend(_runtime_bundle.prompt_tools)
         if _runtime_bundle.app_definitions and apps_for_prompt is not None:
             apps_for_prompt = list(apps_for_prompt) + _runtime_bundle.app_definitions
+
+        # ── agent_spawn: tool injection ────────────────────────────────────────────
+        # Inject spawn_agent + get_agent_result whenever not running as a subagent.
+        # Done AFTER all tools (execution, skill, runtime) are registered so the
+        # ad-hoc subagent inherits the complete parent tool set via parent_structured_tools.
+        if not _is_subagent:
+            from cuga.backend.agent_spawn import (
+                AgentDescriptorRegistry,
+                create_spawn_tools,
+                format_available_agents_block,
+            )
+
+            _agent_registry = AgentDescriptorRegistry(_all_agent_entries)
+
+            # Collect the full parent tool set for ad-hoc subagent inheritance.
+            # Excludes spawn/skill meta-tools — those are filtered in adhoc() itself.
+            _parent_structured_tools_for_subagent = (
+                list(tools_for_execution)
+                + _skill_specific_tools
+                + list(_runtime_bundle.prompt_tools)
+            )
+
+            agent_spawn_tools = create_spawn_tools(
+                registry=_agent_registry,
+                parent_tools_context=adapter._tools_context,
+                spawn_futures=adapter._spawn_futures,
+                parent_config=config,
+                parent_structured_tools=_parent_structured_tools_for_subagent,
+            )
+            tools_for_prompt.extend(agent_spawn_tools)
+            for _st in agent_spawn_tools:
+                _stfn = _st.coroutine if (hasattr(_st, "coroutine") and _st.coroutine) else _st.func
+                if _stfn:
+                    adapter._tools_context[_st.name] = make_tool_awaitable(_stfn)
+
+            agents_prompt_section = format_available_agents_block(_agent_registry)
+            agents_enabled = True
+
+            if _all_agent_entries:
+                logger.info(
+                    f"agent_spawn: loaded {len(_all_agent_entries)} named descriptor(s) "
+                    f"({len(_skill_agent_entries)} from skills, {len(_dir_agent_entries)} from directory), "
+                    "injected spawn_agent + get_agent_result tools"
+                )
+                # Pre-warm named sub-agent graphs in the background.
+                if getattr(settings, "agent_spawn", None) and settings.agent_spawn.enabled:
+                    from cuga.backend.agent_spawn.runtime import prewarm_agent_for_entry
+                    for _entry in _all_agent_entries:
+                        asyncio.create_task(
+                            prewarm_agent_for_entry(_entry, adapter._tools_context, config),
+                            name=f"prewarm_{_entry.name}",
+                        )
+            else:
+                logger.info("agent_spawn: no named agents; ad-hoc spawn_agent injected")
+        # ── end agent_spawn ────────────────────────────────────────────────────────
 
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
