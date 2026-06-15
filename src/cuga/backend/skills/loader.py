@@ -110,33 +110,6 @@ def _normalize_requirements(value: Any) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in candidates if str(item).strip())
 
 
-def _parse_skill_agents(raw_agents: Any, skill_path: Path) -> tuple:
-    """Parse ``agents:`` list from SKILL.md and load each referenced AGENT.md.
-
-    Each entry in *raw_agents* is a directory path relative to the SKILL.md's
-    own directory that contains an AGENT.md file.  Missing or invalid paths are
-    logged and skipped — they never raise so a broken agent reference never
-    prevents the rest of the skill from loading.
-    """
-    if not raw_agents:
-        return ()
-    from cuga.backend.agent_spawn.loader import _parse_agent_file
-
-    skill_dir = skill_path.parent
-    results = []
-    for rel in _as_list(raw_agents):
-        agent_md = (skill_dir / rel / "AGENT.md").resolve()
-        if not agent_md.is_file():
-            logger.warning(
-                f"Skill {skill_path}: agents entry {rel!r} has no AGENT.md at {agent_md}, skipping"
-            )
-            continue
-        entry = _parse_agent_file(agent_md)
-        if entry:
-            results.append(entry)
-    return tuple(results)
-
-
 def _parse_skill_file(path: Path) -> SkillEntry | None:
     try:
         frontmatter, body = parse_markdown_with_frontmatter(str(path))
@@ -164,8 +137,6 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
             validated.append(d)
         tool_definitions = tuple(validated)
 
-    agent_descriptors = _parse_skill_agents(frontmatter.get("agents"), path)
-
     return SkillEntry(
         name=str(name).strip(),
         description=str(description).strip(),
@@ -173,7 +144,6 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
         source=str(path),
         requirements=_normalize_requirements(frontmatter.get("requirements")),
         tool_definitions=tool_definitions,
-        agent_descriptors=agent_descriptors,
     )
 
 

@@ -1,40 +1,19 @@
-"""Unit tests for the agent_spawn package (Phases 1–10).
-
-Organized by implementation phase. Shared helpers are at the top.
-Module-level functions _async_fn / _sync_fn are import targets for
-tool_definitions tests (module path = tests.unit.test_agent_spawn).
-"""
+"""Unit tests for the agent_spawn package."""
 
 from pathlib import Path
 
 import pytest
 
 
-# ── Shared helpers ──────────────────────────────────────────────────────────
+# ── Import targets for tool_definitions tests ──────────────────────────────
 
 
-def _make_entry(**kwargs):
-    from cuga.backend.agent_spawn.registry import AgentDescriptorEntry
-
-    defaults = dict(name="agent", description="d", source="/tmp")
-    defaults.update(kwargs)
-    return AgentDescriptorEntry(**defaults)
+async def _async_fn(x: int) -> str:
+    return str(x)
 
 
-def _make_registry(*names):
-    from cuga.backend.agent_spawn.registry import AgentDescriptorEntry, AgentDescriptorRegistry
-
-    entries = [AgentDescriptorEntry(name=n, description=f"desc-{n}", source="/") for n in names]
-    return AgentDescriptorRegistry(entries)
-
-
-def _write_agent(root: Path, name: str, description: str, extra: str = "") -> None:
-    agent_dir = root / name
-    agent_dir.mkdir(parents=True, exist_ok=True)
-    (agent_dir / "AGENT.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n{extra}---\nAgent body.\n",
-        encoding="utf-8",
-    )
+def _sync_fn(x: int) -> str:
+    return str(x)
 
 
 def _make_adapter(spawn_futures=None):
@@ -48,51 +27,6 @@ def _make_adapter(spawn_futures=None):
         base_tool_provider=None,
         spawn_futures_ref=spawn_futures if spawn_futures is not None else {},
     )
-
-
-def _run_agent_spawn_block(adapter, agents_path: str, enabled: bool, config=None):
-    """Run the agent_spawn block from prepare_node in isolation.
-
-    Mirrors the exact code in prepare_node.py between the
-    '── agent_spawn ──' and '── end agent_spawn ──' markers,
-    plus the follow-up loop that registers tools into adapter._tools_context.
-    """
-    from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import (
-        make_tool_awaitable,
-    )
-
-    agent_spawn_tools = []
-    agents_prompt_section = ""
-    agents_enabled = False
-
-    if enabled:
-        from cuga.backend.agent_spawn import (
-            AgentDescriptorRegistry,
-            create_spawn_tools,
-            discover_agents,
-            format_available_agents_block,
-        )
-
-        _agent_entries = discover_agents(agents_path)
-        if _agent_entries:
-            _agent_registry = AgentDescriptorRegistry(_agent_entries)
-            agent_spawn_tools = create_spawn_tools(
-                registry=_agent_registry,
-                parent_tools_context=adapter._tools_context,
-                spawn_futures=adapter._spawn_futures,
-                parent_config=config,
-            )
-            agents_prompt_section = format_available_agents_block(_agent_registry)
-            agents_enabled = True
-
-    for tool in agent_spawn_tools:
-        tool_func = (
-            tool.coroutine if (hasattr(tool, "coroutine") and tool.coroutine) else tool.func
-        )
-        if tool_func:
-            adapter._tools_context[tool.name] = make_tool_awaitable(tool_func)
-
-    return agent_spawn_tools, agents_enabled, agents_prompt_section
 
 
 def _get_prompt_template():
@@ -111,186 +45,18 @@ def _get_prompt_template():
     return load_one_prompt(str(prompts_dir / "mcp_prompt.jinja2"), relative_to_caller=False)
 
 
-# ── Import targets for tool_definitions tests ──────────────────────────────
-
-async def _async_fn(x: int) -> str:
-    return str(x)
-
-
-def _sync_fn(x: int) -> str:
-    return str(x)
-
-
-# ── Phase 1: Configuration & Feature Toggle ────────────────────────────────
-
-
-def test_agent_spawn_disabled_by_default():
-    from cuga.config import settings
-
-    assert settings.agent_spawn.enabled is False
+# ── Phase 1: Configuration ─────────────────────────────────────────────────
 
 
 def test_agent_spawn_defaults():
     from cuga.config import settings
 
-    assert settings.agent_spawn.agents_dir == ".agents/agents"
     assert settings.agent_spawn.max_spawn_depth == 2
     assert settings.agent_spawn.forward_sync_subagent_events is True
-    assert settings.agent_spawn.inherit_parent_tools is False
 
 
 def test_agent_spawn_package_importable():
     import cuga.backend.agent_spawn  # must not raise
-
-
-# ── Phase 2: AGENT.md Loader & Registry ───────────────────────────────────
-
-
-def test_discover_agents_empty_dir(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    assert discover_agents(tmp_path / "nonexistent") == []
-
-
-def test_discover_agents_minimal_descriptor(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    _write_agent(tmp_path, "foo", "bar")
-    entries = discover_agents(tmp_path)
-    assert len(entries) == 1
-    assert entries[0].name == "foo"
-    assert entries[0].description == "bar"
-
-
-def test_discover_agents_rejects_path_traversal(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    agent_dir = tmp_path / "bad"
-    agent_dir.mkdir()
-    (agent_dir / "AGENT.md").write_text(
-        "---\nname: ../../etc/passwd\ndescription: bad\n---\n",
-        encoding="utf-8",
-    )
-    assert discover_agents(tmp_path) == []
-
-
-def test_discover_agents_sanitizes_jinja_in_description(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    _write_agent(tmp_path, "safe", "foo {{ x }}")
-    entries = discover_agents(tmp_path)
-    assert entries[0].description == "foo "
-
-
-def test_tool_definition_missing_function_raises(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    agent_dir = tmp_path / "broken"
-    agent_dir.mkdir()
-    (agent_dir / "AGENT.md").write_text(
-        "---\nname: broken\ndescription: desc\ntool_definitions:\n"
-        "  - name: t\n    module: some.module\n---\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="function"):
-        discover_agents(tmp_path)
-
-
-def test_discover_agents_last_wins_on_name_collision(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    dir_a = tmp_path / "a_agent"
-    dir_b = tmp_path / "b_agent"
-    for d in (dir_a, dir_b):
-        d.mkdir()
-    (dir_a / "AGENT.md").write_text(
-        "---\nname: dup\ndescription: first\n---\n", encoding="utf-8"
-    )
-    (dir_b / "AGENT.md").write_text(
-        "---\nname: dup\ndescription: second\n---\n", encoding="utf-8"
-    )
-    entries = discover_agents(tmp_path)
-    assert len(entries) == 1
-    assert entries[0].description == "second"
-
-
-def test_discover_agents_full_frontmatter(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    agent_dir = tmp_path / "full"
-    agent_dir.mkdir()
-    (agent_dir / "AGENT.md").write_text(
-        "---\n"
-        "name: full\n"
-        "description: full agent\n"
-        "tools:\n  - my_tool\n"
-        "skill_tools:\n  - my_skill\n"
-        "model: gpt-4o\n"
-        "thread_id_prefix: full\n"
-        "max_steps: 5\n"
-        "inherit_parent_tools: true\n"
-        "---\nBody.\n",
-        encoding="utf-8",
-    )
-    entries = discover_agents(tmp_path)
-    assert len(entries) == 1
-    e = entries[0]
-    assert e.tools == ("my_tool",)
-    assert e.skill_tools == ("my_skill",)
-    assert e.model == "gpt-4o"
-    assert e.thread_id_prefix == "full"
-    assert e.max_steps == 5
-    assert e.inherit_parent_tools is True
-
-
-# ── Phase 3a: AGENT.md tool_definitions validation ────────────────────────
-
-
-def test_invalid_module_in_tool_definitions_raises_at_parse_time(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    agent_dir = tmp_path / "broken_module"
-    agent_dir.mkdir()
-    (agent_dir / "AGENT.md").write_text(
-        "---\nname: broken_module\ndescription: desc\ntool_definitions:\n"
-        "  - name: t\n    function: some_fn\n---\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="module"):
-        discover_agents(tmp_path)
-
-
-def test_invalid_name_in_tool_definitions_raises_at_parse_time(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-
-    agent_dir = tmp_path / "broken_name"
-    agent_dir.mkdir()
-    (agent_dir / "AGENT.md").write_text(
-        "---\nname: broken_name\ndescription: desc\ntool_definitions:\n"
-        "  - module: some.module\n    function: some_fn\n---\n",
-        encoding="utf-8",
-    )
-    with pytest.raises(ValueError, match="name"):
-        discover_agents(tmp_path)
-
-
-def test_valid_tool_definitions_do_not_raise(tmp_path):
-    from cuga.backend.agent_spawn.loader import discover_agents
-    from cuga.backend.agent_spawn.registry import ToolDefinition
-
-    agent_dir = tmp_path / "valid_agent"
-    agent_dir.mkdir()
-    (agent_dir / "AGENT.md").write_text(
-        "---\nname: valid_agent\ndescription: desc\ntool_definitions:\n"
-        "  - name: my_tool\n    description: does stuff\n"
-        "    module: some.module\n    function: fn\n---\n",
-        encoding="utf-8",
-    )
-    entries = discover_agents(tmp_path)
-    assert len(entries) == 1
-    assert len(entries[0].tool_definitions) == 1
-    assert isinstance(entries[0].tool_definitions[0], ToolDefinition)
-    assert entries[0].tool_definitions[0].name == "my_tool"
 
 
 # ── Phase 3b: Tool Builder ─────────────────────────────────────────────────
@@ -408,46 +174,9 @@ def test_make_thread_id_format():
 
     from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
 
-    entry = _make_entry(name="myagent", thread_id_prefix="myagent")
-    rt = SpawnAgentRuntime(entry, {})
+    rt = SpawnAgentRuntime([])
     tid = rt._make_thread_id()
-    assert re.match(r"^myagent_[0-9a-f]{8}$", tid), f"Unexpected thread_id: {tid}"
-
-
-def test_assemble_tools_built_wins_over_parent():
-    from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
-    from langchain_core.tools import StructuredTool
-
-    async def parent_foo():
-        return "parent"
-
-    async def built_foo():
-        return "built"
-
-    entry = _make_entry(inherit_parent_tools=True, tools=("foo",))
-    rt = SpawnAgentRuntime(entry, {"foo": parent_foo})
-
-    built_tool = StructuredTool.from_function(coroutine=built_foo, name="foo", description="built")
-    rt._build_definition_tools = lambda: [built_tool]
-
-    tools = rt._assemble_tools()
-    by_name = {t.name: t for t in tools}
-    assert by_name["foo"].coroutine is built_foo
-
-
-def test_assemble_tools_no_inherit_ignores_parent():
-    from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
-
-    async def parent_tool():
-        return "parent"
-
-    entry = _make_entry(inherit_parent_tools=False, tools=("parent_tool",))
-    rt = SpawnAgentRuntime(entry, {"parent_tool": parent_tool})
-    rt._build_definition_tools = lambda: []
-    rt._build_skill_tools = lambda: []
-
-    tools = rt._assemble_tools()
-    assert not any(t.name == "parent_tool" for t in tools)
+    assert re.match(r"^sub_cuga_[0-9a-f]{8}$", tid), f"Unexpected thread_id: {tid}"
 
 
 @pytest.mark.asyncio
@@ -456,8 +185,7 @@ async def test_execute_respects_max_spawn_depth():
 
     token = _spawn_depth.set(99)
     try:
-        entry = _make_entry()
-        rt = SpawnAgentRuntime(entry, {})
+        rt = SpawnAgentRuntime([])
         result = await rt.execute("some task")
         assert result.startswith("[SpawnError]")
     finally:
@@ -470,8 +198,7 @@ async def test_execute_async_returns_future_id(monkeypatch):
 
     from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
 
-    entry = _make_entry()
-    rt = SpawnAgentRuntime(entry, {})
+    rt = SpawnAgentRuntime([])
 
     async def _fake_execute(task: str) -> str:
         return "result"
@@ -489,42 +216,10 @@ async def test_execute_async_returns_future_id(monkeypatch):
 def test_create_spawn_tools_returns_two_tools():
     from cuga.backend.agent_spawn.tools import create_spawn_tools
 
-    tools = create_spawn_tools(_make_registry(), {}, {})
+    tools = create_spawn_tools({})
     assert len(tools) == 2
     names = {t.name for t in tools}
     assert "spawn_agent" in names and "get_agent_result" in names
-
-
-@pytest.mark.asyncio
-async def test_spawn_agent_unknown_name_returns_error_string():
-    from cuga.backend.agent_spawn.tools import create_spawn_tools
-
-    futures: dict = {}
-    tools = create_spawn_tools(_make_registry(), {}, futures)
-    spawn = next(t for t in tools if t.name == "spawn_agent")
-    result = await spawn.coroutine(name="nobody", task="hi")
-    assert "Unknown agent" in result
-
-
-@pytest.mark.asyncio
-async def test_spawn_agent_async_returns_future_id(monkeypatch):
-    import re
-
-    from cuga.backend.agent_spawn import runtime
-    from cuga.backend.agent_spawn.tools import create_spawn_tools
-
-    futures: dict = {}
-    reg = _make_registry("mybot")
-    tools = create_spawn_tools(reg, {}, futures)
-    spawn = next(t for t in tools if t.name == "spawn_agent")
-
-    async def _fake_execute_async(self, task):
-        return "future_aabbccdd"
-
-    monkeypatch.setattr(runtime.SpawnAgentRuntime, "execute_async", _fake_execute_async)
-
-    result = await spawn.coroutine(name="mybot", task="do x", mode="async")
-    assert re.match(r"^future_[0-9a-f]+$", result)
 
 
 @pytest.mark.asyncio
@@ -532,7 +227,7 @@ async def test_get_agent_result_unknown_future_id():
     from cuga.backend.agent_spawn.tools import create_spawn_tools
 
     futures: dict = {}
-    tools = create_spawn_tools(_make_registry(), {}, futures)
+    tools = create_spawn_tools(futures)
     get_result = next(t for t in tools if t.name == "get_agent_result")
     result = await get_result.coroutine(future_id="nonexistent")
     assert "Unknown future_id" in result
@@ -543,7 +238,7 @@ async def test_get_agent_result_done_returns_immediately():
     from cuga.backend.agent_spawn.tools import create_spawn_tools
 
     futures = {"fid_done": {"status": "done", "result": "hello"}}
-    tools = create_spawn_tools(_make_registry(), {}, futures)
+    tools = create_spawn_tools(futures)
     get_result = next(t for t in tools if t.name == "get_agent_result")
     result = await get_result.coroutine(future_id="fid_done", timeout=5.0)
     assert result == "hello"
@@ -554,21 +249,18 @@ async def test_get_agent_result_timeout():
     from cuga.backend.agent_spawn.tools import create_spawn_tools
 
     futures = {"fid_run": {"status": "running", "result": None}}
-    tools = create_spawn_tools(_make_registry(), {}, futures)
+    tools = create_spawn_tools(futures)
     get_result = next(t for t in tools if t.name == "get_agent_result")
     result = await get_result.coroutine(future_id="fid_run", timeout=0.1)
     assert "[SpawnTimeout]" in result
 
 
-def test_format_available_agents_block_structure():
+def test_format_available_agents_block_adhoc_description():
     from cuga.backend.agent_spawn.prompt_utils import format_available_agents_block
-    from cuga.backend.agent_spawn.registry import AgentDescriptorEntry, AgentDescriptorRegistry
 
-    reg = AgentDescriptorRegistry([AgentDescriptorEntry(name="a", description="d", source="/")])
-    block = format_available_agents_block(reg)
-    assert block.startswith("<available_agents>")
-    assert "**a**: d" in block
+    block = format_available_agents_block()
     assert "spawn_agent" in block
+    assert "Ad-hoc" in block
 
 
 # ── Phase 6: Graph Closure (spawn_futures ref) ─────────────────────────────
@@ -615,47 +307,6 @@ def test_agent_graph_adapter_spawn_futures_default_is_empty_dict():
     )
     assert isinstance(adapter._spawn_futures, dict)
     assert len(adapter._spawn_futures) == 0
-
-
-# ── Phase 7: Prepare Node Integration ─────────────────────────────────────
-
-
-def test_prepare_node_disabled_no_spawn_tools(tmp_path):
-    adapter = _make_adapter()
-    tools, agents_enabled, section = _run_agent_spawn_block(adapter, str(tmp_path), enabled=False)
-
-    assert tools == []
-    assert agents_enabled is False
-    assert section == ""
-    assert "spawn_agent" not in adapter._tools_context
-    assert "get_agent_result" not in adapter._tools_context
-
-
-def test_prepare_node_enabled_with_agents_injects_tools(tmp_path):
-    _write_agent(tmp_path, "my_agent", "My test agent")
-
-    adapter = _make_adapter()
-    tools, agents_enabled, section = _run_agent_spawn_block(adapter, str(tmp_path), enabled=True)
-
-    assert len(tools) == 2
-    assert agents_enabled is True
-    assert "<available_agents>" in section
-    assert "**my_agent**: My test agent" in section
-    assert "spawn_agent" in adapter._tools_context
-    assert "get_agent_result" in adapter._tools_context
-
-
-def test_prepare_node_enabled_no_agents_dir_no_tools(tmp_path):
-    nonexistent = str(tmp_path / "does_not_exist")
-
-    adapter = _make_adapter()
-    tools, agents_enabled, section = _run_agent_spawn_block(adapter, nonexistent, enabled=True)
-
-    assert tools == []
-    assert agents_enabled is False
-    assert section == ""
-    assert "spawn_agent" not in adapter._tools_context
-    assert "get_agent_result" not in adapter._tools_context
 
 
 # ── Phase 8: MCP Prompt Template ──────────────────────────────────────────
@@ -727,13 +378,10 @@ async def test_execute_emits_spawn_agent_and_result_events(monkeypatch):
     from cuga.backend.agent_spawn import runtime
     from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
 
-    entry = _make_entry(name="tester", thread_id_prefix="tester")
-    rt = SpawnAgentRuntime(entry, {})
+    rt = SpawnAgentRuntime([])
 
     events: list = []
     runtime.set_event_callback(lambda name, data: events.append((name, data)))
-
-    rt._assemble_tools = lambda: []
 
     async def _fake_run_stream(agent, task, thread_id, cfg):
         return "mocked-answer"
@@ -757,15 +405,13 @@ async def test_forward_sync_subagent_events_includes_subagent_key(monkeypatch):
     from cuga.backend.agent_spawn import runtime
     from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
 
-    entry = _make_entry(name="forwarder")
-    rt = SpawnAgentRuntime(entry, {})
+    rt = SpawnAgentRuntime([])
 
     events: list = []
     runtime.set_event_callback(lambda name, data: events.append((name, data)))
 
     class FakeAgent:
         async def stream(self, task, thread_id, config):
-            # CugaAgent.stream() with subgraphs=True yields (namespace, {node: state}) tuples
             yield ((), {"FinalAnswerAgent": {"script": "print('hi')", "final_answer": "done"}})
 
     try:
@@ -773,7 +419,7 @@ async def test_forward_sync_subagent_events_includes_subagent_key(monkeypatch):
         assert result == "done"
         code_agent_events = [e for e in events if e[0] == "CodeAgent"]
         assert len(code_agent_events) == 1
-        assert code_agent_events[0][1]["subagent"] == "forwarder"
+        assert code_agent_events[0][1]["subagent"] == "SubCuga"
     finally:
         runtime.set_event_callback(None)
 
@@ -795,8 +441,7 @@ def test_build_invoke_config_syncs_langfuse_callbacks(monkeypatch):
     )
 
     parent_cfg = {"configurable": {"thread_id": "parent-thread"}}
-    entry = _make_entry(name="obs")
-    rt = SpawnAgentRuntime(entry, {}, parent_config=parent_cfg)
+    rt = SpawnAgentRuntime([], parent_config=parent_cfg)
     rt._build_invoke_config()
 
     assert len(sync_calls) == 1
@@ -814,10 +459,8 @@ async def test_execute_calls_set_session_attribute(monkeypatch):
     )
 
     parent_cfg = {"configurable": {"thread_id": "parent-thread"}}
-    entry = _make_entry(name="obs")
-    rt = SpawnAgentRuntime(entry, {}, parent_config=parent_cfg)
+    rt = SpawnAgentRuntime([], parent_config=parent_cfg)
 
-    rt._assemble_tools = lambda: []
     rt._build_invoke_config = lambda: {}
     rt._build_agent = lambda tools: object()
 
@@ -852,9 +495,7 @@ async def test_execute_async_calls_set_session_before_create_task(monkeypatch):
     monkeypatch.setattr(asyncio, "create_task", _tracked_create_task)
 
     parent_cfg = {"configurable": {"thread_id": "async-thread"}}
-    entry = _make_entry(name="obs")
-    rt = SpawnAgentRuntime(entry, {}, parent_config=parent_cfg)
-    rt._assemble_tools = lambda: []
+    rt = SpawnAgentRuntime([], parent_config=parent_cfg)
 
     async def _fake_execute(task):
         return "done"
