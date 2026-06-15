@@ -1,4 +1,5 @@
 .env
+docs/*.md
 .omc/
 .omx/
 __pycache__
