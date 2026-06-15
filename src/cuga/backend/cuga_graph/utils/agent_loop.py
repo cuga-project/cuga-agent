@@ -267,6 +267,7 @@ def _spawn_to_stream_event(name: str, data: dict) -> Optional["StreamEvent"]:
             "type": "start",
             "agent_name": data.get("agent_name", ""),
             "task": data.get("task", ""),
+            "spawn_id": data.get("spawn_id", ""),
         })
         return StreamEvent(name="SubAgent", data=payload)
     if name == "SpawnAgentResult":
@@ -275,6 +276,7 @@ def _spawn_to_stream_event(name: str, data: dict) -> Optional["StreamEvent"]:
             "agent_name": data.get("agent_name", ""),
             "status": data.get("status", ""),
             "answer": data.get("answer", ""),
+            "spawn_id": data.get("spawn_id", ""),
         })
         return StreamEvent(name="SubAgent", data=payload)
     if name == "CodeAgent":
@@ -288,7 +290,12 @@ def _spawn_to_stream_event(name: str, data: dict) -> Optional["StreamEvent"]:
             val = data.get(key)
             if val and isinstance(val, str):
                 safe_data[key] = val
-        payload = json.dumps({"type": "step", "agent_name": agent_name, **safe_data})
+        payload = json.dumps({
+            "type": "step",
+            "agent_name": agent_name,
+            "spawn_id": data.get("spawn_id", ""),
+            **safe_data,
+        })
         return StreamEvent(name="SubAgent", data=payload)
     return None
 
