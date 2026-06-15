@@ -20,6 +20,11 @@ from cuga.config import settings
 
 _spawn_depth: contextvars.ContextVar[int] = contextvars.ContextVar("_spawn_depth", default=0)
 
+# Tools that should never be passed down to subagents (would cause recursion or confusion).
+_SPAWN_INTERNAL_TOOL_NAMES: frozenset[str] = frozenset({
+    "spawn_agent", "get_agent_result", "load_skill", "find_tools", "create_update_todos",
+})
+
 _event_callback: Optional[Callable[[str, dict], None]] = None
 
 
@@ -97,13 +102,50 @@ class SpawnAgentRuntime:
         # Use the caller-provided futures dict (same object as in create_spawn_tools closure).
         # Falls back to the module-level dict when instantiated outside the tools factory.
         self._spawn_futures: Dict[str, Any] = spawn_futures_ref if spawn_futures_ref is not None else _spawn_futures
+        # Pre-built StructuredTool list for ad-hoc spawning — set by adhoc() classmethod.
+        self._adhoc_tools: Optional[List[StructuredTool]] = None
+
+    @classmethod
+    def adhoc(
+        cls,
+        parent_tools_context: Dict[str, Any],
+        parent_config: Optional[Dict[str, Any]] = None,
+        spawn_futures_ref: Optional[Dict[str, Any]] = None,
+        parent_structured_tools: Optional[List[StructuredTool]] = None,
+    ) -> "SpawnAgentRuntime":
+        """Create a runtime for an ad-hoc subagent that inherits all parent tools.
+
+        The subagent gets a fresh context (no conversation history) with the same
+        tool set as the parent, minus spawn/skill meta-tools. This is the "fresh
+        eyes" pattern: the caller skill instructs CUGA to delegate via natural
+        language (e.g. "⚠️ USE SUBAGENTS") without requiring a predefined AGENT.md.
+        """
+        adhoc_entry = AgentDescriptorEntry(
+            name="__adhoc__",
+            description="Ad-hoc subagent with fresh context",
+            source="<runtime>",
+            inherit_parent_tools=True,
+        )
+        rt = cls(adhoc_entry, parent_tools_context, parent_config, spawn_futures_ref)
+        if parent_structured_tools is not None:
+            rt._adhoc_tools = [
+                t for t in parent_structured_tools
+                if t.name not in _SPAWN_INTERNAL_TOOL_NAMES
+            ]
+        return rt
 
     def _resolve_parent_tools(self) -> List[StructuredTool]:
-        """Resolve parent-context tool names to StructuredTool instances.
+        """Resolve parent-context tools to StructuredTool instances.
 
-        Re-wraps functions from parent context at spawn time — avoids a parallel
-        _tools_for_spawn dict and keeps the tool list always current.
+        For ad-hoc spawns, uses the pre-built StructuredTool list (preserving
+        descriptions and schemas). For named agents with explicit tools: list,
+        re-wraps callables from parent context at spawn time.
         """
+        # Ad-hoc path: use pre-built tools with full descriptions/schemas.
+        if self._adhoc_tools is not None:
+            return list(self._adhoc_tools)
+
+        # Named-agent path: re-wrap callables from parent context.
         out: list[StructuredTool] = []
         for name in self._entry.tools:
             fn = self._parent_tools_context.get(name)
@@ -171,9 +213,15 @@ class SpawnAgentRuntime:
             by_name[t.name] = t
         return list(by_name.values())
 
+    @property
+    def _display_name(self) -> str:
+        """Name shown in UI events. Ad-hoc spawns surface as 'SubCuga'."""
+        return "SubCuga" if self._adhoc_tools is not None else self._entry.name
+
     def _make_thread_id(self) -> str:
         """Unique thread_id per spawn: {prefix}_{uuid4().hex[:8]}."""
-        return f"{self._entry.thread_id_prefix}_{uuid4().hex[:8]}"
+        prefix = "sub_cuga" if self._adhoc_tools is not None else self._entry.thread_id_prefix
+        return f"{prefix}_{uuid4().hex[:8]}"
 
     def _build_agent(self, tools: List[StructuredTool]):
         """Return a CugaAgent for the given tool set, reusing a cached instance when possible.
@@ -228,7 +276,7 @@ class SpawnAgentRuntime:
             if not isinstance(node_data, dict):
                 continue
             if forward and "script" in node_data:
-                _emit("CodeAgent", {**node_data, "subagent": self._entry.name})
+                _emit("CodeAgent", {**node_data, "subagent": self._display_name})
             candidate = node_data.get("final_answer")
             if candidate:
                 final_answer = candidate
@@ -250,7 +298,7 @@ class SpawnAgentRuntime:
         set_session_attribute(parent_thread_id)
 
         _emit("SpawnAgent", {
-            "agent_name": self._entry.name,
+            "agent_name": self._display_name,
             "task": task[:200],
             "mode": "sync",
             "thread_id": thread_id,
@@ -264,7 +312,7 @@ class SpawnAgentRuntime:
             _spawn_depth.reset(token)
 
         _emit("SpawnAgentResult", {
-            "agent_name": self._entry.name,
+            "agent_name": self._display_name,
             "thread_id": thread_id,
             "status": "success",
             "answer": answer[:500],
