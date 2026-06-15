@@ -8,17 +8,8 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
-from cuga.backend.agent_spawn.registry import AgentDescriptorRegistry
-
 
 class SpawnAgentInput(BaseModel):
-    name: Optional[str] = Field(
-        None,
-        description=(
-            "Named agent from <available_agents>. Omit (or pass null) to spawn an ad-hoc "
-            "subagent that inherits all your tools with a fresh context and no prior conversation."
-        ),
-    )
     task: str = Field(
         ...,
         description=(
@@ -36,34 +27,23 @@ class GetAgentResultInput(BaseModel):
 
 
 def create_spawn_tools(
-    registry: AgentDescriptorRegistry,
-    parent_tools_context: Dict[str, Any],
     spawn_futures: Dict[str, Any],
     parent_config: Optional[Dict[str, Any]] = None,
     parent_structured_tools: Optional[List[StructuredTool]] = None,
 ) -> list[StructuredTool]:
     """Factory: returns [spawn_agent_tool, get_agent_result_tool]."""
 
-    async def spawn_agent(name: Optional[str] = None, task: str = "", mode: str = "sync") -> str:
+    async def spawn_agent(task: str = "", mode: str = "sync") -> str:
         from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
 
-        if name:
-            entry = registry.get(name)
-            if entry is None:
-                known = ", ".join(e.name for e in registry.all()) or "(none — use ad-hoc spawning by omitting name)"
-                return f"Unknown agent: {name!r}. Known agents: {known}"
-            rt = SpawnAgentRuntime(entry, parent_tools_context, parent_config, spawn_futures_ref=spawn_futures)
-        else:
-            rt = SpawnAgentRuntime.adhoc(
-                parent_tools_context,
-                parent_config,
-                spawn_futures_ref=spawn_futures,
-                parent_structured_tools=parent_structured_tools,
-            )
+        rt = SpawnAgentRuntime.from_parent(
+            parent_config,
+            spawn_futures_ref=spawn_futures,
+            parent_structured_tools=parent_structured_tools,
+        )
 
         if mode == "async":
-            future_id = await rt.execute_async(task)
-            return future_id
+            return await rt.execute_async(task)
         return await rt.execute(task)
 
     async def get_agent_result(future_id: str, timeout: float = 60.0) -> str:
@@ -83,10 +63,10 @@ def create_spawn_tools(
         coroutine=spawn_agent,
         name="spawn_agent",
         description=(
-            "Spawn a subagent with fresh context to handle a task independently. "
-            "Omit 'name' for an ad-hoc subagent that inherits all your tools. "
-            "Pass 'name' to use a named agent from <available_agents>. "
-            "mode='sync' waits for the result; mode='async' returns a future_id."
+            "Spawn a SubCuga subagent with fresh context to handle a task independently. "
+            "The subagent inherits all your tools and runs without any prior conversation history. "
+            "Pass the complete task description — everything the subagent needs to succeed. "
+            "mode='sync' waits for the result; mode='async' returns a future_id for get_agent_result."
         ),
         args_schema=SpawnAgentInput,
     )
