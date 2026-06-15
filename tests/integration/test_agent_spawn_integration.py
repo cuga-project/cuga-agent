@@ -272,10 +272,15 @@ async def test_skill_agents_spawn_agent_tool_callable(tmp_path, monkeypatch):
 
 
 def test_number_theory_production_skill_agents_load():
-    """The production .agents/skills/number_theory SKILL.md bundles real agent AGENT.md files."""
+    """The production number_theory SKILL.md registers tools directly in its frontmatter.
+
+    In the new fluid-spawning model there are no AGENT.md files; tools are pre-registered
+    into CUGA's own context via the skill's tools: frontmatter block so ad-hoc subagents
+    can inherit them.
+    """
     from pathlib import Path as _Path
     from cuga.backend.skills.loader import _parse_skill_file
-    from cuga.backend.agent_spawn.tool_builder import build_tool_from_definition
+    from cuga.backend.agent_spawn.tool_builder import build_tools_from_skill_tool_definitions
 
     skill_md = (
         _Path(__file__).resolve().parents[2]
@@ -289,12 +294,17 @@ def test_number_theory_production_skill_agents_load():
 
     entry = _parse_skill_file(skill_md)
     assert entry is not None
-    names = {d.name for d in entry.agent_descriptors}
-    assert "prime_factorizer" in names, f"prime_factorizer not in {names}"
-    assert "modular_solver" in names, f"modular_solver not in {names}"
 
-    # Verify the tools referenced in the AGENT.md are importable and buildable
-    for descriptor in entry.agent_descriptors:
-        for td in descriptor.tool_definitions:
-            tool = build_tool_from_definition(td)
-            assert tool is not None
+    # No embedded AGENT.md descriptors in the new format
+    assert entry.agent_descriptors == (), "number_theory should have no embedded AGENT.md descriptors"
+
+    # Tools are declared directly in SKILL.md frontmatter
+    tool_names = {td["name"] for td in entry.tool_definitions}
+    assert "prime_factorize" in tool_names, f"prime_factorize not in {tool_names}"
+    assert "solve_crt" in tool_names, f"solve_crt not in {tool_names}"
+
+    # Verify the tools are importable and buildable
+    built = build_tools_from_skill_tool_definitions(entry)
+    assert len(built) == 2
+    built_names = {t.name for t in built}
+    assert built_names == {"prime_factorize", "solve_crt"}
