@@ -9,7 +9,7 @@ reviews:
   auto_apply_labels: true
 
   labeling_instructions:
-    - label: complexity: low
+    - label: "complexity: low"
       instructions: |
         Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
         Use complexity: low when the change is narrow, well-bounded, and easy to reason about:
@@ -20,7 +20,7 @@ reviews:
         - A large diff can still be low complexity if it is mechanical (formatting, renames, generated
           output, bulk docs) and does not alter runtime behavior or review risk
 
-    - label: complexity: medium
+    - label: "complexity: medium"
       instructions: |
         Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
         Use complexity: medium when the change spans multiple concerns or needs careful validation:
@@ -31,7 +31,7 @@ reviews:
         - Requires checking edge cases, test coverage, and interactions between changed parts
         - A small diff can still be medium complexity if the behavioral surface area is non-obvious
 
-    - label: complexity: high
+    - label: "complexity: high"
       instructions: |
         Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
         Use complexity: high when the change is broad, risky, or hard to validate:
