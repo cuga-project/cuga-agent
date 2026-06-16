@@ -5,8 +5,8 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
-TaskMode = Literal["task_agent", "tool"]
-GatewayMode = Literal["decision_agent", "tool"]
+TaskMode = Literal["task_agent", "native"]
+GatewayMode = Literal["decision_agent", "native"]
 HookType = Literal["pre_edge", "post_node", "pre_gateway", "post_gateway"]
 HookAction = Literal[
     "continue",

@@ -132,14 +132,14 @@ class FlowConfig:
             instruction = agent_cfg.get("system_instruction") or task.get("instruction", "")
             if instruction:
                 task_instructions[task_id] = instruction
-            if mode == "task_agent" or (mode != "tool" and has_agent):
+            if mode == "task_agent" or (mode != "native" and has_agent):
                 agentic_task_ids.append(task_id)
             else:
                 tool_tasks[task_id] = task.get("tool") or None
 
         decision_gateway_ids = [
             gw_id for gw_id, gw_cfg in self.gateways_config.items()
-            if isinstance(gw_cfg, dict) and gw_cfg.get("mode", "tool") == "decision_agent"
+            if isinstance(gw_cfg, dict) and gw_cfg.get("mode", "native") == "decision_agent"
         ]
 
         flow_conditions: Dict[str, str] = {}
@@ -210,7 +210,7 @@ class FlowConfig:
           - mode: task_agent is explicitly set, OR
           - an agent: sub-section is present (implicit task_agent, backward-compatible).
 
-        Tasks with mode: tool (or no agent:) are handled by create_tool_tasks() instead.
+        Tasks with mode: native (or no agent:) are handled by create_tool_tasks() instead.
 
         Returns:
             Dict mapping task_id -> TaskAgent
@@ -226,8 +226,8 @@ class FlowConfig:
             mode = task_config.get("mode", "")
             agent_config = task_config.get("agent", {})
 
-            # tool mode: skip — handled by create_tool_tasks()
-            if mode == "tool":
+            # native mode: skip — handled by create_tool_tasks()
+            if mode == "native":
                 continue
             # task_agent mode: requires agent: section
             if not agent_config:
@@ -255,9 +255,9 @@ class FlowConfig:
 
     def create_tool_tasks(self) -> Dict[str, Optional[str]]:
         """
-        Collect tool-mode task declarations from the YAML.
+        Collect native-mode task declarations from the YAML.
 
-        A task is in tool mode when mode: tool is explicitly set OR when no
+        A task is in native mode when mode: native is explicitly set OR when no
         agent: section is present (default).  The optional tool: field names
         the callable in FlowAgent.tools that the node will invoke.
 
@@ -414,14 +414,14 @@ class FlowConfig:
 
         Returns:
             Dict mapping gateway_id -> DecisionAgent instance.
-            Gateways with mode: tool (or no mode) are not included.
+            Gateways with mode: native (or no mode) are not included.
         """
         agents: Dict[str, DecisionAgent] = {}
 
         for gateway_id, gw_cfg in self.gateways_config.items():
             if not isinstance(gw_cfg, dict):
                 continue
-            if gw_cfg.get("mode", "tool") != "decision_agent":
+            if gw_cfg.get("mode", "native") != "decision_agent":
                 continue
 
             policy_path = gw_cfg.get("policy", "")

@@ -16,9 +16,9 @@ variables:
   loan_granted: false
 
 tasks:
-  # Default for any BPMN task not listed here: mode: tool (pass-through, no LLM).
+  # Default for any BPMN task not listed here: mode: native (pass-through, no LLM).
   # mode: task_agent  → full CugaAgent reasoning loop, requires agent: section
-  # mode: tool        → lightweight tool node; optional tool: names the callable
+  # mode: native      → lightweight native node; optional tool: names the callable
 
   - id: "Activity_0oydey5"
     mode: task_agent
@@ -46,9 +46,9 @@ tasks:
       tools: []
       policy: "../policies/task-rejection_handler.md"
 
-  # Example tool-mode task (not active in this process — illustrative):
+  # Example native-mode task (not active in this process — illustrative):
   # - id: "Activity_audit_log"
-  #   mode: tool
+  #   mode: native
   #   tool: "write_audit_log"   # calls FlowAgent.tools["write_audit_log"](state)
 
 gateways:
@@ -63,7 +63,7 @@ gateways:
         decision: "Reject — credit score insufficient"
 
   Gateway_15y9k7z:
-    mode: tool                    # merge gateway — single outgoing flow, no decision needed
+    mode: native                  # merge gateway — single outgoing flow, no decision needed
 
 action_permissions:
   permitted_actions:

@@ -16,9 +16,9 @@ variables:
   invoice_generated: false
 
 tasks:
-  # Default for any BPMN task not listed here: mode: tool (pass-through, no LLM).
+  # Default for any BPMN task not listed here: mode: native (pass-through, no LLM).
   # mode: task_agent  → full CugaAgent reasoning loop, requires agent: section
-  # mode: tool        → lightweight tool node; optional tool: names the callable
+  # mode: native      → lightweight native node; optional tool: names the callable
 
   - id: "Activity_0oydey5"
     mode: task_agent
@@ -46,10 +46,10 @@ tasks:
 
 gateways:
   Gateway_09ad5fc:
-    mode: tool    # parallel split — all branches run concurrently, no decision needed
+    mode: native    # parallel split — all branches run concurrently, no decision needed
 
   Gateway_15y9k7z:
-    mode: tool    # parallel join — waits for all incoming branches, no decision needed
+    mode: native    # parallel join — waits for all incoming branches, no decision needed
 
 action_permissions:
   permitted_actions:

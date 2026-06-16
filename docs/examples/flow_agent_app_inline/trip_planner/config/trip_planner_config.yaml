@@ -12,12 +12,12 @@ variables:
   trip_plan: ""
 
 tasks:
-  # Default for any BPMN task not listed here: mode: tool (pass-through, no LLM).
+  # Default for any BPMN task not listed here: mode: native (pass-through, no LLM).
   # mode: task_agent  → full CugaAgent reasoning loop, requires agent: section
-  # mode: tool        → lightweight tool node; optional tool: names the callable
+  # mode: native      → lightweight native node; optional tool: names the callable
 
   - id: "Activity_0w2einw"
-    mode: tool   # "Request travel destination" — pass-through; destination comes from process variables
+    mode: native   # "Request travel destination" — pass-through; destination comes from process variables
 
   - id: "Activity_1dlyezk"
     mode: task_agent
@@ -31,7 +31,7 @@ tasks:
       destination: "destination"
 
   - id: "Activity_199zx27"
-    mode: tool   # "Plan trip by human" — pass-through; human-authored plan is in process variables
+    mode: native   # "Plan trip by human" — pass-through; human-authored plan is in process variables
 
   - id: "Activity_00olk6b"
     mode: task_agent
@@ -43,7 +43,7 @@ tasks:
 
 gateways:
   Gateway_1ctgj6w:
-    mode: tool
+    mode: native
     flows:
       Flow_0g3h7rx:
         condition: "${planning_preference} == agent"
@@ -51,7 +51,7 @@ gateways:
         condition: "${planning_preference} == human"
 
   Gateway_1c6a5ar:
-    mode: tool   # merge/join — single outgoing flow, no decision needed
+    mode: native   # merge/join — single outgoing flow, no decision needed
 
 # No hooks for this process
 

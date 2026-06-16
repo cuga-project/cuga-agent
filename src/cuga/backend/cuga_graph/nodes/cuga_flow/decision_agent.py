@@ -18,7 +18,7 @@ Direct tool-calling is deterministic: LLM calls the tool, gets TRUE/FALSE, repli
 with only the chosen flow ID. The CugaAgent is still created (lazy) so the agent is
 conceptually a CugaAgent with a registered tool; it is exposed via _get_agent().
 
-If a gateway is configured in "tool" mode the FlowAgent routes it inline using
+If a gateway is configured in "native" mode the FlowAgent routes it inline using
 condition eval alone — no DecisionAgent instance is created for it.
 
 Note: CugaAgent is imported lazily inside methods to avoid a circular import:

@@ -90,7 +90,7 @@ The gateway condition expression is evaluated by substituting `${variable}` toke
 **Step 2 — policy-governed decision** (CugaAgent)
 If the condition result is conclusive and unambiguous, the flow is selected directly. Otherwise, the `CugaAgent` reads the condition result, the full process state, and the gateway's markdown policy, then selects exactly one flow ID in adherence to that policy.
 
-Gateways with a single outgoing flow, or configured as `mode: tool`, are routed inline by `FlowAgent` using condition evaluation directly — no `DecisionAgent` is instantiated for them.
+Gateways with a single outgoing flow, or configured as `mode: native`, are routed inline by `FlowAgent` using condition evaluation directly — no `DecisionAgent` is instantiated for them.
 
 ```yaml
 gateways:
@@ -243,7 +243,7 @@ A module-level utility (`eval_condition`) that evaluates BPMN condition expressi
 2. Parses the resulting expression into a binary comparison
 3. Applies the operator safely using Python's `operator` module
 
-Used by `DecisionAgent` and by `FlowAgent` directly for tool-mode gateways.
+Used by `DecisionAgent` and by `FlowAgent` directly for native-mode gateways.
 
 ---
 
