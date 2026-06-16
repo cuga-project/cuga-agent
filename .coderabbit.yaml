@@ -1,0 +1,47 @@
+# yaml-language-server: $schema=https://coderabbit.ai/integrations/schema.v2.json
+
+language: en-US
+
+reviews:
+  profile: chill
+  high_level_summary: true
+  suggested_labels: true
+  auto_apply_labels: true
+
+  labeling_instructions:
+    - label: complexity: low
+      instructions: |
+        Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
+        Use complexity: low when the change is narrow, well-bounded, and easy to reason about:
+        - Single concern: one bug, one doc fix, one test, one config knob, one isolated helper
+        - Behavior is obvious from the diff; no hidden coupling or cross-subsystem effects
+        - No changes to core agent loop, auth, security, policies, concurrency, or data integrity
+        - Reviewer can validate correctness without tracing through multiple subsystems
+        - A large diff can still be low complexity if it is mechanical (formatting, renames, generated
+          output, bulk docs) and does not alter runtime behavior or review risk
+
+    - label: complexity: medium
+      instructions: |
+        Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
+        Use complexity: medium when the change spans multiple concerns or needs careful validation:
+        - New feature or non-trivial refactor with clear boundaries but real logic to verify
+        - Touches 2+ related areas (e.g. agent node + prompt, API + frontend, tool wiring + tests)
+        - Non-breaking changes to agent graph nodes, MCP/tool wiring, LLM prompts, or API contracts
+        - Dependency, CI, or config changes that affect how the system runs or is built
+        - Requires checking edge cases, test coverage, and interactions between changed parts
+        - A small diff can still be medium complexity if the behavioral surface area is non-obvious
+
+    - label: complexity: high
+      instructions: |
+        Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
+        Use complexity: high when the change is broad, risky, or hard to validate:
+        - Architectural refactors, new subsystems, or changes to core agent loop / supervisor orchestration
+        - Security, auth, sandboxing, policy/guardrails, or multi-tenant context handling
+        - Breaking API/schema changes, migrations, concurrency, or distributed-system behavior
+        - Wide blast radius across subsystems even if individual edits look small
+        - Touches deployment, Docker, release pipelines, or critical production paths
+        - When in doubt between medium and high for security- or data-integrity-related changes, choose high
+
+  auto_review:
+    enabled: true
+    drafts: false
