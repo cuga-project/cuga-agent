@@ -1162,6 +1162,14 @@ async def _next_event_or_stop(stream, stop_event):
         return None, "done"
 
 
+def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> None:
+    """Propagate the authenticated user and service scope onto the graph state."""
+    from cuga.config import get_service_instance_id, get_tenant_id
+
+    state.user_id = user_id
+    state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+
+
 async def event_stream(
     query: str,
     api_mode=False,
@@ -1240,10 +1248,7 @@ async def event_stream(
                 local_state.thread_id = thread_id
 
     if local_state:
-        from cuga.config import get_service_instance_id, get_tenant_id
-
-        local_state.user_id = user_id
-        local_state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+        apply_request_user_context(local_state, user_id)
         if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
             from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
 

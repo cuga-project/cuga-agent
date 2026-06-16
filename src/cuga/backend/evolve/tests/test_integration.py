@@ -221,6 +221,32 @@ class TestUserFacts:
         result = await EvolveIntegration.get_guidelines("test task")
         assert result is None
 
+    @pytest.mark.asyncio
+    @patch.object(EvolveIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_passes_multi_user_params(self, mock_settings, mock_call_tool):
+        mock_settings.evolve.enabled = True
+        mock_settings.evolve.lite_mode_only = False
+        mock_call_tool.return_value = "guideline text"
+        result = await EvolveIntegration.get_guidelines(
+            "test task", user_id="user-1", namespace_id="tenant-a", session_id="thread-99"
+        )
+        assert result == "guideline text"
+        mock_call_tool.assert_called_once_with(
+            "get_guidelines",
+            {"task": "test task", "user_id": "user-1", "namespace_id": "tenant-a", "session_id": "thread-99"},
+        )
+
+    @pytest.mark.asyncio
+    @patch.object(EvolveIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_omits_none_multi_user_params(self, mock_settings, mock_call_tool):
+        mock_settings.evolve.enabled = True
+        mock_settings.evolve.lite_mode_only = False
+        mock_call_tool.return_value = "guideline text"
+        await EvolveIntegration.get_guidelines("test task", user_id=None, namespace_id=None)
+        mock_call_tool.assert_called_once_with("get_guidelines", {"task": "test task"})
+
 
 class TestToolDispatch:
     """Test transport selection and fallback behavior."""
@@ -369,3 +395,46 @@ class TestSaveTrajectory:
         mock_settings.evolve.save_on_failure = True
         mock_call_tool.side_effect = asyncio.TimeoutError("Operation timed out")
         await EvolveIntegration.save_trajectory([HumanMessage(content="test")], "task_1", success=True)
+
+    @pytest.mark.asyncio
+    @patch.object(EvolveIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_passes_multi_user_params(self, mock_settings, mock_call_tool):
+        mock_settings.evolve.enabled = True
+        mock_settings.evolve.lite_mode_only = False
+        mock_settings.evolve.save_on_success = True
+        mock_settings.evolve.save_on_failure = True
+        messages = [HumanMessage(content="Hello"), AIMessage(content="Hi")]
+        await EvolveIntegration.save_trajectory(
+            messages,
+            "task_1",
+            success=True,
+            user_id="user-1",
+            namespace_id="tenant-a",
+            session_id="thread-99",
+        )
+        mock_call_tool.assert_called_once()
+        call_args = mock_call_tool.call_args[0]
+        assert call_args[0] == "save_trajectory"
+        payload = call_args[1]
+        assert payload["user_id"] == "user-1"
+        assert payload["namespace_id"] == "tenant-a"
+        assert payload["session_id"] == "thread-99"
+        assert "trajectory_data" in payload
+        assert payload["task_id"] == "task_1"
+
+    @pytest.mark.asyncio
+    @patch.object(EvolveIntegration, "_call_tool", new_callable=AsyncMock)
+    @patch("cuga.backend.evolve.integration.settings")
+    async def test_omits_none_multi_user_params(self, mock_settings, mock_call_tool):
+        mock_settings.evolve.enabled = True
+        mock_settings.evolve.lite_mode_only = False
+        mock_settings.evolve.save_on_success = True
+        mock_settings.evolve.save_on_failure = True
+        messages = [HumanMessage(content="Hello"), AIMessage(content="Hi")]
+        await EvolveIntegration.save_trajectory(messages, "task_1", success=True)
+        mock_call_tool.assert_called_once()
+        payload = mock_call_tool.call_args[0][1]
+        assert "user_id" not in payload
+        assert "namespace_id" not in payload
+        assert "session_id" not in payload
