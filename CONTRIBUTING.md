@@ -116,6 +116,10 @@ Why this matters:
 
 ## Pull Request Guidelines
 
+### PR complexity labels
+
+CodeRabbit automatically applies one `complexity: low`, `complexity: medium`, or `complexity: high` label to each PR based on **scope and conceptual risk**, not diff size. See [`.coderabbit.yaml`](.coderabbit.yaml) for the rubric.
+
 - Keep diffs small; avoid drive-by refactors. Separate formatting-only PRs from feature/fix PRs.
 - Include a brief summary of what/why, and link related issues (e.g., `Refs: #123`).
 - Add/update tests when changing behavior.
