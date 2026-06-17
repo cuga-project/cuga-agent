@@ -141,6 +141,11 @@ CugaAgent
 
 The wrapper is transparent until a guard policy exists.
 
+Direct SDK tools are enforced at runtime under the app name `"runtime_tools"`.
+If a `ToolGuide` uses `target_apps`, it must include `"runtime_tools"` for
+directly provided LangChain/runtime tools; otherwise the runtime app filter will
+treat the guard as not applicable.
+
 ---
 
 ## Creating a ToolGuide
@@ -212,6 +217,10 @@ guard_code = await agent.policies.generate_tool_guard_code(
 ```
 
 If `app_name` is omitted, ToolGuard tries to auto-detect the app exposing the target tool. If multiple apps expose the same tool name, pass `app_name` explicitly.
+
+For runtime enforcement, `target_apps` is also checked. Direct SDK tools use
+`"runtime_tools"` at runtime, so policies scoped with `target_apps` must include
+`"runtime_tools"` to enforce on those tools.
 
 Then store the generated code:
 
@@ -306,6 +315,22 @@ base_provider = unwrap_tool_provider(tool_provider)
 ```
 
 This is mainly useful for compatibility paths such as checking whether the underlying provider is a `DirectLangChainToolsProvider`.
+
+---
+
+## Policy code execution and trust model
+
+`policy_code` is admin-authored Python executed by the ToolGuard runtime in the
+tool-execution/backend context. In current CUGA Lite flows, local agent execution
+calls the guarded provider in the backend service process, and E2B execution
+calls back to the backend `/functions/call` path; in both cases the guard code
+runs with backend service-process privileges, not inside the agent code sandbox.
+
+Only trusted administrators with manage access should be allowed to create or
+modify `policy_code`. Review guard code for correctness, security, and
+performance before enabling it. Moving guard execution into a sandboxed
+tool-execution worker is a defense-in-depth architecture option, but it is not
+the current runtime behavior.
 
 ---
 
