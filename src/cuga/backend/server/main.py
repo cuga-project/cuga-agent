@@ -2448,6 +2448,7 @@ async def get_policies_config(
                 frontend_policy["target_tools"] = policy_dict.get("target_tools", [])
                 frontend_policy["target_apps"] = policy_dict.get("target_apps")
                 frontend_policy["guide_content"] = policy_dict.get("guide_content", "")
+                frontend_policy["tool_guards"] = policy_dict.get("tool_guards")
                 frontend_policy["prepend"] = policy_dict.get("prepend", False)
             elif policy_dict["type"] == "tool_approval":
                 frontend_policy["required_tools"] = policy_dict.get("required_tools", [])
