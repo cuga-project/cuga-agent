@@ -15,8 +15,9 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
     ensure_toolguard_provider,
     unwrap_tool_provider,
 )
-from cuga.backend.cuga_graph.policy.models import ToolGuard
+from cuga.backend.cuga_graph.policy.models import ToolGuard, ToolGuide
 from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_policy_updates import merge_tool_guards
+from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
 from cuga.backend.cuga_graph.policy.tool_guard.tool_invoker import ToolGuardInvoker
 
 
@@ -63,6 +64,41 @@ class FakeRuntime:
             }
         )
         return self.error
+
+
+class FailingGuardRuntime:
+    def __init__(self, error: Exception) -> None:
+        self.error = error
+
+    async def guard_toolcall(self, **_: Any) -> None:
+        raise self.error
+
+
+class CapturingGuardRuntime:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    async def guard_toolcall(self, **kwargs: Any) -> None:
+        self.calls.append(kwargs)
+
+
+def _make_tool_guide(
+    *,
+    name: str = "Guard policy",
+    tool_name: str = "book_flight",
+    policy_code: str = "async def guard_book_flight(api, args):\n    return None\n",
+    target_apps: list[str] | None = None,
+) -> ToolGuide:
+    return ToolGuide(
+        id=name.lower().replace(" ", "-"),
+        name=name,
+        description="Test guard policy",
+        triggers=[],
+        target_tools=[tool_name],
+        target_apps=target_apps,
+        guide_content="",
+        tool_guards={tool_name: ToolGuard(policy_code=policy_code)},
+    )
 
 
 def _make_recording_tool(calls: list[dict[str, Any]]) -> StructuredTool:
@@ -194,6 +230,112 @@ async def test_toolguard_provider_preserves_metadata_on_wrapped_tool_function() 
     assert guarded_tool.func._param_constraints == {"passengers": ["max 3 for regular members"]}
     assert guarded_tool.func._response_schemas == {"success": {"type": "object"}}
     assert guarded_tool.args_schema is raw_tool.args_schema
+
+
+@pytest.mark.asyncio
+async def test_toolguard_runtime_blocks_on_internal_guard_error() -> None:
+    runtime = ToolGuardRuntime(DummyProvider([]), enable_policies=False)
+    runtime._initialized = True
+    runtime.tool_to_guards = {"book_flight": [_make_tool_guide()]}
+    runtime._runtimes_by_app["runtime_tools"] = FailingGuardRuntime(RuntimeError("boom"))
+
+    error = await runtime.guard_tool_call(
+        app_name="runtime_tools",
+        function_name="book_flight",
+        arguments={"passengers": 4},
+    )
+
+    assert error is not None
+    assert "Internal guard error for 'book_flight': boom" in error
+    assert "Tool call blocked as a safety precaution" in error
+
+
+@pytest.mark.asyncio
+async def test_toolguard_runtime_blocks_when_runtime_unavailable_for_applicable_guard() -> None:
+    runtime = ToolGuardRuntime(DummyProvider([]), enable_policies=False)
+    runtime._initialized = True
+    runtime.tool_to_guards = {"book_flight": [_make_tool_guide()]}
+
+    async def unavailable_runtime(_: str) -> None:
+        return None
+
+    runtime._get_or_create_runtime_for_app = unavailable_runtime  # type: ignore[method-assign]
+
+    error = await runtime.guard_tool_call(
+        app_name="runtime_tools",
+        function_name="book_flight",
+        arguments={"passengers": 4},
+    )
+
+    assert error is not None
+    assert "ToolGuard runtime unavailable for 'book_flight' in app 'runtime_tools'" in error
+    assert "Tool call blocked because an applicable guard policy exists" in error
+
+
+@pytest.mark.asyncio
+async def test_toolguard_runtime_blocks_invalid_declared_policy_code() -> None:
+    runtime = ToolGuardRuntime(DummyProvider([]), enable_policies=False)
+    runtime._initialized = True
+    runtime._register_policy_guards(
+        _make_tool_guide(
+            name="Invalid guard policy",
+            policy_code="def guard_book_flight(api, args):\n    return None\n",
+        )
+    )
+
+    error = await runtime.guard_tool_call(
+        app_name="runtime_tools",
+        function_name="book_flight",
+        arguments={"passengers": 4},
+    )
+
+    assert "book_flight" not in runtime.tool_to_guards
+    assert "book_flight" in runtime.invalid_tool_guards
+    assert error is not None
+    assert "Invalid ToolGuard policy_code for 'book_flight' in app 'runtime_tools'" in error
+    assert "Invalid guard policy" in error
+
+
+@pytest.mark.asyncio
+async def test_toolguard_runtime_blocks_args_parameter_collision() -> None:
+    capture_runtime = CapturingGuardRuntime()
+    runtime = ToolGuardRuntime(DummyProvider([]), enable_policies=False)
+    runtime._initialized = True
+    runtime.tool_to_guards = {"tool_with_args": [_make_tool_guide(tool_name="tool_with_args")]}
+    runtime._runtimes_by_app["runtime_tools"] = capture_runtime
+
+    error = await runtime.guard_tool_call(
+        app_name="runtime_tools",
+        function_name="tool_with_args",
+        arguments={"args": "real tool parameter"},
+    )
+
+    assert error is not None
+    assert "Internal guard argument collision for 'tool_with_args'" in error
+    assert capture_runtime.calls == []
+
+
+@pytest.mark.asyncio
+async def test_toolguard_runtime_type_casts_with_tool_args_schema() -> None:
+    raw_tool = _make_recording_tool([])
+    capture_runtime = CapturingGuardRuntime()
+    runtime = ToolGuardRuntime(DummyProvider([raw_tool]), enable_policies=False)
+    runtime._initialized = True
+    runtime.tool_to_guards = {"book_flight": [_make_tool_guide()]}
+    runtime._runtimes_by_app["runtime_tools"] = capture_runtime
+
+    error = await runtime.guard_tool_call(
+        app_name="runtime_tools",
+        function_name="book_flight",
+        arguments={"user_id": "uid_1", "flight_id": "AB12", "passengers": "4"},
+    )
+
+    assert error is None
+    assert len(capture_runtime.calls) == 1
+    guard_args = capture_runtime.calls[0]["args"]
+    assert guard_args["passengers"] == 4
+    assert isinstance(guard_args["passengers"], int)
+    assert guard_args["args"].passengers == 4
 
 
 @pytest.mark.asyncio
