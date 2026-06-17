@@ -2966,9 +2966,12 @@ async def get_subagents_config(current_user: Optional[UserInfo] = Depends(requir
             source_config = {"type": "direct"}
 
             if agent_config.get('a2a_protocol', {}).get('enabled'):
+                a2a_protocol = agent_config.get('a2a_protocol', {})
                 source_config = {
                     "type": "a2a",
-                    "url": agent_config.get('a2a_protocol', {}).get('url', ''),
+                    # Supervisor YAML uses `endpoint` (matching delegation.py); fall
+                    # back to `url` for any older configs that used that key.
+                    "url": a2a_protocol.get('endpoint') or a2a_protocol.get('url', ''),
                     "name": agent_name,
                 }
             elif mcp_servers:
