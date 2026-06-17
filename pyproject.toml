@@ -48,8 +48,11 @@ dependencies = [
     "boto3>=1.34.0",
     # Knowledge engine (replaces OpenRAG)
     "langchain-docling>=2.0,<3.0",
-    "torch", # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels
-    "torchvision", # explicit: must match torch variant (cpu) to avoid operator registration errors
+    # PyTorch: macOS x86_64/Rosetta needs torch<2.3 (last Intel mac wheels); arm64/Linux/Windows use latest
+    "torch; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torch<2.3; sys_platform == 'darwin' and platform_machine == 'x86_64'",
+    "torchvision; sys_platform != 'darwin' or platform_machine != 'x86_64'",
+    "torchvision<0.18; sys_platform == 'darwin' and platform_machine == 'x86_64'",
     "langchain-ollama>=0.2.0",
     "langchain-text-splitters>=1.0,<2.0",
     "beautifulsoup4>=4.12",
@@ -77,6 +80,10 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 
 [tool.uv]
 package = true
+# Force lockfile to include wheels for Intel/Rosetta macOS (PyTorch 2.3+ has no x86_64 mac wheels)
+required-environments = [
+    "sys_platform == 'darwin' and platform_machine == 'x86_64'",
+]
 constraint-dependencies = [
     "pillow>=12.2.0",  # CVE-2026-25990 (PSD), FITS decompression bomb (10.3.0-12.1.x)
     "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441

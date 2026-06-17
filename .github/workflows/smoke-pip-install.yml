@@ -12,6 +12,39 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  dependency-sync-smoke:
+    name: Dependency sync (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS x86_64
+            os: macos-13
+            command: uv sync --locked --no-dev
+          - name: UBI linux amd64
+            os: ubuntu-latest
+            command: uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform x86_64-unknown-linux-gnu
+          - name: UBI linux arm64
+            os: ubuntu-latest
+            command: uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform aarch64-unknown-linux-gnu
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Run dependency sync smoke
+        run: ${{ matrix.command }}
+
   smoke-pip-isolated:
     name: Wheel install + demo_crm OpenAPI
     runs-on: ubuntu-latest
