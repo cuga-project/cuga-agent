@@ -16,7 +16,7 @@ from cuga.backend.evolve.formatting import (
     get_first_human_message_content,
     get_latest_memory_query,
 )
-from cuga.backend.evolve.integration import EvolveIntegration
+from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 from cuga.config import settings
 
 
@@ -43,8 +43,18 @@ async def build_evolve_special_instructions_extension(
     task_description = state.sub_task or get_first_human_message_content(state.chat_messages)
     if task_description:
         try:
+            # Extract multi-user parameters from state for Evolve attribution
+            _evolve_user_id = normalize_evolve_identifier(getattr(state, 'user_id', None))
+            _evolve_namespace_id = (getattr(state, 'service_scope', {}) or {}).get('tenant_id') or None
+            _evolve_session_id = getattr(state, 'thread_id', None)
+
             evolve_guidelines = await asyncio.wait_for(
-                EvolveIntegration.get_guidelines(task_description),
+                EvolveIntegration.get_guidelines(
+                    task_description,
+                    user_id=_evolve_user_id,
+                    namespace_id=_evolve_namespace_id,
+                    session_id=_evolve_session_id,
+                ),
                 timeout=timeout,
             )
         except Exception:
@@ -57,7 +67,7 @@ async def build_evolve_special_instructions_extension(
             logger.debug("Evolve: Injected guidelines section (%d chars)", len(evolve_section))
 
     memory_query = state.sub_task or get_latest_memory_query(state.chat_messages)
-    current_user_id = str(getattr(state, "user_id", "") or "").strip()
+    current_user_id = normalize_evolve_identifier(getattr(state, "user_id", None))
     if current_user_id and memory_query:
         current_agent_id = str(configurable.get("agent_id") or "").strip()
         thread_id_for_memory = str(

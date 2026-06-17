@@ -42,6 +42,13 @@ class LangfuseTraceHandler:
         if not self.trace_id:
             print("No Langfuse trace ID, cannot get data")
             return None
+        # Skip the retry loop if credentials weren't provided at construction
+        # time. Without this guard, httpx fails to build a Basic auth header
+        # from (None, None) and the per-trace retry sleep loop wastes ~150s
+        # per task (2 + 3 + 4.5 + ... over 10 attempts). The warning was
+        # already printed once in __init__. See issue #318.
+        if not self.config.langfuse_public_key or not self.config.langfuse_secret_key:
+            return None
         print(f"Fetching Langfuse data for trace {self.trace_id}...")
         langfuse_data = await self.extract_langfuse_data(
             self.config,
