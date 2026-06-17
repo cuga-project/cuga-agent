@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.runnables import RunnableConfig
 from langgraph.types import Command
@@ -24,6 +24,9 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.tools.runtime_tools import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import AgentInfo, CugaSupervisorState
 from cuga.backend.cuga_graph.nodes.cuga_supervisor.delegation import create_agent_delegation_func
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
+    resolve_supervisor_execution_context,
+)
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
 
@@ -34,6 +37,17 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
         prompt_template_str = prompt_file.read()
     instructions = get_all_instructions_formatted()
 
+    def _store_todos_on_run_state(serialized_todos: List[Dict[str, str]]) -> None:
+        """Persist todos onto the active run's state, not a shared adapter list.
+
+        The create_update_todos tool runs inside ``execute_agent_tool``; the per-run
+        execution context resolved here points at that run's CugaSupervisorState, so
+        concurrent conversations never share a todo list.
+        """
+        exec_ctx = resolve_supervisor_execution_context()
+        if exec_ctx is not None and exec_ctx.state is not None:
+            exec_ctx.state.task_todos = serialized_todos
+
     async def prepare_agents_and_prompt(
         state: CugaSupervisorState, config: Optional[RunnableConfig] = None
     ) -> Command:
@@ -41,7 +55,6 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
 
         is_fresh_conversation = len(state.supervisor_chat_messages or []) <= 1
         if is_fresh_conversation:
-            adapter._task_todos_ref.clear()
             state.task_todos = None
 
         cfg = config.get("configurable", {}) if config else {}
@@ -160,7 +173,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                 }
             agent_tools_for_prompt.append(tool_info)
 
-        todos_tool = await create_update_todos_tool(todos_store_ref=adapter._task_todos_ref)
+        todos_tool = await create_update_todos_tool(write_todos=_store_todos_on_run_state)
         adapter._agent_tools_context["create_update_todos"] = make_tool_awaitable(todos_tool.func)
         agent_tools_for_prompt.append(
             {
@@ -247,8 +260,10 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
             "prepared_prompt": dynamic_prompt,
             "step_count": 0,
             "available_agents": {
-                name: AgentInfo(name=name, type=info["type"], description=info["description"]).model_dump()
-                for name, info in zip([a["name"] for a in agent_list], agent_list)
+                agent["name"]: AgentInfo(
+                    name=agent["name"], type=agent["type"], description=agent["description"]
+                ).model_dump()
+                for agent in agent_list
             },
         }
         if is_fresh_conversation:

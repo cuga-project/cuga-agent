@@ -2398,9 +2398,14 @@ class CugaSupervisor:
 
     async def initialize(self):
         """Initialize policy system and other lazy resources."""
-        if self._auto_load_policies and (not hasattr(self, "_policy_system") or self._policy_system is None):
+        # Honor reset_policy_storage even without auto-load (parity with CugaAgent.initialize):
+        # _ensure_policy_system clears storage when _reset_policy_storage is set.
+        needs_init = self._auto_load_policies and (
+            not hasattr(self, "_policy_system") or self._policy_system is None
+        )
+        if needs_init or self._reset_policy_storage:
             await self.policies._ensure_policy_system()
-            logger.debug("Supervisor policy system auto-initialized during initialize()")
+            logger.debug("Supervisor policy system initialized during initialize()")
 
     @property
     def graph(self):
@@ -2451,9 +2456,12 @@ class CugaSupervisor:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
-        if self._auto_load_policies and (not hasattr(self, "_policy_system") or self._policy_system is None):
+        needs_init = self._auto_load_policies and (
+            not hasattr(self, "_policy_system") or self._policy_system is None
+        )
+        if needs_init or self._reset_policy_storage:
             await self.policies._ensure_policy_system()
-            logger.debug("Supervisor policy system auto-initialized during invoke()")
+            logger.debug("Supervisor policy system initialized during invoke()")
 
         import uuid
         from langchain_core.messages import HumanMessage

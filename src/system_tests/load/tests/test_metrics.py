@@ -34,7 +34,7 @@ def test_report_flags_tail_shift_and_low_speedup():
     )
 
     assert any("tail shift" in warning for warning in report.warnings)
-    assert "user 1" in report.warnings[0]
+    assert any("tail shift" in warning and "user 1" in warning for warning in report.warnings)
     rendered = report.format_report(title="Test Report")
     assert "Concurrency speedup" in rendered
     assert "Finish timeline" in rendered

@@ -212,9 +212,17 @@ class LoadTestWithMockedLLM(BaseTestServerStream):
 
             if self.test_state_isolation:
                 state_check_started = time.monotonic()
-                await asyncio.sleep(1)
 
-                is_ok, state_error = await self.validate_own_thread_state(user_id, thread_id)
+                # Poll until the background history save lands instead of a fixed 1s sleep,
+                # which is both slower than needed and flaky under load.
+                is_ok, state_error = False, "state check did not run"
+                state_check_timeout_s = 5.0
+                while time.monotonic() - state_check_started < state_check_timeout_s:
+                    is_ok, state_error = await self.validate_own_thread_state(user_id, thread_id)
+                    if is_ok:
+                        break
+                    await asyncio.sleep(0.1)
+
                 timings.state_checked_at = time.monotonic()
                 timings.state_check_duration_s = timings.state_checked_at - state_check_started
                 if not is_ok:

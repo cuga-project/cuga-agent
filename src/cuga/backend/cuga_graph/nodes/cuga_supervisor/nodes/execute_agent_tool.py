@@ -117,9 +117,14 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "step_count": state.step_count + 1,
                 **delegation_updates,
             }
-            todo_state_update = extract_task_todos_from_new_vars(new_vars)
-            if todo_state_update is not None:
-                base_update["task_todos"] = todo_state_update
+            # The create_update_todos tool writes onto the run-local state via the execution
+            # context, so prefer that; fall back to scanning execution outputs for older flows.
+            if state.task_todos is not None:
+                base_update["task_todos"] = state.task_todos
+            else:
+                todo_state_update = extract_task_todos_from_new_vars(new_vars)
+                if todo_state_update is not None:
+                    base_update["task_todos"] = todo_state_update
             return base_update
         except Exception as exc:
             error_msg = f"Error during execution: {str(exc)}"

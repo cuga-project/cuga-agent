@@ -79,14 +79,11 @@ def create_cuga_supervisor_graph(
     Returns:
         StateGraph implementing the CugaSupervisor architecture
     """
-    task_todos_ref: List[Dict[str, str]] = []
-
     sup_adapter = SupervisorGraphAdapter(
         agents=agents,
         special_instructions=special_instructions,
         tool_provider=tool_provider,
         base_callbacks=callbacks or [],
-        task_todos_ref=task_todos_ref,
         static_prompt=prompt,
     )
     prepare_node = sup_adapter.build_prepare_node()

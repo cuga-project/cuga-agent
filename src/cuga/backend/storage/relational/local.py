@@ -54,3 +54,13 @@ class LocalRelationalStore:
             if self._conn is not None:
                 await asyncio.to_thread(self._conn.close)
                 self._conn = None
+
+    def close_sync(self) -> None:
+        """Close the connection synchronously.
+
+        For destructive resets (e.g. reset_config_db) invoked from sync callers that
+        delete the backing file; not lock-guarded since no concurrent access is expected.
+        """
+        if self._conn is not None:
+            self._conn.close()
+            self._conn = None

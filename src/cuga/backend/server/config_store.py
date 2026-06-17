@@ -306,6 +306,9 @@ async def delete_all_configs(agent_id: str = "cuga-default") -> int:
 def reset_config_db() -> None:
     from cuga.config import DBS_DIR
 
+    # Close/clear cached relational stores first so we don't leave connections pointing at
+    # the deleted file; the next access reopens against the recreated DB.
+    get_storage().invalidate_relational_stores()
     path = os.path.join(DBS_DIR, "cuga.db")
     if os.path.exists(path):
         os.remove(path)

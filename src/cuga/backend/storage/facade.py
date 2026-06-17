@@ -57,6 +57,22 @@ class StorageFacade:
             await store.close()
         self._relational_stores.clear()
 
+    def invalidate_relational_stores(self) -> None:
+        """Drop cached relational stores so the next access reopens against current files.
+
+        Used after destructive operations (e.g. reset_config_db) that delete the backing
+        local DB file out from under cached connections. Closes connections synchronously
+        when the store supports it; otherwise drops the reference for lazy reopen.
+        """
+        for store in self._relational_stores.values():
+            close_sync = getattr(store, "close_sync", None)
+            if callable(close_sync):
+                try:
+                    close_sync()
+                except Exception:
+                    pass
+        self._relational_stores.clear()
+
     def get_embedding_store(
         self, collection_name: str, schema: "EmbeddingSchemaConfig"
     ) -> "EmbeddingStoreBackend":

@@ -12,7 +12,6 @@ from typing import Any, Callable, Dict, List, Optional
 from langchain_core.messages import BaseMessage
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import (
-    format_current_plan_section,
     format_task_todos_system_block,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import CoreGraphAdapter
@@ -44,14 +43,12 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         special_instructions: Optional[str] = None,
         tool_provider: Optional[Any] = None,
         base_callbacks: Optional[List[Any]] = None,
-        task_todos_ref: Optional[List[Dict[str, str]]] = None,
         static_prompt: Optional[str] = None,
     ) -> None:
         self._agents = agents
         self._special_instructions = special_instructions
         self._tool_provider = tool_provider
         self._base_callbacks = base_callbacks or []
-        self._task_todos_ref = task_todos_ref if task_todos_ref is not None else []
         self._static_prompt = static_prompt
         self._agent_tools_context: Dict[str, Any] = {}
 
@@ -74,11 +71,11 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         return getattr(state, "supervisor_variables", None)
 
     def prepare_system_content(self, state: Any, configurable: dict, base_prompt: str) -> str:
-        if self._task_todos_ref:
-            return base_prompt + format_task_todos_system_block(self._task_todos_ref)
+        # Todos are run-local: the create_update_todos tool writes them onto the per-run state via
+        # the supervisor execution context, so concurrent runs never share a todo list.
         task_todos = getattr(state, "task_todos", None)
         if task_todos:
-            return base_prompt + format_current_plan_section(task_todos)
+            return base_prompt + format_task_todos_system_block(task_todos)
         return base_prompt
 
     def get_invoke_config(self, configurable: dict) -> dict:

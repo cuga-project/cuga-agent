@@ -205,3 +205,33 @@ class TestSupervisorPolicyManagement:
     async def test_policies_property_returns_same_manager(self):
         supervisor = CugaSupervisor(agents={})
         assert supervisor.policies is supervisor.policies
+
+
+class TestSupervisorPolicyInitialization:
+    @pytest.mark.asyncio
+    async def test_initialize_honors_reset_policy_storage_without_auto_load(self, monkeypatch):
+        """reset_policy_storage must trigger policy-system init even when auto-load is off.
+
+        Parity with CugaAgent.initialize(); previously the guard only checked auto-load.
+        """
+        supervisor = CugaSupervisor(agents={}, auto_load_policies=False, reset_policy_storage=True)
+        called = {"value": False}
+
+        async def fake_ensure():
+            called["value"] = True
+
+        monkeypatch.setattr(supervisor.policies, "_ensure_policy_system", fake_ensure)
+        await supervisor.initialize()
+        assert called["value"] is True
+
+    @pytest.mark.asyncio
+    async def test_initialize_skips_when_no_auto_load_and_no_reset(self, monkeypatch):
+        supervisor = CugaSupervisor(agents={}, auto_load_policies=False, reset_policy_storage=False)
+        called = {"value": False}
+
+        async def fake_ensure():
+            called["value"] = True
+
+        monkeypatch.setattr(supervisor.policies, "_ensure_policy_system", fake_ensure)
+        await supervisor.initialize()
+        assert called["value"] is False

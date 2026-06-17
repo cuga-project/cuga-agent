@@ -138,12 +138,17 @@ def test_build_execute_node_returns_async_callable():
     assert asyncio.iscoroutinefunction(node)
 
 
-def test_prepare_system_content_with_task_todos_ref():
+def test_prepare_system_content_injects_run_local_task_todos():
     adapter = _make_adapter()
-    adapter._task_todos_ref = [{"text": "Delegate to CRM", "status": "pending"}]
-    state = SimpleNamespace(task_todos=None)
+    state = SimpleNamespace(task_todos=[{"text": "Delegate to CRM", "status": "pending"}])
     content = adapter.prepare_system_content(state, {}, "System")
     assert "Delegate to CRM" in content
+
+
+def test_prepare_system_content_without_todos_returns_base():
+    adapter = _make_adapter()
+    state = SimpleNamespace(task_todos=None)
+    assert adapter.prepare_system_content(state, {}, "System") == "System"
 
 
 def test_get_invoke_config_returns_callbacks():
