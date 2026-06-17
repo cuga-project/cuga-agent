@@ -175,24 +175,33 @@ class PoliciesManager:
         ```
     """
 
-    def __init__(self, agent: "CugaAgent"):
-        """Initialize policies manager with reference to agent."""
+    def __init__(self, agent: Union["CugaAgent", "CugaSupervisor"]):
+        """Initialize policies manager with reference to agent or supervisor."""
         self._agent = agent
         self._fs_sync = None
 
+    def _agent_tool_provider(self) -> Optional[ToolProviderInterface]:
+        """Return tool_provider when the host exposes one (CugaAgent, optional CugaSupervisor)."""
+        return getattr(self._agent, "tool_provider", None)
+
     def _invalidate_toolguard_runtime(self) -> None:
         """Invalidate ToolGuard runtime/cache if the agent provider supports it."""
-        invalidate_toolguard_provider(self._agent.tool_provider)
+        provider = self._agent_tool_provider()
+        if provider is not None:
+            invalidate_toolguard_provider(provider)
 
     def _attach_policy_storage_to_toolguard(self) -> None:
         """Attach current policy storage to the ToolGuard provider wrapper if available."""
+        provider = self._agent_tool_provider()
+        if provider is None:
+            return
         if (
             hasattr(self._agent, "_policy_system")
             and self._agent._policy_system is not None
             and hasattr(self._agent._policy_system, "storage")
         ):
             configure_toolguard_provider(
-                self._agent.tool_provider,
+                provider,
                 policy_storage=self._agent._policy_system.storage,
             )
 
@@ -2739,6 +2748,7 @@ class CugaSupervisor:
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
         special_instructions: Optional[str] = None,
+        tool_provider: Optional[ToolProviderInterface] = None,
         policy_system: Optional[PolicyConfigurable] = None,
         cuga_folder: Optional[str] = None,
         auto_load_policies: Optional[bool] = None,
@@ -2760,6 +2770,7 @@ class CugaSupervisor:
             special_instructions: Optional workflow instructions injected into the supervisor's
                 system prompt. Use this to guide the supervisor's multi-turn behaviour
                 (e.g. "search first, then present results, then wait for user selection").
+            tool_provider: Optional provider for MCP/external tools the supervisor calls directly
             policy_system: Optional PolicyConfigurable instance (auto-created if not provided)
             cuga_folder: Path to .cuga folder containing policy markdown files
             auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke
@@ -2788,6 +2799,17 @@ class CugaSupervisor:
             filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
         )
         self._reset_policy_storage = reset_policy_storage
+
+        if tool_provider is not None:
+            policy_storage = self._policy_system.storage if self._policy_system is not None else None
+            self.tool_provider = ensure_toolguard_provider(
+                tool_provider,
+                policy_storage=policy_storage,
+                cuga_folder=self.cuga_folder,
+                enabled=settings.policy.enabled,
+            )
+        else:
+            self.tool_provider = None
 
         # Initialize model from settings if not provided
         if not self._model:
@@ -2858,6 +2880,7 @@ class CugaSupervisor:
                 supervisor_model=self._model,
                 agents=self._agents,
                 special_instructions=self._special_instructions,
+                tool_provider=self.tool_provider,
                 callbacks=self._callbacks,
             )
 
