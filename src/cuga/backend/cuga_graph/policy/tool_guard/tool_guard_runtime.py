@@ -805,9 +805,7 @@ class ToolGuardRuntime:
         ]
 
         if not guards:
-            target_apps_summary = {
-                guard.name: guard.target_apps for guard in all_guards if guard.target_apps
-            }
+            target_apps_summary = {guard.name: guard.target_apps for guard in all_guards if guard.target_apps}
             logger.warning(
                 f"Tool '{function_name}' has {len(all_guards)} registered guard(s), but none apply "
                 f"to app '{app_name}' after target_apps filtering. Tool call will proceed unguarded. "
