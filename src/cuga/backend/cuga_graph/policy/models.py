@@ -178,9 +178,11 @@ class ToolGuard(BaseModel):
         default="",
         description=(
             "Python code that validates tool usage compliance. "
-            "This code is executed in a sandboxed environment using the toolguard library. "
+            "This code is admin-authored and executed by the ToolGuard runtime in the "
+            "tool-execution/backend context; in current CUGA Lite flows it runs in the "
+            "backend service process with service-process privileges. "
             "Only trusted administrators with manage access should be allowed to modify policy code. "
-            "While sandboxed, policy code should still be reviewed for correctness and performance."
+            "Policy code should be reviewed for correctness, security, and performance."
         ),
     )
 
@@ -231,7 +233,11 @@ class ToolGuide(BaseModel):
     triggers: List[Trigger] = Field(..., description="Conditions that activate this guide")
     target_tools: List[str] = Field(..., description="List of tool names to enrich (use '*' for all tools)")
     target_apps: Optional[List[str]] = Field(
-        None, description="List of app names to enrich tools for (optional)"
+        None,
+        description=(
+            "List of app names to enrich tools for (optional). Directly provided LangChain/runtime "
+            "tools use the app name 'runtime_tools', so scoped policies for those tools must include it."
+        ),
     )
     guide_content: str = Field(..., description="Markdown content to append to tool descriptions")
     tool_guards: Dict[str, ToolGuard] = Field(
