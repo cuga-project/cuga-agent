@@ -61,6 +61,7 @@ class ToolGuardRuntime:
         self.cuga_folder = cuga_folder
         self.invoker = ToolGuardInvoker(tool_provider)
         self.tool_to_guards: Dict[str, List[ToolGuide]] = {}
+        self.invalid_tool_guards: Dict[str, List[ToolGuide]] = {}
         # Per-app runtime mapping to avoid cross-app collisions
         self._runtimes_by_app: Dict[str, Any] = {}
         self._runtime_domains_by_app: Dict[str, RuntimeDomain] = {}
@@ -158,6 +159,7 @@ class ToolGuardRuntime:
                 except Exception:
                     logger.exception(f"Error while exiting ToolGuard runtime for app '{app_name}'")
         self.tool_to_guards = {}
+        self.invalid_tool_guards = {}
         self._runtimes_by_app = {}
         self._runtime_domains_by_app = {}
 
@@ -198,8 +200,11 @@ class ToolGuardRuntime:
                 logger.error(
                     f"Tool guard for '{tool_name}' in policy '{policy.name}' "
                     f"has policy_code but no valid 'async def guard_*' function found. "
-                    f"Skipping registration to prevent marking tool as guarded without enforcement."
+                    "Tracking as invalid so matching tool calls fail closed."
                 )
+                if tool_name not in self.invalid_tool_guards:
+                    self.invalid_tool_guards[tool_name] = []
+                self.invalid_tool_guards[tool_name].append(policy)
                 continue
 
             if tool_name not in self.tool_to_guards:
@@ -699,117 +704,52 @@ class ToolGuardRuntime:
             self._runtimes_by_app[app_name] = None
             return None
 
-    def _type_cast_arguments(
+    async def _type_cast_arguments(
         self, arguments: Dict[str, Any], app_name: str, function_name: str
     ) -> Dict[str, Any]:
         """
-        Type-cast string arguments to their proper types based on the tool schema.
+        Type-cast arguments using the tool's existing LangChain/Pydantic args_schema.
 
-        This is necessary because LLM outputs and some tool invocation paths may
-        convert all arguments to strings, but guard code expects proper types
-        (e.g., float for annual_revenue, not string).
-
-        Args:
-            arguments: Raw arguments dictionary
-            app_name: Name of the application
-            function_name: Name of the tool/function
-
-        Returns:
-            Type-casted arguments dictionary
+        This avoids reconstructing generated model names from tool names or parsing
+        generated source files. If no schema is available, the original arguments
+        are returned unchanged.
         """
-        # Get the runtime domain for this app to access type information
-        runtime_domain = self._runtime_domains_by_app.get(app_name)
-        if not runtime_domain:
-            logger.debug(f"No runtime domain for app '{app_name}', skipping type casting")
-            return arguments
-
-        # Parse the types file to extract parameter types from Pydantic models
         try:
-            import re
-
-            typed_arguments = {}
-            types_content = runtime_domain.app_types.content
-
-            # Convert function_name to the Args class name
-            # e.g., crm_create_account_accounts_post -> CrmCreateAccountAccountsPostArgs
-            parts = function_name.split('_')
-            args_class_name = ''.join(word.capitalize() for word in parts) + 'Args'
-
-            # Find the class definition in the types file
-            class_pattern = rf'class\s+{re.escape(args_class_name)}\s*\([^)]*\):\s*\n((?:\s+.*\n)*)'
-            class_match = re.search(class_pattern, types_content)
-
-            if not class_match:
+            tools = await self.invoker._get_tools()
+            tool = tools.get(function_name)
+            if tool is None:
                 logger.debug(
-                    f"Could not find Args class '{args_class_name}' for '{function_name}', skipping type casting"
+                    f"Could not find tool '{function_name}' for app '{app_name}', skipping type casting"
                 )
                 return arguments
 
-            class_body = class_match.group(1)
+            args_schema = getattr(tool, "args_schema", None)
+            if args_schema is None:
+                logger.debug(f"Tool '{function_name}' has no args_schema, skipping type casting")
+                return arguments
 
-            # Extract field definitions with types
-            # Pattern: field_name: type or field_name: type | None = default
-            field_pattern = r'^\s+(\w+)\s*:\s*([^=\n]+?)(?:\s*=.*)?$'
-            field_matches = re.findall(field_pattern, class_body, re.MULTILINE)
+            if hasattr(args_schema, "model_validate"):
+                validated = args_schema.model_validate(arguments)
+                typed_arguments = validated.model_dump()
+                logger.debug(f"Type-cast arguments for '{function_name}' using Pydantic v2 args_schema")
+                return arguments | typed_arguments
 
-            # Build type mapping
-            type_map = {}
-            for field_name, field_type in field_matches:
-                # Clean up the type annotation (remove | None, whitespace, etc.)
-                field_type = field_type.strip()
-                # Extract base type from union types like "float | None"
-                if '|' in field_type:
-                    base_type = field_type.split('|')[0].strip()
-                else:
-                    base_type = field_type
-                type_map[field_name] = base_type
+            if hasattr(args_schema, "parse_obj"):
+                validated = args_schema.parse_obj(arguments)
+                typed_arguments = validated.dict()
+                logger.debug(f"Type-cast arguments for '{function_name}' using Pydantic v1 args_schema")
+                return arguments | typed_arguments
 
-            logger.debug(f"Type map for '{function_name}': {type_map}")
-
-            # Type-cast each argument
-            for key, value in arguments.items():
-                if key not in type_map:
-                    typed_arguments[key] = value
-                    continue
-
-                expected_type = type_map[key]
-
-                # Skip if value is None
-                if value is None:
-                    typed_arguments[key] = value
-                    continue
-
-                # Type-cast string values to their expected types
-                if isinstance(value, str):
-                    try:
-                        if expected_type == 'int':
-                            typed_arguments[key] = int(value)
-                            logger.debug(f"Cast '{key}' from string '{value}' to int {typed_arguments[key]}")
-                        elif expected_type == 'float':
-                            typed_arguments[key] = float(value)
-                            logger.debug(
-                                f"Cast '{key}' from string '{value}' to float {typed_arguments[key]}"
-                            )
-                        elif expected_type == 'bool':
-                            typed_arguments[key] = value.lower() in ('true', '1', 'yes')
-                            logger.debug(f"Cast '{key}' from string '{value}' to bool {typed_arguments[key]}")
-                        else:
-                            typed_arguments[key] = value
-                    except (ValueError, TypeError) as e:
-                        logger.warning(
-                            f"Failed to cast argument '{key}' from string to {expected_type}: {e}. "
-                            f"Using original value."
-                        )
-                        typed_arguments[key] = value
-                else:
-                    # Value is already the correct type
-                    typed_arguments[key] = value
-
-            return typed_arguments
+            logger.debug(
+                f"Tool '{function_name}' args_schema does not expose Pydantic validation APIs, "
+                "skipping type casting"
+            )
+            return arguments
 
         except Exception as e:
             logger.warning(
-                f"Error during type casting for '{function_name}': {e}. Using original arguments.",
+                f"Error during args_schema type casting for '{function_name}' in app '{app_name}': {e}. "
+                "Using original arguments.",
                 exc_info=True,
             )
             return arguments
@@ -835,6 +775,22 @@ class ToolGuardRuntime:
             logger.warning("ToolGuardRuntime not initialized, skipping validation")
             return None
 
+        invalid_guards = [
+            guard
+            for guard in self.invalid_tool_guards.get(function_name, [])
+            if guard.target_apps is None or not guard.target_apps or app_name in guard.target_apps
+        ]
+        if invalid_guards:
+            policy_names = ", ".join(guard.name for guard in invalid_guards)
+            logger.warning(
+                f"Tool guard policy_code is invalid for tool '{function_name}' in app '{app_name}'. "
+                f"Blocking tool call because declared guard policy/policies cannot be enforced: {policy_names}"
+            )
+            return (
+                f"Invalid ToolGuard policy_code for '{function_name}' in app '{app_name}'. "
+                f"Tool call blocked because declared guard policy/policies cannot be enforced: {policy_names}."
+            )
+
         # Check if this tool has any guards
         if function_name not in self.tool_to_guards:
             logger.debug(f"No guards registered for tool '{function_name}'")
@@ -849,9 +805,13 @@ class ToolGuardRuntime:
         ]
 
         if not guards:
-            logger.debug(
-                f"No guards applicable for tool '{function_name}' on app '{app_name}' "
-                f"(found {len(all_guards)} guard(s) but none match this app)"
+            target_apps_summary = {
+                guard.name: guard.target_apps for guard in all_guards if guard.target_apps
+            }
+            logger.warning(
+                f"Tool '{function_name}' has {len(all_guards)} registered guard(s), but none apply "
+                f"to app '{app_name}' after target_apps filtering. Tool call will proceed unguarded. "
+                f"Configured target_apps: {target_apps_summary}"
             )
             return None
 
@@ -874,7 +834,18 @@ class ToolGuardRuntime:
 
         try:
             # Type-cast arguments to their proper types before validation
-            typed_arguments = self._type_cast_arguments(arguments, app_name, function_name)
+            typed_arguments = await self._type_cast_arguments(arguments, app_name, function_name)
+
+            if "args" in typed_arguments:
+                logger.error(
+                    f"Tool '{function_name}' in app '{app_name}' has a parameter named 'args', "
+                    "which conflicts with ToolGuard's injected guard argument namespace. "
+                    "Blocking to avoid corrupting guard inputs."
+                )
+                return (
+                    f"Internal guard argument collision for '{function_name}': tool parameter 'args' "
+                    "conflicts with ToolGuard runtime metadata. Tool call blocked as a safety precaution."
+                )
 
             args_obj = SimpleNamespace(**typed_arguments)
             await runtime.guard_toolcall(
