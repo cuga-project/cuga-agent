@@ -21,8 +21,8 @@ jobs:
       matrix:
         include:
           - name: macOS x86_64
-            os: macos-13
-            command: uv sync --locked --no-dev
+            os: ubuntu-latest
+            command: MACOSX_DEPLOYMENT_TARGET=15.0 uv sync --locked --dry-run --no-dev --python-platform x86_64-apple-darwin
           - name: UBI linux amd64
             os: ubuntu-latest
             command: uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform x86_64-unknown-linux-gnu
