@@ -14,6 +14,14 @@ class SkillEntry:
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
 
+    @property
+    def pip_packages(self) -> list[str]:
+        return [r for r in self.requirements if not r.startswith("npm:")]
+
+    @property
+    def npm_packages(self) -> list[str]:
+        return [r[4:] for r in self.requirements if r.startswith("npm:")]
+
 
 class SkillRegistry:
     def __init__(self, entries: List[SkillEntry]):
@@ -31,16 +39,18 @@ class SkillRegistry:
         parts: list[str] = []
 
         if entry.requirements:
-            pip_pkgs = [r for r in entry.requirements if not r.startswith("npm:")]
-            npm_pkgs = [r[4:] for r in entry.requirements if r.startswith("npm:")]
+            pip_pkgs = entry.pip_packages
+            npm_pkgs = entry.npm_packages
             setup_lines: list[str] = []
             if pip_pkgs:
                 setup_lines.append(f"await run_command('uv pip install --quiet {' '.join(pip_pkgs)}')")
                 setup_lines.append("await asyncio.sleep(5)")
+                setup_lines.append(f"await run_command('uv pip show {' '.join(pip_pkgs)}')")
             if npm_pkgs:
                 # Install locally in the working dir so require() resolves correctly
                 setup_lines.append(f"await run_command('npm install {' '.join(npm_pkgs)}')")
                 setup_lines.append("await asyncio.sleep(5)")
+                setup_lines.append(f"await run_command('npm list {' '.join(npm_pkgs)}')")
             setup_script = "\n".join(setup_lines)
             parts.append(
                 "⚠️ STEP 1 — INSTALL REQUIREMENTS (MANDATORY — your very first code block, no exceptions):\n"

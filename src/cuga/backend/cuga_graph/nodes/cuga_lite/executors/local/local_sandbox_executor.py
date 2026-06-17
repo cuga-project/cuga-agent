@@ -134,21 +134,29 @@ class LocalSandboxExecutor:
         env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
         return env
 
-    def _copy_skills_to_workspace(self, thread_id: Optional[str] = None) -> None:
+    def _copy_skills_to_workspace(
+        self,
+        thread_id: Optional[str] = None,
+        cuga_folder: Optional[str] = None,
+        skills_enabled: Optional[bool] = None,
+    ) -> None:
         """Copy discovered skill folders into the per-thread /workspace/skills directory."""
         from cuga.config import settings
 
-        if not getattr(settings.skills, "enabled", False):
+        enabled = skills_enabled if skills_enabled is not None else getattr(settings.skills, "enabled", False)
+        if not enabled:
             return
         try:
             from cuga.backend.skills.loader import discover_skills
         except Exception:
             return
 
-        cuga_folder = (os.getenv("CUGA_FOLDER") or "").strip() or (
-            getattr(settings.policy, "cuga_folder", None) or ""
-        ).strip()
-        skill_entries = discover_skills(cuga_folder or None)
+        resolved_folder = (
+            cuga_folder
+            or (os.getenv("CUGA_FOLDER") or "").strip()
+            or (getattr(settings.policy, "cuga_folder", None) or "").strip()
+        )
+        skill_entries = discover_skills(resolved_folder or None)
 
         copied = 0
         for skill_entry in skill_entries:
@@ -236,14 +244,19 @@ class LocalSandboxExecutor:
 
         return run_command
 
-    def create_sandbox_tools(self, thread_id: Optional[str] = None) -> list[StructuredTool]:
+    def create_sandbox_tools(
+        self,
+        thread_id: Optional[str] = None,
+        cuga_folder: Optional[str] = None,
+        skills_enabled: Optional[bool] = None,
+    ) -> list[StructuredTool]:
         """Return the run_command StructuredTool for local (unsandboxed) execution.
 
         Filesystem tools (read/write/list/edit/...) are no longer produced
         here — they come from the consolidated ``filesystem`` package via
         ``create_filesystem_tools`` (see ``cuga_lite_graph``).
         """
-        self._copy_skills_to_workspace(thread_id)
+        self._copy_skills_to_workspace(thread_id, cuga_folder=cuga_folder, skills_enabled=skills_enabled)
         return [
             StructuredTool.from_function(
                 coroutine=self.create_run_command_tool(thread_id),

@@ -1594,6 +1594,8 @@ class CugaAgent:
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
         enable_knowledge: Optional[bool] = None,
+        enable_skills: Optional[bool] = None,
+        skills_folder: Optional[str] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1610,6 +1612,8 @@ class CugaAgent:
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
             enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
+            enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
+            skills_folder: Root folder that contains .agents/skills/. Defaults to cwd / CUGA_FOLDER env var.
 
         Example with tool approval policy:
             ```python
@@ -1655,6 +1659,10 @@ class CugaAgent:
 
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
+
+        # Skills configuration
+        self._enable_skills = enable_skills  # None = auto from settings
+        self._skills_folder = skills_folder  # None = use CUGA_FOLDER / cwd
 
         # Setup tool provider. ToolGuard is installed immediately as a transparent
         # provider-level decorator so create-agent-first, add-guard-later flows work.
@@ -2202,6 +2210,20 @@ class CugaAgent:
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
 
+        # Pass skills configuration via configurable (overrides settings when set)
+        if self._enable_skills is not None:
+            run_config["configurable"]["skills_enabled"] = self._enable_skills
+        if self._skills_folder is not None:
+            # discover_skills() expects the .cuga subfolder path, not the workspace root.
+            # Convert workspace root → workspace_root/.cuga so that .agents/skills/ resolves correctly.
+            # Guard against double-suffixing if the caller already passes a .cuga-suffixed path.
+            from pathlib import Path as _Path
+
+            _sf = _Path(self._skills_folder)
+            if _sf.name != ".cuga":
+                _sf = _sf / ".cuga"
+            run_config["configurable"]["skills_folder"] = str(_sf)
+
         # Ensure graph is created (needed for state retrieval)
         _ = self.graph
 
@@ -2380,6 +2402,21 @@ class CugaAgent:
             error_msg = result['error']
             final_answer = f"Error: {error_msg}"
 
+        # Fallback: if final_answer is still empty, look at the last non-empty AI message.
+        # Reasoning models sometimes return content='' with the answer only in
+        # additional_kwargs['reasoning_content'], so check both fields.
+        if not final_answer:
+            for msg in reversed(result.get("chat_messages", [])):
+                if getattr(msg, "type", None) != "ai":
+                    continue
+                text = getattr(msg, "content", "") or (
+                    getattr(msg, "additional_kwargs", {}).get("reasoning_content", "")
+                )
+                if text:
+                    final_answer = text
+                    logger.debug("final_answer extracted from last AI chat message (fallback)")
+                    break
+
         # Check if graph interrupted for approval
         if not final_answer:
             try:
@@ -2491,6 +2528,17 @@ class CugaAgent:
 
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
+
+        # Pass skills configuration via configurable (overrides settings when set)
+        if self._enable_skills is not None:
+            run_config["configurable"]["skills_enabled"] = self._enable_skills
+        if self._skills_folder is not None:
+            from pathlib import Path as _Path
+
+            _sf = _Path(self._skills_folder)
+            if _sf.name != ".cuga":
+                _sf = _sf / ".cuga"
+            run_config["configurable"]["skills_folder"] = str(_sf)
 
         # Handle resume case (message is None or action_response is provided)
         if message is None or action_response is not None:

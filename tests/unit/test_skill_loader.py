@@ -1,4 +1,5 @@
 from pathlib import Path
+from unittest.mock import patch
 
 from cuga.backend.skills.loader import discover_skills, get_skill_search_roots
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
@@ -80,9 +81,180 @@ def test_skill_registry_load_skill_emits_install_steps_for_requirements() -> Non
     loaded = registry.load_skill("deck")
 
     assert "await run_command('uv pip install --quiet python-pptx')" in loaded
-    assert "await run_command('cd /tmp && npm install sharp')" in loaded
+    assert "await run_command('npm install sharp')" in loaded
     assert "STEP 2 — SKILL INSTRUCTIONS" in loaded
     assert "`python -m <module> ...` → `uv run python -m <module> ...`" in loaded
     assert "`pip list` / `pip show` / `pip freeze` → `uv pip list`" in loaded
     assert "must never be rewritten as `uv npm`" in loaded
     assert "Do not use `uv npm`, `uv run node`, or `uv run npm`" in loaded
+
+
+# ---------------------------------------------------------------------------
+# Sandbox skill-copy path
+# ---------------------------------------------------------------------------
+
+
+def _write_agents_skill(root: Path, name: str, description: str = "desc", body: str = "Body") -> None:
+    """Write a SKILL.md under root/.agents/skills/<name>/SKILL.md (the standard discovery path)."""
+    skill_dir = root / ".agents" / "skills" / name
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: {description}\n---\n{body}\n",
+        encoding="utf-8",
+    )
+
+
+def test_copy_skills_to_workspace_copies_skill_files(tmp_path: Path, monkeypatch) -> None:
+    """_copy_skills_to_workspace() copies SKILL.md into the per-thread workspace skills dir."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
+        LocalSandboxExecutor,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    _write_agents_skill(tmp_path, "my_skill")
+
+    workspace_root = tmp_path / "ws"
+    thread_id = "test-thread"
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor.local_thread_workspace_root",
+        return_value=workspace_root,
+    ):
+        executor = LocalSandboxExecutor()
+        executor._copy_skills_to_workspace(
+            thread_id=thread_id,
+            cuga_folder=str(tmp_path / ".cuga"),
+            skills_enabled=True,
+        )
+
+    dest = workspace_root / "skills" / "my_skill" / "SKILL.md"
+    assert dest.exists(), f"Expected SKILL.md to be copied to {dest}"
+
+
+def test_copy_skills_to_workspace_is_noop_when_disabled(tmp_path: Path, monkeypatch) -> None:
+    """_copy_skills_to_workspace() copies nothing when skills_enabled=False."""
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor import (
+        LocalSandboxExecutor,
+    )
+
+    monkeypatch.chdir(tmp_path)
+    _write_agents_skill(tmp_path, "my_skill")
+
+    workspace_root = tmp_path / "ws"
+
+    with patch(
+        "cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_sandbox_executor.local_thread_workspace_root",
+        return_value=workspace_root,
+    ):
+        executor = LocalSandboxExecutor()
+        executor._copy_skills_to_workspace(
+            cuga_folder=str(tmp_path / ".cuga"),
+            skills_enabled=False,
+        )
+
+    skills_dir = workspace_root / "skills"
+    assert not skills_dir.exists(), (
+        f"Expected no skills to be copied when skills_enabled=False, but found files under {skills_dir}"
+    )
+
+
+def test_skill_name_with_path_traversal_is_rejected(tmp_path: Path) -> None:
+    """A SKILL.md whose frontmatter name contains path separators is silently skipped."""
+    from cuga.backend.skills.loader import _parse_skill_file
+
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "---\nname: ../../etc/passwd\ndescription: bad skill\n---\nBody\n",
+        encoding="utf-8",
+    )
+
+    result = _parse_skill_file(skill_path)
+
+    assert result is None, "Expected None for a skill with a path-traversal name"
+
+
+# ---------------------------------------------------------------------------
+# Fix 4 – Jinja2 prompt-injection sanitization
+# ---------------------------------------------------------------------------
+
+
+def test_jinja_expression_in_description_is_stripped(tmp_path: Path) -> None:
+    """A description containing {{ }} Jinja2 expression syntax is sanitized at parse time.
+
+    Without sanitization, a malicious SKILL.md can inject arbitrary text into
+    the system prompt by placing Jinja2 template expressions in the description
+    field, which is rendered by the mcp_prompt.jinja2 template without escaping.
+    """
+    from cuga.backend.skills.loader import _parse_skill_file
+
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "---\nname: my_skill\ndescription: Legit desc {{ malicious_var }}\n---\nBody\n",
+        encoding="utf-8",
+    )
+
+    result = _parse_skill_file(skill_path)
+
+    assert result is not None
+    assert "{{" not in result.description
+    assert "}}" not in result.description
+    assert "malicious_var" not in result.description
+    assert "Legit desc" in result.description
+
+
+def test_jinja_block_in_description_is_stripped(tmp_path: Path) -> None:
+    """A description containing {% %} Jinja2 block syntax has the delimiters stripped.
+
+    The sanitizer removes Jinja delimiter sequences ({% %}) to prevent the
+    template engine from evaluating them.  Literal text between the delimiters
+    may remain; what matters is that no {% or %} tokens reach the renderer.
+    """
+    from cuga.backend.skills.loader import _parse_skill_file
+
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "---\nname: my_skill\ndescription: Safe {% if True %}payload{% endif %} text\n---\nBody\n",
+        encoding="utf-8",
+    )
+
+    result = _parse_skill_file(skill_path)
+
+    assert result is not None
+    assert "{%" not in result.description, "Jinja block-open delimiter must be removed"
+    assert "%}" not in result.description, "Jinja block-close delimiter must be removed"
+    assert "Safe" in result.description
+    assert "text" in result.description
+
+
+def test_jinja_expression_in_name_is_stripped(tmp_path: Path) -> None:
+    """A name field containing Jinja2 syntax is sanitized (name is also rendered into the prompt)."""
+    from cuga.backend.skills.loader import _parse_skill_file
+
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "---\nname: skill_{{ inject }}\ndescription: Fine description\n---\nBody\n",
+        encoding="utf-8",
+    )
+
+    result = _parse_skill_file(skill_path)
+
+    assert result is not None
+    assert "{{" not in result.name
+    assert "inject" not in result.name
+    assert "skill_" in result.name
+
+
+def test_clean_description_is_unchanged(tmp_path: Path) -> None:
+    """A description with no Jinja2 syntax passes through unchanged."""
+    from cuga.backend.skills.loader import _parse_skill_file
+
+    skill_path = tmp_path / "SKILL.md"
+    skill_path.write_text(
+        "---\nname: my_skill\ndescription: Summarizes complex reports into bullet points\n---\nBody\n",
+        encoding="utf-8",
+    )
+
+    result = _parse_skill_file(skill_path)
+
+    assert result is not None
+    assert result.description == "Summarizes complex reports into bullet points"
