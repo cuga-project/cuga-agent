@@ -121,8 +121,8 @@ class TestSSETransportAuth:
         assert call_kwargs["headers"] == {"Authorization": f"Basic {expected}"}
         assert result is fake_transport
 
-    def test_api_key_auth_does_not_set_headers(self):
-        """api-key auth goes into query params, not headers — headers should be None."""
+    def test_api_key_auth_appends_query_params_to_url(self):
+        """api-key auth must be URL-encoded and appended to the transport URL."""
         manager = _make_manager()
         config = _sse_config(auth=Auth(type="api-key", value="key123", key="api_key"))
 
@@ -139,9 +139,32 @@ class TestSSETransportAuth:
         ):
             result = manager._create_transport("test_server", config)
 
-        # api-key goes to query_params, not headers — so headers dict is empty → None
         call_kwargs = MockSSE.call_args.kwargs
         assert call_kwargs["headers"] is None
+        assert call_kwargs["url"] == "https://example.com/sse?api_key=key123"
+        assert result is fake_transport
+
+    def test_query_auth_appends_custom_param_to_url(self):
+        """query auth must append the named query parameter to the transport URL."""
+        manager = _make_manager()
+        config = _sse_config(auth=Auth(type="query", value="token456", key="auth_token"))
+
+        fake_transport = MagicMock()
+        with (
+            patch(
+                "cuga.backend.tools_env.registry.mcp_manager.mcp_manager.SSETransport",
+                return_value=fake_transport,
+            ) as MockSSE,
+            patch(
+                "cuga.backend.secrets.resolve_secret",
+                side_effect=lambda v: v,
+            ),
+        ):
+            result = manager._create_transport("test_server", config)
+
+        call_kwargs = MockSSE.call_args.kwargs
+        assert call_kwargs["headers"] is None
+        assert call_kwargs["url"] == "https://example.com/sse?auth_token=token456"
         assert result is fake_transport
 
     def test_missing_url_raises(self):
@@ -161,3 +184,54 @@ class TestSSETransportAuth:
         with patch("cuga.backend.tools_env.registry.mcp_manager.mcp_manager.SSETransport", None):
             with pytest.raises(Exception, match="SSETransport not available"):
                 manager._create_transport("test_server", config)
+
+
+class TestHTTPTransportAuth:
+    """_create_transport('http') must forward auth headers and query params."""
+
+    def _http_config(self, auth: Auth | None = None, url: str = "https://example.com/mcp") -> ServiceConfig:
+        return ServiceConfig(url=url, transport="http", auth=auth)
+
+    def test_bearer_auth_sets_authorization_header(self):
+        manager = _make_manager()
+        config = self._http_config(auth=Auth(type="bearer", value="my-secret-token"))
+
+        fake_transport = MagicMock()
+        with (
+            patch(
+                "cuga.backend.tools_env.registry.mcp_manager.mcp_manager.StreamableHttpTransport",
+                return_value=fake_transport,
+            ) as MockHTTP,
+            patch(
+                "cuga.backend.secrets.resolve_secret",
+                side_effect=lambda v: v,
+            ),
+        ):
+            result = manager._create_transport("test_server", config)
+
+        call_kwargs = MockHTTP.call_args.kwargs
+        assert call_kwargs["headers"] == {"Authorization": "Bearer my-secret-token"}
+        assert call_kwargs["url"] == config.url
+        assert result is fake_transport
+
+    def test_api_key_auth_appends_query_params_to_url(self):
+        manager = _make_manager()
+        config = self._http_config(auth=Auth(type="api-key", value="key123", key="api_key"))
+
+        fake_transport = MagicMock()
+        with (
+            patch(
+                "cuga.backend.tools_env.registry.mcp_manager.mcp_manager.StreamableHttpTransport",
+                return_value=fake_transport,
+            ) as MockHTTP,
+            patch(
+                "cuga.backend.secrets.resolve_secret",
+                side_effect=lambda v: v,
+            ),
+        ):
+            result = manager._create_transport("test_server", config)
+
+        call_kwargs = MockHTTP.call_args.kwargs
+        assert call_kwargs["headers"] is None
+        assert call_kwargs["url"] == "https://example.com/mcp?api_key=key123"
+        assert result is fake_transport
