@@ -3,7 +3,7 @@
 from enum import Enum
 from typing import Any, Dict, List, Literal, Optional, Union
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 class PolicyType(str, Enum):
@@ -165,6 +165,28 @@ class IntentGuardResponse(BaseModel):
     status_code: Optional[int] = Field(None, description="HTTP status code if applicable")
 
 
+class ToolGuard(BaseModel):
+    """Guard configuration for a specific tool with compliance rules."""
+
+    violating_examples: List[str] = Field(
+        default_factory=list, description="Examples of violating usage patterns"
+    )
+    compliance_examples: List[str] = Field(
+        default_factory=list, description="Examples of compliant usage patterns"
+    )
+    policy_code: str = Field(
+        default="",
+        description=(
+            "Python code that validates tool usage compliance. "
+            "This code is admin-authored and executed by the ToolGuard runtime in the "
+            "tool-execution/backend context; in current CUGA Lite flows it runs in the "
+            "backend service process with service-process privileges. "
+            "Only trusted administrators with manage access should be allowed to modify policy code. "
+            "Policy code should be reviewed for correctness, security, and performance."
+        ),
+    )
+
+
 class IntentGuard(BaseModel):
     """Guard that intercepts intents and provides custom responses."""
 
@@ -211,13 +233,27 @@ class ToolGuide(BaseModel):
     triggers: List[Trigger] = Field(..., description="Conditions that activate this guide")
     target_tools: List[str] = Field(..., description="List of tool names to enrich (use '*' for all tools)")
     target_apps: Optional[List[str]] = Field(
-        None, description="List of app names to enrich tools for (optional)"
+        None,
+        description=(
+            "List of app names to enrich tools for (optional). Directly provided LangChain/runtime "
+            "tools use the app name 'runtime_tools', so scoped policies for those tools must include it."
+        ),
     )
     guide_content: str = Field(..., description="Markdown content to append to tool descriptions")
+    tool_guards: Dict[str, ToolGuard] = Field(
+        default_factory=dict,
+        description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)",
+    )
     prepend: bool = Field(False, description="Whether to prepend content instead of appending")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     priority: int = Field(0, description="Priority when multiple guides match (higher = more important)")
     enabled: bool = Field(True, description="Whether this guide is active")
+
+    @field_validator("tool_guards", mode="before")
+    @classmethod
+    def default_tool_guards(cls, value):
+        """Treat explicit null tool guard config as omitted."""
+        return {} if value is None else value
 
 
 class ToolApproval(BaseModel):

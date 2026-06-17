@@ -1239,6 +1239,14 @@ async def _next_event_or_stop(stream, stop_event):
         return None, "done"
 
 
+def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> None:
+    """Propagate the authenticated user and service scope onto the graph state."""
+    from cuga.config import get_service_instance_id, get_tenant_id
+
+    state.user_id = user_id
+    state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+
+
 async def event_stream(
     query: str,
     api_mode=False,
@@ -1315,10 +1323,7 @@ async def event_stream(
                 local_state.thread_id = thread_id
 
     if local_state:
-        from cuga.config import get_service_instance_id, get_tenant_id
-
-        local_state.user_id = user_id
-        local_state.service_scope = {"tenant_id": get_tenant_id(), "instance_id": get_service_instance_id()}
+        apply_request_user_context(local_state, user_id)
         if os.getenv("CUGA_DEMO_MODE") == "health" and not local_state.pi:
             from cuga.backend.server.demo_manage_setup import HEALTH_USER_CONTEXT
 
@@ -1694,6 +1699,16 @@ app.add_middleware(
 
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
+
+
+if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
+    # The A2A package is only imported when explicitly enabled in settings,
+    # so disabled deployments pay no import-time cost for it. All runner
+    # wiring lives in cuga.backend.server.a2a.runner — main.py just
+    # delegates the mount.
+    from cuga.backend.server.a2a.runner import build_a2a_router_for_settings  # noqa: E402
+
+    app.include_router(build_a2a_router_for_settings(settings.a2a, app_state))
 
 
 @app.get("/health")
@@ -2500,6 +2515,7 @@ async def get_policies_config(
                 frontend_policy["target_tools"] = policy_dict.get("target_tools", [])
                 frontend_policy["target_apps"] = policy_dict.get("target_apps")
                 frontend_policy["guide_content"] = policy_dict.get("guide_content", "")
+                frontend_policy["tool_guards"] = policy_dict.get("tool_guards")
                 frontend_policy["prepend"] = policy_dict.get("prepend", False)
             elif policy_dict["type"] == "tool_approval":
                 frontend_policy["required_tools"] = policy_dict.get("required_tools", [])
@@ -3017,9 +3033,12 @@ async def get_subagents_config(current_user: Optional[UserInfo] = Depends(requir
             source_config = {"type": "direct"}
 
             if agent_config.get('a2a_protocol', {}).get('enabled'):
+                a2a_protocol = agent_config.get('a2a_protocol', {})
                 source_config = {
                     "type": "a2a",
-                    "url": agent_config.get('a2a_protocol', {}).get('url', ''),
+                    # Supervisor YAML uses `endpoint` (matching delegation.py); fall
+                    # back to `url` for any older configs that used that key.
+                    "url": a2a_protocol.get('endpoint') or a2a_protocol.get('url', ''),
                     "name": agent_name,
                 }
             elif mcp_servers:

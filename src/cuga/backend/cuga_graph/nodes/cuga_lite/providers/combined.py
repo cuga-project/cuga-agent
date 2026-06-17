@@ -156,21 +156,38 @@ def create_tool_from_tracker(tool_name: str, tool_def: Dict[str, Any], app_name:
                 error=error_msg,
             )
 
+    def tool_func_sync(*args, **kwargs):
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            return asyncio.run(tool_func(*args, **kwargs))
+        raise RuntimeError(
+            f"Async tool '{tool_name}' was invoked synchronously while an event loop is running. "
+            "Use ainvoke() for async execution."
+        )
+
     tool_func.__name__ = tool_name
     tool_func.__doc__ = description
+    tool_func_sync.__name__ = tool_name
+    tool_func_sync.__doc__ = description
 
     tool = StructuredTool.from_function(
-        func=tool_func, name=tool_name, description=description, args_schema=InputModel
+        func=tool_func_sync,
+        coroutine=tool_func,
+        name=tool_name,
+        description=description,
+        args_schema=InputModel,
     )
-
-    tool.func = tool_func
 
     if not hasattr(tool.func, "_param_constraints"):
         tool.func._param_constraints = param_constraints
+    if not hasattr(tool.coroutine, "_param_constraints"):
+        tool.coroutine._param_constraints = param_constraints
 
     # Store metadata for tool call tracking
-    tool.func._operation_id = operation_id
-    tool.func._app_name = app_name
+    for target in (tool.func, tool.coroutine, tool):
+        target._operation_id = operation_id
+        target._app_name = app_name
 
     return tool
 
