@@ -196,6 +196,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
                 )
 
             todo_state_update = extract_task_todos_from_new_vars(new_vars)
+            if todo_state_update is None and getattr(adapter, "_task_todos_ref", None):
+                if adapter._task_todos_ref:
+                    todo_state_update = [dict(item) for item in adapter._task_todos_ref]
             base_update = {
                 "chat_messages": updated_messages,
                 "variables_storage": state.variables_storage,

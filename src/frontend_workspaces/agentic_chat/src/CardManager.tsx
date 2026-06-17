@@ -19,6 +19,7 @@ import AppAnalyzerComponent from "./app_analyzer_component";
 import TaskDecompositionComponent from "./task_decomposition";
 import ShortlisterComponent from "./shortlister";
 import SingleExpandableContent from "./generic_component";
+import TaskTodosComponent from "./task_todos_component";
 import ActionAgent from "./action_agent";
 import QaAgentComponent from "./qa_agent";
 import { FollowupAction } from "./Followup";
@@ -1029,6 +1030,18 @@ const CardManager: React.FC<CardManagerProps> = ({ chatInstance, threadId, useDr
           case "CodeAgent":
             if (parsedContent.code || parsedContent.execution_output) {
               mainElement = <CoderAgentOutput coderData={parsedContent} />;
+            }
+            break;
+          case "Reflection":
+            if (parsedContent) {
+              const reflectionText =
+                typeof parsedContent === "string" ? parsedContent : JSON.stringify(parsedContent, null, 2);
+              mainElement = <SingleExpandableContent title={"Code Reflection"} content={reflectionText} />;
+            }
+            break;
+          case "TaskTodos":
+            if (parsedContent?.todos) {
+              mainElement = <TaskTodosComponent todosData={parsedContent} />;
             }
             break;
           case "Policy":

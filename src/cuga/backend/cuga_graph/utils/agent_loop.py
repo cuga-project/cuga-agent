@@ -259,6 +259,60 @@ class StreamEvent(BaseModel):
         return f"event: {self.name}\ndata: {self.data}\n\n"
 
 
+_SANDBOX_REFLECTION_SEPARATOR = "\n\n---\n\nSummary:\n"
+
+
+def _split_sandbox_execution_output(raw: str) -> tuple[str, str]:
+    if _SANDBOX_REFLECTION_SEPARATOR in raw:
+        execution_part, reflection_part = raw.split(_SANDBOX_REFLECTION_SEPARATOR, 1)
+        return execution_part.strip(), reflection_part.strip()
+    return raw.strip(), ""
+
+
+def _sandbox_stream_events(state_data: dict) -> list[StreamEvent]:
+    execution_output = ""
+    messages = state_data.get("chat_messages", [])
+    if messages:
+        for msg in reversed(messages):
+            if hasattr(msg, "content"):
+                content = msg.content
+            elif isinstance(msg, dict):
+                content = msg.get("content", "")
+            else:
+                continue
+            if "Execution output:" in content:
+                execution_output = content.split("Execution output:\n")[-1]
+                break
+
+    execution_output, reflection_output = _split_sandbox_execution_output(execution_output)
+    events: list[StreamEvent] = []
+
+    if execution_output:
+        events.append(
+            StreamEvent(
+                name="CodeAgent",
+                data=json.dumps(
+                    {
+                        "code": "",
+                        "execution_output": execution_output,
+                        "steps_summary": [],
+                        "summary": "Code execution completed",
+                        "variables": state_data.get("variables_storage", {}),
+                    }
+                ),
+            )
+        )
+
+    if reflection_output:
+        events.append(StreamEvent(name="Reflection", data=reflection_output))
+
+    task_todos = state_data.get("task_todos")
+    if task_todos:
+        events.append(StreamEvent(name="TaskTodos", data=json.dumps({"todos": task_todos})))
+
+    return events
+
+
 class AgentLoop:
     """
     A class to handle the agent loop process, managing events, streaming responses,
@@ -302,7 +356,7 @@ class AgentLoop:
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
         yield event.format()
 
-    def get_event_message(self, event) -> StreamEvent:
+    def get_event_message(self, event) -> Union[StreamEvent, List[StreamEvent]]:
         # When subgraphs=True, event is a tuple: (namespace_tuple, state_dict)
         # namespace_tuple is like () for root or (node_name,) for subgraph
         if isinstance(event, tuple):
@@ -361,43 +415,15 @@ class AgentLoop:
                 # Handle sandbox node from CugaLite subgraph
                 elif node_name == "sandbox":
                     logger.info("Detected sandbox node - formatting execution output")
-
-                    # Extract execution output from chat_messages
-                    execution_output = ""
-                    messages = state_data.get("chat_messages", [])
-                    if messages:
-                        logger.debug(f"Found {len(messages)} messages in sandbox state")
-                        for msg in reversed(messages):
-                            # Handle both BaseMessage objects and dicts
-                            if hasattr(msg, 'content'):
-                                content = msg.content
-                            elif isinstance(msg, dict):
-                                content = msg.get("content", "")
-                            else:
-                                continue
-
-                            if "Execution output:" in content:
-                                execution_output = content.split("Execution output:\n")[-1]
-                                logger.debug(f"Extracted execution output: {execution_output[:100]}...")
-                                break
-
-                    # Only return event if we have meaningful execution output
-                    if execution_output and execution_output.strip():
-                        output = {
-                            "code": "",
-                            "execution_output": execution_output,
-                            "steps_summary": [],
-                            "summary": "Code execution completed",
-                            "variables": state_data.get("variables_storage", {}),
-                        }
+                    events = _sandbox_stream_events(state_data)
+                    if events:
                         logger.info(
-                            f"Returning sandbox output with execution_output length: {len(execution_output)}"
+                            "Returning sandbox stream events: %s",
+                            [event.name for event in events],
                         )
-                        return StreamEvent(name="CodeAgent", data=json.dumps(output))
-                    else:
-                        # Skip empty sandbox events
-                        logger.debug("Skipping empty sandbox event")
-                        return StreamEvent(name="", data="")
+                        return events
+                    logger.debug("Skipping empty sandbox event")
+                    return StreamEvent(name="", data="")
 
                 # Default handling for other subgraph nodes
                 logger.debug(f"Unhandled subgraph node: {node_name}")
@@ -684,15 +710,16 @@ class AgentLoop:
                 set_session_attribute(self.thread_id)
                 session_tagged = True
 
-            event_msg = self.get_event_message(event)
-            # Skip empty events (events with no name or no data)
-            if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
-                logger.debug(
-                    f"Skipping empty event: name='{event_msg.name}', data='{event_msg.data[:50] if event_msg.data else ''}'"
-                )
-                continue
-            # logger.debug(f"current event: {event_msg.format()}")
-            yield event_msg.format()
+            event_msgs = self.get_event_message(event)
+            if not isinstance(event_msgs, list):
+                event_msgs = [event_msgs]
+            for event_msg in event_msgs:
+                if not event_msg.name or (not event_msg.data and event_msg.name != "__interrupt__"):
+                    logger.debug(
+                        f"Skipping empty event: name='{event_msg.name}', data='{event_msg.data[:50] if event_msg.data else ''}'"
+                    )
+                    continue
+                yield event_msg.format()
         yield self.get_output(event)
 
     def get_output_of_obj(self, dict):

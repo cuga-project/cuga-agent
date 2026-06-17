@@ -1,13 +1,26 @@
 import React, { useState } from "react";
 import Markdown from "react-markdown";
 
+const REFLECTION_SEPARATOR = "\n\n---\n\nSummary:\n";
+
+function splitExecutionAndReflection(text: string) {
+  if (!text || !text.includes(REFLECTION_SEPARATOR)) {
+    return { execution: text || "", reflection: "" };
+  }
+  const [execution, reflection] = text.split(REFLECTION_SEPARATOR, 2);
+  return { execution: execution.trim(), reflection: reflection.trim() };
+}
+
 export default function CoderAgentOutput({ coderData }) {
   const [showFullCode, setShowFullCode] = useState(false);
   const [showFullOutput, setShowFullOutput] = useState(false);
+  const [showFullReflection, setShowFullReflection] = useState(false);
 
-  // Handle both old format (summary) and new format (execution_output)
-  const { code = "", summary, execution_output, variables } = coderData;
-  const output = execution_output || summary || "";
+  const { code = "", summary, execution_output, reflection, variables } = coderData;
+  const rawOutput = execution_output || summary || "";
+  const splitOutput = splitExecutionAndReflection(rawOutput);
+  const output = reflection ? rawOutput : splitOutput.execution;
+  const reflectionText = reflection || splitOutput.reflection;
 
   function getCodeSnippet(fullCode, maxLines = 4) {
     if (!fullCode) return "";
@@ -80,6 +93,28 @@ export default function CoderAgentOutput({ coderData }) {
               <div className="bg-green-50 rounded p-3 border border-green-200" style={{ overflowY: "auto", maxHeight: showFullOutput ? "none" : "300px" }}>
                 <div className="text-xs text-green-800 leading-relaxed">
                   <Markdown>{showFullOutput ? output : truncateOutput(output)}</Markdown>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {reflectionText && (
+            <div className="mb-3">
+              <div className="flex items-center justify-between mb-2">
+                <span className="text-xs text-gray-600">Code Reflection ({reflectionText.length} chars)</span>
+                {reflectionText.length > 400 && (
+                  <button
+                    onClick={() => setShowFullReflection(!showFullReflection)}
+                    className="text-xs text-blue-600 hover:text-blue-800"
+                  >
+                    {showFullReflection ? "▲ Less" : "▼ More"}
+                  </button>
+                )}
+              </div>
+
+              <div className="bg-blue-50 rounded p-3 border border-blue-200" style={{ overflowY: "auto", maxHeight: showFullReflection ? "none" : "300px" }}>
+                <div className="text-xs text-blue-800 leading-relaxed">
+                  <Markdown>{showFullReflection ? reflectionText : truncateOutput(reflectionText)}</Markdown>
                 </div>
               </div>
             </div>

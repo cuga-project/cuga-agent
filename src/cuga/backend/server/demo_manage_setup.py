@@ -732,6 +732,7 @@ def setup_demo_manage_config(
     if tools and (any(t.get("name") == "docs" for t in tools) or demo_type in ("demo", "demo_skills")):
         config["feature_flags"] = config.get("feature_flags") or {}
         config["feature_flags"]["enable_todos"] = True
+        config["feature_flags"]["reflection"] = True
 
     if demo_type == "demo_skills":
         config.setdefault("advanced_features", {})["enable_shell_tool"] = True
