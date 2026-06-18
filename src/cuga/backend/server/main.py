@@ -77,6 +77,11 @@ from cuga.backend.server.workspace_sandbox import (
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
 from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
+from cuga.backend.server.tool_guard_generation import (
+    build_tool_guard_generation_agent,
+    generate_tool_guards_for_policy,
+)
+from cuga.backend.cuga_graph.policy.models import ToolGuide
 from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
@@ -2597,6 +2602,81 @@ async def save_policies_config(
             },
             status_code=500,
         )
+
+
+@app.post("/api/config/policies/{policy_id}/tool-guards/generate")
+async def generate_tool_guard_for_policy(
+    policy_id: str,
+    request: Request,
+    current_user: Optional[UserInfo] = Depends(require_auth),
+):
+    """Generate and persist ToolGuards for a saved Tool Guide policy."""
+    if not settings.policy.enabled:
+        return JSONResponse(
+            {"status": "error", "message": "Policy system is disabled in settings"},
+            status_code=403,
+        )
+
+    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    state = draft_app_state if use_draft else app_state
+    policy_system = getattr(state, "policy_system", None)
+    runtime_agent = getattr(state, "agent", None)
+
+    if policy_system is None or getattr(policy_system, "storage", None) is None:
+        return JSONResponse(
+            {"status": "error", "message": "Policy system is not initialized"},
+            status_code=503,
+        )
+
+    existing_policy = await policy_system.storage.get_policy(policy_id)
+    if existing_policy is None:
+        return JSONResponse(
+            {"status": "error", "message": f"Policy '{policy_id}' was not found"},
+            status_code=404,
+        )
+    if not isinstance(existing_policy, ToolGuide):
+        return JSONResponse(
+            {"status": "error", "message": f"Policy '{policy_id}' is not a Tool Guide policy"},
+            status_code=400,
+        )
+    target_tools = list(existing_policy.target_tools or [])
+    if not target_tools or target_tools == ["*"] or "*" in target_tools:
+        return JSONResponse(
+            {"status": "error", "message": "Select specific target tools to generate a guard"},
+            status_code=400,
+        )
+    if runtime_agent is None or getattr(runtime_agent, "tool_provider", None) is None:
+        return JSONResponse(
+            {"status": "error", "message": "Tool provider is not initialized"},
+            status_code=503,
+        )
+
+    try:
+        generation_agent = build_tool_guard_generation_agent(
+            policy_system=policy_system,
+            tool_provider=runtime_agent.tool_provider,
+            model=getattr(runtime_agent, "_model", None),
+        )
+        result = await generate_tool_guards_for_policy(
+            policy_system=policy_system,
+            policy_id=policy_id,
+            generation_agent=generation_agent,
+        )
+        return JSONResponse(result, status_code=200)
+    except ValueError as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+    except LookupError as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=404)
+    except TypeError as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+    except Exception as exc:
+        logger.exception("Failed to generate ToolGuard for policy %s", policy_id)
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
 
 
 # Runtime tools injected by Cuga Lite — split by gate so each group only
