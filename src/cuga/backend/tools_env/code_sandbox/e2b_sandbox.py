@@ -689,7 +689,7 @@ async def call_api(app_name, api_name, args=None):
 
 # Execute and capture locals
 async def main():
-    _result_locals = await asyncio.wait_for(_async_main(), timeout=30)
+    _result_locals = await asyncio.wait_for(_async_main(), timeout=60)
     print("!!!===!!!")
     print(_result_locals)
 

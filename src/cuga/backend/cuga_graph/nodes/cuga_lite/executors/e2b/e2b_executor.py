@@ -82,7 +82,7 @@ class E2BExecutor(RemoteExecutor):
 
 # Execute and capture locals
 async def main():
-    __result_locals = await asyncio.wait_for(_async_main(), timeout=30)
+    __result_locals = await asyncio.wait_for(_async_main(), timeout=60)
     print("!!!===!!!")
     print(__result_locals)
 

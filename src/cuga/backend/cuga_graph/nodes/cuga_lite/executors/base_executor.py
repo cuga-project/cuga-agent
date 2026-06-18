@@ -11,7 +11,7 @@ class BaseExecutor(ABC):
         self,
         wrapped_code: str,
         context_locals: dict[str, Any],
-        timeout: int = 30,
+        timeout: int = 60,
     ) -> str:
         """Execute wrapped code and return stdout result.
 
