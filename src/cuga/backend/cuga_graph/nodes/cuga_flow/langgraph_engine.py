@@ -714,13 +714,6 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                         )
                         return Command(update=state.model_dump(), goto=target)
 
-                elif result.action == HookAction.REQUEST_USER_INPUT:
-                    prompt = result.user_prompt or "Input required before continuing."
-                    state.process_variables["_user_input_requested"] = True
-                    state.process_variables["_user_input_prompt"] = prompt
-                    state.halt(f"user_input_required: {prompt}")
-                    return Command(update=state.model_dump(), goto=END)
-
                 elif result.action == HookAction.SWAP_NODES:
                     pair = result.swap_nodes
                     if pair and len(pair) == 2:

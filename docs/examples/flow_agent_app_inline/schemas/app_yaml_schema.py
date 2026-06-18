@@ -12,7 +12,6 @@ HookAction = Literal[
     "continue",
     "skip_node",
     "skip_to",
-    "request_user_input",
     "terminate",
     "swap_nodes",
     "remove_node",

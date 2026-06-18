@@ -41,8 +41,6 @@ class HookAction(Enum):
     SKIP_NODE = "skip_node"  # Skip the immediate next node
     SKIP_TO = "skip_to"  # Jump to a named node via Command(goto=),
     # bypassing all intermediate nodes
-    REQUEST_USER_INPUT = "request_user_input"  # Surface a prompt to the user and
-    # soft-halt; caller can resume
     TERMINATE = "terminate"  # Hard-halt the process
     SWAP_NODES = "swap_nodes"  # Swap two nodes: redirect to node_b when
     # node_a was next, or node_a when node_b was next
@@ -64,8 +62,6 @@ class HookResult:
         message:       Human-readable explanation shown in the UI via tracker.
         skip_to_node:  Target node ID for SKIP_TO — FlowAgent issues
                        Command(goto=skip_to_node) to jump there directly.
-        user_prompt:   Question text for REQUEST_USER_INPUT — FlowAgent
-                       surfaces this to the user and soft-halts.
         graph_modifications: Arbitrary detail dict recorded in the audit log
                        for REFORM_GRAPH (informational only at this stage).
         state_updates: Optional process-variable patches to apply before

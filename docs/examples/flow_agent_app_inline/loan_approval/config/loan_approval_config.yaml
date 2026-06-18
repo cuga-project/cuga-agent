@@ -69,7 +69,6 @@ action_permissions:
   permitted_actions:
     - continue
     - skip_to
-    - request_user_input
     - terminate
   prohibited_actions:
     - swap_nodes

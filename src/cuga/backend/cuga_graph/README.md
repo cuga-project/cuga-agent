@@ -109,7 +109,7 @@ Hook nodes are inserted between BPMN sequence flow edges at compile time. When t
 - **`condition`**: optional guard — if it returns false the hook is skipped
 - **`policy`**: optional markdown; when present the FlowAgent reasons with its LLM (`_llm_hook_decision`) against the policy and full process state to produce a `HookResult`; otherwise the static `handler` function is called
 
-The `HookResult.action` determines what happens next: `CONTINUE` proceeds normally, `SKIP_TO` jumps to a named node via `Command(goto=)`, `TERMINATE` halts the process, `REQUEST_USER_INPUT` soft-halts and surfaces a question to the user. Hook nodes always return a `Command(goto=…)` — never bare state — to satisfy LangGraph's routing constraint. The **HookManager** is owned by `FlowAgent` and serves as a priority-sorted registry of all registered hooks, indexed by edge location.
+The `HookResult.action` determines what happens next: `CONTINUE` proceeds normally, `SKIP_TO` jumps to a named node via `Command(goto=)`, `TERMINATE` halts the process. Hook nodes always return a `Command(goto=…)` — never bare state — to satisfy LangGraph's routing constraint. The **HookManager** is owned by `FlowAgent` and serves as a priority-sorted registry of all registered hooks, indexed by edge location.
 
 ---
 

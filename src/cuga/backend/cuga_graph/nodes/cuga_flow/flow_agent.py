@@ -270,7 +270,6 @@ what structural action (if any) the FlowAgent should apply.
 - "skip_node"           — skip the immediate next node only
 - "skip_to"             — jump directly to a task from the list above (provide target_node)
 - "swap_nodes"          — swap two nodes: provide node_a and node_b
-- "request_user_input"  — pause and ask the user a question (provide user_prompt)
 - "terminate"           — halt the process immediately
 - "remove_node"         — remove a specific node from the execution path (provide remove_node)
 - "add_node"            — insert a new task node before the next node (provide add_node with node_id and task_instruction)

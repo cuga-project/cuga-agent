@@ -128,7 +128,6 @@ The `HookResult.action` determines what happens next:
 | `SKIP_NODE` | Skip the immediate next node |
 | `SKIP_TO` | Jump directly to a named node, bypassing all intermediate nodes |
 | `SWAP_NODES` | Swap two nodes: redirect to `node_b` when `node_a` was next, or `node_a` when `node_b` was next |
-| `REQUEST_USER_INPUT` | Soft-halt and surface a question to the user |
 | `TERMINATE` | Hard-halt the process immediately |
 | `REMOVE_NODE` | Remove a node from the process topology at runtime: the engine rewires its predecessor and successor flows to bypass it and resumes at the correct point |
 | `ADD_NODE` | Insert a new task node into the process topology at runtime: the engine wires flows through the new node before the current target and resumes at the inserted node |
