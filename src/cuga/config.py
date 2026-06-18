@@ -200,6 +200,7 @@ validators = [
     Validator("evolve.save_on_failure", default=True),
     Validator("evolve.async_save", default=True),
     Validator("evolve.timeout", default=30.0),
+    Validator("connections.llm_http_timeout", default=61),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

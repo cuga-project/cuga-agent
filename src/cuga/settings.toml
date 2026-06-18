@@ -207,6 +207,7 @@ trigger_fraction = 0.75  # Trigger at 75% of context window (recommended for pro
 [connections]
 inference_ca_cert = ""  # Path to a CA certificate for LLM inference HTTP clients (e.g. "vault-root-ca.crt"). Applied to OpenAI and LiteLLM. Env: CUGA_INFERENCE_CA_CERT
 inference_disable_ssl = false  # Disable SSL verification for all inference connections (overrides inference_ca_cert). Env: CUGA_DISABLE_SSL
+llm_http_timeout = 61  # HTTP timeout in seconds for LLM API requests (OpenAI, Azure, OpenRouter). Env: CUGA_LLM_HTTP_TIMEOUT or LLM_HTTP_TIMEOUT
 
 [observability]
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
