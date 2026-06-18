@@ -22,39 +22,8 @@ class FlowConfig:
     """
     Configuration for FlowAgent loaded from YAML.
 
-    YAML Structure:
-        flow:
-          name: "Approval Process"
-          bpmn_file: "process.bpmn"
-
-        llm:
-          provider: "openai"
-          model: "gpt-4"
-          temperature: 0.0
-
-        tasks:
-          - id: "review_task"
-            agent:
-              name: "reviewer"
-              description: "Reviews documents"
-              tools: ["read_file", "search"]
-
-          - id: "approve_task"
-            agent:
-              name: "approver"
-              description: "Approves or rejects"
-              tools: ["send_email"]
-
-        hooks:
-          - id: "escalation_hook"
-            type: "pre_edge"
-            location: "flow_to_approve"
-            condition: "amount > 10000"
-            action: "reform_graph"
-
-        variables:
-          max_amount: 10000
-          approval_required: true
+    For the authoritative YAML schema see:
+    docs/examples/flow_agent_app_inline/schemas/app_yaml_schema.py
     """
 
     def __init__(self, config_dict: Dict[str, Any], config_file_dir: Optional[str] = None):
