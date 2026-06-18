@@ -175,24 +175,33 @@ class PoliciesManager:
         ```
     """
 
-    def __init__(self, agent: "CugaAgent"):
-        """Initialize policies manager with reference to agent."""
+    def __init__(self, agent: Union["CugaAgent", "CugaSupervisor"]):
+        """Initialize policies manager with reference to agent or supervisor."""
         self._agent = agent
         self._fs_sync = None
 
+    def _agent_tool_provider(self) -> Optional[ToolProviderInterface]:
+        """Return tool_provider when the host exposes one (CugaAgent, optional CugaSupervisor)."""
+        return getattr(self._agent, "tool_provider", None)
+
     def _invalidate_toolguard_runtime(self) -> None:
         """Invalidate ToolGuard runtime/cache if the agent provider supports it."""
-        invalidate_toolguard_provider(self._agent.tool_provider)
+        provider = self._agent_tool_provider()
+        if provider is not None:
+            invalidate_toolguard_provider(provider)
 
     def _attach_policy_storage_to_toolguard(self) -> None:
         """Attach current policy storage to the ToolGuard provider wrapper if available."""
+        provider = self._agent_tool_provider()
+        if provider is None:
+            return
         if (
             hasattr(self._agent, "_policy_system")
             and self._agent._policy_system is not None
             and hasattr(self._agent._policy_system, "storage")
         ):
             configure_toolguard_provider(
-                self._agent.tool_provider,
+                provider,
                 policy_storage=self._agent._policy_system.storage,
             )
 
@@ -2739,6 +2748,12 @@ class CugaSupervisor:
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
         special_instructions: Optional[str] = None,
+        tool_provider: Optional[ToolProviderInterface] = None,
+        policy_system: Optional[PolicyConfigurable] = None,
+        cuga_folder: Optional[str] = None,
+        auto_load_policies: Optional[bool] = None,
+        reset_policy_storage: bool = False,
+        filesystem_sync: Optional[bool] = None,
     ):
         """
         Initialize supervisor.
@@ -2755,7 +2770,15 @@ class CugaSupervisor:
             special_instructions: Optional workflow instructions injected into the supervisor's
                 system prompt. Use this to guide the supervisor's multi-turn behaviour
                 (e.g. "search first, then present results, then wait for user selection").
+            tool_provider: Optional provider for MCP/external tools the supervisor calls directly
+            policy_system: Optional PolicyConfigurable instance (auto-created if not provided)
+            cuga_folder: Path to .cuga folder containing policy markdown files
+            auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke
+            reset_policy_storage: If True, clears all existing policies from storage on init
+            filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
         """
+        from cuga.config import settings
+
         self._agents = agents or {}
         self._model = model
         self._description = description
@@ -2765,6 +2788,28 @@ class CugaSupervisor:
         self._graph = None
         self._compiled_graph = None
         self._supervisor_state = None
+        self._policy_system = policy_system
+        self._policies_manager = None
+
+        self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
+        self._auto_load_policies = (
+            auto_load_policies if auto_load_policies is not None else settings.policy.auto_load_policies
+        )
+        self._filesystem_sync = (
+            filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
+        )
+        self._reset_policy_storage = reset_policy_storage
+
+        if tool_provider is not None:
+            policy_storage = self._policy_system.storage if self._policy_system is not None else None
+            self.tool_provider = ensure_toolguard_provider(
+                tool_provider,
+                policy_storage=policy_storage,
+                cuga_folder=self.cuga_folder,
+                enabled=settings.policy.enabled,
+            )
+        else:
+            self.tool_provider = None
 
         # Initialize model from settings if not provided
         if not self._model:
@@ -2799,6 +2844,24 @@ class CugaSupervisor:
         )
 
     @property
+    def policies(self) -> PoliciesManager:
+        """Get the policies manager for this supervisor."""
+        if self._policies_manager is None:
+            self._policies_manager = PoliciesManager(self)
+        return self._policies_manager
+
+    async def initialize(self):
+        """Initialize policy system and other lazy resources."""
+        # Honor reset_policy_storage even without auto-load (parity with CugaAgent.initialize):
+        # _ensure_policy_system clears storage when _reset_policy_storage is set.
+        needs_init = self._auto_load_policies and (
+            not hasattr(self, "_policy_system") or self._policy_system is None
+        )
+        if needs_init or self._reset_policy_storage:
+            await self.policies._ensure_policy_system()
+            logger.debug("Supervisor policy system initialized during initialize()")
+
+    @property
     def graph(self):
         """
         Get the underlying LangGraph StateGraph (compiled).
@@ -2817,6 +2880,8 @@ class CugaSupervisor:
                 supervisor_model=self._model,
                 agents=self._agents,
                 special_instructions=self._special_instructions,
+                tool_provider=self.tool_provider,
+                callbacks=self._callbacks,
             )
 
             # Compile with checkpointer
@@ -2846,6 +2911,13 @@ class CugaSupervisor:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
+        needs_init = self._auto_load_policies and (
+            not hasattr(self, "_policy_system") or self._policy_system is None
+        )
+        if needs_init or self._reset_policy_storage:
+            await self.policies._ensure_policy_system()
+            logger.debug("Supervisor policy system initialized during invoke()")
+
         import uuid
         from langchain_core.messages import HumanMessage
 
@@ -2857,6 +2929,8 @@ class CugaSupervisor:
         config = {"configurable": {"thread_id": thread_id}}
         if self._callbacks:
             config["callbacks"] = self._callbacks
+        if self._policy_system:
+            config["configurable"]["policy_system"] = self._policy_system
 
         # Handle resume case
         if message is None or action_response is not None:
