@@ -124,8 +124,8 @@ Customize:
 
 ### Performance
 
-* **🥇 #1 on AppWorld** (750 tasks, 457 APIs)
-* **Top-tier on WebArena**, #1 from Feb–Sep 2025
+* **🥇 #1 on AppWorld** (#1 from 07/25 - 02/26; 750 tasks, 457 APIs)
+* **🥇 #1 on WebArena** (#1 from 02/25 - 09/25)
 
 ### Why It Matters
 
