@@ -1629,6 +1629,16 @@ app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 
 
+if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
+    # The A2A package is only imported when explicitly enabled in settings,
+    # so disabled deployments pay no import-time cost for it. All runner
+    # wiring lives in cuga.backend.server.a2a.runner — main.py just
+    # delegates the mount.
+    from cuga.backend.server.a2a.runner import build_a2a_router_for_settings  # noqa: E402
+
+    app.include_router(build_a2a_router_for_settings(settings.a2a, app_state))
+
+
 @app.get("/health")
 async def health():
     return JSONResponse({"status": "ok", "subsystems": app_state.get_subsystem_statuses()})
