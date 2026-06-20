@@ -1,0 +1,26 @@
+# Consumer CUGA — has no local tools, delegates everything to the
+# provider over A2A.
+#
+# The supervisor here knows about exactly one agent: `provider`, declared
+# as type `external` with an A2A HTTP endpoint pointing at the second
+# CUGA process (default http://localhost:8002). On startup, the supervisor
+# fetches the provider's AgentCard from /.well-known/agent.json and uses
+# it to populate the prompt; at delegation time it POSTs JSON-RPC to the
+# provider's /a2a endpoint via delegate_task_via_a2a_sdk.
+
+supervisor:
+  description: "Consumer CUGA — owns no tools; delegates to a remote provider over A2A."
+  special_instructions: |
+    You have NO local tools. For every user request, delegate to the
+    `provider` agent. The provider is a remote CUGA exposing sales/CRM
+    tooling over A2A. Use `delegate_to_provider("...")` and return the
+    provider's answer to the user without further reasoning.
+
+agents:
+  - name: provider
+    description: "Remote CUGA on http://localhost:8002 fronting the digital_sales toolset over A2A."
+    a2a_protocol:
+      enabled: true
+      transport: http
+      endpoint: "http://localhost:8002"
+      timeout: 30
