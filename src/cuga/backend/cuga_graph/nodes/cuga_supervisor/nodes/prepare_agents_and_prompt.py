@@ -266,6 +266,8 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                 for agent in agent_list
             },
         }
+        if adapter.get_metadata(state):
+            update_payload[adapter.metadata_key] = adapter.get_metadata(state)
         if is_fresh_conversation:
             update_payload["task_todos"] = None
 

@@ -17,7 +17,10 @@ logger = logging.getLogger(__name__)
 
 
 async def apply_output_formatter_policies(
-    state: AgentState, config: Optional[RunnableConfig] = None, context: str = "unknown"
+    state: AgentState,
+    config: Optional[RunnableConfig] = None,
+    context: str = "unknown",
+    metadata_key: str = "cuga_lite_metadata",
 ) -> None:
     """
     Apply OutputFormatter policies to the final answer.
@@ -54,18 +57,23 @@ async def apply_output_formatter_policies(
             state.final_answer = formatted_response
 
             # Store consistent metadata structure for UI display
-            _update_output_formatter_metadata(state, metadata)
+            _update_output_formatter_metadata(state, metadata, metadata_key=metadata_key)
 
         elif metadata:
             logger.debug(f"{context}: OutputFormatter metadata returned but no formatted_response")
             # Store metadata even if no formatted_response (for UI display)
-            _update_output_formatter_metadata(state, metadata, applied=False)
+            _update_output_formatter_metadata(state, metadata, applied=False, metadata_key=metadata_key)
 
     except Exception as e:
         logger.warning(f"{context}: Error checking OutputFormatter policies: {e}", exc_info=True)
 
 
-def _update_output_formatter_metadata(state: AgentState, metadata: dict, applied: bool = True) -> None:
+def _update_output_formatter_metadata(
+    state: AgentState,
+    metadata: dict,
+    applied: bool = True,
+    metadata_key: str = "cuga_lite_metadata",
+) -> None:
     """
     Update state metadata with OutputFormatter policy information.
 
@@ -74,9 +82,8 @@ def _update_output_formatter_metadata(state: AgentState, metadata: dict, applied
         metadata: Policy enactment metadata
         applied: Whether the formatter was actually applied (True) or just matched (False)
     """
-    # Initialize cuga_lite_metadata if it doesn't exist
-    if not hasattr(state, 'cuga_lite_metadata') or state.cuga_lite_metadata is None:
-        state.cuga_lite_metadata = {}
+    if not hasattr(state, metadata_key) or getattr(state, metadata_key) is None:
+        setattr(state, metadata_key, {})
 
     # Base metadata that's always included
     base_metadata = {
@@ -101,5 +108,4 @@ def _update_output_formatter_metadata(state: AgentState, metadata: dict, applied
             }
         )
 
-    # Update the state metadata
-    state.cuga_lite_metadata.update(base_metadata)
+    getattr(state, metadata_key).update(base_metadata)

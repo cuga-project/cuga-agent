@@ -2861,6 +2861,103 @@ class CugaSupervisor:
             await self.policies._ensure_policy_system()
             logger.debug("Supervisor policy system initialized during initialize()")
 
+    def _create_supervisor_hitl_wrapper_graph(self):
+        """Wrap the supervisor subgraph with HITL + output-formatter callback (parity with CugaAgent)."""
+        from typing import Literal
+
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.types import Command
+
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
+            create_cuga_supervisor_graph,
+        )
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
+            CugaSupervisorState,
+        )
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.suggest_actions import SuggestHumanActions
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.wait_for_response import WaitForResponse
+        from cuga.backend.cuga_graph.utils.nodes_names import ActionIds, NodeNames
+
+        callback_name = "SupervisorSDKCallback"
+
+        supervisor_subgraph = create_cuga_supervisor_graph(
+            supervisor_model=self._model,
+            agents=self._agents,
+            special_instructions=self._special_instructions,
+            tool_provider=self.tool_provider,
+            callbacks=self._callbacks,
+        )
+        compiled_subgraph = supervisor_subgraph.compile()
+
+        async def supervisor_sdk_callback(
+            state: CugaSupervisorState,
+            config: Optional[RunnableConfig] = None,
+        ) -> Command[Literal["SupervisorSubgraph", "SuggestHumanActions", "__end__"]]:
+            if state.sender == NodeNames.WAIT_FOR_RESPONSE and state.hitl_response:
+                if state.hitl_response.action_id == ActionIds.TOOL_APPROVAL:
+                    if state.hitl_response.confirmed:
+                        md = dict(state.supervisor_metadata or {})
+                        md.update({"approval_required": False, "user_approved": True})
+                        state.supervisor_metadata = md
+                        state.hitl_action = None
+                        state.hitl_response = None
+                        state.final_answer = ""
+                        state.execution_complete = False
+                        state.sender = callback_name
+                        return Command(update=state.model_dump(), goto="SupervisorSubgraph")
+                    policy_name = (state.supervisor_metadata or {}).get("policy_name", "Tool Approval")
+                    state.final_answer = (
+                        f"❌ **Execution Cancelled**\n\nYou denied execution required by "
+                        f"**{policy_name}**. The supervisor will not proceed with this task."
+                    )
+                    state.execution_complete = True
+                    state.hitl_response = None
+                    state.sender = callback_name
+                    return Command(update=state.model_dump(), goto=END)
+
+            if state.hitl_action and state.hitl_action.action_id == ActionIds.TOOL_APPROVAL:
+                state.sender = callback_name
+                return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
+
+            from cuga.backend.cuga_graph.policy.output_formatter_utils import apply_output_formatter_policies
+
+            await apply_output_formatter_policies(
+                state,
+                config,
+                context="Supervisor SDK Callback",
+                metadata_key="supervisor_metadata",
+            )
+
+            state.sender = callback_name
+            return Command(update=state.model_dump(), goto=END)
+
+        suggest_actions = SuggestHumanActions()
+        wait_for_response = WaitForResponse()
+
+        async def dummy_route_to_callback(
+            state: CugaSupervisorState,
+            config: Optional[RunnableConfig] = None,
+        ) -> Command:
+            return Command(update=state.model_dump(), goto=callback_name)
+
+        wrapper = StateGraph(CugaSupervisorState)
+        wrapper.add_node("SupervisorSubgraph", compiled_subgraph)
+        wrapper.add_node(callback_name, supervisor_sdk_callback)
+        wrapper.add_node(suggest_actions.name, suggest_actions.node)
+        wrapper.add_node(wait_for_response.name, wait_for_response.node)
+        for node_name in (
+            "FinalAnswerAgent",
+            NodeNames.CHAT_AGENT,
+            NodeNames.API_PLANNER_AGENT,
+            NodeNames.CUGA_LITE,
+        ):
+            wrapper.add_node(node_name, dummy_route_to_callback)
+
+        wrapper.add_edge(START, "SupervisorSubgraph")
+        wrapper.add_edge("SupervisorSubgraph", callback_name)
+
+        return wrapper
+
     @property
     def graph(self):
         """
@@ -2870,24 +2967,19 @@ class CugaSupervisor:
             Compiled LangGraph graph
         """
         if self._compiled_graph is None:
-            from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
-                create_cuga_supervisor_graph,
-            )
             from langgraph.checkpoint.memory import MemorySaver
 
-            # Create supervisor subgraph
-            supervisor_subgraph = create_cuga_supervisor_graph(
-                supervisor_model=self._model,
-                agents=self._agents,
-                special_instructions=self._special_instructions,
-                tool_provider=self.tool_provider,
-                callbacks=self._callbacks,
-            )
+            from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 
-            # Compile with checkpointer
+            if self._graph is None:
+                self._graph = self._create_supervisor_hitl_wrapper_graph()
+
             checkpointer = MemorySaver()
-            self._compiled_graph = supervisor_subgraph.compile(checkpointer=checkpointer)
-            logger.debug("Compiled supervisor graph with checkpointer")
+            self._compiled_graph = self._graph.compile(
+                checkpointer=checkpointer,
+                interrupt_before=[NodeNames.WAIT_FOR_RESPONSE],
+            )
+            logger.debug("Compiled supervisor graph with HITL wrapper and checkpointer")
 
         return self._compiled_graph
 
@@ -2940,13 +3032,18 @@ class CugaSupervisor:
             # Set session.id for OpenLit observability (if enabled)
             set_session_attribute(thread_id)
 
+            from langgraph.types import Command
+
             if action_response:
-                self.graph.update_state(config, {"hitl_response": action_response})
                 logger.info(
                     f"Resuming execution after HITL response (action_id: {action_response.action_id})"
                 )
-
-            result = await self.graph.ainvoke(None, config=config)
+                result = await self.graph.ainvoke(
+                    Command(resume=action_response.model_dump()),
+                    config=config,
+                )
+            else:
+                result = await self.graph.ainvoke(None, config=config)
         else:
             # Normal invocation
             from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
@@ -2977,6 +3074,18 @@ class CugaSupervisor:
         if not final_answer and result.get("error"):
             error_msg = result["error"]
             final_answer = f"Error: {error_msg}"
+
+        if not final_answer:
+            try:
+                state = self.graph.get_state(config)
+                if state.next:
+                    logger.info("Supervisor graph interrupted for human-in-the-loop interaction")
+                    final_answer = (
+                        "⏸️ Execution paused for approval. "
+                        "Use supervisor.invoke(None, thread_id=..., action_response=...) to resume."
+                    )
+            except Exception as e:
+                logger.debug(f"Could not check supervisor interrupt state: {e}")
 
         # Get tool calls if available
         tool_calls = (
