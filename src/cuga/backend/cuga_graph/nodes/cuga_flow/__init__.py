@@ -17,7 +17,6 @@ Key Components:
 
 from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import (
     FlowState,
-    HookEvaluation,
     GraphModification,
 )
 from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import (
@@ -53,7 +52,6 @@ from cuga.backend.server.cuga_flo_mcp import MCPFlowBridge
 __all__ = [
     # State
     "FlowState",
-    "HookEvaluation",
     "GraphModification",
     # Hooks
     "Hook",

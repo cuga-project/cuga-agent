@@ -25,16 +25,6 @@ class GraphModification(BaseModel):
     reason: str = Field(description="Explanation for why the modification was made")
 
 
-class HookEvaluation(BaseModel):
-    """Record of a hook evaluation."""
-
-    hook_id: str = Field(description="ID of the hook")
-    edge_id: str = Field(description="Edge where hook was triggered")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
-    action: str = Field(description="Action taken: continue, halt, adapt")
-    reason: str = Field(description="Explanation for the action")
-    state_snapshot: Dict[str, Any] = Field(default_factory=dict, description="Snapshot of relevant state")
-
 
 class FlowState(AgentState):
     """
@@ -65,10 +55,7 @@ class FlowState(AgentState):
         default_factory=dict, description="BPMN process variables accessible to all nodes"
     )
 
-    # Hook and adaptation tracking — lists merged across parallel branches
-    hook_evaluations: Annotated[List[HookEvaluation], operator.add] = Field(
-        default_factory=list, description="History of hook evaluations during execution"
-    )
+    # Adaptation tracking — lists merged across parallel branches
     graph_modifications: Annotated[List[GraphModification], operator.add] = Field(
         default_factory=list, description="History of graph modifications made by hooks"
     )
@@ -91,24 +78,6 @@ class FlowState(AgentState):
     # Metadata
     start_time: Optional[datetime] = Field(default=None, description="Process start timestamp")
     end_time: Optional[datetime] = Field(default=None, description="Process end timestamp")
-
-    def add_hook_evaluation(
-        self,
-        hook_id: str,
-        edge_id: str,
-        action: str,
-        reason: str,
-        state_snapshot: Optional[Dict[str, Any]] = None,
-    ) -> None:
-        """Add a hook evaluation record."""
-        evaluation = HookEvaluation(
-            hook_id=hook_id,
-            edge_id=edge_id,
-            action=action,
-            reason=reason,
-            state_snapshot=state_snapshot or {},
-        )
-        self.hook_evaluations.append(evaluation)
 
     def add_graph_modification(
         self, hook_id: str, modification_type: str, details: Dict[str, Any], reason: str
@@ -158,7 +127,6 @@ class FlowState(AgentState):
             "status": "complete" if self.is_complete else ("halted" if self.is_halted else "running"),
             "execution_path": self.execution_path,
             "duration_seconds": duration,
-            "hooks_triggered": len(self.hook_evaluations),
             "graph_modifications": len(self.graph_modifications),
             "gateway_decisions": len(self.gateway_decisions),
             "tasks_executed": len(self.task_results),

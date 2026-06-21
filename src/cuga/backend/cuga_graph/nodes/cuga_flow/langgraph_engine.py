@@ -683,12 +683,6 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                         message=f"Action '{action_val}' is prohibited",
                     )
 
-                state.add_hook_evaluation(
-                    hook_id=hook.id,
-                    edge_id=edge_id,
-                    action=result.action.value,
-                    reason=result.message or "Hook evaluated",
-                )
                 logger.info(f"  Hook {hook.id} → {result.action.value}: {result.message}")
 
                 if result.state_updates:
