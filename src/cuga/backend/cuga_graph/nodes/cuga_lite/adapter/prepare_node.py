@@ -301,12 +301,22 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         _is_subagent = _agent_spawn_depth.get() > 0
         skills_cfg_on = getattr(settings.skills, "enabled", False) and not _is_subagent
         cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        _skill_callable_tools: list = []
         if skills_cfg_on:
             skill_entries = discover_skills(cuga_folder_for_skills)
             if skill_entries:
                 skill_registry = SkillRegistry(skill_entries)
                 skill_tools = create_skill_tools(skill_registry)
+                _skill_callable_tools = [t for t in skill_tools if t.name != "load_skill"]
                 tools_for_prompt.extend(skill_tools)
+                for _sk_tool in skill_tools:
+                    _sk_fn = (
+                        _sk_tool.coroutine
+                        if (hasattr(_sk_tool, "coroutine") and _sk_tool.coroutine)
+                        else _sk_tool.func
+                    )
+                    if _sk_fn:
+                        adapter._tools_context[_sk_tool.name] = make_tool_awaitable(_sk_fn)
                 skills_prompt_section = format_available_skills_block(skill_registry)
                 skills_enabled = True
                 logger.info(
@@ -390,7 +400,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
             _parent_structured_tools_for_subagent = (
                 list(tools_for_execution)
-                + _skill_specific_tools
+                + _skill_callable_tools
                 + list(_runtime_bundle.prompt_tools)
             )
 
