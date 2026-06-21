@@ -301,9 +301,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         _is_subagent = _agent_spawn_depth.get() > 0
         skills_cfg_on = getattr(settings.skills, "enabled", False) and not _is_subagent
         cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
-        # Skill-defined tools (tools: frontmatter in SKILL.md) that are pre-registered
-        # into CUGA's own context so subagents can inherit them.
-        _skill_specific_tools: list = []
         if skills_cfg_on:
             skill_entries = discover_skills(cuga_folder_for_skills)
             if skill_entries:
@@ -317,26 +314,6 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                     f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
                     "~/.config/cuga/skills fallbacks"
                 )
-                # Pre-register skill tool_definitions into CUGA's own context.
-                # These tools become available to CUGA and are inherited by ad-hoc subagents,
-                # so skills can instruct CUGA to spawn subagents that already have the tools.
-                from cuga.backend.agent_spawn.tool_builder import build_tools_from_skill_tool_definitions
-                for _se in skill_entries:
-                    for _st in build_tools_from_skill_tool_definitions(_se):
-                        _skill_specific_tools.append(_st)
-                        tools_for_prompt.append(_st)
-                        _stfn = (
-                            _st.coroutine
-                            if (hasattr(_st, "coroutine") and _st.coroutine)
-                            else _st.func
-                        )
-                        if _stfn:
-                            adapter._tools_context[_st.name] = make_tool_awaitable(_stfn)
-                if _skill_specific_tools:
-                    logger.info(
-                        f"agent_spawn: pre-registered {len(_skill_specific_tools)} skill tool(s) "
-                        "into CUGA context for subagent inheritance"
-                    )
 
         agent_spawn_tools = []
         agents_prompt_section = ""
