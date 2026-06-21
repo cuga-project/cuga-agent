@@ -4,11 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import contextvars
+import os
 from typing import Any, Callable, Dict, List, Optional
 from uuid import uuid4
 
 from langchain_core.tools import StructuredTool
 from loguru import logger
+from cuga.backend.cuga_graph.utils.langfuse_tracing import (
+    get_langfuse_invoke_config,
+    sync_langfuse_callbacks_from_config,
+)
+from cuga.backend.observability.openlit_init import set_session_attribute
 
 from cuga.config import settings
 
@@ -83,9 +89,8 @@ class SpawnAgentRuntime:
         return f"sub_cuga_{uuid4().hex[:8]}"
 
     def _build_agent(self, tools: List[StructuredTool]):
-        import os
-        from cuga.sdk import CugaAgent
 
+        # Checks to see if there is already cached agent (pre made), if there is returns it, else creatubg a new one.
         no_cache = os.environ.get("CUGA_AGENT_SPAWN_NO_CACHE")
         if not no_cache:
             cache_key = frozenset(t.name for t in tools)
@@ -93,6 +98,7 @@ class SpawnAgentRuntime:
             if cached is not None:
                 return cached
 
+        from cuga.sdk import CugaAgent
         agent = CugaAgent(tools=tools)
 
         if not no_cache:
@@ -100,22 +106,22 @@ class SpawnAgentRuntime:
         return agent
 
     def _build_invoke_config(self) -> dict:
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import (
-            get_langfuse_invoke_config,
-            sync_langfuse_callbacks_from_config,
-        )
         if self._parent_config:
             sync_langfuse_callbacks_from_config(self._parent_config)
         return get_langfuse_invoke_config()
 
     async def _run_stream(self, agent, task: str, thread_id: str, cfg: dict, spawn_id: str = "") -> str:
+
         final_answer = ""
         forward = getattr(settings.agent_spawn, "forward_sync_subagent_events", True)
         async for chunk in agent.stream(task, thread_id=thread_id, config=cfg):
             state_dict = chunk[1] if isinstance(chunk, tuple) else chunk
+
             if not isinstance(state_dict, dict):
                 continue
+            
             node_data = next(iter(state_dict.values()), None)
+
             if not isinstance(node_data, dict):
                 continue
             if forward and "script" in node_data:
@@ -136,7 +142,6 @@ class SpawnAgentRuntime:
         thread_id = self._make_thread_id()
         invoke_cfg = self._build_invoke_config()
 
-        from cuga.backend.observability.openlit_init import set_session_attribute
         parent_thread_id = self._parent_config.get("configurable", {}).get("thread_id", "")
         set_session_attribute(parent_thread_id)
 
@@ -166,7 +171,6 @@ class SpawnAgentRuntime:
 
     async def execute_async(self, task: str) -> str:
         """Fire-and-forget spawn; return future_id for get_agent_result."""
-        from cuga.backend.observability.openlit_init import set_session_attribute
         parent_thread_id = self._parent_config.get("configurable", {}).get("thread_id", "")
         set_session_attribute(parent_thread_id)
 

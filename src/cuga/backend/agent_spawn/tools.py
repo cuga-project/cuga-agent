@@ -8,6 +8,8 @@ from typing import Any, Dict, List, Optional
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
+from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
+
 
 class SpawnAgentInput(BaseModel):
     task: str = Field(
@@ -34,8 +36,6 @@ def create_spawn_tools(
     """Factory: returns [spawn_agent_tool, get_agent_result_tool]."""
 
     async def spawn_agent(task: str = "", mode: str = "sync") -> str:
-        from cuga.backend.agent_spawn.runtime import SpawnAgentRuntime
-
         rt = SpawnAgentRuntime.from_parent(
             parent_config,
             spawn_futures_ref=spawn_futures,
