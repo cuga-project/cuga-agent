@@ -4,11 +4,11 @@ description: "Use this skill when the user asks about prime factorization, numbe
 tools:
   - name: prime_factorize
     description: "Factorize n and compute number-theoretic properties including Euler totient φ(n), divisor count τ(n), divisor sum σ(n), Möbius function μ(n), squarefree flag, and perfect number flag"
-    module: cuga.backend.agent_spawn.number_theory_tools.prime_factorizer
+    module: cuga.backend.skills.number_theory_tools.prime_factorizer
     function: prime_factorize
   - name: solve_crt
     description: "Solve a system of simultaneous congruences x ≡ r₁ (mod m₁), x ≡ r₂ (mod m₂), … via the Chinese Remainder Theorem; returns the smallest non-negative solution and the combined modulus"
-    module: cuga.backend.agent_spawn.number_theory_tools.modular_solver
+    module: cuga.backend.skills.number_theory_tools.modular_solver
     function: solve_crt
 ---
 
