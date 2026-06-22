@@ -45,6 +45,12 @@ def _result_to_chunk(r: SearchResult, *, include_scores: bool) -> dict[str, Any]
     Single helper so every code path emits identical chunk JSON —
     avoids the drift that existed between the route's scope='all' and
     single-scope branches before this consolidation.
+
+    Per-leg ranks (``dense_rank``, ``lexical_rank``, ``rrf_score``) are
+    populated by the hybrid fusion step and surfaced ONLY when non-None
+    so single-leg / pure-dense / pre-upgrade responses stay terse. When
+    debugging "why X ranked above Y" or "is BM25 actually firing?", the
+    presence of these fields is the signal.
     """
     chunk: dict[str, Any] = {
         "source": r.scope,
@@ -56,6 +62,16 @@ def _result_to_chunk(r: SearchResult, *, include_scores: bool) -> dict[str, Any]
         chunk["section_path"] = r.section_path
     if include_scores:
         chunk["score"] = r.score
+    # Hybrid-retrieval observability: surface ranks + fused score on any
+    # chunk RRF actually fused. ``None`` means "leg didn't appear in the
+    # input" (lexical leg empty for pre-FTS collections; dense leg would
+    # only be None for lexical-only chunks).
+    if getattr(r, "rrf_score", None) is not None:
+        chunk["rrf_score"] = r.rrf_score
+        if getattr(r, "dense_rank", None) is not None:
+            chunk["dense_rank"] = r.dense_rank
+        if getattr(r, "lexical_rank", None) is not None:
+            chunk["lexical_rank"] = r.lexical_rank
     return chunk
 
 
