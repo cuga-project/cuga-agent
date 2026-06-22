@@ -19,9 +19,10 @@ class VectorStoreAdapter(ABC):
     ) -> dict[str, int]:
         """Insert documents. Returns ``{"num_added": N, "num_skipped": M}``.
 
-        When ``stage_timings`` is provided, implementations may populate it
-        with per-stage timings (e.g. ``embed_s``, ``insert_s``) used by the
-        Step 0 bench harness in issue #183. Implementations may ignore it.
+        When ``stage_timings`` is provided, implementations may populate
+        it with per-stage timings (e.g. ``embed_s``, ``insert_s``) — the
+        engine uses this to render the granular ingest progress bar.
+        Implementations may ignore it.
         """
 
     @abstractmethod

@@ -36,7 +36,7 @@ drop_page_chrome = "off"
 
 [search]
 # Four attempts for deep multi-hop. Each retry rewrites the query;
-# diminishing returns past 4 per agent-bench data.
+# diminishing returns past 4 in empirical testing.
 max_search_attempts = 4
 default_limit = 15
 default_score_threshold = 0.0

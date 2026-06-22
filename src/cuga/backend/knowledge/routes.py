@@ -69,9 +69,10 @@ def _extract_task_error(task: dict[str, Any], fallback: str = "Ingestion failed"
     return fallback
 
 
-# Stage weights for the unified upload progress bar. Tuned from the bench
-# log (parse_s / embed_s / insert_s) over a mixed corpus; values sum to 1.0
-# and intentionally overweight parse since it's the most variable stage.
+# Stage weights for the unified upload progress bar. Tuned empirically
+# from per-stage timings (parse_s / embed_s / insert_s) over a mixed
+# corpus; values sum to 1.0 and intentionally overweight parse since
+# it's the most variable stage.
 _STAGE_WEIGHTS = {"parse": 0.45, "embed": 0.40, "insert": 0.15}
 
 # Module-level strong-ref set for fire-and-forget background ingests. The

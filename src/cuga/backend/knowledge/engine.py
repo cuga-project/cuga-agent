@@ -1500,10 +1500,34 @@ class KnowledgeEngine:
             self._metadata_ready = True
 
     async def aclose(self) -> None:
+        """Close all engine-held async resources.
+
+        Required at the end of any event loop that called engine methods
+        which acquired a pool — otherwise the next loop's first call
+        would re-use a pool bound to the closed loop and raise
+        ``RuntimeError: ... attached to a different loop``. Production
+        runs on a single long-lived loop and rarely hits this; tests
+        and short-lived script harnesses MUST call aclose() before the
+        loop exits.
+        """
         try:
             await self._metadata.close()
         except Exception as e:
             logger.debug(f"Knowledge metadata close: {e}")
+        # Close every cached vector store's underlying connection pool.
+        # Without this, the asyncpg pool inside ProdEmbeddingStore stays
+        # bound to whatever loop first called ``_get_pool()`` — fine in
+        # production (one process, one loop) but a foot-gun for tests
+        # that use ``asyncio.run`` per call.
+        for collection, adapter in list(self._vector_stores.items()):
+            close = getattr(adapter, "close_pool", None)
+            if close is None:
+                continue
+            try:
+                await close()
+            except Exception as e:
+                logger.debug(f"close_pool failed for {collection}: {e}")
+        self._vector_stores.clear()
 
     def shutdown(self) -> None:
         """Release resources."""
@@ -2718,6 +2742,7 @@ class KnowledgeEngine:
                     RerankedCandidate,
                     rerank as _rerank,
                 )
+
                 candidates = [
                     RerankedCandidate(
                         text=r.text,
