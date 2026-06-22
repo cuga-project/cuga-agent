@@ -1,6 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef } from "react";
 import * as api from "../../frontend/src/api";
+import "./PoliciesConfig.css";
 import {
   ComposedModal,
   ModalHeader,
@@ -251,20 +252,22 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         const data = await response.json();
         const configData = data.config || {};
         const policiesData = configData.policies || {};
-        const normalizedPolicies = (policiesData.policies ?? []).map((policy: Policy) => ({
-          ...policy,
-          triggers: policy.triggers.map((trigger: PolicyTrigger) => {
-            if (trigger.type === "natural_language" && trigger.value !== undefined) {
-              const normalizedValue = Array.isArray(trigger.value)
-                ? trigger.value
-                : typeof trigger.value === "string"
-                ? [trigger.value]
-                : [];
-              return { ...trigger, value: normalizedValue };
-            }
-            return trigger;
-          }),
-        }));
+        const normalizedPolicies = (policiesData.policies ?? []).map((policy: Policy) => {
+          return {
+            ...policy,
+            triggers: policy.triggers.map((trigger: PolicyTrigger) => {
+              if (trigger.type === "natural_language" && trigger.value !== undefined) {
+                const normalizedValue = Array.isArray(trigger.value)
+                  ? trigger.value
+                  : typeof trigger.value === "string"
+                  ? [trigger.value]
+                  : [];
+                return { ...trigger, value: normalizedValue };
+              }
+              return trigger;
+            }),
+          };
+        });
 
         setConfig({
           enablePolicies: policiesData.enablePolicies ?? true,
@@ -415,6 +418,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
       target_apps: policy.target_apps ?? null,
       guide_content: policy.guide_content ?? "",
       prepend: policy.prepend ?? false,
+      tool_guards: policy.tool_guards ?? {},
     });
 
   const updateSavedToolGuideSnapshots = (policies: Policy[]) => {
@@ -430,8 +434,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const isToolGuideSaved = (policy: ToolGuidePolicy) =>
     savedToolGuideSnapshots[policy.id] === normalizeToolGuideForSnapshot(policy);
 
-  const hasGeneratedToolGuard = (policy: ToolGuidePolicy) =>
-    Object.values(policy.tool_guards ?? {}).some((guard) => Boolean(guard?.policy_code));
+  const hasGeneratedToolGuard = (policy: ToolGuidePolicy) => {
+    return Object.values(policy.tool_guards ?? {}).some((guard) => Boolean(guard?.policy_code));
+  };
 
   const hasConcreteTargetTools = (policy: ToolGuidePolicy) => {
     const targetTools = policy.target_tools ?? [];
@@ -1438,12 +1443,22 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                                 : "Generate tool guard"
                             }
                             tooltipPosition="bottom"
-                            onClick={() => generateToolGuard(policy.id)}
+                            onClick={() => {
+                              if (hasGeneratedToolGuard(policy)) {
+                                setToastMessage({
+                                  kind: "success",
+                                  title: "Tool guard already generated",
+                                  subtitle: "This policy already has a tool guard.",
+                                });
+                              } else {
+                                generateToolGuard(policy.id);
+                              }
+                            }}
                             disabled={
                               !config.enablePolicies ||
-                              !hasConcreteTargetTools(policy) ||
-                              hasGeneratedToolGuard(policy)
+                              !hasConcreteTargetTools(policy)
                             }
+                            className={hasGeneratedToolGuard(policy) ? "guard-generated" : ""}
                           />
                         )}
                       <Stack orientation="horizontal" gap={2}>
