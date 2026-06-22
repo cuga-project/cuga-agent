@@ -20,7 +20,7 @@ dependencies = [
     "fastapi[standard]",
     "langfuse",
     "dynaconf>=3.2.13",
-    "playwright>=1.59.0", # CVE-2025-9611 (MCP origin/DNS rebinding), CVE-2025-59288 (browser download SSL)
+    "playwright>=1.59.0",  # CVE-2025-9611 (MCP origin/DNS rebinding), CVE-2025-59288 (browser download SSL)
     "browsergym-core==0.13.0",
     "python-dotenv",
     "loguru",
@@ -48,15 +48,12 @@ dependencies = [
     "boto3>=1.34.0",
     # Knowledge engine (replaces OpenRAG)
     "langchain-docling>=2.0,<3.0",
-    # Docling supports multiple OCR engines. The engine selector at
-    # ``engine._select_ocr_engine_options`` picks the best one available
-    # for the host:
-    #   - tesseract (system)   : preferred when the ``tesseract`` binary
-    #                            is on PATH (Linux/macOS via brew). Fast,
-    #                            multi-lingual, no Python download.
-    #   - easyocr (any OS)     : cross-platform fallback, ~50MB per lang.
-    # easyocr is the cross-platform safety net so OCR Just Works on a
-    # fresh ``uv sync`` even when tesseract isn't installed.
+    # EasyOCR is the cross-platform safety net so OCR Just Works on a
+    # fresh ``uv sync`` even when tesseract isn't on PATH. Tesseract
+    # (system binary) is preferred when available — see
+    # ``engine._select_ocr_engine_options``. Test
+    # ``test_no_tesseract_falls_back_to_easyocr`` documents that this
+    # fallback path must remain importable.
     "easyocr",
     "torch", # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels
     "torchvision", # explicit: must match torch variant (cpu) to avoid operator registration errors
@@ -64,6 +61,7 @@ dependencies = [
     "langchain-text-splitters>=1.0,<2.0",
     "beautifulsoup4>=4.12",
     "psycopg[binary]>=3.2",
+    "toolguard>=0.2.17",
     "cuga-oak-health; python_version>='3.12'",
     "aiosmtpd",
 ]
@@ -245,5 +243,4 @@ sandbox = [
 anyio_mode = "auto"
 markers = [
     "e2e: end-to-end tests requiring live external services (registry, etc.)",
-    "pgvector: requires a live pgvector container (CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING). Run via CI ``pgvector-integration`` job or locally with ``docker run pgvector/pgvector:0.8.0-pg16``.",
 ]
