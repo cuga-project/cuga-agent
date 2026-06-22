@@ -93,8 +93,8 @@ class BPMNParser:
     """
     Parser for BPMN 2.0 XML files.
 
-    Converts BPMN process definitions into LangGraph StateGraph structures
-    that can be executed by FlowAgent.
+    Converts BPMN process definitions into BPMNProcess objects
+    consumed by the WorkflowEngine and FlowAgent.
     """
 
     def parse_file(self, bpmn_file: str) -> BPMNProcess:
