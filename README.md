@@ -239,89 +239,6 @@ CUGA supports multiple LLM providers with flexible configuration options. You ca
 - **RITS** - Internal IBM research platform
 - **OpenRouter** - LLM API gateway provider
 
-## GPU Deployment (Knowledge Engine)
-
-CUGA's knowledge engine (Docling parse, fastembed embedder, cross-encoder reranker, Docling-transformers layout) accelerates on NVIDIA GPUs. The CPU image works everywhere; the GPU image is opt-in to keep the default lean.
-
-**Quick start on a CUDA cluster:**
-
-```bash
-# Build the GPU image (nvidia/cuda:12.4.1-cudnn-runtime base, ~3.5-4 GB)
-docker build -f Dockerfile.gpu -t cuga:gpu .
-
-# Local docker (single GPU)
-docker run --gpus all --shm-size=2g -p 7860:7860 cuga:gpu
-
-# Verify the stack actually engaged the GPU (run inside the container)
-docker exec <id> uv run cuga doctor
-```
-
-**Kubernetes (with nvidia-device-plugin installed on the cluster):**
-
-```yaml
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: cuga
-spec:
-  replicas: 1
-  selector:
-    matchLabels: {app: cuga}
-  template:
-    metadata:
-      labels: {app: cuga}
-    spec:
-      containers:
-        - name: cuga
-          image: cuga:gpu
-          resources:
-            limits:
-              nvidia.com/gpu: 1          # required; without this the pod schedules on CPU nodes
-              memory: 16Gi
-            requests:
-              memory: 8Gi
-          # Docling's transformers layout uses DataLoader workers — the
-          # default 64 MB shm OOMs them silently. Mount a tmpfs.
-          volumeMounts:
-            - name: dshm
-              mountPath: /dev/shm
-          env:
-            - {name: CUGA_GPU_REQUIRED, value: "1"}   # fail-fast if GPU missing at startup
-            # On a full H100/A100 you can fit ~8-14 Docling workers per GPU
-            # (each holds ~4-6GB VRAM). cuga's default is sized for laptops;
-            # raise it on GPU. The engine logs a warning if left at the default.
-            - {name: DYNACONF_KNOWLEDGE__ENGINE__MAX_INGEST_WORKERS, value: "8"}
-      volumes:
-        - name: dshm
-          emptyDir:
-            medium: Memory
-            sizeLimit: 2Gi
-```
-
-**Other platforms:**
-
-- **HuggingFace Spaces (GPU tier)**: push the image built from `Dockerfile.gpu` (Spaces will inject CUDA at request-time).
-- **AWS ECS**: requires the **EC2** launch type with `g4dn`/`g5` instances + `resourceRequirements: [{type: GPU, value: "1"}]` in the task definition. Fargate does not support GPUs.
-
-**What gets accelerated** (measured on H100, 2026-06-09):
-
-| Stage | Speedup vs 8-core CPU | Notes |
-| --- | --- | --- |
-| Docling layout (transformers) | 6–10× | the parse-side win |
-| Embedder (bge-small-en) | 3–6× | launch-overhead-bound at small models |
-| Embedder (bge-base-en) | 10–20× | the sweet spot |
-| Embedder (multilingual-e5-large) | 30–60× | the largest win |
-| Cross-encoder reranker | **75–180×** | single biggest GPU win |
-| Tesseract OCR | 1.0× | CPU-only (C++ binary) |
-| sqlite-vec / pgvector HNSW | 1.0× | CPU-only |
-| BM25 (FTS5 / tsvector) | 1.0× | CPU-only |
-
-End-to-end median speedup on a 556-page PDF: **~10× for `multilingual-e5-large`, ~3–6× for `bge-small-en`**. OCR is the Amdahl floor — set `docling.pdf_mode = "balanced"` on born-digital PDFs to remove it.
-
-**Fail-fast mode** (recommended for production GPU deploys): set `gpu_required = true` in `[knowledge.embeddings]` of your `settings.toml` (or the env var `CUGA_GPU_REQUIRED=1`). The engine raises at startup if no GPU runtime is loaded, instead of silently degrading to CPU.
-
-**Health-check tool**: `uv run cuga doctor` prints nvidia-smi, ORT providers, torch CUDA state, fastembed's live session providers, and `/dev/shm` size. Paste the output into support tickets.
-
 ## Configuration Priority
 
 1. **Environment Variables** (highest priority)
@@ -667,115 +584,23 @@ agent = CugaAgent(tools=[my_tools], enable_knowledge=False)
 
 PDF, DOCX, XLSX, PPTX, HTML, Markdown, images, and more (via Docling).
 
-#### Embedding Providers
+#### Embedding providers + tuning
 
-The knowledge engine supports four built-in provider categories, plus any OpenAI-compatible endpoint via the `openai` provider with a custom Base URL.
+The knowledge engine ships four built-in provider categories — `fastembed`
+(default, local), `huggingface` (local), `openai` (network, accepts any
+OpenAI-compatible endpoint via `base_url`), and `ollama` (network) — plus
+`openrouter` for one-key-many-models access to embedding models on
+[openrouter.ai/models](https://openrouter.ai/models?output_modalities=embeddings).
+Provider, model, batch size, and concurrency are all set under
+`[knowledge.embeddings]` in `settings.toml` or via CLI overrides
+(`--embeddings-provider`, `--embeddings-base-url`, `--embeddings-api-key`,
+`--embeddings-model`, `--embeddings-batch-size`, `--embeddings-concurrency`).
 
-| Provider | Local / Network | Notes |
-| --- | --- | --- |
-| `fastembed` (default) | local CPU/GPU | BAAI/bge-small-en-v1.5 by default; no model download for tokenizer. |
-| `huggingface` | local CPU/GPU | Requires `sentence-transformers` + `langchain-huggingface` installed. |
-| `openai` | network | Works with the official OpenAI API and any OpenAI-compatible endpoint. |
-| `ollama` | network (localhost by default) | Default model `nomic-embed-text`. |
-
-**OpenAI-compatible providers (Groq, Together AI, Fireworks AI, OpenRouter, custom proxies).** Use `provider = openai` and override `base_url` + `api_key`. Concrete examples:
-
-```toml
-# settings.toml — Groq
-[knowledge.embeddings]
-provider = "openai"
-base_url = "https://api.groq.com/openai/v1"
-api_key  = "env://GROQ_API_KEY"   # or paste the key directly
-model    = ""  # set a Groq-supported embeddings model if available
-
-# settings.toml — Together AI
-[knowledge.embeddings]
-provider = "openai"
-base_url = "https://api.together.xyz/v1"
-api_key  = "env://TOGETHER_API_KEY"
-model    = "togethercomputer/m2-bert-80M-8k-retrieval"
-```
-
-Override at startup time without editing `settings.toml`:
-
-```bash
-cuga start demo_knowledge \
-  --embeddings-provider openai \
-  --embeddings-base-url https://api.groq.com/openai/v1 \
-  --embeddings-api-key $GROQ_API_KEY \
-  --embeddings-model your-groq-embeddings-model
-```
-
-> Note: Some providers (notably Groq) focus on chat completions and do **not** expose an embeddings endpoint. For those, keep `fastembed` (local) or use an OpenAI-compatible provider that does ship embeddings (Together, Fireworks, OpenAI itself, ...).
-
-**OpenRouter — single key, many embedding models.** Use `provider = "openrouter"` to pick any embedding model from [openrouter.ai/models?output_modalities=embeddings](https://openrouter.ai/models?output_modalities=embeddings) with one API key. Both **model** and **API key** are required (no defaults); base URL is auto-set.
-
-```toml
-# settings.toml — OpenRouter
-[knowledge.embeddings]
-provider = "openrouter"
-api_key  = "env://OPENROUTER_API_KEY"
-model    = "openai/text-embedding-3-small"  # paste any model id from openrouter.ai
-```
-
-```bash
-cuga start demo_knowledge \
-  --embeddings-provider openrouter \
-  --embeddings-api-key $OPENROUTER_API_KEY \
-  --embeddings-model openai/text-embedding-3-small
-```
-
-```python
-from cuga import CugaAgent
-from cuga.backend.knowledge.config import KnowledgeConfig
-import os
-
-agent = CugaAgent(
-    enable_knowledge=True,
-    knowledge_config=KnowledgeConfig(
-        enabled=True,
-        embedding_provider="openrouter",
-        embedding_model="openai/text-embedding-3-small",
-        embedding_api_key=os.environ["OPENROUTER_API_KEY"],
-    ),
-)
-```
-
-**Choosing a provider**
-
-| Need | Recommendation |
-| --- | --- |
-| Air-gapped / zero per-call cost / privacy | `fastembed` (default) |
-| Cheap cloud embeddings, single key for many models | `openrouter` + any embedding model from [openrouter.ai/models](https://openrouter.ai/models?output_modalities=embeddings) |
-| Direct OpenAI billing / org limits | `openai` with default base URL |
-| OpenAI-compatible third party (Together, Fireworks, custom proxy) | `openai` + `base_url` |
-| Self-hosted local model | `ollama` (default `nomic-embed-text`) or `huggingface` |
-
-**Switching providers changes vector dim** (e.g. 384 → 1536), so an existing collection needs a reindex. CUGA's manage UI surfaces a "Re-index recommended" banner automatically when `provider`, `model`, `chunk_size`, `chunk_overlap`, or `metric_type` change.
-
-> **Provider × Docling-mode benchmark numbers** — the full 3 × 3 latency / cost / Jaccard matrix and its methodology are tracked separately in the internal benchmarking notes (was previously here; trimmed for review — see [#319](https://github.com/cuga-project/cuga-agent/issues/319) for the content-hash-cache follow-up).
-
-#### Ingestion Performance Tuning
-
-Three knobs control ingest throughput and progress granularity. Defaults work well for most workloads:
-
-| Setting | Default | Effect |
-| --- | --- | --- |
-| `[knowledge.embeddings] batch_size` | `64` | Chunks per `embed_documents` call. Smaller → finer progress updates; larger → lower per-call overhead. |
-| `[knowledge.embeddings] concurrency` | `4` | Parallel embed sub-batches for **network** providers (OpenAI / Ollama). No effect on local providers. |
-| `[knowledge.engine] vector_insert_batch_size` | `200` | Reserved for future sub-batched bulk insert; today `add_many` is one call per ingest. |
-
-CLI overrides:
-
-```bash
-cuga start demo_knowledge --embeddings-batch-size 128 --embeddings-concurrency 8
-```
-
-All three are part of the **published knowledge config snapshot** — when you publish via the manager UI, these values travel with the version and apply to every subsequent run.
-
-#### Per-stage Ingest Progress
-
-When ingesting a document, the engine emits granular progress events into the metadata DB so the UI can render `Embedding (192/511)`, `Saving (511/511)`, etc. The events are also written to a JSONL bench log when `[knowledge.bench] log_path` is set — used by `scripts/bench_knowledge_ingest.py` for performance attribution.
+> **Full provider matrix + tuning guide** — see the
+> [knowledge engine docs](https://docs.cuga.dev/docs/sdk/knowledge/).
+> Switching provider or model invalidates existing vectors (different
+> dim), so the manage UI surfaces a "Re-index recommended" banner
+> automatically.
 
 ---
 
