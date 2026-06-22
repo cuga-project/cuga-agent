@@ -188,7 +188,12 @@ def resolve_collection(identity: KnowledgeIdentity, scope: str, request: Request
                 ):
                     raise HTTPException(status_code=403, detail="access denied to session")
 
-        return f"kb_sess_{_sanitize(identity.thread_id)}"
+        # Strip BEFORE sanitize so " abc" and "abc" land in the same
+        # collection. Without this, a caller sending a leading-space
+        # thread_id ends up in ``kb_sess__abc`` while a different caller
+        # sending the clean form ends up in ``kb_sess_abc`` — same logical
+        # session, two physical collections, tenant data goes missing.
+        return f"kb_sess_{_sanitize(identity.thread_id.strip())}"
     elif scope == "agent":
         _as = getattr(request.app.state, "app_state", None) if request else None
         return resolve_agent_collection(identity.agent_id, _as)

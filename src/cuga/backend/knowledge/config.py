@@ -657,8 +657,19 @@ class KnowledgeConfig:
             raise ValueError(f"chunk_size must be >= 100, got {self.chunk_size}")
         if self.chunk_overlap < 0 or self.chunk_overlap >= self.chunk_size:
             raise ValueError(f"chunk_overlap must be in [0, chunk_size), got {self.chunk_overlap}")
-        if self.metric_type not in ("COSINE", "IP", "L2"):
-            raise ValueError(f"metric_type must be COSINE, IP, or L2, got {self.metric_type}")
+        # Only COSINE is implemented end-to-end today: ProdEmbeddingStore
+        # creates the HNSW index with ``vector_cosine_ops`` and queries it
+        # with ``<=>`` (cosine distance). Accepting "IP" or "L2" here would
+        # silently use a cosine index for an inner-product or L2-distance
+        # query — wrong scores, slow lookups. Reject loudly until multi-
+        # metric support ships (see review comment 52, deferred to a
+        # storage-layer follow-up PR).
+        if self.metric_type != "COSINE":
+            raise ValueError(
+                f"metric_type must be COSINE (the only metric supported by "
+                f"the storage backend in this release), got {self.metric_type!r}. "
+                f"IP and L2 are tracked for a future storage-layer follow-up."
+            )
         if self.max_ingest_workers < 1:
             raise ValueError(f"max_ingest_workers must be >= 1, got {self.max_ingest_workers}")
         if self.max_pending_tasks < 1:

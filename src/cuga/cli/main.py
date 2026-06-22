@@ -674,18 +674,26 @@ def knowledge_glossary_set(
 
     if publish:
         # See knowledge_adaptation_set: publish endpoint is POST
-        # ``/api/manage/config`` with the draft config as body.
+        # ``/api/manage/config`` with the draft config as body. Split the
+        # GET-draft and POST-publish into two try blocks so the operator
+        # sees which step failed (mirrors adaptation_set's diagnostics).
         draft_url = f"{base}/api/manage/config?draft=1&agent_id={aid}"
         publish_url = f"{base}/api/manage/config?agent_id={aid}"
         try:
             r_draft = httpx.get(draft_url, timeout=15.0)
             r_draft.raise_for_status()
             draft_cfg = r_draft.json() or {}
-            r = httpx.post(publish_url, json={"config": draft_cfg}, timeout=60.0)
-            r.raise_for_status()
         except Exception as e:
-            typer.secho(f"Publish failed: {e}", fg=typer.colors.RED, err=True)
+            typer.secho(f"Failed to read draft: {e}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
+        try:
+            r = httpx.post(publish_url, json={"config": draft_cfg}, timeout=60.0)
+        except Exception as e:
+            typer.secho(f"Failed to publish: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        if r.status_code >= 400:
+            typer.secho(f"Publish rejected ({r.status_code}): {r.text}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
         typer.secho("Published.", fg=typer.colors.GREEN)
 
 

@@ -1707,7 +1707,16 @@ class KnowledgeEngine:
         # runtimes already use internal threads. The engine knows the provider
         # so it makes the dispatch decision once, here, rather than at every
         # embed call.
-        embedder_is_network = self._config.embedding_provider in ("openai", "ollama", "openrouter")
+        # ``litellm`` proxies to network providers (OpenAI / Azure / OpenRouter
+        # via its prefix scheme) so it belongs in the network bucket — without
+        # it, the adapter would serialise embed against a cloud endpoint and
+        # hit provider rate-limit WAF responses on large ingests.
+        embedder_is_network = self._config.embedding_provider in (
+            "openai",
+            "ollama",
+            "openrouter",
+            "litellm",
+        )
         return create_vector_store(
             backend=self._knowledge_vector_backend(),
             collection=collection,
