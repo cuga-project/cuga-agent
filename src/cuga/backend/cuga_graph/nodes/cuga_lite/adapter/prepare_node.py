@@ -69,6 +69,21 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
         or ``cuga_lite_enable_few_shots`` in configurable (skips prefix chat few-shots).
         """
+        # Reset cross-task state at the start of a fresh conversation.
+        # adapter._task_todos_ref is closure-scoped per compiled graph and
+        # outlives a single .invoke(); state.task_todos can also persist via a
+        # thread-keyed checkpointer. We detect "fresh conversation" by message
+        # count (<=1 means just the user's initial message).
+        # The closure ref is cleared in place; state.task_todos is propagated
+        # via every Command.update returned below because in-place state
+        # mutation does not persist through LangGraph.
+        # Note: this does not cover "new task as a follow-up turn on the same
+        # thread" (chat_messages > 1 with a topic change) — tracked separately.
+        is_fresh_conversation = len(state.chat_messages or []) <= 1
+        if is_fresh_conversation:
+            adapter._task_todos_ref.clear()
+            state.task_todos = None
+
         configurable = config.get("configurable", {}) if config else {}
         enable_todos = (
             configurable.get("enable_todos")
@@ -107,6 +122,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
             # If policy returned a command (e.g., BLOCK_INTENT), execute it immediately
             if command:
+                # Propagate the task_todos reset through the policy-returned
+                # Command so LangGraph persists it; the in-place state mutation
+                # above does not survive the node return.
+                if is_fresh_conversation and isinstance(getattr(command, "update", None), dict):
+                    command.update.setdefault("task_todos", None)
                 return command
 
             # If policy returned metadata (e.g., playbook guidance), store it
@@ -434,21 +454,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                             )
                         }
                     if tid and "session" in allowed_scopes:
-                        # Empty-string-aware injection: ``setdefault`` would
-                        # leave an explicit ``thread_id=""`` in place, and
-                        # downstream ``client.py:_resolve_collection`` then
-                        # raises ``ValueError("thread_id required for session
-                        # scope")``. Mirror the e2b_executor pattern
-                        # (e2b_executor.py:243-253) — replace None OR empty
-                        # strings with the actual session thread id. This
-                        # is the ``_is_empty()`` guard the pre-merge branch
-                        # had and the cuga_agent_core refactor merge
-                        # dropped. (Sami's re-review 2026-06-10.)
-                        existing_tid = kwargs.get("thread_id")
-                        if existing_tid is None or (
-                            isinstance(existing_tid, str) and not existing_tid.strip()
-                        ):
-                            kwargs["thread_id"] = tid
+                        kwargs.setdefault("thread_id", tid)
                     return await fn(*args, **kwargs)
 
                 _wrapped.__doc__ = getattr(fn, "__doc__", None)
@@ -521,9 +527,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 # running in draft mode (Try-It-Out). Published agent always
                 # uses engine config. Prefer the per-agent
                 # ``draft_knowledge_configs`` dict (multi-tenant safe), fall
-                # back to the legacy singular attribute. Strip the
-                # "--draft" suffix to get the base agent_id used as the
-                # dict key.
+                # back to the legacy singular attribute.
                 _search_cfg = None
                 if engine is not None:
                     _search_cfg = engine._config
@@ -545,12 +549,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         except Exception:
                             pass
 
-                # Single seam — assemble_system_prompt_section subsumes
-                # the previous format_knowledge_context + get_knowledge_summary
+                # Single seam — assemble_system_prompt_section subsumes the
+                # previous format_knowledge_context + get_knowledge_summary
                 # + knowledge_instructions.md compose dance. Returns a
-                # dataclass with composed text + audit prompt_hash so future
-                # fields (metrics, version) extend cleanly without breaking
-                # this call site.
+                # dataclass with composed text + audit prompt_hash.
+                # Closes review comment 24 ("cuga_lite is the lasting path").
                 assembled = await assemble_system_prompt_section(
                     engine,
                     agent_id,
@@ -621,19 +624,23 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
 
-        return Command(
-            goto="call_model",
-            update={
-                "tools_prepared": True,
-                "prepared_prompt": dynamic_prompt,
-                "step_count": 0,
-                "cuga_lite_metadata": state.cuga_lite_metadata,
-                "reflection_apps": reflection_apps_snapshot,
-                "reflection_enable_find_tools": enable_find_tools,
-                "reflection_skills_enabled": skills_enabled,
-                "reflection_skills_prompt_section": skills_prompt_section,
-                "mcp_few_shot_messages": few_shot_examples,
-            },
-        )
+        update_payload: dict[str, Any] = {
+            "tools_prepared": True,
+            "prepared_prompt": dynamic_prompt,
+            "step_count": 0,
+            "cuga_lite_metadata": state.cuga_lite_metadata,
+            "reflection_apps": reflection_apps_snapshot,
+            "reflection_enable_find_tools": enable_find_tools,
+            "reflection_skills_enabled": skills_enabled,
+            "reflection_skills_prompt_section": skills_prompt_section,
+            "mcp_few_shot_messages": few_shot_examples,
+        }
+        if is_fresh_conversation:
+            # Carry the task_todos reset through LangGraph state so the
+            # state.task_todos fallback path in prepare_system_content sees an
+            # empty value on the next turn.
+            update_payload["task_todos"] = None
+
+        return Command(goto="call_model", update=update_payload)
 
     return prepare_tools_and_apps
