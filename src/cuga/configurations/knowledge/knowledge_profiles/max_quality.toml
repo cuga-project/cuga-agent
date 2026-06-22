@@ -1,20 +1,71 @@
 [profile]
 name = "Max Quality"
-description = "Exhaustive multi-hop retrieval. Decomposes questions into sub-queries, cross-references results. Highest accuracy, highest latency and cost."
+description = "Exhaustive retrieval with multilingual embedder + reranker + full Docling OCR. Highest accuracy, highest cost and latency. Requires >=16GB RAM."
 
-[search]
-max_search_attempts = 8
-default_limit = 30
-default_score_threshold = 0.0
+# Pareto-locked profile (2026-06-09).
+# Switching to max_quality INVALIDATES collections: embedder is 1024d
+# multilingual. Re-ingest required. This profile assumes the user has
+# explicitly accepted that cost.
+
+[embeddings]
+# multilingual-e5-large: 1024d, ~560M params, multilingual (16+ langs).
+# MIRACL avg 66.5 across 16 languages. On English-only corpora, an
+# English-tuned 1024d model (bge-large-en-v1.5) wins by ~3 nDCG; flip
+# this key if you do not need multilingual.
+model = "intfloat/multilingual-e5-large"
+# Reduced because 1024d × 64 batch × fp32 ≈ 1GB transient RSS; 256 batch
+# would peak ~3.5GB — too risky for the 1024d model on standard hosts.
+batch_size = 64
+concurrency = 4
 
 [chunking]
-chunk_size = 500
-chunk_overlap = 150
+# 1000-tok windows preserve long-form context (legal preambles, multi-
+# page procedure blocks). With 20% overlap, cross-boundary entities are
+# captured without inflating the index materially.
+chunk_size = 1000
+chunk_overlap = 200
+
+[docling]
+# accurate: do_ocr=True, do_table_structure=True. Scanned PDFs work,
+# full fidelity. Slowest parse path.
+pdf_mode = "accurate"
+layout_engine = "auto"
+# off: preserve every chunk. Max-quality users want every signal even
+# if it includes page-chrome noise — the reranker will filter it.
+drop_page_chrome = "off"
+
+[search]
+# Four attempts for deep multi-hop. Each retry rewrites the query;
+# diminishing returns past 4 per agent-bench data.
+max_search_attempts = 4
+default_limit = 15
+default_score_threshold = 0.0
+hybrid_mode = "auto"
+# off: do not silently drop anything; reranker decides.
+junk_filter = "off"
+
+[rerank]
+enabled = true
+# top_k_in >= 3 × default_limit (15) = 45; 60 gives the reranker
+# substantial headroom. CPU cost: ~18s at 100% CPU for 60 pairs —
+# acceptable for the "max quality" posture.
+top_k_in = 60
+model = "BAAI/bge-reranker-v2-m3"
+
+[engine]
+# 4 workers assumes the user has >=8GB RAM headroom for the heavier
+# 1024d embedder. Reduce if your container is smaller.
+max_ingest_workers = 4
+# Lower than other profiles because 1024d vectors are 2.7x the byte
+# footprint of 384d — keeps pgvector HNSW lock windows short.
+vector_insert_batch_size = 300
 
 [instructions]
 addendum = """
-Maximize retrieval thoroughness. Decompose every question into its constituent sub-questions and search for each independently.
-After initial results, extract entities, dates, and terminology to form follow-up queries.
+You are using the **Max Quality** profile: multilingual embedder, hybrid retrieval, cross-encoder reranking, four search attempts.
+
+Decompose every multi-part question into its constituent sub-questions and search for each independently.
+After initial results, extract entities, dates, version numbers, and domain terminology to form follow-up queries.
 Cross-reference results from different searches to ensure completeness.
 Use all available search attempts before synthesizing your answer.
 When both scopes have documents, search both systematically.
