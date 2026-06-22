@@ -59,6 +59,29 @@ import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
 
+// Mirror of ``AdaptationServerError`` from
+// ``agentic_chat/src/ClientAdaptationPanel.tsx``. Declared locally as a
+// type-only shape because the agentic_chat workspace's package exports
+// don't re-export it. The server's ``ClientAdaptationError.to_dict()``
+// shape is the source of truth (see ``config.py``); the union of
+// ``error`` values must stay in sync between server and these two
+// frontend declarations.
+interface AdaptationServerErrorShape {
+  error:
+    | "length_exceeded"
+    | "bidi_override"
+    | "control_char"
+    | "contract_override_phrase"
+    | "type_error"
+    | "null_byte";
+  message: string;
+  phrase?: string;
+  pattern?: string;
+  codepoint?: string;
+  length?: number;
+  max?: number;
+}
+
 export interface HomescreenConfig {
   isOn?: boolean;
   greeting?: string;
@@ -251,6 +274,12 @@ export function ManagePage() {
   const [knowledgeSavedSnapshot, setKnowledgeSavedSnapshot] = useState<AgentConfig["knowledge"] | null>(null);
   const [knowledgeReindexNeeded, setKnowledgeReindexNeeded] = useState(false);
   const [knowledgeReindexing, setKnowledgeReindexing] = useState(false);
+  // Adaptation 422 wiring (Sami #60): the autosave PATCH below may return
+  // a 422 with the structured ClientAdaptationError.to_dict() body. We
+  // surface it into the panel via the controlled-state contract so the
+  // operator sees what they need to fix instead of a silent no-save.
+  // Cleared on the next successful save.
+  const [adaptationServerError, setAdaptationServerError] = useState<AdaptationServerErrorShape | null>(null);
   const [knowledgeStale, setKnowledgeStale] = useState(false);
   const [knowledgeReindexDeferred, setKnowledgeReindexDeferred] = useState(false);
   const [ragProfiles, setRagProfiles] = useState<Record<string, any>>({});
@@ -923,7 +952,10 @@ export function ManagePage() {
     setKnowledgeReindexNeeded(changed && knowledgeDocCount > 0);
   }, [knowledgeConfig, knowledgeSavedSnapshot, knowledgeDocCount]);
 
-  // Debounced auto-save for knowledge config
+  // Debounced auto-save for knowledge config. On 422 the server returns a
+  // structured ClientAdaptationError.to_dict() body — push it into the
+  // KnowledgePanel via the controlled-state contract so the operator
+  // sees what's wrong instead of a silent no-save (Sami #60).
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
     const t = setTimeout(async () => {
@@ -931,9 +963,20 @@ export function ManagePage() {
         const res = await api.patchManageConfigDraftKnowledge(knowledgeConfig, effectiveAgentId);
         if (res.ok) {
           setCurrentVersion("draft");
+          setAdaptationServerError(null);
+        } else if (res.status === 422) {
+          try {
+            const body = await res.json();
+            const err = (body && (body.detail ?? body)) as Partial<AdaptationServerErrorShape> | null;
+            if (err && typeof err.error === "string" && typeof err.message === "string") {
+              setAdaptationServerError(err as AdaptationServerErrorShape);
+            }
+          } catch {
+            // 422 without a JSON body — leave the prior error in place.
+          }
         }
       } catch {
-        // silent
+        // network failure — silent (a transient flake clears on the next change)
       }
     }, 800);
     return () => clearTimeout(t);
@@ -2051,6 +2094,8 @@ export function ManagePage() {
           knowledgeReindexDeferred={knowledgeReindexDeferred}
           knowledgeReindexing={knowledgeReindexing}
           ragProfiles={ragProfiles}
+          adaptationServerError={adaptationServerError}
+          onAdaptationServerError={setAdaptationServerError}
           onReindex={async () => {
             setKnowledgeReindexing(true);
             try {
