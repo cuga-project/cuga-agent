@@ -2732,7 +2732,7 @@ def doctor() -> None:
         else:
             _row(
                 "status",
-                "CPU-only (for CUDA cluster: use Dockerfile.gpu or `uv sync --extra gpu`)",
+                "CPU-only (GPU support is deferred to a follow-up release)",
             )
     except Exception as e:
         _row("onnxruntime", f"IMPORT FAILED: {e!r}")

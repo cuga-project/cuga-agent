@@ -31,14 +31,8 @@ jobs:
           python-version: '3.12'
       
       - name: Install dependencies
-        # ``--no-extra gpu`` keeps the ``onnxruntime-gpu`` package out of the
-        # CI environment. With ``--all-extras`` it would install alongside
-        # the base ``onnxruntime`` (transitive of fastembed) and the two
-        # collide on disk, breaking ``import onnxruntime`` (see
-        # qdrant/fastembed#608 and microsoft/onnxruntime#21825). The GPU
-        # path is exercised in ``Dockerfile.gpu`` only.
-        run: uv sync --all-extras --no-extra gpu --dev
-      
+        run: uv sync --all-extras --dev
+
       - name: Install Playwright browsers
         run: uv run playwright install --with-deps chromium
       
@@ -97,8 +91,8 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Install dependencies (no GPU, no Playwright — headless suite)
-        run: uv sync --all-extras --no-extra gpu --dev
+      - name: Install dependencies (headless suite — no Playwright)
+        run: uv sync --all-extras --dev
 
       - name: Enable pgvector extension
         run: |

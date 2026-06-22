@@ -1427,20 +1427,18 @@ class KnowledgeEngine:
                 else:
                     # Case (b): CPU image, GPU requested.
                     msg = (
-                        "use_gpu=True but this is the CPU image (CUGA_GPU_BUILD unset) "
-                        "— embed, reranker, and Docling will all run on CPU. Fix: "
-                        "pull/build the GPU image — `docker build -f Dockerfile.gpu "
-                        "-t cuga:gpu .` then `docker run --gpus all cuga:gpu`. For a "
-                        "local override: `uv sync --extra gpu`."
+                        "use_gpu=True but this is the CPU image — embed, reranker, "
+                        "and Docling will all run on CPU. GPU support is not yet "
+                        "shipped (deferred to a follow-up release); set "
+                        "use_gpu=False to silence this warning."
                     )
             elif only_cpu_onnx and _torch_cuda:
                 # Case (c): partial GPU.
                 msg = (
                     "use_gpu=True: torch sees CUDA but onnxruntime is CPU-only — "
                     "reranker + Docling-transformers will use CUDA, but fastembed "
-                    "(embedder) + Docling-onnx layout will run on CPU. Fix: use the "
-                    "GPU image (Dockerfile.gpu) which ships fastembed-gpu, or run "
-                    "`uv sync --extra gpu` locally."
+                    "(embedder) + Docling-onnx layout will run on CPU. GPU runtime "
+                    "support is deferred to a follow-up release."
                 )
 
             if msg:
