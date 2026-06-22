@@ -114,17 +114,6 @@ class HookResult:
 
 
 @dataclass
-class GraphChangeSpec:
-    """Spec describing structural changes a hook wants to make to the graph."""
-
-    add_nodes: Dict[str, Callable] = field(default_factory=dict)
-    remove_nodes: List[str] = field(default_factory=list)
-    add_edges: List[tuple] = field(default_factory=list)
-    remove_edges: List[tuple] = field(default_factory=list)
-    modify_edges: Dict[str, str] = field(default_factory=dict)
-
-
-@dataclass
 class Hook:
     """
     A hook that intercepts execution at a specific point.
