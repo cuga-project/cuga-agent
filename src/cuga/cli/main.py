@@ -538,9 +538,20 @@ def knowledge_adaptation_set(
     typer.secho(f"Client adaptation saved to draft ({len(text)} chars).", fg=typer.colors.GREEN)
 
     if publish:
-        publish_url = f"{base}/api/manage/config/publish?agent_id={aid}"
+        # Publish flow: server endpoint is POST /api/manage/config (not
+        # ``/config/publish``). The body must be the full config we want
+        # to publish — fetch the current draft first, then POST it.
+        draft_url = f"{base}/api/manage/config?draft=1&agent_id={aid}"
+        publish_url = f"{base}/api/manage/config?agent_id={aid}"
         try:
-            r = httpx.post(publish_url, timeout=60.0)
+            r_draft = httpx.get(draft_url, timeout=15.0)
+            r_draft.raise_for_status()
+            draft_cfg = r_draft.json() or {}
+        except Exception as e:
+            typer.secho(f"Failed to read draft: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        try:
+            r = httpx.post(publish_url, json={"config": draft_cfg}, timeout=60.0)
         except Exception as e:
             typer.secho(f"Failed to publish: {e}", fg=typer.colors.RED, err=True)
             raise typer.Exit(code=2)
@@ -662,9 +673,15 @@ def knowledge_glossary_set(
     typer.secho(f"Glossary saved to draft ({len(glossary)} entries).", fg=typer.colors.GREEN)
 
     if publish:
-        publish_url = f"{base}/api/manage/config/publish?agent_id={aid}"
+        # See knowledge_adaptation_set: publish endpoint is POST
+        # ``/api/manage/config`` with the draft config as body.
+        draft_url = f"{base}/api/manage/config?draft=1&agent_id={aid}"
+        publish_url = f"{base}/api/manage/config?agent_id={aid}"
         try:
-            r = httpx.post(publish_url, timeout=60.0)
+            r_draft = httpx.get(draft_url, timeout=15.0)
+            r_draft.raise_for_status()
+            draft_cfg = r_draft.json() or {}
+            r = httpx.post(publish_url, json={"config": draft_cfg}, timeout=60.0)
             r.raise_for_status()
         except Exception as e:
             typer.secho(f"Publish failed: {e}", fg=typer.colors.RED, err=True)
