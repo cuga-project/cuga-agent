@@ -1,3 +1,4 @@
+import math
 import re
 import threading
 from datetime import date
@@ -17,7 +18,7 @@ from loguru import logger
 
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
-from cuga.config import settings
+from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
@@ -75,6 +76,19 @@ except ImportError:
     ReasoningChatLiteLLM = None  # type: ignore[misc, assignment]
 
 _ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_DEFAULT_LLM_HTTP_TIMEOUT = DEFAULT_LLM_HTTP_TIMEOUT
+
+
+def _parse_timeout(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return None
+    if timeout <= 0 or not math.isfinite(timeout):
+        return None
+    return timeout
 
 
 def _normalize_secret(val: Optional[str]) -> Optional[str]:
@@ -255,6 +269,7 @@ class LLMManager:
             d['resolved_model_name'] = self._get_model_name(model_settings, platform)
             d['resolved_api_version'] = self._get_api_version(model_settings, platform)
             d['resolved_base_url'] = self._get_base_url(model_settings, platform)
+            d['resolved_http_timeout'] = self._get_http_timeout(model_settings)
 
         settings_str = json.dumps(d, sort_keys=True)
         return hashlib.md5(settings_str.encode()).hexdigest()
@@ -557,6 +572,38 @@ class LLMManager:
 
         return True
 
+    def _get_http_timeout(self, model_settings: Dict[str, Any]) -> float:
+        """Return HTTP timeout (seconds) for OpenAI, Azure, and OpenRouter clients.
+
+        Other platforms (groq, watsonx, rits, google-genai, litellm) ignore this
+        setting until wired separately.
+
+        Priority:
+        1. timeout in model_settings (per-agent TOML)
+        2. CUGA_LLM_HTTP_TIMEOUT env var
+        3. LLM_HTTP_TIMEOUT env var
+        4. settings.connections.llm_http_timeout (TOML)
+        5. Default (_DEFAULT_LLM_HTTP_TIMEOUT)
+        """
+        per_model = _parse_timeout(model_settings.get("timeout"))
+        if per_model is not None:
+            return per_model
+
+        for env_var in ("CUGA_LLM_HTTP_TIMEOUT", "LLM_HTTP_TIMEOUT"):
+            env_val = _parse_timeout(os.environ.get(env_var))
+            if env_val is not None:
+                logger.debug(f"Using {env_var} from environment: {env_val}")
+                return env_val
+
+        try:
+            toml_timeout = _parse_timeout(settings.connections.llm_http_timeout)
+            if toml_timeout is not None:
+                return toml_timeout
+        except (AttributeError, TypeError) as exc:
+            logger.debug(f"Could not read connections.llm_http_timeout from settings: {exc}")
+
+        return _DEFAULT_LLM_HTTP_TIMEOUT
+
     def _is_reasoning_model(self, model_name: str) -> bool:
         """Check if model is a reasoning model that doesn't support temperature
 
@@ -577,6 +624,7 @@ class LLMManager:
         model_name = self._get_model_name(model_settings, platform)
         api_version = self._get_api_version(model_settings, platform)
         base_url = self._get_base_url(model_settings, platform)
+        http_timeout = self._get_http_timeout(model_settings)
         if platform == "azure":
             api_version = str(model_settings.get('api_version'))
             is_reasoning = self._is_reasoning_model(model_name)
@@ -585,7 +633,7 @@ class LLMManager:
                 logger.debug(f"Creating AzureChatOpenAI reasoning model: {model_name} (no temperature)")
                 llm = AzureChatOpenAI(
                     model_version=api_version,
-                    timeout=61,
+                    timeout=http_timeout,
                     api_version="2025-04-01-preview",
                     azure_deployment=model_name + "-" + api_version,
                     max_completion_tokens=max_tokens,
@@ -593,7 +641,7 @@ class LLMManager:
             else:
                 logger.debug(f"Creating AzureChatOpenAI model: {model_name} - {api_version}")
                 llm = AzureChatOpenAI(
-                    timeout=61,
+                    timeout=http_timeout,
                     azure_deployment=model_name + "-" + api_version,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -604,7 +652,7 @@ class LLMManager:
             openai_params: Dict[str, Any] = {
                 "model_name": model_name,
                 "max_tokens": max_tokens,
-                "timeout": 61,
+                "timeout": http_timeout,
             }
 
             if not is_reasoning:
@@ -739,7 +787,7 @@ class LLMManager:
             openrouter_params: Dict[str, Any] = {
                 "model_name": model_name,
                 "max_tokens": max_tokens,
-                "timeout": 61,
+                "timeout": http_timeout,
                 "openai_api_key": api_key,
                 "openai_api_base": base_url,
             }
