@@ -214,30 +214,50 @@ if __name__ == "__main__":
         positional_names = self._KNOWLEDGE_POSITIONAL_ARGS.get(tool_name, [])
         allowed_scopes_repr = repr(list(allowed_scopes))
         positional_names_repr = repr(positional_names)
-        default_scope_line = f'            kwargs["scope"] = "{default_scope}"\n' if default_scope else ""
-        thread_id_line = (
-            f'        kwargs.setdefault("thread_id", "{thread_id}")\n'
-            if thread_id and "session" in allowed_scopes
+        # Only emit a scope/thread_id block for tools that actually accept
+        # those args. ``knowledge_get_ingestion_status`` and
+        # ``knowledge_get_knowledge_status`` have no scope/thread params —
+        # silently injecting them would TypeError inside the sandbox.
+        tool_has_scope = "scope" in positional_names
+        tool_has_thread_id = "thread_id" in positional_names
+
+        # Scope validation: emit at function level so the block has its own
+        # indent contract and isn't structurally coupled to thread_id below.
+        # Generator-time conditions (tool_has_scope, allowed_scopes,
+        # tool_has_thread_id) ensure we only emit blocks for tools that
+        # accept them — no runtime guard needed.
+        default_scope_line = (
+            f'        kwargs["scope"] = "{default_scope}"\n' if default_scope else "        pass\n"
+        )
+        scope_validation_block = (
+            f"""    allowed_scopes = {allowed_scopes_repr}
+    if "scope" not in kwargs:
+{default_scope_line}    scope = kwargs.get("scope")
+    if scope not in allowed_scopes:
+        allowed_text = ", ".join(allowed_scopes)
+        return {{"error": f"Knowledge scope '{{scope}}' is unavailable in this context. Allowed scopes: {{allowed_text}}"}}
+"""
+            if tool_has_scope and allowed_scopes
             else ""
         )
-        default_scope_block = default_scope_line if default_scope_line else "            pass\n"
-        thread_id_block = thread_id_line if thread_id_line else ""
+        # Thread-id injection: also at function level. Whitespace-safe —
+        # ``setdefault`` would leave an explicit ``""`` in place, which is
+        # exactly what produced the post-publish 400s in the live trace.
+        thread_id_block = (
+            f"""    _existing_tid = kwargs.get("thread_id")
+    if _existing_tid is None or (isinstance(_existing_tid, str) and not _existing_tid.strip()):
+        kwargs["thread_id"] = "{thread_id}"
+"""
+            if thread_id and "session" in allowed_scopes and tool_has_thread_id
+            else ""
+        )
 
         return f"""async def {tool_name}(*args, **kwargs):
     \"\"\"Context-aware knowledge tool stub for remote execution.\"\"\"
     positional_names = {positional_names_repr}
     for name, value in zip(positional_names, args):
         kwargs.setdefault(name, value)
-    allowed_scopes = {allowed_scopes_repr}
-    if allowed_scopes:
-        if "scope" not in kwargs:
-{default_scope_block}
-        scope = kwargs.get("scope")
-        if scope not in allowed_scopes:
-            allowed_text = ", ".join(allowed_scopes)
-            return {{"error": f"Knowledge scope '{{scope}}' is unavailable in this context. Allowed scopes: {{allowed_text}}"}}
-{thread_id_block}
-    return await call_api("knowledge", "{tool_name}", kwargs)
+{scope_validation_block}{thread_id_block}    return await call_api("knowledge", "{tool_name}", kwargs)
 """
 
     def _parse_execution_output(self, raw_output: str) -> tuple[str, dict[str, Any]]:

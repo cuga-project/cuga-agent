@@ -162,7 +162,12 @@ def resolve_collection(identity: KnowledgeIdentity, scope: str, request: Request
         raise HTTPException(status_code=403, detail=_scope_disabled_detail(scope))
 
     if scope == "session":
-        if not identity.thread_id:
+        # Whitespace-safe check. ``"   "`` is truthy in Python but it
+        # sanitizes to ``"___"`` and would create a phantom collection
+        # ``kb_sess____`` shared across every misconfigured caller.
+        # Strip before the truthiness test so any "no real thread id"
+        # input is rejected uniformly.
+        if not (identity.thread_id or "").strip():
             raise HTTPException(status_code=400, detail="X-Thread-ID required")
 
         # Enforce session ownership if provider is available
