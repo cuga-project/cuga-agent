@@ -97,9 +97,6 @@ class BPMNParser:
     that can be executed by FlowAgent.
     """
 
-    def __init__(self):
-        self.processes: Dict[str, BPMNProcess] = {}
-
     def parse_file(self, bpmn_file: str) -> BPMNProcess:
         """
         Parse a BPMN XML file and extract process definition.
@@ -125,7 +122,6 @@ class BPMNParser:
         process_elem = processes[0]
         process = self._parse_process(process_elem)
 
-        self.processes[process.id] = process
         logger.info(f"Parsed process: {process.name} (ID: {process.id})")
         logger.info(f"  Elements: {len(process.elements)}")
         logger.info(f"  Flows: {len(process.flows)}")
