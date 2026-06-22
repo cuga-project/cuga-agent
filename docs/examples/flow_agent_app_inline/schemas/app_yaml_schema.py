@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 TaskMode = Literal["task_agent", "native"]
 GatewayMode = Literal["decision_agent", "native"]
 HookType = Literal["pre_edge", "post_node", "pre_gateway", "post_gateway"]
+AgentType = Literal["cuga_agent", "wxo", "claude_agent", "langgraph", "crewAI"]
 HookAction = Literal[
     "continue",
     "skip_node",
@@ -26,6 +27,7 @@ class FlowBlock(BaseModel):
     id: str
     version: Optional[str] = None
     bpmn_file: Optional[str] = None
+    agent_type: AgentType = "cuga_agent"
 
 
 class LLMConfig(BaseModel):
@@ -43,6 +45,7 @@ class TaskAgentConfig(BaseModel):
     system_instruction: str
     tools: list[str] = Field(default_factory=list)
     policy: Optional[str] = None
+    agent_type: AgentType = "cuga_agent"
 
 
 class TaskConfig(BaseModel):
@@ -70,6 +73,7 @@ class GatewayConfig(BaseModel):
     condition: Optional[str] = None
     policy: Optional[str] = None
     flows: Optional[dict[str, GatewayFlowConfig]] = None
+    agent_type: AgentType = "cuga_agent"
 
 
 class ActionPermissionsConfig(BaseModel):
