@@ -300,9 +300,7 @@ class TestClientAdaptationExampleEndToEnd:
         here.
         """
         text = EXAMPLE_MD.read_text(encoding="utf-8").lower()
-        forbidden: tuple[str, ...] = (
-            "TODO_REPLACE_WITH_CLIENT_TOKEN".lower(),
-        )
+        forbidden: tuple[str, ...] = ("TODO_REPLACE_WITH_CLIENT_TOKEN".lower(),)
         for token in forbidden:
             assert token not in text, (
                 f"Example contains client-specific token {token!r}; "

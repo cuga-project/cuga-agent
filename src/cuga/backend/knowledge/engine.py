@@ -31,7 +31,6 @@ from langchain_core.indexing import InMemoryRecordManager
 from langchain_docling import DoclingLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from cuga.backend.knowledge.bench import record_ingest_run
 from cuga.backend.knowledge.config import (
     KnowledgeConfig,
     client_adaptation_hash as _client_adapt_hash,
@@ -2143,17 +2142,6 @@ class KnowledgeEngine:
                         "duration_seconds": round(duration, 2),
                         "timings": dict(stage_timings),
                     }
-                },
-            )
-            record_ingest_run(
-                self._config.bench_log_path,
-                {
-                    "stack": self._knowledge_vector_backend(),
-                    "collection": collection,
-                    "filename": filename,
-                    "embedding_provider": self._config.embedding_provider,
-                    "chunk_count": len(docs),
-                    "timings": dict(stage_timings),
                 },
             )
             logger.info(

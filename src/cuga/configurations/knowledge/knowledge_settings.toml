@@ -112,13 +112,6 @@ max_url_download_size_mb = 50
 max_files_per_request = 10
 max_chunks_per_document = 10000
 
-[knowledge.bench]
-# When non-empty, the engine appends one JSON line per completed ingest to this
-# path with per-stage timings (parse_s, embed_s, insert_s, insert_total_s,
-# finalize_s, total_s). Used by scripts/bench_knowledge_ingest.py for the
-# issue #183 attribution table. Disabled by default; off the hot path.
-log_path = ""
-
 [knowledge.client_adaptation]
 # Operator-supplied markdown appended to the knowledge-agent system prompt.
 # Use it to carry domain glossary, verbatim-preservation rules, or anti-hedging

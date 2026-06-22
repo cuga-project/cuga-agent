@@ -38,16 +38,12 @@ def test_from_settings_loads_perf_keys_from_toml() -> None:
             "engine": {
                 "vector_insert_batch_size": 500,
             },
-            "bench": {
-                "log_path": "/tmp/ingest_runs.jsonl",
-            },
         }
     )
     cfg = KnowledgeConfig.from_settings(settings)
     assert cfg.embedding_batch_size == 128
     assert cfg.embedding_concurrency == 8
     assert cfg.vector_insert_batch_size == 500
-    assert cfg.bench_log_path == "/tmp/ingest_runs.jsonl"
 
 
 def test_from_settings_defaults_when_keys_missing() -> None:
@@ -65,7 +61,6 @@ def test_from_settings_defaults_when_keys_missing() -> None:
     assert cfg.embedding_batch_size == 64
     assert cfg.embedding_concurrency == 4
     assert cfg.vector_insert_batch_size == 200
-    assert cfg.bench_log_path == ""
 
 
 def test_from_settings_default_profile_owns_perf_knobs() -> None:
@@ -89,7 +84,6 @@ def test_knowledge_config_dataclass_defaults() -> None:
     assert cfg.embedding_batch_size == 64
     assert cfg.embedding_concurrency == 4
     assert cfg.vector_insert_batch_size == 200
-    assert cfg.bench_log_path == ""
 
 
 def test_perf_keys_round_trip_via_to_dict_and_coerce() -> None:

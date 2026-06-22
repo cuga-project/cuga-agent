@@ -508,11 +508,6 @@ class KnowledgeConfig:
     max_files_per_request: int = 10
     max_chunks_per_document: int = 10000
 
-    # Benchmarking (Step 0 of issue #183 ingest perf work).
-    # When non-empty, the engine appends one JSON line per completed ingest to
-    # this path with per-stage timings. Disabled by default; off the hot path.
-    bench_log_path: str = ""
-
     # Adapter batching (Steps 4-7 of issue #183 ingest perf work).
     # ``embedding_batch_size``: chunks per call to embed_documents. Smaller =
     # finer progress granularity; larger = lower per-call overhead on cloud
@@ -964,7 +959,6 @@ class KnowledgeConfig:
         engine = kb.get("engine", {})
         limits = kb.get("limits", {})
         mcp = kb.get("mcp", {})
-        bench = kb.get("bench", {})
         docling = kb.get("docling", {})
         adaptation = kb.get("client_adaptation", {})
 
@@ -1050,7 +1044,6 @@ class KnowledgeConfig:
             max_chunks_per_document=limits.get("max_chunks_per_document", 10000),
             mcp_transport=mcp.get("transport", "http"),
             mcp_port=mcp.get("port", 8113),
-            bench_log_path=bench.get("log_path", ""),
             # Accept both the structured [knowledge.client_adaptation] table and
             # the flat top-level key. The flat form is what to_dict() emits, so
             # an exported published snapshot inlined into settings.toml round-trips
