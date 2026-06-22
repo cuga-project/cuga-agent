@@ -60,27 +60,70 @@ class LocalEmbeddingStore:
     def _aux_keys(self) -> List[str]:
         return list(self._schema.auxiliary_columns.keys())
 
-    async def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
-        await asyncio.to_thread(self._add_sync, id, embedding, metadata)
+    def _insert_sql_and_row(
+        self, id_: str, embedding: List[float], metadata: Dict[str, Any]
+    ) -> tuple[str, List[Any]]:
+        """Build the parameterised INSERT and a single row's values.
 
-    def _add_sync(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
-        conn = self._get_conn()
+        Shared between ``add`` (single row + commit) and ``add_many`` (bulk
+        executemany in one transaction) so the schema/order logic lives in
+        exactly one place.
+        """
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
-        full = {self._schema.id_column: id, **metadata}
+        full = {self._schema.id_column: id_, **metadata}
         cols = ["embedding"] + meta_keys + aux_keys
-        placeholders = ", ".join("?" for _ in cols)
         col_list = ", ".join(cols)
-        values = (
+        placeholders = ", ".join("?" for _ in cols)
+        sql = f"INSERT INTO {self._collection_name} ({col_list}) VALUES ({placeholders})"
+        values: List[Any] = (
             [_serialize_float32(embedding)]
             + [full.get(k) for k in meta_keys]
             + [full.get(k) for k in aux_keys]
         )
-        conn.execute(
-            f"INSERT INTO {self._collection_name} ({col_list}) VALUES ({placeholders})",
-            values,
-        )
-        conn.commit()
+        return sql, values
+
+    async def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
+        # Delegate to add_many so the SQL/row construction lives in one place.
+        # Semantics are preserved: one row, one commit, no concurrent writers.
+        await self.add_many([(id, embedding, metadata)])
+
+    async def add_many(self, items: List[tuple[str, List[float], Dict[str, Any]]]) -> None:
+        """Bulk-insert items in a single transaction (issue #183 step 2)."""
+        await asyncio.to_thread(self._add_many_sync, items)
+
+    def _add_many_sync(self, items: List[tuple[str, List[float], Dict[str, Any]]]) -> None:
+        if not items:
+            return
+        conn = self._get_conn()
+        sql: str | None = None
+        rows: List[List[Any]] = []
+        for id_, embedding, metadata in items:
+            row_sql, values = self._insert_sql_and_row(id_, embedding, metadata)
+            if sql is None:
+                sql = row_sql
+            rows.append(values)
+        assert sql is not None  # items is non-empty
+        try:
+            try:
+                # Fast path: single C-loop multi-row insert.
+                conn.executemany(sql, rows)
+            except sqlite3.OperationalError:
+                # sqlite-vec's vec0 virtual table is suspect for executemany on
+                # some builds; fall back to a loop inside the same transaction
+                # so we still drop the per-row commit fsync cost from N to 1.
+                for row in rows:
+                    conn.execute(sql, row)
+            conn.commit()
+        except Exception:
+            try:
+                conn.rollback()
+            except sqlite3.Error:
+                # Some virtual-table builds reject rollback; commit was the
+                # write barrier, so a failure before commit() means no rows
+                # were durable anyway.
+                pass
+            raise
 
     async def search(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]
