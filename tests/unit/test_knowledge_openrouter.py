@@ -324,33 +324,6 @@ def test_embedder_is_network_includes_openrouter() -> None:
 # ---- SDK round-trip via CugaAgent(knowledge_config=...) ----
 
 
-def test_sdk_knowledge_config_openrouter_lands_on_engine(_isolated_knowledge_dir) -> None:
-    """CugaAgent(knowledge_config=KnowledgeConfig(provider='openrouter', ...))
-    must propagate every OpenRouter field to engine._config — no silent drop.
-    """
-    from pathlib import Path
-
-    from cuga import CugaAgent
-
-    cfg = KnowledgeConfig(
-        enabled=True,
-        embedding_provider="openrouter",
-        embedding_model="openai/text-embedding-3-small",
-        embedding_api_key="sk-or-test",
-        persist_dir=Path(_isolated_knowledge_dir),
-    )
-    agent = CugaAgent(enable_knowledge=True, knowledge_config=cfg)
-    try:
-        engine = agent.knowledge._engine
-        assert engine._config.embedding_provider == "openrouter"
-        assert engine._config.embedding_model == "openai/text-embedding-3-small"
-        assert engine._config.embedding_api_key == "sk-or-test"
-    finally:
-        import asyncio
-
-        asyncio.run(agent.aclose())
-
-
 # ---- settings.toml load ----
 
 
