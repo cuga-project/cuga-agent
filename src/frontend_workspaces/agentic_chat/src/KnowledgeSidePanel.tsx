@@ -1,8 +1,5 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useRef } from "react";
 import { X, FileText, Trash2, Upload, Lock } from "lucide-react";
-import {
-  listKnowledgeDocuments,
-} from "../../frontend/src/api";
 import { useSessionKnowledgeAttachments } from "../../frontend/src/knowledge/useSessionKnowledgeAttachments";
 import "./KnowledgeSidePanel.css";
 
@@ -19,7 +16,11 @@ interface KnowledgeSidePanelProps {
   threadId: string;
   sessionDocsVersion: number;
   onSessionDocsChanged: () => void;
-  onDocCountChanged?: (count: number) => void;
+  // Agent-level docs come from App (``useAgentKnowledgeDocs``) so the
+  // badge count and the panel share one source of truth. The panel no
+  // longer fetches these itself — preventing the 6→0→6 flicker that
+  // happened when local state was reset on prop transitions.
+  agentDocs: KnowledgeDoc[];
   inline?: boolean;
   knowledgeEnabled?: boolean | null;
   agentKnowledgeEnabled?: boolean | null;
@@ -41,14 +42,13 @@ export function KnowledgeSidePanel({
   threadId,
   sessionDocsVersion,
   onSessionDocsChanged,
-  onDocCountChanged,
+  agentDocs,
   inline = false,
   knowledgeEnabled = true,
   agentKnowledgeEnabled = true,
   sessionKnowledgeEnabled = true,
   agentLabel,
 }: KnowledgeSidePanelProps) {
-  const [agentDocs, setAgentDocs] = useState<KnowledgeDoc[]>([]);
   const [dragover, setDragover] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const agentScopeEnabled = knowledgeEnabled !== false && agentKnowledgeEnabled !== false;
@@ -56,10 +56,6 @@ export function KnowledgeSidePanel({
   const effectiveThreadId = sessionScopeEnabled ? threadId : "";
   const conversationReady = sessionScopeEnabled && Boolean(effectiveThreadId);
   const disabledAgentLabel = agentLabel || "this agent";
-
-  // Stabilize callback ref to avoid re-render cascades
-  const onDocCountChangedRef = useRef(onDocCountChanged);
-  onDocCountChangedRef.current = onDocCountChanged;
 
   const {
     documents: sessionDocs,
@@ -73,35 +69,10 @@ export function KnowledgeSidePanel({
     onSessionDocsChanged,
   });
 
-  // Report total doc count to parent
-  useEffect(() => {
-    if (knowledgeEnabled === false) {
-      onDocCountChangedRef.current?.(0);
-      return;
-    }
-    onDocCountChangedRef.current?.((agentScopeEnabled ? agentDocs.length : 0) + (sessionScopeEnabled ? sessionDocs.length : 0));
-  }, [agentDocs.length, agentScopeEnabled, knowledgeEnabled, sessionDocs.length, sessionScopeEnabled]);
-
-  // Fetch agent-level docs once on mount
-  useEffect(() => {
-    if (!agentScopeEnabled) {
-      setAgentDocs([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await listKnowledgeDocuments();
-        if (res.ok) {
-          const data = await res.json();
-          if (!cancelled) setAgentDocs(data.documents ?? []);
-        }
-      } catch (err) {
-        console.error("Failed to load agent knowledge docs:", err);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [agentScopeEnabled]);
+  // Agent-doc fetching has moved up to ``useAgentKnowledgeDocs`` (App
+  // level). The panel reads ``agentDocs`` from props and no longer owns
+  // its own fetch lifecycle — eliminates the 6→0→6 transition that used
+  // to happen when ``agentScopeEnabled`` flipped during prop resolution.
 
   const handleDeleteSessionDoc = async (filename: string) => {
     if (!effectiveThreadId) return;

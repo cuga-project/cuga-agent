@@ -1,5 +1,10 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import ClientAdaptationPanel, {
+  CLIENT_ADAPTATION_MAX_CHARS as CLIENT_ADAPTATION_MAX_CHARS_RE,
+  AdaptationServerError,
+  GlossaryEntry,
+} from "./ClientAdaptationPanel";
 import {
   ComposedModal,
   ModalHeader,
@@ -11,6 +16,7 @@ import {
   Select,
   SelectItem,
   InlineNotification,
+  InlineLoading,
   Theme,
   Tabs,
   TabList,
@@ -23,8 +29,10 @@ import {
   Toggle,
   Accordion,
   AccordionItem,
+  AILabel,
+  AILabelContent,
 } from "@carbon/react";
-import { Upload, TrashCan, Search, Renew, Document, Checkmark, ErrorFilled } from "@carbon/icons-react";
+import { Upload, TrashCan, Search, Renew, Document, Checkmark, ErrorFilled, Reset, Close } from "@carbon/icons-react";
 import { apiFetch } from "../../frontend/src/api";
 import * as api from "../../frontend/src/api";
 import "./ConfigModal.css";
@@ -36,7 +44,44 @@ interface ReindexTask {
   task_id: string;
   filename?: string;
   status: "pending" | "running" | "completed" | "failed";
-  file_tasks?: Record<string, { filename?: string; status?: string; error?: string }>;
+  file_tasks?: Record<
+    string,
+    {
+      filename?: string;
+      status?: string;
+      error?: string;
+      // Granular progress emitted by the engine during ingest (issue #183).
+      // Backend writes per-stage events between "processing" and "completed";
+      // we render "<stage> (done/total)" when present.
+      stage?: string;
+      progress?: { done?: number; total?: number };
+    }
+  >;
+}
+
+function getReindexTaskProgressLabel(task: ReindexTask): string | undefined {
+  if (!task.file_tasks) {
+    return undefined;
+  }
+  const firstEntry = Object.values(task.file_tasks)[0];
+  if (!firstEntry?.stage) {
+    return undefined;
+  }
+  const { stage, progress } = firstEntry;
+  const done = progress?.done;
+  const total = progress?.total;
+  // Map raw backend stage names to friendly labels.
+  const friendly: Record<string, string> = {
+    parsed: "Parsed",
+    embed: "Embedding",
+    insert_start: "Saving",
+    insert: "Saving",
+  };
+  const label = friendly[stage] ?? stage;
+  if (typeof done === "number" && typeof total === "number" && total > 0) {
+    return `${label} (${done}/${total})`;
+  }
+  return label;
 }
 
 interface ReindexProgress {
@@ -87,6 +132,100 @@ function getReindexStatusLabel(status: ReindexTask["status"]): string {
 }
 
 // ---------------------------------------------------------------------------
+// In-flight upload persistence
+// ---------------------------------------------------------------------------
+// Survives modal close + page reload so the user sees their bar continue
+// rather than vanish. Cleared whenever a task lands in a terminal state.
+const ACTIVE_UPLOADS_LS_KEY = "cuga.knowledge.activeUploads";
+// Drop entries older than 1h to avoid resurrecting tasks the server has
+// long since GC'd. The server's recover_stale_tasks already handles its
+// side; this is the client's belt-and-suspenders.
+const ACTIVE_UPLOADS_TTL_MS = 60 * 60 * 1000;
+
+interface PersistedUpload {
+  taskId: string;
+  name: string;
+  createdAt: number;
+}
+
+function loadActiveUploads(): PersistedUpload[] {
+  try {
+    const raw = localStorage.getItem(ACTIVE_UPLOADS_LS_KEY);
+    if (!raw) return [];
+    const parsed = JSON.parse(raw) as unknown;
+    if (!Array.isArray(parsed)) return [];
+    const now = Date.now();
+    return parsed.filter((entry): entry is PersistedUpload => {
+      if (!entry || typeof entry !== "object") return false;
+      const e = entry as Record<string, unknown>;
+      return (
+        typeof e.taskId === "string" &&
+        typeof e.name === "string" &&
+        typeof e.createdAt === "number" &&
+        now - e.createdAt < ACTIVE_UPLOADS_TTL_MS
+      );
+    });
+  } catch {
+    // Quota errors, private-mode storage, etc. — degrade silently;
+    // resume just won't work, uploads still do.
+    return [];
+  }
+}
+
+function saveActiveUploads(entries: PersistedUpload[]): void {
+  try {
+    if (entries.length === 0) {
+      localStorage.removeItem(ACTIVE_UPLOADS_LS_KEY);
+    } else {
+      localStorage.setItem(ACTIVE_UPLOADS_LS_KEY, JSON.stringify(entries));
+    }
+  } catch {
+    // No-op: persistence is best-effort.
+  }
+}
+
+function addActiveUpload(entry: PersistedUpload): void {
+  const current = loadActiveUploads().filter((e) => e.taskId !== entry.taskId);
+  current.push(entry);
+  saveActiveUploads(current);
+}
+
+function removeActiveUpload(taskId: string): void {
+  const current = loadActiveUploads().filter((e) => e.taskId !== taskId);
+  saveActiveUploads(current);
+}
+
+// Sleep that rejects with an AbortError as soon as ``signal`` aborts, so
+// closing the modal mid-poll doesn't make the user wait the full interval
+// for the loop to notice.
+function abortableSleep(ms: number, signal: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) {
+      reject(new DOMException("Aborted", "AbortError"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException("Aborted", "AbortError"));
+    };
+    signal.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+function isAbortError(e: unknown): boolean {
+  return (
+    typeof e === "object" &&
+    e !== null &&
+    "name" in e &&
+    (e as { name: unknown }).name === "AbortError"
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 interface KnowledgeDocument {
@@ -114,6 +253,11 @@ interface KnowledgeConfigValues {
   rag_profile?: string;
   embedding_provider?: string;
   embedding_model?: string;
+  // For OpenAI-compatible providers (Groq, Together, Fireworks, OpenRouter, ...)
+  // set embedding_provider="openai" and override these two fields.
+  embedding_api_key?: string;
+  embedding_base_url?: string;
+  embedding_extra_params?: Record<string, string | number | boolean>;
   use_gpu?: boolean;
   chunk_size?: number;
   chunk_overlap?: number;
@@ -123,7 +267,36 @@ interface KnowledgeConfigValues {
   max_url_download_size_mb?: number;
   max_files_per_request?: number;
   max_chunks_per_document?: number;
+  // Adapter batching (issue #183). Saved with the config snapshot when published.
+  embedding_batch_size?: number;
+  embedding_concurrency?: number;
+  vector_insert_batch_size?: number;
+  // Docling PDF parsing level: "fast" | "balanced" | "accurate".
+  // Trades parse speed for extraction fidelity. Saved with the snapshot.
+  docling_pdf_mode?: string;
+  docling_layout_engine?: string;
+  // Client adaptation — operator-supplied prompt rules + glossary.
+  // Saved with the snapshot; never part of vector_config_hash.
+  client_adaptation_text?: string;
+  client_adaptation_glossary?: GlossaryEntry[];
 }
+
+// Re-export from the panel for any downstream consumers; the canonical
+// constant lives in ClientAdaptationPanel.tsx.
+const CLIENT_ADAPTATION_MAX_CHARS = CLIENT_ADAPTATION_MAX_CHARS_RE;
+void CLIENT_ADAPTATION_MAX_CHARS;
+
+// String-union name for each top-level tab in this modal. Used by parents
+// (e.g. ManagePage) to deep-link the modal to a specific tab without
+// reaching for raw indices. TAB_INDEX is the single source of truth and is
+// also exported so that test code can assert ordering invariants.
+export type KnowledgeTabName = "documents" | "search" | "behavior" | "settings";
+export const TAB_INDEX: Record<KnowledgeTabName, number> = {
+  documents: 0,
+  search: 1,
+  behavior: 2,
+  settings: 3,
+};
 
 interface RagProfileMeta {
   name: string;
@@ -145,6 +318,11 @@ interface KnowledgePanelProps {
   onReindex?: () => Promise<{ count: number; task_ids: string[] } | null>;
   knowledgeReindexing?: boolean;
   ragProfiles?: Record<string, RagProfileMeta>;
+  // Which tab to open the modal on. Uncontrolled-with-initial-value: the
+  // parent seeds the initial index via this prop, but the user owns tab
+  // navigation from frame 1. Defaults to "documents" (back-compat with
+  // every existing call site).
+  initialTab?: KnowledgeTabName;
 }
 
 // ---------------------------------------------------------------------------
@@ -163,8 +341,18 @@ export default function KnowledgePanel({
   onReindex,
   knowledgeReindexing,
   ragProfiles,
+  initialTab,
 }: KnowledgePanelProps) {
-  const [tabIndex, setTabIndex] = useState(0);
+  // Uncontrolled-with-initial-value: seed from the prop on first render
+  // (the modal is unmounted on close so the prop is always fresh on next
+  // mount), then the user owns navigation. Do NOT lift to a controlled
+  // prop — that would fight the user every time they click another tab.
+  const [tabIndex, setTabIndex] = useState(TAB_INDEX[initialTab ?? "documents"]);
+  // 422 from PATCH /api/manage/config/draft/knowledge with structured
+  // ClientAdaptationError.to_dict() body. Surfaced inside the panel as
+  // per-failure-mode notifications (phrase / control / etc).
+  const [adaptationServerError, setAdaptationServerError] = useState<AdaptationServerError | null>(null);
+  void setAdaptationServerError; // wired up by future autosave integration
   const knowledgeEnabled = knowledgeConfig?.enabled ?? true;
   const agentLevelEnabled = knowledgeEnabled && (knowledgeConfig?.agent_level_enabled ?? true);
   const sessionLevelEnabled = knowledgeEnabled && (knowledgeConfig?.session_level_enabled ?? true);
@@ -174,11 +362,31 @@ export default function KnowledgePanel({
   const [isDragOver, setIsDragOver] = useState(false);
   const [deleteConfirm, setDeleteConfirm] = useState<string | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  // Per-file upload status shown inline in the document list
-  // `displayName` = original browser name (shown in UI), `backendName` = sanitized name (for matching)
+  // Per-file upload status shown inline in the document list.
+  // `displayName` = original browser name (shown in UI), `backendName` = sanitized name (for matching).
+  // `progress` is the 0..1 overall fraction sourced from the backend's
+  // weighted_pct (parse/embed/insert collapsed into a single bar).
   const [uploadingFiles, setUploadingFiles] = useState<
-    { name: string; backendName?: string; status: "uploading" | "success" | "error"; error?: string; taskId?: string }[]
+    {
+      name: string;
+      backendName?: string;
+      status: "uploading" | "success" | "error" | "cancelled";
+      error?: string;
+      taskId?: string;
+      progress?: number;
+      // ``queued`` is set when the backend reports ui_phase=queued (file is
+      // waiting on the per-collection ingest lock). Lets the UI render a
+      // distinct "Queued" state rather than a frozen 3% bar.
+      queued?: boolean;
+    }[]
   >([]);
+
+  // Per-upload AbortControllers keyed by the backend task_id (or the local
+  // entryId before the backend assigns one). Lets us tear down in-flight
+  // fetches + polls on modal close or user cancel without leaking timers.
+  // A ref instead of state because we never render from this map and we
+  // don't want a re-render every time an upload starts or ends.
+  const uploadControllersRef = useRef<Map<string, AbortController>>(new Map());
 
   // Search tab state
   const [searchQuery, setSearchQuery] = useState("");
@@ -191,6 +399,166 @@ export default function KnowledgePanel({
 
   // Health state (used by search tab for status display)
   const [healthy, setHealthy] = useState<boolean | null>(null);
+
+  // Hardware acceleration status (what the live engine actually loaded).
+  const [accel, setAccel] = useState<{
+    device_label: string;
+    fallback_to_cpu: boolean;
+    embedding_relevant: boolean;
+    key_source?: { required: boolean; source: string };
+  } | null>(null);
+
+  // Inline hint when the user tries to put a reserved key (like embedding_model)
+  // into the Extra-params JSON. Surfaces a clear "put it in the field above"
+  // message right next to the input, instead of letting them save garbage.
+  const [extraParamsHint, setExtraParamsHint] = useState<string | null>(null);
+
+  // Test-connection state. result is null=untested, true=ok, false=failed.
+  const [testing, setTesting] = useState(false);
+  const [testResult, setTestResult] = useState<{
+    ok: boolean;
+    dim?: number;
+    latency_ms?: number;
+    error?: string;
+  } | null>(null);
+
+  // === Section-level UI helpers (production polish pass) ===
+
+  // Show / hide expert fields. Persisted in localStorage so the user's mode
+  // sticks across reloads. Default: simple ("Just work") to avoid drowning
+  // first-time users in tuning knobs.
+  const [showAdvanced, setShowAdvanced] = useState<boolean>(() => {
+    try {
+      return localStorage.getItem("cuga.knowledge.advanced") === "1";
+    } catch {
+      return false;
+    }
+  });
+  const persistShowAdvanced = useCallback((v: boolean) => {
+    setShowAdvanced(v);
+    try {
+      localStorage.setItem("cuga.knowledge.advanced", v ? "1" : "0");
+    } catch {
+      /* localStorage might be disabled — non-fatal */
+    }
+  }, []);
+
+  // Live URL validation — conservative: empty is OK (optional fields),
+  // anything non-empty must start with http:// or https://. Catches the
+  // "pasted a hostname without protocol" mistake before save fires.
+  const validateBaseUrl = useCallback((url: string | undefined): string | null => {
+    const trimmed = (url ?? "").trim();
+    if (!trimmed) return null;
+    if (!/^https?:\/\/.+/i.test(trimmed)) {
+      return "Must start with http:// or https://";
+    }
+    return null;
+  }, []);
+  const baseUrlError = validateBaseUrl(knowledgeConfig?.embedding_base_url);
+
+  // Per-section error/warning state — surfaced as a Tag in the accordion
+  // header so the user can see which sections need attention WITHOUT opening
+  // them. Errors block save (engine would reject); warnings are advisory.
+  type SectionStatus = { kind: "error" | "warning"; reason: string } | null;
+  const embeddingsStatus: SectionStatus = (() => {
+    const p = knowledgeConfig?.embedding_provider;
+    const model = (knowledgeConfig?.embedding_model || "").trim();
+    const apiKey = (knowledgeConfig?.embedding_api_key || "").trim();
+    if (baseUrlError) return { kind: "error", reason: `Base URL: ${baseUrlError}` };
+    if ((p === "litellm" || p === "openrouter") && !model) {
+      return { kind: "error", reason: "Model is required" };
+    }
+    if (p === "openrouter" && !apiKey) {
+      return { kind: "error", reason: "API Key is required" };
+    }
+    if (extraParamsHint) return { kind: "error", reason: extraParamsHint };
+    if (testResult && !testResult.ok) return { kind: "warning", reason: "Test connection failed" };
+    return null;
+  })();
+  const chunkingStatus: SectionStatus = (() => {
+    const cs = knowledgeConfig?.chunk_size ?? 1000;
+    const co = knowledgeConfig?.chunk_overlap ?? 200;
+    if (co >= cs) return { kind: "error", reason: "Overlap must be less than chunk size" };
+    return null;
+  })();
+
+  // Helper to render an accordion title with optional status badge.
+  const sectionTitle = useCallback((label: string, status: SectionStatus) => {
+    if (!status) return label;
+    return (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: "0.5rem" }}>
+        {label}
+        <Tag
+          type={status.kind === "error" ? "red" : "magenta"}
+          size="sm"
+          renderIcon={status.kind === "error" ? ErrorFilled : undefined}
+          title={status.reason}
+        >
+          {status.kind === "error" ? "Needs attention" : "Warning"}
+        </Tag>
+      </span>
+    );
+  }, []);
+
+  // Reset state — confirmation modal target. null = no modal open.
+  const [resetTarget, setResetTarget] = useState<null | {
+    section: string;
+    fields: string[];
+  }>(null);
+  const [defaultsCache, setDefaultsCache] = useState<Record<string, any> | null>(null);
+  const performReset = useCallback(async () => {
+    if (!resetTarget) return;
+    try {
+      let defaults = defaultsCache;
+      if (!defaults) {
+        const res = await api.getKnowledgeDefaults();
+        if (!res.ok) {
+          onToast?.("error", "Reset failed", `Server returned ${res.status} ${res.statusText}`);
+          setResetTarget(null);
+          return;
+        }
+        const j = await res.json();
+        defaults = (j.defaults || {}) as Record<string, any>;
+        setDefaultsCache(defaults);
+      }
+      const updates: Record<string, any> = {};
+      for (const f of resetTarget.fields) {
+        if (f in defaults) updates[f] = defaults[f];
+      }
+      onKnowledgeConfigChange?.({ ...(knowledgeConfig as any), ...updates });
+      onToast?.("info", "Section reset", `Restored ${resetTarget.section} to factory defaults.`);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "unknown error";
+      onToast?.("error", "Reset failed", msg);
+    } finally {
+      setResetTarget(null);
+    }
+  }, [resetTarget, defaultsCache, knowledgeConfig, onKnowledgeConfigChange, onToast]);
+
+  // Save-state indicator: when the user edits a knowledge field, the actual
+  // PATCH happens in ManagePage's debounced effect (800 ms). We can't easily
+  // capture the completion signal from here, so we track it locally based on
+  // change-vs-quiescence. Carbon for AI recommends always surfacing
+  // persistence state so users know what's actually committed. The failure
+  // case is already covered by the toast in ManagePage.
+  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
+  const knowledgeConfigSig = JSON.stringify(knowledgeConfig ?? {});
+  const firstSigRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (firstSigRef.current === null) {
+      firstSigRef.current = knowledgeConfigSig;
+      return;
+    }
+    if (firstSigRef.current === knowledgeConfigSig) return;
+    firstSigRef.current = knowledgeConfigSig;
+    setSaveState("saving");
+    const t1 = setTimeout(() => setSaveState("saved"), 1500); // match ManagePage's ~800ms debounce + small buffer
+    const t2 = setTimeout(() => setSaveState("idle"), 4000);
+    return () => {
+      clearTimeout(t1);
+      clearTimeout(t2);
+    };
+  }, [knowledgeConfigSig]);
 
   // Reindex progress state
   const [reindexProgress, setReindexProgress] = useState<{
@@ -280,6 +648,80 @@ export default function KnowledgePanel({
     loadDocuments();
     checkHealth();
   }, [loadDocuments, checkHealth]);
+
+  // Fetch hardware acceleration status. Re-fetches when the user toggles
+  // use_gpu or switches embedding provider — both can change what the
+  // live engine actually loaded.
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getKnowledgeAccelerator();
+        if (!res.ok) return;
+        const j = await res.json();
+        if (cancelled || !j.available) {
+          if (!cancelled) setAccel(null);
+          return;
+        }
+        setAccel({
+          device_label: j.device_label,
+          fallback_to_cpu: !!j.fallback_to_cpu,
+          embedding_relevant: !!j.embedding_relevant,
+          key_source: j.key_source,
+        });
+      } catch {
+        if (!cancelled) setAccel(null);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    knowledgeConfig?.use_gpu,
+    knowledgeConfig?.embedding_provider,
+    knowledgeConfig?.embedding_model,
+    knowledgeConfig?.embedding_api_key,
+  ]);
+
+  // Reset test result when any embedding-related field changes (stale result
+  // would be misleading — a green check on yesterday's key isn't trustworthy
+  // after the user edits something).
+  useEffect(() => {
+    setTestResult(null);
+  }, [
+    knowledgeConfig?.embedding_provider,
+    knowledgeConfig?.embedding_model,
+    knowledgeConfig?.embedding_api_key,
+    knowledgeConfig?.embedding_base_url,
+    knowledgeConfig?.embedding_extra_params,
+  ]);
+
+  // Run a single embed call against the configured provider — surfaces auth /
+  // network / model failures BEFORE the user uploads anything.
+  const handleTestConnection = useCallback(async () => {
+    setTesting(true);
+    setTestResult(null);
+    try {
+      const res = await api.testEmbeddingsConnection({
+        provider: knowledgeConfig?.embedding_provider || "",
+        model: knowledgeConfig?.embedding_model || "",
+        api_key: knowledgeConfig?.embedding_api_key || "",
+        base_url: knowledgeConfig?.embedding_base_url || "",
+        extra_params: knowledgeConfig?.embedding_extra_params || {},
+      });
+      const j = await res.json();
+      setTestResult({
+        ok: !!j.ok,
+        dim: j.dim,
+        latency_ms: j.latency_ms,
+        error: j.error,
+      });
+    } catch (e: any) {
+      setTestResult({ ok: false, error: String(e?.message || e) });
+    } finally {
+      setTesting(false);
+    }
+  }, [knowledgeConfig]);
 
   // Cleanup reindex polling on unmount
   useEffect(() => {
@@ -398,54 +840,413 @@ export default function KnowledgePanel({
       refreshTimer = setTimeout(() => loadDocuments(), 500);
     };
 
-    // Upload each file individually in parallel — each request awaits its own ingestion
+    // Upload one file: POST with wait=false (202 + task_id), then poll the
+    // task endpoint until terminal. The poll response's weighted_pct (0..1)
+    // drives the inline progress bar — stage internals (parse/embed/insert)
+    // are deliberately collapsed server-side so the UI shows just one bar.
+    //
+    // The AbortController is owned by the controllers map so modal-close /
+    // user-cancel can tear down the upload + poll cleanly. We re-key the
+    // map from the temporary entryId to the backend task_id as soon as we
+    // learn it, so cancel-by-task-id works for both fresh uploads and
+    // resumed-on-mount uploads.
     const uploadOne = async (file: File, entryId: string) => {
+      const controller = new AbortController();
+      uploadControllersRef.current.set(entryId, controller);
+      const signal = controller.signal;
+
+      // Guarded setState: every late callback must check signal.aborted so
+      // we never write to state after the modal unmounts or after a cancel.
+      const safeSet = (
+        updater: (prev: typeof uploadingFiles) => typeof uploadingFiles,
+      ): void => {
+        if (signal.aborted) return;
+        setUploadingFiles(updater);
+      };
+
+      let backendTaskId: string | undefined;
       try {
-        const res = await api.uploadKnowledgeDocument(file);
+        const res = await api.uploadKnowledgeDocument(file, true, false, signal);
         if (!res.ok) {
           const err = await res.json().catch(() => ({ detail: res.statusText }));
-          setUploadingFiles((prev) =>
+          safeSet((prev) =>
             prev.map((f) => f.taskId === entryId
               ? { ...f, status: "error" as const, error: err.detail || "Failed" }
               : f)
           );
           return;
         }
-        // Response contains the final completed/failed task (backend awaited ingestion)
-        const task = await res.json();
-        // Single-file upload returns the task directly (not wrapped in {tasks: [...]})
-        const finalTask = task.tasks ? task.tasks[0] : task;
-
-        if (finalTask.status === "completed") {
-          setUploadingFiles((prev) =>
+        const queued = await res.json();
+        const queuedTask = queued.tasks ? queued.tasks[0] : queued;
+        backendTaskId = queuedTask?.task_id;
+        const backendName: string | undefined = queuedTask?.filename;
+        if (!backendTaskId) {
+          // Server returned a synchronous result (wait was ignored or legacy build).
+          // Treat as final to stay compatible.
+          const ok = queuedTask?.status === "completed";
+          safeSet((prev) =>
             prev.map((f) => f.taskId === entryId
-              ? { ...f, backendName: finalTask.filename, status: "success" as const }
+              ? ok
+                ? { ...f, backendName, status: "success" as const, progress: 1 }
+                : { ...f, backendName, status: "error" as const, error: "Ingestion failed" }
               : f)
           );
-          scheduleRefresh();
-          setTimeout(() => {
-            setUploadingFiles((prev) => prev.filter((f) => f.taskId !== entryId));
-          }, 3000);
-        } else {
-          const fileInfo = Object.values(finalTask.file_tasks || {})[0] as { error?: string } | undefined;
-          setUploadingFiles((prev) =>
-            prev.map((f) => f.taskId === entryId
-              ? { ...f, backendName: finalTask.filename, status: "error" as const, error: fileInfo?.error || "Ingestion failed" }
-              : f)
-          );
+          if (ok) {
+            scheduleRefresh();
+            setTimeout(() => {
+              safeSet((prev) => prev.filter((f) => f.taskId !== entryId));
+            }, 3000);
+          }
+          return;
         }
-      } catch (e: any) {
-        setUploadingFiles((prev) =>
+
+        // Re-key the controllers map from entryId to the canonical backend
+        // task_id so the cancel button (which only knows the task_id) can
+        // find the controller.
+        uploadControllersRef.current.delete(entryId);
+        uploadControllersRef.current.set(backendTaskId, controller);
+
+        // Persist for resume-across-reload. We only enter the registry once
+        // we have a real backend task_id — there's nothing to resume before.
+        addActiveUpload({
+          taskId: backendTaskId,
+          name: file.name,
+          createdAt: Date.now(),
+        });
+
+        // Seed the entry with the backend task_id + a tiny visible progress
+        // so the bar starts moving immediately on slow networks.
+        safeSet((prev) =>
           prev.map((f) => f.taskId === entryId
-            ? { ...f, status: "error" as const, error: e.message || "Upload failed" }
+            ? { ...f, taskId: backendTaskId, backendName, progress: Math.max(f.progress ?? 0, 0.02) }
+            : f)
+        );
+
+        await pollUntilTerminal(backendTaskId, signal, scheduleRefresh);
+      } catch (e: unknown) {
+        if (isAbortError(e) || signal.aborted) {
+          // Either the modal unmounted (no state writes wanted — safeSet is a
+          // no-op now) or the user clicked cancel (the cancel handler already
+          // wrote the cancelled state). Nothing to do.
+          return;
+        }
+        const message = e instanceof Error ? e.message : "Upload failed";
+        safeSet((prev) =>
+          prev.map((f) => f.taskId === entryId || f.taskId === backendTaskId
+            ? { ...f, status: "error" as const, error: message }
+            : f)
+        );
+      } finally {
+        // Clean both possible keys — entryId before re-keying, task_id after.
+        // Persist-clear only if we actually finished (terminal). Cancel /
+        // unmount paths leave the entry for later resume.
+        const key = backendTaskId ?? entryId;
+        if (uploadControllersRef.current.get(key) === controller) {
+          uploadControllersRef.current.delete(key);
+        }
+      }
+    };
+
+    // Extracted so resume-on-mount can share the same poll loop without
+    // duplicating logic. ``backendTaskId`` is known up front; the local
+    // entry must already exist with that taskId before this is called.
+    const pollUntilTerminal = async (
+      backendTaskId: string,
+      signal: AbortSignal,
+      onCompleted: () => void,
+    ): Promise<void> => {
+      const safeSet = (
+        updater: (prev: typeof uploadingFiles) => typeof uploadingFiles,
+      ): void => {
+        if (signal.aborted) return;
+        setUploadingFiles(updater);
+      };
+
+      // 600ms is below the human-perception threshold for "live"; backend
+      // does no work on these calls beyond a sqlite SELECT + weighted_pct.
+      const POLL_INTERVAL_MS = 600;
+      const MAX_POLLS = 10 * 60; // 10 min hard cap
+
+      for (let i = 0; i < MAX_POLLS; i++) {
+        try {
+          await abortableSleep(POLL_INTERVAL_MS, signal);
+        } catch {
+          // Aborted — modal closed or user cancelled. Bail without touching state.
+          return;
+        }
+
+        let taskResp: Response;
+        try {
+          taskResp = await api.getKnowledgeTaskStatus(backendTaskId, signal);
+        } catch (e) {
+          if (isAbortError(e) || signal.aborted) return;
+          continue; // transient network blip — keep polling
+        }
+        if (!taskResp.ok) {
+          if (taskResp.status === 404) {
+            removeActiveUpload(backendTaskId);
+            safeSet((prev) =>
+              prev.map((f) => f.taskId === backendTaskId
+                ? { ...f, status: "error" as const, error: "Task not found" }
+                : f)
+            );
+            return;
+          }
+          continue;
+        }
+        const task = await taskResp.json().catch(() => null);
+        if (!task) continue;
+
+        const pct: number = typeof task.weighted_pct === "number" ? task.weighted_pct : 0;
+        const status: string = task.status;
+        const uiPhase: string | undefined = task.ui_phase;
+
+        if (status === "completed") {
+          removeActiveUpload(backendTaskId);
+          safeSet((prev) =>
+            prev.map((f) => f.taskId === backendTaskId
+              ? { ...f, status: "success" as const, progress: 1, backendName: task.filename ?? f.backendName }
+              : f)
+          );
+          onCompleted();
+          setTimeout(() => {
+            safeSet((prev) => prev.filter((f) => f.taskId !== backendTaskId));
+          }, 3000);
+          return;
+        }
+        if (status === "failed" || status === "cancelled") {
+          removeActiveUpload(backendTaskId);
+          const fileInfo = Object.values(task.file_tasks || {})[0] as { error?: string } | undefined;
+          safeSet((prev) =>
+            prev.map((f) => f.taskId === backendTaskId
+              ? status === "cancelled"
+                ? { ...f, status: "cancelled" as const, error: undefined }
+                : { ...f, status: "error" as const, error: fileInfo?.error || "Ingestion failed" }
+              : f)
+          );
+          return;
+        }
+
+        // Still in flight — only advance progress forward (never go backwards
+        // because of a stale-read race with a later write). Carry through
+        // the ui_phase so the row can render "Queued" vs "Processing"
+        // distinctly even though both are non-terminal statuses.
+        const isQueued = uiPhase === "queued";
+        safeSet((prev) =>
+          prev.map((f) => f.taskId === backendTaskId
+            ? { ...f, progress: Math.max(f.progress ?? 0, pct), queued: isQueued }
             : f)
         );
       }
+
+      // Timed out without a terminal status — surface clearly. The task may
+      // still be running server-side; we leave the localStorage entry so a
+      // future reload can re-attach.
+      safeSet((prev) =>
+        prev.map((f) => f.taskId === backendTaskId
+          ? { ...f, status: "error" as const, error: "Timed out waiting for ingest" }
+          : f)
+      );
     };
 
     // Fire all uploads in parallel — each resolves independently
     await Promise.allSettled(entries.map((entry, i) => uploadOne(fileArray[i], entry.taskId)));
   };
+
+  // Reusable poll loop for resume-on-mount. Defined inside the component
+  // so it closes over setUploadingFiles. Mirrors ``pollUntilTerminal``
+  // inside ``handleUpload`` — kept as a thin shim because resume doesn't
+  // have a ``scheduleRefresh`` debouncer in scope.
+  const resumePoll = useCallback(
+    async (backendTaskId: string, signal: AbortSignal): Promise<void> => {
+      const safeSet = (
+        updater: (prev: typeof uploadingFiles) => typeof uploadingFiles,
+      ): void => {
+        if (signal.aborted) return;
+        setUploadingFiles(updater);
+      };
+      const POLL_INTERVAL_MS = 600;
+      const MAX_POLLS = 10 * 60;
+
+      for (let i = 0; i < MAX_POLLS; i++) {
+        try {
+          await abortableSleep(POLL_INTERVAL_MS, signal);
+        } catch {
+          return;
+        }
+        let resp: Response;
+        try {
+          resp = await api.getKnowledgeTaskStatus(backendTaskId, signal);
+        } catch (e) {
+          if (isAbortError(e) || signal.aborted) return;
+          continue;
+        }
+        if (!resp.ok) {
+          if (resp.status === 404) {
+            removeActiveUpload(backendTaskId);
+            safeSet((prev) =>
+              prev.map((f) => f.taskId === backendTaskId
+                ? { ...f, status: "error" as const, error: "Task not found" }
+                : f)
+            );
+            return;
+          }
+          continue;
+        }
+        const task = await resp.json().catch(() => null);
+        if (!task) continue;
+        const pct: number = typeof task.weighted_pct === "number" ? task.weighted_pct : 0;
+        const status: string = task.status;
+        const uiPhase: string | undefined = task.ui_phase;
+
+        if (status === "completed") {
+          removeActiveUpload(backendTaskId);
+          safeSet((prev) =>
+            prev.map((f) => f.taskId === backendTaskId
+              ? { ...f, status: "success" as const, progress: 1, backendName: task.filename ?? f.backendName }
+              : f)
+          );
+          loadDocuments();
+          setTimeout(() => {
+            safeSet((prev) => prev.filter((f) => f.taskId !== backendTaskId));
+          }, 3000);
+          return;
+        }
+        if (status === "failed" || status === "cancelled") {
+          removeActiveUpload(backendTaskId);
+          const fileInfo = Object.values(task.file_tasks || {})[0] as { error?: string } | undefined;
+          safeSet((prev) =>
+            prev.map((f) => f.taskId === backendTaskId
+              ? status === "cancelled"
+                ? { ...f, status: "cancelled" as const, error: undefined }
+                : { ...f, status: "error" as const, error: fileInfo?.error || "Ingestion failed" }
+              : f)
+          );
+          return;
+        }
+        const isQueued = uiPhase === "queued";
+        safeSet((prev) =>
+          prev.map((f) => f.taskId === backendTaskId
+            ? { ...f, progress: Math.max(f.progress ?? 0, pct), queued: isQueued }
+            : f)
+        );
+      }
+      safeSet((prev) =>
+        prev.map((f) => f.taskId === backendTaskId
+          ? { ...f, status: "error" as const, error: "Timed out waiting for ingest" }
+          : f)
+      );
+    },
+    [loadDocuments],
+  );
+
+  // Cancel an in-flight upload. Best-effort by design: the backend's
+  // cancel_event is only checked between stages, so an embed in progress
+  // may complete anyway. We always flip the row to "cancelled" locally —
+  // if the ingest happens to finish, a duplicate-upload will 409 cleanly.
+  const handleCancelUpload = useCallback(
+    async (taskId: string | undefined): Promise<void> => {
+      if (!taskId) return;
+      // Abort first so the poll loop stops immediately and stops fighting
+      // us for setUploadingFiles ownership.
+      const controller = uploadControllersRef.current.get(taskId);
+      if (controller) {
+        controller.abort();
+        uploadControllersRef.current.delete(taskId);
+      }
+      setUploadingFiles((prev) =>
+        prev.map((f) => f.taskId === taskId
+          ? { ...f, status: "cancelled" as const, error: undefined }
+          : f)
+      );
+      removeActiveUpload(taskId);
+      // Fire-and-forget the server cancel — non-blocking by design.
+      try {
+        await api.cancelKnowledgeTask(taskId);
+      } catch {
+        // Server-side cancel is best-effort. If the network ate the
+        // request the row is already cancelled locally; the next file
+        // ingest of the same name will 409 if needed.
+      }
+    },
+    [],
+  );
+
+  // --- Resume on mount + teardown on unmount ----------------------------
+  // Resume: read localStorage, validate each entry against the server, and
+  // re-attach a poll for any task still in flight. Done once on mount.
+  // Teardown: abort every controller so closing the modal stops timers,
+  // sleeps, and in-flight fetches in one synchronous turn.
+  useEffect(() => {
+    const persisted = loadActiveUploads();
+    if (persisted.length === 0) {
+      // Still register the cleanup even with no persisted entries — fresh
+      // uploads created during the modal session must abort on close.
+      return () => {
+        uploadControllersRef.current.forEach((c) => c.abort());
+        uploadControllersRef.current.clear();
+      };
+    }
+
+    let cancelled = false;
+    (async () => {
+      for (const entry of persisted) {
+        if (cancelled) return;
+        let task: { task_id?: string; status?: string; filename?: string; weighted_pct?: number; ui_phase?: string } | null = null;
+        try {
+          const resp = await api.getKnowledgeTaskStatus(entry.taskId);
+          if (resp.status === 404) {
+            removeActiveUpload(entry.taskId);
+            continue;
+          }
+          if (!resp.ok) continue;
+          task = await resp.json().catch(() => null);
+        } catch {
+          // Network issue on initial check — leave the entry alone so a
+          // later mount can try again.
+          continue;
+        }
+        if (!task || cancelled) continue;
+        const status = task.status;
+        if (status === "completed" || status === "failed" || status === "cancelled") {
+          // Terminal — clean up the registry; the indexed-documents list
+          // will already show successful ones.
+          removeActiveUpload(entry.taskId);
+          continue;
+        }
+        // Still in flight — surface the row and start polling. Merge by
+        // taskId so a concurrent fresh upload of the same task (extremely
+        // unlikely but defended) doesn't get duplicated.
+        const controller = new AbortController();
+        uploadControllersRef.current.set(entry.taskId, controller);
+        setUploadingFiles((prev) => {
+          if (prev.some((f) => f.taskId === entry.taskId)) return prev;
+          return [
+            ...prev,
+            {
+              name: entry.name,
+              backendName: task?.filename,
+              taskId: entry.taskId,
+              status: "uploading" as const,
+              progress: typeof task?.weighted_pct === "number" ? task.weighted_pct : 0,
+              queued: task?.ui_phase === "queued",
+            },
+          ];
+        });
+        // Don't await — let all resumed polls run in parallel.
+        void resumePoll(entry.taskId, controller.signal);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      uploadControllersRef.current.forEach((c) => c.abort());
+      uploadControllersRef.current.clear();
+    };
+    // Intentionally mount-only: resuming on every render would re-fire
+    // server validations for every state change. resumePoll is stable.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   const handleDrop = (e: React.DragEvent) => {
     e.preventDefault();
@@ -555,6 +1356,25 @@ export default function KnowledgePanel({
                 <TabList aria-label="Knowledge sections">
                   <Tab>Documents ({documents.length})</Tab>
                   <Tab>Search Test</Tab>
+                  <Tab>
+                    <span style={{ display: "inline-flex", alignItems: "center", gap: "0.375rem" }}>
+                      Knowledge harness
+                      {/* Carbon-for-AI: AILabel slug marks this tab as AI-affecting */}
+                      <AILabel autoAlign size="mini" aiText="AI" textLabel="Knowledge harness">
+                        <AILabelContent>
+                          <h6 style={{ marginTop: 0 }}>Knowledge harness</h6>
+                          <p style={{ fontSize: "0.8125rem", margin: "0.5rem 0 0" }}>
+                            Operator rules + glossary appended to the knowledge-agent system prompt
+                            for every search. Steers phrasing, hedging, citation, and synonym handling
+                            without changing retrieval.
+                          </p>
+                        </AILabelContent>
+                      </AILabel>
+                      {(knowledgeConfig?.client_adaptation_text ?? "").trim().length > 0 && (
+                        <Tag type="green" size="sm">Active</Tag>
+                      )}
+                    </span>
+                  </Tab>
                   <Tab>Settings</Tab>
                 </TabList>
                 <TabPanels>
@@ -632,48 +1452,269 @@ export default function KnowledgePanel({
                           />
                         </Stack>
 
-                        {/* Upload progress — shown inline above the document list */}
+                        {/* Upload progress — the row itself fills left-to-right
+                            as ingest advances. Single horizontal bar driven by
+                            backend ``weighted_pct``; stages are deliberately
+                            opaque to the user. */}
                         {uploadingFiles.length > 0 && (
                           <Stack gap={1}>
-                            {uploadingFiles.map((f) => (
-                              <Tile key={f.taskId || f.name} style={{
-                                borderLeft: `3px solid ${
-                                  f.status === "uploading" ? "#4589ff" :
-                                  f.status === "success" ? "#24a148" : "#da1e28"
-                                }`,
-                              }}>
-                                <Stack orientation="horizontal" gap={4} style={{ alignItems: "center" }}>
-                                  <Document size={16} />
-                                  <span style={{ flex: 1, fontSize: "0.875rem" }}>{f.name}</span>
-                                  <Tag
-                                    type={
-                                      f.status === "uploading" ? "blue" :
-                                      f.status === "success" ? "green" : "red"
-                                    }
-                                    size="sm"
+                            {uploadingFiles.map((f, idx) => {
+                              const isUploading = f.status === "uploading";
+                              const isSuccess = f.status === "success";
+                              const isError = f.status === "error";
+                              const isCancelled = f.status === "cancelled";
+                              const isQueued = isUploading && f.queued === true;
+                              const isInFlight = isUploading && !isQueued;
+                              const isDismissable = isError || isCancelled;
+                              // Border-left accent is the at-a-glance scan
+                              // signal — color encodes state, not progress.
+                              // No bar, no %, no false-precision: an
+                              // always-moving spinner is honest because the
+                              // parse stage genuinely emits no granular
+                              // signal until it completes.
+                              const accent = isError
+                                ? "#da1e28"
+                                : isSuccess
+                                  ? "#24a148"
+                                  : isQueued || isCancelled
+                                    ? "#8d8d8d"
+                                    : "#4589ff";
+                              // Carbon InlineLoading covers the three cases
+                              // it was designed for (active/finished/error).
+                              // Queued is rendered separately — it's not
+                              // "loading", it's "waiting in line".
+                              const loadingStatus: "active" | "finished" | "error" | undefined =
+                                isInFlight ? "active"
+                                : isSuccess ? "finished"
+                                : isError ? "error"
+                                : undefined;
+                              const stateLabel = isSuccess
+                                ? "Indexed"
+                                : isError
+                                  ? "Failed"
+                                  : isCancelled
+                                    ? "Cancelled"
+                                    : isQueued
+                                      ? "Queued"
+                                      : "Processing";
+                              // Visual fill driven by backend weighted_pct.
+                              // Clamped 0..1, monotonic forward via the poll
+                              // loop. No numeric label — the strip's WIDTH
+                              // gives the user a sense of progress without
+                              // the precision anxiety of "3%".
+                              const stripPct = isSuccess
+                                ? 1
+                                : isError || isCancelled || isQueued
+                                  ? 0
+                                  : Math.max(0, Math.min(1, f.progress ?? 0));
+                              return (
+                                <Tile
+                                  key={f.taskId || f.name}
+                                  className="cuga-upload-row"
+                                  style={{
+                                    position: "relative",
+                                    // NOTE: no overflow:hidden on the Tile.
+                                    // Carbon's hasIconOnly Button renders
+                                    // its tooltip as an absolute descendant,
+                                    // which gets clipped by ancestor
+                                    // overflow:hidden. The progress strip
+                                    // below is already bounded by its own
+                                    // left:0/right:0 positioning, so no
+                                    // clipping is needed here.
+                                    borderLeft: `3px solid ${accent}`,
+                                    transition: "border-color 200ms ease",
+                                    // Stagger entrance for multi-file batches.
+                                    // Bounded at 8 rows × 30ms = 240ms so a
+                                    // 20-file drop still feels snappy.
+                                    animationDelay: `${Math.min(idx, 8) * 30}ms`,
+                                  }}
+                                >
+                                  <Stack
+                                    orientation="horizontal"
+                                    gap={4}
+                                    style={{ alignItems: "center" }}
                                   >
-                                    {f.status === "uploading" ? "Processing..." :
-                                     f.status === "success" ? "Indexed" : "Failed"}
-                                  </Tag>
-                                  {f.status === "error" && (
-                                    <Button
-                                      type="button"
-                                      kind="ghost"
-                                      size="sm"
-                                      hasIconOnly
-                                      renderIcon={TrashCan}
-                                      iconDescription="Dismiss"
-                                      onClick={() => setUploadingFiles((prev) => prev.filter((x) => x.taskId !== f.taskId))}
-                                    />
+                                    {/* Status indicator replaces the file
+                                        icon during processing — single
+                                        visual focus, no competing icons.
+                                        Wrapped in a transition container so
+                                        spinner → checkmark scales in rather
+                                        than pops. */}
+                                    <span
+                                      className={
+                                        isSuccess ? "cuga-status-icon cuga-status-icon--success"
+                                        : "cuga-status-icon"
+                                      }
+                                      style={{
+                                        display: "inline-flex",
+                                        alignItems: "center",
+                                        justifyContent: "center",
+                                        width: "1rem",
+                                        height: "1rem",
+                                      }}
+                                    >
+                                      {loadingStatus ? (
+                                        <InlineLoading
+                                          status={loadingStatus}
+                                          description=""
+                                          iconDescription={stateLabel}
+                                          style={{ width: "1rem", height: "1rem", minHeight: 0 }}
+                                        />
+                                      ) : isQueued ? (
+                                        <span
+                                          className="cuga-queued-dot"
+                                          aria-label="Queued"
+                                        />
+                                      ) : (
+                                        <Document size={16} />
+                                      )}
+                                    </span>
+                                    <span style={{ flex: 1, fontSize: "0.875rem" }}>{f.name}</span>
+                                    <span
+                                      role="status"
+                                      aria-live="polite"
+                                      style={{
+                                        fontSize: "0.75rem",
+                                        color: "var(--cds-text-secondary)",
+                                        minWidth: "4rem",
+                                        textAlign: "right",
+                                      }}
+                                    >
+                                      {stateLabel}
+                                    </span>
+                                    {isUploading && f.taskId && (
+                                      <span className="cuga-row-action">
+                                        <Button
+                                          type="button"
+                                          kind="ghost"
+                                          size="sm"
+                                          hasIconOnly
+                                          renderIcon={Close}
+                                          iconDescription={isQueued ? "Remove from queue" : "Cancel upload"}
+                                          onClick={() => handleCancelUpload(f.taskId)}
+                                        />
+                                      </span>
+                                    )}
+                                    {isDismissable && (
+                                      <Button
+                                        type="button"
+                                        kind="ghost"
+                                        size="sm"
+                                        hasIconOnly
+                                        renderIcon={TrashCan}
+                                        iconDescription="Dismiss"
+                                        onClick={() =>
+                                          setUploadingFiles((prev) =>
+                                            prev.filter((x) => x.taskId !== f.taskId),
+                                          )
+                                        }
+                                      />
+                                    )}
+                                  </Stack>
+                                  {f.error && (
+                                    <p
+                                      style={{
+                                        fontSize: "0.75rem",
+                                        color: "#da1e28",
+                                        margin: "0.25rem 0 0 1.5rem",
+                                      }}
+                                    >
+                                      {f.error}
+                                    </p>
                                   )}
-                                </Stack>
-                                {f.error && (
-                                  <p style={{ fontSize: "0.75rem", color: "#da1e28", margin: "0.25rem 0 0 1.5rem" }}>
-                                    {f.error}
-                                  </p>
-                                )}
-                              </Tile>
-                            ))}
+                                  {/* Thin progress strip — auxiliary signal
+                                      anchored to the bottom of the row.
+                                      Width-driven by weighted_pct; smooth
+                                      ease handles the parse→embed jump.
+                                      Hidden when no work is in flight. */}
+                                  {(isInFlight || isSuccess) && (
+                                    <div
+                                      aria-hidden="true"
+                                      style={{
+                                        position: "absolute",
+                                        bottom: 0,
+                                        left: 0,
+                                        right: 0,
+                                        height: "3px",
+                                        background: "rgba(141, 141, 141, 0.18)",
+                                        pointerEvents: "none",
+                                      }}
+                                    >
+                                      <div
+                                        style={{
+                                          height: "100%",
+                                          width: "100%",
+                                          background: accent,
+                                          transformOrigin: "left center",
+                                          transform: `scaleX(${stripPct})`,
+                                          transition: "transform 350ms cubic-bezier(0.22, 1, 0.36, 1), background-color 200ms ease",
+                                        }}
+                                      />
+                                    </div>
+                                  )}
+                                </Tile>
+                              );
+                            })}
+                            <style>{`
+                              /* Row enter animation — slide-up + fade so the
+                                 row feels like it arrived deliberately rather
+                                 than popped in. */
+                              .cuga-upload-row {
+                                animation: cuga-row-enter 220ms cubic-bezier(0.22, 1, 0.36, 1);
+                              }
+                              @keyframes cuga-row-enter {
+                                from { opacity: 0; transform: translateY(4px); }
+                                to   { opacity: 1; transform: translateY(0); }
+                              }
+                              /* Queued state — slow opacity pulse signals
+                                 "standing by". 1.5s feels patient, not anxious. */
+                              .cuga-queued-dot {
+                                width: 0.5rem;
+                                height: 0.5rem;
+                                border-radius: 50%;
+                                background: #8d8d8d;
+                                display: inline-block;
+                                animation: cuga-queued-pulse 1.5s ease-in-out infinite;
+                              }
+                              @keyframes cuga-queued-pulse {
+                                0%, 100% { opacity: 0.35; }
+                                50%      { opacity: 1; }
+                              }
+                              /* Success → checkmark grows with a small
+                                 overshoot, making completion feel earned
+                                 rather than abrupt. */
+                              .cuga-status-icon--success {
+                                animation: cuga-success-pop 280ms cubic-bezier(0.34, 1.56, 0.64, 1);
+                              }
+                              @keyframes cuga-success-pop {
+                                0%   { transform: scale(0.6); opacity: 0; }
+                                60%  { transform: scale(1.12); opacity: 1; }
+                                100% { transform: scale(1); opacity: 1; }
+                              }
+                              /* Cancel button hover-reveal: present but
+                                 receded by default so it doesn't compete
+                                 with the spinner; surfaces on row hover
+                                 or keyboard focus-within (for a11y). */
+                              .cuga-row-action {
+                                opacity: 0.35;
+                                transition: opacity 150ms ease;
+                              }
+                              .cuga-upload-row:hover .cuga-row-action,
+                              .cuga-upload-row:focus-within .cuga-row-action {
+                                opacity: 1;
+                              }
+                              /* Honor users who've opted out of motion. */
+                              @media (prefers-reduced-motion: reduce) {
+                                .cuga-upload-row,
+                                .cuga-queued-dot,
+                                .cuga-status-icon--success {
+                                  animation: none !important;
+                                }
+                                .cuga-row-action {
+                                  opacity: 1;
+                                }
+                              }
+                            `}</style>
                           </Stack>
                         )}
 
@@ -866,6 +1907,48 @@ export default function KnowledgePanel({
                         </>
                       )}
                     </Stack>
+                  </TabPanel>
+
+                  {/* ======================================================= */}
+                  {/* BEHAVIOR TAB — client adaptation                         */}
+                  {/* ======================================================= */}
+                  <TabPanel>
+                    {knowledgeConfig && onKnowledgeConfigChange ? (
+                      <ClientAdaptationPanel
+                        value={knowledgeConfig.client_adaptation_text ?? ""}
+                        onChange={(next: string) =>
+                          onKnowledgeConfigChange({ ...knowledgeConfig, client_adaptation_text: next })
+                        }
+                        glossary={knowledgeConfig.client_adaptation_glossary ?? []}
+                        onGlossaryChange={(next: GlossaryEntry[]) =>
+                          onKnowledgeConfigChange({ ...knowledgeConfig, client_adaptation_glossary: next })
+                        }
+                        // Atomic reset: clear text AND glossary in one
+                        // ``onKnowledgeConfigChange`` call. Sequencing
+                        // two separate callbacks (onChange + onGlossaryChange)
+                        // hits the stale-closure problem — each closes
+                        // over the same ``knowledgeConfig`` snapshot, so
+                        // the second clobbers the first. One spread =>
+                        // both deltas land.
+                        onReset={() =>
+                          onKnowledgeConfigChange({
+                            ...knowledgeConfig,
+                            client_adaptation_text: "",
+                            client_adaptation_glossary: [],
+                          })
+                        }
+                        // Save state + drift + serverError are wired by the
+                        // parent (ManagePage) when those signals exist; in the
+                        // standalone modal context this is intentionally bare.
+                        serverError={adaptationServerError ?? null}
+                      />
+                    ) : (
+                      <Tile>
+                        <p style={{ color: "var(--cds-text-secondary)", margin: 0 }}>
+                          Knowledge settings are managed from the Manage page.
+                        </p>
+                      </Tile>
+                    )}
                   </TabPanel>
 
                   {/* ======================================================= */}
@@ -1145,6 +2228,7 @@ export default function KnowledgePanel({
                                   </div>
                                   {reindexProgress.tasks.map((task) => {
                                     const taskError = getReindexTaskError(task);
+                                    const progressLabel = getReindexTaskProgressLabel(task);
                                     return (
                                       <div
                                         key={task.task_id}
@@ -1167,6 +2251,14 @@ export default function KnowledgePanel({
                                           <span className="knowledge-reindex-item__filename">
                                             {task.filename || task.task_id}
                                           </span>
+                                          {task.status === "running" && progressLabel && (
+                                            <span
+                                              className="knowledge-reindex-item__progress"
+                                              style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}
+                                            >
+                                              {progressLabel}
+                                            </span>
+                                          )}
                                           {task.status === "failed" && taskError && (
                                             <span className="knowledge-reindex-item__error">
                                               {taskError}
@@ -1227,20 +2319,78 @@ export default function KnowledgePanel({
                             </Stack>
                           )}
 
-                          {/* ── 5. Advanced configuration (collapsed by default) ── */}
+                          {/* ── 4. Advanced settings toggle ──
+                              UX rationale: the basic view is just the
+                              ON/OFF gate, agent/session scopes, and the
+                              Retrieval Profile cards — that's the 90%
+                              decision surface. Embeddings/chunking/parsing
+                              /score/limits are operator-grade knobs and
+                              shouldn't compete for attention. The toggle
+                              sits right after Retrieval Profile so its
+                              affordance is discoverable without scrolling
+                              past the whole accordion stack. Choice
+                              persists in localStorage. */}
+                          <Stack
+                            orientation="horizontal"
+                            gap={3}
+                            style={{ alignItems: "center", marginTop: "0.5rem" }}
+                          >
+                            <Toggle
+                              id="knowledge-show-advanced"
+                              labelText="Advanced settings"
+                              labelA="Off"
+                              labelB="On"
+                              toggled={showAdvanced}
+                              onToggle={(v: boolean) => persistShowAdvanced(v)}
+                              size="sm"
+                            />
+                            <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
+                              Embeddings, chunking, parsing, score & metric, and limits.
+                            </span>
+                          </Stack>
+
+                          {/* ── 5. Advanced configuration (only when toggle on) ── */}
+                          {showAdvanced && (
                           <Accordion align="start" size="md">
-                            <AccordionItem title="Embeddings">
+                            <AccordionItem title={sectionTitle("Embeddings", embeddingsStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
                                 <Stack orientation="horizontal" gap={4}>
                                   <Select
                                     id="knowledge-embedding-provider"
                                     labelText="Provider"
                                     value={knowledgeConfig.embedding_provider ?? "auto"}
-                                    onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_provider: e.target.value })}
+                                    onChange={(e: any) => {
+                                      const newProvider = e.target.value;
+                                      // CRITICAL: when switching providers, RESET fields that are
+                                      // provider-specific. Otherwise a previously-typed base_url
+                                      // (e.g. an IBM LiteLLM proxy URL) silently bleeds into the
+                                      // next provider's request (e.g. OpenRouter), sending your
+                                      // OpenRouter key to the wrong server. Each provider's
+                                      // base_url / api_key / extra_params live in their own world.
+                                      const prev = knowledgeConfig.embedding_provider;
+                                      const isCredentialedProvider = (p: string | undefined) =>
+                                        p === "openai" || p === "openrouter" || p === "litellm" || p === "ollama";
+                                      const needsReset = isCredentialedProvider(prev) || isCredentialedProvider(newProvider);
+                                      onKnowledgeConfigChange({
+                                        ...knowledgeConfig,
+                                        embedding_provider: newProvider,
+                                        ...(needsReset
+                                          ? {
+                                              embedding_base_url: "",
+                                              embedding_api_key: "",
+                                              embedding_extra_params: {},
+                                              embedding_model: "",
+                                            }
+                                          : {}),
+                                      });
+                                    }}
                                   >
                                     <SelectItem value="auto" text="Auto-detect" />
-                                    <SelectItem value="openai" text="OpenAI" />
-                                    <SelectItem value="huggingface" text="HuggingFace" />
+                                    <SelectItem value="fastembed" text="FastEmbed (local)" />
+                                    <SelectItem value="openai" text="OpenAI / OpenAI-compatible (Together, Fireworks, custom proxy)" />
+                                    <SelectItem value="openrouter" text="OpenRouter (single key for many models)" />
+                                    <SelectItem value="litellm" text="LiteLLM (unified — openai/cohere/azure/bedrock/...)" />
+                                    <SelectItem value="huggingface" text="HuggingFace local (PyTorch — Mac GPU / NVIDIA CUDA via GPU Acceleration toggle)" />
                                     <SelectItem value="ollama" text="Ollama" />
                                   </Select>
                                   <TextInput
@@ -1248,22 +2398,358 @@ export default function KnowledgePanel({
                                     labelText="Model"
                                     value={knowledgeConfig.embedding_model ?? ""}
                                     onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_model: e.target.value })}
-                                    placeholder="Auto-detect per provider"
+                                    placeholder={
+                                      knowledgeConfig.embedding_provider === "openrouter"
+                                        ? "REQUIRED — e.g. openai/text-embedding-3-small"
+                                        : knowledgeConfig.embedding_provider === "litellm"
+                                          ? "REQUIRED — e.g. openai/text-embedding-3-small, cohere/embed-english-v3.0"
+                                          : "Auto-detect per provider"
+                                    }
                                   />
                                 </Stack>
-                                <Toggle
-                                  id="knowledge-use-gpu"
-                                  labelText="GPU Acceleration"
-                                  labelA="Off"
-                                  labelB="On"
-                                  toggled={knowledgeConfig.use_gpu ?? true}
-                                  onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, use_gpu: checked })}
-                                  size="sm"
-                                />
+                                {knowledgeConfig.embedding_provider === "openrouter" && (
+                                  <>
+                                    <InlineNotification
+                                      kind="info"
+                                      lowContrast
+                                      hideCloseButton
+                                      title="OpenRouter"
+                                      subtitle={
+                                        <>
+                                          Paste any embeddings model id from{" "}
+                                          <a
+                                            href="https://openrouter.ai/models?output_modalities=embeddings"
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                          >
+                                            openrouter.ai/models
+                                          </a>{" "}
+                                          (e.g. <code>openai/text-embedding-3-small</code>). Both Model and API Key are required.
+                                        </>
+                                      }
+                                    />
+                                    <TextInput
+                                      id="knowledge-embedding-api-key-openrouter"
+                                      type="password"
+                                      labelText="OpenRouter API Key"
+                                      required
+                                      value={knowledgeConfig.embedding_api_key ?? ""}
+                                      onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_api_key: e.target.value })}
+                                      placeholder="Paste OPENROUTER_API_KEY"
+                                    />
+                                  </>
+                                )}
+                                {knowledgeConfig.embedding_provider === "litellm" && (
+                                  <>
+                                    {!((knowledgeConfig.embedding_model || "").trim()) ? (
+                                      <InlineNotification
+                                        kind="warning"
+                                        lowContrast
+                                        hideCloseButton
+                                        title="Model required"
+                                        subtitle={
+                                          <>
+                                            LiteLLM needs a model name with a provider prefix in the <strong>Model</strong> field above
+                                            (e.g. <code>openai/text-embedding-3-small</code>, <code>azure/text-embedding-3-small-1</code>,
+                                            <code>cohere/embed-english-v3.0</code>). Settings won't save until this is filled in.
+                                          </>
+                                        }
+                                      />
+                                    ) : (
+                                      <InlineNotification
+                                        kind="success"
+                                        lowContrast
+                                        hideCloseButton
+                                        title="LiteLLM ready"
+                                        subtitle={
+                                          <>
+                                            <code>{knowledgeConfig.embedding_model}</code> will be routed via LiteLLM. See{" "}
+                                            <a
+                                              href="https://docs.litellm.ai/docs/embedding/supported_embedding"
+                                              target="_blank"
+                                              rel="noopener noreferrer"
+                                            >
+                                              supported models
+                                            </a>
+                                            . API key falls back to env var if empty. Base URL is for self-hosted proxies.
+                                          </>
+                                        }
+                                      />
+                                    )}
+                                    <Stack orientation="horizontal" gap={4}>
+                                      <TextInput
+                                        id="knowledge-embedding-base-url-litellm"
+                                        labelText="Base URL (optional, for self-hosted LiteLLM proxy)"
+                                        value={knowledgeConfig.embedding_base_url ?? ""}
+                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_base_url: e.target.value })}
+                                        placeholder="e.g. http://localhost:4000"
+                                        invalid={!!baseUrlError}
+                                        invalidText={baseUrlError ?? undefined}
+                                      />
+                                      <TextInput
+                                        id="knowledge-embedding-api-key-litellm"
+                                        type="password"
+                                        labelText="API Key (optional — falls back to env var)"
+                                        value={knowledgeConfig.embedding_api_key ?? ""}
+                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_api_key: e.target.value })}
+                                        placeholder="Leave empty to use provider env var"
+                                      />
+                                    </Stack>
+                                  </>
+                                )}
+                                {(knowledgeConfig.embedding_provider === "openai" || knowledgeConfig.embedding_provider === "ollama") && (
+                                  <>
+                                    <InlineNotification
+                                      kind="info"
+                                      lowContrast
+                                      hideCloseButton
+                                      title={knowledgeConfig.embedding_provider === "openai" ? "OpenAI / OpenAI-compatible" : "Ollama"}
+                                      subtitle={
+                                        knowledgeConfig.embedding_provider === "openai" ? (
+                                          <>
+                                            Works for OpenAI direct and any OpenAI-compatible endpoint (Together, Fireworks, IBM LiteLLM proxy).
+                                            Remember to append <code>/v1</code> to the Base URL for most proxies. For OpenRouter use its dedicated provider.
+                                          </>
+                                        ) : (
+                                          <>
+                                            Local Ollama server. Base URL defaults to <code>http://localhost:11434</code>. Model is optional —
+                                            defaults to <code>nomic-embed-text</code>.
+                                          </>
+                                        )
+                                      }
+                                    />
+                                    <Stack orientation="horizontal" gap={4}>
+                                      <TextInput
+                                        id="knowledge-embedding-base-url"
+                                        labelText="Base URL"
+                                        value={knowledgeConfig.embedding_base_url ?? ""}
+                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_base_url: e.target.value })}
+                                        placeholder={knowledgeConfig.embedding_provider === "openai" ? "e.g. https://api.together.xyz/v1" : "e.g. http://localhost:11434"}
+                                        helperText={knowledgeConfig.embedding_provider === "openai" ? "Optional — leave empty for OpenAI direct." : "Optional — defaults to localhost:11434."}
+                                        invalid={!!baseUrlError}
+                                        invalidText={baseUrlError ?? undefined}
+                                      />
+                                      <TextInput
+                                        id="knowledge-embedding-api-key"
+                                        type="password"
+                                        labelText="API Key"
+                                        value={knowledgeConfig.embedding_api_key ?? ""}
+                                        onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_api_key: e.target.value })}
+                                        placeholder={knowledgeConfig.embedding_provider === "openai" ? "Leave empty to use OPENAI_API_KEY env" : "Usually unused for Ollama"}
+                                        helperText={knowledgeConfig.embedding_provider === "openai" ? "Optional — falls back to OPENAI_API_KEY env var." : "Optional — Ollama typically doesn't require a key."}
+                                      />
+                                    </Stack>
+                                  </>
+                                )}
+
+                                {/* === Advanced extra_params editor (for Azure api_version, Bedrock region, ...) === */}
+                                {showAdvanced && (knowledgeConfig.embedding_provider === "litellm" ||
+                                  knowledgeConfig.embedding_provider === "openai") && (
+                                  <TextInput
+                                    id="knowledge-embedding-extra-params"
+                                    labelText="Advanced: Extra provider kwargs (optional, JSON dict)"
+                                    value={
+                                      knowledgeConfig.embedding_extra_params &&
+                                      Object.keys(knowledgeConfig.embedding_extra_params).length > 0
+                                        ? JSON.stringify(knowledgeConfig.embedding_extra_params)
+                                        : ""
+                                    }
+                                    onChange={(e: any) => {
+                                      const raw = e.target.value.trim();
+                                      if (!raw) {
+                                        onKnowledgeConfigChange({ ...knowledgeConfig, embedding_extra_params: {} });
+                                        return;
+                                      }
+                                      try {
+                                        const parsed = JSON.parse(raw);
+                                        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                                          // Reject reserved keys that have dedicated fields above —
+                                          // prevents the "I put my model in the JSON" foot-gun the
+                                          // user hit. We surface the rejection via setExtraParamsHint.
+                                          const reserved = ["embedding_model", "model", "embedding_api_key", "api_key", "embedding_base_url", "base_url"];
+                                          const violations = reserved.filter((k) => k in parsed);
+                                          if (violations.length > 0) {
+                                            setExtraParamsHint(
+                                              `Don't put ${violations.join(", ")} here — those go in the named fields above. This box is for provider-specific extras (e.g. api_version for Azure).`,
+                                            );
+                                            return;
+                                          }
+                                          setExtraParamsHint(null);
+                                          onKnowledgeConfigChange({ ...knowledgeConfig, embedding_extra_params: parsed });
+                                        }
+                                      } catch {
+                                        // Don't propagate while user is typing invalid JSON.
+                                      }
+                                    }}
+                                    placeholder={
+                                      knowledgeConfig.embedding_model?.startsWith("azure/")
+                                        ? '{"api_version":"2024-02-15","azure_deployment":"my-deployment"}'
+                                        : 'leave empty for most providers'
+                                    }
+                                    helperText="NOT for the model name — model has its own field above. Use this only for provider-specific extras (Azure: api_version. Bedrock: aws_region_name)."
+                                    invalid={!!extraParamsHint}
+                                    invalidText={extraParamsHint ?? undefined}
+                                  />
+                                )}
+
+                                {/* === Action row: Test connection + status Tags ===
+                                    Carbon Tag is the right primitive for compact status
+                                    indicators — supports color tokens, icons (renderIcon),
+                                    and is screen-reader friendly. Replaces the previous
+                                    span+inline-hex approach. */}
+                                <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexWrap: "wrap" }}>
+                                  <Button
+                                    kind="tertiary"
+                                    size="sm"
+                                    disabled={testing || !knowledgeConfig.embedding_provider}
+                                    onClick={handleTestConnection}
+                                    renderIcon={testing ? Renew : undefined}
+                                    iconDescription={testing ? "Testing connection…" : undefined}
+                                  >
+                                    {testing ? "Testing…" : "Test connection"}
+                                  </Button>
+
+                                  {/* Save-state Tag (Carbon for AI persistence cue) */}
+                                  {saveState === "saving" && (
+                                    <Tag type="gray" size="sm" renderIcon={Renew}>
+                                      Saving…
+                                    </Tag>
+                                  )}
+                                  {saveState === "saved" && (
+                                    <Tag type="green" size="sm" renderIcon={Checkmark}>
+                                      Saved
+                                    </Tag>
+                                  )}
+
+                                  {/* Key-source chip — only shown when no test result is up
+                                      yet (test result is more informative when available) */}
+                                  {!testResult && accel?.key_source?.required && (
+                                    <Tag
+                                      type={
+                                        accel.key_source.source === "missing"
+                                          ? "red"
+                                          : accel.key_source.source === "ui"
+                                            ? "green"
+                                            : "magenta"
+                                      }
+                                      size="sm"
+                                      title="Where the embedding API key is being read from."
+                                    >
+                                      {accel.key_source.source === "ui"
+                                        ? "Key: from UI"
+                                        : accel.key_source.source === "missing"
+                                          ? "Key: missing"
+                                          : `Key: ${accel.key_source.source}`}
+                                    </Tag>
+                                  )}
+                                </Stack>
+
+                                {/* Test connection result — use InlineNotification so the
+                                    FULL error is visible (no 80-char truncation behind a
+                                    title attr). Critical for debugging 401s etc. */}
+                                {testResult && (
+                                  <InlineNotification
+                                    kind={testResult.ok ? "success" : "error"}
+                                    lowContrast
+                                    hideCloseButton={false}
+                                    onCloseButtonClick={() => setTestResult(null)}
+                                    title={
+                                      testResult.ok
+                                        ? `Connected — dim=${testResult.dim}, ${testResult.latency_ms} ms`
+                                        : "Test failed"
+                                    }
+                                    subtitle={
+                                      testResult.ok
+                                        ? "You can now upload documents on the Documents tab."
+                                        : testResult.error || "No detail returned."
+                                    }
+                                  />
+                                )}
+
+                                <Stack orientation="horizontal" gap={3} style={{ alignItems: "center", flexWrap: "wrap" }}>
+                                  <Toggle
+                                    id="knowledge-use-gpu"
+                                    labelText="GPU Acceleration"
+                                    labelA="Off"
+                                    labelB="On"
+                                    toggled={knowledgeConfig.use_gpu ?? true}
+                                    onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, use_gpu: checked })}
+                                    size="sm"
+                                  />
+                                  {/* Honest device label: green when GPU engaged, magenta
+                                      when GPU requested but ORT loaded CPU only, gray when
+                                      not relevant (cloud provider). */}
+                                  {accel && (
+                                    <Tag
+                                      type={
+                                        accel.fallback_to_cpu
+                                          ? "magenta"
+                                          : accel.embedding_relevant
+                                            ? "green"
+                                            : "gray"
+                                      }
+                                      size="sm"
+                                      renderIcon={
+                                        accel.fallback_to_cpu
+                                          ? ErrorFilled
+                                          : accel.embedding_relevant
+                                            ? Checkmark
+                                            : undefined
+                                      }
+                                      title="What the running engine actually loaded for embedding inference."
+                                    >
+                                      {accel.fallback_to_cpu ? "GPU fallback to CPU" : `Detected: ${accel.device_label}`}
+                                    </Tag>
+                                  )}
+                                </Stack>
+                                {showAdvanced && (
+                                  <>
+                                    <Stack orientation="horizontal" gap={4}>
+                                      <NumberInput
+                                        id="knowledge-embedding-batch-size"
+                                        label="Batch Size"
+                                        value={knowledgeConfig.embedding_batch_size ?? 64}
+                                        min={1}
+                                        max={2048}
+                                        step={16}
+                                        helperText="Chunks per embed call. Smaller = finer progress; larger = lower per-call overhead."
+                                        onChange={((_e: unknown, { value }: { value: number }) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_batch_size: value })) as any}
+                                      />
+                                      <NumberInput
+                                        id="knowledge-embedding-concurrency"
+                                        label="Concurrency"
+                                        value={knowledgeConfig.embedding_concurrency ?? 4}
+                                        min={1}
+                                        max={32}
+                                        step={1}
+                                        helperText="Parallel embed sub-batches for network providers (OpenAI / Ollama). No effect on local providers."
+                                        onChange={((_e: unknown, { value }: { value: number }) => onKnowledgeConfigChange({ ...knowledgeConfig, embedding_concurrency: value })) as any}
+                                      />
+                                    </Stack>
+                                    <NumberInput
+                                      id="knowledge-vector-insert-batch-size"
+                                      label="Vector Insert Batch Size"
+                                      value={knowledgeConfig.vector_insert_batch_size ?? 200}
+                                      min={1}
+                                      max={5000}
+                                      step={50}
+                                      helperText="Chunks per add_many transaction. Caps each transaction so a large document does not blow past pgvector's command_timeout or hold the HNSW write lock for long. Default 200 works for typical docs."
+                                      onChange={((_e: unknown, { value }: { value: number }) => onKnowledgeConfigChange({ ...knowledgeConfig, vector_insert_batch_size: value })) as any}
+                                    />
+                                  </>
+                                )}
+                                {/* Per-section Reset to factory defaults */}
+                                <Button kind="ghost" size="sm" renderIcon={Reset}
+                                  onClick={() => setResetTarget({
+                                    section: "Embeddings",
+                                    fields: ["embedding_provider", "embedding_model", "embedding_api_key", "embedding_base_url", "embedding_extra_params", "use_gpu", "embedding_batch_size", "embedding_concurrency", "vector_insert_batch_size"],
+                                  })}>
+                                  Reset Embeddings to defaults
+                                </Button>
                               </Stack>
                             </AccordionItem>
 
-                            <AccordionItem title="Chunking">
+                            <AccordionItem title={sectionTitle("Chunking", chunkingStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
                                 {ragProfiles && (knowledgeConfig.rag_profile ?? "standard") !== "custom" && (
                                   <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
@@ -1291,24 +2777,71 @@ export default function KnowledgePanel({
                                     onChange={((_e: unknown, { value }: { value: number }) => onKnowledgeConfigChange({ ...knowledgeConfig, chunk_overlap: value })) as any}
                                   />
                                 </Stack>
+                                <Button kind="ghost" size="sm" renderIcon={Reset}
+                                  onClick={() => setResetTarget({ section: "Chunking", fields: ["chunk_size", "chunk_overlap"] })}>
+                                  Reset Chunking to defaults
+                                </Button>
                               </Stack>
                             </AccordionItem>
 
-                            <AccordionItem title="Score & Metric">
+                            <AccordionItem title="Document Parsing (Docling)">
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
                                 <Select
-                                  id="knowledge-metric-type"
-                                  labelText="Distance Metric"
-                                  value={knowledgeConfig.metric_type ?? "COSINE"}
-                                  onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, metric_type: e.target.value })}
+                                  id="knowledge-docling-pdf-mode"
+                                  labelText="Parsing Level"
+                                  helperText="Applies to PDFs and every other Docling-supported format (DOCX, PPTX, HTML, images, …). Trades parse speed for extraction fidelity. Saved with the published config snapshot."
+                                  value={knowledgeConfig.docling_pdf_mode ?? "accurate"}
+                                  onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, docling_pdf_mode: e.target.value })}
                                 >
-                                  <SelectItem value="COSINE" text="Cosine Similarity" />
-                                  <SelectItem value="IP" text="Inner Product" />
-                                  <SelectItem value="L2" text="L2 Distance" />
+                                  <SelectItem value="fast" text="Fast — OCR off, tables off (digital docs only; ~3–10× faster)" />
+                                  <SelectItem value="balanced" text="Balanced — OCR off, tables on (digital docs with tables)" />
+                                  <SelectItem value="accurate" text="Accurate (default) — OCR on, tables on (scanned docs supported)" />
                                 </Select>
+                                <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
+                                  ⚠️ <strong>Fast</strong> mode will extract little or no text from scanned documents. Use <strong>Accurate</strong> for OCR.
+                                </p>
+                                {showAdvanced && (
+                                <Select
+                                  id="knowledge-docling-layout-engine"
+                                  labelText="Layout Engine"
+                                  helperText="Which backend runs the layout-detection model. Auto = ONNX (default; CPU on Mac, CUDA on NVIDIA). Transformers = PyTorch (only way to engage Apple GPU/MPS; ~500 MB more RAM)."
+                                  value={knowledgeConfig.docling_layout_engine ?? "auto"}
+                                  onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, docling_layout_engine: e.target.value })}
+                                >
+                                  <SelectItem value="auto" text="Auto (default) — ONNX, fastest startup on CPU & NVIDIA" />
+                                  <SelectItem value="onnx" text="ONNX — explicit (same as Auto today; pinned)" />
+                                  <SelectItem value="transformers" text="Transformers (PyTorch) — engages MPS on Mac / CUDA on NVIDIA" />
+                                </Select>
+                                )}
+                                <Button kind="ghost" size="sm" renderIcon={Reset}
+                                  onClick={() => setResetTarget({ section: "Document Parsing", fields: ["docling_pdf_mode", "docling_layout_engine"] })}>
+                                  Reset Document Parsing to defaults
+                                </Button>
                               </Stack>
                             </AccordionItem>
 
+                            {showAdvanced && (
+                              <AccordionItem title="Score & Metric">
+                                <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
+                                  <Select
+                                    id="knowledge-metric-type"
+                                    labelText="Distance Metric"
+                                    value={knowledgeConfig.metric_type ?? "COSINE"}
+                                    onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, metric_type: e.target.value })}
+                                  >
+                                    <SelectItem value="COSINE" text="Cosine Similarity" />
+                                    <SelectItem value="IP" text="Inner Product" />
+                                    <SelectItem value="L2" text="L2 Distance" />
+                                  </Select>
+                                  <Button kind="ghost" size="sm" renderIcon={Reset}
+                                    onClick={() => setResetTarget({ section: "Score & Metric", fields: ["metric_type"] })}>
+                                    Reset Score & Metric to defaults
+                                  </Button>
+                                </Stack>
+                              </AccordionItem>
+                            )}
+
+                            {showAdvanced && (
                             <AccordionItem title="Limits">
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
                                 <Stack orientation="horizontal" gap={4}>
@@ -1350,9 +2883,47 @@ export default function KnowledgePanel({
                                   min={1} max={50}
                                   onChange={((_e: unknown, { value }: { value: number }) => onKnowledgeConfigChange({ ...knowledgeConfig, max_pending_tasks: value })) as any}
                                 />
+                                <Button kind="ghost" size="sm" renderIcon={Reset}
+                                  onClick={() => setResetTarget({ section: "Limits", fields: ["max_upload_size_mb", "max_files_per_request", "max_url_download_size_mb", "max_chunks_per_document", "max_pending_tasks"] })}>
+                                  Reset Limits to defaults
+                                </Button>
                               </Stack>
                             </AccordionItem>
+                            )}
                           </Accordion>
+                          )}
+
+                          {/* === Reset to defaults — confirmation modal ===
+                              Confirmation modal so a stray click doesn't wipe
+                              the user's tuned values. Only resets the fields
+                              listed in resetTarget.fields — never touches
+                              other sections. */}
+                          {resetTarget && (
+                            <ComposedModal
+                              open
+                              onClose={() => setResetTarget(null)}
+                              size="sm"
+                            >
+                              <ModalHeader title={`Reset ${resetTarget.section} to defaults?`} />
+                              <ModalBody>
+                                <p style={{ marginBottom: "0.75rem" }}>
+                                  This restores the <strong>{resetTarget.section}</strong> section to factory defaults.
+                                  Your other knowledge settings are untouched.
+                                </p>
+                                <p style={{ fontSize: "0.8125rem", color: "var(--cds-text-secondary)", margin: 0 }}>
+                                  Fields affected: <code>{resetTarget.fields.join(", ")}</code>
+                                </p>
+                              </ModalBody>
+                              <ModalFooter>
+                                <Button kind="secondary" onClick={() => setResetTarget(null)}>
+                                  Cancel
+                                </Button>
+                                <Button kind="danger" renderIcon={Reset} onClick={performReset}>
+                                  Reset section
+                                </Button>
+                              </ModalFooter>
+                            </ComposedModal>
+                          )}
                         </>
                       )}
                     </Stack>
