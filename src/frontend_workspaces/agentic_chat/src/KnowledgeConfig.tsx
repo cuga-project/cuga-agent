@@ -323,6 +323,16 @@ interface KnowledgePanelProps {
   // navigation from frame 1. Defaults to "documents" (back-compat with
   // every existing call site).
   initialTab?: KnowledgeTabName;
+  // Lift adaptation-server-error state to the parent so the autosave
+  // path (which lives in ManagePage, not here) can push a 422 response
+  // body into the panel. Optional + falls back to local state for
+  // back-compat with parents that don't yet implement it. When BOTH
+  // ``adaptationServerError`` and ``onAdaptationServerError`` are
+  // supplied, the panel is fully controlled by the parent; when neither
+  // is supplied, the panel manages its own local state (clears reset
+  // affordance only — never sees a real 422 today).
+  adaptationServerError?: AdaptationServerError | null;
+  onAdaptationServerError?: (error: AdaptationServerError | null) => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -342,6 +352,8 @@ export default function KnowledgePanel({
   knowledgeReindexing,
   ragProfiles,
   initialTab,
+  adaptationServerError: adaptationServerErrorProp,
+  onAdaptationServerError,
 }: KnowledgePanelProps) {
   // Uncontrolled-with-initial-value: seed from the prop on first render
   // (the modal is unmounted on close so the prop is always fresh on next
@@ -351,8 +363,18 @@ export default function KnowledgePanel({
   // 422 from PATCH /api/manage/config/draft/knowledge with structured
   // ClientAdaptationError.to_dict() body. Surfaced inside the panel as
   // per-failure-mode notifications (phrase / control / etc).
-  const [adaptationServerError, setAdaptationServerError] = useState<AdaptationServerError | null>(null);
-  void setAdaptationServerError; // wired up by future autosave integration
+  //
+  // Hybrid controlled/uncontrolled: when the parent passes a value
+  // (``adaptationServerError`` prop), the panel is fully controlled —
+  // the parent's autosave path (in ManagePage) catches the 422 and
+  // pushes the error in. When the prop is undefined, we fall back to
+  // local state so the panel still works in standalone test scenarios
+  // and back-compat with parents that haven't been updated yet.
+  const [adaptationServerErrorLocal, setAdaptationServerErrorLocal] = useState<AdaptationServerError | null>(null);
+  const adaptationServerError =
+    adaptationServerErrorProp !== undefined ? adaptationServerErrorProp : adaptationServerErrorLocal;
+  const setAdaptationServerError = onAdaptationServerError ?? setAdaptationServerErrorLocal;
+  void setAdaptationServerError; // exported via the controlled-state contract; called from inside the panel when we wire dismiss UX.
   const knowledgeEnabled = knowledgeConfig?.enabled ?? true;
   const agentLevelEnabled = knowledgeEnabled && (knowledgeConfig?.agent_level_enabled ?? true);
   const sessionLevelEnabled = knowledgeEnabled && (knowledgeConfig?.session_level_enabled ?? true);
