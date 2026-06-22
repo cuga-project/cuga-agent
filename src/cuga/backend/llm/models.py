@@ -1,3 +1,4 @@
+import math
 import re
 import threading
 from datetime import date
@@ -17,7 +18,7 @@ from loguru import logger
 
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
-from cuga.config import settings
+from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
@@ -75,7 +76,7 @@ except ImportError:
     ReasoningChatLiteLLM = None  # type: ignore[misc, assignment]
 
 _ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
-_DEFAULT_LLM_HTTP_TIMEOUT = 61
+_DEFAULT_LLM_HTTP_TIMEOUT = DEFAULT_LLM_HTTP_TIMEOUT
 
 
 def _parse_timeout(value: Any) -> Optional[float]:
@@ -85,7 +86,7 @@ def _parse_timeout(value: Any) -> Optional[float]:
         timeout = float(value)
     except (TypeError, ValueError):
         return None
-    if timeout <= 0:
+    if timeout <= 0 or not math.isfinite(timeout):
         return None
     return timeout
 
@@ -572,7 +573,10 @@ class LLMManager:
         return True
 
     def _get_http_timeout(self, model_settings: Dict[str, Any]) -> float:
-        """Return HTTP timeout (seconds) for LLM API clients.
+        """Return HTTP timeout (seconds) for OpenAI, Azure, and OpenRouter clients.
+
+        Other platforms (groq, watsonx, rits, google-genai, litellm) ignore this
+        setting until wired separately.
 
         Priority:
         1. timeout in model_settings (per-agent TOML)
@@ -595,8 +599,8 @@ class LLMManager:
             toml_timeout = _parse_timeout(settings.connections.llm_http_timeout)
             if toml_timeout is not None:
                 return toml_timeout
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as exc:
+            logger.debug(f"Could not read connections.llm_http_timeout from settings: {exc}")
 
         return _DEFAULT_LLM_HTTP_TIMEOUT
 

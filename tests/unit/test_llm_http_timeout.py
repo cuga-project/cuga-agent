@@ -65,11 +65,13 @@ class TestGetHttpTimeout:
         mgr = LLMManager()
         assert mgr._get_http_timeout({}) == 150.0
 
-    def test_invalid_timeout_values_fall_back_to_default(self):
+    def test_invalid_timeout_values_fall_back_to_default(self, monkeypatch):
         mgr = LLMManager()
-        assert mgr._get_http_timeout({"timeout": "not-a-number"}) == _DEFAULT_LLM_HTTP_TIMEOUT
-        assert mgr._get_http_timeout({"timeout": 0}) == _DEFAULT_LLM_HTTP_TIMEOUT
-        assert mgr._get_http_timeout({"timeout": -5}) == _DEFAULT_LLM_HTTP_TIMEOUT
+        for invalid in ("not-a-number", 0, -5, "NaN", "inf", "Infinity"):
+            assert mgr._get_http_timeout({"timeout": invalid}) == _DEFAULT_LLM_HTTP_TIMEOUT
+        for env_val in ("NaN", "inf"):
+            monkeypatch.setenv("CUGA_LLM_HTTP_TIMEOUT", env_val)
+            assert mgr._get_http_timeout({}) == _DEFAULT_LLM_HTTP_TIMEOUT
 
 
 class TestHttpTimeoutPassedToClients:
