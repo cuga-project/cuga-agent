@@ -351,6 +351,9 @@ let _knowledgeAgentId = "default";
 export function setKnowledgeAgentId(agentId: string) {
   _knowledgeAgentId = agentId;
 }
+export function getKnowledgeAgentId(): string {
+  return _knowledgeAgentId;
+}
 
 /**
  * Central knowledge API helper. Injects X-Agent-ID and optional X-Thread-ID
@@ -375,6 +378,28 @@ function knowledgeApiFetch(
 
 export function getKnowledgeHealth(): Promise<Response> {
   return knowledgeApiFetch("/api/knowledge/health");
+}
+
+export function getKnowledgeAccelerator(): Promise<Response> {
+  return apiFetch("/api/manage/knowledge/accelerator");
+}
+
+export function getKnowledgeDefaults(): Promise<Response> {
+  return apiFetch("/api/manage/knowledge/defaults");
+}
+
+export function testEmbeddingsConnection(body: {
+  provider: string;
+  model?: string;
+  api_key?: string;
+  base_url?: string;
+  extra_params?: Record<string, unknown>;
+}): Promise<Response> {
+  return apiFetch("/api/manage/knowledge/test_embeddings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export function enableKnowledge(): Promise<Response> {
@@ -406,19 +431,29 @@ export function uploadKnowledgeDocuments(files: File[], replaceDuplicates = true
   });
 }
 
-export function uploadKnowledgeDocument(file: File, replaceDuplicates = true): Promise<Response> {
+export function uploadKnowledgeDocument(
+  file: File,
+  replaceDuplicates = true,
+  wait = true,
+  signal?: AbortSignal,
+): Promise<Response> {
   const formData = new FormData();
   formData.append("files", file);
   formData.append("scope", "agent");
   formData.append("replace_duplicates", String(replaceDuplicates));
+  formData.append("wait", String(wait));
   return knowledgeApiFetch("/api/knowledge/documents", {
     method: "POST",
     body: formData,
+    signal,
   });
 }
 
-export function listKnowledgeDocuments(): Promise<Response> {
-  return knowledgeApiFetch("/api/knowledge/documents?scope=agent");
+export function listKnowledgeDocuments(signal?: AbortSignal): Promise<Response> {
+  return knowledgeApiFetch(
+    "/api/knowledge/documents?scope=agent",
+    signal ? { signal } : undefined,
+  );
 }
 
 export function deleteKnowledgeDocument(filename: string): Promise<Response> {
@@ -461,8 +496,14 @@ export function getKnowledgeTasks(): Promise<Response> {
   return knowledgeApiFetch("/api/knowledge/tasks?scope=agent");
 }
 
-export function getKnowledgeTaskStatus(taskId: string): Promise<Response> {
-  return knowledgeApiFetch(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`);
+export function getKnowledgeTaskStatus(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return knowledgeApiFetch(
+    `/api/knowledge/tasks/${encodeURIComponent(taskId)}`,
+    signal ? { signal } : undefined,
+  );
 }
 
 export function cancelKnowledgeTask(taskId: string): Promise<Response> {
