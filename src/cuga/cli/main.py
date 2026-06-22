@@ -186,6 +186,536 @@ app = typer.Typer(
 
 app.add_typer(policy_app, name="policy")
 
+# ``cuga knowledge`` subcommand group — read/write the running engine's
+# knowledge config from the CLI without having to curl the API. Combines:
+#   - perf: config get/set + snapshot export/import (no-API JSON ops)
+#   - client-adaptation: adaptation get/set/clear + glossary get/set + doctor
+knowledge_app = typer.Typer(
+    help="Manage the running knowledge engine config "
+    "(settings, client adaptation, snapshots — reads/writes "
+    "/api/knowledge/settings on the cuga server).",
+    short_help="Knowledge engine config",
+)
+
+
+def _knowledge_api_base() -> str:
+    base = os.environ.get("CUGA_API_BASE", "http://127.0.0.1:8005")
+    return base.rstrip("/")
+
+
+@knowledge_app.command("config-get", help="Print the running knowledge config as JSON.")
+def knowledge_config_get(
+    field: str | None = typer.Argument(
+        None,
+        help="Optional single field name (e.g. 'search_junk_filter'). Omit to print the full config.",
+    ),
+    json_output: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit raw JSON (machine-readable).",
+    ),
+):
+    """Read the live engine settings."""
+    import json as _json
+
+    import urllib.request as _ur
+
+    url = f"{_knowledge_api_base()}/api/knowledge/settings"
+    try:
+        with _ur.urlopen(url, timeout=10) as resp:  # noqa: S310 — operator tool
+            payload = _json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("Failed to fetch knowledge settings from %s: %s", url, exc)
+        raise typer.Exit(code=1)
+
+    knowledge_cfg = payload.get("knowledge", payload)
+    if field:
+        if field not in knowledge_cfg:
+            logger.error("Unknown field %r. Available: %s", field, sorted(knowledge_cfg.keys()))
+            raise typer.Exit(code=1)
+        value = knowledge_cfg[field]
+        typer.echo(_json.dumps(value) if json_output else str(value))
+        return
+
+    typer.echo(_json.dumps(knowledge_cfg, indent=None if json_output else 2))
+
+
+@knowledge_app.command(
+    "config-set",
+    help="Update a single knowledge config field on the running engine.",
+)
+def knowledge_config_set(
+    field: str = typer.Argument(
+        ...,
+        help="Field name (e.g. 'search_junk_filter', 'docling_drop_page_chrome').",
+    ),
+    value: str = typer.Argument(..., help="New value as a string. Booleans accept true/false."),
+):
+    """PATCH the running engine settings. Validation errors come back as
+    HTTP 400 from the server (clearer than a TOML edit + restart loop)."""
+    import json as _json
+    import urllib.request as _ur
+
+    # Coerce common scalar shapes so the user doesn't have to JSON-quote.
+    coerced: object = value
+    if value.lower() in ("true", "false"):
+        coerced = value.lower() == "true"
+    else:
+        try:
+            coerced = int(value)
+        except ValueError:
+            try:
+                coerced = float(value)
+            except ValueError:
+                pass  # keep as string
+
+    body = _json.dumps({"knowledge": {field: coerced}}).encode("utf-8")
+    url = f"{_knowledge_api_base()}/api/knowledge/settings"
+    req = _ur.Request(url, data=body, method="POST", headers={"Content-Type": "application/json"})
+    try:
+        with _ur.urlopen(req, timeout=10) as resp:  # noqa: S310 — operator tool
+            typer.echo(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("Failed to update knowledge settings: %s", exc)
+        raise typer.Exit(code=1)
+
+
+def _manage_api_base() -> str:
+    """The manage-routes endpoint hangs off the main backend port —
+    same host as ``/api/knowledge/*`` but a different prefix. Default
+    matches the dev-server port; override via env for production."""
+    base = os.environ.get("CUGA_API_BASE", "http://127.0.0.1:8005")
+    return base.rstrip("/")
+
+
+@knowledge_app.command(
+    "snapshot-export",
+    help="Export the published knowledge config snapshot to a file.",
+)
+def knowledge_snapshot_export(
+    output: str = typer.Argument(
+        ...,
+        help="Path to write the JSON snapshot to (e.g. './kb-snapshot.json').",
+    ),
+    agent_id: str = typer.Option(
+        "cuga-default",
+        "--agent-id",
+        help="Agent ID whose config to export (default 'cuga-default').",
+    ),
+    include_secrets: bool = typer.Option(
+        False,
+        "--include-secrets",
+        help="Include API keys etc. Default OFF — match the publish contract "
+        "so the file is safe to share across machines.",
+    ),
+):
+    """Save the live published knowledge config (modes, providers,
+    chunking, etc.) to a JSON file. The file is round-trippable via
+    ``cuga knowledge snapshot-import`` on another machine — the same
+    contract as the UI's publish/import flow."""
+    import json as _json
+    import urllib.parse as _up
+    import urllib.request as _ur
+
+    qs = _up.urlencode({"agent_id": agent_id})
+    url = f"{_manage_api_base()}/api/manage/config?{qs}"
+    try:
+        with _ur.urlopen(url, timeout=15) as resp:  # noqa: S310 — operator tool
+            payload = _json.loads(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("Failed to fetch manage config from %s: %s", url, exc)
+        raise typer.Exit(code=1)
+
+    config = payload.get("config", {})
+    knowledge = config.get("knowledge", {})
+    if not knowledge:
+        logger.warning(
+            "No 'knowledge' section in published config for agent_id=%s — "
+            "exporting an empty snapshot. This usually means knowledge has "
+            "never been configured for this agent.",
+            agent_id,
+        )
+
+    snapshot = {
+        "schema": "cuga.knowledge.snapshot.v1",
+        "agent_id": agent_id,
+        "knowledge": knowledge,
+    }
+    # Strip API key on export by default — matches the in-engine
+    # ``to_dict(include_secrets=False)`` contract so an operator who
+    # ``snapshot-export``s + emails the file can't accidentally leak keys.
+    if not include_secrets and isinstance(snapshot["knowledge"].get("embedding_api_key"), str):
+        snapshot["knowledge"]["embedding_api_key"] = ""
+
+    try:
+        with open(output, "w", encoding="utf-8") as f:
+            _json.dump(snapshot, f, indent=2, ensure_ascii=False)
+            f.write("\n")
+    except OSError as exc:
+        logger.error("Failed to write snapshot to %s: %s", output, exc)
+        raise typer.Exit(code=1)
+
+    typer.echo(f"Knowledge snapshot exported to {output} (agent_id={agent_id})")
+
+
+@knowledge_app.command(
+    "snapshot-import",
+    help="Publish a knowledge config snapshot from a file.",
+)
+def knowledge_snapshot_import(
+    input: str = typer.Argument(
+        ...,
+        help="Path to a JSON snapshot file (from `snapshot-export`).",
+    ),
+    agent_id: Optional[str] = typer.Option(
+        None,
+        "--agent-id",
+        help="Override the agent_id in the snapshot. Default: use whatever "
+        "the snapshot recorded (usually 'cuga-default').",
+    ),
+):
+    """Apply a previously-exported knowledge config to the running
+    engine. Validation errors come back as HTTP 400 with the offending
+    field name — same path the UI's publish form goes through."""
+    import json as _json
+    import urllib.parse as _up
+    import urllib.request as _ur
+
+    try:
+        with open(input, encoding="utf-8") as f:
+            snapshot = _json.load(f)
+    except OSError as exc:
+        logger.error("Failed to read snapshot file %s: %s", input, exc)
+        raise typer.Exit(code=1)
+    except _json.JSONDecodeError as exc:
+        logger.error("Snapshot file %s is not valid JSON: %s", input, exc)
+        raise typer.Exit(code=1)
+
+    schema = snapshot.get("schema")
+    if schema and schema != "cuga.knowledge.snapshot.v1":
+        logger.error(
+            "Unknown snapshot schema %r — expected 'cuga.knowledge.snapshot.v1'. "
+            "Was this file produced by a different cuga version?",
+            schema,
+        )
+        raise typer.Exit(code=1)
+
+    knowledge = snapshot.get("knowledge")
+    if not isinstance(knowledge, dict) or not knowledge:
+        logger.error(
+            "Snapshot at %s has no 'knowledge' section to import.",
+            input,
+        )
+        raise typer.Exit(code=1)
+
+    target_agent_id = agent_id or snapshot.get("agent_id") or "cuga-default"
+
+    # Apply via the manage PATCH endpoint — same path the UI uses,
+    # so we get the engine's full validation + the immediate take-effect
+    # semantics (no restart needed).
+    body = _json.dumps({"knowledge": knowledge}).encode("utf-8")
+    qs = _up.urlencode({"agent_id": target_agent_id})
+    url = f"{_manage_api_base()}/api/manage/config/draft/knowledge?{qs}"
+    req = _ur.Request(
+        url,
+        data=body,
+        method="PATCH",
+        headers={"Content-Type": "application/json"},
+    )
+    try:
+        with _ur.urlopen(req, timeout=30) as resp:  # noqa: S310 — operator tool
+            typer.echo(resp.read().decode("utf-8"))
+    except Exception as exc:
+        logger.error("Failed to apply snapshot via PATCH %s: %s", url, exc)
+        raise typer.Exit(code=1)
+
+    typer.echo(
+        f"Knowledge snapshot imported (agent_id={target_agent_id}). "
+        f"Run `cuga knowledge config-get` to verify the new live values."
+    )
+
+
+app.add_typer(knowledge_app, name="knowledge")
+
+
+def _cuga_server_base_url() -> str:
+    """Resolve the cuga backend base URL for CLI HTTP calls.
+
+    Distinct from ``_knowledge_api_base`` above: that one accepts a
+    single ``CUGA_API_BASE`` env override (perf-branch convention used
+    by ``config-get``/``config-set``/``snapshot-*``); this one composes
+    host+port from ``CUGA_HOST``/``CUGA_PORT`` (client-adaptation
+    convention used by ``adaptation-*``/``glossary-*``/``doctor``).
+    Both are retained for back-compat with whichever env vars
+    operators have already wired into their deployment scripts.
+    """
+    port = os.environ.get("CUGA_PORT") or "8000"
+    host = os.environ.get("CUGA_HOST") or "127.0.0.1"
+    return f"http://{host}:{port}"
+
+
+@knowledge_app.command(
+    "adaptation-get",
+    help="Print the active client-adaptation text (markdown).",
+)
+def knowledge_adaptation_get():
+    """Fetch and print the current client_adaptation_text from the running cuga server."""
+    url = f"{_cuga_server_base_url()}/api/knowledge/settings"
+    try:
+        r = httpx.get(url, timeout=10.0)
+        r.raise_for_status()
+    except Exception as e:
+        typer.secho(f"Failed to reach cuga server at {url}: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    data = r.json().get("knowledge", {})
+    text = data.get("client_adaptation_text", "")
+    if not text:
+        typer.secho("(no client adaptation set)", fg=typer.colors.YELLOW)
+        return
+    typer.echo(text)
+
+
+@knowledge_app.command(
+    "adaptation-set",
+    help=(
+        "Upload a markdown file as the client-adaptation text. "
+        "The file's content is appended to the knowledge-agent system prompt "
+        "for every request. Limit: 1500 chars."
+    ),
+)
+def knowledge_adaptation_set(
+    file: Path = typer.Argument(
+        ...,
+        help="Path to the markdown file containing the adaptation text.",
+        exists=True,
+        readable=True,
+        dir_okay=False,
+    ),
+    agent_id: Optional[str] = typer.Option(
+        None, "--agent-id", help="Target agent id (default: cuga-default)."
+    ),
+    publish: bool = typer.Option(
+        False,
+        "--publish/--draft-only",
+        help="After patching draft, also publish a new version snapshot.",
+    ),
+):
+    """Read FILE, validate length, PATCH the draft knowledge config, optionally publish."""
+    from cuga.backend.knowledge.config import CLIENT_ADAPTATION_MAX_CHARS
+
+    try:
+        text = file.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        typer.secho(
+            f"File is not valid UTF-8: {e}. Re-save as UTF-8 and retry.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if len(text) > CLIENT_ADAPTATION_MAX_CHARS:
+        typer.secho(
+            f"File too large: {len(text)} chars > {CLIENT_ADAPTATION_MAX_CHARS}. "
+            "Trim to fit before retrying.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    aid = agent_id or "cuga-default"
+    base = _cuga_server_base_url()
+
+    patch_url = f"{base}/api/manage/config/draft/knowledge?agent_id={aid}"
+    try:
+        r = httpx.patch(patch_url, json={"client_adaptation_text": text}, timeout=15.0)
+    except Exception as e:
+        typer.secho(f"Failed to reach {patch_url}: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    if r.status_code >= 400:
+        typer.secho(f"PATCH rejected ({r.status_code}): {r.text}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.secho(f"Client adaptation saved to draft ({len(text)} chars).", fg=typer.colors.GREEN)
+
+    if publish:
+        publish_url = f"{base}/api/manage/config/publish?agent_id={aid}"
+        try:
+            r = httpx.post(publish_url, timeout=60.0)
+        except Exception as e:
+            typer.secho(f"Failed to publish: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        if r.status_code >= 400:
+            typer.secho(f"Publish rejected ({r.status_code}): {r.text}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=1)
+        typer.secho("Published to new version snapshot.", fg=typer.colors.GREEN)
+
+
+@knowledge_app.command(
+    "adaptation-clear",
+    help="Clear the client-adaptation text (sets it to empty string).",
+)
+def knowledge_adaptation_clear(
+    agent_id: Optional[str] = typer.Option(None, "--agent-id"),
+):
+    aid = agent_id or "cuga-default"
+    patch_url = f"{_cuga_server_base_url()}/api/manage/config/draft/knowledge?agent_id={aid}"
+    try:
+        r = httpx.patch(patch_url, json={"client_adaptation_text": ""}, timeout=15.0)
+        r.raise_for_status()
+    except Exception as e:
+        typer.secho(f"Failed: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    typer.secho("Client adaptation cleared.", fg=typer.colors.GREEN)
+
+
+@knowledge_app.command(
+    "glossary-get",
+    help="Print the active client-adaptation glossary (JSON).",
+)
+def knowledge_glossary_get():
+    """Fetch and print the current glossary entries from the running cuga server."""
+    import json
+
+    url = f"{_cuga_server_base_url()}/api/knowledge/settings"
+    try:
+        r = httpx.get(url, timeout=10.0)
+        r.raise_for_status()
+    except Exception as e:
+        typer.secho(f"Failed to reach cuga server at {url}: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    data = r.json().get("knowledge", {})
+    glossary = data.get("client_adaptation_glossary", [])
+    if not glossary:
+        typer.secho("(no glossary entries set)", fg=typer.colors.YELLOW)
+        return
+    typer.echo(json.dumps(glossary, indent=2, ensure_ascii=False))
+
+
+@knowledge_app.command(
+    "glossary-set",
+    help=(
+        "Upload a JSON file containing the client-adaptation glossary. "
+        "The file must be a JSON array of {term, aliases[], definition?} "
+        "objects. Max 50 entries, 10 aliases each."
+    ),
+)
+def knowledge_glossary_set(
+    file: Path = typer.Argument(
+        ...,
+        help="Path to the JSON file containing the glossary entries.",
+        exists=True,
+        readable=True,
+        dir_okay=False,
+    ),
+    agent_id: Optional[str] = typer.Option(None, "--agent-id"),
+    publish: bool = typer.Option(
+        False,
+        "--publish/--draft-only",
+        help="After patching draft, also publish a new version snapshot.",
+    ),
+):
+    """Read FILE, validate structure, PATCH the draft knowledge config."""
+    import json
+
+    from cuga.backend.knowledge.config import CLIENT_GLOSSARY_MAX_ENTRIES
+
+    try:
+        text = file.read_text(encoding="utf-8")
+    except UnicodeDecodeError as e:
+        typer.secho(f"File is not valid UTF-8: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    try:
+        glossary = json.loads(text)
+    except json.JSONDecodeError as e:
+        typer.secho(f"File is not valid JSON: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+
+    if not isinstance(glossary, list):
+        typer.secho(
+            f"Glossary must be a JSON array, got {type(glossary).__name__}.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    if len(glossary) > CLIENT_GLOSSARY_MAX_ENTRIES:
+        typer.secho(
+            f"Glossary has {len(glossary)} entries — max is {CLIENT_GLOSSARY_MAX_ENTRIES}.",
+            fg=typer.colors.RED,
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
+    aid = agent_id or "cuga-default"
+    base = _cuga_server_base_url()
+
+    patch_url = f"{base}/api/manage/config/draft/knowledge?agent_id={aid}"
+    try:
+        r = httpx.patch(patch_url, json={"client_adaptation_glossary": glossary}, timeout=15.0)
+    except Exception as e:
+        typer.secho(f"Failed to reach {patch_url}: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    if r.status_code >= 400:
+        typer.secho(f"PATCH rejected ({r.status_code}): {r.text}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=1)
+
+    typer.secho(f"Glossary saved to draft ({len(glossary)} entries).", fg=typer.colors.GREEN)
+
+    if publish:
+        publish_url = f"{base}/api/manage/config/publish?agent_id={aid}"
+        try:
+            r = httpx.post(publish_url, timeout=60.0)
+            r.raise_for_status()
+        except Exception as e:
+            typer.secho(f"Publish failed: {e}", fg=typer.colors.RED, err=True)
+            raise typer.Exit(code=2)
+        typer.secho("Published.", fg=typer.colors.GREEN)
+
+
+@knowledge_app.command(
+    "doctor",
+    help=(
+        "Print a quick diagnostic of the active client-adaptation config — "
+        "hashes, lengths, glossary entry count. Use this when answering "
+        "'is my adaptation actually applied?' or correlating support tickets "
+        "to config versions."
+    ),
+)
+def knowledge_doctor():
+    """Run the on-call diagnostic for client-adaptation."""
+    url = f"{_cuga_server_base_url()}/api/knowledge/settings"
+    try:
+        r = httpx.get(url, timeout=10.0)
+        r.raise_for_status()
+    except Exception as e:
+        typer.secho(f"Failed to reach cuga server: {e}", fg=typer.colors.RED, err=True)
+        raise typer.Exit(code=2)
+    k = r.json().get("knowledge", {})
+    adapt_hash = k.get("client_adaptation_hash", "")
+    adapt_len = k.get("client_adaptation_len", 0)
+    gloss_hash = k.get("client_adaptation_glossary_hash", "")
+    gloss_count = k.get("client_adaptation_glossary_count", 0)
+
+    active = bool(adapt_len) or bool(gloss_count)
+    status_color = typer.colors.GREEN if active else typer.colors.YELLOW
+    status_text = "ACTIVE" if active else "OFF"
+
+    typer.secho(f"Client adaptation status: {status_text}", fg=status_color, bold=True)
+    typer.echo("")
+    typer.echo("  Adaptation text:")
+    typer.echo(f"    length:   {adapt_len} chars")
+    typer.echo(f"    hash:     {adapt_hash}")
+    typer.echo("  Glossary:")
+    typer.echo(f"    entries:  {gloss_count}")
+    typer.echo(f"    hash:     {gloss_hash}")
+    typer.echo("")
+    if active:
+        typer.echo(
+            f"Grep logs for `cuga.knowledge.adaptation_applied` matching hash "
+            f"{adapt_hash} to correlate prompt-assembly events to this config."
+        )
+
+
 # Global variables to track running direct processes (registry/demo)
 direct_processes = {}
 shutdown_event = threading.Event()
@@ -913,6 +1443,166 @@ def start(
         "--cuga-workspace",
         help="Path to cuga workspace; when set, configures policy env so all file operations use this dir (manager/demo_crm)",
     ),
+    embeddings_provider: str | None = typer.Option(
+        None,
+        "--embeddings-provider",
+        help="Override knowledge embeddings provider "
+        "(fastembed | huggingface | openai | ollama | openrouter | litellm). "
+        "Use 'litellm' for a unified interface across providers — pass any model with a provider prefix "
+        "(e.g. 'openai/text-embedding-3-small', 'cohere/embed-english-v3.0', 'azure/<deployment>'). "
+        "Use 'openrouter' to pick from openrouter.ai/models?output_modalities=embeddings with a single key — "
+        "just set --embeddings-api-key + --embeddings-model. "
+        "For other OpenAI-compatible endpoints (Together, Fireworks) use 'openai' + --embeddings-base-url. "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER.",
+    ),
+    embeddings_model: str | None = typer.Option(
+        None,
+        "--embeddings-model",
+        help="Override knowledge embeddings model (provider-specific). Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL.",
+    ),
+    embeddings_base_url: str | None = typer.Option(
+        None,
+        "--embeddings-base-url",
+        help="Override knowledge embeddings endpoint URL (use for OpenAI-compatible providers). "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__BASE_URL.",
+    ),
+    embeddings_api_key: str | None = typer.Option(
+        None,
+        "--embeddings-api-key",
+        help="Override knowledge embeddings API key (use for openai / OpenAI-compatible providers). "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__API_KEY.",
+    ),
+    embeddings_batch_size: int | None = typer.Option(
+        None,
+        "--embeddings-batch-size",
+        help="Override knowledge embeddings sub-batch size (default 64). Smaller = finer ingest progress; "
+        "larger = lower per-call overhead. Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__BATCH_SIZE.",
+    ),
+    embeddings_concurrency: int | None = typer.Option(
+        None,
+        "--embeddings-concurrency",
+        help="Override knowledge embeddings concurrency for network providers (default 4, no-op on local providers). "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__CONCURRENCY.",
+    ),
+    docling_pdf_mode: str | None = typer.Option(
+        None,
+        "--docling-pdf-mode",
+        help="Override knowledge Docling PDF parsing level: 'fast' (OCR + tables off; digital PDFs only, "
+        "~3-10x faster), 'balanced' (OCR off, tables on; most digital PDFs), or 'accurate' (default; "
+        "OCR + tables on; scanned PDFs supported). Sets DYNACONF_KNOWLEDGE__DOCLING__PDF_MODE.",
+    ),
+    use_gpu: bool | None = typer.Option(
+        None,
+        "--use-gpu/--no-use-gpu",
+        help="Override knowledge embeddings GPU autodetect. Default: autodetect (CUDA / Apple CoreML); "
+        "pass --no-use-gpu to force CPU. No effect on cloud providers. "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__USE_GPU.",
+    ),
+    embeddings_extra_params: str | None = typer.Option(
+        None,
+        "--embeddings-extra-params",
+        help="Provider-specific embedding kwargs as JSON (Azure: api_version + azure_deployment; "
+        "Bedrock: aws_region_name). Example: "
+        "'{\"api_version\":\"2024-02-15\",\"azure_deployment\":\"my-dep\"}'. "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__EXTRA_PARAMS.",
+    ),
+    docling_layout_engine: str | None = typer.Option(
+        None,
+        "--docling-layout-engine",
+        help="Override Docling layout backend: 'auto' (default — ONNX on Mac, ONNX+CUDA on NVIDIA), "
+        "'onnx' (explicit), or 'transformers' (PyTorch — engages MPS/CUDA via device_map; "
+        "only path to Apple GPU for layout). Sets DYNACONF_KNOWLEDGE__DOCLING__LAYOUT_ENGINE.",
+    ),
+    # === Knowledge tuning knobs (parity with UI Settings tab) ===
+    knowledge_enabled: bool | None = typer.Option(
+        None,
+        "--knowledge-enabled/--no-knowledge-enabled",
+        help="Toggle the knowledge subsystem globally. Sets DYNACONF_KNOWLEDGE__ENABLED.",
+    ),
+    agent_level_enabled: bool | None = typer.Option(
+        None,
+        "--agent-level-knowledge/--no-agent-level-knowledge",
+        help="Toggle permanent (agent-level) knowledge documents. Sets DYNACONF_KNOWLEDGE__AGENT_LEVEL_ENABLED.",
+    ),
+    session_level_enabled: bool | None = typer.Option(
+        None,
+        "--session-level-knowledge/--no-session-level-knowledge",
+        help="Toggle ephemeral (session-level) knowledge documents. Sets DYNACONF_KNOWLEDGE__SESSION_LEVEL_ENABLED.",
+    ),
+    chunk_size: int | None = typer.Option(
+        None,
+        "--chunk-size",
+        help="Override knowledge chunk size in tokens (default 1000). Sets DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_SIZE.",
+    ),
+    chunk_overlap: int | None = typer.Option(
+        None,
+        "--chunk-overlap",
+        help="Override knowledge chunk overlap in tokens (default 200; must be < chunk_size). Sets DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_OVERLAP.",
+    ),
+    vector_insert_batch_size: int | None = typer.Option(
+        None,
+        "--vector-insert-batch-size",
+        help="Override vector-store insert batch size (default 200). Caps each add_many transaction. "
+        "Sets DYNACONF_KNOWLEDGE__ENGINE__VECTOR_INSERT_BATCH_SIZE.",
+    ),
+    rag_profile: str | None = typer.Option(
+        None,
+        "--rag-profile",
+        help="RAG profile preset: 'speed' | 'standard' | 'balanced' | 'max_quality' | 'custom'. "
+        "Sets DYNACONF_KNOWLEDGE__SEARCH__RAG_PROFILE.",
+    ),
+    metric_type: str | None = typer.Option(
+        None,
+        "--knowledge-metric-type",
+        help="Vector-distance metric: 'COSINE' | 'IP' | 'L2'. Sets DYNACONF_KNOWLEDGE__SEARCH__METRIC_TYPE.",
+    ),
+    max_upload_size_mb: int | None = typer.Option(
+        None,
+        "--knowledge-max-upload-mb",
+        help="Max upload size per file in MB (default 100). Sets DYNACONF_KNOWLEDGE__LIMITS__MAX_UPLOAD_SIZE_MB.",
+    ),
+    max_files_per_request: int | None = typer.Option(
+        None,
+        "--knowledge-max-files-per-request",
+        help="Max files per upload request (default 10). Sets DYNACONF_KNOWLEDGE__LIMITS__MAX_FILES_PER_REQUEST.",
+    ),
+    max_url_download_size_mb: int | None = typer.Option(
+        None,
+        "--knowledge-max-url-download-mb",
+        help="Max size for URL-fetched documents in MB (default 50). Sets DYNACONF_KNOWLEDGE__LIMITS__MAX_URL_DOWNLOAD_SIZE_MB.",
+    ),
+    max_chunks_per_document: int | None = typer.Option(
+        None,
+        "--knowledge-max-chunks-per-doc",
+        help="Cap chunks per document (default 10000). Sets DYNACONF_KNOWLEDGE__LIMITS__MAX_CHUNKS_PER_DOCUMENT.",
+    ),
+    max_pending_tasks: int | None = typer.Option(
+        None,
+        "--knowledge-max-pending-tasks",
+        help="Max queued ingestion tasks per collection (default 10). "
+        "Sets DYNACONF_KNOWLEDGE__ENGINE__MAX_PENDING_TASKS.",
+    ),
+    knowledge_search_junk_filter: str | None = typer.Option(
+        None,
+        "--knowledge-search-junk-filter",
+        help="Retrieval-time noise filter: 'off' (never filter), 'dry_run' (default; "
+        "count + log what would be filtered, return everything), 'enforce' (drop). "
+        "Sets DYNACONF_KNOWLEDGE__SEARCH__JUNK_FILTER.",
+    ),
+    knowledge_docling_drop_page_chrome: str | None = typer.Option(
+        None,
+        "--knowledge-docling-drop-page-chrome",
+        help="Ingest-time drop of pure page_footer/page_header chunks (Docling labels): "
+        "'off', 'dry_run', or 'enforce' (default). "
+        "Sets DYNACONF_KNOWLEDGE__DOCLING__DROP_PAGE_CHROME.",
+    ),
+    knowledge_search_hybrid_mode: str | None = typer.Option(
+        None,
+        "--knowledge-search-hybrid-mode",
+        help="Hybrid retrieval (BM25 + dense, RRF-fused). "
+        "'auto' (default) runs both legs in parallel; 'off' uses dense only. "
+        "Sets DYNACONF_KNOWLEDGE__SEARCH__HYBRID_MODE.",
+    ),
 ):
     """
     Start the specified service.
@@ -962,6 +1652,91 @@ def start(
 
     if reset and service != "demo_knowledge":
         logger.warning("--reset is only supported for demo_knowledge and will be ignored for '%s'", service)
+
+    # Embedding overrides — set as DYNACONF env vars BEFORE the service blocks
+    # below so the engine picks them up when settings is first loaded. These
+    # flags work for any service that touches the knowledge engine; the
+    # validation of the provider value happens later inside KnowledgeConfig.
+    _embedding_flag_env = [
+        ("DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER", embeddings_provider),
+        ("DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL", embeddings_model),
+        ("DYNACONF_KNOWLEDGE__EMBEDDINGS__BASE_URL", embeddings_base_url),
+        ("DYNACONF_KNOWLEDGE__EMBEDDINGS__API_KEY", embeddings_api_key),
+        (
+            "DYNACONF_KNOWLEDGE__EMBEDDINGS__BATCH_SIZE",
+            str(embeddings_batch_size) if embeddings_batch_size is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__EMBEDDINGS__CONCURRENCY",
+            str(embeddings_concurrency) if embeddings_concurrency is not None else None,
+        ),
+        ("DYNACONF_KNOWLEDGE__DOCLING__PDF_MODE", docling_pdf_mode),
+        (
+            "DYNACONF_KNOWLEDGE__EMBEDDINGS__USE_GPU",
+            ("true" if use_gpu else "false") if use_gpu is not None else None,
+        ),
+        # extra_params is a JSON dict — DYNACONF supports the @json marker prefix
+        # to coerce env strings to JSON values; if user typed bad JSON, dynaconf
+        # surfaces the parse error at settings-load time (acceptable failure mode).
+        (
+            "DYNACONF_KNOWLEDGE__EMBEDDINGS__EXTRA_PARAMS",
+            f"@json {embeddings_extra_params}" if embeddings_extra_params is not None else None,
+        ),
+        ("DYNACONF_KNOWLEDGE__DOCLING__LAYOUT_ENGINE", docling_layout_engine),
+        # Bool toggles — coerce to "true"/"false" only when the flag was set.
+        (
+            "DYNACONF_KNOWLEDGE__ENABLED",
+            ("true" if knowledge_enabled else "false") if knowledge_enabled is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__AGENT_LEVEL_ENABLED",
+            ("true" if agent_level_enabled else "false") if agent_level_enabled is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__SESSION_LEVEL_ENABLED",
+            ("true" if session_level_enabled else "false") if session_level_enabled is not None else None,
+        ),
+        # Numeric tuning knobs — DYNACONF reads strings; settings.toml typing
+        # coerces back to int on load.
+        ("DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_SIZE", str(chunk_size) if chunk_size is not None else None),
+        (
+            "DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_OVERLAP",
+            str(chunk_overlap) if chunk_overlap is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__ENGINE__VECTOR_INSERT_BATCH_SIZE",
+            str(vector_insert_batch_size) if vector_insert_batch_size is not None else None,
+        ),
+        ("DYNACONF_KNOWLEDGE__SEARCH__RAG_PROFILE", rag_profile),
+        ("DYNACONF_KNOWLEDGE__SEARCH__METRIC_TYPE", metric_type),
+        (
+            "DYNACONF_KNOWLEDGE__LIMITS__MAX_UPLOAD_SIZE_MB",
+            str(max_upload_size_mb) if max_upload_size_mb is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__LIMITS__MAX_FILES_PER_REQUEST",
+            str(max_files_per_request) if max_files_per_request is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__LIMITS__MAX_URL_DOWNLOAD_SIZE_MB",
+            str(max_url_download_size_mb) if max_url_download_size_mb is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__LIMITS__MAX_CHUNKS_PER_DOCUMENT",
+            str(max_chunks_per_document) if max_chunks_per_document is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__ENGINE__MAX_PENDING_TASKS",
+            str(max_pending_tasks) if max_pending_tasks is not None else None,
+        ),
+        ("DYNACONF_KNOWLEDGE__SEARCH__JUNK_FILTER", knowledge_search_junk_filter),
+        ("DYNACONF_KNOWLEDGE__DOCLING__DROP_PAGE_CHROME", knowledge_docling_drop_page_chrome),
+        ("DYNACONF_KNOWLEDGE__SEARCH__HYBRID_MODE", knowledge_search_hybrid_mode),
+    ]
+    for _env_name, _value in _embedding_flag_env:
+        if _value is not None:
+            os.environ[_env_name] = _value
+            logger.info("Embedding override: %s=%s", _env_name.split("__", 1)[-1], _value)
 
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
@@ -1869,6 +2644,142 @@ def status(
 
     # Validate service for any other service
     validate_service(service)
+
+
+@app.command(
+    help="Diagnose cuga's GPU stack — print device visibility, ONNX providers, "
+    "torch CUDA, fastembed session, shm, image build flag. Copy-pasteable for "
+    "support tickets.",
+    short_help="GPU health check",
+)
+def doctor() -> None:
+    """Print a structured GPU diagnosis.
+
+    Reads the actual loaded runtime — not just config — so a misconfigured
+    image (CPU build, missing libcudnn, --gpus all forgotten, ...) surfaces
+    as a single readable report instead of multiple buried log lines. Designed
+    to be run inside the container/pod with ``docker exec`` / ``kubectl exec``
+    immediately after deploy.
+    """
+    import os as _os
+    import platform as _platform
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    def _row(label: str, value: str) -> None:
+        typer.echo(f"  {label:<28} {value}")
+
+    typer.echo("\n[cuga doctor] GPU stack diagnosis")
+    typer.echo("=" * 60)
+
+    # 1. Image / env signals
+    typer.echo("\n[1] Image / environment")
+    _row("python", _platform.python_version())
+    _row("platform", f"{_platform.system()} {_platform.machine()}")
+    _row("CUGA_GPU_BUILD", _os.environ.get("CUGA_GPU_BUILD", "(unset → CPU image)"))
+    _row("CUGA_GPU_REQUIRED", _os.environ.get("CUGA_GPU_REQUIRED", "(unset → warn-only)"))
+
+    # 2. NVIDIA driver visibility
+    typer.echo("\n[2] NVIDIA driver visibility")
+    nvsmi = _shutil.which("nvidia-smi")
+    if not nvsmi:
+        _row("nvidia-smi", "NOT FOUND on PATH (container can't see the GPU)")
+    else:
+        try:
+            out = _subprocess.run(
+                [nvsmi, "--query-gpu=name,driver_version,memory.total,memory.free", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                for line in out.stdout.strip().splitlines():
+                    _row("gpu", line.strip())
+            else:
+                _row("nvidia-smi", f"exit {out.returncode}: {out.stderr.strip()[:120]}")
+        except Exception as e:
+            _row("nvidia-smi", f"ERROR: {e!r}")
+
+    # 3. onnxruntime providers
+    typer.echo("\n[3] onnxruntime")
+    try:
+        import onnxruntime as _ort
+
+        providers = _ort.get_available_providers()
+        _row("ort version", _ort.__version__)
+        _row("available providers", str(providers))
+        if "CUDAExecutionProvider" in providers:
+            _row("status", "GPU-capable (CUDA)")
+        elif "CoreMLExecutionProvider" in providers:
+            _row("status", "GPU-capable (CoreML / Apple Silicon)")
+        else:
+            _row(
+                "status",
+                "CPU-only (for CUDA cluster: use Dockerfile.gpu or `uv sync --extra gpu`)",
+            )
+    except Exception as e:
+        _row("onnxruntime", f"IMPORT FAILED: {e!r}")
+
+    # 4. torch CUDA
+    typer.echo("\n[4] torch / CUDA")
+    try:
+        import torch
+
+        _row("torch version", torch.__version__)
+        _row("cuda.is_available", str(torch.cuda.is_available()))
+        if torch.cuda.is_available():
+            _row("device count", str(torch.cuda.device_count()))
+            _row("device 0 name", torch.cuda.get_device_name(0))
+            _row("cudnn version", str(torch.backends.cudnn.version()))
+            try:
+                free, total = torch.cuda.mem_get_info(0)
+                _row("device 0 mem", f"{free / (1024**3):.1f} GB free / {total / (1024**3):.1f} GB total")
+            except Exception:
+                pass
+    except Exception as e:
+        _row("torch", f"IMPORT FAILED: {e!r}")
+
+    # 5. fastembed loaded providers (the actual runtime, not the list)
+    typer.echo("\n[5] fastembed live session")
+    try:
+        from fastembed import TextEmbedding
+
+        # Use the model the engine's auto-default uses so we test what users actually hit.
+        m = TextEmbedding("BAAI/bge-small-en-v1.5")
+        sess_providers: list[str] = []
+        cur = m
+        for _ in range(4):
+            for a in ("model", "_model", "session", "_session", "ort_session"):
+                obj = getattr(cur, a, None)
+                if obj is None:
+                    continue
+                if hasattr(obj, "get_providers"):
+                    sess_providers = list(obj.get_providers())
+                    break
+                cur = obj
+                break
+            if sess_providers:
+                break
+        _row("active providers", str(sess_providers) if sess_providers else "(could not introspect)")
+        if sess_providers and "CUDAExecutionProvider" in sess_providers:
+            _row("status", "embed will use GPU")
+        elif sess_providers:
+            _row("status", "embed will run on CPU")
+    except Exception as e:
+        _row("fastembed", f"FAILED: {e!r}")
+
+    # 6. /dev/shm size (Docling DataLoader workers OOM at the 64 MB default)
+    typer.echo("\n[6] /dev/shm")
+    try:
+        out = _subprocess.run(["df", "-h", "/dev/shm"], capture_output=True, text=True, timeout=3)
+        for line in out.stdout.strip().splitlines()[-1:]:
+            _row("size", line.strip())
+        _row("recommended", ">= 2G for Docling transformers layout DataLoader")
+    except Exception as e:
+        _row("/dev/shm", f"NOT CHECKABLE: {e!r}")
+
+    typer.echo("\n" + "=" * 60)
+    typer.echo("Tip: paste this entire output into a support ticket or PR comment.\n")
 
 
 @app.command(help="Test sandbox execution", short_help="Test sandbox")
