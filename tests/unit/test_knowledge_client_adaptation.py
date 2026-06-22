@@ -289,6 +289,61 @@ class TestClientAdaptationExampleEndToEnd:
         # And the XML framing is present so the LLM sees this as a high-priority block.
         assert '<client_adaptation priority="high">' in summary
 
+    @pytest.mark.asyncio
+    async def test_assemble_system_prompt_section_includes_adaptation_block(self):
+        """Closes the A6 coverage gap.
+
+        Review comment 24 migrated prepare_node from the legacy trio
+        (``get_knowledge_summary`` + ``format_knowledge_context`` +
+        ``load_knowledge_instructions``) to the single seam
+        ``assemble_system_prompt_section``. The previous test only
+        exercised the LEGACY seam; this test exercises the NEW seam
+        directly so a future refactor that drops the
+        ``<client_adaptation priority="high">`` wrapper would fail
+        loudly instead of slipping past.
+        """
+        from cuga.backend.knowledge.awareness import assemble_system_prompt_section
+
+        text = EXAMPLE_MD.read_text(encoding="utf-8")
+        engine = _stub_engine([_StubDoc("manual.pdf")])
+        # ``assemble_system_prompt_section`` reads scoring/adaptation knobs
+        # from ``search_config`` when explicitly supplied (the production
+        # draft / "Try It Out" path). Use that override so we don't need
+        # to fake the full engine._config dataclass.
+        search_cfg = SimpleNamespace(
+            enabled=True,
+            client_adaptation_text=text,
+            client_adaptation_glossary=[],
+            max_search_attempts=3,
+            default_limit=10,
+            rag_profile="standard",
+        )
+        assembled = await assemble_system_prompt_section(
+            engine,
+            agent_id="kb_agent_demo",
+            thread_id=None,
+            base_instructions="BASE INSTRUCTIONS",
+            search_config=search_cfg,
+        )
+        # Type contract: an AssembledKnowledgePrompt dataclass, not a tuple.
+        assert assembled.has_knowledge is True
+        # Audit hash is present (and non-empty) so observability tools
+        # can correlate "which prompt did agent N see at time T".
+        assert assembled.prompt_hash, "prompt_hash must be populated"
+        # The composed text includes the base instructions + the
+        # client-adaptation block + the loaded knowledge instructions.
+        text_out = assembled.text
+        assert "BASE INSTRUCTIONS" in text_out, "base_instructions lost"
+        assert '<client_adaptation priority="high">' in text_out, "XML wrapper missing — prompt drift"
+        # Spot-check the example file's content survived the compose pass.
+        assert "Token preservation" in text_out
+        assert "Empty-context discipline" in text_out
+        # The contract char count is non-zero (knowledge_instructions.md
+        # was loaded + composed) so the LLM sees BOTH the operator's
+        # adaptation AND cuga's own contract.
+        assert assembled.contract_chars > 0
+        assert assembled.knowledge_block_chars > 0
+
     def test_example_uses_only_generic_placeholders(self):
         """Guard: the example must stay client-agnostic.
 
