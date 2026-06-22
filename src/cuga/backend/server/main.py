@@ -2453,7 +2453,8 @@ async def get_policies_config(
                 frontend_policy["target_tools"] = policy_dict.get("target_tools", [])
                 frontend_policy["target_apps"] = policy_dict.get("target_apps")
                 frontend_policy["guide_content"] = policy_dict.get("guide_content", "")
-                frontend_policy["tool_guards"] = policy_dict.get("tool_guards")
+                tool_guards = policy_dict.get("tool_guards")
+                frontend_policy["tool_guards"] = tool_guards
                 frontend_policy["prepend"] = policy_dict.get("prepend", False)
             elif policy_dict["type"] == "tool_approval":
                 frontend_policy["required_tools"] = policy_dict.get("required_tools", [])
@@ -2667,6 +2668,45 @@ async def generate_tool_guard_for_policy(
             policy_id=policy_id,
             generation_agent=generation_agent,
         )
+        
+        # Sync the updated policy back to config_store so /api/manage/config returns it
+        try:
+            from cuga.backend.server.config_store import load_draft, save_draft
+            
+            agent_id = "cuga-default"  # TODO: get from request if multi-agent support needed
+            config = await load_draft(agent_id)
+            if config and "policies" in config and "policies" in config["policies"]:
+                # Find and update the policy in config
+                updated_policy = await policy_system.storage.get_policy(policy_id)
+                if updated_policy:
+                    policy_list = config["policies"]["policies"]
+                    for i, p in enumerate(policy_list):
+                        if p.get("id") == policy_id:
+                            # Convert updated policy to dict and update in config
+                            policy_dict = updated_policy.model_dump()
+                            # Map backend field names to frontend expectations
+                            frontend_policy = {
+                                "id": policy_dict["id"],
+                                "name": policy_dict["name"],
+                                "description": policy_dict["description"],
+                                "policy_type": policy_dict["type"],
+                                "enabled": policy_dict.get("enabled", True),
+                                "triggers": policy_dict.get("triggers", []),
+                                "priority": policy_dict.get("priority", 50),
+                                "target_tools": policy_dict.get("target_tools", []),
+                                "target_apps": policy_dict.get("target_apps"),
+                                "guide_content": policy_dict.get("guide_content", ""),
+                                "tool_guards": policy_dict.get("tool_guards", {}),
+                                "prepend": policy_dict.get("prepend", False),
+                            }
+                            policy_list[i] = frontend_policy
+                            break
+                    await save_draft(config, agent_id)
+                    logger.info(f"Synced updated policy {policy_id} to config_store")
+        except Exception as sync_exc:
+            logger.warning(f"Failed to sync policy to config_store: {sync_exc}")
+            # Don't fail the request if sync fails - the policy is already saved to policy storage
+        
         return JSONResponse(result, status_code=200)
     except ValueError as exc:
         return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
