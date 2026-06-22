@@ -182,7 +182,10 @@ def test_one_scope_erroring_returns_partial_results(monkeypatch):
         if collection == "kb_agent":
             raise RuntimeError("simulated agent-collection failure")
         return (
-            [SearchResult(text=f"s-{i}", filename="s.pdf", page=i, score=0.7 - 0.01 * i, scope=scope) for i in range(3)],
+            [
+                SearchResult(text=f"s-{i}", filename="s.pdf", page=i, score=0.7 - 0.01 * i, scope=scope)
+                for i in range(3)
+            ],
             _JunkFilterStats(candidates=3),
         )
 

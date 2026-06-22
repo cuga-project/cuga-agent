@@ -1377,7 +1377,8 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                         collections = [
                             d.name
                             for d in files_dir.iterdir()
-                            if d.is_dir() and (d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"))
+                            if d.is_dir()
+                            and (d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"))
                         ]
                     else:
                         collections = []
