@@ -1,0 +1,191 @@
+"""System tool: analyze_image.
+
+Accepts a local file path (absolute, relative, or /workspace/...) or an HTTPS
+URL, sends the image to the configured LLM, and returns a text description.
+
+Primary model is tried first (the same model the agent uses for everything
+else).  If it rejects the multimodal content — e.g. a model like
+``openai/gpt-oss-120b`` that does not support vision — the tool automatically
+falls back to the model named in the ``IMAGE_ANALYSIS_MODEL`` environment
+variable (e.g. ``Azure/gpt-4o``).
+
+This lets CUGA handle images seamlessly regardless of whether the primary
+model supports vision.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import os
+from pathlib import Path
+from typing import Optional
+
+from langchain_core.messages import HumanMessage
+from langchain_core.tools import StructuredTool
+from loguru import logger
+from pydantic import BaseModel, Field
+
+_MEDIA_TYPE_MAP = {
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".png": "image/png",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tiff": "image/tiff",
+    ".tif": "image/tiff",
+}
+
+
+def _is_url(source: str) -> bool:
+    return source.startswith("http://") or source.startswith("https://")
+
+
+def _resolve_path(source: str) -> Path:
+    p = Path(source)
+    if p.is_absolute() and p.exists():
+        return p
+    # /workspace/... refers to the sandbox working directory
+    if source.startswith("/workspace/"):
+        rel = Path(source[len("/workspace/") :])
+        if rel.exists():
+            return rel
+    return p
+
+
+def _build_data_url(source: str) -> str:
+    """Return a ``data:<media>; base64,...`` URL from a local path or HTTP URL."""
+    if _is_url(source):
+        import urllib.request
+
+        suffix = Path(source.split("?")[0]).suffix or ".jpg"
+        dest = Path(f"_img_download{suffix}")
+        req = urllib.request.Request(
+            source,
+            headers={"User-Agent": "Mozilla/5.0 (compatible; CugaAgent/1.0)"},
+        )
+        with urllib.request.urlopen(req) as resp:
+            dest.write_bytes(resp.read())
+        path = dest
+    else:
+        path = _resolve_path(source)
+
+    if not path.exists():
+        raise FileNotFoundError(f"Image not found: {source!r}")
+
+    raw = path.read_bytes()
+    encoded = base64.standard_b64encode(raw).decode("ascii")
+    media_type = _MEDIA_TYPE_MAP.get(path.suffix.lower(), "image/jpeg")
+    return f"data:{media_type};base64,{encoded}"
+
+
+async def analyze_image(image: str, question: str) -> str:
+    """Analyze an image and return a text answer.
+
+    Tries the primary model first; falls back to IMAGE_ANALYSIS_MODEL if the
+    primary model does not support vision.
+
+    Args:
+        image: Absolute path, workspace-relative path (/workspace/file.png),
+               or HTTPS URL of the image to analyze.
+        question: What to extract or describe from the image.
+
+    Returns:
+        The model's textual answer about the image.
+    """
+    data_url = _build_data_url(image)
+    multimodal_content = [
+        {"type": "image_url", "image_url": {"url": data_url}},
+        {"type": "text", "text": question},
+    ]
+
+    # ── attempt 1: primary model ────────────────────────────────────────────
+    try:
+        from cuga.backend.llm.models import LLMManager
+        from cuga.config import settings
+
+        primary_llm = LLMManager().get_model(settings.agent.code.model)
+        msg = HumanMessage(content=multimodal_content)
+        result = await primary_llm.ainvoke([msg])
+        text = result.content if isinstance(result.content, str) else str(result.content)
+        logger.info("analyze_image: primary model succeeded")
+        return text
+    except Exception as exc:
+        logger.info(
+            f"analyze_image: primary model rejected vision content ({type(exc).__name__}: {exc}), "
+            "falling back to IMAGE_ANALYSIS_MODEL"
+        )
+
+    # ── attempt 2: IMAGE_ANALYSIS_MODEL fallback ────────────────────────────
+    import litellm
+
+    litellm.drop_params = True
+
+    fallback_model = os.environ.get("IMAGE_ANALYSIS_MODEL", "").strip()
+    if not fallback_model:
+        raise RuntimeError(
+            "Primary model does not support vision and IMAGE_ANALYSIS_MODEL is not set. "
+            "Add IMAGE_ANALYSIS_MODEL=<model> to your .env to enable image analysis."
+        )
+
+    api_key: Optional[str] = os.environ.get("LITELLM_API_KEY") or os.environ.get("OPENAI_API_KEY")
+    base_url: Optional[str] = os.environ.get("LITELLM_BASE_URL") or os.environ.get("OPENAI_BASE_URL")
+
+    if not api_key:
+        raise RuntimeError(
+            "No API key available for IMAGE_ANALYSIS_MODEL fallback. Set LITELLM_API_KEY or OPENAI_API_KEY."
+        )
+
+    litellm_image_content = {"type": "image_url", "image_url": {"url": data_url}}
+    completion_args: dict = {
+        "model": fallback_model,
+        "messages": [
+            {
+                "role": "user",
+                "content": [
+                    litellm_image_content,
+                    {"type": "text", "text": question},
+                ],
+            }
+        ],
+        "max_tokens": 1024,
+        "api_key": api_key,
+    }
+    if base_url:
+        completion_args["base_url"] = base_url.rstrip("/")
+        completion_args["custom_llm_provider"] = "openai"
+
+    loop = asyncio.get_event_loop()
+    response = await loop.run_in_executor(None, lambda: litellm.completion(**completion_args))
+    text = response.choices[0].message.content
+    logger.info(f"analyze_image: fallback model {fallback_model!r} succeeded")
+    return text
+
+
+class _AnalyzeImageInput(BaseModel):
+    image: str = Field(
+        ...,
+        description=("Path to the image file (absolute, relative, or /workspace/filename) or an HTTPS URL."),
+    )
+    question: str = Field(
+        ...,
+        description="What to analyze, describe, or extract from the image.",
+    )
+
+
+def create_analyze_image_tool() -> StructuredTool:
+    """Return a StructuredTool wrapping :func:`analyze_image`."""
+    return StructuredTool.from_function(
+        coroutine=analyze_image,
+        name="analyze_image",
+        description=(
+            "Analyze or describe an image. "
+            "Use this whenever the user references an image file or URL, asks to "
+            "describe a photo, extract text from a screenshot, read a chart/diagram, "
+            "or answer any question that requires visual understanding. "
+            "Accepts an image path (/workspace/file.png, absolute path, or URL) and "
+            "a question. Returns a text description or answer."
+        ),
+        args_schema=_AnalyzeImageInput,
+    )

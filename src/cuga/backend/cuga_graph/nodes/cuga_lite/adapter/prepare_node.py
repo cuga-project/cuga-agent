@@ -298,6 +298,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # inside a sub-agent so the sub-agent doesn't inherit spawn/skill tools and
         # inadvertently trigger recursive spawning.
         from cuga.backend.agent_spawn.runtime import _spawn_depth as _agent_spawn_depth
+
         _is_subagent = _agent_spawn_depth.get() > 0
         skills_cfg_on = getattr(settings.skills, "enabled", False) and not _is_subagent
         cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
@@ -399,9 +400,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             )
 
             _parent_structured_tools_for_subagent = (
-                list(tools_for_execution)
-                + _skill_callable_tools
-                + list(_runtime_bundle.prompt_tools)
+                list(tools_for_execution) + _skill_callable_tools + list(_runtime_bundle.prompt_tools)
             )
 
             agent_spawn_tools = create_spawn_tools(
@@ -419,6 +418,18 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             agents_enabled = True
             logger.info("agent_spawn: injected spawn_agent + get_agent_result (ad-hoc SubCuga spawning)")
         # ── end agent_spawn ────────────────────────────────────────────────────────
+
+        # ── analyze_image: always-on vision system tool ────────────────────────────
+        from cuga.backend.tools.image_analysis import create_analyze_image_tool
+
+        _analyze_image_tool = create_analyze_image_tool()
+        tools_for_prompt.append(_analyze_image_tool)
+        _analyze_image_fn = _analyze_image_tool.coroutine
+        adapter._tools_context["analyze_image"] = make_tool_awaitable(_analyze_image_fn)
+        logger.info(
+            "analyze_image: vision system tool injected (primary model + IMAGE_ANALYSIS_MODEL fallback)"
+        )
+        # ── end analyze_image ──────────────────────────────────────────────────────
 
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
