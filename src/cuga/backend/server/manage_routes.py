@@ -1356,14 +1356,29 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
             if _pf_warn:
                 response["preflight_warning"] = _pf_warn
             # If the embedding dim actually changed, existing vectors are no
-            # longer compatible — auto-trigger reindex of every collection that
-            # has files on disk so the user doesn't end up with silently-stale data.
+            # longer compatible — auto-trigger reindex of the requesting
+            # agent's collections only. Scanning every directory under
+            # files_dir would touch collections owned by other agents in
+            # multi-tenant deployments, which is exactly the wrong scope
+            # for a PATCH that targeted a single agent's draft.
             if live_apply_result.get("dim_changed") and live_engine is not None:
                 triggered_collections: list[dict[str, Any]] = []
                 try:
+                    import re as _re
+
                     files_dir = getattr(live_engine, "_files_dir", None)
+                    # Agent collections live under ``kb_agent_<sanitized_agent_id>``
+                    # with an optional ``_<config_hash>`` suffix
+                    # (see ``awareness._agent_collection_name``). Filter to
+                    # that prefix so we only reindex what THIS agent owns.
+                    sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+                    agent_prefix = f"kb_agent_{sanitized}"
                     if files_dir and files_dir.exists():
-                        collections = [d.name for d in files_dir.iterdir() if d.is_dir()]
+                        collections = [
+                            d.name
+                            for d in files_dir.iterdir()
+                            if d.is_dir() and (d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"))
+                        ]
                     else:
                         collections = []
                     for coll in collections:
@@ -1375,6 +1390,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                             triggered_collections.append({"collection": coll, "error": str(rerr)})
                     response["auto_reindex"] = {
                         "triggered": True,
+                        "scope": agent_prefix,
                         "reason": f"embedding dim changed: {live_apply_result.get('previous_dim')} → {live_apply_result.get('new_dim')}",
                         "collections": triggered_collections,
                     }
