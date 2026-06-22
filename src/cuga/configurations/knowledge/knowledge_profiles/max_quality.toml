@@ -45,10 +45,14 @@ hybrid_mode = "auto"
 junk_filter = "off"
 
 [rerank]
-enabled = true
-# top_k_in >= 3 × default_limit (15) = 45; 60 gives the reranker
-# substantial headroom. CPU cost: ~18s at 100% CPU for 60 pairs —
-# acceptable for the "max quality" posture.
+# Reranker module is deferred to a follow-up PR (review comment 11);
+# this profile ships with rerank OFF to avoid runtime ModuleNotFoundError
+# on every search. Flips back to ``enabled = true`` when the reranker
+# follow-up PR lands the module + sentence-transformers dep.
+#
+# Original design: top_k_in >= 3 × default_limit (15) = 45; 60 gives the
+# reranker substantial headroom. CPU cost: ~18s at 100% CPU for 60 pairs.
+enabled = false
 top_k_in = 60
 model = "BAAI/bge-reranker-v2-m3"
 

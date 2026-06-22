@@ -201,13 +201,21 @@ class TestBalancedProfile:
         assert p["chunking"]["chunk_overlap"] == 150
 
     def test_balanced_pins_bge_base_and_rerank(self):
-        """Balanced is where users opt into the +1.1GB reranker + bge-base.
-        Switching standard<->balanced INVALIDATES vectors by design."""
+        """Balanced is where users opt into bge-base. The reranker module
+        is deferred to a follow-up PR (review comment 11) so this profile
+        ships with rerank.enabled=false; the rerank metadata (top_k_in,
+        model) is preserved so the follow-up only flips the boolean.
+        Switching standard<->balanced INVALIDATES vectors by design.
+
+        TODO(reranker-follow-up): flip this assertion back to ``is True``
+        when the reranker follow-up PR re-enables the engine integration.
+        """
         from cuga.backend.knowledge.config import load_profile
 
         p = load_profile("balanced")
         assert p["embeddings"]["model"] == "BAAI/bge-base-en-v1.5"
-        assert p["rerank"]["enabled"] is True
+        assert p["rerank"]["enabled"] is False
+        # top_k_in metadata kept honest for the follow-up PR.
         assert p["rerank"]["top_k_in"] >= 3 * p["search"]["default_limit"]
 
     def test_other_profiles_unchanged(self):

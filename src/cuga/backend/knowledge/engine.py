@@ -1384,9 +1384,9 @@ class KnowledgeEngine:
         #       or the K8s pod lacks ``nvidia.com/gpu`` request. Fix is to
         #       pass the device into the container, NOT to rebuild.
         #
-        #   (b) CPU image, GPU requested      — user expected the GPU image
-        #       but pulled the CPU one. Fix is to switch to ``cuga:gpu``
-        #       tag or build ``Dockerfile.gpu``.
+        #   (b) CPU image, GPU requested      — user requested the GPU
+        #       runtime but only the CPU build is shipped today. GPU
+        #       image is deferred to a follow-up release.
         #
         #   (c) Partial GPU                   — torch sees CUDA but ORT is
         #       CPU-only. Embed runs on CPU even though reranker / Docling-
@@ -2699,13 +2699,16 @@ class KnowledgeEngine:
         # available, OOM, etc.) we fall back to the fusion ranking and log
         # a warning so search degrades gracefully.
         if rerank_on and len(results) > 1:
-            from cuga.backend.knowledge.reranker import (
-                RerankedCandidate,
-                RerankerUnavailableError,
-                rerank as _rerank,
-            )
-
+            # Reranker module is deferred to a follow-up PR (Sami #11);
+            # the import lives inside the try so a deployment that opts
+            # in via settings.toml override degrades gracefully instead
+            # of crashing the request. The default profiles ship with
+            # rerank.enabled=false in this PR.
             try:
+                from cuga.backend.knowledge.reranker import (  # type: ignore[import-not-found]
+                    RerankedCandidate,
+                    rerank as _rerank,
+                )
                 candidates = [
                     RerankedCandidate(
                         text=r.text,
@@ -2749,15 +2752,22 @@ class KnowledgeEngine:
                     )
                     for c in reranked
                 ]
-            except RerankerUnavailableError as e:
+            except ModuleNotFoundError:
                 logger.warning(
-                    "Reranker enabled but unavailable; falling back to fusion "
-                    "ranking. Install sentence-transformers or set "
-                    "rerank_enabled=false. Detail: %s",
-                    e,
+                    "Reranker enabled but the reranker module is not "
+                    "shipped in this release (deferred to a follow-up PR). "
+                    "Falling back to fusion ranking. Set rerank.enabled=false "
+                    "in your knowledge profile to silence this warning."
                 )
                 results = results[:limit]
-            except Exception as e:  # pragma: no cover — defensive
+            except Exception as e:
+                # Catches RerankerUnavailableError (the reranker's own
+                # typed error for "module shipped but sentence-transformers
+                # missing at runtime") plus any other reranker failure —
+                # all degrade to the fusion ranking. We catch by base
+                # type to avoid importing RerankerUnavailableError at the
+                # module top level (would defeat the deferred-bundle
+                # cleanup).
                 logger.warning("Reranker failed (%s); falling back to fusion ranking.", e)
                 results = results[:limit]
         else:
