@@ -1,7 +1,17 @@
 FROM python:3.12-slim-trixie
 
-# The installer requires curl (and certificates) to download the release archive
-RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
+# The installer requires curl (and certificates) to download the release archive.
+# Tesseract (binary + osd script-detection + curated language packs) powers Docling's
+# multilingual OCR — ``lang=["auto"]`` does per-page script detection via osd.traineddata
+# and then OCRs each page with the matching model. Adds ~130 MB to the image; covers the
+# scripts cuga's knowledge engine ingests (en/he/ar/ru/el/hi/th/ja/ko/zh-Hans).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        curl ca-certificates \
+        tesseract-ocr tesseract-ocr-osd \
+        tesseract-ocr-eng tesseract-ocr-heb tesseract-ocr-ara \
+        tesseract-ocr-rus tesseract-ocr-ell tesseract-ocr-hin \
+        tesseract-ocr-tha tesseract-ocr-jpn tesseract-ocr-kor \
+        tesseract-ocr-chi-sim && \
     rm -rf /var/lib/apt/lists/*
 
 # Download the latest installer
@@ -23,7 +33,12 @@ COPY pyproject.toml uv.lock ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-# Install dependencies
+# Install dependencies. CPU-only by default — fine for laptops, demos,
+# and HF Spaces. For a CUDA cluster, build the parallel ``Dockerfile.gpu``
+# (nvidia/cuda runtime base + ``uv sync --extra gpu``) — the bolt-on
+# ``uv pip install`` swap that used to live here was lockfile-unaware and
+# silently reverted to CPU on any subsequent ``uv sync``; the separate
+# Dockerfile is the lockfile-managed pattern. See ``Dockerfile.gpu``.
 RUN uv sync
 
 # Create cuga_workspace directory

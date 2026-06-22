@@ -31,11 +31,92 @@ jobs:
           python-version: '3.12'
       
       - name: Install dependencies
-        run: uv sync --all-extras --dev
+        # ``--no-extra gpu`` keeps the ``onnxruntime-gpu`` package out of the
+        # CI environment. With ``--all-extras`` it would install alongside
+        # the base ``onnxruntime`` (transitive of fastembed) and the two
+        # collide on disk, breaking ``import onnxruntime`` (see
+        # qdrant/fastembed#608 and microsoft/onnxruntime#21825). The GPU
+        # path is exercised in ``Dockerfile.gpu`` only.
+        run: uv sync --all-extras --no-extra gpu --dev
       
       - name: Install Playwright browsers
         run: uv run playwright install --with-deps chromium
       
       - name: Run unit tests
         run: bash src/scripts/run_tests.sh --skip-stability
+
+  pgvector-integration:
+    name: pgvector Integration
+    runs-on: ubuntu-latest
+    # Parallel to unit-tests — a pgvector flake doesn't gate the
+    # 709 mock tests, and the unit-tests job's wall-clock subsumes ours.
+    # MVT scope per the 2-expert debate (2026-06-10): 2 tests on every
+    # PR. The full 8-scenario matrix (HNSW contention, container kill,
+    # pool exhaustion, etc.) is tracked in a follow-up issue and runs
+    # nightly.
+    env:
+      # Address Sami's pgvector QA gate: orphan-vector rollback in
+      # ``adapter.py::_add_all`` was previously only exercised against
+      # mocked / sqlite-vec backends. sqlite-vec's atomic-write semantics
+      # structurally cannot reproduce the bug class (MVCC visibility,
+      # per-batch transaction commits, asyncpg pool reuse, HNSW page
+      # locks). This job runs the MVT against a real pgvector container.
+      CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING: postgresql://cuga:cuga@localhost:5432/cuga_test
+
+    services:
+      pgvector:
+        # Pinned tag (NOT :latest) — pg16 line is stable for pgvector
+        # 0.7+, which the langchain_postgres dep tree requires.
+        image: pgvector/pgvector:0.8.0-pg16
+        env:
+          POSTGRES_USER: cuga
+          POSTGRES_PASSWORD: cuga
+          POSTGRES_DB: cuga_test
+        ports:
+          - 5432:5432
+        # ``--health-start-period 10s`` absorbs first-boot WAL init;
+        # without it pgvector 0.8.0/pg16 cold start flakes ~2% on
+        # shared GHA runners. ``pg_isready`` (not just TCP-open) is the
+        # signal that the extension can be created.
+        options: >-
+          --health-cmd "pg_isready -U cuga -d cuga_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+          --health-start-period 10s
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v5
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (no GPU, no Playwright — headless suite)
+        run: uv sync --all-extras --no-extra gpu --dev
+
+      - name: Enable pgvector extension
+        run: |
+          PGPASSWORD=cuga psql -h localhost -U cuga -d cuga_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Run pgvector integration tests (MVT)
+        run: uv run pytest tests/integration/test_knowledge_pgvector_rollback.py
+              -v -m pgvector --maxfail=3 --durations=10
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      - name: Dump Postgres logs on failure
+        if: failure()
+        run: |
+          docker ps -a
+          for cid in $(docker ps -aq); do
+            echo "=== logs $cid ==="
+            docker logs "$cid" 2>&1 | tail -100 || true
+          done
 

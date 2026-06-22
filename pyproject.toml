@@ -20,7 +20,7 @@ dependencies = [
     "fastapi[standard]",
     "langfuse",
     "dynaconf>=3.2.13",
-    "playwright>=1.59.0",  # CVE-2025-9611 (MCP origin/DNS rebinding), CVE-2025-59288 (browser download SSL)
+    "playwright>=1.59.0", # CVE-2025-9611 (MCP origin/DNS rebinding), CVE-2025-59288 (browser download SSL)
     "browsergym-core==0.13.0",
     "python-dotenv",
     "loguru",
@@ -48,13 +48,24 @@ dependencies = [
     "boto3>=1.34.0",
     # Knowledge engine (replaces OpenRAG)
     "langchain-docling>=2.0,<3.0",
+    # Docling supports multiple OCR engines. The engine selector at
+    # ``engine._select_ocr_engine_options`` picks the best one available
+    # for the host:
+    #   - ocrmac (macOS only)  : Apple Vision Framework — fast, native,
+    #                            no model downloads, multi-lingual.
+    #   - easyocr (any OS)     : cross-platform default, ~50MB per lang.
+    #   - tesseract (system)   : fallback for Linux servers with the
+    #                            ``tesseract`` binary installed.
+    # ocrmac is installed only on macOS (platform marker); easyocr is the
+    # cross-platform safety net so OCR Just Works on a fresh ``uv sync``.
+    "ocrmac ; sys_platform == 'darwin'",
+    "easyocr",
     "torch", # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels
     "torchvision", # explicit: must match torch variant (cpu) to avoid operator registration errors
     "langchain-ollama>=0.2.0",
     "langchain-text-splitters>=1.0,<2.0",
     "beautifulsoup4>=4.12",
     "psycopg[binary]>=3.2",
-    "toolguard>=0.2.17",
     "cuga-oak-health; python_version>='3.12'",
     "aiosmtpd",
 ]
@@ -70,6 +81,25 @@ evolve = ["altk-evolve>=1.1.0; python_version>='3.12'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
 # Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
 observability = ["openlit>=1.40.3"]
+# GPU extra. Selected by ``uv sync --extra gpu``. Brings in only
+# ``onnxruntime-gpu`` for the fastembed + Docling onnx layout paths.
+#
+# ``fastembed-gpu`` is INTENTIONALLY NOT here even though it would
+# avoid the qdrant/fastembed#608 collision: under CI's
+# ``uv sync --all-extras`` it would coexist with the base ``fastembed``
+# and the two packages clobber each other on disk, leaving
+# ``ModuleNotFoundError: No module named 'fastembed'``. The
+# ``Dockerfile.gpu`` does an explicit ORT swap after ``uv sync --extra
+# gpu`` to put the GPU runtime on disk without the collision.
+#
+# Torch + torchvision still resolve through ``[tool.uv.sources]`` to
+# pytorch-cpu by default; ``Dockerfile.gpu`` does a single explicit
+# cu121 reinstall AFTER ``uv sync --extra gpu`` to put torch on CUDA.
+# The nvidia/cuda runtime base provides the libcudart/libcudnn/libgomp
+# the slim Debian base lacks.
+gpu = [
+    "onnxruntime-gpu>=1.20",
+]
 
 [project.urls]
 Homepage = "https://cuga.dev"
@@ -236,4 +266,5 @@ sandbox = [
 anyio_mode = "auto"
 markers = [
     "e2e: end-to-end tests requiring live external services (registry, etc.)",
+    "pgvector: requires a live pgvector container (CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING). Run via CI ``pgvector-integration`` job or locally with ``docker run pgvector/pgvector:0.8.0-pg16``.",
 ]
