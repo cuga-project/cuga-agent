@@ -193,33 +193,4 @@ class HookManager:
 
 
 
-def create_simple_hook(
-    hook_id: str,
-    location: str,
-    hook_type: HookType,
-    handler: Callable[[FlowState], HookResult],
-    condition: Optional[Callable[[FlowState], bool]] = None,
-) -> Hook:
-    """
-    Convenience function to create a hook on a BPMN sequence flow edge.
-
-    Args:
-        hook_id: Unique identifier
-        location: Edge ID to attach the hook to (one hook per edge)
-        hook_type: Type of hook
-        handler: Function to evaluate the hook
-        condition: Optional activation condition
-
-    Returns:
-        Configured Hook instance
-    """
-    return Hook(
-        id=hook_id,
-        hook_type=hook_type,
-        location=location,
-        handler=handler,
-        condition=condition,
-    )
-
-
 # Made with Bob

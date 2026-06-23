@@ -25,7 +25,6 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import (
     HookAction,
     HookResult,
     HookManager,
-    create_simple_hook,
 )
 from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import (
     BPMNParser,
@@ -58,7 +57,6 @@ __all__ = [
     "HookAction",
     "HookResult",
     "HookManager",
-    "create_simple_hook",
     # BPMN Parser
     "BPMNParser",
     "BPMNProcess",
