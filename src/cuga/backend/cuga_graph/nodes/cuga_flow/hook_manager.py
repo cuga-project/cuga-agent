@@ -152,7 +152,6 @@ class HookManager:
     def __init__(self):
         self.hooks: Dict[str, Hook] = {}
         self.hooks_by_location: Dict[str, Hook] = {}
-        self.hooks_by_type: Dict[HookType, List[Hook]] = {hook_type: [] for hook_type in HookType}
 
     def register_hook(self, hook: Hook) -> None:
         """Register a hook for execution. Each edge may have at most one hook."""
@@ -165,7 +164,6 @@ class HookManager:
         logger.info(f"Registering hook: {hook.id} at {hook.location} ({hook.hook_type.value})")
         self.hooks[hook.id] = hook
         self.hooks_by_location[hook.location] = hook
-        self.hooks_by_type[hook.hook_type].append(hook)
 
     def unregister_hook(self, hook_id: str) -> None:
         """Unregister a hook."""
@@ -176,7 +174,6 @@ class HookManager:
         logger.info(f"Unregistering hook: {hook_id}")
         del self.hooks[hook_id]
         del self.hooks_by_location[hook.location]
-        self.hooks_by_type[hook.hook_type].remove(hook)
 
     def enable_hook(self, hook_id: str) -> None:
         """Enable a hook."""
@@ -194,9 +191,6 @@ class HookManager:
         """Return the hook on the given edge, or None if no hook is registered there."""
         return self.hooks_by_location.get(location)
 
-    def get_hooks_by_type(self, hook_type: HookType) -> List[Hook]:
-        """Get all hooks of a specific type."""
-        return self.hooks_by_type.get(hook_type, [])
 
 
 def create_simple_hook(
