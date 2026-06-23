@@ -156,10 +156,6 @@ class FlowConfig:
         """Get flow ID from configuration."""
         return self.flow_config.get("id")
 
-    def get_flow_version(self) -> Optional[str]:
-        """Get flow version from configuration."""
-        return self.flow_config.get("version")
-
     def get_model_name(self) -> Optional[str]:
         """
         Get LLM model name from configuration.
