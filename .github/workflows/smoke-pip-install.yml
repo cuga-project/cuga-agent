@@ -13,26 +13,41 @@ concurrency:
 
 jobs:
   dependency-sync-smoke:
-    name: Dependency sync (${{ matrix.name }})
+    name: Dependency sync (${{ matrix.name }}, py${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 25
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
         include:
-          - name: macOS x86_64
+          - name: macOS x86_64 resolver dry-run
             os: ubuntu-latest
-            command: MACOSX_DEPLOYMENT_TARGET=15.0 uv sync --locked --dry-run --no-dev --python-platform x86_64-apple-darwin
+            python: "3.12"
+            expect: pass
+            command: MACOSX_DEPLOYMENT_TARGET=15.0 uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform x86_64-apple-darwin --python
+          - name: macOS x86_64 py3.13 unsupported
+            os: ubuntu-latest
+            python: "3.13"
+            expect: fail
+            command: MACOSX_DEPLOYMENT_TARGET=15.0 uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform x86_64-apple-darwin --python
           - name: UBI linux amd64
             os: ubuntu-latest
-            command: uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform x86_64-unknown-linux-gnu
+            python: "3.12"
+            expect: pass
+            command: uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform x86_64-unknown-linux-gnu --python
           - name: UBI linux arm64
             os: ubuntu-latest
-            command: uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform aarch64-unknown-linux-gnu
+            python: "3.12"
+            expect: pass
+            command: uv sync --locked --dry-run --no-editable --no-dev --extra observability --python-platform aarch64-unknown-linux-gnu --python
 
     steps:
       - name: Checkout code
         uses: actions/checkout@v5
+        with:
+          persist-credentials: false
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -40,10 +55,24 @@ jobs:
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
 
       - name: Run dependency sync smoke
-        run: ${{ matrix.command }}
+        if: matrix.expect == 'pass'
+        run: ${{ matrix.command }} ${{ matrix.python }}
+
+      - name: Verify unsupported platform rejected
+        if: matrix.expect == 'fail'
+        run: |
+          set +e
+          output=$(${{ matrix.command }} ${{ matrix.python }} 2>&1)
+          status=$?
+          set -e
+          if [ "$status" -eq 0 ]; then
+            echo "Expected sync to fail for unsupported platform"
+            exit 1
+          fi
+          echo "$output" | grep -q "not compatible with the lockfile"
 
   smoke-pip-isolated:
     name: Wheel install + demo_crm OpenAPI
