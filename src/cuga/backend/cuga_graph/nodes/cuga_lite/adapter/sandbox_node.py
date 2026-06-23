@@ -54,12 +54,19 @@ def _record_weak_schema_shapes(adapter: Any, tool_calls: list) -> None:
     weak_schema_tool_names = getattr(adapter, "_weak_schema_tool_names", frozenset())
     if not weak_schema_tool_names:
         return
-    observed = adapter._observed_tool_shapes
+    observed = getattr(adapter, "_observed_tool_shapes", {})
     for call in tool_calls:
         name = call.get("name")
         if name not in weak_schema_tool_names or name in observed or call.get("error"):
             continue
         observed[name] = _describe_observed_shape(call.get("result"))
+
+
+def _needs_shape_tracking(adapter: Any) -> bool:
+    """True when at least one weak-schema tool's shape hasn't been observed yet this session."""
+    weak_schema_tool_names = getattr(adapter, "_weak_schema_tool_names", frozenset())
+    observed = getattr(adapter, "_observed_tool_shapes", {})
+    return bool(weak_schema_tool_names - observed.keys())
 
 
 def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) -> Callable:
@@ -102,8 +109,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         # Add tools to context
         context = {**existing_vars, **adapter._tools_context}
 
-        # Start tool call tracking (only if enabled via invoke parameter)
-        ToolCallTracker.start_tracking(enabled=track_tool_calls)
+        # Start tool call tracking (enabled via invoke parameter, or internally
+        # whenever a weak-schema tool's output shape hasn't been observed yet)
+        ToolCallTracker.start_tracking(enabled=track_tool_calls or _needs_shape_tracking(adapter))
 
         try:
             # Execute the script - pass the CugaLiteState itself since it has variables_manager
@@ -212,7 +220,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             # Collect tool calls from this execution
             execution_tool_calls = ToolCallTracker.stop_tracking()
             _record_weak_schema_shapes(adapter, execution_tool_calls)
-            accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
+            accumulated_tool_calls = (state.tool_calls or []) + (
+                execution_tool_calls if track_tool_calls else []
+            )
 
             if error_message:
                 return core_create_error_command(
@@ -244,7 +254,9 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             # Collect tool calls even on error
             execution_tool_calls = ToolCallTracker.stop_tracking()
             _record_weak_schema_shapes(adapter, execution_tool_calls)
-            accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
+            accumulated_tool_calls = (state.tool_calls or []) + (
+                execution_tool_calls if track_tool_calls else []
+            )
 
             error_msg = f"Error during execution: {str(e)}"
             logger.error(error_msg)
