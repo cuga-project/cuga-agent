@@ -34,6 +34,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.helpers.knowledge import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import resolved_runtime_model_name
 from cuga.backend.cuga_graph.nodes.cuga_lite.prompt_utils import (
+    PromptUtils,
     create_mcp_prompt,
     format_apps_for_prompt,
     normalize_mcp_few_shot_examples,
@@ -595,6 +596,12 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             lc_bind_tools_meta["_lc_bind_tools_overlay_structured_tools"] = [
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
             ]
+
+        adapter._weak_schema_tool_names = frozenset(
+            t.name
+            for t in (tools_for_prompt or [])
+            if getattr(t, "name", None) and PromptUtils.is_weak_schema_tool(t)
+        )
 
         # Create prompt dynamically
         dynamic_prompt = adapter._static_prompt
