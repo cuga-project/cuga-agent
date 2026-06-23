@@ -119,14 +119,3 @@ class WorkflowEngine(ABC):
             "end_events": list(process.end_events),
         }
 
-    def inspect_instance(self, state: FlowState) -> Dict[str, Any]:
-        return {
-            "process_id": state.process_id,
-            "process_name": state.process_name,
-            "is_complete": state.is_complete,
-            "is_halted": state.is_halted,
-            "execution_path": list(state.execution_path),
-        }
-
-    def get_execution_history(self, state: FlowState) -> List[str]:
-        return list(state.execution_path)
