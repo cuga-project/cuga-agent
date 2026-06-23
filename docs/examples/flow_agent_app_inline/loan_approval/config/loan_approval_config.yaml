@@ -76,7 +76,7 @@ action_permissions:
 
 hooks:
   - id: "audit_credit_decision"
-    type: "pre_edge"
+    type: "edge"
     location: "Flow_0ybszcv"
     policy: "../policies/hook-audit_credit_decision.md"
 

@@ -122,7 +122,7 @@ class FlowConfig:
         hooks_data = [
             {
                 "id": h.get("id"),
-                "hook_type": h.get("type", "pre_edge"),
+                "hook_type": h.get("type", "edge"),
                 "location": h.get("location"),
                 "enabled": h.get("enabled", True),
             }
@@ -323,7 +323,7 @@ class FlowConfig:
         for hook_config in self.hooks_config:
             try:
                 hook_id = hook_config.get("id")
-                hook_type_str = hook_config.get("type", "pre_edge")
+                hook_type_str = hook_config.get("type", "edge")
                 location = hook_config.get("location")
                 condition_str = hook_config.get("condition")
                 action_str = hook_config.get("action", "continue")
@@ -334,7 +334,7 @@ class FlowConfig:
                     continue
 
                 # Parse hook type
-                hook_type = HookType[hook_type_str.upper()] if hook_type_str else HookType.PRE_EDGE
+                hook_type = HookType[hook_type_str.upper()] if hook_type_str else HookType.EDGE
 
                 # Parse action (used only when no policy is present)
                 action = HookAction[action_str.upper()] if action_str else HookAction.CONTINUE

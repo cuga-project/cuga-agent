@@ -56,7 +56,7 @@ loan_flow_agent = FlowAgent(
     hooks=[
         Hook(
             id="audit_credit_decision",
-            hook_type=HookType.PRE_EDGE,
+            hook_type=HookType.EDGE,
             location="Flow_0ybszcv",
             handler=lambda state: HookResult(action=HookAction.CONTINUE),
             priority=0,

@@ -62,6 +62,6 @@ action_permissions:
 
 hooks:
   - id: "post_receival_check"
-    type: "pre_edge"
+    type: "edge"
     location: "Flow_1ji6b0i"
     policy: "../policies/hook-post_receival.md"

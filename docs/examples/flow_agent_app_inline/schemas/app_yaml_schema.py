@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 
 TaskMode = Literal["task_agent", "native"]
 GatewayMode = Literal["decision_agent", "native"]
-HookType = Literal["pre_edge"]
+HookType = Literal["edge"]
 AgentType = Literal["cuga_agent", "wxo", "claude_agent", "langgraph", "crewAI"]
 HookAction = Literal[
     "continue",
