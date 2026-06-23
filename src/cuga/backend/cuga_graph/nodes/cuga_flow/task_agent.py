@@ -214,53 +214,6 @@ class TaskAgent:
 
         return task_result
 
-    async def stream(self, state: FlowState, task_input: Optional[str] = None):
-        """
-        Stream task execution (for real-time updates).
-
-        Args:
-            state: Current flow state
-            task_input: Optional explicit task input
-
-        Yields:
-            Chunks of execution output
-        """
-        logger.info(f"Streaming task: {self.task_id} ({self.task_name})")
-
-        try:
-            # Pre-execution hook
-            if self.pre_execute:
-                self.pre_execute(state)
-
-            # Prepare input
-            if task_input is None:
-                task_input = self._prepare_input(state)
-
-            # Stream from CugaAgent
-            accumulated_result = []
-            async for chunk in self.agent.stream(task_input):
-                accumulated_result.append(chunk)
-                yield chunk
-
-            # Process final result
-            final_result = "".join(str(c) for c in accumulated_result)
-            task_result = self._process_output(final_result, state)
-
-            # Record result
-            state.record_task_result(self.task_id, task_result)
-
-            # Post-execution hook
-            if self.post_execute:
-                self.post_execute(state, task_result)
-
-            logger.info(f"Task streaming completed: {self.task_id}")
-
-        except Exception as e:
-            logger.error(f"Error streaming task {self.task_id}: {e}")
-            error_result = {"status": "failed", "success": False, "error": str(e), "task_id": self.task_id}
-            state.record_task_result(self.task_id, error_result)
-            yield f"Error: {e}"
-
     def get_info(self) -> Dict[str, Any]:
         """Get information about this task agent."""
         return {
