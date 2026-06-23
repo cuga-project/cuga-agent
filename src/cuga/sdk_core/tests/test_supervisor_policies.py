@@ -436,6 +436,17 @@ class TestSupervisorPolicyE2E:
         state_before = supervisor.graph.get_state(config)
         assert "WaitForResponse" in (state_before.next or ())
 
+        hitl = values.get("hitl_action")
+        assert hitl is not None
+        if hasattr(hitl, "action_id"):
+            hitl = hitl.model_dump()
+        assert hitl["action_id"] == "tool_approval"
+        assert hitl["return_to"] == "CugaSupervisor"
+        tool_data = hitl["additional_data"]["tool"]
+        assert "delegate_to_user_finder" in tool_data["required_tools"]
+        assert tool_data.get("policy_name") == "Approve Delegation"
+        assert tool_data.get("full_code")
+
         approval = ActionResponse(
             action_id="tool_approval",
             response_type=ActionType.CONFIRMATION,
@@ -447,6 +458,59 @@ class TestSupervisorPolicyE2E:
         await supervisor.invoke(None, thread_id=thread_id, action_response=approval)
         values_after = _graph_values(supervisor, thread_id)
         assert values_after.get("step_count", 0) > steps_before
+
+    @pytest.mark.asyncio
+    async def test_e2e_tool_approval_denial_cancels_execution(self):
+        from datetime import datetime
+
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+            ActionResponse,
+            ActionType,
+        )
+
+        user_finder = CugaAgent(
+            tools=[get_user_id],
+            auto_load_policies=False,
+            reset_policy_storage=True,
+            filesystem_sync=False,
+        )
+        user_finder.description = "Finds user IDs"
+        supervisor = _isolated_supervisor(agents={"user_finder": user_finder})
+
+        await supervisor.policies.add_tool_approval(
+            name="Approve Delegation",
+            required_tools=["delegate_to_user_finder"],
+            approval_message="Delegation requires approval.",
+        )
+
+        thread_id = "supervisor_tool_approval_denial_e2e"
+        config = {"configurable": {"thread_id": thread_id}}
+        await supervisor.invoke(
+            "Find Alice's user id using the user_finder agent",
+            thread_id=thread_id,
+        )
+        values = _graph_values(supervisor, thread_id)
+        steps_before = values.get("step_count", 0)
+        delegation_before = (values.get("metrics") or {}).get("delegation_count", 0)
+
+        denial = ActionResponse(
+            action_id="tool_approval",
+            response_type=ActionType.CONFIRMATION,
+            confirmed=False,
+            timestamp=datetime.now().isoformat(),
+            user_id=thread_id,
+            session_id=thread_id,
+        )
+        result = await supervisor.invoke(None, thread_id=thread_id, action_response=denial)
+        values_after = _graph_values(supervisor, thread_id)
+
+        assert "cancel" in result.answer.lower()
+        assert values_after.get("execution_complete") is True
+        assert values_after.get("hitl_action") is None
+        assert values_after.get("step_count", 0) == steps_before
+        assert (values_after.get("metrics") or {}).get("delegation_count", 0) == delegation_before
+        state_after = supervisor.graph.get_state(config)
+        assert not state_after.next or state_after.next == ()
 
     @pytest.mark.asyncio
     async def test_e2e_output_formatter_applies_on_invoke(self):

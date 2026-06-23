@@ -187,6 +187,7 @@ class ToolApprovalHandler:
             code_preview=preview_lines,
             full_code=code,
             approval_message=approval_msg,
+            return_to=adapter.sender_name,
         )
 
         final_answer_text = ToolApprovalHandler._generate_approval_message(

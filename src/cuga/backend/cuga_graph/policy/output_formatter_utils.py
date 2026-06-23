@@ -32,6 +32,9 @@ async def apply_output_formatter_policies(
         state: Current agent state with final_answer set
         config: Optional LangGraph config (may contain policy_system)
         context: Context identifier for logging ("sdk", "cuga_lite", etc.)
+        metadata_key: State attribute for policy metadata. Default matches legacy
+            ``AgentState.cuga_lite_metadata``; callers (e.g. supervisor) should pass
+            their own key (``supervisor_metadata``).
     """
     if not settings.policy.enabled or not hasattr(state, 'final_answer') or not state.final_answer:
         return

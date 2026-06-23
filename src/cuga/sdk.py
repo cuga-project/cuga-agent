@@ -2911,6 +2911,7 @@ class CugaSupervisor:
                         f"**{policy_name}**. The supervisor will not proceed with this task."
                     )
                     state.execution_complete = True
+                    state.hitl_action = None
                     state.hitl_response = None
                     state.sender = callback_name
                     return Command(update=state.model_dump(), goto=END)
@@ -3013,21 +3014,21 @@ class CugaSupervisor:
         import uuid
         from langchain_core.messages import HumanMessage
 
-        # Setup config
-        if not thread_id:
-            thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
-            logger.debug(f"Auto-generated thread_id: {thread_id}")
+        is_resume = message is None or action_response is not None
+        if is_resume and not thread_id:
+            raise ValueError(
+                "thread_id is required when resuming execution (message=None or action_response provided)"
+            )
 
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {}}
         if self._callbacks:
             config["callbacks"] = self._callbacks
         if self._policy_system:
             config["configurable"]["policy_system"] = self._policy_system
 
         # Handle resume case
-        if message is None or action_response is not None:
-            if not thread_id:
-                raise ValueError("thread_id is required when resuming execution")
+        if is_resume:
+            config["configurable"]["thread_id"] = thread_id
 
             # Set session.id for OpenLit observability (if enabled)
             set_session_attribute(thread_id)
@@ -3045,6 +3046,12 @@ class CugaSupervisor:
             else:
                 result = await self.graph.ainvoke(None, config=config)
         else:
+            if not thread_id:
+                thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
+                logger.debug(f"Auto-generated thread_id: {thread_id}")
+
+            config["configurable"]["thread_id"] = thread_id
+
             # Normal invocation
             from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
                 CugaSupervisorState,
