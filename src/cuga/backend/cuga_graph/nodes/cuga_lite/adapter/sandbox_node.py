@@ -30,6 +30,38 @@ from cuga.config import settings
 _llm_manager = LLMManager()
 
 
+def _describe_observed_shape(result: Any) -> str:
+    """Render a short, human-readable description of an observed tool result."""
+    if isinstance(result, dict):
+        keys = list(result.keys())[:8]
+        suffix = ", ..." if len(result) > len(keys) else ""
+        return f"dict with keys [{', '.join(repr(k) for k in keys)}{suffix}]"
+    if isinstance(result, (list, tuple)):
+        kind = type(result).__name__
+        if result:
+            return (
+                f"{kind} of {len(result)} items, e.g. first item: "
+                f"{type(result[0]).__name__} {str(result[0])[:120]!r}"
+            )
+        return f"empty {kind}"
+    if isinstance(result, str):
+        return f"str of {len(result)} chars, e.g. {result[:120]!r}"
+    return type(result).__name__
+
+
+def _record_weak_schema_shapes(adapter: Any, tool_calls: list) -> None:
+    """Stash the first observed output shape for any weak-schema tool this session."""
+    weak_schema_tool_names = getattr(adapter, "_weak_schema_tool_names", frozenset())
+    if not weak_schema_tool_names:
+        return
+    observed = adapter._observed_tool_shapes
+    for call in tool_calls:
+        name = call.get("name")
+        if name not in weak_schema_tool_names or name in observed or call.get("error"):
+            continue
+        observed[name] = _describe_observed_shape(call.get("result"))
+
+
 def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) -> Callable:
     async def sandbox(state: Any, config: Optional[RunnableConfig] = None):
         """Execute code in sandbox and return results."""
@@ -179,6 +211,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
 
             # Collect tool calls from this execution
             execution_tool_calls = ToolCallTracker.stop_tracking()
+            _record_weak_schema_shapes(adapter, execution_tool_calls)
             accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
 
             if error_message:
@@ -210,6 +243,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
         except Exception as e:
             # Collect tool calls even on error
             execution_tool_calls = ToolCallTracker.stop_tracking()
+            _record_weak_schema_shapes(adapter, execution_tool_calls)
             accumulated_tool_calls = (state.tool_calls or []) + execution_tool_calls
 
             error_msg = f"Error during execution: {str(e)}"
