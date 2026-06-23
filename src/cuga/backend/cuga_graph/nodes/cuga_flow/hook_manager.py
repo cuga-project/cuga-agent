@@ -125,9 +125,9 @@ class Hook:
     """
 
     id: str
-    hook_type: HookType
     location: str  # edge_id — exactly one hook per edge
-    handler: Callable[[FlowState], HookResult]
+    hook_type: HookType = HookType.EDGE
+    handler: Optional[Callable[[FlowState], HookResult]] = None
     condition: Optional[Callable[[FlowState], bool]] = None
     enabled: bool = True
     metadata: Dict[str, Any] = field(default_factory=dict)

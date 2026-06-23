@@ -100,19 +100,8 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             tool_tasks: Dict[str, Optional[str]] = static.get("tool_tasks", {})
             action_permissions: Dict[str, List[str]] = static.get("action_permissions", {})
 
-            # Build stub Hook objects (condition/handler live in FlowAgent; engine only
-            # needs id/type/location/priority to register them with HookManager).
             stub_hooks: List[Hook] = [
-                Hook(
-                    id=h["id"],
-                    hook_type=__import__(
-                        "cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager",
-                        fromlist=["HookType"],
-                    ).HookType(h["hook_type"]),
-                    location=h["location"],
-                    enabled=h.get("enabled", True),
-                    handler=lambda s: HookResult(action=HookAction.CONTINUE),
-                )
+                Hook(id=h["id"], location=h["location"])
                 for h in hooks_data
             ]
 
