@@ -169,3 +169,30 @@ def test_handle_approval_resumption_supervisor_seams():
     assert cmd.goto == "execute_agent_tool"
     assert "supervisor_metadata" in cmd.update
     assert cmd.update["script"] == "print('go')"
+
+
+def _hitl_return_to(adapter, metadata_key, messages_key):
+    st = SimpleNamespace(
+        **{
+            messages_key: [],
+            metadata_key: {
+                "policy_name": "P",
+                "required_tools": ["t1"],
+                "approval_message": "Approve",
+            },
+            "step_count": 0,
+        }
+    )
+    cmd = ToolApprovalHandler._create_approval_interrupt(adapter, st, "print('x')", "content", ["print('x')"])
+    return cmd.update["hitl_action"].return_to
+
+
+def test_create_approval_interrupt_return_to_supervisor():
+    assert (
+        _hitl_return_to(SupLikeAdapter(), "supervisor_metadata", "supervisor_chat_messages")
+        == "CugaSupervisor"
+    )
+
+
+def test_create_approval_interrupt_return_to_lite():
+    assert _hitl_return_to(LiteLikeAdapter(), "cuga_lite_metadata", "chat_messages") == "CugaLite"
