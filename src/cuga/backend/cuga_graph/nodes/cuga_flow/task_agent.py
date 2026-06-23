@@ -216,54 +216,5 @@ class TaskAgent:
 
 
 
-class TaskAgentFactory:
-    """
-    Factory for creating TaskAgent instances from configuration.
-
-    Simplifies creation of TaskAgents from YAML configuration or
-    programmatic definitions.
-    """
-
-    @staticmethod
-    def create_from_config(task_id: str, config: Dict[str, Any]) -> TaskAgent:
-        """
-        Create TaskAgent from configuration dict.
-
-        Args:
-            task_id: BPMN task element ID
-            config: Configuration dict with keys:
-                - name: Task name
-                - tools: List of tool names or tool instances
-                - instructions: Special instructions
-                - input_mapping: Input variable mapping
-                - output_mapping: Output variable mapping
-
-        Returns:
-            Configured TaskAgent instance
-        """
-        return TaskAgent(
-            task_id=task_id,
-            task_name=config.get("name", task_id),
-            tools=config.get("tools"),
-            special_instructions=config.get("instructions"),
-            input_mapping=config.get("input_mapping"),
-            output_mapping=config.get("output_mapping"),
-        )
-
-    @staticmethod
-    def create_simple(task_id: str, task_name: str, instructions: str) -> TaskAgent:
-        """
-        Create a simple TaskAgent with just instructions.
-
-        Args:
-            task_id: BPMN task element ID
-            task_name: Human-readable task name
-            instructions: Task instructions for the agent
-
-        Returns:
-            Simple TaskAgent instance
-        """
-        return TaskAgent(task_id=task_id, task_name=task_name, special_instructions=instructions)
-
 
 # Made with Bob

@@ -33,7 +33,7 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import (
     BPMNFlow,
 )
 from cuga.backend.cuga_graph.nodes.cuga_flow.decision_agent import DecisionAgent
-from cuga.backend.cuga_graph.nodes.cuga_flow.task_agent import TaskAgent, TaskAgentFactory
+from cuga.backend.cuga_graph.nodes.cuga_flow.task_agent import TaskAgent
 from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent import FlowAgent
 from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import FlowConfig, load_flow_from_yaml
 from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import (
@@ -65,7 +65,6 @@ __all__ = [
     # Agents
     "DecisionAgent",
     "TaskAgent",
-    "TaskAgentFactory",
     "FlowAgent",
     # Configuration
     "FlowConfig",
