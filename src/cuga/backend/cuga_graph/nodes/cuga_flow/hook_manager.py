@@ -23,10 +23,7 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
 class HookType(Enum):
     """Types of hooks that can be registered."""
 
-    PRE_EDGE = "pre_edge"  # Before traversing an edge
-    POST_NODE = "post_node"  # After executing a node
-    PRE_GATEWAY = "pre_gateway"  # Before gateway decision
-    POST_GATEWAY = "post_gateway"  # After gateway decision
+    PRE_EDGE = "pre_edge"
 
 
 class HookAction(Enum):
@@ -120,8 +117,8 @@ class Hook:
 
     Attributes:
         id: Unique hook identifier
-        hook_type: Type of hook (pre_edge, post_node, etc.)
-        location: Where the hook is attached (edge_id, node_id, etc.)
+        hook_type: Type of hook (pre_edge)
+        location: Edge ID the hook is attached to
         condition: Optional condition for hook activation
         handler: Function that evaluates the hook
         enabled: Whether the hook is active
