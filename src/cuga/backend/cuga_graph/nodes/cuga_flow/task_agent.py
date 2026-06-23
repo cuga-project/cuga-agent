@@ -214,17 +214,6 @@ class TaskAgent:
 
         return task_result
 
-    def get_info(self) -> Dict[str, Any]:
-        """Get information about this task agent."""
-        return {
-            "task_id": self.task_id,
-            "task_name": self.task_name,
-            "has_input_mapping": bool(self.input_mapping),
-            "has_output_mapping": bool(self.output_mapping),
-            "has_pre_hook": self.pre_execute is not None,
-            "has_post_hook": self.post_execute is not None,
-            "agent_type": type(self.agent).__name__,
-        }
 
 
 class TaskAgentFactory:
