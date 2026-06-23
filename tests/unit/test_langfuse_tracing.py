@@ -98,6 +98,20 @@ class TestLangfuseTracingHelpers:
             sync_langfuse_callbacks_from_config({"configurable": {"langfuse_trace_id": "abc123"}})
             assert get_langfuse_invoke_config() == {"callbacks": [handler]}
 
+    def test_sync_clears_stale_trace_state_when_next_config_has_no_trace(self):
+        """A later invocation in the same async context with no trace id must not
+        reattach nested LLM calls to the previous invocation's trace."""
+        handler = _fake_langfuse_handler()
+        with patch(
+            "cuga.backend.cuga_graph.utils.langfuse_tracing.create_trace_langfuse_handler",
+            return_value=handler,
+        ):
+            sync_langfuse_callbacks_from_config({"configurable": {"langfuse_trace_id": "trace-A"}})
+            assert get_langfuse_invoke_config() == {"callbacks": [handler]}
+
+            sync_langfuse_callbacks_from_config({"configurable": {}})
+            assert get_langfuse_invoke_config() == {}
+
     def test_get_invoke_config_ignores_non_langfuse_callbacks(self):
         set_langfuse_callbacks([_RecordingCallback("stale")])
         set_langfuse_trace_id("trace-99")
@@ -267,6 +281,26 @@ class TestSdkCallbackDedup:
         assert caller in run_config["callbacks"]
         assert config_only not in run_config["callbacks"]
         assert run_config["configurable"]["callbacks"] == run_config["callbacks"]
+
+    def test_apply_callbacks_detects_langfuse_handler_inside_callback_manager(self):
+        """A Langfuse handler nested inside a caller-supplied callback manager (not a
+        bare list) must still be detected so the agent-level handler is dropped."""
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import _flatten_callbacks
+        from cuga.sdk import CugaAgent
+
+        agent_level = _fake_langfuse_handler()
+        per_call_lf = _fake_langfuse_handler()
+        manager = type("AsyncCallbackManager", (), {"handlers": [per_call_lf]})()
+
+        agent = CugaAgent.__new__(CugaAgent)
+        agent._callbacks = [agent_level]
+
+        run_config = {"callbacks": manager, "configurable": {}}
+        agent._apply_callbacks(run_config)
+
+        flattened_ids = [id(c) for c in _flatten_callbacks(run_config["callbacks"])]
+        assert id(per_call_lf) in flattened_ids
+        assert id(agent_level) not in flattened_ids
 
 
 class TestNestedCallSites:

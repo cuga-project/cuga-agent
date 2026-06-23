@@ -168,9 +168,8 @@ def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
         return
     _langgraph_run_config.set(config)
     configurable = config.get("configurable") or {}
-    trace_id = configurable.get("langfuse_trace_id")
-    if trace_id:
-        set_langfuse_trace_id(trace_id)
+    trace_id = configurable.get("langfuse_trace_id") or None
+    set_langfuse_trace_id(trace_id)
     callbacks = collect_langfuse_callbacks_from_config(config)
     if callbacks:
         _remember_primary_handler(callbacks)
@@ -179,6 +178,8 @@ def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
         if handler:
             _langfuse_primary_handler.set(handler)
             callbacks = [handler]
+    else:
+        _langfuse_primary_handler.set(None)
     set_langfuse_callbacks(callbacks or None)
 
 
