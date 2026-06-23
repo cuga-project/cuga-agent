@@ -29,7 +29,6 @@ from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent_state import FlowState
 from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import (
     Hook,
     HookAction,
-    HookManager,
     HookResult,
 )
 from cuga.backend.cuga_graph.nodes.cuga_flow.workflow_engine import (
@@ -284,6 +283,8 @@ class LangGraphWorkflowEngine(WorkflowEngine):
     def _build_graph(self, process: BPMNProcess, overlay: _ControlOverlay):
         graph = StateGraph(FlowState)
 
+        hooks_by_location: Dict[str, Hook] = {h.location: h for h in overlay.hooks}
+
         flows_by_source: Dict[str, list] = defaultdict(list)
         flows_by_target: Dict[str, list] = defaultdict(list)
         for flow in process.flows:
@@ -312,18 +313,15 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             logger.debug(f"  Added node: {elem_id}")
 
         # Build internal edges (skips start_event flows — handled by START routing below)
-        self._add_edges_with_hooks(graph, process, overlay, flows_by_source)
+        self._add_edges_with_hooks(graph, process, overlay, flows_by_source, hooks_by_location)
 
         # Collect hook node IDs that were actually added during edge building.
         # Only non-start-event flows with a registered hook get hook nodes in the graph.
-        _hm_check = HookManager()
-        for h in overlay.hooks:
-            _hm_check.register_hook(h)
         start_event_flow_ids = {f.id for f in process.flows if f.source_ref == process.start_event}
         hook_node_ids = [
             f"hook_{flow.id}" for flow in process.flows
             if flow.id not in start_event_flow_ids
-            and _hm_check.get_hook_at_location(flow.id) is not None
+            and flow.id in hooks_by_location
         ]
         all_entry_targets = {nid: nid for nid in graph_node_ids + hook_node_ids}
 
@@ -331,12 +329,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
         start_flows = flows_by_source.get(process.start_event, [])
         if start_flows:
             first_target = start_flows[0].target_ref
-            # If there's a hook on the start edge, the hook node is the real entry
-            from cuga.backend.cuga_graph.nodes.cuga_flow.hook_manager import HookManager as _HM
-            _hm = _HM()
-            for h in overlay.hooks:
-                _hm.register_hook(h)
-            start_hook = _hm.get_hook_at_location(start_flows[0].id)
+            start_hook = hooks_by_location.get(start_flows[0].id)
             natural_entry = f"hook_{start_flows[0].id}" if start_hook else first_target
         else:
             natural_entry = next(iter(graph_node_ids), None)
@@ -356,11 +349,8 @@ class LangGraphWorkflowEngine(WorkflowEngine):
         process: BPMNProcess,
         overlay: _ControlOverlay,
         flows_by_source: Dict[str, list],
+        hooks_by_location: Dict[str, Hook],
     ) -> None:
-        hook_manager = HookManager()
-        for hook in overlay.hooks:
-            hook_manager.register_hook(hook)
-
         for source_ref, outgoing_flows in flows_by_source.items():
             # Start-event outgoing flows are handled by the conditional START edge in _build_graph
             if source_ref == process.start_event:
@@ -373,7 +363,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                 if element and element.element_type == "parallelGateway":
                     for flow in outgoing_flows:
                         lg_target = END if flow.target_ref in process.end_events else flow.target_ref
-                        hook_for_flow = hook_manager.get_hook_at_location(flow.id)
+                        hook_for_flow = hooks_by_location.get(flow.id)
                         if hook_for_flow:
                             hook_node_id = f"hook_{flow.id}"
                             graph.add_node(
@@ -392,7 +382,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
                     flow_to_target: Dict[str, str] = {}
                     for flow in outgoing_flows:
                         lg_target = END if flow.target_ref in process.end_events else flow.target_ref
-                        hook_for_flow = hook_manager.get_hook_at_location(flow.id)
+                        hook_for_flow = hooks_by_location.get(flow.id)
                         if hook_for_flow:
                             hook_node_id = f"hook_{flow.id}"
                             graph.add_node(
@@ -414,7 +404,7 @@ class LangGraphWorkflowEngine(WorkflowEngine):
             else:
                 flow = outgoing_flows[0]
                 lg_target = END if flow.target_ref in process.end_events else flow.target_ref
-                hook_for_edge = hook_manager.get_hook_at_location(flow.id)
+                hook_for_edge = hooks_by_location.get(flow.id)
                 if hook_for_edge:
                     hook_node_id = f"hook_{flow.id}"
                     graph.add_node(
