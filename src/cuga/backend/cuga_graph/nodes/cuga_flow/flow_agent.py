@@ -411,10 +411,3 @@ Respond ONLY with a JSON object:
         return "\n".join(parts)
 
     # ──────────────────────────────────────────────────────────────
-    # Backward-compat helpers (used by tests / existing callers)
-    # ──────────────────────────────────────────────────────────────
-
-    def register_task(self, task_id: str, agent: TaskAgent) -> None:
-        self.task_agents[task_id] = agent
-        logger.info(f"Registered TaskAgent '{agent.task_name}' for task '{task_id}'")
-
