@@ -115,23 +115,5 @@ class FlowState(AgentState):
         self.halt_reason = reason
         self.end_time = datetime.utcnow()
 
-    def get_execution_summary(self) -> Dict[str, Any]:
-        """Get a summary of the execution for logging/debugging."""
-        duration = None
-        if self.start_time and self.end_time:
-            duration = (self.end_time - self.start_time).total_seconds()
-
-        return {
-            "process_id": self.process_id,
-            "process_name": self.process_name,
-            "status": "complete" if self.is_complete else ("halted" if self.is_halted else "running"),
-            "execution_path": self.execution_path,
-            "duration_seconds": duration,
-            "graph_modifications": len(self.graph_modifications),
-            "gateway_decisions": len(self.gateway_decisions),
-            "tasks_executed": len(self.task_results),
-            "process_variables": list(self.process_variables.keys()),
-        }
-
 
 # Made with Bob
