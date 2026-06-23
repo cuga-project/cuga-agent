@@ -418,8 +418,3 @@ Respond ONLY with a JSON object:
         self.task_agents[task_id] = agent
         logger.info(f"Registered TaskAgent '{agent.task_name}' for task '{task_id}'")
 
-    def register_hook(self, hook: Hook) -> None:
-        self.hooks.append(hook)
-
-    def unregister_hook(self, hook_id: str) -> None:
-        self.hooks = [h for h in self.hooks if h.id != hook_id]
