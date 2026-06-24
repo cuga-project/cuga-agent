@@ -264,10 +264,11 @@ class LocalSandboxExecutor:
                 description=(
                     "Run a shell command directly on the host and return its output. "
                     "The working directory is the sandbox workspace — use relative paths for all files "
-                    "(e.g. `node ./script.js`, `uv run ./script.py`). "
+                    "(e.g. `node ./script.js`, `uv run --no-project ./script.py`). "
                     "A per-thread `.venv` is on PATH; `UV_NO_CONFIG=1` ensures `uv pip install` targets "
                     "that venv and not the Cuga project. "
-                    "Use uv only for Python packages (`uv pip install ...`); never `python -m ...` — use `uv run python -m ...`. "
+                    "Use uv only for Python packages (`uv pip install ...`); never `python -m ...` — "
+                    "use `uv run --no-project python -m ...` (or `uv run --no-project ./script.py`). "
                     "Node commands: plain `node ...`; npm commands: plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`. "
                     "Skills are available at `./skills/<skill_name>/`."

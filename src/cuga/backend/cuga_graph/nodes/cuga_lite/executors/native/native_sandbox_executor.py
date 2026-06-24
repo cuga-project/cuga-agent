@@ -297,9 +297,10 @@ class NativeSandboxExecutor:
                 description=(
                     "Run a shell command inside the native macOS sandbox and return its output. "
                     "The working directory is the sandbox workspace — use relative paths for all files "
-                    "(e.g. `node ./script.js`, `uv run ./script.py`). "
+                    "(e.g. `node ./script.js`, `uv run --no-project ./script.py`). "
                     "The sandbox virtual environment is pre-activated. "
-                    "Use uv only for Python packages (`uv pip install ...`); never `python -m ...` directly — use `uv run python -m ...`. "
+                    "Use uv only for Python packages (`uv pip install ...`); never `python -m ...` directly — "
+                    "use `uv run --no-project python -m ...` (or `uv run --no-project ./script.py`). "
                     "Node commands: plain `node ...`; npm commands: plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`. "
                     "Skills are available at `./skills/<skill_name>/`."

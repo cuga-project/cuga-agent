@@ -99,7 +99,7 @@ def test_skill_registry_load_skill_includes_install_normalization_guidance() -> 
     assert "STEP 1 — SKILL INSTRUCTIONS" in loaded
     assert "STEP 2 — SKILL INSTRUCTIONS" not in loaded
     assert "follow that skill's own structure" in loaded
-    assert "`python -m <module> ...` → `uv run python -m <module> ...`" in loaded
+    assert "`python -m <module> ...` → `uv run --no-project python -m <module> ...`" in loaded
     assert "`pip list` / `pip show` / `pip freeze` → `uv pip list`" in loaded
     assert "never `uv npm`" in loaded
     assert "Do not use `uv npm`, `uv run node`, or `uv run npm`" in loaded
