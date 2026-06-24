@@ -234,3 +234,4 @@ agent_url = "http://localhost:8000"                          # Public URL client
 auth_required = false                                        # When true, the AgentCard advertises a bearer security scheme.
 skill_ids = ["delegate_task"]                                # Skill IDs surfaced in the AgentCard.
 supervisor_config_path = ""                                  # YAML config for the CugaSupervisor that handles A2A inbound. When empty, a placeholder runner is used.
+auto_approve = false                                         # Simple-runner only: when true, human-in-the-loop interrupts are auto-confirmed and the graph resumes; when false, the interrupt is surfaced to the caller as an input_required event.
