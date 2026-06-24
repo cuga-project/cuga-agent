@@ -586,9 +586,16 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 t for t in (tools_for_prompt or []) if getattr(t, "name", None)
             ]
 
+        # Use tools_for_execution, not tools_for_prompt: when find_tools shortlisting
+        # is active (the common case once an app has more than a handful of tools),
+        # tools_for_prompt is collapsed to just the find_tools meta-tool (~line 230),
+        # which would make this set permanently empty and silently disable the
+        # downstream block-isolation enforcement (graph_adapter.get_tools_needing_probing)
+        # and session shape-memory (sandbox_node._record_weak_schema_shapes) for every
+        # tool actually reachable through find_tools.
         adapter._weak_schema_tool_names = frozenset(
             t.name
-            for t in (tools_for_prompt or [])
+            for t in (tools_for_execution or [])
             if getattr(t, "name", None) and PromptUtils.is_weak_schema_tool(t)
         )
 
