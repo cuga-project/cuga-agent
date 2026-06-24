@@ -266,3 +266,83 @@ def test_factory_returns_eight_named_tools() -> None:
         "search_files",
         "get_file_info",
     ]
+
+
+def test_write_file_accepts_valid_python_script(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    script = "import json\n\nprint(json.dumps({'ok': True}))\n"
+    msg = asyncio.run(fs.write_file("parse_instana.py", script))
+    assert "File written" in msg
+    on_disk = tmp_path / "cuga_workspace" / "t" / "parse_instana.py"
+    assert on_disk.read_text() == script
+
+
+def test_write_file_auto_dedents_uniform_indent(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    indented = "\n    import json\n    print(1)\n"
+    msg = asyncio.run(fs.write_file("dedent.py", indented))
+    assert "File written" in msg
+    on_disk = tmp_path / "cuga_workspace" / "t" / "dedent.py"
+    assert on_disk.read_text() == "import json\nprint(1)\n"
+
+
+def test_write_file_preserves_valid_nested_indentation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    # Real script: top-level at column 0, function/loop bodies legitimately indented.
+    # dedent must be a no-op here (common leading whitespace is 0).
+    script = (
+        "import json\n\n"
+        "def ms_to_date(ms):\n"
+        "    return ms // 1000\n\n"
+        "for i in range(3):\n"
+        "    print(ms_to_date(i))\n"
+    )
+    msg = asyncio.run(fs.write_file("nested.py", script))
+    assert "File written" in msg
+    on_disk = tmp_path / "cuga_workspace" / "t" / "nested.py"
+    assert on_disk.read_text() == script
+
+
+def test_write_file_rejects_invalid_python_after_dedent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    bad = "\n    def broken(\n    print(1)\n"
+    msg = asyncio.run(fs.write_file("bad.py", bad))
+    assert "[write_file error]" in msg
+    on_disk = tmp_path / "cuga_workspace" / "t" / "bad.py"
+    assert not on_disk.exists()
+
+
+def test_write_file_python_validation_does_not_overwrite_existing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    good = "x = 1\n"
+    asyncio.run(fs.write_file("keep.py", good))
+    on_disk = tmp_path / "cuga_workspace" / "t" / "keep.py"
+    bad_msg = asyncio.run(fs.write_file("keep.py", "\n    def broken(\n    pass\n"))
+    assert "[write_file error]" in bad_msg
+    assert on_disk.read_text() == good
+
+
+def test_write_file_skips_python_validation_for_non_py(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    msg = asyncio.run(fs.write_file("notes.txt", "    not python\n"))
+    assert "File written" in msg

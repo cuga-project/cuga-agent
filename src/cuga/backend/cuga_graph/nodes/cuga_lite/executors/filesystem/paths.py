@@ -182,3 +182,38 @@ def public_workspace_path(host_path: Path, *, thread_id: Optional[str]) -> str:
         return str(host_path)
     rel_str = str(rel)
     return "." if rel_str == "." else f"./{rel_str}"
+
+
+def shell_workspace_path(virtual_path: str) -> str:
+    """Path for ``run_command`` when cwd is the per-thread workspace root.
+
+    Maps agent-facing ``/workspace/...`` (and legacy ``/tmp/cuga_workspace/<thread>/...``)
+    to ``./...`` so shell tools work in local/native sandboxes where ``/workspace`` is not
+    a real directory. OpenSandbox runs ``cd /workspace`` first; ``./`` paths still work.
+    """
+    raw = (virtual_path or "").strip().replace("\\", "/")
+    if raw == VIRTUAL_WORKSPACE_ROOT:
+        return "."
+    prefix = VIRTUAL_WORKSPACE_ROOT + "/"
+    if raw.startswith(prefix):
+        tail = raw[len(prefix) :]
+        return "." if not tail else f"./{tail}"
+    legacy = re.match(r"^/tmp/cuga_workspace/[^/]+/(.*)$", raw)
+    if legacy:
+        tail = legacy.group(1)
+        return "." if not tail else f"./{tail}"
+    return raw
+
+
+def normalize_shell_command_paths(cmd: str) -> str:
+    """Rewrite virtual workspace path prefixes in a shell command string.
+
+    ``read_file`` / ``list_files`` accept ``/workspace/...``; ``run_command`` cwd is the
+    physical workspace (local/native) or ``/workspace`` (OpenSandbox). Normalizing to ``./``
+    keeps manifest and skill paths working in all sandbox modes.
+    """
+    if not cmd:
+        return cmd
+    out = cmd.replace("\\", "/")
+    out = re.sub(r"/tmp/cuga_workspace/[^/]+/", "./", out)
+    return out.replace(f"{VIRTUAL_WORKSPACE_ROOT}/", "./")

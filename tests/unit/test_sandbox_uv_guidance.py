@@ -8,6 +8,12 @@ def test_sandbox_uv_guidance_forbids_bare_uv_run() -> None:
     assert "python -c" in SANDBOX_UV_COMMAND_NORMALIZATION
     assert "python -m pip" in SANDBOX_UV_COMMAND_NORMALIZATION
     assert "retry once with" in SANDBOX_UV_COMMAND_NORMALIZATION
+    assert "shell_path" in SANDBOX_UV_COMMAND_NORMALIZATION
+    assert "plain **string**" in SANDBOX_UV_COMMAND_NORMALIZATION
+    assert "write_file" in SANDBOX_UV_COMMAND_NORMALIZATION
+    assert "can't open file" in SANDBOX_UV_COMMAND_NORMALIZATION
+    assert "head: None" in SANDBOX_UV_COMMAND_NORMALIZATION
+    assert "infer prefixes" in SANDBOX_UV_COMMAND_NORMALIZATION
 
 
 def test_load_skill_includes_sandbox_uv_guidance() -> None:

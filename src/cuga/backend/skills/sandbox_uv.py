@@ -39,11 +39,42 @@ SANDBOX_UV_FORBIDDEN = (
     "`python -m pip ...`, or `python -m <package>` to validate imports."
 )
 
+SANDBOX_WORKSPACE_PATHS = (
+    "Session uploads: `read_file` / `list_files` use `/workspace/uploads/...`; "
+    "`run_command` / `head` / `python ./script.py` use `./uploads/...` (manifest "
+    "`shell_path`). `/workspace/` in shell commands is rewritten to `./` automatically "
+    "(local/native/OpenSandbox)."
+)
+
+SANDBOX_RUN_COMMAND_RETURN = (
+    "`run_command` returns a plain **string** (stdout, plus `\\n[stderr]\\n...` on failure) — "
+    "never a dict. Use `out = await run_command(...)` then `json.loads(out.strip())` when the "
+    "script prints JSON; do **not** use `out[\"raw_output\"]` or subscript the return value. "
+    "If output contains `[stderr]`, `can't open file`, `head: None`, `exited with status`, or "
+    "`[run_command error]`, the command failed — print the full string, fix the cause (often a "
+    "missing script, wrong path, or a `None` variable interpolated into the command), and "
+    "**stop** before the next step. Do **not** regex-parse, `json.loads`, or infer prefixes/schema "
+    "from failed output. Exception: `uv pip install` may log to stderr on success — check for "
+    "`Audited` / `Installed` or follow with `python -c \"import pkg; print('ok')\"`."
+)
+
+SANDBOX_WRITE_THEN_RUN = (
+    "Before `run_command(\"python ./script.py\")`, ensure the script exists: "
+    "`await write_file(\"./script.py\", content)` in a prior step (or earlier in the same block), "
+    "confirm the write succeeded (return starts with `File written:` — not `[write_file error]`), "
+    "then run the **same path** you wrote (e.g. if you wrote `./scripts/parse_phase1.py`, run "
+    "`python ./scripts/parse_phase1.py`, not `./parse_phase1.py`). "
+    "Prefer separate code blocks for write vs run when the script is large."
+)
+
 SANDBOX_UV_COMMAND_NORMALIZATION = (
     "Sandbox Python via `run_command`: "
     f"install only with `{SANDBOX_UV_PIP_INSTALL}`. "
     f"{SANDBOX_VERIFY_IMPORT} "
     f"{SANDBOX_RUN_FALLBACK} "
+    f"{SANDBOX_RUN_COMMAND_RETURN} "
+    f"{SANDBOX_WRITE_THEN_RUN} "
+    f"{SANDBOX_WORKSPACE_PATHS} "
     "If skill docs say `uv run python ...`, rewrite to "
     "`uv run --no-project python ...` or `uv run --no-project ./script.py`. "
     f"{SANDBOX_UV_FORBIDDEN} "

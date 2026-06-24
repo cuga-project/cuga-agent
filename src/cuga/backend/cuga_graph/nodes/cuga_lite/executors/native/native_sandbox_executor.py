@@ -34,6 +34,7 @@ from loguru import logger
 # historical name for back-compat (workspace_sandbox.py imports it).
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     CUGA_WORKSPACE_DIRNAME,
+    normalize_shell_command_paths,
     thread_workspace_root as native_thread_workspace_root,
 )
 
@@ -202,6 +203,7 @@ class NativeSandboxExecutor:
     ) -> tuple[str, str]:
         self._check_platform()
         self._ensure_policy()
+        cmd = normalize_shell_command_paths(cmd)
         # Native uses one shared /tmp/.venv. It is created lazily once, not per command.
         await self._ensure_venv()
         workspace_root = native_thread_workspace_root(thread_id)
@@ -296,13 +298,17 @@ class NativeSandboxExecutor:
                 coroutine=self.create_run_command_tool(thread_id),
                 name="run_command",
                 description=(
-                    "Run a shell command inside the native macOS sandbox and return its output. "
+                    "Run a shell command inside the native macOS sandbox and return stdout as a plain string "
+                    "(appends `\\n[stderr]\\n...` on failure) — not a dict. "
                     "The working directory is the sandbox workspace — use relative paths for all files "
                     "(e.g. `node ./script.js`, `python ./script.py`, or `uv run --no-project ./script.py`). "
                     "The sandbox virtual environment is pre-activated. "
                     "Install with `uv pip install ...`. Verify with `python -c \"import pkg; print('ok')\"` "
                     "or `uv pip show pkg` — not `python -m pip` or `pip show`. "
                     "Run with `python ./script.py` first; retry with `uv run --no-project ...` if that fails. "
+                    "Write scripts with write_file before running them. "
+                    "For uploaded/session files use `./uploads/...` in shell commands (or `/workspace/...` — "
+                    "rewritten automatically); `read_file` accepts both. "
                     "Node commands: plain `node ...`; npm commands: plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`. "
                     "Skills are available at `./skills/<skill_name>/`."

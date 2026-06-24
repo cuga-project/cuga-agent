@@ -134,3 +134,24 @@ def test_local_thread_workspace_root_is_per_thread_when_skills_on(
     assert a == tmp_path / "cuga_workspace" / "thread-A"
     assert b == tmp_path / "cuga_workspace" / "thread_B"
     assert a != b
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell idioms")
+def test_local_sandbox_run_command_rewrites_workspace_upload_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``head /workspace/uploads/foo.json`` works after rewrite to ``./uploads/...``."""
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+
+    parent = tmp_path / "cuga_workspace"
+    thread_root = parent / _lse._safe_thread_id("thread-A")
+    uploads = thread_root / "uploads"
+    uploads.mkdir(parents=True)
+    (uploads / "data.json").write_text('{"ok": true}\n')
+    _fake_venv_python(thread_root)
+
+    executor = _lse.LocalSandboxExecutor()
+    stdout, stderr = asyncio.run(_run(executor, "head -n 1 /workspace/uploads/data.json", "thread-A"))
+    assert '{"ok": true}' in stdout
+    assert "No such file" not in stderr

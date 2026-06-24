@@ -43,6 +43,7 @@ def test_merge_manifest_replaces_same_name() -> None:
     merged = wu._merge_manifest_entry(manifest, thread_id="t1", filename="a.json", size_bytes=99)
     assert len(merged["files"]) == 1
     assert merged["files"][0]["size_bytes"] == 99
+    assert merged["files"][0]["shell_path"] == "./uploads/a.json"
 
 
 @pytest.mark.asyncio
@@ -61,6 +62,7 @@ async def test_upload_workspace_bytes_host_mode(tmp_path: Path, monkeypatch: pyt
     manifest = json.loads(manifest_path.read_text())
     assert manifest["thread_id"] == "thread-1"
     assert manifest["files"][0]["name"] == "instana.json"
+    assert manifest["files"][0]["shell_path"] == "./uploads/instana.json"
 
 
 @pytest.mark.asyncio
@@ -84,7 +86,8 @@ def test_format_upload_context_lists_files(tmp_path: Path, monkeypatch: pytest.M
     ctx = wu.format_upload_context("t1")
     assert ctx is not None
     assert "/workspace/uploads/a.json" in ctx
-    assert "list_files('/workspace/uploads')" in ctx
+    assert "./uploads/a.json" in ctx
+    assert "shell_path" in ctx
 
 
 @pytest.mark.asyncio

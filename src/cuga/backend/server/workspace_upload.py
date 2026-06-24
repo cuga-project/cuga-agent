@@ -17,6 +17,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     ensure_thread_workspace_seeded,
     resolve_workspace_path,
     safe_thread_id,
+    shell_workspace_path,
     thread_workspace_root,
 )
 from cuga.backend.server.workspace_sandbox import workspace_tree_is_sandbox_backed
@@ -99,6 +100,7 @@ def _merge_manifest_entry(
     entry = {
         "name": filename,
         "path": sandbox_upload_path(filename),
+        "shell_path": shell_workspace_path(sandbox_upload_path(filename)),
         "size_bytes": size_bytes,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -161,10 +163,14 @@ def format_upload_context(thread_id: Optional[str]) -> str | None:
     lines = ["## Session uploads", "", "JSON files uploaded for this conversation:"]
     for f in files:
         size_mb = (f.get("size_bytes") or 0) / (1024 * 1024)
-        lines.append(f"- `{f.get('path', f.get('name'))}` ({size_mb:.1f} MB)")
+        tool_path = f.get("path", f.get("name"))
+        shell_path = f.get("shell_path") or shell_workspace_path(str(tool_path))
+        lines.append(f"- `{tool_path}` ({size_mb:.1f} MB) — shell/run_command: `{shell_path}`")
     lines.append("")
     lines.append(
-        "Use `list_files('/workspace/uploads')` or a skill whose description matches the uploaded data."
+        "Use `list_files('/workspace/uploads')` or `read_file` with `/workspace/uploads/...` "
+        "for filesystem tools; use `shell_path` (e.g. `./uploads/...`) in `run_command` "
+        "(`/workspace/...` is rewritten automatically in shell)."
     )
     return "\n".join(lines)
 

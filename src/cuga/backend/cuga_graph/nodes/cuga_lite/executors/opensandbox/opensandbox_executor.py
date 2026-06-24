@@ -39,6 +39,9 @@ from langchain_core.tools import StructuredTool
 from loguru import logger
 
 from cuga.config import settings
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    normalize_shell_command_paths,
+)
 from ..base_executor import RemoteExecutor
 
 
@@ -264,6 +267,7 @@ class OpenSandboxExecutor(RemoteExecutor):
                 from code_interpreter import SupportedLanguage  # type: ignore[import]
 
                 interpreter = await executor._get_or_create_interpreter(thread_id)
+                cmd = normalize_shell_command_paths(cmd)
                 sandbox_cmd = f"cd {VIRTUAL_WORKSPACE_ROOT} && source {VENV_PATH}/bin/activate && {cmd}"
                 result = await interpreter.codes.run(sandbox_cmd, language=SupportedLanguage.BASH)
                 stdout = "".join(line.text for line in result.logs.stdout)
@@ -308,6 +312,8 @@ class OpenSandboxExecutor(RemoteExecutor):
                     "Install with `uv pip install ...`. Verify with `python -c \"import pkg; print('ok')\"` "
                     "or `uv pip show pkg` — not `python -m pip` or `pip show`. "
                     "Run with `python ./script.py` first; retry with `uv run --no-project ...` if that fails. "
+                    "Uploaded files live under `./uploads/` (manifest `shell_path`); `/workspace/...` paths "
+                    "from `read_file`/`list_files` are rewritten for shell automatically. "
                     "Node commands must start with plain `node ...`; npm commands must start with plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`."
                 ),

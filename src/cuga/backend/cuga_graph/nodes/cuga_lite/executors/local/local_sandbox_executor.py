@@ -37,6 +37,7 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     CUGA_WORKSPACE_DIRNAME,
     VIRTUAL_WORKSPACE_ROOT,
     local_base_dir as _local_base_dir,
+    normalize_shell_command_paths,
     public_workspace_path as _public_workspace_path,
     resolve_workspace_path as _resolve_workspace_path,
     safe_thread_id as _safe_thread_id,
@@ -187,6 +188,7 @@ class LocalSandboxExecutor:
     async def _run_command(
         self, cmd: str, *, thread_id: Optional[str] = None, timeout: int = 120
     ) -> tuple[str, str]:
+        cmd = normalize_shell_command_paths(cmd)
         workspace_root = local_thread_workspace_root(thread_id)
         workspace_root.mkdir(parents=True, exist_ok=True)
         venv = await self._ensure_workspace_venv(workspace_root)
@@ -262,13 +264,17 @@ class LocalSandboxExecutor:
                 coroutine=self.create_run_command_tool(thread_id),
                 name="run_command",
                 description=(
-                    "Run a shell command directly on the host and return its output. "
+                    "Run a shell command directly on the host and return stdout as a plain string "
+                    "(appends `\\n[stderr]\\n...` on failure) — not a dict. "
                     "The working directory is the sandbox workspace — use relative paths for all files "
                     "(e.g. `node ./script.js`, `python ./script.py`, or `uv run --no-project ./script.py`). "
                     "Per-thread `.venv` is on PATH with `UV_NO_CONFIG=1`. "
                     "Install with `uv pip install ...`. Verify with `python -c \"import pkg; print('ok')\"` "
                     "or `uv pip show pkg` — not `python -m pip` or `pip show`. "
                     "Run with `python ./script.py` first; retry with `uv run --no-project ...` if that fails. "
+                    "Write scripts with write_file before running them. "
+                    "For uploaded/session files use `./uploads/...` in shell commands (or `/workspace/...` — "
+                    "rewritten automatically); `read_file` accepts both. "
                     "Node commands: plain `node ...`; npm commands: plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`. "
                     "Skills are available at `./skills/<skill_name>/`."
