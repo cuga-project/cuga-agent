@@ -23,14 +23,14 @@ def mock_state():
 async def test_code_execution_timeout(mock_state):
     """Test that code execution itself times out correctly."""
 
-    # Code that sleeps longer than the execution timeout (30 seconds)
+    # Code that sleeps longer than the execution timeout (60 seconds)
     code = """
 import asyncio
-await asyncio.sleep(35)  # Longer than 30 second timeout
+await asyncio.sleep(65)  # Longer than 60 second timeout
 print("This should not print")
 """
 
-    # Execute code - should timeout at code execution level (30 seconds)
+    # Execute code - should timeout at code execution level (60 seconds)
     result, new_vars = await CodeExecutor.eval_with_tools_async(
         code=code,
         _locals={},
