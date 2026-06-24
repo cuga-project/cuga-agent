@@ -93,6 +93,11 @@ def test_default_normalize_response_none_reasoning():
     assert reasoning is None
 
 
+def test_default_get_tools_needing_probing_returns_empty_frozenset():
+    adapter = _MinimalAdapter()
+    assert adapter.get_tools_needing_probing() == frozenset()
+
+
 def test_default_get_invoke_config_returns_empty_dict():
     adapter = _MinimalAdapter()
     assert adapter.get_invoke_config({}) == {}
