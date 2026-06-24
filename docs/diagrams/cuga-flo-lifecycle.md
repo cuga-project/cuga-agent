@@ -64,8 +64,8 @@ sequenceDiagram
         Note over App,Eng: INVOCATION
         App->>FA: invoke(input_data, process_variables)
         Note right of FA: str input_data → initial_inputs["_user_message"]<br/>dict input_data → merged into initial_inputs
-        FA->>Bridge: run_process(process_key, initial_inputs)
-        Bridge->>Eng: _run_via_mcp(process_key, initial_inputs, mcp_server)
+        FA->>Bridge: call_tool("run_process", {process_key, initial_inputs})
+        Bridge->>Eng: run_process tool → _run_via_mcp(process_key, initial_inputs, mcp_server)
         Eng->>Bridge: call_tool("get_bpmn_process", {process_key})
         Bridge->>Reg: get_bpmn_process(process_key)
         Reg-->>Bridge: BPMNProcess
@@ -119,7 +119,7 @@ sequenceDiagram
     end
 
     rect rgb(245, 230, 255)
-        Note over Eng,FA: ENGINE EXECUTION — Hook Node (PRE_EDGE)
+        Note over Eng,FA: ENGINE EXECUTION — Hook Node (EDGE)
         Eng->>Eng: _create_hook_node(edge_id, hook, normal_target, process, overlay)
         Note right of Eng: Builds ControlPointContext:<br/>edge_id — intercepted flow ID<br/>current_state — engine-held FS<br/>execution_history — engine-held path<br/>(no task_instruction)
         Note right of Eng: If hook.condition set and not met → skip,<br/>Command(goto=normal_target)
