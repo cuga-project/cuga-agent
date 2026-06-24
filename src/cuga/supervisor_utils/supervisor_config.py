@@ -71,36 +71,6 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
                 logger.error(f"Failed to instantiate FlowAgent '{agent_name}' from '{flow_config_path}': {e}")
                 raise
 
-        elif agent_config.get("type") == "flow_agent_ordo":
-            # Ordo FlowAgent — task-only YAML config; BPMN execution is delegated
-            # to MCPOrdo via OrdoEngine + MCP2MCPMediator.
-            flow_config_rel = agent_config.get("flow_config")
-            if not flow_config_rel:
-                raise ValueError(
-                    f"Agent '{agent_name}' has type: flow_agent_ordo but no flow_config path"
-                )
-
-            ordo_workflow_id = agent_config.get("ordo_workflow_id") or agent_name
-
-            from pathlib import Path
-            from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import load_ordo_flow_from_yaml
-
-            flow_config_path = str(Path(yaml_path).parent / flow_config_rel)
-            logger.info(
-                f"Instantiating ordo FlowAgent '{agent_name}' from {flow_config_path} "
-                f"(workflow_id='{ordo_workflow_id}')"
-            )
-            try:
-                agent = load_ordo_flow_from_yaml(flow_config_path, ordo_workflow_id)
-                agents[agent_name] = agent
-                logger.info(f"✅ Ordo FlowAgent '{agent_name}' ready (MCPOrdo + MCP2MCPMediator)")
-            except Exception as e:
-                logger.error(
-                    f"Failed to instantiate ordo FlowAgent '{agent_name}' "
-                    f"from '{flow_config_path}': {e}"
-                )
-                raise
-
         elif "import_from" in agent_config:
             # Import a pre-configured CugaAgent instance from a Python module.
             # This lets you define agents fully in Python (with tools, policies, etc.)
