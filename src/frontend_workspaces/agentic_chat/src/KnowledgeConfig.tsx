@@ -855,11 +855,15 @@ export default function KnowledgePanel({
     }));
     setUploadingFiles((prev) => [...prev.filter((f) => f.status !== "success"), ...entries]);
 
-    // Debounce doc list refresh — multiple completions within 500ms trigger one refresh
-    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+    // Refresh the doc list immediately on each completion. The 500ms
+    // trailing-edge debounce previously here made every fresh upload
+    // feel laggy ("file processed but not yet visible") for the common
+    // single-file case; the resumePoll path already calls
+    // loadDocuments() inline, this matches. listKnowledgeDocuments is a
+    // sub-50ms sqlite read so N near-simultaneous completions just fire
+    // N GETs — no batching needed.
     const scheduleRefresh = () => {
-      if (refreshTimer) clearTimeout(refreshTimer);
-      refreshTimer = setTimeout(() => loadDocuments(), 500);
+      loadDocuments();
     };
 
     // Upload one file: POST with wait=false (202 + task_id), then poll the
