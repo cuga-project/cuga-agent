@@ -69,13 +69,20 @@ def _event_text(event: Any) -> str:
     return str(getattr(event, "name", "") or "")
 
 
-def _message(text: str, message_id: str, context_id: str) -> Message:
-    """Build an agent-role A2A Message wrapping ``text`` as a single TextPart."""
+def _message(
+    text: str, message_id: str, context_id: str, metadata: dict[str, Any] | None = None
+) -> Message:
+    """Build an agent-role A2A Message wrapping ``text`` as a single TextPart.
+
+    ``metadata`` is attached verbatim when provided — used to carry the HITL
+    ``action_id`` so a caller can correlate an approval response.
+    """
     return Message(
         role=Role.agent,
         parts=[Part(root=TextPart(text=text))],
         message_id=message_id,
         context_id=context_id,
+        metadata=metadata,
     )
 
 
@@ -100,16 +107,28 @@ def stream_events_to_a2a(
     for ev in events:
         counter += 1
         if _is_hitl(ev):
+            # A HITL interrupt can be terminal (the task pauses awaiting input
+            # and the stream closes) when the runner marks the event final.
+            is_final = bool(getattr(ev, "final", False))
+            if is_final:
+                saw_terminal = True
+            data = getattr(ev, "data", None)
+            meta = (
+                {"action_id": data["action_id"]}
+                if isinstance(data, dict) and data.get("action_id")
+                else None
+            )
             yield TaskStatusUpdateEvent(
                 task_id=task_id,
                 context_id=context_id,
-                final=False,
+                final=is_final,
                 status=TaskStatus(
                     state=TaskState.input_required,
                     message=_message(
                         _event_text(ev) or "Input required",
                         f"{task_id}-msg-{counter}",
                         context_id,
+                        metadata=meta,
                     ),
                 ),
             )
