@@ -4,6 +4,8 @@ from unittest.mock import Mock
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors import CodeExecutor
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.security import SecurityValidator
+from cuga.config import settings
 
 
 @pytest.fixture
@@ -68,8 +70,9 @@ async def test_async_tool_execution(mock_state):
 
 
 @pytest.mark.asyncio
-async def test_dangerous_import_blocked(mock_state):
+async def test_dangerous_import_blocked(mock_state, monkeypatch):
     """Test that dangerous imports are blocked."""
+    monkeypatch.setattr(settings.skills, "enabled", False)
     code = "import os\nos.system('echo hello')"
 
     with pytest.raises(ImportError) as exc_info:
@@ -81,6 +84,31 @@ async def test_dangerous_import_blocked(mock_state):
         )
 
     assert "not allowed" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_skills_mode_allows_non_allowlisted_import(mock_state, monkeypatch):
+    """Skills mode skips import allowlist so skill workflows can use extra packages."""
+    monkeypatch.setattr(settings.skills, "enabled", True)
+    code = "import json\ndata = json.dumps({'ok': True})\nprint(data)"
+    result, new_vars = await CodeExecutor.eval_with_tools_async(
+        code=code,
+        _locals={"x": 1},
+        state=mock_state,
+        mode="local",
+    )
+    assert "ok" in result
+
+
+def test_skills_relaxed_skips_wrapped_code_validation(monkeypatch):
+    monkeypatch.setattr(settings.skills, "enabled", True)
+    SecurityValidator.validate_wrapped_code("open('/tmp/x')")
+
+
+def test_wrapped_code_validation_active_without_skills(monkeypatch):
+    monkeypatch.setattr(settings.skills, "enabled", False)
+    with pytest.raises(PermissionError, match="Security violation"):
+        SecurityValidator.validate_wrapped_code("open('/tmp/x')")
 
 
 @pytest.mark.asyncio
