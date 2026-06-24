@@ -73,13 +73,6 @@ class FlowConfig:
         self.tasks_config = config_dict.get("tasks", [])
         self.hooks_config = config_dict.get("hooks", [])
         self.variables = config_dict.get("variables", {})
-        self.mcp_servers_config = (
-            config_dict.get("mcp_servers")
-            or config_dict.get("mcpServers")
-            or self.flow_config.get("mcp_servers")
-            or self.flow_config.get("mcpServers")
-            or {}
-        )
         # gateways section: gateway_id -> {mode, policy, flows: {flow_id -> {condition, ...}}}
         self.gateways_config: Dict[str, Any] = config_dict.get("gateways", {})
         # action_permissions: permitted_actions / prohibited_actions lists for hook enforcement
@@ -209,99 +202,6 @@ class FlowConfig:
             return None
         return self.llm_config.get("model")
 
-    @staticmethod
-    def _run_async_sync(coro_factory):
-        """
-        Run an async factory from sync config-loading code.
-
-        FlowConfig is constructed from both sync and async call paths.  If an
-        event loop is already running, run the coroutine in a short-lived
-        background thread; otherwise use asyncio.run directly.
-        """
-        import asyncio
-        import threading
-
-        try:
-            asyncio.get_running_loop()
-        except RuntimeError:
-            return asyncio.run(coro_factory())
-
-        result = {}
-        error = {}
-
-        def runner():
-            try:
-                result["value"] = asyncio.run(coro_factory())
-            except Exception as exc:  # pragma: no cover - re-raised in caller thread
-                error["error"] = exc
-
-        thread = threading.Thread(target=runner, name="flow-config-mcp-tools", daemon=True)
-        thread.start()
-        thread.join()
-
-        if error:
-            raise error["error"]
-        return result.get("value")
-
-    @staticmethod
-    def _normalize_mcp_connections(mcp_servers_config: Any) -> Dict[str, Any]:
-        """Normalize YAML MCP config into MultiServerMCPClient connection format."""
-        if not mcp_servers_config:
-            return {}
-
-        if isinstance(mcp_servers_config, dict) and "mcpServers" in mcp_servers_config:
-            servers = mcp_servers_config["mcpServers"]
-        elif isinstance(mcp_servers_config, dict):
-            servers = mcp_servers_config
-        elif isinstance(mcp_servers_config, list):
-            servers = {}
-            for item in mcp_servers_config:
-                if not isinstance(item, dict):
-                    continue
-                if "name" in item:
-                    name = item["name"]
-                    cfg = {k: v for k, v in item.items() if k != "name"}
-                    servers[name] = cfg
-                else:
-                    servers.update(item)
-        else:
-            raise ValueError("mcp_servers must be a mapping or list")
-
-        connections: Dict[str, Any] = {}
-        for name, cfg in servers.items():
-            if not isinstance(cfg, dict):
-                continue
-            conn = dict(cfg)
-            if conn.get("command") and not conn.get("transport"):
-                conn["transport"] = "stdio"
-            if conn.get("args") is None:
-                conn["args"] = []
-            connections[name] = conn
-        return connections
-
-    def create_mcp_tools(self, mcp_servers_config: Any = None) -> List[Any]:
-        """Load LangChain tools from MCP server config."""
-        config = self.mcp_servers_config if mcp_servers_config is None else mcp_servers_config
-        connections = self._normalize_mcp_connections(config)
-        if not connections:
-            return []
-
-        try:
-            from langchain_mcp_adapters.client import MultiServerMCPClient
-
-            async def load_tools():
-                client = MultiServerMCPClient(connections=connections)
-                return await client.get_tools()
-
-            tools = self._run_async_sync(load_tools)
-            logger.info(
-                f"Loaded {len(tools)} MCP tool(s) from servers: {list(connections.keys())}"
-            )
-            return tools
-        except Exception as e:
-            logger.warning(f"Failed to load MCP tools from config: {e}")
-            return []
-
     def create_task_agents(self) -> Dict[str, TaskAgent]:
         """
         Create TaskAgent instances for tasks declared with mode: task_agent.
@@ -316,12 +216,6 @@ class FlowConfig:
             Dict mapping task_id -> TaskAgent
         """
         task_agents: Dict[str, TaskAgent] = {}
-        shared_mcp_tools = self.create_mcp_tools()
-        shared_mcp_tools_by_name = {
-            getattr(tool, "name", ""): tool
-            for tool in shared_mcp_tools
-            if getattr(tool, "name", "")
-        }
 
         for task_config in self.tasks_config:
             task_id = task_config.get("id")
@@ -340,37 +234,10 @@ class FlowConfig:
                 continue
 
             try:
-                tools_config = list(agent_config.get("tools") or [])
-                task_mcp_tools = self.create_mcp_tools(
-                    agent_config.get("mcp_servers")
-                    or agent_config.get("mcpServers")
-                    or task_config.get("mcp_servers")
-                    or task_config.get("mcpServers")
-                    or {}
-                )
-                task_mcp_tools_by_name = {
-                    getattr(tool, "name", ""): tool
-                    for tool in task_mcp_tools
-                    if getattr(tool, "name", "")
-                }
-                available_mcp_tools = {**shared_mcp_tools_by_name, **task_mcp_tools_by_name}
-
-                all_tools = []
-                for tool_ref in tools_config:
-                    if isinstance(tool_ref, str):
-                        tool = available_mcp_tools.get(tool_ref)
-                        if tool is None:
-                            logger.warning(
-                                f"Task '{task_id}' requested tool '{tool_ref}', "
-                                "but no matching MCP/LangChain tool was loaded"
-                            )
-                            continue
-                        all_tools.append(tool)
-                    else:
-                        all_tools.append(tool_ref)
+                tools_config = agent_config.get("tools") or []
                 cuga_agent = CugaAgent(
                     special_instructions=agent_config.get("system_instruction") or None,
-                    tools=all_tools if all_tools else None,
+                    tools=tools_config if tools_config else None,
                 )
                 task_agent = TaskAgent(
                     task_id=task_id,
@@ -641,53 +508,6 @@ class FlowConfig:
         """Get initial process variables from configuration."""
         return self.variables.copy()
 
-    def get_ro_input_args(self) -> Dict[str, Any]:
-        """
-        Get default input arguments passed to ro register_workflow.
-
-        These come from ``flow.input_args`` in the YAML. Runtime inputs still
-        override these defaults in the mediator.
-        """
-        input_args = self.flow_config.get("input_args") or {}
-        if not isinstance(input_args, dict):
-            raise ValueError("flow.input_args must be a mapping/dict if provided")
-        return input_args.copy()
-
-    def get_ro_source(self) -> str:
-        """
-        Load the .ro program source for Ordo-backed flows.
-
-        Resolution order:
-          1. ``flow.ro_source_file`` relative to the YAML config directory.
-          2. ``<flow.id>.ro`` next to the YAML config.
-          3. ``<flow.id>.ro`` in the parent directory of the YAML config.
-
-        Prefer setting ``flow.ro_source_file`` explicitly for clarity.
-        """
-        ro_source_file = self.flow_config.get("ro_source_file")
-        candidates: List[Path] = []
-
-        if ro_source_file:
-            candidates.append(self._resolve_path(ro_source_file))
-
-        flow_id = self.get_flow_id()
-        if flow_id and self.config_file_dir:
-            config_dir = Path(self.config_file_dir)
-            candidates.append(config_dir / f"{flow_id}.ro")
-            candidates.append(config_dir.parent / f"{flow_id}.ro")
-
-        for candidate in candidates:
-            if candidate.is_file():
-                logger.info(f"Loaded ro source for flow '{flow_id}' from {candidate}")
-                return candidate.read_text()
-
-        searched = ", ".join(str(p) for p in candidates) or "(no candidates)"
-        raise FileNotFoundError(
-            f"Could not find .ro source for flow '{flow_id}'. "
-            "Set flow.ro_source_file or place '<flow.id>.ro' next to the config "
-            f"or its parent directory. Searched: {searched}"
-        )
-
     def to_flow_agent(self) -> FlowAgent:
         """
         Create a FlowAgent instance from this configuration via ProcessRegistry.
@@ -713,97 +533,49 @@ class FlowConfig:
 
         return flow_agent
 
-    def to_ordo_flow_agent(self, process_key: str, ordo: Optional[Any] = None) -> FlowAgent:
+    def to_ordo_flow_agent(self, process_key: str) -> "FlowAgent":
         """
-        Create a FlowAgent wired to an Ordo-compatible MCP server via the MCP2MCPMediator.
-
-        By default an in-process :class:`MCPOrdo` stub (``WorkflowStubStore``) is used.
-        Pass a :class:`~cuga.backend.server.cuga_flo_mcp.ordo.MCPOrdoExternal` instance
-        to connect to a *real* external workflow engine instead::
-
-            from cuga.backend.server.cuga_flo_mcp.ordo import MCPOrdoExternal
-
-            ordo = MCPOrdoExternal(command="ro", args=["mcp"])
-            flow_agent = flow_config.to_ordo_flow_agent(
-                process_key="loan_approval_stub",
-                ordo=ordo,
-            )
-
-        Initialization order:
-          1. MCPFlowBridge  — empty, no registry or engine yet
-          2. ordo           — workflow engine (stub or real external server)
-          3. MCP2MCPMediator.register():
-               • bridge: OrdoRegistryAdapter (register_flow, get_flow_annotations, get_bpmn_process)
-                         + _MediatorEngineAdapter (run_process)
-          4. bridge.load_flow(config_path)
-               → OrdoRegistryAdapter.register_flow() caches FlowConfig
-               → ordo.store.register_workflow() (no-op for external servers)
-          5. FlowAgent(process_key, bridge)
-               → bridge.get_flow_annotations() → OrdoRegistryAdapter → FlowConfig
-               → config.create_task_agents() / create_task_policies()
-
-        Args:
-            process_key: Workflow ID served by the workflow engine
-                         (e.g. 'loan_approval_stub'). Becomes FlowAgent.process_key.
-            ordo: Ordo engine instance.  Defaults to ``MCPOrdo()`` (in-process stub).
-                  Pass ``MCPOrdoExternal(command, args)`` for a real external server.
-
-        Returns:
-            Configured FlowAgent backed by the chosen Ordo engine + MCP2MCPMediator.
+        Create a FlowAgent wired to MCPOrdo via the MCP2MCPMediator.
         """
+        from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNProcess
+        from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import (
+            ProcessDefinition,
+            ProcessRegistry,
+        )
         from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
         from cuga.backend.server.cuga_flo_mcp.mediator import MCP2MCPMediator
         from cuga.backend.server.cuga_flo_mcp.ordo import MCPOrdo
 
-        # 1. Bridge — empty FastMCP server, no registry or engine yet
         bridge = MCPFlowBridge(name="cuga-flo-bridge-ordo")
+        registry = ProcessRegistry(bridge=bridge)
 
-        # 2. Ordo engine — use provided instance or fall back to in-process stub
-        if ordo is None:
-            ordo = MCPOrdo()
+        stub_bpmn = BPMNProcess(id=process_key, name=process_key, elements={}, flows=[])
+        registry._register_preloaded(
+            key=process_key,
+            bpmn=stub_bpmn,
+            definition=ProcessDefinition(
+                key=process_key, name=process_key, bpmn_path="", config_path=""
+            ),
+            config=self,
+        )
 
-        # 3. Mediator wires both servers so registry and engine services are available
-        #    on the bridge before FlowAgent or load_flow are called.
+        flow_agent = FlowAgent(process_key=process_key, bridge=bridge)
+
+        ordo = MCPOrdo()
         mediator = MCP2MCPMediator(bridge, ordo, process_key)
         mediator.register()
 
-        # 4. Register the flow: bridge.load_flow() → OrdoRegistryAdapter.register_flow()
-        #    → caches FlowConfig locally + calls ordo.store.register_workflow()
-        #    (no-op for MCPOrdoExternal — real engine manages its own registry)
-        bridge.load_flow(self.config_path)
-
-        # 5. FlowAgent fetches FlowConfig via bridge → OrdoRegistryAdapter and
-        #    calls create_task_agents() / create_task_policies() internally.
-        flow_agent = FlowAgent(process_key=process_key, bridge=bridge)
-
         logger.info(
             f"FlowConfig: ordo FlowAgent ready — process_key='{process_key}', "
-            f"engine={type(ordo).__name__}, "
             f"{len(flow_agent.task_agents)} task agent(s)"
         )
         return flow_agent
 
 
-def load_ordo_flow_from_yaml(
-    yaml_file: str,
-    process_key: str,
-    ordo: Optional[Any] = None,
-) -> FlowAgent:
-    """
-    Load a FlowAgent backed by an Ordo-compatible MCP engine from a YAML task-only config.
-
-    Args:
-        yaml_file: Path to the ordo_config.yaml (tasks only, no bpmn_file needed).
-        process_key: Workflow ID served by the workflow engine
-                     (e.g. 'loan_approval_stub').
-        ordo: Ordo engine instance.  Defaults to ``MCPOrdo()`` (in-process stub).
-              Pass ``MCPOrdoExternal(command, args)`` to connect to a real external server.
-
-    Returns:
-        Configured FlowAgent wired to the chosen Ordo engine + MCP2MCPMediator.
-    """
+def load_ordo_flow_from_yaml(yaml_file: str, process_key: str) -> "FlowAgent":
+    """Load a FlowAgent backed by MCPOrdo from a YAML task-only configuration."""
     config = FlowConfig.from_yaml(yaml_file)
-    return config.to_ordo_flow_agent(process_key, ordo=ordo)
+    return config.to_ordo_flow_agent(process_key)
 
 
 def load_flow_from_yaml(yaml_file: str) -> FlowAgent:

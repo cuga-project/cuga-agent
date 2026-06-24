@@ -73,61 +73,27 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
 
         elif agent_config.get("type") == "flow_agent_ordo":
             # Ordo FlowAgent — task-only YAML config; BPMN execution is delegated
-            # to an Ordo-compatible MCP server via MCP2MCPMediator.
-            #
-            # When `mcp_server:` is present the FlowAgent connects to a *real*
-            # external workflow engine via stdio transport instead of the
-            # built-in in-process WorkflowStubStore.
-            #
-            # YAML example:
-            #   - name: ordo_flow_agent
-            #     type: flow_agent_ordo
-            #     flow_config: "ordo_config.yaml"
-            #     process_key: "loan_approval_stub"
-            #     mcp_server:          # optional — omit to use the in-process stub
-            #       command: "ro"
-            #       args: ["mcp"]
-            #       env:               # optional extra environment variables
-            #         RO_LOG_LEVEL: "info"
+            # to MCPOrdo via OrdoEngine + MCP2MCPMediator.
             flow_config_rel = agent_config.get("flow_config")
             if not flow_config_rel:
                 raise ValueError(
                     f"Agent '{agent_name}' has type: flow_agent_ordo but no flow_config path"
                 )
 
-            process_key = agent_config.get("process_key") or agent_name
+            ordo_workflow_id = agent_config.get("ordo_workflow_id") or agent_name
 
             from pathlib import Path
             from cuga.backend.cuga_graph.nodes.cuga_flow.flow_config import load_ordo_flow_from_yaml
 
             flow_config_path = str(Path(yaml_path).parent / flow_config_rel)
-
-            # Build the ordo engine — real external server or in-process stub
-            mcp_server_cfg = agent_config.get("mcp_server")
-            if mcp_server_cfg:
-                from cuga.backend.server.cuga_flo_mcp.ordo import MCPOrdoExternal
-
-                ordo = MCPOrdoExternal(
-                    command=mcp_server_cfg["command"],
-                    args=mcp_server_cfg.get("args") or [],
-                    env=mcp_server_cfg.get("env") or None,
-                )
-                engine_label = f"MCPOrdoExternal(command={mcp_server_cfg['command']!r})"
-            else:
-                ordo = None  # load_ordo_flow_from_yaml defaults to MCPOrdo() stub
-                engine_label = "MCPOrdo (in-process stub)"
-
             logger.info(
                 f"Instantiating ordo FlowAgent '{agent_name}' from {flow_config_path} "
-                f"(process_key='{process_key}', engine={engine_label})"
+                f"(workflow_id='{ordo_workflow_id}')"
             )
             try:
-                agent = load_ordo_flow_from_yaml(flow_config_path, process_key, ordo=ordo)
+                agent = load_ordo_flow_from_yaml(flow_config_path, ordo_workflow_id)
                 agents[agent_name] = agent
-                logger.info(
-                    f"✅ Ordo FlowAgent '{agent_name}' ready "
-                    f"({engine_label} + MCP2MCPMediator)"
-                )
+                logger.info(f"✅ Ordo FlowAgent '{agent_name}' ready (MCPOrdo + MCP2MCPMediator)")
             except Exception as e:
                 logger.error(
                     f"Failed to instantiate ordo FlowAgent '{agent_name}' "
