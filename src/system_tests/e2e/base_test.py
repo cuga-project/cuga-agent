@@ -734,6 +734,17 @@ class BaseTestServerStream(unittest.IsolatedAsyncioTestCase):
 
         return all_events
 
+    @staticmethod
+    def get_state_chat_messages_count(state_response: dict) -> int:
+        """Extract chat_messages_count from /api/agent/state response."""
+        state = state_response.get("state") or {}
+        return int(state.get("chat_messages_count") or 0)
+
+    @staticmethod
+    def get_state_variables_count(state_response: dict) -> int:
+        """Extract variables_count from /api/agent/state response."""
+        return int(state_response.get("variables_count") or 0)
+
     def _assert_answer_event(
         self,
         all_events: List[Dict[str, Any]],

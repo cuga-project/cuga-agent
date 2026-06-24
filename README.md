@@ -22,8 +22,8 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 [![Documentation](https://shields.io/badge/Documentation-Available-blue?logo=gitbook&style=for-the-badge)](https://docs.cuga.dev)
 [![Discord](https://shields.io/badge/Discord-Join-blue?logo=discord&style=for-the-badge)](https://discord.gg/aH6rAEEW)
 
-[![AppWorld](https://img.shields.io/badge/%F0%9F%A5%87%20%231%20on-AppWorld-gold?style=for-the-badge)](https://appworld.dev/leaderboard)
-[![WebArena](https://img.shields.io/badge/Top--tier%20on-WebArena-silver?style=for-the-badge)](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=0#gid=0)
+[![AppWorld](https://img.shields.io/badge/%F0%9F%A5%87%20%231%20(07%2F25-02%2F26)%20on-AppWorld-gold?style=for-the-badge)](https://appworld.dev/leaderboard)
+[![WebArena](https://img.shields.io/badge/%F0%9F%A5%87%20%231%20(02%2F25-09%2F25)%20on-WebArena-gold?style=for-the-badge)](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=0#gid=0)
 
 </div>
 
@@ -56,8 +56,8 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 
 CUGA achieves state-of-the-art performance on leading benchmarks:
 
-- **#1 on [AppWorld](https://appworld.dev/leaderboard)** — a benchmark with 750 real-world tasks across 457 APIs
-- **Top-tier on [WebArena](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=0#gid=0)** (#1 from 02/25 - 09/25) — a complex benchmark for autonomous web agents across application domains
+- **#1 on [AppWorld](https://appworld.dev/leaderboard)** (#1 from 07/25 - 02/26) — a benchmark with 750 real-world tasks across 457 APIs
+- **#1 on [WebArena](https://docs.google.com/spreadsheets/d/1M801lEpBbKSNwP-vDBkC_pF7LdyGU1f_ufZb_NWNBZQ/edit?gid=0#gid=0)** (#1 from 02/25 - 09/25) — a complex benchmark for autonomous web agents across application domains
 
 ### Key Features & Capabilities
 

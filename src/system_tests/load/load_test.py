@@ -4,6 +4,12 @@ import time
 import os
 import httpx
 from system_tests.e2e.base_test import BaseTestServerStream, SERVER_URL
+from system_tests.load.conftest import resolve_load_test_users
+from system_tests.load.metrics import (
+    LoadTestConcurrencyReport,
+    UserLoadTimings,
+    print_load_test_report,
+)
 
 STATE_ENDPOINT = f"{SERVER_URL}/api/agent/state"
 
@@ -28,11 +34,13 @@ class LoadTest(BaseTestServerStream):
 
     # Flag to enable/disable chat_messages isolation checks
     check_chat_messages_isolation = False
+    num_users = 5
 
     # E2B mode flag - set via environment variable CUGA_E2B_MODE=true
     test_e2b_mode = os.getenv("CUGA_E2B_MODE", "false").lower() == "true"
 
     def setUp(self):
+        self.num_users = resolve_load_test_users(self.num_users)
         super().setUp()
         if self.test_e2b_mode:
             from cuga.config import settings as cuga_settings
@@ -75,7 +83,7 @@ class LoadTest(BaseTestServerStream):
         try:
             state_response = await self.get_agent_state(thread_id)
             my_variables = state_response.get("variables", {})
-            my_chat_messages_count = state_response.get("chat_messages_count", 0)
+            my_chat_messages_count = self.get_state_chat_messages_count(state_response)
 
             # Check that we actually have variables
             if not my_variables:
@@ -105,123 +113,128 @@ class LoadTest(BaseTestServerStream):
             return False, f"User {user_id}: Error validating isolation: {e}"
 
     async def run_single_user_task(
-        self, user_id: int, thread_id: str, all_thread_ids: list[str]
-    ) -> tuple[bool, str]:
+        self, user_id: int, thread_id: str, all_thread_ids: list[str], batch_start: float
+    ) -> tuple[bool, str, UserLoadTimings | None]:
         """
         Runs a task for a single user and verifies the result.
-        Returns (success, error_message)
+        Returns (success, error_message, timings)
         """
         query = "list all my accounts, how many are there?"
         expected_keywords = ["50"]
+        timings = UserLoadTimings(user_id=user_id, thread_id=thread_id, started_at=time.monotonic())
 
         print(f"User {user_id} (Thread {thread_id}): Starting task...")
 
         try:
-            # Validate state is empty at start (only if state isolation testing is enabled)
             if self.test_state_isolation:
                 initial_state = await self.get_agent_state(thread_id)
-                initial_variables_count = initial_state.get("variables_count", 0)
-                initial_chat_messages_count = initial_state.get("chat_messages_count", 0)
+                initial_variables_count = self.get_state_variables_count(initial_state)
+                initial_chat_messages_count = self.get_state_chat_messages_count(initial_state)
 
                 if initial_variables_count > 0:
                     return (
                         False,
                         f"User {user_id}: State should be empty at start, but found {initial_variables_count} variables",
+                        timings,
                     )
                 if self.check_chat_messages_isolation and initial_chat_messages_count > 0:
                     return (
                         False,
                         f"User {user_id}: chat_messages should be empty at start, but found {initial_chat_messages_count}",
+                        timings,
                     )
 
-            # Run task using base class method with thread_id
+            primary_started = time.monotonic()
             all_events = await self.run_task(query=query, thread_id=thread_id, verbose=False, timeout=60.0)
+            timings.primary_finished_at = time.monotonic()
+            timings.primary_duration_s = timings.primary_finished_at - primary_started
 
-            # Verify result using base class assertion
             try:
                 self._assert_answer_event(all_events, expected_keywords=expected_keywords)
             except AssertionError as e:
-                return False, f"User {user_id}: {str(e)}"
+                return False, f"User {user_id}: {str(e)}", timings
 
-            # Validate state isolation (only if testing is enabled)
             if self.test_state_isolation:
-                # Wait a moment for the graph to checkpoint the final state
-                # LangGraph checkpoints state after node completion, not during execution
+                state_check_started = time.monotonic()
                 await asyncio.sleep(2)
 
-                # Validate state after completion has variables and chat messages
                 final_state = await self.get_agent_state(thread_id)
-                final_variables_count = final_state.get("variables_count", 0)
-                final_chat_messages_count = final_state.get("chat_messages_count", 0)
+                final_variables_count = self.get_state_variables_count(final_state)
+                final_chat_messages_count = self.get_state_chat_messages_count(final_state)
+                timings.state_checked_at = time.monotonic()
+                timings.state_check_duration_s = timings.state_checked_at - state_check_started
 
                 if final_variables_count == 0:
                     return (
                         False,
                         f"User {user_id}: State should have variables after completion, but found 0 variables",
+                        timings,
                     )
                 if self.check_chat_messages_isolation and final_chat_messages_count == 0:
                     return (
                         False,
                         f"User {user_id}: State should have chat_messages after completion, but found 0",
+                        timings,
                     )
 
-                # Validate isolation from other threads
                 other_thread_ids = [tid for tid in all_thread_ids if tid != thread_id]
                 is_isolated, isolation_error = await self.validate_state_isolation(
                     user_id, thread_id, other_thread_ids
                 )
                 if not is_isolated:
-                    return False, isolation_error
+                    return False, isolation_error, timings
 
                 print(f"User {user_id}: ✓ State is isolated from other threads")
 
-            # Send followup question
             print(f"User {user_id} (Thread {thread_id}): Sending followup question...")
             followup_query = "how many accounts did we retrieve?"
             followup_expected_keywords = ["50"]
 
-            # Run followup task using base class method
+            followup_started = time.monotonic()
             all_followup_events = await self.run_task(
                 query=followup_query, thread_id=thread_id, verbose=False, timeout=60.0
             )
+            timings.followup_duration_s = time.monotonic() - followup_started
 
-            # Verify followup result using base class assertion
             try:
                 self._assert_answer_event(all_followup_events, expected_keywords=followup_expected_keywords)
             except AssertionError as e:
-                return False, f"User {user_id}: Followup - {str(e)}"
+                return False, f"User {user_id}: Followup - {str(e)}", timings
+
+            timings.finished_at = time.monotonic()
+            timings.total_duration_s = timings.finished_at - timings.started_at
 
             print(f"User {user_id}: ✓ Followup question answered correctly")
             print(f"User {user_id}: Success!")
-            return True, ""
+            return True, "", timings
 
         except Exception as e:
-            return False, f"User {user_id}: Exception: {e}"
+            timings.finished_at = time.monotonic()
+            timings.total_duration_s = timings.finished_at - timings.started_at
+            return False, f"User {user_id}: Exception: {e}", timings
 
     async def test_concurrent_users(self):
         """
         Simulate 20 concurrent users running the same task.
         Validates state isolation between threads.
         """
-        num_users = 5
+        num_users = self.num_users
         print(f"\n--- Starting Load Test with {num_users} users ---")
 
-        start_time = time.time()
-
-        # Generate all thread_ids upfront
+        batch_start = time.monotonic()
         thread_ids = [str(uuid.uuid4()) for _ in range(num_users)]
 
         tasks = []
         for i in range(num_users):
-            tasks.append(self.run_single_user_task(i, thread_ids[i], thread_ids))
+            tasks.append(self.run_single_user_task(i, thread_ids[i], thread_ids, batch_start))
 
         results = await asyncio.gather(*tasks)
 
-        end_time = time.time()
-        duration = end_time - start_time
+        duration = time.monotonic() - batch_start
 
-        success_results = [(success, error) for success, error in results if success]
-        failure_results = [(success, error) for success, error in results if not success]
+        success_results = [(success, error, timings) for success, error, timings in results if success]
+        failure_results = [(success, error) for success, error, _ in results if not success]
+        user_timings = [timings for _, _, timings in success_results if timings is not None]
 
         success_count = len(success_results)
         failure_count = len(failure_results)
@@ -233,11 +246,20 @@ class LoadTest(BaseTestServerStream):
 
         if failure_count > 0:
             print("\n--- Failure Details ---")
-            for i, (success, error) in enumerate(failure_results):
+            for i, (_, error) in enumerate(failure_results):
                 print(f"Failure {i + 1}: {error}")
-        # await asyncio.sleep(0)
+
         self.assertEqual(
             failure_count,
             0,
             f"{failure_count} users failed the test. Errors: {[e for _, e in failure_results]}",
         )
+
+        if user_timings:
+            report = LoadTestConcurrencyReport.build(
+                num_users=num_users,
+                wall_clock_s=duration,
+                batch_start=batch_start,
+                timings=user_timings,
+            )
+            print_load_test_report(report, title="Load Test Concurrency Report")

@@ -12,6 +12,10 @@ from dotenv import find_dotenv, load_dotenv
 from dynaconf import Dynaconf, Validator
 from loguru import logger
 
+# Default HTTP timeout for OpenAI/Azure/OpenRouter LLM clients (seconds).
+# One second above common 60s gateway limits so the client fails cleanly first.
+DEFAULT_LLM_HTTP_TIMEOUT = 61
+
 # ---------------------------------------------------------------------------
 # Package root & path helper (must be defined BEFORE first use)
 # ---------------------------------------------------------------------------
@@ -200,6 +204,7 @@ validators = [
     Validator("evolve.save_on_failure", default=True),
     Validator("evolve.async_save", default=True),
     Validator("evolve.timeout", default=30.0),
+    Validator("connections.llm_http_timeout", default=DEFAULT_LLM_HTTP_TIMEOUT),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")

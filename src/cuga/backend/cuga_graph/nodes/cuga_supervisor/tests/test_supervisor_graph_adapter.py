@@ -138,6 +138,26 @@ def test_build_execute_node_returns_async_callable():
     assert asyncio.iscoroutinefunction(node)
 
 
+def test_prepare_system_content_injects_run_local_task_todos():
+    adapter = _make_adapter()
+    state = SimpleNamespace(task_todos=[{"text": "Delegate to CRM", "status": "pending"}])
+    content = adapter.prepare_system_content(state, {}, "System")
+    assert "Delegate to CRM" in content
+
+
+def test_prepare_system_content_without_todos_returns_base():
+    adapter = _make_adapter()
+    state = SimpleNamespace(task_todos=None)
+    assert adapter.prepare_system_content(state, {}, "System") == "System"
+
+
+def test_get_invoke_config_returns_callbacks():
+    cb = object()
+    adapter = _make_adapter()
+    adapter._base_callbacks = [cb]
+    assert adapter.get_invoke_config({})["callbacks"] == [cb]
+
+
 # ── 7. resolve_names_from_caller_frame helper ──────────────────────────────
 
 
