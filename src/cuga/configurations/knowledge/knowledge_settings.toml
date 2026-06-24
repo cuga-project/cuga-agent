@@ -41,11 +41,13 @@ concurrency = 4
 # snapshot-safety. Reserved keys (model, api_key, base_url, api_base) are
 # filtered out by the adapter to prevent override of the dedicated fields.
 extra_params = {}
-# Autodetect available GPU (CUDA on NVIDIA, CoreML on Apple Silicon) and engage
-# it for the local embedding inference (fastembed ONNX / huggingface PyTorch).
-# Set false to force CPU regardless of hardware. Has no effect on cloud
-# providers (openai/openrouter/ollama). The detected device is surfaced via
-# GET /api/manage/knowledge/accelerator and the UI shows it next to this toggle.
+# Autodetect available GPU and engage it for local inference (fastembed ONNX /
+# huggingface PyTorch). MPS/CoreML on Apple Silicon works out of the box; CUDA
+# needs the GPU ONNX runtime, which the default CPU install omits — run the GPU
+# image (Dockerfile.gpu) or `uv sync --extra gpu --no-install-package onnxruntime`.
+# Set false to force CPU. No effect on cloud providers (openai/openrouter/ollama).
+# The detected device is surfaced via GET /api/manage/knowledge/accelerator and
+# the UI shows it next to this toggle.
 use_gpu = true
 
 [knowledge.chunking]

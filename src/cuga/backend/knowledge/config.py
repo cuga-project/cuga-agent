@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import os
 import re
 import unicodedata
 from dataclasses import dataclass, field, fields as dc_fields
@@ -1032,7 +1033,13 @@ class KnowledgeConfig:
             max_search_attempts=profile_search.get(
                 "max_search_attempts", search.get("max_search_attempts", 3)
             ),
-            max_ingest_workers=profile_engine.get("max_ingest_workers", engine.get("max_ingest_workers", 2)),
+            # CUGA_MAX_INGEST_WORKERS env wins so CLI/container ops can tune
+            # ingest concurrency without editing TOML. Bad value fails loudly
+            # at startup (int cast + the >=1 check in __post_init__).
+            max_ingest_workers=int(
+                os.environ.get("CUGA_MAX_INGEST_WORKERS")
+                or profile_engine.get("max_ingest_workers", engine.get("max_ingest_workers", 2))
+            ),
             max_pending_tasks=engine.get("max_pending_tasks", 10),
             embedding_batch_size=profile_embeddings.get("batch_size", embeddings.get("batch_size", 64)),
             embedding_concurrency=profile_embeddings.get("concurrency", embeddings.get("concurrency", 4)),

@@ -1349,6 +1349,12 @@ class KnowledgeEngine:
         # Per-collection async ingest locks
         self._collection_locks: dict[str, asyncio.Lock] = {}
 
+        # Bounds concurrent Docling parses process-wide (the heavy, GPU/CPU-bound
+        # step). Inserts still serialize per-collection via the lock above.
+        # ponytail: one global semaphore; per-collection parse limits if a single
+        # collection ever needs to starve others.
+        self._ingest_sem = asyncio.Semaphore(config.max_ingest_workers)
+
         # Active tasks for cancellation
         self._active_tasks: dict[str, asyncio.Event] = {}
 
@@ -1427,18 +1433,20 @@ class KnowledgeEngine:
                 else:
                     # Case (b): CPU image, GPU requested.
                     msg = (
-                        "use_gpu=True but this is the CPU image — embed, reranker, "
-                        "and Docling will all run on CPU. GPU support is not yet "
-                        "shipped (deferred to a follow-up release); set "
-                        "use_gpu=False to silence this warning."
+                        "use_gpu=True but onnxruntime is CPU-only — embed, reranker, "
+                        "and Docling will all run on CPU. Run the GPU image "
+                        "(Dockerfile.gpu) or, on a CUDA host, `uv sync --extra gpu "
+                        "--no-install-package onnxruntime`. Or set use_gpu=False to "
+                        "silence this warning."
                     )
             elif only_cpu_onnx and _torch_cuda:
                 # Case (c): partial GPU.
                 msg = (
                     "use_gpu=True: torch sees CUDA but onnxruntime is CPU-only — "
                     "reranker + Docling-transformers will use CUDA, but fastembed "
-                    "(embedder) + Docling-onnx layout will run on CPU. GPU runtime "
-                    "support is deferred to a follow-up release."
+                    "(embedder) + Docling-onnx layout will run on CPU. Add the GPU "
+                    "runtime: `uv sync --extra gpu --no-install-package onnxruntime` "
+                    "(or run Dockerfile.gpu)."
                 )
 
             if msg:
@@ -1877,8 +1885,10 @@ class KnowledgeEngine:
     ) -> None:
         """Run ingestion for a single file in a background thread.
 
-        Serialized per-collection via asyncio.Lock. Docling parsing still runs in a
-        thread to avoid blocking the event loop.
+        Parsing runs concurrently, bounded by ``_ingest_sem`` (max_ingest_workers).
+        Only the vector-store insert is serialized per-collection (lock taken
+        inside ``_ingest_inner``). Docling parsing runs in a thread to avoid
+        blocking the event loop.
         """
         cancel_event = asyncio.Event()
         self._active_tasks[task_id] = cancel_event
@@ -1886,9 +1896,9 @@ class KnowledgeEngine:
         coll = _sanitize_collection(collection)
         await self._ensure_metadata_ready()
 
-        async with self._get_collection_lock(coll):
-            await self._ensure_collection_config(coll)
-            await self._ensure_vector_store_cached(coll)
+        # Parse runs concurrently (bounded by the semaphore); the per-collection
+        # lock is taken inside _ingest_inner around just the vector-store insert.
+        async with self._ingest_sem:
             await self._ingest_inner(
                 coll,
                 file_path,
@@ -2091,15 +2101,21 @@ class KnowledgeEngine:
                 f"collection {collection} for {filename}"
             )
             t_insert_total = time.monotonic()
-            result = await self._insert_documents_async(
-                collection,
-                docs,
-                source_id,
-                filename,
-                replace_duplicates,
-                stage_timings=stage_timings,
-                progress_cb=progress_cb,
-            )
+            # Per-collection critical section: ensure config/vector-store exist
+            # and insert. Dedup correctness depends on this being serialized;
+            # the parse above is not.
+            async with self._get_collection_lock(collection):
+                await self._ensure_collection_config(collection)
+                await self._ensure_vector_store_cached(collection)
+                result = await self._insert_documents_async(
+                    collection,
+                    docs,
+                    source_id,
+                    filename,
+                    replace_duplicates,
+                    stage_timings=stage_timings,
+                    progress_cb=progress_cb,
+                )
             stage_timings["insert_total_s"] = round(time.monotonic() - t_insert_total, 3)
 
             # Drain any in-flight progress emits before the completion
@@ -3470,18 +3486,22 @@ class KnowledgeEngine:
                 task_info = await self._create_reindex_task_entry(collection, file_path.name)
                 task_ids.append(task_info["task_id"])
 
-            # Phase 3: Sequential background worker. Clears flags on completion.
+            # Background worker. Files re-ingest concurrently — _run_ingest is
+            # bounded by _ingest_sem (max_ingest_workers), so this amortizes the
+            # GPU/CPU across files instead of one-at-a-time. return_exceptions
+            # keeps one bad file from aborting the rest (_ingest_inner already
+            # marks its own task failed).
             async def _reindex_worker():
                 try:
-                    for fp, tid in zip(file_list, task_ids):
-                        await self._run_ingest(
-                            collection,
-                            fp,
-                            fp.name,
-                            tid,
-                            replace_duplicates=True,
-                            skip_file_copy=True,
-                        )
+                    await asyncio.gather(
+                        *(
+                            self._run_ingest(
+                                collection, fp, fp.name, tid, replace_duplicates=True, skip_file_copy=True
+                            )
+                            for fp, tid in zip(file_list, task_ids)
+                        ),
+                        return_exceptions=True,
+                    )
                 finally:
                     self._reindex_in_progress.discard(collection)
                     self._reindex_deferred.discard(collection)

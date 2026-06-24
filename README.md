@@ -515,6 +515,8 @@ CUGA includes a built-in knowledge base powered by LangChain and local vector st
 
 When enabled, the agent can search, ingest, and manage documents.
 
+> **GPU (optional):** ingestion auto-uses MPS/CoreML on Apple Silicon. For NVIDIA, run the GPU image — `docker build -f Dockerfile.gpu -t cuga:gpu . && docker run --gpus all cuga:gpu` — and keep `use_gpu = true`; no extra steps. (Local CUDA host without Docker: `uv sync --extra gpu --no-install-package onnxruntime`.)
+
 **Try the knowledge demo:** same as the main demo but with the knowledge engine on (upload documents and query them):
 
 ```bash

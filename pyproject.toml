@@ -77,6 +77,15 @@ evolve = ["altk-evolve>=1.1.0; python_version>='3.12'"]
 # OpenLit (PyPI) pins openai<2; litellm 1.83.x needs openai 2.x — cannot both be core deps for pip/uvx.
 # Note: When using observability extra, ensure python-dotenv>=1.1.0 is installed to avoid conflicts
 observability = ["openlit>=1.40.3"]
+# Opt-in CUDA runtime for the knowledge engine (fastembed + Docling-onnx layout).
+# onnxruntime-gpu ships the same `onnxruntime` module as the base CPU dep, so it
+# must REPLACE it — sync with the CPU one skipped so it can't shadow the GPU one:
+#   uv sync --extra gpu --no-install-package onnxruntime
+# That is exactly what Dockerfile.gpu does; most users just run the GPU image.
+# ponytail: onnxruntime-gpu only (covers embeddings + onnx layout). torch stays
+# CPU-pinned — add a cu-index torch source here if Docling-*transformers* layout
+# on CUDA is ever needed.
+gpu = ["onnxruntime-gpu"]
 
 [project.urls]
 Homepage = "https://cuga.dev"

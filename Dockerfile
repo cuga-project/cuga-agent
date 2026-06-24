@@ -35,10 +35,10 @@ COPY docs/ ./docs/
 
 # Install dependencies. CPU-only by default — fine for laptops, demos,
 # and HF Spaces. For a CUDA cluster, build the parallel ``Dockerfile.gpu``
-# (nvidia/cuda runtime base + ``uv sync --extra gpu``) — the bolt-on
-# ``uv pip install`` swap that used to live here was lockfile-unaware and
-# silently reverted to CPU on any subsequent ``uv sync``; the separate
-# Dockerfile is the lockfile-managed pattern. See ``Dockerfile.gpu``.
+# (nvidia/cuda runtime base + ``uv sync --extra gpu --no-install-package
+# onnxruntime``) — that swaps the CPU onnxruntime for onnxruntime-gpu in a
+# lockfile-managed way, instead of a bolt-on ``uv pip install`` that a later
+# ``uv sync`` would silently revert to CPU.
 RUN uv sync
 
 # Create cuga_workspace directory
