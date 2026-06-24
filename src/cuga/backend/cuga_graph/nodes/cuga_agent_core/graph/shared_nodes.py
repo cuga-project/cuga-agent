@@ -182,7 +182,9 @@ def create_call_model_node(
         content, reasoning = adapter.normalize_response(response)
 
         # ── Extract code ───────────────────────────────────────────────────
-        code = extract_code_from_model_response(content, reasoning)
+        code = extract_code_from_model_response(
+            content, reasoning, tools_needing_probing=adapter.get_tools_needing_probing()
+        )
 
         adapter.on_response_processed(state, code, content)
 
