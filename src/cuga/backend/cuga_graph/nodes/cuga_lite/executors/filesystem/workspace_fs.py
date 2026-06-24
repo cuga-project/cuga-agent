@@ -91,15 +91,53 @@ def _is_python_script_path(path: str) -> bool:
     return PurePosixPath(path.replace("\\", "/")).suffix.lower() == ".py"
 
 
-def _normalize_python_script_content(content: str) -> str:
-    """Strip a uniform block-indent agents add inside triple-quoted script strings.
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
 
-    ``textwrap.dedent`` removes only the common leading whitespace, so it is a
-    no-op on already-correct scripts (top-level lines at column 0) and only
-    rescues the case where every line was indented to match the code block.
+
+def _strip_block_indent(lines: list[str], block: int) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        if _line_indent(line) >= block and line[:block].isspace():
+            out.append(line[block:])
+        else:
+            out.append(line)
+    return out
+
+
+def _python_compiles(content: str) -> bool:
+    try:
+        compile(content, "<script>", "exec")
+    except SyntaxError:
+        return False
+    return True
+
+
+def _peel_agent_block_indent(content: str) -> str:
+    """Strip one block-indent level when imports are at column 0 and the body is indented."""
+    lines = content.splitlines()
+    non_blank = [(i, _line_indent(ln)) for i, ln in enumerate(lines) if ln.strip()]
+    if not non_blank or non_blank[0][1] != 0:
+        return content
+    later_indents = [ind for _, ind in non_blank[1:] if ind > 0]
+    if not later_indents:
+        return content
+    block = min(later_indents)
+    suffix = "\n" if content.endswith("\n") else ""
+    return "\n".join(_strip_block_indent(lines, block)) + suffix
+
+
+def _normalize_python_script_content(content: str) -> str:
+    """Strip block-indent agents add inside triple-quoted script strings.
+
+    ``textwrap.dedent`` handles the all-lines-indented case. Agents often put
+    imports at column 0 and indent the rest one block level; peel that
+    structurally so real syntax errors surface at the correct line.
     """
-    # ponytail: stdlib dedent is the whole fix; leading blank lines are harmless to drop
-    return textwrap.dedent(content).lstrip("\n")
+    content = textwrap.dedent(content).lstrip("\n")
+    if _python_compiles(content):
+        return content
+    return _peel_agent_block_indent(content)
 
 
 def _validate_python_script(content: str, path: str) -> str | None:
@@ -107,8 +145,17 @@ def _validate_python_script(content: str, path: str) -> str | None:
     try:
         compile(content, path, "exec")
     except SyntaxError as exc:
-        line = exc.lineno or "?"
-        return f"Python syntax error at line {line}: {exc.msg}"
+        line_no = exc.lineno or "?"
+        msg = f"Python syntax error at line {line_no}: {exc.msg}"
+        lines = content.splitlines()
+        if isinstance(line_no, int) and 1 <= line_no <= len(lines):
+            msg += f"\n  >>> {lines[line_no - 1].rstrip()}"
+        if "unexpected indent" in (exc.msg or "").lower():
+            msg += (
+                " When building script strings in a code block, do not indent lines inside "
+                '"""...""" — top-level statements must start at column 0.'
+            )
+        return msg
     return None
 
 
@@ -140,11 +187,7 @@ class WorkspaceFilesystem:
                 content = _normalize_python_script_content(content)
                 py_err = _validate_python_script(content, path)
                 if py_err:
-                    return (
-                        f"[write_file error] {py_err}. "
-                        "When building script strings in a code block, do not indent lines inside "
-                        '"""...""" — top-level statements must start at column 0. Rewrite and retry.'
-                    )
+                    return f"[write_file error] {py_err}. Rewrite and retry."
             display = await self.backend.write_text(path, content, operation="write_file")
             return f"File written: {display} ({len(content)} chars)"
         except Exception as exc:

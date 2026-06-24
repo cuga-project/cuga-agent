@@ -38,12 +38,13 @@ def test_sanitize_upload_filename_normalizes_browser_download_name() -> None:
 def test_merge_manifest_replaces_same_name() -> None:
     manifest = {
         "thread_id": "t1",
-        "files": [{"name": "a.json", "path": "/workspace/uploads/a.json", "size_bytes": 1}],
+        "files": [{"name": "a.json", "path": "./uploads/a.json", "size_bytes": 1}],
     }
     merged = wu._merge_manifest_entry(manifest, thread_id="t1", filename="a.json", size_bytes=99)
     assert len(merged["files"]) == 1
     assert merged["files"][0]["size_bytes"] == 99
-    assert merged["files"][0]["shell_path"] == "./uploads/a.json"
+    assert merged["files"][0]["path"] == "./uploads/a.json"
+    assert "shell_path" not in merged["files"][0]
 
 
 @pytest.mark.asyncio
@@ -62,7 +63,8 @@ async def test_upload_workspace_bytes_host_mode(tmp_path: Path, monkeypatch: pyt
     manifest = json.loads(manifest_path.read_text())
     assert manifest["thread_id"] == "thread-1"
     assert manifest["files"][0]["name"] == "instana.json"
-    assert manifest["files"][0]["shell_path"] == "./uploads/instana.json"
+    assert manifest["files"][0]["path"] == "./uploads/instana.json"
+    assert "shell_path" not in manifest["files"][0]
 
 
 @pytest.mark.asyncio
@@ -79,15 +81,32 @@ def test_format_upload_context_lists_files(tmp_path: Path, monkeypatch: pytest.M
     uploads.mkdir(parents=True)
     manifest = {
         "thread_id": "t1",
-        "files": [{"name": "a.json", "path": "/workspace/uploads/a.json", "size_bytes": 2 * 1024 * 1024}],
+        "files": [{"name": "a.json", "path": "./uploads/a.json", "size_bytes": 2 * 1024 * 1024}],
     }
     (uploads / ".manifest.json").write_text(json.dumps(manifest))
 
     ctx = wu.format_upload_context("t1")
     assert ctx is not None
-    assert "/workspace/uploads/a.json" in ctx
     assert "./uploads/a.json" in ctx
-    assert "shell_path" in ctx
+    assert "shell_path" not in ctx
+    assert "as-is" in ctx
+
+
+def test_format_upload_context_normalizes_legacy_virtual_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    uploads = tmp_path / "cuga_workspace" / "t1" / "uploads"
+    uploads.mkdir(parents=True)
+    manifest = {
+        "thread_id": "t1",
+        "files": [{"name": "a.json", "path": "/workspace/uploads/a.json", "size_bytes": 100}],
+    }
+    (uploads / ".manifest.json").write_text(json.dumps(manifest))
+
+    ctx = wu.format_upload_context("t1")
+    assert ctx is not None
+    assert "./uploads/a.json" in ctx
 
 
 @pytest.mark.asyncio

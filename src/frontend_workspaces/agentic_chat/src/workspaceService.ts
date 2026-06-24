@@ -72,6 +72,11 @@ class WorkspaceService {
       this.lastFetchTime = 0;
     }
 
+    if (forceRefresh) {
+      this.cachedData = null;
+      this.lastFetchTime = 0;
+    }
+
     const now = Date.now();
     const timeSinceLastFetch = now - this.lastFetchTime;
 
@@ -80,20 +85,18 @@ class WorkspaceService {
       return this.cachedData;
     }
 
-    // If there's already a pending request, wait for it instead of making a new one
-    if (this.pendingRequest) {
+    // Coalesce concurrent polls; manual refresh always hits the network
+    if (this.pendingRequest && !forceRefresh) {
       return this.pendingRequest;
     }
 
-    // Enforce minimum interval even for forced refresh
-    if (timeSinceLastFetch < this.MIN_INTERVAL_MS) {
+    if (!forceRefresh && timeSinceLastFetch < this.MIN_INTERVAL_MS) {
       const waitTime = this.MIN_INTERVAL_MS - timeSinceLastFetch;
       await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
-    // Make the actual request
-    this.pendingRequest = this.fetchWorkspaceData(threadId);
-    
+    this.pendingRequest = this.fetchWorkspaceData(threadId, forceRefresh);
+
     try {
       const data = await this.pendingRequest;
       this.cachedData = data;
@@ -108,10 +111,13 @@ class WorkspaceService {
   /**
    * Internal method to actually fetch data from the API
    */
-  private async fetchWorkspaceData(threadId?: string): Promise<WorkspaceData> {
+  private async fetchWorkspaceData(threadId?: string, forceRefresh = false): Promise<WorkspaceData> {
     try {
-      const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : '';
-      const response = await apiFetch(`/api/workspace/tree${q}`);
+      const params = new URLSearchParams();
+      if (threadId) params.set('thread_id', threadId);
+      if (forceRefresh) params.set('_', String(Date.now()));
+      const q = params.toString();
+      const response = await apiFetch(`/api/workspace/tree${q ? `?${q}` : ''}`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
@@ -122,11 +128,10 @@ class WorkspaceService {
       };
     } catch (error) {
       console.error('Error fetching workspace tree:', error);
-      // Return cached data if available, otherwise return empty tree
-      if (this.cachedData) {
+      if (!forceRefresh && this.cachedData) {
         return this.cachedData;
       }
-      return { tree: [], timestamp: Date.now() };
+      throw error;
     }
   }
 

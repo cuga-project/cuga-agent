@@ -713,19 +713,25 @@ export function ChatLanding() {
     })();
   }, []);
 
-  const fetchWorkspaceTree = useCallback(async () => {
+  const fetchWorkspaceTree = useCallback(async (forceRefresh = false) => {
     try {
-      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined);
+      if (forceRefresh) setWorkspaceTreeLoading(true);
+      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, forceRefresh);
       if (res.ok) {
         const data = await res.json();
         setWorkspaceTree(data.tree || []);
+      } else if (forceRefresh) {
+        addToast("warning", "Workspace refresh failed", `${res.status} ${res.statusText}`);
       }
     } catch (err) {
       console.error("Error fetching workspace tree:", err);
+      if (forceRefresh) {
+        addToast("error", "Workspace refresh failed", err instanceof Error ? err.message : "Unknown error");
+      }
     } finally {
       setWorkspaceTreeLoading(false);
     }
-  }, [effectiveChatThreadId]);
+  }, [addToast, effectiveChatThreadId]);
 
   useEffect(() => {
     fetchWorkspaceTree();
@@ -1388,7 +1394,7 @@ export function ChatLanding() {
                     label="Refresh workspace"
                     kind="ghost"
                     size="sm"
-                    onClick={() => void fetchWorkspaceTree()}
+                    onClick={() => void fetchWorkspaceTree(true)}
                   >
                     <Renew size={16} />
                   </IconButton>

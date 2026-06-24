@@ -33,6 +33,9 @@ from loguru import logger
 # Canonical workspace path logic now lives in the consolidated filesystem
 # package. Re-exported here under the historical names for back-compat
 # (external imports of ``local_thread_workspace_root`` / ``_resolve_workspace_path``).
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.run_output import (
+    format_run_command_output,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     CUGA_WORKSPACE_DIRNAME,
     VIRTUAL_WORKSPACE_ROOT,
@@ -187,7 +190,7 @@ class LocalSandboxExecutor:
 
     async def _run_command(
         self, cmd: str, *, thread_id: Optional[str] = None, timeout: int = 120
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, int]:
         cmd = normalize_shell_command_paths(cmd)
         workspace_root = local_thread_workspace_root(thread_id)
         workspace_root.mkdir(parents=True, exist_ok=True)
@@ -217,9 +220,10 @@ class LocalSandboxExecutor:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             stdout_text = stdout.decode(errors="replace")
             stderr_text = stderr.decode(errors="replace")
-            if proc.returncode != 0:
-                stderr_text = (stderr_text + "\n" if stderr_text else "") + f"(exit code {proc.returncode})"
-            return stdout_text, stderr_text
+            returncode = proc.returncode or 0
+            if returncode != 0:
+                stderr_text = (stderr_text + "\n" if stderr_text else "") + f"(exit code {returncode})"
+            return stdout_text, stderr_text, returncode
         except asyncio.TimeoutError:
             proc.kill()
             raise TimeoutError(f"Command timed out after {timeout}s")
@@ -234,11 +238,8 @@ class LocalSandboxExecutor:
                 cmd: Shell command (e.g. "uv pip install pandas", "node script.js")
             """
             try:
-                stdout, stderr = await executor._run_command(cmd, thread_id=thread_id)
-                output = stdout
-                if stderr.strip():
-                    output += f"\n[stderr]\n{stderr}"
-                return output or "(command completed with no output)"
+                stdout, stderr, returncode = await executor._run_command(cmd, thread_id=thread_id)
+                return format_run_command_output(stdout, stderr, failed=returncode != 0)
             except TimeoutError as exc:
                 return f"[run_command error] {exc}"
             except Exception as exc:

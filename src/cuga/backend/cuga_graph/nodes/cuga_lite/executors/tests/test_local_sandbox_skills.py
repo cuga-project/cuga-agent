@@ -42,7 +42,7 @@ def _enable_skills(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_paths, "skills_enabled", lambda: True)
 
 
-async def _run(executor: _lse.LocalSandboxExecutor, cmd: str, thread_id: str) -> tuple[str, str]:
+async def _run(executor: _lse.LocalSandboxExecutor, cmd: str, thread_id: str) -> tuple[str, str, int]:
     return await executor._run_command(cmd, thread_id=thread_id, timeout=30)
 
 
@@ -64,7 +64,7 @@ def test_local_sandbox_relative_paths_land_in_per_thread_cuga_workspace(
     _fake_venv_python(thread_root)
 
     executor = _lse.LocalSandboxExecutor()
-    stdout, stderr = asyncio.run(_run(executor, "echo hello > out.txt", "thread-A"))
+    stdout, stderr, _rc = asyncio.run(_run(executor, "echo hello > out.txt", "thread-A"))
 
     expected = parent / safe
     assert _lse.local_thread_workspace_root("thread-A").resolve() == expected.resolve()
@@ -152,6 +152,35 @@ def test_local_sandbox_run_command_rewrites_workspace_upload_paths(
     _fake_venv_python(thread_root)
 
     executor = _lse.LocalSandboxExecutor()
-    stdout, stderr = asyncio.run(_run(executor, "head -n 1 /workspace/uploads/data.json", "thread-A"))
+    stdout, stderr, rc = asyncio.run(_run(executor, "head -n 1 /workspace/uploads/data.json", "thread-A"))
+    assert rc == 0
     assert '{"ok": true}' in stdout
     assert "No such file" not in stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell idioms")
+def test_run_command_omits_stderr_on_success_with_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DeprecationWarning on stderr must not break json.loads on stdout JSON."""
+    import json
+
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    thread_root = tmp_path / "cuga_workspace" / _lse._safe_thread_id("thread-A")
+    thread_root.mkdir(parents=True)
+    py = _fake_venv_python(thread_root)
+    py.unlink()
+    py.symlink_to(sys.executable)
+
+    executor = _lse.LocalSandboxExecutor()
+    run = executor.create_run_command_tool("thread-A")
+    out = asyncio.run(
+        run(
+            "python -c \"import datetime, json; "
+            "datetime.datetime.utcfromtimestamp(1); "
+            "print(json.dumps({'ok': True}))\""
+        )
+    )
+    assert "[stderr]" not in out
+    assert json.loads(out.split("\n[stderr]\n", 1)[0].strip()) == {"ok": True}

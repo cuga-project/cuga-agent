@@ -290,6 +290,68 @@ def test_write_file_auto_dedents_uniform_indent(tmp_path: Path, monkeypatch: pyt
     assert on_disk.read_text() == "import json\nprint(1)\n"
 
 
+def test_write_file_auto_dedents_imports_plus_block_indent(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Imports at column 0 with the rest indented one code-block level (common agent mistake)."""
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    mixed = (
+        "import json, ijson\n"
+        "    \n"
+        "    def parse_instana(path):\n"
+        "        return {'ok': True}\n"
+        "\n"
+        "    if __name__ == '__main__':\n"
+        "        print(json.dumps(parse_instana('x')))\n"
+    )
+    expected = (
+        "import json, ijson\n"
+        "\n"
+        "def parse_instana(path):\n"
+        "    return {'ok': True}\n"
+        "\n"
+        "if __name__ == '__main__':\n"
+        "    print(json.dumps(parse_instana('x')))\n"
+    )
+    msg = asyncio.run(fs.write_file("parse_phase1.py", mixed))
+    assert "File written" in msg
+    on_disk = tmp_path / "cuga_workspace" / "t" / "parse_phase1.py"
+    assert on_disk.read_text() == expected
+
+
+def test_write_file_reports_real_syntax_error_after_block_peel(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Block-indent peel must not mask a real syntax error as 'unexpected indent'."""
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    bad = "import json\n    instana_date_range = {\n        \"start\": event_start = 1,\n    }\n"
+    msg = asyncio.run(fs.write_file("bad_phase1.py", bad))
+    assert "[write_file error]" in msg
+    assert "unexpected indent" not in msg.lower()
+    assert "event_start" in msg
+    on_disk = tmp_path / "cuga_workspace" / "t" / "bad_phase1.py"
+    assert not on_disk.exists()
+
+
+def test_write_file_peels_block_indent_even_when_script_has_syntax_error(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Structural peel runs before validation; valid body after peel still writes."""
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    fs = _fs("t")
+    mixed = "import json\n    x = {\n        \"a\": 1,\n    }\n    print(json.dumps(x))\n"
+    expected = "import json\nx = {\n    \"a\": 1,\n}\nprint(json.dumps(x))\n"
+    msg = asyncio.run(fs.write_file("peeled.py", mixed))
+    assert "File written" in msg
+    on_disk = tmp_path / "cuga_workspace" / "t" / "peeled.py"
+    assert on_disk.read_text() == expected
+
+
 def test_write_file_preserves_valid_nested_indentation(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:

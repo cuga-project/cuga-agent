@@ -40,22 +40,24 @@ SANDBOX_UV_FORBIDDEN = (
 )
 
 SANDBOX_WORKSPACE_PATHS = (
-    "Session uploads: `read_file` / `list_files` use `/workspace/uploads/...`; "
-    "`run_command` / `head` / `python ./script.py` use `./uploads/...` (manifest "
-    "`shell_path`). `/workspace/` in shell commands is rewritten to `./` automatically "
-    "(local/native/OpenSandbox)."
+    "Workspace paths: use workspace-relative paths everywhere (e.g. `./uploads/foo.json`, "
+    "`./scripts/parse.py`) — they work in `read_file`/`write_file`/`list_files`, `run_command`, "
+    "and inside Python scripts (`open('uploads/foo.json')`). Session uploads are listed in "
+    "`.manifest.json` with a single `path` field per file. Absolute `/workspace/...` is also "
+    "accepted (rewritten to `./` in shell automatically)."
 )
 
 SANDBOX_RUN_COMMAND_RETURN = (
-    "`run_command` returns a plain **string** (stdout, plus `\\n[stderr]\\n...` on failure) — "
-    "never a dict. Use `out = await run_command(...)` then `json.loads(out.strip())` when the "
-    "script prints JSON; do **not** use `out[\"raw_output\"]` or subscript the return value. "
+    "`run_command` returns stdout as a plain **string**; `\\n[stderr]\\n...` is appended "
+    "**only on failure** (non-zero exit) — never a dict. "
+    "Parse JSON script output with "
+    "`json.loads(out.split('\\n[stderr]\\n', 1)[0].strip())`; do **not** use `out[\"raw_output\"]` "
+    "or subscript the return value. "
     "If output contains `[stderr]`, `can't open file`, `head: None`, `exited with status`, or "
-    "`[run_command error]`, the command failed — print the full string, fix the cause (often a "
-    "missing script, wrong path, or a `None` variable interpolated into the command), and "
+    "`[run_command error]`, the command failed — print the full string, fix the cause, and "
     "**stop** before the next step. Do **not** regex-parse, `json.loads`, or infer prefixes/schema "
-    "from failed output. Exception: `uv pip install` may log to stderr on success — check for "
-    "`Audited` / `Installed` or follow with `python -c \"import pkg; print('ok')\"`."
+    "from failed output. After `uv pip install`, verify with "
+    "`python -c \"import pkg; print('ok')\"` (install stderr is not included on success)."
 )
 
 SANDBOX_WRITE_THEN_RUN = (

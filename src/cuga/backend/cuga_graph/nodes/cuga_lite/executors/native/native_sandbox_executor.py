@@ -32,6 +32,9 @@ from loguru import logger
 # Canonical workspace path logic lives in the consolidated filesystem
 # package. ``native_thread_workspace_root`` is re-exported under its
 # historical name for back-compat (workspace_sandbox.py imports it).
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.run_output import (
+    format_run_command_output,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     CUGA_WORKSPACE_DIRNAME,
     normalize_shell_command_paths,
@@ -200,7 +203,7 @@ class NativeSandboxExecutor:
 
     async def _run_sandboxed(
         self, cmd: str, *, thread_id: Optional[str] = None, timeout: int = 120
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, int]:
         self._check_platform()
         self._ensure_policy()
         cmd = normalize_shell_command_paths(cmd)
@@ -245,11 +248,12 @@ class NativeSandboxExecutor:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             stdout_text = stdout.decode(errors="replace")
             stderr_text = stderr.decode(errors="replace")
-            if proc.returncode != 0:
+            returncode = proc.returncode or 0
+            if returncode != 0:
                 stderr_text = (stderr_text + "\n" if stderr_text else "") + (
-                    f"sandbox-exec exited with status {proc.returncode}"
+                    f"sandbox-exec exited with status {returncode}"
                 )
-            return stdout_text, stderr_text
+            return stdout_text, stderr_text, returncode
         except asyncio.TimeoutError:
             proc.kill()
             raise TimeoutError(f"Command timed out after {timeout}s")
@@ -268,11 +272,8 @@ class NativeSandboxExecutor:
                 cmd: Shell command (e.g. "uv pip install pandas", "node script.js", "npm install")
             """
             try:
-                stdout, stderr = await executor._run_sandboxed(cmd, thread_id=thread_id)
-                output = stdout
-                if stderr.strip():
-                    output += f"\n[stderr]\n{stderr}"
-                return output or "(command completed with no output)"
+                stdout, stderr, returncode = await executor._run_sandboxed(cmd, thread_id=thread_id)
+                return format_run_command_output(stdout, stderr, failed=returncode != 0)
             except TimeoutError as exc:
                 return f"[run_command error] {exc}"
             except Exception as exc:

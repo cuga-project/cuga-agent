@@ -39,6 +39,9 @@ from langchain_core.tools import StructuredTool
 from loguru import logger
 
 from cuga.config import settings
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.run_output import (
+    format_run_command_output,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     normalize_shell_command_paths,
 )
@@ -272,10 +275,9 @@ class OpenSandboxExecutor(RemoteExecutor):
                 result = await interpreter.codes.run(sandbox_cmd, language=SupportedLanguage.BASH)
                 stdout = "".join(line.text for line in result.logs.stdout)
                 stderr = "".join(line.text for line in result.logs.stderr)
-                output = stdout
-                if stderr.strip():
-                    output += f"\n[stderr]\n{stderr}"
-                return output or "(command completed with no output)"
+                exit_code = getattr(result, "exit_code", getattr(result, "return_code", None))
+                failed = bool(getattr(result, "error", None)) or (exit_code is not None and exit_code != 0)
+                return format_run_command_output(stdout, stderr, failed=failed)
             except Exception as exc:
                 return f"[run_command error] {exc}"
 

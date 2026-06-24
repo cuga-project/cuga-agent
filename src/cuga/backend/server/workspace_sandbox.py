@@ -24,7 +24,12 @@ def workspace_tree_is_sandbox_backed() -> bool:
 
 
 def workspace_tree_is_native_backed() -> bool:
-    """True for both 'native' (macOS sandbox-exec) and 'local' (plain host subprocess) modes."""
+    """True when workspace files live on the host (native/local shell or host filesystem)."""
+    from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import ExecutionRouter
+
+    plan = ExecutionRouter.resolve(settings)
+    if plan.filesystem_backend == "host" or plan.shell_backend in ("native", "local"):
+        return True
     if workspace_tree_is_sandbox_backed():
         return False
     mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")

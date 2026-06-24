@@ -279,9 +279,12 @@ export async function deleteConversation(threadId: string): Promise<Response> {
   });
 }
 
-export async function getWorkspaceTree(threadId?: string): Promise<Response> {
-  const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
-  return apiFetch(`/api/workspace/tree${q}`);
+export async function getWorkspaceTree(threadId?: string, forceRefresh = false): Promise<Response> {
+  const params = new URLSearchParams();
+  if (threadId) params.set("thread_id", threadId);
+  if (forceRefresh) params.set("_", String(Date.now()));
+  const q = params.toString();
+  return apiFetch(`/api/workspace/tree${q ? `?${q}` : ""}`);
 }
 
 export async function getWorkspaceFile(path: string, threadId?: string): Promise<Response> {

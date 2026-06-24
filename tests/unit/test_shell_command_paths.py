@@ -1,7 +1,13 @@
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     normalize_shell_command_paths,
+    relative_workspace_path,
     shell_workspace_path,
 )
+
+
+def test_relative_workspace_path_uploads() -> None:
+    assert relative_workspace_path("uploads/foo.json") == "./uploads/foo.json"
+    assert relative_workspace_path("./uploads/foo.json") == "./uploads/foo.json"
 
 
 def test_shell_workspace_path_maps_virtual_uploads() -> None:

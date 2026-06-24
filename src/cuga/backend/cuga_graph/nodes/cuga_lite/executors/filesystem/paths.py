@@ -184,6 +184,12 @@ def public_workspace_path(host_path: Path, *, thread_id: Optional[str]) -> str:
     return "." if rel_str == "." else f"./{rel_str}"
 
 
+def relative_workspace_path(tail: str) -> str:
+    """Workspace-relative path for agent-facing use in tools, shell, and scripts."""
+    raw = (tail or "").strip().replace("\\", "/").lstrip("./")
+    return "." if not raw else f"./{raw}"
+
+
 def shell_workspace_path(virtual_path: str) -> str:
     """Path for ``run_command`` when cwd is the per-thread workspace root.
 

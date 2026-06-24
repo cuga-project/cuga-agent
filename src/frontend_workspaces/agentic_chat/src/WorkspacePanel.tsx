@@ -36,12 +36,12 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
   const [isDragOver, setIsDragOver] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const loadWorkspaceTree = useCallback(async () => {
+  const loadWorkspaceTree = useCallback(async (forceRefresh = false) => {
     try {
       setError(null);
       const { workspaceService } = await import('./workspaceService');
       const tid = threadId?.trim() || undefined;
-      const data = await workspaceService.getWorkspaceTree(false, tid);
+      const data = await workspaceService.getWorkspaceTree(forceRefresh, tid);
       setFileTree(data.tree || []);
     } catch (err) {
       console.error("Error loading workspace:", err);
@@ -354,7 +354,7 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
             </button>
             <button
               className="workspace-refresh-btn"
-              onClick={loadWorkspaceTree}
+              onClick={() => void loadWorkspaceTree(true)}
               title="Refresh"
             >
               <RefreshCw size={16} />

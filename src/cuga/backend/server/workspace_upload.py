@@ -15,6 +15,7 @@ from loguru import logger
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     VIRTUAL_WORKSPACE_ROOT,
     ensure_thread_workspace_seeded,
+    relative_workspace_path,
     resolve_workspace_path,
     safe_thread_id,
     shell_workspace_path,
@@ -41,6 +42,10 @@ def sanitize_upload_filename(filename: str) -> str:
     if not safe_stem:
         raise ValueError("Invalid filename")
     return f"{safe_stem}{suffix}"
+
+
+def relative_upload_path(filename: str) -> str:
+    return relative_workspace_path(f"{UPLOADS_SUBDIR}/{filename}")
 
 
 def sandbox_upload_path(filename: str) -> str:
@@ -94,13 +99,23 @@ async def _write_manifest_remote(thread_id: Optional[str], manifest: dict[str, A
     )
 
 
+def _agent_path_from_manifest_entry(entry: dict[str, Any]) -> str:
+    """Normalize legacy manifest entries to a single workspace-relative path."""
+    legacy_shell = entry.get("shell_path")
+    if legacy_shell:
+        return str(legacy_shell)
+    raw = str(entry.get("path") or entry.get("name") or "")
+    if raw.startswith(VIRTUAL_WORKSPACE_ROOT + "/") or raw == VIRTUAL_WORKSPACE_ROOT:
+        return shell_workspace_path(raw)
+    return relative_workspace_path(raw)
+
+
 def _merge_manifest_entry(
     manifest: dict[str, Any], *, thread_id: Optional[str], filename: str, size_bytes: int
 ) -> dict[str, Any]:
     entry = {
         "name": filename,
-        "path": sandbox_upload_path(filename),
-        "shell_path": shell_workspace_path(sandbox_upload_path(filename)),
+        "path": relative_upload_path(filename),
         "size_bytes": size_bytes,
         "uploaded_at": datetime.now(timezone.utc).isoformat(),
     }
@@ -163,14 +178,13 @@ def format_upload_context(thread_id: Optional[str]) -> str | None:
     lines = ["## Session uploads", "", "JSON files uploaded for this conversation:"]
     for f in files:
         size_mb = (f.get("size_bytes") or 0) / (1024 * 1024)
-        tool_path = f.get("path", f.get("name"))
-        shell_path = f.get("shell_path") or shell_workspace_path(str(tool_path))
-        lines.append(f"- `{tool_path}` ({size_mb:.1f} MB) — shell/run_command: `{shell_path}`")
+        agent_path = _agent_path_from_manifest_entry(f)
+        lines.append(f"- `{agent_path}` ({size_mb:.1f} MB)")
     lines.append("")
     lines.append(
-        "Use `list_files('/workspace/uploads')` or `read_file` with `/workspace/uploads/...` "
-        "for filesystem tools; use `shell_path` (e.g. `./uploads/...`) in `run_command` "
-        "(`/workspace/...` is rewritten automatically in shell)."
+        "Use each path as-is in `read_file`, `write_file`, `list_files`, and `run_command` "
+        "(e.g. `head -c 2048 ./uploads/foo.json`, `python ./scripts/parse.py` with "
+        "`open('uploads/foo.json')` inside the script). Absolute `/workspace/...` is also accepted."
     )
     return "\n".join(lines)
 
