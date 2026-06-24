@@ -5,10 +5,10 @@ Both FlowAgent and WorkflowEngine register their services here:
   - FlowAgent registers: execute_task, route_gateway, evaluate_hook
   - WorkflowEngine registers: run_process
 
-Both sides communicate via proxy methods on the bridge (load_flow,
-get_flow_annotations, run_process) which call the underlying components
-directly. The same operations are also registered as MCP tools on the
-shared FastMCP server for future remote/cross-process transport.
+FlowAgent calls load_flow and get_flow_annotations via direct bridge methods.
+All workflow invocations and FlowAgent callbacks (execute_task, route_gateway,
+evaluate_hook, run_process) go exclusively through MCP tools on the shared
+FastMCP server, enabling future remote/cross-process transport.
 
 Replacing ControlOverlay (Python-closure bridge) with this MCP bridge makes the
 contract explicit via tool schemas and enables future remote/cross-process transport
@@ -37,7 +37,7 @@ class MCPFlowBridge:
         bridge.register_registry(registry)
         bridge.register_flow_agent(fa)
         bridge.register_engine(engine)
-        # FlowAgent.invoke() calls bridge.run_process() directly
+        # FlowAgent.invoke() calls the run_process MCP tool via get_client()
     """
 
     def __init__(self, name: str = "cuga-flo-mcp") -> None:
@@ -102,17 +102,6 @@ class MCPFlowBridge:
         the registry directly.  Also exposed as the MCP tool 'get_flow_annotations'.
         """
         return self._registry.get_flow_annotations(process_key)
-
-    async def run_process(self, process_key: str, initial_inputs: dict) -> dict:
-        """
-        Execute a BPMN process via the engine.
-
-        Async bridge method — mediates the call so FlowAgent never touches
-        the engine directly.  Also exposed as the MCP tool 'run_process' for
-        remote callers.  Returns {state, bpmn}.
-        """
-        state, bpmn = await self._engine._run_via_mcp(process_key, initial_inputs, self._mcp)
-        return {"state": state.model_dump(mode="json"), "bpmn": bpmn.to_dict()}
 
     def register_flow_agent(self, fa: "FlowAgent") -> None:
         """

@@ -364,7 +364,12 @@ Respond ONLY with a JSON object:
 
         bpmn_process = None
         try:
-            result = await self.bridge.run_process(self.process_key, initial_inputs)
+            async with self.bridge.get_client() as c:
+                call_result = await c.call_tool(
+                    "run_process",
+                    {"process_key": self.process_key, "initial_inputs": initial_inputs},
+                )
+            result = call_result.data
             bpmn_process = BPMNProcess.from_dict(result["bpmn"])
             logger.info(f"Invoking process '{bpmn_process.name}' via MCPFlowBridge")
             final_state = FlowState.model_validate(result["state"])
