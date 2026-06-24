@@ -207,6 +207,7 @@ trigger_fraction = 0.75  # Trigger at 75% of context window (recommended for pro
 [connections]
 inference_ca_cert = ""  # Path to a CA certificate for LLM inference HTTP clients (e.g. "vault-root-ca.crt"). Applied to OpenAI and LiteLLM. Env: CUGA_INFERENCE_CA_CERT
 inference_disable_ssl = false  # Disable SSL verification for all inference connections (overrides inference_ca_cert). Env: CUGA_DISABLE_SSL
+llm_http_timeout = 61  # Seconds; OpenAI/Azure/OpenRouter only (see DEFAULT_LLM_HTTP_TIMEOUT in config.py). Env: CUGA_LLM_HTTP_TIMEOUT or LLM_HTTP_TIMEOUT
 
 [observability]
 openlit = false  # Enable OpenLit LLM observability via OpenTelemetry (OTLP). Requires: pip install cuga[observability]
@@ -233,3 +234,4 @@ agent_url = "http://localhost:8000"                          # Public URL client
 auth_required = false                                        # When true, the AgentCard advertises a bearer security scheme.
 skill_ids = ["delegate_task"]                                # Skill IDs surfaced in the AgentCard.
 supervisor_config_path = ""                                  # YAML config for the CugaSupervisor that handles A2A inbound. When empty, a placeholder runner is used.
+auto_approve = false                                         # Simple-runner only: when true, human-in-the-loop interrupts are auto-confirmed and the graph resumes; when false, the interrupt is surfaced to the caller as an input_required event.

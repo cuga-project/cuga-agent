@@ -21,10 +21,11 @@ import uuid
 from typing import Any, AsyncIterator, Mapping, Protocol
 
 from fastapi import APIRouter, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, Response
 from sse_starlette.sse import EventSourceResponse
 
 from cuga.backend.server.a2a._a2a_types import (
+    Artifact,
     Message,
     MessageSendParams,
     Task,
@@ -44,8 +45,14 @@ class GraphRunner(Protocol):
     ``final`` is acceptable. We don't import CUGA's graph types here.
     """
 
-    def run(self, message: str, context_id: str | None = None) -> AsyncIterator[Any]:  # pragma: no cover
-        """Yield graph events for ``message`` on the given thread."""
+    def run(
+        self, message: str, context_id: str | None = None, approval: dict | None = None
+    ) -> AsyncIterator[Any]:  # pragma: no cover
+        """Yield graph events for ``message`` on the given thread.
+
+        ``approval`` is an optional structured approve/deny signal forwarded
+        from the inbound message; runners that don't support HITL resume ignore it.
+        """
         ...
 
 
@@ -86,6 +93,34 @@ def _ensure_context_id(params: MessageSendParams) -> str:
     return params.message.context_id or uuid.uuid4().hex
 
 
+def _extract_approval(params: MessageSendParams) -> dict | None:
+    """Extract a structured approve/deny signal from the inbound message.
+
+    Looks for a ``confirmed`` (or ``approved``) flag in any DataPart payload
+    or in the message ``metadata``. Returns ``{"action_id": ..., "confirmed":
+    bool}`` when found, else None — in which case the runner falls back to
+    reading approve/deny from the message text.
+    """
+    msg = params.message
+    candidates: list[dict] = []
+    for p in msg.parts:
+        root = getattr(p, "root", p)
+        data = getattr(root, "data", None)
+        if isinstance(data, dict):
+            candidates.append(data)
+    metadata = getattr(msg, "metadata", None)
+    if isinstance(metadata, dict):
+        candidates.append(metadata)
+
+    for data in candidates:
+        if "confirmed" in data or "approved" in data:
+            confirmed = data.get("confirmed")
+            if confirmed is None:
+                confirmed = data.get("approved")
+            return {"action_id": data.get("action_id"), "confirmed": bool(confirmed)}
+    return None
+
+
 def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs: Any) -> APIRouter:
     """Build the A2A FastAPI router bound to a specific graph runner.
 
@@ -116,28 +151,47 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
         """Serve the AgentCard at the path the 1.x SDK resolver fetches."""
         return await _agent_card_response()
 
-    async def _run_and_collect(message_text: str, context_id: str, task_id: str) -> Task:
+    async def _run_and_collect(
+        message_text: str, context_id: str, task_id: str, approval: dict | None = None
+    ) -> Task:
         """Drive the runner to completion and fold the events into a Task."""
-        agen = runner.run(message_text, context_id)
+        agen = runner.run(message_text, context_id, approval=approval)
         events = []
         async for ev in agen:
             events.append(ev)
         history: list[Message] = []
         last_state: TaskState = TaskState.completed
+        final_message: Message | None = None
         for upd in stream_events_to_a2a(events, task_id=task_id, context_id=context_id):
             if upd.status and upd.status.message:
                 history.append(upd.status.message)
             if upd.status and upd.status.state:
                 last_state = upd.status.state
+            # The terminal frame carries the agent's answer/error/prompt text.
+            if upd.final and upd.status and upd.status.message:
+                final_message = upd.status.message
+        # A2A clients read agent output from the terminal status message and
+        # from artifacts — not from history. Populate both so the answer
+        # actually reaches the caller (history alone left callers empty-handed).
+        artifacts = None
+        if final_message is not None and last_state == TaskState.completed and final_message.parts:
+            artifacts = [
+                Artifact(
+                    artifact_id=f"{task_id}-answer",
+                    name="answer",
+                    parts=final_message.parts,
+                )
+            ]
         return Task(
             id=task_id,
             context_id=context_id,
-            status=TaskStatus(state=last_state),
+            status=TaskStatus(state=last_state, message=final_message),
             history=history,
+            artifacts=artifacts,
         )
 
     async def _sse_stream(
-        message_text: str, context_id: str, task_id: str, rpc_id: Any
+        message_text: str, context_id: str, task_id: str, rpc_id: Any, approval: dict | None = None
     ) -> AsyncIterator[dict]:
         """Yield SSE frames carrying JSON-RPC envelopes per task update.
 
@@ -146,7 +200,7 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
         stream and can't distinguish a network drop from a server bug.
         """
         try:
-            agen = runner.run(message_text, context_id)
+            agen = runner.run(message_text, context_id, approval=approval)
             events = []
             async for ev in agen:
                 events.append(ev)
@@ -158,8 +212,7 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             err_frame = _rpc_error(rpc_id, _INTERNAL_ERROR, f"Internal error: {type(exc).__name__}")
             yield {"data": json.dumps(err_frame)}
 
-    @router.post("/a2a")
-    async def jsonrpc_endpoint(request: Request):
+    async def _handle_jsonrpc_request(request: Request):
         """Dispatch a JSON-RPC 2.0 request to the right A2A method.
 
         Returns a JSON envelope for ``message/send`` and an SSE stream
@@ -191,9 +244,10 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
                 return JSONResponse(_rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", str(exc)))
             message_text = _extract_message_text(params)
             context_id = _ensure_context_id(params)
+            approval = _extract_approval(params)
             task_id = uuid.uuid4().hex
             try:
-                task = await _run_and_collect(message_text, context_id, task_id)
+                task = await _run_and_collect(message_text, context_id, task_id, approval=approval)
             except Exception as exc:  # graph blew up
                 # Don't echo raw exception text across the wire (paths,
                 # config, etc.). Keep details in server logs; tell the
@@ -213,9 +267,46 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
                 return JSONResponse(_rpc_error(rpc_id, _INVALID_PARAMS, "Invalid params", str(exc)))
             message_text = _extract_message_text(params)
             context_id = _ensure_context_id(params)
+            approval = _extract_approval(params)
             task_id = uuid.uuid4().hex
-            return EventSourceResponse(_sse_stream(message_text, context_id, task_id, rpc_id))
+            return EventSourceResponse(
+                _sse_stream(message_text, context_id, task_id, rpc_id, approval=approval)
+            )
 
         return JSONResponse(_rpc_error(rpc_id, _METHOD_NOT_FOUND, "Method not found"))
+
+    @router.options("/a2a")
+    async def jsonrpc_options_a2a():
+        """Handle CORS preflight requests for the /a2a endpoint."""
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+        )
+
+    @router.post("/a2a")
+    async def jsonrpc_endpoint_a2a(request: Request):
+        """Dispatch a JSON-RPC 2.0 request to the right A2A method at /a2a."""
+        return await _handle_jsonrpc_request(request)
+
+    @router.options("/")
+    async def jsonrpc_options_root():
+        """Handle CORS preflight requests for the root endpoint."""
+        return Response(
+            status_code=200,
+            headers={
+                "Access-Control-Allow-Origin": "*",
+                "Access-Control-Allow-Methods": "POST, OPTIONS",
+                "Access-Control-Allow-Headers": "Content-Type, Authorization",
+            },
+        )
+
+    @router.post("/")
+    async def jsonrpc_endpoint_root(request: Request):
+        """Dispatch a JSON-RPC 2.0 request to the right A2A method at root /."""
+        return await _handle_jsonrpc_request(request)
 
     return router

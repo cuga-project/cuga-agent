@@ -45,6 +45,19 @@ async def test_chat_agent_skips_knowledge_runtime_tools_when_disabled(monkeypatc
     assert prompt_inputs["knowledge_instructions"] == ""
 
 
+@pytest.mark.asyncio
+async def test_execute_tool_falls_back_to_base_tools_when_tools_is_none():
+    agent = ChatAgent()
+    agent._is_setup = True
+    agent.use_regular_chat = True
+    agent.tools = None
+    agent.base_tools = [base_chat_tool]
+
+    result = await agent.execute_tool({"name": "base_chat_tool", "args": {}})
+
+    assert result == "ok"
+
+
 def test_knowledge_client_rejects_disabled_session_scope():
     engine = SimpleNamespace(
         _config=SimpleNamespace(

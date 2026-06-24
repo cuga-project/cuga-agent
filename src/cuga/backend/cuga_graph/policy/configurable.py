@@ -267,9 +267,13 @@ class PolicyConfigurable:
         """
         configurable = config.get("configurable", {}) if config else {}
 
-        # Extract common fields from state
-        user_input = getattr(state, "intent", None) or getattr(state, "goal", None)
-        chat_messages = getattr(state, "chat_messages", None)
+        # Extract common fields from state (supervisor uses input + supervisor_chat_messages)
+        user_input = (
+            getattr(state, "intent", None) or getattr(state, "goal", None) or getattr(state, "input", None)
+        )
+        chat_messages = getattr(state, "chat_messages", None) or getattr(
+            state, "supervisor_chat_messages", None
+        )
 
         # If no user_input but we have chat_messages, extract the last user message
         # Skip messages that contain execution output (for OUTPUT_FORMATTER policies)

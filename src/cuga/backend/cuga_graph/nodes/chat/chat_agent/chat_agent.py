@@ -335,7 +335,7 @@ class ChatAgent(BaseAgent):
         tool_name = tool_call.get("name")
         tool_args = tool_call.get("args", {})
 
-        for tool_i in self.tools:
+        for tool_i in self.tools or self.base_tools or []:
             if tool_i.name == tool_name:
                 try:
                     return await tool_i.ainvoke(tool_args)
@@ -346,7 +346,7 @@ class ChatAgent(BaseAgent):
                         logger.info("Attempting to reconnect due to closed resource error...")
                         await self.setup()
                         # Retry the tool execution with fresh session
-                        for fresh_tool in self.tools:
+                        for fresh_tool in self.tools or self.base_tools or []:
                             if fresh_tool.name == tool_name:
                                 return await fresh_tool.ainvoke(tool_args)
                     raise e
