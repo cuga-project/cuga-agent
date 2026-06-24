@@ -188,9 +188,7 @@ class OpenSandboxExecutor(RemoteExecutor):
     async def _upload_skills_to_sandbox(self, interpreter: Any, cuga_folder: Optional[str] = None) -> None:
         """Upload discovered skill folders into /workspace/skills/ in the sandbox.
 
-        Mirrors ``cuga.backend.skills.loader.discover_skills`` precedence:
-        global legacy ``~/.config/cuga/skills`` → global ``~/.config/agents/skills`` →
-        project legacy ``.cuga/skills`` / ``.cuga/.skills`` → project ``.agents/skills``.
+        Uses the same single root as ``discover_skills`` (``settings.skills.root``).
         """
         from opensandbox.models import WriteEntry  # type: ignore[import]
         from cuga.backend.skills.loader import discover_skills

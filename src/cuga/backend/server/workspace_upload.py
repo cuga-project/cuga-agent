@@ -1,0 +1,206 @@
+"""Thread-scoped workspace file uploads for the chat UI."""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import shutil
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+from loguru import logger
+
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    VIRTUAL_WORKSPACE_ROOT,
+    resolve_workspace_path,
+    thread_workspace_root,
+)
+from cuga.backend.server.workspace_sandbox import workspace_tree_is_sandbox_backed
+
+UPLOADS_SUBDIR = "uploads"
+MANIFEST_NAME = ".manifest.json"
+ALLOWED_SUFFIXES = {".json", ".jsonl", ".ndjson"}
+MAX_UPLOAD_BYTES = 100 * 1024 * 1024  # ponytail: matches knowledge max_upload_size_mb default
+
+
+def sanitize_upload_filename(filename: str) -> str:
+    name = Path((filename or "").strip()).name
+    if not name or name.startswith("."):
+        raise ValueError("Invalid filename")
+    suffix = Path(name).suffix.lower()
+    if suffix not in ALLOWED_SUFFIXES:
+        raise ValueError(f"Unsupported file type {suffix!r}; allowed: {', '.join(sorted(ALLOWED_SUFFIXES))}")
+    stem = Path(name).stem
+    safe_stem = re.sub(r"[^\w.-]", "_", stem, flags=re.ASCII)
+    safe_stem = re.sub(r"_+", "_", safe_stem).strip("_")
+    if not safe_stem:
+        raise ValueError("Invalid filename")
+    return f"{safe_stem}{suffix}"
+
+
+def sandbox_upload_path(filename: str) -> str:
+    return f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}/{filename}"
+
+
+def display_upload_path(filename: str) -> str:
+    return f"workspace/{UPLOADS_SUBDIR}/{filename}"
+
+
+def manifest_sandbox_path() -> str:
+    return f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}/{MANIFEST_NAME}"
+
+
+def _manifest_host_path(thread_id: Optional[str]) -> Path:
+    return resolve_workspace_path(manifest_sandbox_path(), thread_id=thread_id, operation="read_manifest")
+
+
+def read_upload_manifest(thread_id: Optional[str]) -> dict[str, Any]:
+    path = _manifest_host_path(thread_id)
+    if not path.is_file():
+        return {"thread_id": thread_id or "", "files": []}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if isinstance(data, dict) and isinstance(data.get("files"), list):
+            return data
+    except Exception as exc:
+        logger.warning(f"[workspace_upload] corrupt manifest for thread={thread_id}: {exc}")
+    return {"thread_id": thread_id or "", "files": []}
+
+
+def _write_manifest_host(thread_id: Optional[str], manifest: dict[str, Any]) -> None:
+    path = _manifest_host_path(thread_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+
+async def _write_manifest_remote(thread_id: Optional[str], manifest: dict[str, Any]) -> None:
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+
+    backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), thread_id)
+    await backend.write_text(
+        manifest_sandbox_path(), json.dumps(manifest, indent=2), operation="write_manifest"
+    )
+
+
+def _merge_manifest_entry(
+    manifest: dict[str, Any], *, thread_id: Optional[str], filename: str, size_bytes: int
+) -> dict[str, Any]:
+    entry = {
+        "name": filename,
+        "path": sandbox_upload_path(filename),
+        "size_bytes": size_bytes,
+        "uploaded_at": datetime.now(timezone.utc).isoformat(),
+    }
+    files = [f for f in manifest.get("files", []) if f.get("name") != filename]
+    files.append(entry)
+    return {"thread_id": thread_id or "", "files": files}
+
+
+async def upload_workspace_bytes(
+    thread_id: Optional[str],
+    filename: str,
+    data: bytes,
+) -> dict[str, Any]:
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise ValueError(f"File too large ({len(data)} bytes; max {MAX_UPLOAD_BYTES})")
+
+    safe_name = sanitize_upload_filename(filename)
+    sp = sandbox_upload_path(safe_name)
+    manifest = _merge_manifest_entry(
+        read_upload_manifest(thread_id), thread_id=thread_id, filename=safe_name, size_bytes=len(data)
+    )
+
+    if workspace_tree_is_sandbox_backed():
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+
+        backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), thread_id)
+        dest = resolve_workspace_path(sp, thread_id=thread_id, operation="upload_file")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.parent / f".upload-{safe_name}.tmp"
+        tmp.write_bytes(data)
+        try:
+            await backend.upload(str(tmp), sp)
+        finally:
+            tmp.unlink(missing_ok=True)
+        _write_manifest_host(thread_id, manifest)
+        await _write_manifest_remote(thread_id, manifest)
+    else:
+        dest = resolve_workspace_path(sp, thread_id=thread_id, operation="upload_file")
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        _write_manifest_host(thread_id, manifest)
+
+    return {
+        "path": display_upload_path(safe_name),
+        "sandbox_path": sp,
+        "size_bytes": len(data),
+        "manifest": manifest,
+    }
+
+
+def format_upload_context(thread_id: Optional[str]) -> str | None:
+    manifest = read_upload_manifest(thread_id)
+    files = manifest.get("files") or []
+    if not files:
+        return None
+    lines = ["## Session uploads", "", "JSON files uploaded for this conversation:"]
+    for f in files:
+        size_mb = (f.get("size_bytes") or 0) / (1024 * 1024)
+        lines.append(f"- `{f.get('path', f.get('name'))}` ({size_mb:.1f} MB)")
+    lines.append("")
+    lines.append(
+        "Use `list_files('/workspace/uploads')` or a skill whose description matches the uploaded data."
+    )
+    return "\n".join(lines)
+
+
+def delete_thread_uploads(thread_id: Optional[str]) -> None:
+    if not (thread_id or "").strip():
+        return
+    uploads_dir = resolve_workspace_path(
+        f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}", thread_id=thread_id, operation="delete_uploads"
+    )
+    if uploads_dir.exists():
+        shutil.rmtree(uploads_dir, ignore_errors=True)
+        logger.info(f"[workspace_upload] removed uploads for thread={thread_id}")
+
+
+def resolve_host_workspace_path(user_path: str, thread_id: Optional[str]) -> Path:
+    """Map UI/API path to host filesystem path under the thread workspace."""
+    raw = (user_path or "").strip().replace("\\", "/").lstrip("/")
+    parts = raw.split("/") if raw else []
+    if parts and parts[0] in {"workspace", "cuga_workspace", UPLOADS_SUBDIR}:
+        if parts[0] in {"workspace", "cuga_workspace"}:
+            parts = parts[1:]
+    suffix = "/".join(parts)
+    sandbox_path = VIRTUAL_WORKSPACE_ROOT if not suffix else f"{VIRTUAL_WORKSPACE_ROOT}/{suffix}"
+    return resolve_workspace_path(sandbox_path, thread_id=thread_id, operation="access")
+
+
+def fetch_host_workspace_tree(thread_id: Optional[str]) -> list[dict[str, Any]]:
+    """Build workspace tree from host disk (non-sandbox modes)."""
+    root = thread_workspace_root(thread_id)
+    if not root.exists():
+        return []
+
+    sandbox_root = VIRTUAL_WORKSPACE_ROOT
+    dir_lines: list[str] = []
+    file_lines: list[str] = []
+
+    for dirpath, dirnames, filenames in os.walk(root):
+        dirnames[:] = [d for d in dirnames if not d.startswith(".")]
+        rel = Path(dirpath).relative_to(root)
+        if rel.parts:
+            dir_lines.append(str(Path(sandbox_root, *rel.parts)).replace("\\", "/"))
+        for name in filenames:
+            if name.startswith("."):
+                continue
+            file_lines.append(str(Path(sandbox_root, *rel.parts, name)).replace("\\", "/"))
+
+    from cuga.backend.server.workspace_sandbox import sandbox_paths_to_tree
+
+    return sandbox_paths_to_tree(dir_lines, file_lines, sandbox_root=sandbox_root, display_root="workspace")

@@ -5,7 +5,7 @@ git-style edit diffs, JSON contracts); a ``FilesystemBackend`` supplies the
 raw storage primitives. Two backends:
 
 * ``HostWorkspaceBackend`` — host filesystem under ``<cwd>/cuga_workspace``
-  (per-thread or shared per ``settings.skills.enabled``). Serves the chat
+  (per-thread when ``thread_id`` is set). Serves the chat
   agent and the ``local`` / ``native`` sandbox modes.
 * ``RemoteSandboxBackend`` — a thin adapter over ``OpenSandboxExecutor``'s
   remote ``interpreter.sandbox.files.*`` API for the ``opensandbox`` mode.

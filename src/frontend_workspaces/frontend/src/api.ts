@@ -296,6 +296,17 @@ export async function getWorkspaceDownload(path: string, threadId?: string): Pro
   return apiFetch(`/api/workspace/download?${params.toString()}`);
 }
 
+export async function uploadWorkspaceFile(file: File, threadId: string): Promise<Response> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const params = new URLSearchParams({ thread_id: threadId });
+  return apiFetch(`/api/workspace/upload?${params.toString()}`, {
+    method: "POST",
+    headers: { "X-Thread-ID": threadId },
+    body: formData,
+  });
+}
+
 export async function getAgents(): Promise<Response> {
   return apiFetch("/api/agents");
 }

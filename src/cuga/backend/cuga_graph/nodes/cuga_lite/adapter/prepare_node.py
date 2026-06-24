@@ -309,12 +309,14 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         skill_tools = []
         skills_prompt_section = ""
         skills_enabled = False
-        configurable_special = (
-            (config or {}).get("configurable", {}).get("special_instructions") if config else None
-        )
+        _cfg = config.get("configurable", {}) if config else {}
+        configurable_special = _cfg.get("special_instructions")
         effective_special = adapter._special_instructions or configurable_special or ""
-        skills_cfg_on = getattr(settings.skills, "enabled", False)
-        cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        _cfg_skills = _cfg.get("skills_enabled")
+        skills_cfg_on = _cfg_skills if _cfg_skills is not None else getattr(settings.skills, "enabled", False)
+        cuga_folder_for_skills = _cfg.get("skills_folder") or os.getenv(
+            "CUGA_FOLDER", settings.policy.cuga_folder
+        )
         if skills_cfg_on:
             skill_entries = discover_skills(cuga_folder_for_skills)
             if skill_entries:
@@ -323,15 +325,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 tools_for_prompt.extend(skill_tools)
                 skills_prompt_section = format_available_skills_block(skill_registry)
                 skills_enabled = True
-                logger.info(
-                    f"Loaded {len(skill_entries)} agent skill(s) from .agents/skills and "
-                    f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
-                    "~/.config/cuga/skills fallbacks"
-                )
 
         # Resolve thread_id early for per-thread workspace selection.
-        _cfg_for_thread = config.get("configurable", {}) if config else {}
-        _runtime_thread_id_for_fs = _cfg_for_thread.get("thread_id") or state.thread_id or adapter._thread_id
+        _runtime_thread_id_for_fs = _cfg.get("thread_id") or state.thread_id or adapter._thread_id
 
         # Update tools context with all execution tools.
         # Wrap to make awaitable (agent always uses await). Filesystem path
@@ -479,6 +475,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         # Inject knowledge base awareness if knowledge tools are available
         effective_instructions = adapter._instructions
+        upload_context = config.get("configurable", {}).get("upload_context")
+        if upload_context:
+            effective_instructions = (
+                f"{upload_context}\n\n{effective_instructions}" if effective_instructions else upload_context
+            )
         # Detect knowledge tools — works for both registry (app named
         # "knowledge") and SDK mode (tools under "runtime_tools")
         has_knowledge_tools = any(getattr(app, "name", "") == "knowledge" for app in (apps_for_prompt or []))

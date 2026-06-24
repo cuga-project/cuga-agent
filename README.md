@@ -44,7 +44,7 @@ Building a domain-specific enterprise agent from scratch is complex and requires
 > | **Langflow** | Low-code visual workflows — integrates with CUGA ([langflow.org](https://www.langflow.org/)) |
 > | **Memory** (optional) | `enable_memory` in `settings.toml` · `uv sync --extra memory` · `cuga start memory` |
 > | **Knowledge** (RAG) | `enable_knowledge=True` (default) · ingest PDFs/Office/HTML/Markdown via **Docling** · **agent-level** + **session-level** scopes · `cuga start demo_knowledge` · [details](#knowledge-base) |
-> | **Agent skills** | `SKILL.md` under `.agents/skills` · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
+> | **Agent skills** | `SKILL.md` under `.cuga/skills` (default) · **`cuga start demo_skills`** (`sandbox_mode = "native"` by default, or **`opensandbox`**) · or **`demo --sandbox`** with `[skills]` on · [Agent skills](#agent-skills) |
 > | **Self-host on a cluster** | Helm chart and deploy scripts in [`deployment/`](deployment/) · [Kubernetes guide](deployment/README.md) (local kind/minikube, or registry push for cloud clusters) |
 > | **Save & reuse** _(experimental)_ | `cuga_mode = "save_reuse_fast"` in `settings.toml` |
 >
@@ -386,11 +386,16 @@ Agent skills are reusable instruction packs: each skill is a `SKILL.md` file wit
 
 **Where skills live**
 
-| Location | Role |
-| -------- | ---- |
-| `.agents/skills/**/SKILL.md` | Preferred project-local skills path; this is what `npx skills ... -a universal` writes |
+Configure a single root in [`settings.toml`](src/cuga/settings.toml) (`[skills] root`, default **`cuga`**) or via **`DYNACONF_SKILLS__ROOT`** env var. CUGA scans one directory only — no merge across paths.
 
-Use **`~/.config/agents/skills/`** for global installs from `npx skills` with **`-g`**; **`~/.config/cuga/skills/`** is a legacy global path that is still scanned. Legacy **`<CUGA folder>/skills/`** and **`<CUGA folder>/.skills/`** (often `.cuga` via `CUGA_FOLDER`) are still scanned. If the same skill `name` appears in multiple places, project-local skills win over global skills, and `.agents/skills/` wins over legacy project paths.
+| `skills.root` | Project path | Use when |
+| ------------- | ------------ | -------- |
+| `cuga` (default) | `<CUGA folder>/skills/**/SKILL.md` (e.g. `.cuga/skills/`) | CUGA-native layout; keeps skills with other CUGA config |
+| `agents` | `.agents/skills/**/SKILL.md` | [skills.sh](https://skills.sh) / `npx skills` universal installs |
+| `global_agents` | `~/.config/agents/skills/` | Global `npx skills -g` installs |
+| `global_cuga` | `~/.config/cuga/skills/` | Legacy global CUGA path |
+
+**Why default `cuga`?** CUGA already uses `.cuga/` for policy, workspace, and uploads. Keeping skills there avoids colliding with other agents that write `.agents/skills/`. If you install skills with `npx skills`, set `root = "agents"` or copy skills into `.cuga/skills/`.
 
 **`SKILL.md` shape**
 
@@ -419,7 +424,7 @@ The [Anthropic skills repo](https://github.com/anthropics/skills) publishes read
 npx skills add https://github.com/anthropics/skills --skill pptx -a universal
 ```
 
-This creates `.agents/skills/pptx/SKILL.md` for the current project. Restart `cuga start demo_skills` (or your app) so skills are rescanned. Add `-g` if you want the skill installed globally under `~/.config/agents/skills/` instead.
+This creates `.agents/skills/pptx/SKILL.md` for the current project (or set `[skills] root = "agents"` in `settings.toml`). To use the CUGA default layout instead, copy or symlink skills into `.cuga/skills/`. Restart `cuga start demo_skills` (or your app) so skills are rescanned. Add `-g` if you want the skill installed globally under `~/.config/agents/skills/` instead.
 
 ---
 

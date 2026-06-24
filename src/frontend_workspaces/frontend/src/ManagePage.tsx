@@ -1604,7 +1604,7 @@ export function ManagePage() {
                   <InlineLoading description="Loading skills…" />
                 ) : skills.length === 0 ? (
                   <p className="cds--type-body-compact-01" style={{ color: "var(--cds-text-secondary)" }}>
-                    No skills found. Add SKILL.md files under <code>.cuga/.skills/</code> or <code>.cuga/skills/</code>.
+                    No skills found. Add SKILL.md files under <code>.cuga/skills/</code> (default) or set <code>[skills] root</code> in settings.toml.
                   </p>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>

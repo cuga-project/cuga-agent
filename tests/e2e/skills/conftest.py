@@ -115,8 +115,8 @@ def write_skill(
     body: str,
     requirements: str = "",
 ) -> Path:
-    """Write a SKILL.md under root/.agents/skills/<name>/SKILL.md."""
-    skill_dir = root / ".agents" / "skills" / name
+    """Write a SKILL.md under root/.cuga/skills/<name>/SKILL.md."""
+    skill_dir = root / ".cuga" / "skills" / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     req_line = f"requirements: {requirements}\n" if requirements else ""
     skill_file = skill_dir / "SKILL.md"

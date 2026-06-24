@@ -3,10 +3,10 @@
 Moved here from ``local_sandbox_executor.py`` so the chat agent, cuga-lite,
 and every sandbox executor resolve workspace paths identically.
 
-Two layouts, selected by ``settings.skills.enabled``:
+Two layouts, selected by ``thread_id``:
 
-* Skills enabled  → per-thread ``<cwd>/cuga_workspace/<safe_thread_id>/``
-* Skills disabled → shared   ``<cwd>/cuga_workspace/``
+* ``thread_id`` present → per-thread ``<cwd>/cuga_workspace/<safe_thread_id>/``
+* no ``thread_id``    → shared   ``<cwd>/cuga_workspace/`` (legacy/SDK)
 
 ``resolve_workspace_path`` maps the agent-facing ``/workspace`` virtual root
 (and the legacy ``/tmp`` / ``/private/tmp`` aliases) onto that physical root
@@ -47,13 +47,13 @@ def local_base_dir() -> Path:
 
 
 def thread_workspace_root(thread_id: Optional[str]) -> Path:
-    """Per-thread workspace when skills are enabled, else the shared workspace.
+    """Per-thread workspace when ``thread_id`` is set, else the shared workspace.
 
-    Skills enabled  → ``<cwd>/cuga_workspace/<safe_thread_id>/``
-    Skills disabled → ``<cwd>/cuga_workspace/``
+    thread_id set   → ``<cwd>/cuga_workspace/<safe_thread_id>/``
+    thread_id empty → ``<cwd>/cuga_workspace/``
     """
     base = local_base_dir()
-    if skills_enabled():
+    if (thread_id or "").strip():
         return base / safe_thread_id(thread_id)
     return base
 

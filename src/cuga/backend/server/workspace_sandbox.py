@@ -20,19 +20,14 @@ _LEGACY_DISPLAY_ROOTS = {"tmp", "cuga_workspace"}  # kept for backward-compat pa
 
 
 def workspace_tree_is_sandbox_backed() -> bool:
-    return bool(
-        getattr(settings.skills, "enabled", False)
-        and getattr(settings.advanced_features, "opensandbox_sandbox", False)
-    )
+    return bool(getattr(settings.advanced_features, "opensandbox_sandbox", False))
 
 
 def workspace_tree_is_native_backed() -> bool:
     """True for both 'native' (macOS sandbox-exec) and 'local' (plain host subprocess) modes."""
     mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
     return bool(
-        getattr(settings.skills, "enabled", False)
-        and getattr(settings.advanced_features, "enable_shell_tool", False)
-        and mode in ("native", "local")
+        getattr(settings.advanced_features, "enable_shell_tool", False) and mode in ("native", "local")
     )
 
 

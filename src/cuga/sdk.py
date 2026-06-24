@@ -1622,7 +1622,7 @@ class CugaAgent:
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
             enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
             enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
-            skills_folder: Root folder that contains .agents/skills/. Defaults to cwd / CUGA_FOLDER env var.
+            skills_folder: Workspace root or `.cuga` folder containing `skills/`. Defaults to cwd / CUGA_FOLDER env var.
 
         Example with tool approval policy:
             ```python
@@ -2224,8 +2224,6 @@ class CugaAgent:
             run_config["configurable"]["skills_enabled"] = self._enable_skills
         if self._skills_folder is not None:
             # discover_skills() expects the .cuga subfolder path, not the workspace root.
-            # Convert workspace root → workspace_root/.cuga so that .agents/skills/ resolves correctly.
-            # Guard against double-suffixing if the caller already passes a .cuga-suffixed path.
             from pathlib import Path as _Path
 
             _sf = _Path(self._skills_folder)

@@ -39,6 +39,8 @@ import {
   ChevronDown,
   ChevronUp,
   Download,
+  Upload,
+  Renew,
 } from "@carbon/icons-react";
 import { KnowledgeSidePanel } from "agentic_chat/KnowledgeSidePanel";
 import type { SessionAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
@@ -361,6 +363,8 @@ export function ChatLanding() {
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(true);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
+  const [workspaceDragOver, setWorkspaceDragOver] = useState(false);
+  const workspaceFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     return () => {
@@ -809,6 +813,49 @@ export function ChatLanding() {
       }
     },
     [addToast, effectiveChatThreadId],
+  );
+
+  const handleWorkspaceUpload = useCallback(
+    async (files: File[]) => {
+      const tid = effectiveChatThreadId?.trim();
+      if (!tid) {
+        addToast("warning", "Upload unavailable", "Start a chat before uploading files.");
+        return;
+      }
+      try {
+        await Promise.all(
+          files.map(async (file) => {
+            const res = await api.uploadWorkspaceFile(file, tid);
+            if (!res.ok) {
+              let detail = res.statusText;
+              try {
+                const body = await res.json();
+                detail = body.detail || detail;
+              } catch {
+                // ignore
+              }
+              throw new Error(`${file.name}: ${detail}`);
+            }
+          }),
+        );
+        addToast("success", "Upload complete", `${files.length} file${files.length !== 1 ? "s" : ""} uploaded to workspace/uploads/`);
+        await fetchWorkspaceTree();
+      } catch (err) {
+        addToast("error", "Upload failed", err instanceof Error ? err.message : "Unknown error");
+      }
+    },
+    [addToast, effectiveChatThreadId, fetchWorkspaceTree],
+  );
+
+  const handleWorkspaceFileInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files ? Array.from(e.target.files) : [];
+      if (files.length > 0) {
+        void handleWorkspaceUpload(files);
+      }
+      e.target.value = "";
+    },
+    [handleWorkspaceUpload],
   );
 
   const closeKnowledgePreviewModal = useCallback(() => {
@@ -1287,7 +1334,61 @@ export function ChatLanding() {
               )}
 
               {rightSection === "workspace" && (
-                <div style={{ padding: "1rem" }}>
+                <div
+                  className={`chat-landing-workspace-panel${workspaceDragOver ? " chat-landing-workspace-panel--drag-over" : ""}`}
+                  style={{ padding: "1rem", position: "relative", minHeight: "12rem" }}
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.dataTransfer?.types.includes("Files")) setWorkspaceDragOver(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const { clientX: x, clientY: y } = e;
+                    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+                      setWorkspaceDragOver(false);
+                    }
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setWorkspaceDragOver(false);
+                    const files = Array.from(e.dataTransfer.files);
+                    if (files.length > 0) void handleWorkspaceUpload(files);
+                  }}
+                >
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.25rem", marginBottom: "0.75rem" }}>
+                  <input
+                    ref={workspaceFileInputRef}
+                    type="file"
+                    accept=".json,.jsonl,.ndjson"
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={handleWorkspaceFileInputChange}
+                  />
+                  <IconButton
+                    label="Upload JSON files"
+                    kind="ghost"
+                    size="sm"
+                    onClick={() => workspaceFileInputRef.current?.click()}
+                  >
+                    <Upload size={16} />
+                  </IconButton>
+                  <IconButton
+                    label="Refresh workspace"
+                    kind="ghost"
+                    size="sm"
+                    onClick={() => void fetchWorkspaceTree()}
+                  >
+                    <Renew size={16} />
+                  </IconButton>
+                </div>
                 {workspaceTreeLoading ? (
                   <div style={{ padding: "1rem" }}>
                     <SkeletonText paragraph lineCount={5} />
@@ -1303,11 +1404,20 @@ export function ChatLanding() {
                   >
                     <Folder size={32} style={{ opacity: 0.25, display: "block", margin: "0 auto 0.75rem" }} />
                     No workspace files.
+                    <br />
+                    <span style={{ fontSize: "0.75rem" }}>
+                      Upload JSON files — they appear under workspace/uploads/
+                    </span>
                   </div>
                 ) : (
                   <TreeView label="Workspace" hideLabel className="chat-landing-workspace-tree">
                     {workspaceTree.map((node) => renderFileNode(node))}
                   </TreeView>
+                )}
+                {workspaceDragOver && (
+                  <div className="chat-landing-workspace-drag-overlay">
+                    Drop JSON files here to upload
+                  </div>
                 )}
                 </div>
               )}

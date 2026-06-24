@@ -1,0 +1,114 @@
+"""Unit tests for thread-scoped workspace uploads."""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from cuga.backend.server import workspace_upload as wu
+
+
+def test_sanitize_upload_filename_accepts_json() -> None:
+    assert wu.sanitize_upload_filename("instana_events.json") == "instana_events.json"
+
+
+def test_sanitize_upload_filename_rejects_hidden() -> None:
+    with pytest.raises(ValueError, match="Invalid filename"):
+        wu.sanitize_upload_filename(".secret.json")
+
+
+def test_sanitize_upload_filename_rejects_bad_extension() -> None:
+    with pytest.raises(ValueError, match="Unsupported file type"):
+        wu.sanitize_upload_filename("data.csv")
+
+
+def test_sanitize_upload_filename_strips_path() -> None:
+    assert wu.sanitize_upload_filename("/tmp/evil/../ok.json") == "ok.json"
+
+
+def test_sanitize_upload_filename_normalizes_browser_download_name() -> None:
+    assert (
+        wu.sanitize_upload_filename("servicenow_incidents_2entries (1).json")
+        == "servicenow_incidents_2entries_1.json"
+    )
+
+
+def test_merge_manifest_replaces_same_name() -> None:
+    manifest = {
+        "thread_id": "t1",
+        "files": [{"name": "a.json", "path": "/workspace/uploads/a.json", "size_bytes": 1}],
+    }
+    merged = wu._merge_manifest_entry(manifest, thread_id="t1", filename="a.json", size_bytes=99)
+    assert len(merged["files"]) == 1
+    assert merged["files"][0]["size_bytes"] == 99
+
+
+@pytest.mark.asyncio
+async def test_upload_workspace_bytes_host_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(wu, "workspace_tree_is_sandbox_backed", lambda: False)
+
+    result = await wu.upload_workspace_bytes("thread-1", "instana.json", b'{"events": []}')
+    assert result["path"] == "workspace/uploads/instana.json"
+    assert result["sandbox_path"] == "/workspace/uploads/instana.json"
+
+    on_disk = tmp_path / "cuga_workspace" / "thread-1" / "uploads" / "instana.json"
+    assert on_disk.read_bytes() == b'{"events": []}'
+
+    manifest_path = tmp_path / "cuga_workspace" / "thread-1" / "uploads" / ".manifest.json"
+    manifest = json.loads(manifest_path.read_text())
+    assert manifest["thread_id"] == "thread-1"
+    assert manifest["files"][0]["name"] == "instana.json"
+
+
+@pytest.mark.asyncio
+async def test_upload_rejects_oversized_file(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(wu, "workspace_tree_is_sandbox_backed", lambda: False)
+    big = b"x" * (wu.MAX_UPLOAD_BYTES + 1)
+    with pytest.raises(ValueError, match="too large"):
+        await wu.upload_workspace_bytes("t", "big.json", big)
+
+
+def test_format_upload_context_lists_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    uploads = tmp_path / "cuga_workspace" / "t1" / "uploads"
+    uploads.mkdir(parents=True)
+    manifest = {
+        "thread_id": "t1",
+        "files": [{"name": "a.json", "path": "/workspace/uploads/a.json", "size_bytes": 2 * 1024 * 1024}],
+    }
+    (uploads / ".manifest.json").write_text(json.dumps(manifest))
+
+    ctx = wu.format_upload_context("t1")
+    assert ctx is not None
+    assert "/workspace/uploads/a.json" in ctx
+    assert "list_files('/workspace/uploads')" in ctx
+
+
+def test_delete_thread_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    uploads = tmp_path / "cuga_workspace" / "t1" / "uploads"
+    uploads.mkdir(parents=True)
+    (uploads / "x.json").write_text("{}")
+
+    wu.delete_thread_uploads("t1")
+    assert not uploads.exists()
+
+
+def test_resolve_host_workspace_path_thread_scoped(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    resolved = wu.resolve_host_workspace_path("workspace/uploads/foo.json", "thread-A")
+    assert resolved == (tmp_path / "cuga_workspace" / "thread-A" / "uploads" / "foo.json").resolve()
+
+
+def test_fetch_host_workspace_tree(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    uploads = tmp_path / "cuga_workspace" / "t1" / "uploads"
+    uploads.mkdir(parents=True)
+    (uploads / "data.json").write_text("{}")
+
+    tree = wu.fetch_host_workspace_tree("t1")
+    names = {node["name"] for node in tree}
+    assert "uploads" in names

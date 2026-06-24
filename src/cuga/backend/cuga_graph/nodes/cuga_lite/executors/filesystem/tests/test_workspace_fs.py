@@ -47,15 +47,25 @@ def test_per_thread_layout_when_skills_on(tmp_path: Path, monkeypatch: pytest.Mo
     assert on_disk.read_text() == "hello"
 
 
-def test_shared_layout_when_skills_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_shared_layout_when_no_thread_id(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _disable_skills(monkeypatch)
+
+    asyncio.run(_fs(None).write_file("a.txt", "x"))
+    asyncio.run(_fs(None).write_file("b.txt", "y"))
+    shared = tmp_path / "cuga_workspace"
+    assert (shared / "a.txt").read_text() == "x"
+    assert (shared / "b.txt").read_text() == "y"
+
+
+def test_per_thread_layout_when_skills_off(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     _disable_skills(monkeypatch)
 
     asyncio.run(_fs("thread-A").write_file("a.txt", "x"))
     asyncio.run(_fs("thread-B").write_file("b.txt", "y"))
-    shared = tmp_path / "cuga_workspace"
-    assert (shared / "a.txt").read_text() == "x"
-    assert (shared / "b.txt").read_text() == "y"
+    assert (tmp_path / "cuga_workspace" / "thread-A" / "a.txt").read_text() == "x"
+    assert (tmp_path / "cuga_workspace" / "thread-B" / "b.txt").read_text() == "y"
 
 
 def test_two_threads_are_isolated(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

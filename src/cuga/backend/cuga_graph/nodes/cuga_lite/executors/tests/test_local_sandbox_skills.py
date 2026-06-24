@@ -106,17 +106,20 @@ def test_local_sandbox_two_threads_are_isolated(tmp_path: Path, monkeypatch: pyt
     assert not (parent / "out.txt").exists()
 
 
-def test_local_thread_workspace_root_is_shared_when_skills_off(
+def test_local_thread_workspace_root_is_per_thread_even_when_skills_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With skills disabled, all threads collapse to `<cwd>/cuga_workspace/`."""
+    """With a thread_id, workspaces stay isolated even when skills are disabled."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_paths, "skills_enabled", lambda: False)
 
     a = _lse.local_thread_workspace_root("thread-A")
     b = _lse.local_thread_workspace_root("thread-B")
     none = _lse.local_thread_workspace_root(None)
-    assert a == b == none == tmp_path / "cuga_workspace"
+    assert a == tmp_path / "cuga_workspace" / "thread-A"
+    assert b == tmp_path / "cuga_workspace" / "thread-B"
+    assert none == tmp_path / "cuga_workspace"
+    assert a != b != none
 
 
 def test_local_thread_workspace_root_is_per_thread_when_skills_on(
