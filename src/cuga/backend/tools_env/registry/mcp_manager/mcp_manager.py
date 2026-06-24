@@ -29,7 +29,7 @@ from cuga.backend.tools_env.registry.mcp_manager.adapter import (
 )
 import threading
 from collections import defaultdict
-from urllib.parse import urlencode, urlparse
+from urllib.parse import parse_qsl, urlencode, urlparse
 from loguru import logger
 from cuga.backend.tools_env.registry.mcp_manager.openapi_parser_v0 import OpenAPITransformer
 from cuga.backend.tools_env.registry.mcp_manager.response_schema import extract_response_schema
@@ -980,7 +980,10 @@ class MCPManager:
                 query_params = {}
                 apply_authentication(config.auth, headers, query_params)
                 if query_params:
-                    url = f"{config.url}?{urlencode(query_params)}"
+                    parsed = urlparse(config.url)
+                    merged = dict(parse_qsl(parsed.query, keep_blank_values=True))
+                    merged.update(query_params)
+                    url = parsed._replace(query=urlencode(merged)).geturl()
 
             return SSETransport(url=url, headers=headers if headers else None)
 
@@ -1001,7 +1004,10 @@ class MCPManager:
                 query_params = {}
                 apply_authentication(config.auth, headers, query_params)
                 if query_params:
-                    url = f"{config.url}?{urlencode(query_params)}"
+                    parsed = urlparse(config.url)
+                    merged = dict(parse_qsl(parsed.query, keep_blank_values=True))
+                    merged.update(query_params)
+                    url = parsed._replace(query=urlencode(merged)).geturl()
 
             return StreamableHttpTransport(url=url, headers=headers if headers else None)
 

@@ -7,6 +7,7 @@ the HTTP/streamable-http branch does.
 """
 
 from unittest.mock import MagicMock, patch
+from urllib.parse import parse_qs, urlparse
 
 import pytest
 
@@ -167,6 +168,52 @@ class TestSSETransportAuth:
         assert call_kwargs["url"] == "https://example.com/sse?auth_token=token456"
         assert result is fake_transport
 
+    def test_api_key_auth_merges_with_existing_query_params(self):
+        manager = _make_manager()
+        config = _sse_config(
+            auth=Auth(type="api-key", value="key123", key="api_key"),
+            url="https://example.com/sse?existing=1",
+        )
+
+        fake_transport = MagicMock()
+        with (
+            patch(
+                "cuga.backend.tools_env.registry.mcp_manager.mcp_manager.SSETransport",
+                return_value=fake_transport,
+            ) as MockSSE,
+            patch(
+                "cuga.backend.secrets.resolve_secret",
+                side_effect=lambda v: v,
+            ),
+        ):
+            manager._create_transport("test_server", config)
+
+        parsed = urlparse(MockSSE.call_args.kwargs["url"])
+        assert parse_qs(parsed.query) == {"existing": ["1"], "api_key": ["key123"]}
+
+    def test_query_auth_merges_with_existing_query_params(self):
+        manager = _make_manager()
+        config = _sse_config(
+            auth=Auth(type="query", value="token456", key="auth_token"),
+            url="https://example.com/sse?existing=1",
+        )
+
+        fake_transport = MagicMock()
+        with (
+            patch(
+                "cuga.backend.tools_env.registry.mcp_manager.mcp_manager.SSETransport",
+                return_value=fake_transport,
+            ) as MockSSE,
+            patch(
+                "cuga.backend.secrets.resolve_secret",
+                side_effect=lambda v: v,
+            ),
+        ):
+            manager._create_transport("test_server", config)
+
+        parsed = urlparse(MockSSE.call_args.kwargs["url"])
+        assert parse_qs(parsed.query) == {"existing": ["1"], "auth_token": ["token456"]}
+
     def test_missing_url_raises(self):
         """SSE transport without a URL must raise immediately."""
         manager = _make_manager()
@@ -235,3 +282,49 @@ class TestHTTPTransportAuth:
         assert call_kwargs["headers"] is None
         assert call_kwargs["url"] == "https://example.com/mcp?api_key=key123"
         assert result is fake_transport
+
+    def test_api_key_auth_merges_with_existing_query_params(self):
+        manager = _make_manager()
+        config = self._http_config(
+            auth=Auth(type="api-key", value="key123", key="api_key"),
+            url="https://example.com/mcp?existing=1",
+        )
+
+        fake_transport = MagicMock()
+        with (
+            patch(
+                "cuga.backend.tools_env.registry.mcp_manager.mcp_manager.StreamableHttpTransport",
+                return_value=fake_transport,
+            ) as MockHTTP,
+            patch(
+                "cuga.backend.secrets.resolve_secret",
+                side_effect=lambda v: v,
+            ),
+        ):
+            manager._create_transport("test_server", config)
+
+        parsed = urlparse(MockHTTP.call_args.kwargs["url"])
+        assert parse_qs(parsed.query) == {"existing": ["1"], "api_key": ["key123"]}
+
+    def test_query_auth_merges_with_existing_query_params(self):
+        manager = _make_manager()
+        config = self._http_config(
+            auth=Auth(type="query", value="token456", key="auth_token"),
+            url="https://example.com/mcp?existing=1",
+        )
+
+        fake_transport = MagicMock()
+        with (
+            patch(
+                "cuga.backend.tools_env.registry.mcp_manager.mcp_manager.StreamableHttpTransport",
+                return_value=fake_transport,
+            ) as MockHTTP,
+            patch(
+                "cuga.backend.secrets.resolve_secret",
+                side_effect=lambda v: v,
+            ),
+        ):
+            manager._create_transport("test_server", config)
+
+        parsed = urlparse(MockHTTP.call_args.kwargs["url"])
+        assert parse_qs(parsed.query) == {"existing": ["1"], "auth_token": ["token456"]}
