@@ -37,10 +37,23 @@ def _disable_skills(monkeypatch: pytest.MonkeyPatch) -> None:
 # ─── workspace layout ───────────────────────────────────────────────────────
 
 
+def test_shared_assets_not_seeded_without_env(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("CUGA_THREAD_WORKSPACE_SEED", raising=False)
+    shared = tmp_path / "cuga_workspace"
+    shared.mkdir(parents=True)
+    (shared / "contacts.txt").write_text("demo")
+
+    _paths.ensure_thread_workspace_seeded("thread-A")
+    thread_root = shared / "thread-A"
+    assert not (thread_root / "contacts.txt").exists()
+
+
 def test_shared_assets_seed_into_empty_thread_workspace(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CUGA_THREAD_WORKSPACE_SEED", "crm,ci")
     shared = tmp_path / "cuga_workspace"
     shared.mkdir(parents=True)
     (shared / "contacts.txt").write_text("demo")

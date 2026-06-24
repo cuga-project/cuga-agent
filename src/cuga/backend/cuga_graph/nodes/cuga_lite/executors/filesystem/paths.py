@@ -37,7 +37,15 @@ _SHARED_SEED_FILES = frozenset(
 _SHARED_SEED_DIRS = frozenset({"test_workspace"})
 # Legacy roots older prompts/tools may still emit; mapped onto the workspace.
 _LEGACY_ROOTS = ("/tmp", "/private/tmp")
+_SEED_ENV = "CUGA_THREAD_WORKSPACE_SEED"
 _seeded_threads: set[tuple[str, str]] = set()
+
+
+def _seed_modes() -> frozenset[str]:
+    raw = os.environ.get(_SEED_ENV, "").strip().lower()
+    if not raw:
+        return frozenset()
+    return frozenset(part.strip() for part in raw.split(",") if part.strip())
 
 
 def safe_thread_id(thread_id: Optional[str]) -> str:
@@ -72,7 +80,10 @@ def thread_workspace_root(thread_id: Optional[str]) -> Path:
 
 
 def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
-    """Copy CRM demo and CI test assets from shared root into an empty per-thread workspace once."""
+    """Copy shared CRM/CI fixtures into an empty per-thread workspace when opted in via env."""
+    modes = _seed_modes()
+    if not modes:
+        return
     tid = (thread_id or "").strip()
     if not tid:
         return
@@ -95,9 +106,9 @@ def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
     for item in shared.iterdir():
         if item.name == safe_tid:
             continue
-        if item.is_file() and item.name in _SHARED_SEED_FILES:
+        if item.is_file() and "crm" in modes and item.name in _SHARED_SEED_FILES:
             shutil.copy2(item, dest / item.name)
-        elif item.is_dir() and item.name in _SHARED_SEED_DIRS:
+        elif item.is_dir() and "ci" in modes and item.name in _SHARED_SEED_DIRS:
             shutil.copytree(item, dest / item.name, dirs_exist_ok=True)
 
     _seeded_threads.add(cache_key)
