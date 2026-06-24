@@ -170,7 +170,7 @@ async def test_sse_stream_emits_jsonrpc_error_when_runner_raises(fake_event_fact
     from cuga.backend.server.a2a import build_router
 
     class _BlowingRunner:
-        async def run(self, message, context_id=None):
+        async def run(self, message, context_id=None, approval=None):
             raise RuntimeError("simulated graph crash")
             yield  # pragma: no cover — mark as async generator
 
@@ -224,7 +224,7 @@ async def test_jsonrpc_send_does_not_leak_raw_exception_text(fake_event_factory,
     from cuga.backend.server.a2a import build_router
 
     class _BlowingRunner:
-        async def run(self, message, context_id=None):
+        async def run(self, message, context_id=None, approval=None):
             raise RuntimeError("/secret/path/leak")
             yield  # pragma: no cover
 

@@ -93,6 +93,9 @@ echo "Running ToolGuard provider tests..."
 run_pytest tests/unit/test_toolguard_provider.py \
     tests/unit/test_policy_tool_guide_loading.py \
     tests/unit/test_async_tool_provider_construction.py
+echo "Running A2A tests..."
+run_pytest tests/integration/a2a/ \
+    tests/unit/test_a2a_simple_runner_hitl.py
 echo "✅ All unit tests passed!"
 
 # Check for test type flag
