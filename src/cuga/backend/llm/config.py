@@ -50,6 +50,12 @@ class LLMConfig(BaseModel):
         default=16000, gt=0, description="Maximum number of tokens in the response"
     )
 
+    timeout: Optional[float] = Field(
+        default=None,
+        gt=0,
+        description="HTTP timeout in seconds for LLM API requests (overrides global setting)",
+    )
+
     disable_ssl: bool = Field(
         default=False, description="Whether to disable SSL verification for API requests"
     )
