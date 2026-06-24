@@ -140,7 +140,9 @@ def _settings_to_card_dict(a2a_settings: Any) -> dict[str, Any]:
     }
 
 
-def build_a2a_router_for_settings(a2a_settings: Any, app_state: Any, event_stream_func: Any = None) -> APIRouter:
+def build_a2a_router_for_settings(
+    a2a_settings: Any, app_state: Any, event_stream_func: Any = None
+) -> APIRouter:
     """Build the A2A FastAPI router bound to a runner picked by settings.
 
     If ``a2a_settings.supervisor_config_path`` is set we lazily front the

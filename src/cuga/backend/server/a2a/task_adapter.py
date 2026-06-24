@@ -69,9 +69,7 @@ def _event_text(event: Any) -> str:
     return str(getattr(event, "name", "") or "")
 
 
-def _message(
-    text: str, message_id: str, context_id: str, metadata: dict[str, Any] | None = None
-) -> Message:
+def _message(text: str, message_id: str, context_id: str, metadata: dict[str, Any] | None = None) -> Message:
     """Build an agent-role A2A Message wrapping ``text`` as a single TextPart.
 
     ``metadata`` is attached verbatim when provided — used to carry the HITL
@@ -114,9 +112,7 @@ def stream_events_to_a2a(
                 saw_terminal = True
             data = getattr(ev, "data", None)
             meta = (
-                {"action_id": data["action_id"]}
-                if isinstance(data, dict) and data.get("action_id")
-                else None
+                {"action_id": data["action_id"]} if isinstance(data, dict) and data.get("action_id") else None
             )
             yield TaskStatusUpdateEvent(
                 task_id=task_id,

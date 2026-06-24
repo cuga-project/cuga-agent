@@ -36,8 +36,36 @@ _ERROR_NAMES = {"Error", "error", "failed", "failure", "exception"}
 
 # Text-fallback vocabulary for reading approve/deny out of a plain message
 # when no structured approval signal is supplied.
-_AFFIRM = {"approve", "approved", "yes", "y", "ok", "okay", "confirm", "confirmed", "accept", "accepted", "run", "proceed", "go"}
-_DENY = {"deny", "denied", "no", "n", "reject", "rejected", "cancel", "cancelled", "canceled", "decline", "declined", "abort", "stop"}
+_AFFIRM = {
+    "approve",
+    "approved",
+    "yes",
+    "y",
+    "ok",
+    "okay",
+    "confirm",
+    "confirmed",
+    "accept",
+    "accepted",
+    "run",
+    "proceed",
+    "go",
+}
+_DENY = {
+    "deny",
+    "denied",
+    "no",
+    "n",
+    "reject",
+    "rejected",
+    "cancel",
+    "cancelled",
+    "canceled",
+    "decline",
+    "declined",
+    "abort",
+    "stop",
+}
 
 
 class SimpleA2ARunner:

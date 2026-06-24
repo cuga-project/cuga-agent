@@ -269,7 +269,9 @@ def build_router(*, runner: GraphRunner, settings: Mapping[str, Any], **_kwargs:
             context_id = _ensure_context_id(params)
             approval = _extract_approval(params)
             task_id = uuid.uuid4().hex
-            return EventSourceResponse(_sse_stream(message_text, context_id, task_id, rpc_id, approval=approval))
+            return EventSourceResponse(
+                _sse_stream(message_text, context_id, task_id, rpc_id, approval=approval)
+            )
 
         return JSONResponse(_rpc_error(rpc_id, _METHOD_NOT_FOUND, "Method not found"))
 
