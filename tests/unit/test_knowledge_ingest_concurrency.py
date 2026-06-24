@@ -42,9 +42,7 @@ def test_ingest_semaphore_caps_concurrent_parses():
     eng._ensure_metadata_ready = noop
 
     async def run():
-        await asyncio.gather(
-            *(eng._run_ingest("c", Path("f"), f"f{i}", f"t{i}", True) for i in range(6))
-        )
+        await asyncio.gather(*(eng._run_ingest("c", Path("f"), f"f{i}", f"t{i}", True) for i in range(6)))
 
     asyncio.run(run())
 
