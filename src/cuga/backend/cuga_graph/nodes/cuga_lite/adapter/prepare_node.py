@@ -475,7 +475,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         # Inject knowledge base awareness if knowledge tools are available
         effective_instructions = adapter._instructions
-        upload_context = config.get("configurable", {}).get("upload_context")
+        upload_context = _cfg.get("upload_context")
         if upload_context:
             effective_instructions = (
                 f"{upload_context}\n\n{effective_instructions}" if effective_instructions else upload_context

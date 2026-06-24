@@ -14,7 +14,9 @@ from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     VIRTUAL_WORKSPACE_ROOT,
+    ensure_thread_workspace_seeded,
     resolve_workspace_path,
+    safe_thread_id,
     thread_workspace_root,
 )
 from cuga.backend.server.workspace_sandbox import workspace_tree_is_sandbox_backed
@@ -52,8 +54,14 @@ def manifest_sandbox_path() -> str:
     return f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}/{MANIFEST_NAME}"
 
 
+def _validated_thread_id(thread_id: Optional[str]) -> str:
+    """Sanitize thread_id before any filesystem path construction."""
+    return safe_thread_id(thread_id)
+
+
 def _manifest_host_path(thread_id: Optional[str]) -> Path:
-    return resolve_workspace_path(manifest_sandbox_path(), thread_id=thread_id, operation="read_manifest")
+    tid = _validated_thread_id(thread_id)
+    return resolve_workspace_path(manifest_sandbox_path(), thread_id=tid, operation="read_manifest")
 
 
 def read_upload_manifest(thread_id: Optional[str]) -> dict[str, Any]:
@@ -107,32 +115,35 @@ async def upload_workspace_bytes(
     if len(data) > MAX_UPLOAD_BYTES:
         raise ValueError(f"File too large ({len(data)} bytes; max {MAX_UPLOAD_BYTES})")
 
+    tid = _validated_thread_id(thread_id)
+    ensure_thread_workspace_seeded(tid)
     safe_name = sanitize_upload_filename(filename)
     sp = sandbox_upload_path(safe_name)
     manifest = _merge_manifest_entry(
-        read_upload_manifest(thread_id), thread_id=thread_id, filename=safe_name, size_bytes=len(data)
+        read_upload_manifest(tid), thread_id=tid, filename=safe_name, size_bytes=len(data)
     )
 
     if workspace_tree_is_sandbox_backed():
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
 
-        backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), thread_id)
-        dest = resolve_workspace_path(sp, thread_id=thread_id, operation="upload_file")
+        backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), tid)
+        dest = resolve_workspace_path(sp, thread_id=tid, operation="upload_file")
         dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
         tmp = dest.parent / f".upload-{safe_name}.tmp"
         tmp.write_bytes(data)
         try:
             await backend.upload(str(tmp), sp)
         finally:
             tmp.unlink(missing_ok=True)
-        _write_manifest_host(thread_id, manifest)
-        await _write_manifest_remote(thread_id, manifest)
+        _write_manifest_host(tid, manifest)
+        await _write_manifest_remote(tid, manifest)
     else:
-        dest = resolve_workspace_path(sp, thread_id=thread_id, operation="upload_file")
+        dest = resolve_workspace_path(sp, thread_id=tid, operation="upload_file")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
-        _write_manifest_host(thread_id, manifest)
+        _write_manifest_host(tid, manifest)
 
     return {
         "path": display_upload_path(safe_name),
@@ -158,19 +169,33 @@ def format_upload_context(thread_id: Optional[str]) -> str | None:
     return "\n".join(lines)
 
 
-def delete_thread_uploads(thread_id: Optional[str]) -> None:
-    if not (thread_id or "").strip():
+async def delete_thread_uploads(thread_id: Optional[str]) -> None:
+    tid = (thread_id or "").strip()
+    if not tid:
         return
+    safe_tid = _validated_thread_id(tid)
     uploads_dir = resolve_workspace_path(
-        f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}", thread_id=thread_id, operation="delete_uploads"
+        f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}", thread_id=safe_tid, operation="delete_uploads"
     )
     if uploads_dir.exists():
         shutil.rmtree(uploads_dir, ignore_errors=True)
-        logger.info(f"[workspace_upload] removed uploads for thread={thread_id}")
+        logger.info(f"[workspace_upload] removed host uploads for thread={safe_tid}")
+
+    if workspace_tree_is_sandbox_backed():
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
+
+        executor = CodeExecutor._get_opensandbox_executor()
+        interpreter = await executor.get_interpreter_for_thread(safe_tid)
+        uploads_sp = f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}"
+        try:
+            await interpreter.sandbox.commands.run(f"rm -rf {uploads_sp}")
+        except Exception as exc:
+            logger.debug(f"[workspace_upload] sandbox remove uploads for thread={safe_tid}: {exc}")
 
 
 def resolve_host_workspace_path(user_path: str, thread_id: Optional[str]) -> Path:
     """Map UI/API path to host filesystem path under the thread workspace."""
+    tid = _validated_thread_id(thread_id)
     raw = (user_path or "").strip().replace("\\", "/").lstrip("/")
     parts = raw.split("/") if raw else []
     if parts and parts[0] in {"workspace", "cuga_workspace", UPLOADS_SUBDIR}:
@@ -178,12 +203,14 @@ def resolve_host_workspace_path(user_path: str, thread_id: Optional[str]) -> Pat
             parts = parts[1:]
     suffix = "/".join(parts)
     sandbox_path = VIRTUAL_WORKSPACE_ROOT if not suffix else f"{VIRTUAL_WORKSPACE_ROOT}/{suffix}"
-    return resolve_workspace_path(sandbox_path, thread_id=thread_id, operation="access")
+    return resolve_workspace_path(sandbox_path, thread_id=tid, operation="access")
 
 
 def fetch_host_workspace_tree(thread_id: Optional[str]) -> list[dict[str, Any]]:
     """Build workspace tree from host disk (non-sandbox modes)."""
-    root = thread_workspace_root(thread_id)
+    tid = _validated_thread_id(thread_id)
+    ensure_thread_workspace_seeded(tid)
+    root = thread_workspace_root(tid)
     if not root.exists():
         return []
 

@@ -18,6 +18,14 @@ interface WorkspacePanelProps {
   workspaceFilesystemRoot?: string;
 }
 
+const JSON_UPLOAD_SUFFIXES = [".json", ".jsonl", ".ndjson"];
+
+function filterJsonUploadFiles(files: File[]): File[] {
+  return files.filter((file) =>
+    JSON_UPLOAD_SUFFIXES.some((suffix) => file.name.toLowerCase().endsWith(suffix)),
+  );
+}
+
 export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, workspaceFilesystemRoot = "cuga_workspace" }: WorkspacePanelProps) {
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -191,7 +199,7 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
     e.preventDefault();
     e.stopPropagation();
     setIsDragOver(false);
-    const files = Array.from(e.dataTransfer.files);
+    const files = filterJsonUploadFiles(Array.from(e.dataTransfer.files));
     if (files.length > 0) {
       await handleFileUpload(files);
     }

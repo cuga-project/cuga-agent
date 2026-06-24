@@ -2223,13 +2223,7 @@ class CugaAgent:
         if self._enable_skills is not None:
             run_config["configurable"]["skills_enabled"] = self._enable_skills
         if self._skills_folder is not None:
-            # discover_skills() expects the .cuga subfolder path, not the workspace root.
-            from pathlib import Path as _Path
-
-            _sf = _Path(self._skills_folder)
-            if _sf.name != ".cuga":
-                _sf = _sf / ".cuga"
-            run_config["configurable"]["skills_folder"] = str(_sf)
+            run_config["configurable"]["skills_folder"] = str(self._skills_folder)
 
         # Ensure graph is created (needed for state retrieval)
         _ = self.graph

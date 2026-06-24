@@ -25,6 +25,8 @@ def workspace_tree_is_sandbox_backed() -> bool:
 
 def workspace_tree_is_native_backed() -> bool:
     """True for both 'native' (macOS sandbox-exec) and 'local' (plain host subprocess) modes."""
+    if workspace_tree_is_sandbox_backed():
+        return False
     mode = getattr(settings.advanced_features, "sandbox_mode", "opensandbox")
     return bool(
         getattr(settings.advanced_features, "enable_shell_tool", False) and mode in ("native", "local")

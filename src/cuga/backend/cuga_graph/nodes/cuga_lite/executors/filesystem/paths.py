@@ -18,13 +18,26 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 from pathlib import Path
 from typing import Optional
 
 VIRTUAL_WORKSPACE_ROOT = "/workspace"
 CUGA_WORKSPACE_DIRNAME = "cuga_workspace"
+# CRM demo + manager CI fixtures at the shared workspace root, copied into empty per-thread workspaces.
+_SHARED_SEED_FILES = frozenset(
+    {
+        "contacts.txt",
+        "cuga_playbook.md",
+        "email_template.md",
+        "cities.txt",
+        "company.txt",
+    }
+)
+_SHARED_SEED_DIRS = frozenset({"test_workspace"})
 # Legacy roots older prompts/tools may still emit; mapped onto the workspace.
 _LEGACY_ROOTS = ("/tmp", "/private/tmp")
+_seeded_threads: set[tuple[str, str]] = set()
 
 
 def safe_thread_id(thread_id: Optional[str]) -> str:
@@ -58,6 +71,38 @@ def thread_workspace_root(thread_id: Optional[str]) -> Path:
     return base
 
 
+def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
+    """Copy CRM demo and CI test assets from shared root into an empty per-thread workspace once."""
+    tid = (thread_id or "").strip()
+    if not tid:
+        return
+    safe_tid = safe_thread_id(tid)
+    cache_key = (str(local_base_dir().resolve()), safe_tid)
+    if cache_key in _seeded_threads:
+        return
+
+    shared = local_base_dir()
+    dest = shared / safe_tid
+    if dest.exists() and any(dest.iterdir()):
+        _seeded_threads.add(cache_key)
+        return
+
+    dest.mkdir(parents=True, exist_ok=True)
+    if not shared.is_dir():
+        _seeded_threads.add(cache_key)
+        return
+
+    for item in shared.iterdir():
+        if item.name == safe_tid:
+            continue
+        if item.is_file() and item.name in _SHARED_SEED_FILES:
+            shutil.copy2(item, dest / item.name)
+        elif item.is_dir() and item.name in _SHARED_SEED_DIRS:
+            shutil.copytree(item, dest / item.name, dirs_exist_ok=True)
+
+    _seeded_threads.add(cache_key)
+
+
 def _reject_traversal(raw: str) -> None:
     """Refuse parent-directory traversal outright.
 
@@ -86,6 +131,8 @@ def resolve_workspace_path(
     if not raw:
         raise ValueError("empty path")
     _reject_traversal(raw)
+    if (thread_id or "").strip():
+        ensure_thread_workspace_seeded(thread_id)
     normalized = os.path.normpath(raw.replace("\\", "/"))
     workspace_root = thread_workspace_root(thread_id).resolve()
 

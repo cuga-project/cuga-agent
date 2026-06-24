@@ -87,13 +87,15 @@ def test_format_upload_context_lists_files(tmp_path: Path, monkeypatch: pytest.M
     assert "list_files('/workspace/uploads')" in ctx
 
 
-def test_delete_thread_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+@pytest.mark.asyncio
+async def test_delete_thread_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(wu, "workspace_tree_is_sandbox_backed", lambda: False)
     uploads = tmp_path / "cuga_workspace" / "t1" / "uploads"
     uploads.mkdir(parents=True)
     (uploads / "x.json").write_text("{}")
 
-    wu.delete_thread_uploads("t1")
+    await wu.delete_thread_uploads("t1")
     assert not uploads.exists()
 
 

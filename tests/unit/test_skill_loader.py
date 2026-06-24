@@ -86,7 +86,7 @@ def test_skill_registry_load_skill_includes_install_normalization_guidance() -> 
                 name="deck",
                 description="Deck skill",
                 body="## Dependencies\n\nuv pip install python-pptx",
-                source="/tmp/SKILL.md",
+                source="/skills/deck/SKILL.md",
                 requirements=("python-pptx", "npm:sharp"),
             )
         ]
@@ -112,7 +112,7 @@ def test_skill_registry_load_skill_without_requirements_skips_install_step() -> 
                 name="analysis",
                 description="Analysis skill",
                 body="Analyze uploads.",
-                source="/tmp/SKILL.md",
+                source="/skills/deck/SKILL.md",
             )
         ]
     )

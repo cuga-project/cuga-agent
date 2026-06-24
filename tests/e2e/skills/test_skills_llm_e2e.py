@@ -73,7 +73,7 @@ _RESULTS: list[dict] = []
 
 def _normalize_hyphens(text: str) -> str:
     """Replace Unicode dash variants with ASCII hyphen for robust assertions."""
-    for ch in "‐‑‒–—―−":
+    for ch in ("\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212"):
         text = text.replace(ch, "-")
     return text
 

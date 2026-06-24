@@ -63,10 +63,12 @@ from cuga.config import (
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
 from cuga.backend.server.workspace_upload import (
+    MAX_UPLOAD_BYTES,
     delete_thread_uploads,
     fetch_host_workspace_tree,
     format_upload_context,
     resolve_host_workspace_path,
+    sanitize_upload_filename,
     upload_workspace_bytes,
 )
 from cuga.backend.server.workspace_sandbox import (
@@ -93,6 +95,15 @@ DEFAULT_USER_ID = "default_user"
 def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Optional[str]:
     tid = (query_thread_id or "").strip() or (request.headers.get("x-thread-id") or "").strip()
     return tid or None
+
+
+async def _assert_thread_access(agent_id: str, thread_id: str, user_id: str) -> None:
+    """Reject access when thread_id is owned by a different user."""
+    conversation_db = get_conversation_db()
+    rows = await conversation_db.get_thread_history(thread_id)
+    for row in rows:
+        if row.agent_id == agent_id and row.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied: thread belongs to another user")
 
 
 def _strip_redundant_cuga_workspace_prefix(user_path: str) -> str:
@@ -2419,7 +2430,7 @@ async def delete_conversation(
 
         if success:
             await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
-            delete_thread_uploads(conversation_id)
+            await delete_thread_uploads(conversation_id)
             logger.info(f"Deleted conversation and stream events: {conversation_id}")
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
         else:
@@ -3392,6 +3403,7 @@ async def upload_workspace_file(
     request: Request,
     file: UploadFile = File(...),
     thread_id: Optional[str] = Query(None),
+    agent_id: str = Query("cuga-default"),
     current_user: Optional[UserInfo] = Depends(require_chat_access),
 ):
     """Upload a file into the thread workspace under ``/workspace/uploads/``."""
@@ -3402,7 +3414,40 @@ async def upload_workspace_file(
         if not tid:
             raise HTTPException(status_code=400, detail="thread_id required for workspace upload")
 
-        content = await file.read()
+        user_id = current_user.sub if current_user else DEFAULT_USER_ID
+        await _assert_thread_access(agent_id, tid, user_id)
+
+        try:
+            sanitize_upload_filename(file.filename or "upload.json")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large (max {MAX_UPLOAD_BYTES} bytes)",
+                    )
+            except ValueError:
+                pass
+
+        chunks: list[bytes] = []
+        total = 0
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > MAX_UPLOAD_BYTES:
+                raise HTTPException(
+                    status_code=413,
+                    detail=f"File too large (max {MAX_UPLOAD_BYTES} bytes)",
+                )
+            chunks.append(chunk)
+        content = b"".join(chunks)
+
         try:
             result = await upload_workspace_bytes(tid, file.filename or "upload.json", content)
         except ValueError as e:

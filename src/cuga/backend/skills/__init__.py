@@ -1,8 +1,8 @@
 """Agent skills: SKILL.md discovery and load_skill tool.
 
 Skills are discovered from one root only (``settings.skills.root``, default ``cuga``):
-  - cuga          → .cuga/skills/**/SKILL.md
-  - agents        → .agents/skills/**/SKILL.md  (npx skills / skills.sh layout)
+  - cuga          → ``<CUGA folder>/skills/**/SKILL.md`` (default: ``.cuga/skills``)
+  - agents        → ``<project>/.agents/skills/**/SKILL.md``
   - global_agents → ~/.config/agents/skills/**/SKILL.md
   - global_cuga   → ~/.config/cuga/skills/**/SKILL.md
 

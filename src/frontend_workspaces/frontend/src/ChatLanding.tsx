@@ -254,6 +254,10 @@ const truncateText = (text: string, maxLength: number = 100): string => {
 };
 
 const TEXT_EXTENSIONS = [".txt", ".md", ".json", ".yaml", ".yml", ".log", ".csv", ".html", ".css", ".js", ".ts", ".py"];
+const JSON_UPLOAD_SUFFIXES = [".json", ".jsonl", ".ndjson"];
+
+const filterJsonUploadFiles = (files: File[]): File[] =>
+  files.filter((file) => JSON_UPLOAD_SUFFIXES.some((suffix) => file.name.toLowerCase().endsWith(suffix)));
 
 const createDraftThreadState = (): DraftThreadState => ({
   threadId: generateUUID(),
@@ -1359,7 +1363,7 @@ export function ChatLanding() {
                     e.preventDefault();
                     e.stopPropagation();
                     setWorkspaceDragOver(false);
-                    const files = Array.from(e.dataTransfer.files);
+                    const files = filterJsonUploadFiles(Array.from(e.dataTransfer.files));
                     if (files.length > 0) void handleWorkspaceUpload(files);
                   }}
                 >
