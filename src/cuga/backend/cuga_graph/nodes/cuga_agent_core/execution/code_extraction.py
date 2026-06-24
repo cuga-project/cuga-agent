@@ -20,12 +20,22 @@ from pydantic import BaseModel
 BACKTICK_PATTERN = r"```python(.*?)```"
 
 
-def extract_and_combine_codeblocks(text: str) -> str:
-    """Extract all ```python codeblocks from text and combine them."""
+def extract_and_combine_codeblocks(text: str, tools_needing_probing: frozenset[str] = frozenset()) -> str:
+    """Extract all ```python codeblocks from text and combine them.
+
+    When ``tools_needing_probing`` is non-empty, fenced blocks are scanned in
+    order and only kept up to and including the first block whose code calls
+    one of those tool names — the rest are dropped. This forces a fresh model
+    turn (with the real tool result visible) before any later block runs,
+    instead of running a blind guess in the same execution.
+    """
     code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
 
     if code_blocks:
-        return "\n\n".join(block.strip() for block in code_blocks)
+        blocks = [block.strip() for block in code_blocks]
+        if tools_needing_probing:
+            blocks = _truncate_after_first_probing_block(blocks, tools_needing_probing)
+        return "\n\n".join(blocks)
 
     recovered = _recover_non_closing_python_fence(text)
     if recovered:
@@ -43,16 +53,30 @@ def extract_and_combine_codeblocks(text: str) -> str:
         return ""
 
 
-def extract_code_from_model_response(content: Optional[str], reasoning_content: Optional[str]) -> str:
+def _truncate_after_first_probing_block(
+    blocks: list[str], tools_needing_probing: frozenset[str]
+) -> list[str]:
+    pattern = re.compile(r"\b(" + "|".join(re.escape(name) for name in tools_needing_probing) + r")\s*\(")
+    for i, block in enumerate(blocks):
+        if pattern.search(block):
+            return blocks[: i + 1]
+    return blocks
+
+
+def extract_code_from_model_response(
+    content: Optional[str],
+    reasoning_content: Optional[str],
+    tools_needing_probing: frozenset[str] = frozenset(),
+) -> str:
     """Extract code from a model response, falling back to reasoning.
 
     Tries fenced/raw code in ``content`` first; only if that yields nothing
     does it look at ``reasoning_content``. Mirrors the (previously
     duplicated) logic in the Lite and Supervisor loop nodes.
     """
-    code = extract_and_combine_codeblocks(content) if content else ""
+    code = extract_and_combine_codeblocks(content, tools_needing_probing) if content else ""
     if not code and reasoning_content:
-        code = extract_and_combine_codeblocks(reasoning_content)
+        code = extract_and_combine_codeblocks(reasoning_content, tools_needing_probing)
     return code
 
 
