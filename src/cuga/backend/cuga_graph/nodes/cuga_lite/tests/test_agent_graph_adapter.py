@@ -326,3 +326,25 @@ def test_resolve_max_steps_uses_state_when_set():
     adapter = _make_adapter()
     state = SimpleNamespace(cuga_lite_max_steps=25)
     assert adapter.resolve_max_steps(state, None) == 25
+
+
+# ── 10. get_tools_needing_probing hook ──────────────────────────────────────
+
+
+def test_get_tools_needing_probing_returns_unobserved_weak_schema_tools():
+    adapter = _make_adapter()
+    adapter._weak_schema_tool_names = frozenset({"file_readfile", "get_browser_state"})
+    adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
+    assert adapter.get_tools_needing_probing() == frozenset({"get_browser_state"})
+
+
+def test_get_tools_needing_probing_empty_when_all_observed():
+    adapter = _make_adapter()
+    adapter._weak_schema_tool_names = frozenset({"file_readfile"})
+    adapter._observed_tool_shapes = {"file_readfile": "list of 3 items"}
+    assert adapter.get_tools_needing_probing() == frozenset()
+
+
+def test_get_tools_needing_probing_empty_by_default():
+    adapter = _make_adapter()
+    assert adapter.get_tools_needing_probing() == frozenset()

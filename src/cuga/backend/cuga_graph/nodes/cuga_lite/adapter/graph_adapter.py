@@ -108,6 +108,9 @@ class AgentGraphAdapter(CoreGraphAdapter):
             content += _format_observed_tool_shapes_block(self._observed_tool_shapes)
         return content
 
+    def get_tools_needing_probing(self) -> frozenset[str]:
+        return self._weak_schema_tool_names - self._observed_tool_shapes.keys()
+
     def get_tracker(self) -> Any:
         return self._tracker
 
