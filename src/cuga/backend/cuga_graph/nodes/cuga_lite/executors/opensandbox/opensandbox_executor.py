@@ -305,9 +305,9 @@ class OpenSandboxExecutor(RemoteExecutor):
                 description=(
                     "Run a shell command inside the sandbox and return its output. "
                     "Commands run from /workspace with the sandbox virtual environment activated. "
-                    "Use uv only for Python package installs and inspection (`uv pip install ...`, `uv pip list`, `uv pip show ...`). "
-                    "Never run `python -m ...` directly; use `uv run --no-project python -m ...`. "
-                    "Python scripts should run as `uv run --no-project /workspace/file.py`. "
+                    "Install with `uv pip install ...`. Verify with `python -c \"import pkg; print('ok')\"` "
+                    "or `uv pip show pkg` — not `python -m pip` or `pip show`. "
+                    "Run with `python ./script.py` first; retry with `uv run --no-project ...` if that fails. "
                     "Node commands must start with plain `node ...`; npm commands must start with plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`."
                 ),

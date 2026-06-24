@@ -1,5 +1,7 @@
 """Shared skill prompt text (load_skill output + available_skills block)."""
 
+from cuga.backend.skills.sandbox_uv import SANDBOX_UV_COMMAND_NORMALIZATION
+
 LOAD_SKILL_GUIDANCE = (
     "If the skill instructions below include Dependencies, Requirements, or other install/setup sections, "
     "follow that skill's own structure and ordering — run those installs before the rest of the workflow "
@@ -16,8 +18,8 @@ LOAD_SKILL_COMPANIONS = (
     "relative markdown links or say to read a companion file, treat those references as workflow "
     "routing instructions: choose the relevant companion file(s) based on the situation and read them "
     "before implementing that workflow. Use `await read_file('<path>')` only for those companion files "
-    "when the instructions require them; use "
-    "`await run_command('ls {skill_dir}')` or `await list_files('{skill_dir}')` to explore."
+    "when the instructions require them. Do NOT list or explore `{skill_dir}` after "
+    "`load_skill` unless SKILL.md explicitly links to a companion path."
 )
 
 LOAD_SKILL_PLAYBOOK = (
@@ -29,20 +31,7 @@ LOAD_SKILL_PLAYBOOK = (
 )
 
 LOAD_SKILL_COMMAND_NORMALIZATION = (
-    "Command normalization override for sandbox execution: skill docs may contain legacy Python commands. "
-    "Do not execute `python ...`, `python -m ...`, `python -m pip ...`, `pip ...`, or `pip list` directly. "
-    "The workspace may live inside the Cuga repo — always use `uv run --no-project` for Python execution "
-    "so uv does not sync/build the parent project. "
-    "Translate only Python commands at execution time: `python -m <module> ...` → "
-    "`uv run --no-project python -m <module> ...`; "
-    "`python /workspace/script.py` → `uv run --no-project /workspace/script.py`; "
-    "`python script.py` → `uv run --no-project python script.py` (relative to the skill companion directory); "
-    "`python -c '...'` → `uv run --no-project python -c '...'`; `pip install ...` or `python -m pip install ...` "
-    "→ `uv pip install ...`; and `pip list` / `pip show` / `pip freeze` → `uv pip list` / "
-    "`uv pip show` / `uv pip freeze`. Never prefix Node/npm with uv: Node commands must start with plain "
-    "`node ...`, npm commands must start with plain `npm ...`, and packages must be installed locally as "
-    "`npm install <package>` in `/workspace`. "
-    "Do not use `uv npm`, `uv run node`, or `uv run npm`."
+    "Command normalization override for sandbox `run_command` execution. " + SANDBOX_UV_COMMAND_NORMALIZATION
 )
 
 AVAILABLE_SKILLS_USAGE = (
