@@ -162,12 +162,15 @@ def resolve_collection(identity: KnowledgeIdentity, scope: str, request: Request
         raise HTTPException(status_code=403, detail=_scope_disabled_detail(scope))
 
     if scope == "session":
-        # Whitespace-safe check. ``"   "`` is truthy in Python but it
-        # sanitizes to ``"___"`` and would create a phantom collection
-        # ``kb_sess____`` shared across every misconfigured caller.
-        # Strip before the truthiness test so any "no real thread id"
-        # input is rejected uniformly.
-        if not (identity.thread_id or "").strip():
+        # Canonicalize the thread_id ONCE up-front so the same identity
+        # value drives the empty-check, the ownership check, and the
+        # collection mapping. Previously the strip was applied only to
+        # the empty-check and to the storage name, while the ownership
+        # check used the raw value — meaning ``" abc"`` and ``"abc"``
+        # would pass *separate* ownership records yet hit the same
+        # ``kb_sess_abc`` physical collection. Closes CodeRabbit C1.
+        canonical_thread_id = (identity.thread_id or "").strip()
+        if not canonical_thread_id:
             raise HTTPException(status_code=400, detail="X-Thread-ID required")
 
         # Enforce session ownership if provider is available
@@ -179,21 +182,16 @@ def resolve_collection(identity: KnowledgeIdentity, scope: str, request: Request
             if provider and identity.user_id and identity.tenant_id:
                 # Ensure session state exists (creates on first access with owner)
                 provider.get_or_create_session(
-                    identity.thread_id,
+                    canonical_thread_id,
                     user_id=identity.user_id,
                     tenant_id=identity.tenant_id,
                 )
                 if not provider.check_session_access(
-                    identity.thread_id, identity.user_id, identity.tenant_id
+                    canonical_thread_id, identity.user_id, identity.tenant_id
                 ):
                     raise HTTPException(status_code=403, detail="access denied to session")
 
-        # Strip BEFORE sanitize so " abc" and "abc" land in the same
-        # collection. Without this, a caller sending a leading-space
-        # thread_id ends up in ``kb_sess__abc`` while a different caller
-        # sending the clean form ends up in ``kb_sess_abc`` — same logical
-        # session, two physical collections, tenant data goes missing.
-        return f"kb_sess_{_sanitize(identity.thread_id.strip())}"
+        return f"kb_sess_{_sanitize(canonical_thread_id)}"
     elif scope == "agent":
         _as = getattr(request.app.state, "app_state", None) if request else None
         return resolve_agent_collection(identity.agent_id, _as)

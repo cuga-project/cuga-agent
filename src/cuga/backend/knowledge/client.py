@@ -146,9 +146,16 @@ class KnowledgeClient:
         if scope == "all":
             raise ValueError("_resolve_collection cannot resolve scope='all' — use search() directly")
         if scope == "session":
-            if not thread_id:
+            # Strip before truthiness + before sanitize so the SDK mirrors
+            # the HTTP route's canonicalization in auth.resolve_collection.
+            # Without this, " abc" passes the truthiness check but routes
+            # to ``kb_sess__abc`` while the HTTP path uses ``kb_sess_abc``
+            # — same logical session, two physical collections. Closes
+            # CodeRabbit M1.
+            canonical = (thread_id or "").strip()
+            if not canonical:
                 raise ValueError("thread_id required for session scope")
-            return f"kb_sess_{self._sanitize(thread_id)}"
+            return f"kb_sess_{self._sanitize(canonical)}"
         return self._agent_collection()
 
     def _scoped_collections_for_all(self, thread_id: str | None) -> list[tuple[str, str]]:
@@ -163,8 +170,11 @@ class KnowledgeClient:
         out: list[tuple[str, str]] = []
         if "agent" in allowed:
             out.append(("agent", self._agent_collection()))
-        if "session" in allowed and thread_id:
-            out.append(("session", f"kb_sess_{self._sanitize(thread_id)}"))
+        # Strip BEFORE truthiness + before sanitize — same canonicalization
+        # rule as ``_resolve_collection`` (CodeRabbit M1).
+        canonical_thread_id = (thread_id or "").strip()
+        if "session" in allowed and canonical_thread_id:
+            out.append(("session", f"kb_sess_{self._sanitize(canonical_thread_id)}"))
         return out
 
     async def search(

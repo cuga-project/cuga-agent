@@ -1021,10 +1021,14 @@ async def test_embeddings_connection(request: Request):
             client_msg = _scrub_secret(msg_raw, api_key)
         else:
             client_msg = "Invalid knowledge embedding configuration."
+        # Don't echo ``type(e).__name__`` to the client — CodeQL flags
+        # this as information disclosure (py/stack-trace-exposure). The
+        # exception class name is still in server logs via the
+        # ``logger.exception(...)`` call above; operators with log access
+        # have full diagnostic info.
         return JSONResponse(
             {
                 "ok": False,
-                "error_class": type(e).__name__,
                 "error": client_msg,
             }
         )

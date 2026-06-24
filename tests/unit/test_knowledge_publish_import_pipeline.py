@@ -129,8 +129,16 @@ def test_publish_via_post_route_strips_keys_from_disk(monkeypatch):
         }
     }
     client.post("/api/manage/config", params={"agent_id": "pub-strip-test"}, json=payload)
+    # TODO(coderabbit-M7): this assertion is gated by ``if "saved" in
+    # captured`` because the current mock chain doesn't drive
+    # save_config through to capture. CodeRabbit correctly flagged that
+    # this leaves the secret-strip invariant un-verified — a publish
+    # regression upstream of save_config would silently pass this test.
+    # Fixing the mock chain (likely missing patches for load_config /
+    # update_published_config_at_version) is its own follow-up and out
+    # of scope for the PR-352 review pass.
     # Don't assert on status; the publish flow has many side-effects we mock
-    # out. Just verify what hit the disk save call.
+    # out. Just verify what hit the disk save call IF it fired.
     if "saved" in captured:
         saved_kb = captured["saved"].get("knowledge", {})
         # KEY must be stripped on disk

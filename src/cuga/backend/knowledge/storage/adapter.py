@@ -432,11 +432,17 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
         out: list[tuple[Document, float]] = []
         for row in rows:
             chunk_id, source, filename, page, section_path, chunk_text, raw_rank = row
-            # Map raw BM25 (negative; smaller = better) to [0, 1]
-            # (higher = better). The 1/(1+|x|) mapping mirrors the L2
-            # similarity normalisation used for dense scores — same
-            # shape lets RRF treat both legs symmetrically.
-            score = 1.0 / (1.0 + abs(float(raw_rank)))
+            # Map raw BM25 (negative; more-negative = better match) to
+            # [0, 1] with "higher = better" semantics so RRF can treat
+            # the lexical leg symmetrically with the dense leg.
+            #
+            # Earlier this used ``1/(1+|raw|)``, which INVERTED the
+            # semantics — a more-negative raw_rank (better match) got a
+            # SMALLER score. ``|raw| / (1 + |raw|)`` is monotonically
+            # increasing in ``|raw|``: raw=-10 → 0.91, raw=-1 → 0.50,
+            # raw≈0 → 0. Closes CodeRabbit M3.
+            _abs_rank = abs(float(raw_rank))
+            score = _abs_rank / (1.0 + _abs_rank)
             metadata: dict[str, Any] = {
                 "source": source or "",
                 "filename": filename or "",
@@ -545,7 +551,19 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
                     page_val = int(page_raw)
                 except (TypeError, ValueError):
                     page_val = -1
-            source = str(doc.metadata.get("source", "") or "")
+            # Strip and require non-empty: the rollback path
+            # (``_fts_delete_by_source``) deletes by exact source string.
+            # If a caller smuggled in ``source=""``, a partial-insert
+            # rollback would over-delete every prior chunk in the same
+            # scope that also has an empty source — a silent data-loss
+            # path. Reject loudly instead. Closes CodeRabbit M4.
+            source = str(doc.metadata.get("source", "") or "").strip()
+            if not source:
+                raise ValueError(
+                    "Document metadata.source must be a non-empty string for "
+                    "add_documents — rollback and delete_by_source rely on it "
+                    "as the primary key for source-scoped cleanup."
+                )
             filename = str(doc.metadata.get("filename", "") or "")
             # Preserve section_path (Docling headings collapsed into a flat
             # breadcrumb) — the upstream metadata-normalization step in

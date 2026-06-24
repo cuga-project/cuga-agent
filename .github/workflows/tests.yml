@@ -7,6 +7,13 @@ on:
     branches: [ main, develop ]
   workflow_dispatch:
 
+# Workflow-level least-privilege per CodeQL Actions hardening rule. Both
+# jobs only need to read repo contents; the pgvector job's services block
+# runs in the GHA runner sandbox, not against the repo. Override on a
+# per-job basis if any future job needs to write (e.g. publish, comment).
+permissions:
+  contents: read
+
 jobs:
   unit-tests:
     name: Unit Tests

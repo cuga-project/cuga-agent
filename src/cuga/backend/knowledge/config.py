@@ -1044,7 +1044,12 @@ class KnowledgeConfig:
             docling_drop_page_chrome=profile_docling.get(
                 "drop_page_chrome", docling.get("drop_page_chrome", "enforce")
             ),
-            search_junk_filter=profile_search.get("junk_filter", search.get("junk_filter", "dry_run")),
+            # Default must match the dataclass field (``"enforce"``, see
+            # the field definition above). Earlier this defaulted to
+            # ``"dry_run"``, which silently downgraded enforcement when a
+            # profile omitted the key or profile loading failed. Closes
+            # CodeRabbit M2.
+            search_junk_filter=profile_search.get("junk_filter", search.get("junk_filter", "enforce")),
             search_hybrid_mode=profile_search.get("hybrid_mode", search.get("hybrid_mode", "auto")),
             rerank_enabled=profile_rerank.get("enabled", rerank_kb.get("enabled", False)),
             rerank_top_k_in=profile_rerank.get("top_k_in", rerank_kb.get("top_k_in", 20)),

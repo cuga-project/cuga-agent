@@ -1758,10 +1758,16 @@ def start(
         ("DYNACONF_KNOWLEDGE__DOCLING__DROP_PAGE_CHROME", knowledge_docling_drop_page_chrome),
         ("DYNACONF_KNOWLEDGE__SEARCH__HYBRID_MODE", knowledge_search_hybrid_mode),
     ]
+    # Names that hold a credential must NEVER appear in logs even at INFO.
+    # Redaction list is matched against the SUFFIX after the last ``__`` so
+    # any new ``DYNACONF_..._API_KEY``-style env var is covered automatically.
+    _SECRET_SUFFIXES = {"API_KEY", "TOKEN", "SECRET", "PASSWORD"}
     for _env_name, _value in _embedding_flag_env:
         if _value is not None:
             os.environ[_env_name] = _value
-            logger.info("Embedding override: %s=%s", _env_name.split("__", 1)[-1], _value)
+            _suffix = _env_name.split("__")[-1]
+            _shown = "<redacted>" if _suffix in _SECRET_SUFFIXES else _value
+            logger.info("Embedding override: %s=%s", _suffix, _shown)
 
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health

@@ -313,12 +313,29 @@ def test_openrouter_round_trips_through_snapshot() -> None:
 
 
 def test_embedder_is_network_includes_openrouter() -> None:
-    """OpenRouter is HTTP-bound → C4 concurrent gather should kick in."""
-    # The flag is computed inline in _create_vector_adapter; assert the set
-    # by hitting the same expression. If anyone narrows the tuple again, this
-    # test fires.
-    network_providers = ("openai", "ollama", "openrouter")
-    assert "openrouter" in network_providers
+    """OpenRouter is HTTP-bound → C4 concurrent gather should kick in.
+
+    The previous form constructed a tuple inside the test and asserted
+    against it — vacuous, would pass even if the production code dropped
+    openrouter entirely (CodeRabbit M6). Now grep the actual production
+    source for the live tuple so a narrowing in
+    ``KnowledgeEngine._create_vector_adapter`` fires this test.
+    """
+    import inspect
+
+    from cuga.backend.knowledge.engine import KnowledgeEngine
+
+    src = inspect.getsource(KnowledgeEngine._create_vector_adapter)
+    assert "embedder_is_network" in src, (
+        "production code dropped the embedder_is_network flag — concurrent gather is no longer dispatched"
+    )
+    assert '"openrouter"' in src, (
+        "openrouter was removed from the network-providers tuple — concurrent embed will fall back to serial"
+    )
+    # And the network-providers tuple still contains the other expected
+    # entries — narrowing the set without intent should fire this test too.
+    for provider in ("openai", "ollama", "litellm"):
+        assert f'"{provider}"' in src, f"network-providers tuple narrowed: {provider!r} removed"
 
 
 # ---- SDK round-trip via CugaAgent(knowledge_config=...) ----
