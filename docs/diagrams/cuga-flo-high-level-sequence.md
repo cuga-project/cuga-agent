@@ -12,9 +12,9 @@ sequenceDiagram
     rect rgb(230, 245, 255)
         Note over App,WE: INVOCATION — FlowAgent triggers WorkflowEngine via MCPFlowBridge
         App->>FA: invoke(input_data, process_variables)
-        FA->>Bridge: run_process(process_key, initial_inputs)
-        Note over Bridge,WE: WorkflowEngine exposes run_process to CUGA FLO
-        Bridge->>WE: _run_via_mcp(process_key, initial_inputs)
+        FA->>Bridge: call_tool("run_process", process_key, initial_inputs)
+        Note over Bridge,WE: WorkflowEngine registered run_process as MCP tool
+        Bridge->>WE: _run_via_mcp(process_key, initial_inputs, mcp_server)
     end
 
     rect rgb(230, 255, 235)
@@ -65,7 +65,7 @@ sequenceDiagram
 | **FlowAgent** | Orchestrates process execution — receives invocations from the application, drives the WorkflowEngine via MCPFlowBridge, and delegates each node type to the appropriate agent (TaskAgent, DecisionAgent) or handles hooks directly. |
 | **TaskAgent** | Executes a single task node — given a task instruction and process state, it runs the LLM-backed action and returns a status/output result. |
 | **DecisionAgent** | Resolves gateway routing — evaluates conditions deterministically and, when needed, uses an LLM to select exactly one outgoing flow ID based on gateway policy and process state. |
-| **MCPFlowBridge** | Acts as the MCP protocol adapter between CUGA FLO and the WorkflowEngine — exposes `execute_task`, `route_gateway`, and `evaluate_hook` to the engine, and exposes `run_process` back to FlowAgent. |
+| **MCPFlowBridge** | Acts as the MCP protocol adapter between CUGA FLO and the WorkflowEngine — exposes `execute_task`, `route_gateway`, and `evaluate_hook` to the engine, and exposes `run_process` (registered by the WorkflowEngine) back to FlowAgent. All invocations go through MCP tool calls, enabling future remote/cross-process transport. |
 | **WorkflowEngine** | Drives BPMN process execution — walks the deterministic flow parts task by task, calling back into MCPFlowBridge at each task, gateway, or hook node, and returns the final FlowState on completion. |
 
 ---
@@ -118,7 +118,6 @@ DecisionAgent resolves the routing via a two-step internal graph:
 | `CONTINUE` | Proceed normally along the current edge | — |
 | `SKIP_NODE` | Skip the immediately next node | `message` |
 | `SKIP_TO` | Jump execution to a named node | `skip_to_node: str` |
-| `REQUEST_USER_INPUT` | Pause process and surface prompt to user | `user_prompt: str` |
 | `TERMINATE` | Halt the process immediately | `message` |
 | `SWAP_NODES` | Exchange two nodes in the current graph | `swap_nodes: (node_a, node_b)` |
 | `REMOVE_NODE` | Remove a node and rewire surrounding flows | `remove_node: str` |
