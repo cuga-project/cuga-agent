@@ -98,6 +98,20 @@ class TestLangfuseTracingHelpers:
             sync_langfuse_callbacks_from_config({"configurable": {"langfuse_trace_id": "abc123"}})
             assert get_langfuse_invoke_config() == {"callbacks": [handler]}
 
+    def test_sync_clears_stale_trace_state_when_next_config_has_no_trace(self):
+        """A later invocation in the same async context with no trace id must not
+        reattach nested LLM calls to the previous invocation's trace."""
+        handler = _fake_langfuse_handler()
+        with patch(
+            "cuga.backend.cuga_graph.utils.langfuse_tracing.create_trace_langfuse_handler",
+            return_value=handler,
+        ):
+            sync_langfuse_callbacks_from_config({"configurable": {"langfuse_trace_id": "trace-A"}})
+            assert get_langfuse_invoke_config() == {"callbacks": [handler]}
+
+            sync_langfuse_callbacks_from_config({"configurable": {}})
+            assert get_langfuse_invoke_config() == {}
+
     def test_get_invoke_config_ignores_non_langfuse_callbacks(self):
         set_langfuse_callbacks([_RecordingCallback("stale")])
         set_langfuse_trace_id("trace-99")
@@ -157,6 +171,79 @@ class TestLangfuseTracingHelpers:
             assert get_langfuse_invoke_config() == {"callbacks": [existing]}
 
 
+class _FakeLangfuseLikeHandler:
+    """Mirrors the real langfuse.langchain.CallbackHandler's dispatch shape:
+    on_llm_start/on_chat_model_start call a *name-mangled* private method.
+    Used to prove TraceScopedLangfuseCallbackHandler's override is actually
+    reachable through inheritance, not just present in source.
+    """
+
+    def __init__(self, trace_context=None):
+        self._trace_context = trace_context
+        self._runs: dict = {}
+        self.recorded_trace_ids: list = []
+
+    def on_llm_start(self, serialized, prompts, *, run_id=None, parent_run_id=None, **kwargs):
+        self.__on_llm_action(serialized, run_id, prompts, parent_run_id, **kwargs)
+
+    def on_chat_model_start(self, serialized, messages, *, run_id=None, parent_run_id=None, **kwargs):
+        self.__on_llm_action(serialized, run_id, messages, parent_run_id, **kwargs)
+
+    def __on_llm_action(self, serialized, run_id, prompts, parent_run_id=None, **kwargs):
+        ctx = self._trace_context or {}
+        self.recorded_trace_ids.append(ctx.get("trace_id"))
+        self._runs[run_id] = parent_run_id
+
+
+class TestTraceScopedHandler:
+    @pytest.fixture(autouse=True)
+    def _reset_handler_cache(self):
+        from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
+
+        mod._TRACE_SCOPED_HANDLER_CLASS = None
+        yield
+        mod._TRACE_SCOPED_HANDLER_CLASS = None
+
+    def test_attaches_orphan_llm_start_to_eval_trace(self):
+        from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
+
+        with patch.object(mod, "_langfuse_handler_classes", return_value=(_FakeLangfuseLikeHandler,)):
+            handler_cls = mod._trace_scoped_handler_class()
+            handler = handler_cls(trace_context=None)
+
+        set_langfuse_trace_id("eval-trace-7")
+        handler.on_llm_start({}, ["hi"], run_id="run-1", parent_run_id=None)
+
+        assert handler.recorded_trace_ids == ["eval-trace-7"]
+        assert handler._trace_context is None  # restored after the call
+
+    def test_attaches_orphan_chat_model_start_to_eval_trace(self):
+        from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
+
+        with patch.object(mod, "_langfuse_handler_classes", return_value=(_FakeLangfuseLikeHandler,)):
+            handler_cls = mod._trace_scoped_handler_class()
+            handler = handler_cls(trace_context=None)
+
+        set_langfuse_trace_id("eval-trace-8")
+        handler.on_chat_model_start({}, [["hi"]], run_id="run-2", parent_run_id=None)
+
+        assert handler.recorded_trace_ids == ["eval-trace-8"]
+        assert handler._trace_context is None
+
+    def test_does_not_override_tracked_nested_calls(self):
+        from cuga.backend.cuga_graph.utils import langfuse_tracing as mod
+
+        with patch.object(mod, "_langfuse_handler_classes", return_value=(_FakeLangfuseLikeHandler,)):
+            handler_cls = mod._trace_scoped_handler_class()
+            handler = handler_cls(trace_context={"trace_id": "fixed-trace"})
+
+        handler._runs["parent-1"] = None
+        handler.on_llm_start({}, ["hi"], run_id="run-3", parent_run_id="parent-1")
+
+        assert handler.recorded_trace_ids == ["fixed-trace"]
+        assert handler._trace_context == {"trace_id": "fixed-trace"}
+
+
 class TestSdkCallbackDedup:
     def test_apply_callbacks_drops_agent_langfuse_when_trace_id_set(self):
         from cuga.sdk import CugaAgent
@@ -194,6 +281,26 @@ class TestSdkCallbackDedup:
         assert caller in run_config["callbacks"]
         assert config_only not in run_config["callbacks"]
         assert run_config["configurable"]["callbacks"] == run_config["callbacks"]
+
+    def test_apply_callbacks_detects_langfuse_handler_inside_callback_manager(self):
+        """A Langfuse handler nested inside a caller-supplied callback manager (not a
+        bare list) must still be detected so the agent-level handler is dropped."""
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import _flatten_callbacks
+        from cuga.sdk import CugaAgent
+
+        agent_level = _fake_langfuse_handler()
+        per_call_lf = _fake_langfuse_handler()
+        manager = type("AsyncCallbackManager", (), {"handlers": [per_call_lf]})()
+
+        agent = CugaAgent.__new__(CugaAgent)
+        agent._callbacks = [agent_level]
+
+        run_config = {"callbacks": manager, "configurable": {}}
+        agent._apply_callbacks(run_config)
+
+        flattened_ids = [id(c) for c in _flatten_callbacks(run_config["callbacks"])]
+        assert id(per_call_lf) in flattened_ids
+        assert id(agent_level) not in flattened_ids
 
 
 class TestNestedCallSites:
