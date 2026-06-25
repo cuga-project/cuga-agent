@@ -1796,11 +1796,16 @@ class CugaAgent:
                 return []
             return list(value) if isinstance(value, list) else [value]
 
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import is_langfuse_callback_handler
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import (
+            collect_langfuse_callbacks_from_config,
+            is_langfuse_callback_handler,
+            sync_langfuse_callbacks_from_config,
+        )
 
-        existing = _as_list(run_config.get("callbacks"))
+        caller_callbacks = run_config.get("callbacks")
+        existing = _as_list(caller_callbacks)
         trace_id = run_config["configurable"].get("langfuse_trace_id")
-        per_call_langfuse = any(is_langfuse_callback_handler(cb) for cb in existing)
+        per_call_langfuse = bool(collect_langfuse_callbacks_from_config({"callbacks": caller_callbacks}))
 
         if trace_id or per_call_langfuse:
             built_callbacks = [cb for cb in built_callbacks if not is_langfuse_callback_handler(cb)]
@@ -1808,8 +1813,6 @@ class CugaAgent:
         merged = built_callbacks + existing
         run_config["callbacks"] = merged
         run_config["configurable"]["callbacks"] = merged
-
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
 
         sync_langfuse_callbacks_from_config(run_config)
 

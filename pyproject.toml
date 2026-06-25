@@ -9,7 +9,7 @@ dependencies = [
     "langchain>=1.0",
     "langchain-ibm>=0.3.9",
     "langchain-openai",
-    "langchain-core>=1.2.22",
+    "langchain-core>=1.3.3",  # GHSA-pjwx-r37v-7724: unsafe deserialization via broad load() allowlists (<=1.3.2)
     # litellm 1.83.14 pins aiohttp==3.13.4; keep floor aligned so uv/pip can resolve with litellm+fastmcp.
     "aiohttp>=3.13.4",
     "httpx",
@@ -34,8 +34,8 @@ dependencies = [
     "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
-    # 1.83.7–1.83.13 conflict with fastmcp>=3.2 per resolver; 1.83.14 is current stable on PyPI.
-    "litellm>=1.83.14",
+    # 1.84.0+ fixes GHSA-4xpc-pv4p-pm3w (Host header auth bypass); 1.83.14 was prior floor for fastmcp compat.
+    "litellm>=1.84.0",
     "tavily-python",
     "fastembed>=0.4.0",
     "a2a-sdk[http-server]>=0.3.22",
@@ -104,6 +104,9 @@ constraint-dependencies = [
     "protobuf>=5.29.6",    # GHSA-7gcm-g887-7qv7
     "strawberry-graphql>=0.312.3",  # CVE: Auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2)
     "arize-phoenix>=14.3.1",  # Upgrade to use strawberry-graphql>=0.312.3 (fixes auth bypass vulnerability)
+    "starlette>=1.3.1",       # GHSA-82w8-qh3p-5jfq (form DoS), GHSA-wqp7-x3pw-xc5r (UNC SSRF on Windows)
+    "python-multipart>=0.0.27",  # GHSA-pp6c-gr5w-3c5g (multipart header DoS)
+    "mako>=1.3.12",           # GHSA-v92g-xgxw-vvmm (// path traversal, <=1.3.10), GHSA-2h4p-vjrc-8xpq (Windows \\ traversal, <=1.3.11)
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
 override-dependencies = ["python-dotenv>=1.1.0"]

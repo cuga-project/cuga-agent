@@ -93,10 +93,12 @@ class ToolCallTracker:
         if calls is None:
             return
 
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
         record = {
             "name": tool_name,
-            "arguments": arguments,
-            "result": result,
+            "arguments": VariableUtils.sanitize_value(arguments),
+            "result": VariableUtils.sanitize_value(result),
             "app_name": app_name,
             "operation_id": operation_id,
             "timestamp": datetime.now().isoformat(),
