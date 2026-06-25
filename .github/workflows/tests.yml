@@ -38,12 +38,7 @@ jobs:
           python-version: '3.12'
       
       - name: Install dependencies
-        # ``--no-extra gpu`` excludes the opt-in ``[gpu]`` extra (onnxruntime-gpu).
-        # Installing both ``onnxruntime`` AND ``onnxruntime-gpu`` clobbers the
-        # shared ``site-packages/onnxruntime/`` namespace and produces a half-
-        # populated module ("AttributeError: module 'onnxruntime' has no
-        # attribute 'SessionOptions'"). The GPU extra is for CUDA hosts only.
-        run: uv sync --all-extras --no-extra gpu --dev
+        run: uv sync --all-extras --dev
 
       - name: Install Playwright browsers
         run: uv run playwright install --with-deps chromium
@@ -104,12 +99,7 @@ jobs:
           python-version: '3.12'
 
       - name: Install dependencies (headless suite — no Playwright)
-        # ``--no-extra gpu`` excludes the opt-in ``[gpu]`` extra (onnxruntime-gpu).
-        # Installing both ``onnxruntime`` AND ``onnxruntime-gpu`` clobbers the
-        # shared ``site-packages/onnxruntime/`` namespace and produces a half-
-        # populated module ("AttributeError: module 'onnxruntime' has no
-        # attribute 'SessionOptions'"). The GPU extra is for CUDA hosts only.
-        run: uv sync --all-extras --no-extra gpu --dev
+        run: uv sync --all-extras --dev
 
       - name: Enable pgvector extension
         run: |
