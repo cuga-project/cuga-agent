@@ -275,6 +275,9 @@ interface KnowledgeConfigValues {
   // Trades parse speed for extraction fidelity. Saved with the snapshot.
   docling_pdf_mode?: string;
   docling_layout_engine?: string;
+  // Query transformation (LLM): "off" | "multi_query" | "hyde". Operator-only
+  // (Advanced). Search-only — not part of vector_config_hash, no re-index.
+  search_query_transform?: string;
   // Client adaptation — operator-supplied prompt rules + glossary.
   // Saved with the snapshot; never part of vector_config_hash.
   client_adaptation_text?: string;
@@ -307,6 +310,7 @@ interface RagProfileMeta {
     default_score_threshold?: number;
     hybrid_mode?: string;
     junk_filter?: string;
+    query_transform?: string;
   };
   chunking: { chunk_size?: number; chunk_overlap?: number };
   // Added so profile-click can fully populate the config — without these
@@ -2231,6 +2235,7 @@ export default function KnowledgePanel({
                                           rerank_top_k_in: profile.rerank?.top_k_in ?? knowledgeConfig.rerank_top_k_in,
                                           rerank_model: profile.rerank?.model ?? knowledgeConfig.rerank_model,
                                           search_hybrid_mode: profile.search?.hybrid_mode ?? knowledgeConfig.search_hybrid_mode,
+                                          search_query_transform: profile.search?.query_transform ?? knowledgeConfig.search_query_transform,
                                           search_junk_filter: profile.search?.junk_filter ?? knowledgeConfig.search_junk_filter,
                                           max_search_attempts: profile.search?.max_search_attempts ?? knowledgeConfig.max_search_attempts,
                                           default_limit: profile.search?.default_limit ?? knowledgeConfig.default_limit,
@@ -2420,7 +2425,7 @@ export default function KnowledgePanel({
                               size="sm"
                             />
                             <span style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)" }}>
-                              Embeddings, chunking, parsing, score & metric, and limits.
+                              Embeddings, chunking, parsing, retrieval behavior, score & metric, and limits.
                             </span>
                           </Stack>
 
@@ -2894,6 +2899,64 @@ export default function KnowledgePanel({
                                 </Button>
                               </Stack>
                             </AccordionItem>
+
+                            {showAdvanced &&
+                              (() => {
+                                // Operator-only query transformation. Off everywhere by default
+                                // (eval-gated). The original query always runs; this only adds
+                                // extra retrieval legs, and the engine fails open on LLM error.
+                                const qtVal = knowledgeConfig.search_query_transform ?? "off";
+                                const qtProfile = knowledgeConfig.rag_profile ?? "standard";
+                                const qtDefault = ragProfiles?.[qtProfile]?.search?.query_transform ?? "off";
+                                const qtLabels: Record<string, string> = {
+                                  off: "Off",
+                                  multi_query: "Reword the query (multi-query)",
+                                  hyde: "Draft an ideal answer first (HyDE)",
+                                };
+                                return (
+                                  <AccordionItem title="Retrieval behavior">
+                                    <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
+                                      <Select
+                                        id="knowledge-query-transform"
+                                        labelText="Query expansion"
+                                        helperText="Rewrites the query before searching to catch documents that word things differently. Adds one LLM call (~0.3–1.5s) per search and may not improve every corpus — leave Off unless you've seen it help. The original query still runs, and if the rewrite errors or times out the plain query is used."
+                                        value={qtVal}
+                                        onChange={(e: any) =>
+                                          onKnowledgeConfigChange?.({ ...knowledgeConfig, search_query_transform: e.target.value })
+                                        }
+                                      >
+                                        <SelectItem value="off" text="Off — search the query as typed (default)" />
+                                        <SelectItem value="multi_query" text="Reword the query (multi-query) — try a few alternate phrasings" />
+                                        <SelectItem value="hyde" text="Draft an ideal answer first (HyDE) — match against a hypothetical passage" />
+                                      </Select>
+                                      <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
+                                        Default for the {ragProfiles?.[qtProfile]?.name ?? qtProfile} profile:{" "}
+                                        {qtLabels[qtDefault] ?? qtDefault}
+                                        {qtVal !== qtDefault && (
+                                          <Button
+                                            kind="ghost"
+                                            size="sm"
+                                            onClick={() =>
+                                              onKnowledgeConfigChange?.({ ...knowledgeConfig, search_query_transform: qtDefault })
+                                            }
+                                          >
+                                            Reset to profile default
+                                          </Button>
+                                        )}
+                                      </p>
+                                      {qtVal !== "off" && (
+                                        <InlineNotification
+                                          kind="info"
+                                          lowContrast
+                                          hideCloseButton
+                                          title="Adds an extra AI step per search"
+                                          subtitle="Every search now makes one model call first — about 0.3–1.5s slower, with a small added cost. Watch latency after enabling and switch back to Off if recall doesn't improve."
+                                        />
+                                      )}
+                                    </Stack>
+                                  </AccordionItem>
+                                );
+                              })()}
 
                             {showAdvanced && (
                               <AccordionItem title="Score & Metric">
