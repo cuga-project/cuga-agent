@@ -1,3 +1,4 @@
+import math
 import re
 import threading
 from datetime import date
@@ -16,7 +17,7 @@ from langchain_core.outputs import ChatResult
 from loguru import logger
 
 from cuga.backend.secrets import resolve_secret
-from cuga.config import settings
+from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
 
 
 class ReasoningChatOpenAI(ChatOpenAI):
@@ -74,6 +75,19 @@ except ImportError:
     ReasoningChatLiteLLM = None  # type: ignore[misc, assignment]
 
 _ENV_REF_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*$")
+_DEFAULT_LLM_HTTP_TIMEOUT = DEFAULT_LLM_HTTP_TIMEOUT
+
+
+def _parse_timeout(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        timeout = float(value)
+    except (TypeError, ValueError):
+        return None
+    if timeout <= 0 or not math.isfinite(timeout):
+        return None
+    return timeout
 
 
 def _normalize_secret(val: Optional[str]) -> Optional[str]:
@@ -126,6 +140,12 @@ try:
 except ImportError:
     logger.warning("Langchain Google GenAI not installed, using OpenAI instead")
     ChatGoogleGenerativeAI = None
+
+try:
+    from langchain_anthropic import ChatAnthropic
+except ImportError:
+    logger.warning("Langchain Anthropic not installed. Install langchain-anthropic to use platform='anthropic'.")
+    ChatAnthropic = None
 
 
 class LLMManager:
@@ -359,6 +379,18 @@ class LLMManager:
                 default_model = "gpt-4o"
                 logger.info(f"No model_name specified for LiteLLM, using default: {default_model}")
                 return default_model
+        elif platform == "anthropic":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for Anthropic: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML: {toml_model_name}")
+                return toml_model_name
+            else:
+                default_model = "claude-opus-4-5-20251101"
+                logger.info(f"No model_name specified for Anthropic, using default: {default_model}")
+                return default_model
         else:
             # For other platforms, use TOML or default
             if toml_model_name:
@@ -556,14 +588,45 @@ class LLMManager:
 
         return True
 
-    def _is_reasoning_model(self, model_name: str) -> bool:
-        """Check if model is a reasoning model that doesn't support temperature
+    def _get_http_timeout(self, model_settings: Dict[str, Any]) -> float:
+        """Return HTTP timeout (seconds) for OpenAI, Azure, and OpenRouter clients.
 
-        OpenAI's reasoning models (o1, o3, gpt-5 series) don't support temperature parameter
+        Priority:
+        1. timeout in model_settings (per-agent TOML)
+        2. CUGA_LLM_HTTP_TIMEOUT env var
+        3. LLM_HTTP_TIMEOUT env var
+        4. settings.connections.llm_http_timeout (TOML)
+        5. Default (_DEFAULT_LLM_HTTP_TIMEOUT)
+        """
+        per_model = _parse_timeout(model_settings.get("timeout"))
+        if per_model is not None:
+            return per_model
+
+        for env_var in ("CUGA_LLM_HTTP_TIMEOUT", "LLM_HTTP_TIMEOUT"):
+            env_val = _parse_timeout(os.environ.get(env_var))
+            if env_val is not None:
+                logger.debug(f"Using {env_var} from environment: {env_val}")
+                return env_val
+
+        try:
+            toml_timeout = _parse_timeout(settings.connections.llm_http_timeout)
+            if toml_timeout is not None:
+                return toml_timeout
+        except (AttributeError, TypeError) as exc:
+            logger.debug(f"Could not read connections.llm_http_timeout from settings: {exc}")
+
+        return _DEFAULT_LLM_HTTP_TIMEOUT
+
+    def _is_reasoning_model(self, model_name: str) -> bool:
+        """Check if model is a reasoning model that doesn't support temperature overrides.
+
+        OpenAI's reasoning models (o1, o3, gpt-5 series) don't support temperature.
+        Claude models use extended thinking (temperature must stay at 1.0) and must not
+        be overridden to 0.1 by _update_model_parameters.
         """
         if not model_name:
             return False
-        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5')
+        reasoning_prefixes = ('o1', 'o3', 'gpt-5', 'gpt-5.5', 'azure/gpt-5.5', 'claude-')
         return model_name.startswith(reasoning_prefixes)
 
     def _create_llm_instance(self, model_settings: Dict[str, Any]):
@@ -576,6 +639,7 @@ class LLMManager:
         model_name = self._get_model_name(model_settings, platform)
         api_version = self._get_api_version(model_settings, platform)
         base_url = self._get_base_url(model_settings, platform)
+        http_timeout = self._get_http_timeout(model_settings)
         if platform == "azure":
             api_version = str(model_settings.get('api_version'))
             is_reasoning = self._is_reasoning_model(model_name)
@@ -584,7 +648,7 @@ class LLMManager:
                 logger.debug(f"Creating AzureChatOpenAI reasoning model: {model_name} (no temperature)")
                 llm = AzureChatOpenAI(
                     model_version=api_version,
-                    timeout=61,
+                    timeout=http_timeout,
                     api_version="2025-04-01-preview",
                     azure_deployment=model_name + "-" + api_version,
                     max_completion_tokens=max_tokens,
@@ -592,7 +656,7 @@ class LLMManager:
             else:
                 logger.debug(f"Creating AzureChatOpenAI model: {model_name} - {api_version}")
                 llm = AzureChatOpenAI(
-                    timeout=61,
+                    timeout=http_timeout,
                     azure_deployment=model_name + "-" + api_version,
                     temperature=temperature,
                     max_tokens=max_tokens,
@@ -603,7 +667,7 @@ class LLMManager:
             openai_params: Dict[str, Any] = {
                 "model_name": model_name,
                 "max_tokens": max_tokens,
-                "timeout": 61,
+                "timeout": http_timeout,
             }
 
             if not is_reasoning:
@@ -695,6 +759,7 @@ class LLMManager:
                 model=model_name,
                 temperature=temperature,
                 seed=42,
+                default_headers={"RITS_API_KEY": api_key} if api_key else None,
             )
         elif platform == "rits-restricted":
             api_key = _normalize_secret(resolve_secret("RITS_API_KEY_RESTRICT")) or os.environ.get(
@@ -738,7 +803,7 @@ class LLMManager:
             openrouter_params: Dict[str, Any] = {
                 "model_name": model_name,
                 "max_tokens": max_tokens,
-                "timeout": 61,
+                "timeout": http_timeout,
                 "openai_api_key": api_key,
                 "openai_api_base": base_url,
             }
@@ -808,6 +873,35 @@ class LLMManager:
                 if api_key:
                     litellm_params["api_key"] = api_key
             llm = ReasoningChatLiteLLM(**litellm_params)
+        elif platform == "anthropic":
+            if ChatAnthropic is None:
+                raise ValueError(
+                    "langchain-anthropic is not installed. "
+                    "Run: pip install 'langchain-anthropic>=0.3.0'"
+                )
+            api_key = _normalize_secret(resolve_secret("ANTHROPIC_API_KEY")) or os.environ.get(
+                "ANTHROPIC_API_KEY"
+            )
+            anthropic_params: Dict[str, Any] = {
+                "model": model_name,
+                "max_tokens": max_tokens,
+                "temperature": 1.0,
+                "default_request_timeout": http_timeout,
+            }
+            if max_tokens >= 2048:
+                configured_budget = model_settings.get("thinking_budget_tokens")
+                budget_tokens = int(configured_budget) if configured_budget else int(max_tokens * 0.6)
+                budget_tokens = max(1024, min(budget_tokens, max_tokens - 1000))
+                anthropic_params["thinking"] = {"type": "enabled", "budget_tokens": budget_tokens}
+                logger.debug(f"Creating Anthropic model {model_name} with thinking budget_tokens={budget_tokens}")
+            else:
+                logger.debug(f"Creating Anthropic model {model_name} without thinking (max_tokens={max_tokens} < 2048)")
+            if api_key:
+                anthropic_params["anthropic_api_key"] = api_key
+            anthropic_base_url = self._get_base_url(model_settings, platform)
+            if anthropic_base_url:
+                anthropic_params["anthropic_api_url"] = anthropic_base_url
+            llm = ChatAnthropic(**anthropic_params)
         else:
             raise ValueError(f"Unsupported platform: {platform}")
 
@@ -900,20 +994,17 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         api_key = None
     platform = llm_cfg.get("provider") or "openai"
     model = llm_cfg.get("model") or None
+    toml_url: Optional[str] = None
+    toml_apikey_name: Optional[str] = None
     if use_env:
         try:
             code_model = settings.agent.code.model
             if code_model:
-                toml_platform = (
-                    code_model.get("platform")
-                    if hasattr(code_model, "get")
-                    else getattr(code_model, "platform", None)
-                )
-                toml_model = (
-                    code_model.get("model")
-                    if hasattr(code_model, "get")
-                    else getattr(code_model, "model", None)
-                )
+                _get = code_model.get if hasattr(code_model, "get") else lambda k, d=None: getattr(code_model, k, d)
+                toml_platform = _get("platform")
+                toml_model = _get("model") or _get("model_name")
+                toml_url = _get("url") or _get("base_url")
+                toml_apikey_name = _get("apikey_name")
                 if toml_platform:
                     platform = toml_platform
                 if toml_model:
@@ -945,8 +1036,12 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
     settings_dict = {
         "platform": platform,
         "model": model,
-        "url": llm_cfg.get("base_url") or None,
+        # ui base_url takes precedence; fall back to TOML url so platforms like rits get
+        # their endpoint even when the saved UI config has no base_url
+        "url": llm_cfg.get("base_url") or toml_url or None,
         "api_key": api_key,
+        # propagate apikey_name so platform handlers (e.g. rits) can resolve the key
+        "apikey_name": llm_cfg.get("apikey_name") or toml_apikey_name or None,
         "temperature": llm_cfg.get("temperature", 0.1),
         "disable_ssl": llm_cfg.get("disable_ssl", False),
         "ssl_ca_bundle": llm_cfg.get("ssl_ca_bundle") or None,
