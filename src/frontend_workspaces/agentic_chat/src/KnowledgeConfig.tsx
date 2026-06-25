@@ -301,8 +301,22 @@ export const TAB_INDEX: Record<KnowledgeTabName, number> = {
 interface RagProfileMeta {
   name: string;
   description: string;
-  search: { max_search_attempts?: number; default_limit?: number; default_score_threshold?: number };
+  search: {
+    max_search_attempts?: number;
+    default_limit?: number;
+    default_score_threshold?: number;
+    hybrid_mode?: string;
+    junk_filter?: string;
+  };
   chunking: { chunk_size?: number; chunk_overlap?: number };
+  // Added so profile-click can fully populate the config — without these
+  // the autosave POSTed stale embedding_model / docling_* / rerank_*
+  // values that the backend's "incoming wins" merge then reverted onto
+  // the profile loader's output, making profile switches a no-op.
+  embeddings?: { model?: string; batch_size?: number; concurrency?: number };
+  docling?: { pdf_mode?: string; layout_engine?: string; drop_page_chrome?: string };
+  rerank?: { enabled?: boolean; top_k_in?: number; model?: string };
+  engine?: { max_ingest_workers?: number; vector_insert_batch_size?: number };
 }
 
 interface KnowledgePanelProps {
@@ -2183,11 +2197,36 @@ export default function KnowledgePanel({
                                         padding: "0.75rem 1rem",
                                       }}
                                       onClick={() => {
+                                        // Populate EVERY field the profile owns from the
+                                        // profile metadata (not just chunking). Without this,
+                                        // the autosave POST re-sent the prior values for
+                                        // embedding_model / docling_* / rerank_* and the
+                                        // backend's "incoming wins" merge clobbered the
+                                        // profile loader — so picking max_quality stayed on
+                                        // bge-small at ingest time. Fall back to the previous
+                                        // config value when a profile section omits a key so
+                                        // edits to fields the profile doesn't own survive.
                                         onKnowledgeConfigChange({
                                           ...knowledgeConfig,
                                           rag_profile: key,
-                                          chunk_size: profile.chunking.chunk_size ?? knowledgeConfig.chunk_size,
-                                          chunk_overlap: profile.chunking.chunk_overlap ?? knowledgeConfig.chunk_overlap,
+                                          chunk_size: profile.chunking?.chunk_size ?? knowledgeConfig.chunk_size,
+                                          chunk_overlap: profile.chunking?.chunk_overlap ?? knowledgeConfig.chunk_overlap,
+                                          embedding_model: profile.embeddings?.model ?? knowledgeConfig.embedding_model,
+                                          embedding_batch_size: profile.embeddings?.batch_size ?? knowledgeConfig.embedding_batch_size,
+                                          embedding_concurrency: profile.embeddings?.concurrency ?? knowledgeConfig.embedding_concurrency,
+                                          docling_pdf_mode: profile.docling?.pdf_mode ?? knowledgeConfig.docling_pdf_mode,
+                                          docling_layout_engine: profile.docling?.layout_engine ?? knowledgeConfig.docling_layout_engine,
+                                          docling_drop_page_chrome: profile.docling?.drop_page_chrome ?? knowledgeConfig.docling_drop_page_chrome,
+                                          rerank_enabled: profile.rerank?.enabled ?? knowledgeConfig.rerank_enabled,
+                                          rerank_top_k_in: profile.rerank?.top_k_in ?? knowledgeConfig.rerank_top_k_in,
+                                          rerank_model: profile.rerank?.model ?? knowledgeConfig.rerank_model,
+                                          search_hybrid_mode: profile.search?.hybrid_mode ?? knowledgeConfig.search_hybrid_mode,
+                                          search_junk_filter: profile.search?.junk_filter ?? knowledgeConfig.search_junk_filter,
+                                          max_search_attempts: profile.search?.max_search_attempts ?? knowledgeConfig.max_search_attempts,
+                                          default_limit: profile.search?.default_limit ?? knowledgeConfig.default_limit,
+                                          default_score_threshold: profile.search?.default_score_threshold ?? knowledgeConfig.default_score_threshold,
+                                          max_ingest_workers: profile.engine?.max_ingest_workers ?? knowledgeConfig.max_ingest_workers,
+                                          vector_insert_batch_size: profile.engine?.vector_insert_batch_size ?? knowledgeConfig.vector_insert_batch_size,
                                         });
                                       }}
                                     >

@@ -3361,11 +3361,24 @@ class KnowledgeEngine:
                 ),
             },
             "rag_profiles": {
+                # Expose every section the UI needs to fully populate the
+                # config when the user picks a profile. Previously only
+                # name/description/search/chunking were exposed; the UI
+                # therefore couldn't write back embedding_model /
+                # docling_pdf_mode / rerank_* on profile-click and the
+                # autosave POST re-sent stale values that overrode the
+                # profile loader on the backend side. Closes the
+                # "switched to max_quality but engine still using
+                # bge-small" bug.
                 name: {
                     "name": data.get("profile", {}).get("name", name),
                     "description": data.get("profile", {}).get("description", ""),
                     "search": data.get("search", {}),
                     "chunking": data.get("chunking", {}),
+                    "embeddings": data.get("embeddings", {}),
+                    "docling": data.get("docling", {}),
+                    "rerank": data.get("rerank", {}),
+                    "engine": data.get("engine", {}),
                 }
                 for name, data in list_profiles().items()
             },
