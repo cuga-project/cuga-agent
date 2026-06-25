@@ -774,6 +774,35 @@ class ReindexInProgressError(Exception):
     pass
 
 
+class ReindexSupersededError(Exception):
+    """Raised by an in-flight ingest/reindex worker when the engine's
+    ``_apply_generation`` counter moves past the value captured at
+    worker start — i.e. a newer ``apply_knowledge_config`` call took
+    over while this worker was still embedding under the old config.
+
+    Distinct from ``ReindexBusyError`` (request rejected because
+    something else is running) and from ``cancelled`` (user pressed
+    Cancel). A superseded worker exits cleanly and the next reindex
+    picks up the work fresh under the current config — no error
+    surfaces to the user, no toast, no failure pill. Task is
+    marked ``status="superseded"`` in the metadata store for audit.
+
+    Slice B of the "double reindex during model download" fix —
+    Slice A (PR #352) closed the client-side window where two rapid
+    profile picks could fire two PATCHes; this closes the server-
+    side window where an in-flight worker from a prior config keeps
+    writing vectors with the old embedder after the new apply landed.
+    """
+
+    def __init__(self, worker_gen: int, current_gen: int):
+        self.worker_gen = worker_gen
+        self.current_gen = current_gen
+        super().__init__(
+            f"Reindex superseded: worker started at apply_generation={worker_gen}, "
+            f"engine now at apply_generation={current_gen}"
+        )
+
+
 # --- Prepared update result ---
 
 
@@ -1400,6 +1429,21 @@ class KnowledgeEngine:
         # Per-collection async ingest locks
         self._collection_locks: dict[str, asyncio.Lock] = {}
 
+        # Slice B — monotonic counter bumped by every successful
+        # ``commit_knowledge_update`` that changes embedder /
+        # chunking / metric. In-flight ingest + reindex workers
+        # capture this at start and check it before each batch;
+        # if it moved past them, they raise ``ReindexSupersededError``
+        # and mark their task ``status="superseded"`` (planned
+        # cancellation, not an error). Closes the server-side gap
+        # in the rapid-profile-switch race that Slice A only
+        # addressed client-side. No explicit lock needed: workers
+        # only READ this counter, ``commit_knowledge_update`` runs
+        # under the GIL so the int increment is atomic in CPython,
+        # and two concurrent applies are already serialized at the
+        # HTTP route level (FastAPI's per-request event loop).
+        self._apply_generation: int = 0
+
         # Bounds concurrent Docling parses process-wide (the heavy, GPU/CPU-bound
         # step). Inserts still serialize per-collection via the lock above.
         # ponytail: one global semaphore; per-collection parse limits if a single
@@ -2008,13 +2052,29 @@ class KnowledgeEngine:
         # seconds, rounded at emit time, populated by the engine and (via
         # _insert_documents_async) by the adapter.
         stage_timings: dict[str, Any] = {}
+        # Slice B — capture the engine's current apply generation. Each
+        # batch boundary below re-reads ``self._apply_generation`` and
+        # raises ``ReindexSupersededError`` if it has moved past us
+        # (a newer ``commit_knowledge_update`` changed embedder /
+        # chunking / metric out from under this worker). Inline helper
+        # keeps the check terse at the four points we use it.
+        worker_apply_gen = self._apply_generation
+
+        def _check_supersede() -> None:
+            current = self._apply_generation
+            if current != worker_apply_gen:
+                raise ReindexSupersededError(worker_apply_gen, current)
+
         try:
             await self._metadata.update_task(task_id, status="running")
             await self._metadata.update_task(
                 task_id,
                 file_tasks={filename: {"filename": filename, "status": "processing"}},
             )
-            logger.info(f"Task {task_id}: pending -> running for {filename} in {collection}")
+            logger.info(
+                f"Task {task_id}: pending -> running for {filename} in {collection} "
+                f"(apply_gen={worker_apply_gen})"
+            )
 
             if cancel_event.is_set():
                 await self._metadata.update_task(
@@ -2024,11 +2084,17 @@ class KnowledgeEngine:
                 )
                 return
 
+            _check_supersede()
+
             t_parse = time.monotonic()
             docs = await asyncio.to_thread(self._load_document, file_path)
             stage_timings["parse_s"] = round(time.monotonic() - t_parse, 3)
             if not docs:
                 raise ValueError(f"No content extracted from {filename}")
+            # Slice B supersede check after the expensive parse step.
+            # Embedding hasn't started yet — if a newer apply landed,
+            # this is the cheapest place to bail.
+            _check_supersede()
 
             # C5 (issue #183 step 6): emit "parsed" stage so callers polling
             # get_ingestion_status see progress as soon as Docling finishes
@@ -2162,6 +2228,13 @@ class KnowledgeEngine:
 
             if docs:
                 logger.debug(f"Sample metadata for {filename}: {docs[0].metadata}")
+
+            # Slice B supersede check before the insert critical section.
+            # Embed has already run (it's inside _insert_documents_async on
+            # most adapters, or pre-staged on others) — but the actual
+            # vector write is the expensive last step. Bailing here saves
+            # the largest chunk of wasted work if a newer apply arrived.
+            _check_supersede()
 
             logger.info(
                 f"Inserting {len(docs)} chunks into {self._knowledge_vector_backend()} "
@@ -2302,6 +2375,37 @@ class KnowledgeEngine:
                 chunks=len(docs),
             )
 
+        except ReindexSupersededError as e:
+            # Slice B — planned cancellation, NOT a failure. A newer
+            # apply has taken over; the next reindex it triggers will
+            # process this file fresh with the new config. Mark the
+            # task ``superseded`` (distinct from ``cancelled`` /
+            # ``failed``) so the UI can recognize it and silently
+            # retire the in-progress tile instead of showing a red
+            # "Failed" pill.
+            duration = time.monotonic() - start
+            logger.info(
+                "Task {task_id} superseded for {filename} after {dur:.1f}s "
+                "(worker_gen={wg} → engine_gen={cg})",
+                task_id=task_id,
+                filename=filename,
+                dur=duration,
+                wg=e.worker_gen,
+                cg=e.current_gen,
+            )
+            await self._metadata.update_task(
+                task_id,
+                status="superseded",
+                processed_files=1,
+                file_tasks={
+                    filename: {
+                        "filename": filename,
+                        "status": "superseded",
+                        "reason": f"config changed mid-ingest (gen {e.worker_gen} → {e.current_gen})",
+                        "duration_seconds": round(duration, 2),
+                    }
+                },
+            )
         except Exception as e:
             duration = time.monotonic() - start
             logger.error(f"Failed to ingest {filename}: {e}")
@@ -3409,6 +3513,27 @@ class KnowledgeEngine:
             except Exception as e:  # pragma: no cover - defensive
                 logger.warning("Could not start reranker background load: {}", e)
 
+        # Slice B — bump the apply generation when this commit changes
+        # something that an in-flight ingest/reindex worker would care
+        # about (embedder, chunking, metric). Workers captured the old
+        # value at start; they see a higher value here on their next
+        # batch boundary and bail with ``ReindexSupersededError``,
+        # which the metadata layer records as ``status="superseded"``.
+        # The next reindex (auto-triggered by manage_routes after this
+        # apply) picks the work up fresh with the new config.
+        supersede_relevant = (
+            prepared.embedding_changed or prepared.chunking_changed or prepared.metric_changed
+        )
+        if supersede_relevant:
+            self._apply_generation += 1
+            logger.info(
+                "cuga.knowledge.apply_generation_bumped gen={} (embedding_changed={} chunking_changed={} metric_changed={})",
+                self._apply_generation,
+                prepared.embedding_changed,
+                prepared.chunking_changed,
+                prepared.metric_changed,
+            )
+
         return {
             "embedding_changed": prepared.embedding_changed,
             "chunking_changed": prepared.chunking_changed,
@@ -3418,6 +3543,11 @@ class KnowledgeEngine:
             "previous_dim": old_dim,
             "new_dim": prepared.new_embedding_dim if prepared.new_embeddings else old_dim,
             "docling_changed": docling_changed,
+            # Expose for manage_routes to pass to reindex(gen=...) so
+            # the workers it spawns are stamped with the current gen
+            # — they won't be torpedoed by a later apply, but they'd
+            # torpedo earlier orphans correctly.
+            "apply_generation": self._apply_generation,
         }
 
     def apply_knowledge_config(self, knowledge_cfg: dict) -> dict[str, Any]:
