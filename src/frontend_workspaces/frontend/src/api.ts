@@ -320,6 +320,28 @@ export async function deleteConversation(threadId: string): Promise<Response> {
   });
 }
 
+export interface SlashCommandInfo {
+  name: string;
+  kind: "skill";
+  description: string;
+  argument_hint: string | null;
+}
+
+export async function getCommands(): Promise<SlashCommandInfo[]> {
+  const response = await apiFetch("/api/commands");
+  if (!response.ok) {
+    throw new Error(`Failed to load slash commands: HTTP ${response.status}`);
+  }
+  const data = await response.json().catch(() => ({ commands: [] }));
+  const commands = Array.isArray(data?.commands) ? data.commands : [];
+  return commands.map((c: any) => ({
+    name: String(c?.name ?? ""),
+    kind: "skill" as const,
+    description: typeof c?.description === "string" ? c.description : "",
+    argument_hint: typeof c?.argument_hint === "string" ? c.argument_hint : null,
+  }));
+}
+
 export async function getWorkspaceTree(threadId?: string, forceRefresh = false): Promise<Response> {
   const params = new URLSearchParams();
   if (threadId) params.set("thread_id", threadId);

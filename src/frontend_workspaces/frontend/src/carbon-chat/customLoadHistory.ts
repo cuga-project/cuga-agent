@@ -120,6 +120,33 @@ async function customLoadHistory(
           }
           break;
 
+        // Replay a resolved slash-skill invocation as a reasoning step
+        // attached to the assistant message being assembled (mirrors the live
+        // path in customSendMessage.ts). The step lands in the same "Show
+        // details" panel as the planner reasoning that follows.
+        case "SlashSkillInvoked": {
+          try {
+            const parsed = JSON.parse(actualData);
+            const resolvedName = String(parsed?.resolved_name ?? "");
+            const rawInput = String(parsed?.raw_input ?? "");
+            const rawArgs = String(parsed?.raw_args ?? "");
+            // A literal backtick in the user's input would close the inline
+            // code span and break the rendered markdown — escape so the
+            // span stays intact regardless of user content.
+            const escapeBackticks = (s: string) => s.replace(/\\/g, "\\\\").replace(/`/g, "\\`");
+            const stepTitle = `Skill invoked: /${escapeBackticks(resolvedName)}`;
+            const stepContent = [
+              `**Input:** \`${escapeBackticks(rawInput)}\``,
+              `**Resolved skill:** \`${escapeBackticks(resolvedName)}\``,
+              `**Arguments:** \`${rawArgs ? escapeBackticks(rawArgs) : "(none)"}\``,
+            ].join("\n\n");
+            currentSteps.push(createReasoningStep(stepTitle, stepContent));
+          } catch (e) {
+            console.error("Error parsing SlashSkillInvoked history event:", e);
+          }
+          break;
+        }
+
         case "CodeAgent":
         case "CodeAgent_Reasoning":
         case "Thinking":

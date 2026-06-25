@@ -376,12 +376,19 @@ class ConversationHistoryDB:
             tenant_id = _tenant_id()
             inst_id = _instance_id()
             now = datetime.utcnow().isoformat()
-            events_json = json.dumps(events)
             existing = await store.fetchone(
-                "SELECT created_at FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
+                "SELECT events FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
                 (tenant_id, inst_id, agent_id, thread_id, user_id),
             )
             if existing:
+                # Append new events to existing rather than overwriting — the caller
+                # only buffers per-request events, so without this multi-turn refresh
+                # loses every turn except the most recent. Re-sequence the new events
+                # so numbers stay unique and monotonic across the merged list.
+                existing_events = json.loads(existing["events"]) if existing["events"] else []
+                max_seq = max((e.get("sequence", -1) for e in existing_events), default=-1)
+                renumbered = [{**e, "sequence": max_seq + 1 + offset} for offset, e in enumerate(events)]
+                events_json = json.dumps(existing_events + renumbered)
                 await store.execute(
                     """
                     UPDATE stream_events SET events = ?, updated_at = ?
@@ -390,6 +397,7 @@ class ConversationHistoryDB:
                     (events_json, now, tenant_id, inst_id, agent_id, thread_id, user_id),
                 )
             else:
+                events_json = json.dumps(events)
                 await store.execute(
                     """
                     INSERT INTO stream_events (tenant_id, instance_id, agent_id, thread_id, user_id, events, created_at, updated_at)

@@ -934,6 +934,7 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
     yield
     logger.info("Application is shutting down...")
 
@@ -1102,6 +1103,52 @@ async def _save_conversation_and_events_async(
             logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
     except Exception as e:
         logger.error(f"Error in async save: {e}")
+
+
+def _build_slash_skill_registry():
+    if not _skills_effective_enabled():
+        return None
+    try:
+        from cuga.backend.skills import SkillRegistry, discover_skills
+
+        cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        return SkillRegistry(discover_skills(cuga_folder))
+    except Exception:
+        logger.exception("Failed to discover skills for slash dispatch")
+        return None
+
+
+async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
+    """Run ``parse_and_dispatch`` for the streaming HTTP handler.
+
+    Returns ``None`` if anything goes wrong (so the caller falls back to the
+    planner) or a :class:`DispatchResult` for the caller to act on.
+    """
+    try:
+        from cuga.backend.slash_commands import (
+            build_slash_registry,
+            parse_and_dispatch,
+        )
+    except Exception:
+        logger.exception("Failed to import slash_commands package")
+        return None
+
+    skill_registry = _build_slash_skill_registry()
+    slash_registry = build_slash_registry(skill_registry)
+
+    try:
+        return await parse_and_dispatch(
+            query,
+            slash_registry=slash_registry,
+            skill_registry=skill_registry,
+            thread_id=thread_id,
+        )
+    except Exception:
+        # Log only the command name (token after leading "/"); arguments may
+        # carry secrets and are deliberately omitted.
+        command_name = query.split(maxsplit=1)[0] if query.startswith("/") else "<non-slash>"
+        logger.exception(f"Slash dispatch failed for command {command_name!r}")
+        return None
 
 
 async def save_conversation_to_db(
@@ -1390,6 +1437,48 @@ async def event_stream(
         )
         event_sequence += 1
 
+    slash_result = None
+    if isinstance(query, str):
+        slash_result = await _dispatch_slash_for_stream(query, thread_id)
+
+    if slash_result is not None and slash_result.kind == "skill" and local_state is not None:
+        # Prepend the synthesized load_skill message quad so the planner sees
+        # the skill as already loaded. ``input`` is the trailing arg block (or
+        # the bare slash invocation when there are no args) so the planner has
+        # a current-turn prompt to act on.
+        existing = list(local_state.chat_messages or [])
+        local_state.chat_messages = list(slash_result.injected_messages) + existing
+        local_state.input = (
+            slash_result.raw_args if slash_result.raw_args else slash_result.raw_input or query
+        )
+
+        # Emit SlashSkillInvoked so the frontend renders the invocation inline (live + on history reload); event is buffered into the saved stream.
+        slash_chip_event_data = json.dumps(
+            {
+                "resolved_name": slash_result.resolved_name,
+                "raw_input": slash_result.raw_input,
+                "raw_args": slash_result.raw_args or "",
+            }
+        )
+        if thread_id:
+            stream_events_buffer.append(
+                {
+                    "event_name": "SlashSkillInvoked",
+                    "event_data": slash_chip_event_data,
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "sequence": event_sequence,
+                }
+            )
+            event_sequence += 1
+        yield StreamEvent(name="SlashSkillInvoked", data=slash_chip_event_data).format(
+            app_state.output_format, thread_id=thread_id
+        )
+    elif slash_result is not None and slash_result.kind == "skill" and local_state is None:
+        # Silent degradation otherwise: the skill resolved but we have no
+        # local state to inject the synthesized load_skill quad into, so the
+        # planner won't see the skill body. Surface so operators can spot it.
+        logger.warning("Skill dispatched but local_state is None; skipping message injection")
+
     langfuse_handler = (
         CallbackHandler()
         if settings.advanced_features.langfuse_tracing and CallbackHandler is not None
@@ -1674,7 +1763,14 @@ async def event_stream(
                         ).values
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
-                    name = ((event.split("\n")[0]).split(":")[1]).strip()
+                    try:
+                        name = StreamEvent.parse(event).name
+                    except ValueError as parse_err:
+                        # A malformed event block would otherwise crash the
+                        # stream mid-flight; log and skip so the rest of the
+                        # turn keeps flowing.
+                        logger.warning("Skipping malformed stream event: {}", parse_err)
+                        continue
                     logger.debug("Yield {}".format(event))
                     if name not in ["ChatAgent"]:
                         # Add stream event to buffer instead of immediate DB write
@@ -1689,9 +1785,15 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                        yield StreamEvent(name=name, data=event).format(
-                            app_state.output_format, thread_id=thread_id
-                        )
+                        # WXO mode wraps each event as a Chat Completions
+                        # chunk; DEFAULT mode emits the already-formatted SSE
+                        # block verbatim to avoid double-wrapping.
+                        if app_state.output_format == OutputFormat.WXO:
+                            yield StreamEvent(name=name, data=event).format(
+                                app_state.output_format, thread_id=thread_id
+                            )
+                        else:
+                            yield event
     except Exception as e:
         logger.exception(e)
         logger.error(traceback.format_exc())
@@ -3449,6 +3551,30 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
             "session_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "session"),
         }
     )
+
+
+@app.get("/api/commands")
+async def get_commands(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    """Return the registry of slash commands (skills only); rebuilt per request so new SKILL.md files appear without restart."""
+    try:
+        from cuga.backend.slash_commands import build_slash_registry
+
+        skill_registry = _build_slash_skill_registry()
+        slash_registry = build_slash_registry(skill_registry)
+        return {
+            "commands": [
+                {
+                    "name": c.name,
+                    "kind": c.kind,
+                    "description": c.description,
+                    "argument_hint": c.argument_hint,
+                }
+                for c in slash_registry.list_commands()
+            ]
+        }
+    except Exception:
+        logger.exception("Failed to build slash command registry")
+        raise HTTPException(status_code=500, detail="Failed to build slash command registry")
 
 
 @app.get("/api/skills")

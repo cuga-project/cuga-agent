@@ -101,6 +101,14 @@ run_pytest tests/unit/test_toolguard_provider.py \
 echo "Running A2A tests..."
 run_pytest tests/integration/a2a/ \
     tests/unit/test_a2a_simple_runner_hitl.py
+echo "Running slash-command tests..."
+run_pytest \
+    tests/unit/test_slash_parser.py \
+    tests/unit/test_slash_message_synthesis.py \
+    tests/unit/test_slash_arg_substitution.py \
+    tests/unit/test_slash_langfuse_span.py \
+    tests/unit/test_stream_event_format.py \
+    tests/unit/test_skill_loader.py
 echo "✅ All unit tests passed!"
 
 # Check for test type flag

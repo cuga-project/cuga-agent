@@ -5,12 +5,20 @@ from cuga.backend.skills.loader import discover_skills, get_skill_root
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
 
 
-def _write_skill(root: Path, name: str, description: str, body: str = "Body", requirements: str = "") -> None:
+def _write_skill(
+    root: Path,
+    name: str,
+    description: str,
+    body: str = "Body",
+    requirements: str = "",
+    extra_frontmatter: str = "",
+) -> None:
     skill_dir = root / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     requirements_block = f"requirements: {requirements}\n" if requirements else ""
+    extra_block = f"{extra_frontmatter}\n" if extra_frontmatter else ""
     (skill_dir / "SKILL.md").write_text(
-        f"---\nname: {name}\ndescription: {description}\n{requirements_block}---\n{body}\n",
+        f"---\nname: {name}\ndescription: {description}\n{requirements_block}{extra_block}---\n{body}\n",
         encoding="utf-8",
     )
 
@@ -297,3 +305,69 @@ def test_clean_description_is_unchanged(tmp_path: Path) -> None:
 
     assert result is not None
     assert result.description == "Summarizes complex reports into bullet points"
+
+
+def test_loader_parses_arguments_frontmatter(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_skill(
+        tmp_path / ".cuga" / "skills",
+        "review",
+        "Review a PR",
+        extra_frontmatter="arguments: pr_number title",
+    )
+
+    entries = discover_skills(None)
+    by_name = {e.name: e for e in entries}
+
+    assert by_name["review"].arguments == ("pr_number", "title")
+
+
+def test_loader_rejects_skill_with_numeric_argument_name(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_skill(
+        tmp_path / ".cuga" / "skills",
+        "bad",
+        "Has a numeric arg name",
+        extra_frontmatter="arguments: title 2",
+    )
+
+    entries = discover_skills(None)
+
+    # A numeric-only arg name collides with positional $N syntax — skill is dropped.
+    assert "bad" not in {e.name for e in entries}
+
+
+def test_load_skill_substitutes_args_into_body() -> None:
+    registry = SkillRegistry(
+        [
+            SkillEntry(
+                name="review",
+                description="Review a PR",
+                body="Review PR #$pr for $reason. Full: $ARGUMENTS",
+                source="/tmp/SKILL.md",
+                arguments=("pr", "reason"),
+            )
+        ]
+    )
+
+    loaded = registry.load_skill("review", "123 typos")
+
+    assert "Review PR #123 for typos. Full: 123 typos" in loaded
+
+
+def test_load_skill_without_args_leaves_body_verbatim() -> None:
+    registry = SkillRegistry(
+        [
+            SkillEntry(
+                name="review",
+                description="Review a PR",
+                body="Body with $ARGUMENTS placeholder",
+                source="/tmp/SKILL.md",
+            )
+        ]
+    )
+
+    # Model-initiated load_skill calls pass no args — body must be untouched.
+    loaded = registry.load_skill("review")
+
+    assert "Body with $ARGUMENTS placeholder" in loaded

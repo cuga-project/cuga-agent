@@ -78,21 +78,28 @@ async function* parseCugaStream(response: Response): AsyncGenerator<CugaStreamEv
       
       for (const eventBlock of events) {
         if (!eventBlock.trim()) continue;
-        
+
         console.log("Raw event block:", JSON.stringify(eventBlock));
-        
+
+        // Per the SSE spec, every ``data:`` line in an event contributes one
+        // line to the event payload (joined by ``\n``). The previous version
+        // overwrote ``currentEvent.data`` on each line, which silently
+        // truncated multi-line responses to their last line.
+        const dataLines: string[] = [];
         const lines = eventBlock.split("\n");
         for (const line of lines) {
-          if (line.startsWith("event: ")) {
-            currentEvent.name = line.slice(7).trim();
-            console.log("  Parsed event name:", currentEvent.name);
-          } else if (line.startsWith("data: ")) {
-            currentEvent.data = line.slice(6); // Keep the data as-is (may be plain text or JSON)
-            console.log("  Parsed event data:", JSON.stringify(currentEvent.data));
+          if (line.startsWith("event:")) {
+            currentEvent.name = line.slice(6).trim();
+          } else if (line.startsWith("data:")) {
+            // Trim a single leading space (syntactic per the spec), preserve everything else.
+            const raw = line.slice(5);
+            dataLines.push(raw.startsWith(" ") ? raw.slice(1) : raw);
           }
         }
-        
-        // Yield complete event
+        if (dataLines.length > 0) {
+          currentEvent.data = dataLines.join("\n");
+        }
+
         if (currentEvent.name && currentEvent.data !== undefined) {
           console.log("Yielding complete event:", currentEvent);
           yield currentEvent as CugaStreamEvent;
@@ -270,6 +277,49 @@ export async function customSendMessage(
       console.log("CUGA Event:", event);
 
       switch (event.name) {
+        // A slash command resolved to a skill. Tuck the audit info into the
+        // active streaming response's reasoning panel as a step titled
+        // "Skill invoked: /<name>" rather than rendering a separate bubble —
+        // a separate chip read like tool-call debug stuff. The normal planner
+        // reasoning/Answer events still follow this event as usual and stack
+        // on top of this step.
+        case "SlashSkillInvoked": {
+          try {
+            const parsed =
+              typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+            const resolvedName = String(parsed?.resolved_name ?? "");
+            const rawInput = String(parsed?.raw_input ?? "");
+            const rawArgs = String(parsed?.raw_args ?? "");
+            // A literal backtick in the user's input would close the inline
+            // code span and break the rendered markdown — escape so the
+            // span stays intact regardless of user content. Mirrors the
+            // replay path in customLoadHistory.ts so live and reload render
+            // identically.
+            const escapeBackticks = (s: string) => s.replace(/\\/g, "\\\\").replace(/`/g, "\\`");
+            const stepTitle = `Skill invoked: /${escapeBackticks(resolvedName)}`;
+            const stepContent = [
+              `**Input:** \`${escapeBackticks(rawInput)}\``,
+              `**Resolved skill:** \`${escapeBackticks(resolvedName)}\``,
+              `**Arguments:** \`${rawArgs ? escapeBackticks(rawArgs) : "(none)"}\``,
+            ].join("\n\n");
+            collectedSteps.push(createReasoningStep(stepTitle, stepContent));
+            instance.messaging.addMessageChunk({
+              partial_item: {
+                response_type: MessageResponseTypes.TEXT,
+                text: " ",
+                streaming_metadata: { id: "text-stream", cancellable: true },
+              },
+              partial_response: {
+                message_options: { reasoning: { steps: collectedSteps }, response_user_profile: RESPONSE_USER_PROFILE },
+              },
+              streaming_metadata: { response_id: responseID },
+            } as StreamChunk);
+          } catch (e) {
+            console.error("Error parsing SlashSkillInvoked event:", e);
+          }
+          break;
+        }
+
         case "CodeAgent":
           if (currentStepTitle && currentStepContent) {
             collectedSteps.push(createReasoningStep(currentStepTitle, currentStepContent));
