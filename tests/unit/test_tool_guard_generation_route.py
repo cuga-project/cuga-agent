@@ -1,11 +1,11 @@
 from types import SimpleNamespace
-from unittest.mock import AsyncMock
+from unittest.mock import AsyncMock, Mock
 
 import pytest
 from fastapi.testclient import TestClient
 
 from cuga.backend.cuga_graph.policy.models import AlwaysTrigger, IntentGuard, IntentGuardResponse, ToolGuide
-from cuga.backend.server.main import app
+from cuga.backend.server.main import app, require_auth
 
 
 class FakeStorage:
@@ -61,8 +61,8 @@ def reset_overrides():
 
 
 @pytest.fixture
-def client(monkeypatch):
-    monkeypatch.setattr("cuga.backend.server.main.require_auth", lambda: None, raising=False)
+def client():
+    app.dependency_overrides[require_auth] = lambda: None
     return TestClient(app)
 
 
@@ -81,7 +81,7 @@ def patch_states(monkeypatch, live_policy, draft_policy=None):
 
 def patch_generation(monkeypatch):
     fake_agent = object()
-    build_agent = AsyncMock(return_value=fake_agent)
+    build_agent = Mock(return_value=fake_agent)
     generate = AsyncMock(
         return_value={
             "status": "ok",

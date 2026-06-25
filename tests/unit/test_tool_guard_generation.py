@@ -128,7 +128,7 @@ async def test_generate_tool_guards_for_policy_returns_partial_failure_and_conti
 
     assert response["status"] == "ok"
     assert response["results"] == [
-        {"tool": "book_flight", "status": "error", "message": "example generation failed"},
+        {"tool": "book_flight", "status": "error", "message": "ToolGuard generation failed for this tool"},
         {"tool": "cancel_flight", "status": "ok"},
     ]
     assert ("examples", "tool_guide_1", "cancel_flight") in policies_manager.calls
