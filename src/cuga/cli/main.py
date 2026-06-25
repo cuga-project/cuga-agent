@@ -1463,6 +1463,11 @@ def start(
         "--reset",
         help="For demo_knowledge: Wipe all knowledge data (vector DB, metadata, files, sessions) before starting fresh",
     ),
+    hard_reset: bool = typer.Option(
+        False,
+        "--hard-reset",
+        help="For demo_knowledge: --reset PLUS drop every agent collection on disk (orphan files dirs from prior profile/embedder iterations). Use this when an embedder change left stale collection dirs behind that the OOBE seed skips over.",
+    ),
     cuga_workspace: str | None = typer.Option(
         None,
         "--cuga-workspace",
@@ -1675,8 +1680,15 @@ def start(
     """
     validate_service(service)
 
-    if reset and service != "demo_knowledge":
-        logger.warning("--reset is only supported for demo_knowledge and will be ignored for '%s'", service)
+    if (reset or hard_reset) and service != "demo_knowledge":
+        logger.warning(
+            "--reset/--hard-reset is only supported for demo_knowledge and will be ignored for '%s'", service
+        )
+    # --hard-reset is a strict superset of --reset. Treat them as equivalent
+    # for the "wipe knowledge data" path; the extra dir-pruning happens in
+    # the demo_knowledge block below where files_dir is in scope.
+    if hard_reset:
+        reset = True
 
     # Embedding overrides — set as DYNACONF env vars BEFORE the service blocks
     # below so the engine picks them up when settings is first loaded. These
@@ -1968,6 +1980,40 @@ def start(
         try:
             if reset:
                 logger.info("🧹 Resetting knowledge data...")
+            # ``--hard-reset`` additionally drops EVERY agent collection
+            # directory under files_dir before the demo seed runs. The
+            # regular ``--reset`` path only wipes the current agent's
+            # files dir + dbs; orphan dirs left over from prior profile
+            # iterations (e.g. an old mxbai-pinned collection that's no
+            # longer reachable after switching to bge-large) stay on
+            # disk and clutter diagnostics. ``--hard-reset`` says "yes,
+            # I really want a clean slate."
+            if hard_reset:
+                try:
+                    import shutil as _shutil_hard
+                    from cuga.backend.knowledge.config import KnowledgeConfig as _KC_hard
+                    from cuga.config import settings as _settings_hard
+
+                    _kc_h = _KC_hard.from_settings(_settings_hard)
+                    _files_dir_h = _kc_h.persist_dir / "files"
+                    if _files_dir_h.exists():
+                        for _d in _files_dir_h.iterdir():
+                            if _d.is_dir() and _d.name.startswith("kb_"):
+                                _shutil_hard.rmtree(_d, ignore_errors=True)
+                                logger.info("🧹 --hard-reset: removed %s", _d.name)
+                    # Drop the lock file too — the regular reset path
+                    # respects it (won't wipe while a server is running),
+                    # but with --hard-reset the user is explicitly
+                    # saying they've stopped everything.
+                    _lock_h = _kc_h.persist_dir / ".lock"
+                    if _lock_h.exists():
+                        try:
+                            _lock_h.unlink()
+                            logger.info("🧹 --hard-reset: removed stale .lock")
+                        except OSError:
+                            pass
+                except Exception as _hr_err:
+                    logger.warning("--hard-reset extra cleanup failed: %s (continuing)", _hr_err)
             logger.info("🧹 Setting up demo_knowledge config...")
             setup_demo_manage_config(
                 "demo_knowledge", tools=resolved_tools, reset_knowledge=reset, filesystem=app_filesystem
