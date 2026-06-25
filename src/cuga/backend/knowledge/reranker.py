@@ -82,9 +82,7 @@ def _build_encoder(model_name: str) -> Any:
     cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
     local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
     try:
-        return TextCrossEncoder(
-            model_name=model_name, cache_dir=cache_dir, local_files_only=local_files_only
-        )
+        return TextCrossEncoder(model_name=model_name, cache_dir=cache_dir, local_files_only=local_files_only)
     except Exception as e:
         raise RerankerUnavailableError(f"could not load reranker model {model_name!r}: {e}") from e
 
@@ -176,6 +174,7 @@ def rerank(
 
 
 if __name__ == "__main__":  # smallest runnable check — sort + trim + readiness gate
+
     class _FakeEnc:
         def rerank(self, _q, docs):
             return [float(i) for i in range(len(docs))]  # last doc most relevant
