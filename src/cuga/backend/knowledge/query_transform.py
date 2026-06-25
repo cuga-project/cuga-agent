@@ -151,9 +151,14 @@ if __name__ == "__main__":  # smallest runnable check — multi_query parse, hyd
             return self._out
 
     # multi_query: 2 rewrites parsed, numbering stripped, original deduped
-    mq = _aio.run(expand_query("multi_query", "reset my password",
-                               _Gen("1. how to change password\n2. password recovery steps\nreset my password"),
-                               n=3))
+    mq = _aio.run(
+        expand_query(
+            "multi_query",
+            "reset my password",
+            _Gen("1. how to change password\n2. password recovery steps\nreset my password"),
+            n=3,
+        )
+    )
     assert mq.dense_extra == ["how to change password", "password recovery steps"], mq.dense_extra
     assert mq.lexical_extra == mq.dense_extra  # rewrites are real queries → safe for BM25
 

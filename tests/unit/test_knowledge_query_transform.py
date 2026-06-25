@@ -88,9 +88,7 @@ def test_rrf_fuse_lists_empty():
 
 def test_rrf_fuse_lists_prefers_doc_in_multiple_legs():
     # "shared" appears in both legs → highest fused score; singletons follow.
-    fused = _rrf_fuse_lists(
-        [[_sr("shared"), _sr("onlyA", "g", 2)], [_sr("shared"), _sr("onlyB", "h", 3)]]
-    )
+    fused = _rrf_fuse_lists([[_sr("shared"), _sr("onlyA", "g", 2)], [_sr("shared"), _sr("onlyB", "h", 3)]])
     assert fused[0].text == "shared"
     assert {r.text for r in fused} == {"shared", "onlyA", "onlyB"}
 
