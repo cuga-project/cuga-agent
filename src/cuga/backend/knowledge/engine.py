@@ -2376,13 +2376,19 @@ class KnowledgeEngine:
             )
 
         except ReindexSupersededError as e:
-            # Slice B — planned cancellation, NOT a failure. A newer
-            # apply has taken over; the next reindex it triggers will
-            # process this file fresh with the new config. Mark the
-            # task ``superseded`` (distinct from ``cancelled`` /
-            # ``failed``) so the UI can recognize it and silently
-            # retire the in-progress tile instead of showing a red
-            # "Failed" pill.
+            # Slice B — planned cancellation, NOT a failure. SQL-level
+            # status is "cancelled" because the existing CHECK
+            # constraint admits only {pending, running, completed,
+            # failed, cancelled}; adding "superseded" there would
+            # require migrating both sqlite and postgres CHECKs (an
+            # online ALTER on pg is cheap, but sqlite needs a table
+            # rebuild — not worth it for one value). The supersede vs.
+            # user-cancel distinction lives in ``file_tasks`` —
+            # we record ``status="superseded"`` plus a ``reason``
+            # field for the audit trail. Frontend polling already
+            # treats "cancelled" as terminal, and the auto-fired
+            # reindex's new task_ids replace old polling targets, so
+            # no UI change is needed either.
             duration = time.monotonic() - start
             logger.info(
                 "Task {task_id} superseded for {filename} after {dur:.1f}s "
@@ -2395,7 +2401,7 @@ class KnowledgeEngine:
             )
             await self._metadata.update_task(
                 task_id,
-                status="superseded",
+                status="cancelled",
                 processed_files=1,
                 file_tasks={
                     filename: {
