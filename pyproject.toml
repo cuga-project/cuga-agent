@@ -33,6 +33,7 @@ dependencies = [
     "pyyaml>=6.0.3",
     "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
+    "langchain-anthropic>=0.3.0",
     "langchain-litellm",
     # 1.83.7–1.83.13 conflict with fastmcp>=3.2 per resolver; 1.83.14 is current stable on PyPI.
     "litellm>=1.83.14",
