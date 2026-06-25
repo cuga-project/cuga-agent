@@ -765,6 +765,40 @@ export default function KnowledgePanel({
     checkHealth();
   }, [loadDocuments, checkHealth]);
 
+  // Detected embedding-provider presets from the host's environment
+  // (.env / shell). Drives the "Quick setup from environment" panel
+  // so a user with WATSONX_APIKEY + WATSONX_URL + WATSONX_PROJECT_ID
+  // already set sees Watsonx as ready-to-apply with one click. The
+  // endpoint returns booleans + suggested config only — never the
+  // raw env values. Fetched once on mount.
+  interface EnvPreset {
+    id: string;
+    label: string;
+    default_provider: string;
+    default_model: string;
+    ready: boolean;
+    env_vars: Record<string, boolean>;
+    missing: string[];
+  }
+  const [envPresets, setEnvPresets] = useState<EnvPreset[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.getKnowledgeEnvPresets();
+        if (!res.ok || cancelled) return;
+        const j = await res.json();
+        if (cancelled) return;
+        setEnvPresets(Array.isArray(j?.presets) ? j.presets : []);
+      } catch {
+        // Fail-quiet: the panel just hides — user can still configure manually.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   // Fetch hardware acceleration status. Re-fetches when the user toggles
   // use_gpu or switches embedding provider — both can change what the
   // live engine actually loaded.
@@ -2594,6 +2628,101 @@ export default function KnowledgePanel({
                           <Accordion align="start" size="md">
                             <AccordionItem title={sectionTitle("Embeddings", embeddingsStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
+                                {/* ── Quick setup from environment ──
+                                    Surface env-detected providers so the user
+                                    doesn't have to know which env var name a
+                                    given provider reads (esp. Watsonx, which
+                                    needs THREE: WATSONX_APIKEY + WATSONX_URL
+                                    + WATSONX_PROJECT_ID). Each "Apply" sets
+                                    provider + model and clears the api-key
+                                    field — engine + LiteLLM then read the
+                                    matching env var at embed time. The
+                                    endpoint returns booleans only; raw values
+                                    never leave the server. */}
+                                {envPresets && envPresets.length > 0 && (
+                                  <Tile>
+                                    <Stack gap={3}>
+                                      <Stack gap={1}>
+                                        <span style={{ fontSize: "0.8125rem", fontWeight: 600 }}>
+                                          Quick setup from environment
+                                        </span>
+                                        <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
+                                          Providers detected from your <code>.env</code> or shell. One click pre-fills the form and reads keys from the environment.
+                                        </span>
+                                      </Stack>
+                                      <Stack gap={2}>
+                                        {envPresets.map((preset) => {
+                                          const anyEnvPresent = Object.values(preset.env_vars).some(Boolean);
+                                          // Hide presets where NO env var is set at all — keeps the panel
+                                          // focused on what the user has actually configured.
+                                          if (!anyEnvPresent) return null;
+                                          return (
+                                            <Stack
+                                              key={preset.id}
+                                              orientation="horizontal"
+                                              gap={3}
+                                              style={{ alignItems: "center" }}
+                                            >
+                                              <span
+                                                style={{
+                                                  width: 16,
+                                                  height: 16,
+                                                  borderRadius: "50%",
+                                                  background: preset.ready ? "var(--cds-support-success)" : "var(--cds-support-warning)",
+                                                  flexShrink: 0,
+                                                }}
+                                                aria-hidden="true"
+                                              />
+                                              <Stack gap={0} style={{ flex: 1 }}>
+                                                <span style={{ fontSize: "0.8125rem", fontWeight: 500 }}>
+                                                  {preset.label}
+                                                </span>
+                                                {!preset.ready && preset.missing.length > 0 && (
+                                                  <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
+                                                    Missing: {preset.missing.join(", ")}
+                                                  </span>
+                                                )}
+                                                {preset.ready && (
+                                                  <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
+                                                    Default model: <code>{preset.default_model}</code>
+                                                  </span>
+                                                )}
+                                              </Stack>
+                                              <Button
+                                                kind="tertiary"
+                                                size="sm"
+                                                disabled={!preset.ready}
+                                                onClick={() => {
+                                                  // Apply: set provider + model, clear api_key /
+                                                  // base_url / extra_params so the engine + LiteLLM
+                                                  // read the matching env var (e.g. WATSONX_APIKEY)
+                                                  // at embed time. Autosave fires immediately via
+                                                  // the existing knowledgeConfig watcher in
+                                                  // ManagePage.
+                                                  onKnowledgeConfigChange({
+                                                    ...knowledgeConfig,
+                                                    embedding_provider: preset.default_provider,
+                                                    embedding_model: preset.default_model,
+                                                    embedding_api_key: "",
+                                                    embedding_base_url: "",
+                                                    embedding_extra_params: {},
+                                                  });
+                                                  onToast?.(
+                                                    "success",
+                                                    `${preset.label} applied`,
+                                                    `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
+                                                  );
+                                                }}
+                                              >
+                                                {preset.ready ? "Apply" : "Incomplete"}
+                                              </Button>
+                                            </Stack>
+                                          );
+                                        })}
+                                      </Stack>
+                                    </Stack>
+                                  </Tile>
+                                )}
                                 <Stack orientation="horizontal" gap={4}>
                                   <Select
                                     id="knowledge-embedding-provider"

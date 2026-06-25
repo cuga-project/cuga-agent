@@ -1084,6 +1084,119 @@ async def get_knowledge_defaults():
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.get("/knowledge/env-presets")
+async def get_knowledge_env_presets():
+    """Detected embedding-provider presets based on environment variables.
+
+    Lets the UI offer "one-click apply" for providers whose credentials
+    are already in the host's environment (``.env`` or shell). Returns
+    ONLY booleans + suggested config — NEVER the actual env values, so
+    the response is safe to surface in any logged-out or shared UI
+    context. The "Apply" action on the UI side just sets
+    embedding_provider + embedding_model and leaves embedding_api_key
+    empty; the engine + LiteLLM then read the matching env var at
+    embed-time.
+    """
+    import os as _os
+
+    # Provider preset catalog. ``required_env`` controls the ready flag;
+    # ``optional_env`` is exposed for completeness so the UI can show
+    # "BASE_URL detected, will override default" hints.
+    PROVIDER_PRESETS = [
+        {
+            "id": "openai",
+            "label": "OpenAI",
+            "required_env": ["OPENAI_API_KEY"],
+            "optional_env": ["OPENAI_BASE_URL"],
+            "default_provider": "openai",
+            "default_model": "text-embedding-3-small",
+        },
+        {
+            "id": "openrouter",
+            "label": "OpenRouter",
+            "required_env": ["OPENROUTER_API_KEY"],
+            "optional_env": [],
+            "default_provider": "openrouter",
+            "default_model": "openai/text-embedding-3-small",
+        },
+        {
+            "id": "watsonx",
+            "label": "IBM Watsonx (via LiteLLM)",
+            # LiteLLM accepts WATSONX_URL or WATSONX_API_BASE. We require
+            # at least one of those two — surface both as detected when
+            # either is present.
+            "required_env": ["WATSONX_APIKEY", "WATSONX_PROJECT_ID"],
+            "optional_env": ["WATSONX_URL", "WATSONX_API_BASE"],
+            "default_provider": "litellm",
+            "default_model": "watsonx/ibm/slate-30m-english-rtrvr",
+        },
+        {
+            "id": "azure",
+            "label": "Azure OpenAI (via LiteLLM)",
+            "required_env": ["AZURE_API_KEY", "AZURE_API_BASE"],
+            "optional_env": ["AZURE_API_VERSION"],
+            "default_provider": "litellm",
+            "default_model": "azure/text-embedding-3-small",
+        },
+        {
+            "id": "cohere",
+            "label": "Cohere (via LiteLLM)",
+            "required_env": ["COHERE_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "cohere/embed-english-v3.0",
+        },
+    ]
+
+    presets = []
+    for p in PROVIDER_PRESETS:
+        env_vars = {
+            v: bool((_os.environ.get(v) or "").strip()) for v in (p["required_env"] + p["optional_env"])
+        }
+        # Watsonx is the lone provider with a "one-of-two" optional rule
+        # (URL or API_BASE). Special-case the ready check: required keys
+        # AND at least one of the URL aliases.
+        if p["id"] == "watsonx":
+            url_ok = env_vars.get("WATSONX_URL") or env_vars.get("WATSONX_API_BASE")
+            ready = all(env_vars[v] for v in p["required_env"]) and bool(url_ok)
+            missing = [v for v in p["required_env"] if not env_vars[v]]
+            if not url_ok:
+                missing.append("WATSONX_URL")
+        else:
+            ready = all(env_vars[v] for v in p["required_env"])
+            missing = [v for v in p["required_env"] if not env_vars[v]]
+        presets.append(
+            {
+                "id": p["id"],
+                "label": p["label"],
+                "default_provider": p["default_provider"],
+                "default_model": p["default_model"],
+                "ready": ready,
+                "env_vars": env_vars,
+                "missing": missing,
+            }
+        )
+
+    # Local providers — no env detection needed; always exposed so the
+    # UI can show them in the "always available" section.
+    always_available = [
+        {
+            "id": "fastembed",
+            "label": "Fastembed (local, default)",
+            "default_provider": "fastembed",
+            "default_model": "BAAI/bge-small-en-v1.5",
+        },
+        {
+            "id": "ollama",
+            "label": "Ollama (local)",
+            "default_provider": "ollama",
+            "default_model": "nomic-embed-text",
+        },
+    ]
+
+    return JSONResponse({"presets": presets, "always_available": always_available})
+
+
 @router.get("/knowledge/accelerator")
 async def get_knowledge_accelerator(request: Request):
     """Live hardware acceleration status for the running knowledge engine.

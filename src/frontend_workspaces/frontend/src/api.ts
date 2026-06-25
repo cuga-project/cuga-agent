@@ -388,6 +388,14 @@ export function getKnowledgeDefaults(): Promise<Response> {
   return apiFetch("/api/manage/knowledge/defaults");
 }
 
+// Detected embedding-provider presets from .env / shell environment.
+// Returns booleans + suggested config only — NEVER the actual env
+// values. Used to power the "Quick setup from environment" panel in
+// the knowledge config UI.
+export function getKnowledgeEnvPresets(): Promise<Response> {
+  return apiFetch("/api/manage/knowledge/env-presets");
+}
+
 export function testEmbeddingsConnection(body: {
   provider: string;
   model?: string;
