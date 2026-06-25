@@ -8,22 +8,23 @@ description = "When you need the best, no matter the document."
 # explicitly accepted that cost.
 
 [embeddings]
-# multilingual-e5-large: 1024d, ~560M params, multilingual (16+ langs).
-# MIRACL avg 66.5 across 16 languages. On English-only corpora, an
-# English-tuned 1024d model (bge-large-en-v1.5) wins by ~3 nDCG; flip
-# this key if you do not need multilingual.
+# paraphrase-multilingual-mpnet-base-v2: 768d, multilingual (50+ langs), ~1.0GB.
+# Chosen over multilingual-e5-large (1024d, 2.24GB): e5-large's ONNX exceeds
+# protobuf's 2GB limit and splits its weights into an external-data file, which
+# fastembed + onnxruntime (esp. CoreML on macOS) loads unreliably — it 500'd
+# config publish with "external initializer ... Not a directory". mpnet stays
+# UNDER 2GB (single-file ONNX) so it loads cleanly, is ~half the size/faster, and
+# the cross-encoder reranker (rerank section below) compensates for the modest
+# retrieval-quality gap vs the retrieval-tuned e5.
 #
-# Vetted multilingual/large alternatives (swap requires re-ingest — the
-# embedding dim is part of vector_config_hash). Pick PER CORPUS via eval,
-# not leaderboard vibes:
-#   - intfloat/multilingual-e5-large   1024d  MIT       fastembed (default; needs query:/passage: prefixes, handled)
-#   - Alibaba-NLP/gte-multilingual-base 768d  Apache-2.0 fastembed — lighter RSS, strong multilingual
-#   - Snowflake/snowflake-arctic-embed-l-v2.0 1024d Apache-2.0 fastembed — MRL-truncatable dims
-#   - BAAI/bge-large-en-v1.5           1024d  MIT       fastembed — English-only, ~3 nDCG over e5 on EN corpora
-# (Models not in fastembed's ONNX list require embedding_provider="huggingface" → torch.)
-model = "intfloat/multilingual-e5-large"
-# Reduced because 1024d × 64 batch × fp32 ≈ 1GB transient RSS; 256 batch
-# would peak ~3.5GB — too risky for the 1024d model on standard hosts.
+# Multilingual options WITHIN fastembed (swap = re-ingest; dim is in vector_config_hash):
+#   - sentence-transformers/paraphrase-multilingual-mpnet-base-v2  768d  1.0GB  (default; loads cleanly)
+#   - sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2  384d  0.22GB (lighter, weaker)
+#   - intfloat/multilingual-e5-large  1024d 2.24GB (retrieval-tuned but external-data load issues; query:/passage: prefixes handled)
+# Stronger lighter multilingual models (gte-multilingual-base, arctic-embed-l-v2.0)
+# are NOT in fastembed's list — they require embedding_provider="huggingface" (torch).
+model = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
+# 768d × 64 batch × fp32 ≈ 0.6GB transient RSS — comfortable headroom.
 batch_size = 64
 concurrency = 4
 
