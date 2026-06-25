@@ -1,6 +1,6 @@
 [profile]
 name = "Speed"
-description = "Quick answers across big libraries. Best on lighter laptops; skips images and scans."
+description = "Quick lookups for big libraries."
 
 # Pareto-locked profile (2026-06-09).
 # All sections mirror settings.toml's [knowledge.<section>] shape so the

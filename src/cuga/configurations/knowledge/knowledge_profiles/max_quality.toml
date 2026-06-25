@@ -1,6 +1,6 @@
 [profile]
 name = "Max Quality"
-description = "Reads everything — scans, images, and 16+ languages. Slowest; best on a capable machine."
+description = "When you need the best, no matter the document."
 
 # Pareto-locked profile (2026-06-09).
 # Switching to max_quality INVALIDATES collections: embedder is 1024d

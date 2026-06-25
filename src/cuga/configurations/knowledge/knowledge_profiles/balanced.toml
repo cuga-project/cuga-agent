@@ -1,6 +1,6 @@
 [profile]
 name = "Balanced"
-description = "Takes a second look at top results for sharper answers. Reads tables, adds 1-3 seconds per search."
+description = "Sharper answers, a few seconds slower."
 
 # Pareto-locked profile (2026-06-09).
 # Switching from standard/speed to balanced INVALIDATES collections:
