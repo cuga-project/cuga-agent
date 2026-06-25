@@ -382,6 +382,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
       }
 
       if (response.ok) {
+        updateSavedToolGuideSnapshots(normalizedPolicies);
         setToastMessage({
           kind: "success",
           title: "Policies imported",
@@ -551,6 +552,10 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   };
 
   const generateToolGuard = async (policyId: string) => {
+    if (generatingToolGuardPolicyId !== null) {
+      return;
+    }
+
     const policy = config.policies.find((p) => p.id === policyId);
     if (!policy || policy.policy_type !== "tool_guide") {
       setToastMessage({
@@ -592,7 +597,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
       }
 
       const response = await fetch(
-        `/api/config/policies/${policyId}/tool-guards/generate`,
+        `/api/config/policies/${encodeURIComponent(policyId)}/tool-guards/generate`,
         {
           method: "POST",
           headers,
@@ -1455,7 +1460,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                               }
                             }}
                             disabled={
+                              generatingToolGuardPolicyId !== null ||
                               !config.enablePolicies ||
+                              hasGeneratedToolGuard(policy) ||
                               !hasConcreteTargetTools(policy)
                             }
                             className={hasGeneratedToolGuard(policy) ? "guard-generated" : ""}
