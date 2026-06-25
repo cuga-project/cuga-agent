@@ -131,6 +131,33 @@ function getReindexStatusLabel(status: ReindexTask["status"]): string {
   return "Pending";
 }
 
+// Narrative phase headline for the reindex tile. Replaces the bare
+// "Re-indexing documents..." string with a description of what's
+// actually happening RIGHT NOW so a 90-second model download stops
+// reading as "stuck on 0 of 1". Driven by the per-task ``stage`` field
+// the engine already emits (parsed / embed / insert / insert_start);
+// when stage is unknown we infer "preparing" from "all tasks pending".
+function getReindexPhaseHeadline(tasks: ReindexTask[]): string {
+  if (tasks.length === 0) return "Preparing your new reading model";
+  const stages = tasks
+    .map((t) => Object.values(t.file_tasks ?? {})[0]?.stage)
+    .filter((s): s is string => typeof s === "string");
+  const allPending = tasks.every((t) => t.status === "pending");
+  if (allPending && stages.length === 0) return "Preparing your new reading model";
+  if (stages.some((s) => s === "embed")) return "Re-reading your documents";
+  if (stages.some((s) => s === "insert" || s === "insert_start")) return "Filing everything in its new place";
+  if (stages.some((s) => s === "parsed")) return "Re-reading your documents";
+  return "Re-reading your documents";
+}
+
+// Honest elapsed timer — "Running for 47s" beats a fake countdown. Bands
+// switch at 60s / 5min to keep the unit readable.
+function formatElapsedSeconds(seconds: number): string {
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 300) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+  return `${Math.floor(seconds / 60)}m`;
+}
+
 // ---------------------------------------------------------------------------
 // In-flight upload persistence
 // ---------------------------------------------------------------------------
@@ -608,8 +635,23 @@ export default function KnowledgePanel({
     failed: number;
     tasks: ReindexTask[];
     done: boolean;
+    // Wall-clock start for the honest elapsed timer ("Running for 47s").
+    // Set once when the operation kicks off; never re-stamped on poll.
+    startedAt: number;
   } | null>(null);
+  // Ticks once per second so the elapsed-time label re-renders without
+  // burning a poll cycle. Cheap setState — guarded by the reindex tile's
+  // ``!reindexProgress.done`` so the interval auto-stops on completion.
+  const [, setElapsedTick] = useState(0);
   const reindexPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Drive the 1s tick for the elapsed-time label. Only runs while an
+  // in-flight reindex exists; auto-clears on completion.
+  useEffect(() => {
+    if (!reindexProgress || reindexProgress.done) return;
+    const id = setInterval(() => setElapsedTick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [reindexProgress?.startedAt, reindexProgress?.done]);
 
   // Stabilize callback props with refs to avoid re-fetch loops when parent re-renders
   const onDocsChangedRef = useRef(onDocsChanged);
@@ -798,6 +840,7 @@ export default function KnowledgePanel({
     } catch {
       // Fall back to task IDs until polling resolves filenames.
     }
+    const _reindexStartedAt = Date.now();
     setReindexProgress({
       taskIds,
       total: result.count,
@@ -805,6 +848,7 @@ export default function KnowledgePanel({
       failed: 0,
       tasks: initialTasks,
       done: false,
+      startedAt: _reindexStartedAt,
     });
 
     // Poll task statuses every 2s
@@ -826,14 +870,18 @@ export default function KnowledgePanel({
         const failed = relevantTasks.filter((t: ReindexTask) => t.status === "failed").length;
         const done = completed + failed >= taskIds.length;
 
-        setReindexProgress({
+        setReindexProgress((prev) => ({
           taskIds,
           total: taskIds.length,
           completed,
           failed,
           tasks: relevantTasks,
           done,
-        });
+          // Preserve the wall-clock start stamp set when the operation kicked
+          // off; ``_reindexStartedAt`` only exists in the outer scope of the
+          // ``handleReindex`` invocation and would be undefined here.
+          startedAt: prev?.startedAt ?? Date.now(),
+        }));
 
         if (done) {
           if (reindexPollRef.current) clearInterval(reindexPollRef.current);
@@ -1764,11 +1812,55 @@ export default function KnowledgePanel({
 
 
                         {documents.length === 0 && uploadingFiles.length === 0 ? (
-                          <Tile>
-                            <p style={{ color: "var(--cds-text-secondary)", margin: 0 }}>
-                              No documents indexed yet. Upload files to get started.
-                            </p>
-                          </Tile>
+                          // During an in-flight reindex the active collection is briefly
+                          // empty (its files are mid-migration to the new-hash collection).
+                          // Showing the "No documents indexed yet" empty state in that
+                          // window reads as "I lost my data". Instead, render the files
+                          // currently being processed by the reindex so the user sees
+                          // their documents are being upgraded, not deleted.
+                          reindexProgress && !reindexProgress.done ? (
+                            <Tile>
+                              <Stack gap={3}>
+                                <p style={{ color: "var(--cds-text-secondary)", margin: 0, fontSize: "0.8125rem" }}>
+                                  Your documents are being upgraded for the new profile. They'll
+                                  reappear here as each one finishes.
+                                </p>
+                                <Stack gap={2}>
+                                  {reindexProgress.tasks.map((task) => {
+                                    const fname = task.filename || task.task_id;
+                                    const tagType =
+                                      task.status === "completed" ? "green" :
+                                      task.status === "failed" ? "red" :
+                                      task.status === "running" ? "blue" : "gray";
+                                    const tagLabel =
+                                      task.status === "completed" ? "Ready" :
+                                      task.status === "failed" ? "Failed" :
+                                      task.status === "running" ? "Upgrading…" : "Queued";
+                                    return (
+                                      <Stack
+                                        key={task.task_id}
+                                        orientation="horizontal"
+                                        gap={3}
+                                        style={{ alignItems: "center", opacity: task.status === "pending" ? 0.65 : 1 }}
+                                      >
+                                        <Document size={16} />
+                                        <span style={{ flex: 1, fontSize: "0.875rem", color: "var(--cds-text-primary)" }}>
+                                          {fname}
+                                        </span>
+                                        <Tag size="sm" type={tagType}>{tagLabel}</Tag>
+                                      </Stack>
+                                    );
+                                  })}
+                                </Stack>
+                              </Stack>
+                            </Tile>
+                          ) : (
+                            <Tile>
+                              <p style={{ color: "var(--cds-text-secondary)", margin: 0 }}>
+                                No documents indexed yet. Upload files to get started.
+                              </p>
+                            </Tile>
+                          )
                         ) : (
                           <Stack gap={2}>
                             {documents.filter((doc) => !uploadingFiles.some((f) => (f.backendName || f.name) === doc.filename && f.status !== "error")).map((doc) => (
@@ -2280,11 +2372,20 @@ export default function KnowledgePanel({
                             <Tile>
                               <Stack gap={4}>
                                 <Stack gap={1}>
+                                  {/* Phase-narrative headline replaces the bare "Re-indexing
+                                      documents..." string. During the model-download phase the
+                                      backend hasn't started per-file work yet, so a "0 of N
+                                      processed" subline reads as broken; we lead with what's
+                                      actually happening ("Preparing your new reading model") and
+                                      surface the file-counter only once embedding starts. */}
                                   <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>
-                                    Re-indexing documents...
+                                    {getReindexPhaseHeadline(reindexProgress.tasks)}
                                   </h4>
                                   <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
-                                    {reindexProgress.completed + reindexProgress.failed} of {reindexProgress.total} processed
+                                    {reindexProgress.completed + reindexProgress.failed} of {reindexProgress.total} document
+                                    {reindexProgress.total === 1 ? "" : "s"} ready
+                                    {" · "}
+                                    Running for {formatElapsedSeconds(Math.floor((Date.now() - reindexProgress.startedAt) / 1000))}
                                   </p>
                                 </Stack>
                                 {/* Progress bar */}
