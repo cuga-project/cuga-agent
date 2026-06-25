@@ -180,11 +180,25 @@ class SqliteKnowledgeMetadata(LocalRelationalStore):
         count = 0
         for row in rows:
             task_id = row["task_id"]
-            file_tasks = json.loads(row["file_tasks_json"])
-            for ft in file_tasks.values():
-                if ft["status"] in ("pending", "processing"):
-                    ft["status"] = "failed"
-                    ft["error"] = "interrupted by server restart"
+            try:
+                file_tasks = json.loads(row["file_tasks_json"]) or {}
+            except (TypeError, ValueError):
+                # Corrupted JSON — treat as empty so we still mark the
+                # parent task failed instead of 500-ing the entire engine
+                # startup health probe.
+                file_tasks = {}
+            if isinstance(file_tasks, dict):
+                for ft in file_tasks.values():
+                    # ``status`` is missing on rows written by older
+                    # builds / partial reindex tasks. Default to
+                    # ``pending`` so the recovery still re-marks them
+                    # ``failed`` rather than crashing the whole engine
+                    # health/list endpoints with a KeyError.
+                    if not isinstance(ft, dict):
+                        continue
+                    if ft.get("status", "pending") in ("pending", "processing"):
+                        ft["status"] = "failed"
+                        ft["error"] = ft.get("error") or "interrupted by server restart"
             await self.execute(
                 "UPDATE tasks SET status='failed', file_tasks_json=?, updated_at=? WHERE task_id=?",
                 (json.dumps(file_tasks), now, task_id),
