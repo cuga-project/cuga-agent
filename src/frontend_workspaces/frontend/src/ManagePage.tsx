@@ -2260,6 +2260,16 @@ export function ManagePage() {
           onAdaptationServerError={setAdaptationServerError}
           autoReindexTrigger={autoReindexTrigger}
           onAutoReindexConsumed={() => setAutoReindexTrigger(null)}
+          onAutoReindexComplete={() => {
+            // The engine has finished re-embedding under the current
+            // knowledgeConfig. Refresh the saved-config snapshot so the
+            // "Reindex needed" banner (which compares snapshot vs.
+            // current) clears. Previously the snapshot only updated on
+            // Publish, leaving the banner stuck even after a successful
+            // auto-reindex.
+            setKnowledgeSavedSnapshot({ ...knowledgeConfig });
+            setKnowledgeReindexNeeded(false);
+          }}
           onReindex={async () => {
             setKnowledgeReindexing(true);
             try {

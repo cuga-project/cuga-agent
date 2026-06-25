@@ -374,6 +374,12 @@ interface KnowledgePanelProps {
   // tells the parent we've subscribed and it can clear the trigger.
   autoReindexTrigger?: { taskIds: string[]; total: number; triggerKey: string } | null;
   onAutoReindexConsumed?: () => void;
+  // Fired when an in-flight reindex (auto-triggered OR manual) finishes
+  // without failures. ManagePage uses it to refresh the
+  // ``knowledgeSavedSnapshot`` so the "Reindex needed" banner clears —
+  // without this, the snapshot only updates on Publish, and the banner
+  // persists indefinitely after a successful auto-reindex.
+  onAutoReindexComplete?: () => void;
   // Which tab to open the modal on. Uncontrolled-with-initial-value: the
   // parent seeds the initial index via this prop, but the user owns tab
   // navigation from frame 1. Defaults to "documents" (back-compat with
@@ -409,6 +415,7 @@ export default function KnowledgePanel({
   ragProfiles,
   autoReindexTrigger,
   onAutoReindexConsumed,
+  onAutoReindexComplete,
   initialTab,
   adaptationServerError: adaptationServerErrorProp,
   onAdaptationServerError,
@@ -962,6 +969,12 @@ export default function KnowledgePanel({
           checkHealth();
           if (failed === 0) {
             onToast?.("success", "Re-index complete", `${completed} document(s) re-indexed successfully.`);
+            // Tell the parent to refresh its saved-config snapshot so the
+            // "Reindex needed" banner (driven by snapshot-vs-current diff)
+            // clears. Without this, an auto-reindex that fully succeeded
+            // would still leave the banner up until the next Publish —
+            // confusing because the engine HAS already re-embedded.
+            onAutoReindexComplete?.();
           } else {
             onToast?.("warning", "Re-index finished", `${completed} succeeded, ${failed} failed.`);
           }
