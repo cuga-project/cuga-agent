@@ -3319,10 +3319,25 @@ class KnowledgeEngine:
         old_dim = self._default_embedding_dim
         old_pdf_mode = self._config.docling_pdf_mode
         old_layout_engine = self._config.docling_layout_engine
+        old_qt = getattr(self._config, "search_query_transform", "off")
 
         for f in dc_fields(KnowledgeConfig):
             if f.name != "persist_dir":
                 setattr(self._config, f.name, getattr(prepared.validated, f.name))
+
+        # Confirm a query-transform toggle at SWITCH time (it otherwise only logs
+        # per knowledge search). Search-only change — no model load, no reindex.
+        new_qt = getattr(self._config, "search_query_transform", "off")
+        if new_qt != old_qt:
+            if new_qt == "off":
+                logger.info("cuga.knowledge.query_transform disabled (was {})", old_qt)
+            else:
+                logger.info(
+                    "cuga.knowledge.query_transform enabled mode={} (fires per knowledge search; "
+                    "needs an injected chat model; rerank={})",
+                    new_qt,
+                    getattr(self._config, "rerank_enabled", False),
+                )
 
         dim_changed = False
         if prepared.new_embeddings:
