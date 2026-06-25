@@ -500,7 +500,11 @@ async def lifespan(app: FastAPI):
             return  # Already running
 
         app_state.set_subsystem_status("knowledge", "starting", "Initializing knowledge engine")
-        app_state.knowledge_engine = KnowledgeEngine(kb_config)
+        from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+        # Inject cuga's LLM for optional query transformation (multi_query / HyDE).
+        # Lazy + inert unless a profile enables search_query_transform.
+        app_state.knowledge_engine = KnowledgeEngine(kb_config, chat_generator=CugaChatGenerator())
 
         # Initialize session provider for ownership enforcement
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
