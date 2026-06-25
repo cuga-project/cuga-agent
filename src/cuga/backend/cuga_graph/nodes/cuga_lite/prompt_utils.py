@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 from langchain_core.tools import StructuredTool
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import AppDefinition
 from cuga.backend.llm.utils.helpers import create_chat_prompt_from_templates
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
 from cuga.backend.cuga_graph.nodes.cuga_lite.model_runtime_profile import runtime_defaults_for_model
 
 
@@ -363,12 +364,11 @@ class PromptUtils:
                         # Fallback for other types
                         output_schema = {"value": raw_output_schema} if raw_output_schema is not None else {}
 
-            # Use model_dump with by_alias=True to ensure proper field names
             enriched_tool = Tool(
                 name=api_detail.name,
-                input=input_schema,  # Use alias name
+                input=VariableUtils.sanitize_value(input_schema),
                 reasoning=api_detail.reasoning,
-                output_schema=output_schema,
+                output_schema=VariableUtils.sanitize_value(output_schema),
                 params_doc=params_doc,
                 response_doc=response_doc,
             )

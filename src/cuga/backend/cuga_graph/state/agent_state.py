@@ -153,6 +153,10 @@ class VariablesManager(object):
         Returns:
             str: The name of the variable that was created or updated
         """
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
+        value = VariableUtils.sanitize_value(value)
+
         is_new = True
         original_name = name
 
@@ -825,6 +829,10 @@ class StateVariablesManager(VariablesManager):
 
     def add_variable(self, value: Any, name: Optional[str] = None, description: Optional[str] = None) -> str:
         """Add variable and store in state."""
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.variable_utils import VariableUtils
+
+        value = VariableUtils.sanitize_value(value)
+
         if name is None:
             self.variable_counter += 1
             name = f"variable_{self.variable_counter}"
