@@ -132,21 +132,16 @@ function getReindexStatusLabel(status: ReindexTask["status"]): string {
 }
 
 // Narrative phase headline for the reindex tile. Replaces the bare
-// "Re-indexing documents..." string with a description of what's
-// actually happening RIGHT NOW so a 90-second model download stops
-// reading as "stuck on 0 of 1". Driven by the per-task ``stage`` field
-// the engine already emits (parsed / embed / insert / insert_start);
-// when stage is unknown we infer "preparing" from "all tasks pending".
+// "Re-indexing documents..." string with what's actually happening
+// RIGHT NOW so a 90-second model download stops reading as "stuck on
+// 0 of 1". Driven by the per-task ``stage`` field the engine emits
+// (parsed / embed / insert / insert_start); no stage yet = still
+// preparing. ``parsed`` / ``embed`` and the fallback all collapse to
+// "Re-reading" — only the insert phase changes the headline.
 function getReindexPhaseHeadline(tasks: ReindexTask[]): string {
-  if (tasks.length === 0) return "Preparing your new reading model";
-  const stages = tasks
-    .map((t) => Object.values(t.file_tasks ?? {})[0]?.stage)
-    .filter((s): s is string => typeof s === "string");
-  const allPending = tasks.every((t) => t.status === "pending");
-  if (allPending && stages.length === 0) return "Preparing your new reading model";
-  if (stages.some((s) => s === "embed")) return "Re-reading your documents";
+  const stages = tasks.flatMap((t) => Object.values(t.file_tasks ?? {}).map((ft) => ft.stage)).filter(Boolean);
+  if (stages.length === 0) return "Preparing your new reading model";
   if (stages.some((s) => s === "insert" || s === "insert_start")) return "Filing everything in its new place";
-  if (stages.some((s) => s === "parsed")) return "Re-reading your documents";
   return "Re-reading your documents";
 }
 
@@ -1828,14 +1823,13 @@ export default function KnowledgePanel({
                                 <Stack gap={2}>
                                   {reindexProgress.tasks.map((task) => {
                                     const fname = task.filename || task.task_id;
-                                    const tagType =
-                                      task.status === "completed" ? "green" :
-                                      task.status === "failed" ? "red" :
-                                      task.status === "running" ? "blue" : "gray";
-                                    const tagLabel =
-                                      task.status === "completed" ? "Ready" :
-                                      task.status === "failed" ? "Failed" :
-                                      task.status === "running" ? "Upgrading…" : "Queued";
+                                    const TAG = {
+                                      completed: ["green", "Ready"],
+                                      failed: ["red", "Failed"],
+                                      running: ["blue", "Upgrading…"],
+                                      pending: ["gray", "Queued"],
+                                    } as const;
+                                    const [tagType, tagLabel] = TAG[task.status] ?? TAG.pending;
                                     return (
                                       <Stack
                                         key={task.task_id}
