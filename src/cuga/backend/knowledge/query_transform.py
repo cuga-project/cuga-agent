@@ -25,7 +25,7 @@ import collections
 import logging
 import re
 from dataclasses import dataclass, field
-from typing import Protocol, runtime_checkable
+from typing import Protocol
 
 logger = logging.getLogger(__name__)
 
@@ -34,7 +34,6 @@ _DEFAULT_TIMEOUT_S = 2.0
 _CACHE_MAX = 512
 
 
-@runtime_checkable
 class ChatGenerator(Protocol):
     """Minimal LLM interface the host adapts its own chat model to (one call → one completion)."""
 

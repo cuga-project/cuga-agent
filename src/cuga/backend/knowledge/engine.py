@@ -1602,15 +1602,6 @@ class KnowledgeEngine:
                 f"dim={self._default_embedding_dim}{extra}"
             )
 
-    def set_chat_generator(self, chat_generator: Any) -> None:
-        """Inject (or replace) the host chat model used for query transformation.
-
-        Late-binding setter — cuga builds the engine before its LLM is ready, so
-        the host calls this once the model exists. Pass anything implementing
-        ``query_transform.ChatGenerator`` (async ``generate(prompt) -> str``).
-        """
-        self._chat_generator = chat_generator
-
     async def warmup(self) -> dict[str, Any]:
         """Preload heavyweight resources so callers can gate on readiness.
 
@@ -2633,7 +2624,9 @@ class KnowledgeEngine:
                     f"Glossary expanded query: {original_query!r} -> {query!r} (matches: {match_log})"
                 )
 
-        def _do_dense_search(k: int):
+        # ``q`` defaults to the (glossary-expanded) query; the query-transform
+        # fan-out and the empty-guard retry pass an explicit query string.
+        def _do_dense_search(k: int, q: str = query):
             # Hold the lock only long enough to fetch the adapter reference.
             # Adapters are safe to call concurrently for reads (sqlite-vec
             # uses per-call connections; pgvector wraps an asyncpg pool).
@@ -2642,9 +2635,9 @@ class KnowledgeEngine:
             # p50 latency on multi-scope queries.
             with self._vector_store_lock:
                 adapter = self._vector_stores[collection]
-            return adapter.search(query, k=k)
+            return adapter.search(q, k=k)
 
-        def _do_lexical_search(k: int):
+        def _do_lexical_search(k: int, q: str = query):
             with self._vector_store_lock:
                 adapter = self._vector_stores[collection]
             # Adapters without a lexical index inherit the base class's
@@ -2653,19 +2646,7 @@ class KnowledgeEngine:
             # FTS table hasn't been created yet for a pre-upgrade
             # collection, or (c) the query has no usable tokens after
             # FTS5 sanitization.
-            return adapter.search_lexical(query, k=k)
-
-        # Same as the two closures above but parameterized by query string — used
-        # by the query-transform fan-out to retrieve each variant leg.
-        def _dense_q(qv: str, k: int):
-            with self._vector_store_lock:
-                adapter = self._vector_stores[collection]
-            return adapter.search(qv, k=k)
-
-        def _lexical_q(qv: str, k: int):
-            with self._vector_store_lock:
-                adapter = self._vector_stores[collection]
-            return adapter.search_lexical(qv, k=k)
+            return adapter.search_lexical(q, k=k)
 
         # ``below_threshold_counter`` is a one-element list so the closure
         # can mutate it (avoid `nonlocal` since this function is itself a
@@ -2752,12 +2733,7 @@ class KnowledgeEngine:
                 },
             )
 
-            def _do_dense_search_orig(k: int):
-                with self._vector_store_lock:
-                    adapter = self._vector_stores[collection]
-                return adapter.search(original_query, k=k)
-
-            dense_scored = await asyncio.to_thread(_do_dense_search_orig, first_k)
+            dense_scored = await asyncio.to_thread(_do_dense_search, first_k, original_query)
 
         if dense_scored:
             logger.debug(
@@ -2803,9 +2779,11 @@ class KnowledgeEngine:
             except Exception:
                 _variants = None
             if _variants is not None and _variants.active:
-                _legs = [asyncio.to_thread(_dense_q, qv, first_k) for qv in _variants.dense_extra]
+                _legs = [asyncio.to_thread(_do_dense_search, first_k, qv) for qv in _variants.dense_extra]
                 if _hybrid_on:
-                    _legs += [asyncio.to_thread(_lexical_q, qv, first_k) for qv in _variants.lexical_extra]
+                    _legs += [
+                        asyncio.to_thread(_do_lexical_search, first_k, qv) for qv in _variants.lexical_extra
+                    ]
                 _scored_legs = await asyncio.gather(*_legs, return_exceptions=True)
                 _variant_lists = [
                     _materialize(sc, set(), apply_score_threshold=False)

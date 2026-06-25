@@ -581,8 +581,8 @@ class KnowledgeConfig:
     # Query transformation (LLM-assisted). Off by default — it adds a pre-retrieval
     # LLM round-trip and its gain is corpus-conditional, so it is eval-gated and
     # pre-tuned per profile by the cuga team, never a client-facing switch. Needs a
-    # host-injected chat model (KnowledgeEngine.set_chat_generator); inert without
-    # one. Search-only; NOT in vector_config_hash.
+    # host-injected chat model (KnowledgeEngine(config, chat_generator=...)); inert
+    # without one. Search-only; NOT in vector_config_hash.
     #   "off"          — plain query only (default)
     #   "multi_query"  — LLM rewrites; original + (n-1) variants, RRF-fused
     #   "hyde"         — original query (dense+lexical) PLUS a hypothetical doc as
