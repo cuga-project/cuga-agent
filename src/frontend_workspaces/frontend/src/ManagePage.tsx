@@ -188,6 +188,17 @@ const POLICY_TYPE_LABELS: Record<string, string> = {
   output_formatter: "Output formatters",
 };
 
+// AbortController + fetch rejects with a DOMException whose ``name`` is
+// "AbortError". The intentional-cancel path swallows this silently;
+// every other error type still surfaces normally. Centralised so the 5
+// autosave families can rely on the same predicate.
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  // Node/jsdom polyfill paths can throw a plain Error with name set.
+  if (err instanceof Error && err.name === "AbortError") return true;
+  return false;
+}
+
 function policiesSummary(policies: unknown[]): { total: number; byType: Record<string, number> } {
   const byType: Record<string, number> = {};
   for (const p of policies) {
@@ -317,8 +328,35 @@ export function ManagePage() {
   const toolsSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const llmBlurSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const specialInstructionsSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per-autosave-family AbortControllers. When a new config change
+  // arrives we ``.abort()`` the prior controller so the in-flight
+  // PATCH (which is sending a NOW-STALE payload) is cancelled
+  // client-side. Side-effects from a late-arriving response are
+  // gated on ``signal.aborted`` so they can't poison state we set
+  // for the newer config. See CLIENT_CANCELLATION_CONTRACT.md.
+  const knowledgeAbortRef = useRef<AbortController | null>(null);
+  const toolsAbortRef = useRef<AbortController | null>(null);
+  const llmAbortRef = useRef<AbortController | null>(null);
+  const agentAbortRef = useRef<AbortController | null>(null);
+  const specialInstructionsAbortRef = useRef<AbortController | null>(null);
   const llmConfigRef = useRef(llmConfig);
   llmConfigRef.current = llmConfig;
+
+  // Abort all in-flight autosave PATCHes on unmount so the browser
+  // can release the connection slots immediately. Without this, a
+  // hung PATCH (server slow / network blip) would tie up a slot
+  // until the request naturally fails. The native fetch is aborted
+  // on page unload too, but explicit cleanup is the right pattern
+  // for SPAs that swap routes without a full document unload.
+  useEffect(() => {
+    return () => {
+      knowledgeAbortRef.current?.abort();
+      toolsAbortRef.current?.abort();
+      llmAbortRef.current?.abort();
+      agentAbortRef.current?.abort();
+      specialInstructionsAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     api.getAgentContext()
@@ -839,8 +877,15 @@ export function ManagePage() {
 
   const saveLlmDraft = useCallback(async () => {
     setDraftSaving(true);
+    // Cancel any prior in-flight LLM PATCH (the user might blur from
+    // one input straight into another while the first save is still
+    // on the wire). Side-effects below are guarded by signal.aborted.
+    llmAbortRef.current?.abort();
+    const ac = new AbortController();
+    llmAbortRef.current = ac;
     try {
-      const res = await api.patchManageConfigDraftLlm(llmConfigRef.current, effectiveAgentId);
+      const res = await api.patchManageConfigDraftLlm(llmConfigRef.current, effectiveAgentId, ac.signal);
+      if (ac.signal.aborted) return;
       setDraftSaving(false);
       if (res.ok) {
         setCurrentVersion("draft");
@@ -849,6 +894,7 @@ export function ManagePage() {
         addToast("error", "Draft Save Failed", `Failed to save LLM (${res.status} ${res.statusText})`);
       }
     } catch (error) {
+      if (isAbortError(error)) return; // superseded by newer blur/save — silent
       setDraftSaving(false);
       addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
     }
@@ -865,8 +911,14 @@ export function ManagePage() {
   const saveSpecialInstructionsDraft = useCallback(
     async (value: string, showToast = false) => {
       if (showToast) setDraftSaving(true);
+      // Cancel any prior in-flight special-instructions PATCH (the
+      // user might keep typing — each keystroke schedules a save).
+      specialInstructionsAbortRef.current?.abort();
+      const ac = new AbortController();
+      specialInstructionsAbortRef.current = ac;
       try {
-        const res = await api.patchManageConfigDraftSpecialInstructions(value, effectiveAgentId);
+        const res = await api.patchManageConfigDraftSpecialInstructions(value, effectiveAgentId, ac.signal);
+        if (ac.signal.aborted) return;
         if (showToast) setDraftSaving(false);
         if (res.ok) {
           setCurrentVersion("draft");
@@ -875,6 +927,7 @@ export function ManagePage() {
           addToast("error", "Draft Save Failed", `Failed to save (${res.status} ${res.statusText})`);
         }
       } catch (err) {
+        if (isAbortError(err)) return; // superseded — silent
         if (showToast) {
           setDraftSaving(false);
           addToast("error", "Draft Save Failed", err instanceof Error ? err.message : "Network error");
@@ -897,11 +950,17 @@ export function ManagePage() {
 
   const saveAgentDraft = useCallback(async () => {
     setDraftSaving(true);
+    // Cancel any prior in-flight agent-meta PATCH.
+    agentAbortRef.current?.abort();
+    const ac = new AbortController();
+    agentAbortRef.current = ac;
     try {
       const res = await api.patchManageConfigDraftAgent(
         { name: agentName.trim(), description: agentDescription.trim() || undefined },
-        effectiveAgentId
+        effectiveAgentId,
+        ac.signal,
       );
+      if (ac.signal.aborted) return;
       setDraftSaving(false);
       if (res.ok) {
         setCurrentVersion("draft");
@@ -910,6 +969,7 @@ export function ManagePage() {
         addToast("error", "Draft Save Failed", `Failed to save agent (${res.status} ${res.statusText})`);
       }
     } catch (error) {
+      if (isAbortError(error)) return; // superseded — silent
       setDraftSaving(false);
       addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
     }
@@ -917,16 +977,26 @@ export function ManagePage() {
 
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
+    // Abort prior tools-autosave + arm a new controller. Mirrors the
+    // knowledge autosave pattern (see CLIENT_CANCELLATION_CONTRACT.md);
+    // the tools side-effects (toast, draftSaving spinner) are gated on
+    // ``ac.signal.aborted`` so a stale response can't double-toast.
+    toolsAbortRef.current?.abort();
+    const ac = new AbortController();
+    toolsAbortRef.current = ac;
     const t = setTimeout(() => {
       toolsSaveTimeoutRef.current = null;
+      if (toolsAbortRef.current !== ac) return;
       (async () => {
         setDraftSaving(true);
         try {
-          const res = await api.patchManageConfigDraftTools(tools, effectiveAgentId);
+          const res = await api.patchManageConfigDraftTools(tools, effectiveAgentId, ac.signal);
+          if (ac.signal.aborted) return;
           setDraftSaving(false);
           if (res.ok) {
             setCurrentVersion("draft");
             const data = await res.json().catch(() => ({}));
+            if (ac.signal.aborted) return;
             if (data.status === "partial" && data.tool_errors) {
               Object.entries(data.tool_errors as Record<string, { error?: string; message?: string }>).forEach(
                 ([toolName, err]) => addToast("warning", `Tool: ${toolName}`, err?.error || err?.message || "Unknown error")
@@ -938,6 +1008,7 @@ export function ManagePage() {
             addToast("error", "Draft Save Failed", `Failed to save tools (${res.status} ${res.statusText})`);
           }
         } catch (error) {
+          if (isAbortError(error)) return; // superseded by newer autosave — silent
           setDraftSaving(false);
           addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
         }
@@ -969,11 +1040,39 @@ export function ManagePage() {
   // structured ClientAdaptationError.to_dict() body — push it into the
   // KnowledgePanel via the controlled-state contract so the operator
   // sees what's wrong instead of a silent no-save (Sami #60).
+  //
+  // Race fix (Slice A): when the user picks a new profile while a prior
+  // PATCH is still in flight, the prior controller is .abort()-ed and
+  // its response is dropped via the ``signal.aborted`` guards below.
+  // Server-side state still mutates for the aborted request (the
+  // server doesn't honor client disconnects today) — that's Slice B's
+  // job. Here we just stop the UI from rendering TWO reindex tiles for
+  // the same user action. See CLIENT_CANCELLATION_CONTRACT.md.
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
+
+    // Cancel any prior in-flight PATCH for this family. We do this
+    // OUTSIDE the setTimeout so the abort fires immediately on the
+    // user's next pick — not after another 800 ms wait. Helps the
+    // server's request budget too.
+    knowledgeAbortRef.current?.abort();
+    const ac = new AbortController();
+    knowledgeAbortRef.current = ac;
+
     const t = setTimeout(async () => {
+      // Defensive: if a NEWER effect run replaced the ref mid-debounce
+      // (clearTimeout in cleanup should have caught us, but the timer
+      // can race the cleanup in rare microtask interleavings), skip.
+      if (knowledgeAbortRef.current !== ac) return;
       try {
-        const res = await api.patchManageConfigDraftKnowledge(knowledgeConfig, effectiveAgentId);
+        const res = await api.patchManageConfigDraftKnowledge(
+          knowledgeConfig,
+          effectiveAgentId,
+          ac.signal,
+        );
+        // Guard 1: between request and response, a newer autosave may
+        // have aborted us. Don't apply this response's side-effects.
+        if (ac.signal.aborted) return;
         if (res.ok) {
           setCurrentVersion("draft");
           setAdaptationServerError(null);
@@ -986,6 +1085,8 @@ export function ManagePage() {
           // re-render with the same payload doesn't re-arm.
           try {
             const body = await res.clone().json();
+            // Guard 2: body read is async too; recheck after the await.
+            if (ac.signal.aborted) return;
             const collections = body?.auto_reindex?.collections ?? [];
             const taskIds: string[] = collections
               .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
@@ -1007,8 +1108,13 @@ export function ManagePage() {
             // wasn't in the response; the manual Reindex path still works.
           }
         } else if (res.status === 422) {
+          // Guard 3: 422 carries an adaptation-server-error blob.
+          // Don't surface the validation error for a config the user
+          // has already moved past.
+          if (ac.signal.aborted) return;
           try {
             const body = await res.json();
+            if (ac.signal.aborted) return;
             const err = (body && (body.detail ?? body)) as Partial<AdaptationServerErrorShape> | null;
             if (err && typeof err.error === "string" && typeof err.message === "string") {
               setAdaptationServerError(err as AdaptationServerErrorShape);
@@ -1017,11 +1123,25 @@ export function ManagePage() {
             // 422 without a JSON body — leave the prior error in place.
           }
         }
-      } catch {
-        // network failure — silent (a transient flake clears on the next change)
+      } catch (err) {
+        // AbortError is expected when a newer autosave superseded us.
+        // Stay silent — the next effect run will issue a fresh PATCH.
+        if (isAbortError(err)) return;
+        // Network failure (real) — silent (transient flake clears on
+        // the next change). NOT silenced via a blanket catch above
+        // because we want AbortError to be the ONLY no-op; any other
+        // error type would surface here if we wanted to.
       }
     }, 800);
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      // Do NOT .abort() in cleanup. The cleanup fires before EVERY
+      // effect re-run, and by the time it runs we've already moved to
+      // a new controller via the body's ``ref.current = ac`` line at
+      // the top. Aborting in cleanup would race with the new effect.
+      // The next effect run's ``knowledgeAbortRef.current?.abort()``
+      // at the top is the correct cancellation point.
+    };
   }, [knowledgeConfig, effectiveAgentId]);
 
   useEffect(() => {

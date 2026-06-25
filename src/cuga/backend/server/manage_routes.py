@@ -1241,6 +1241,19 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
     """
     if agent_id is None:
         agent_id = "cuga-default"
+    # Slice A telemetry — the UI now aborts an in-flight knowledge PATCH
+    # when the user picks another profile within the 800ms debounce
+    # window (see CLIENT_CANCELLATION_CONTRACT.md). The request still
+    # arrives here intact, but logging the disconnect at DEBUG level
+    # lets SREs correlate "duplicate apply" patterns with client-side
+    # cancellation. Slice B (engine generation counter) will
+    # short-circuit the actual apply work when this returns True.
+    if await request.is_disconnected():
+        logger.debug(
+            "patch_draft_knowledge: client disconnected before handler ran "
+            "(agent_id=%s) — Slice B will short-circuit apply work in a follow-up.",
+            agent_id,
+        )
     try:
         from cuga.backend.server.config_store import _parse_agent_id
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url

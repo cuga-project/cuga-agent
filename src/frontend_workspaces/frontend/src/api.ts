@@ -176,42 +176,64 @@ export async function postManageConfigDraft(config: unknown, agentId?: string): 
   });
 }
 
+// Autosave PATCH helpers — each accepts an optional ``signal`` so the
+// caller can cancel an in-flight request when a newer config arrives
+// (the rapid-profile-pick race). ``apiFetch`` spreads ``init`` into
+// ``fetch``'s second arg, so passing ``signal`` here propagates
+// natively. See CLIENT_CANCELLATION_CONTRACT.md for the contract.
 export async function patchManageConfigDraftAgent(
   agent: { name?: string; description?: string },
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/agent${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ agent }),
+    signal,
   });
 }
 
-export async function patchManageConfigDraftLlm(llm: unknown, agentId?: string): Promise<Response> {
+export async function patchManageConfigDraftLlm(
+  llm: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/llm${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ llm }),
+    signal,
   });
 }
 
-export async function patchManageConfigDraftTools(tools: unknown, agentId?: string): Promise<Response> {
+export async function patchManageConfigDraftTools(
+  tools: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/tools${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ tools }),
+    signal,
   });
 }
 
-export async function patchManageConfigDraftPolicies(policies: unknown, agentId?: string): Promise<Response> {
+export async function patchManageConfigDraftPolicies(
+  policies: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/policies${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ policies }),
+    signal,
   });
 }
 
@@ -226,25 +248,29 @@ export async function postManageConfig(config: unknown, agentId?: string): Promi
 
 export async function patchManageConfigDraftSpecialInstructions(
   specialInstructions: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/special_instructions${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ special_instructions: specialInstructions }),
+    signal,
   });
 }
 
 export async function patchManageConfigDraftKnowledge(
   knowledge: unknown,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/knowledge${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ knowledge }),
+    signal,
   });
 }
 
