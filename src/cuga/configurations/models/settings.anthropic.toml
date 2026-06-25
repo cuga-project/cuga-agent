@@ -1,0 +1,69 @@
+[agent.task_decomposition.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.planner.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.chat.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.shortlister.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.plan_controller.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.final_answer.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.code.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.code_planner.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.qa.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[agent.action.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 16000
+
+[memory.mem0.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 1000
+
+[memory.milvus.step_processing.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 1000
+
+[memory.milvus.fact_extraction.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 1000
+
+[memory.tips_extractor.model]
+platform = "anthropic"
+temperature = 1.0
+max_tokens = 5000
