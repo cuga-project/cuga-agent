@@ -2807,16 +2807,16 @@ class KnowledgeEngine:
                 if _variant_lists:
                     _raw_candidate_count += sum(len(vl) for vl in _variant_lists)
                     results = _rrf_fuse_lists([results, *_variant_lists])
+                    # loguru: format inline (extra={} is silently dropped by loguru),
+                    # so this line is actually visible/grep-able in the console.
                     logger.info(
-                        "cuga.knowledge.query_transform_applied",
-                        extra={
-                            "cuga_knowledge_qt_mode": _qt_mode,
-                            "cuga_knowledge_qt_dense_legs": len(_variants.dense_extra),
-                            "cuga_knowledge_qt_lexical_legs": (
-                                len(_variants.lexical_extra) if _hybrid_on else 0
-                            ),
-                            "cuga_knowledge_qt_fused_count": len(results),
-                        },
+                        "cuga.knowledge.query_transform_applied mode={} dense_legs={} "
+                        "lexical_legs={} fused={} query={!r}",
+                        _qt_mode,
+                        len(_variants.dense_extra),
+                        len(_variants.lexical_extra) if _hybrid_on else 0,
+                        len(results),
+                        original_query[:60],
                     )
 
         # Junk filter applies to the unified post-fusion list.
