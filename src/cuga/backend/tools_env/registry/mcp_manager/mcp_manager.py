@@ -29,12 +29,19 @@ from cuga.backend.tools_env.registry.mcp_manager.adapter import (
 )
 import threading
 from collections import defaultdict
-from urllib.parse import urlparse
+from urllib.parse import parse_qsl, quote, urlencode, urlparse
 from loguru import logger
 from cuga.backend.tools_env.registry.mcp_manager.openapi_parser_v0 import OpenAPITransformer
 from cuga.backend.tools_env.registry.mcp_manager.response_schema import extract_response_schema
 import yaml
 from cuga.backend.utils.consts import ServiceType, LOCAL_ORCHESTRATE_URL, LOCAL_TRM_URL
+
+
+def _merge_auth_query_params(base_url: str, auth_params: dict[str, str]) -> str:
+    parsed = urlparse(base_url)
+    merged = dict(parse_qsl(parsed.query, keep_blank_values=True))
+    merged.update(auth_params)
+    return parsed._replace(query=urlencode(merged, quote_via=quote)).geturl()
 
 
 class MCPManager:
@@ -975,11 +982,14 @@ class MCPManager:
 
             # Build headers from auth config if available
             headers = {}
+            url = config.url
             if config.auth:
                 query_params = {}
                 apply_authentication(config.auth, headers, query_params)
+                if query_params:
+                    url = _merge_auth_query_params(config.url, query_params)
 
-            return SSETransport(url=config.url, headers=headers if headers else None)
+            return SSETransport(url=url, headers=headers if headers else None)
 
         elif transport_type == 'http':
             if not StreamableHttpTransport:
@@ -993,11 +1003,14 @@ class MCPManager:
 
             # Build headers from auth config if available
             headers = {}
+            url = config.url
             if config.auth:
                 query_params = {}
                 apply_authentication(config.auth, headers, query_params)
+                if query_params:
+                    url = _merge_auth_query_params(config.url, query_params)
 
-            return StreamableHttpTransport(url=config.url, headers=headers if headers else None)
+            return StreamableHttpTransport(url=url, headers=headers if headers else None)
 
         else:
             raise Exception(f"Unknown transport type: {transport_type}")

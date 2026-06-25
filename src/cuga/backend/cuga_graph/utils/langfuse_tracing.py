@@ -93,47 +93,47 @@ def _trace_scoped_handler_class() -> type | None:
     base_cls = base_classes[0]
 
     class TraceScopedLangfuseCallbackHandler(base_cls):  # type: ignore[misc,valid-type]
-        def __on_llm_action(
-            self,
-            serialized: Any,
-            run_id: Any,
-            prompts: list[Any],
-            parent_run_id: Any = None,
-            tags: Any = None,
-            metadata: Any = None,
-            **kwargs: Any,
-        ) -> None:
+        # NOTE: the real handler dispatches on_llm_start/on_chat_model_start to a
+        # name-mangled private method (``__on_llm_action``). Overriding that name
+        # here would itself be mangled to this class's own name and never get
+        # called by the base class, so we override the public entry points
+        # instead and temporarily swap ``_trace_context`` around the super() call.
+        def _scoped_trace_context(self, parent_run_id: Any) -> dict[str, str] | None:
             trace_ctx = getattr(self, "_trace_context", None)
             if trace_ctx is None:
                 tid = _langfuse_trace_id.get()
                 if tid:
                     trace_ctx = _trace_context_for_id(tid)
             parent_missing = parent_run_id is None or parent_run_id not in getattr(self, "_runs", {})
-            if trace_ctx is not None and parent_missing:
-                original = self._trace_context
-                self._trace_context = trace_ctx
-                try:
-                    super().__on_llm_action(
-                        serialized,
-                        run_id,
-                        prompts,
-                        parent_run_id=parent_run_id,
-                        tags=tags,
-                        metadata=metadata,
-                        **kwargs,
-                    )
-                finally:
-                    self._trace_context = original
-                return
-            super().__on_llm_action(
-                serialized,
-                run_id,
-                prompts,
-                parent_run_id=parent_run_id,
-                tags=tags,
-                metadata=metadata,
-                **kwargs,
-            )
+            return trace_ctx if (trace_ctx is not None and parent_missing) else None
+
+        def on_llm_start(self, serialized: Any, prompts: Any, *, parent_run_id: Any = None, **kwargs: Any):
+            scoped = self._scoped_trace_context(parent_run_id)
+            if scoped is None:
+                return super().on_llm_start(serialized, prompts, parent_run_id=parent_run_id, **kwargs)
+            original = self._trace_context
+            self._trace_context = scoped
+            try:
+                return super().on_llm_start(serialized, prompts, parent_run_id=parent_run_id, **kwargs)
+            finally:
+                self._trace_context = original
+
+        def on_chat_model_start(
+            self, serialized: Any, messages: Any, *, parent_run_id: Any = None, **kwargs: Any
+        ):
+            scoped = self._scoped_trace_context(parent_run_id)
+            if scoped is None:
+                return super().on_chat_model_start(
+                    serialized, messages, parent_run_id=parent_run_id, **kwargs
+                )
+            original = self._trace_context
+            self._trace_context = scoped
+            try:
+                return super().on_chat_model_start(
+                    serialized, messages, parent_run_id=parent_run_id, **kwargs
+                )
+            finally:
+                self._trace_context = original
 
     TraceScopedLangfuseCallbackHandler.__name__ = "TraceScopedLangfuseCallbackHandler"
     _TRACE_SCOPED_HANDLER_CLASS = TraceScopedLangfuseCallbackHandler
@@ -168,9 +168,8 @@ def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
         return
     _langgraph_run_config.set(config)
     configurable = config.get("configurable") or {}
-    trace_id = configurable.get("langfuse_trace_id")
-    if trace_id:
-        set_langfuse_trace_id(trace_id)
+    trace_id = configurable.get("langfuse_trace_id") or None
+    set_langfuse_trace_id(trace_id)
     callbacks = collect_langfuse_callbacks_from_config(config)
     if callbacks:
         _remember_primary_handler(callbacks)
@@ -179,6 +178,8 @@ def sync_langfuse_callbacks_from_config(config: Any = None) -> None:
         if handler:
             _langfuse_primary_handler.set(handler)
             callbacks = [handler]
+    else:
+        _langfuse_primary_handler.set(None)
     set_langfuse_callbacks(callbacks or None)
 
 

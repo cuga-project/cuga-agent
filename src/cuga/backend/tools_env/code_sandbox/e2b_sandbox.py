@@ -676,6 +676,12 @@ async def call_api(app_name, api_name, args=None):
 """
 
         # Build complete code with E2B-compatible structure
+        # int() cast: the value is substituted into a code template sent to
+        # the e2b sandbox. A non-int (e.g. a misconfigured env var coerced
+        # to string) would inject syntactically broken Python and surface as
+        # a NameError at sandbox runtime — fail early with a clear TypeError
+        # here instead.
+        sandbox_timeout = int(settings.advanced_features.sandbox_execution_timeout)
         complete_code = f"""
 {call_api_helper}
 
@@ -689,7 +695,7 @@ async def call_api(app_name, api_name, args=None):
 
 # Execute and capture locals
 async def main():
-    _result_locals = await asyncio.wait_for(_async_main(), timeout=30)
+    _result_locals = await asyncio.wait_for(_async_main(), timeout={sandbox_timeout})
     print("!!!===!!!")
     print(_result_locals)
 

@@ -19,11 +19,14 @@ constraints = [
     { name = "arize-phoenix", specifier = ">=14.3.1" },
     { name = "authlib", specifier = ">=1.6.9" },
     { name = "h11", specifier = ">=0.16.0" },
+    { name = "mako", specifier = ">=1.3.12" },
     { name = "orjson", specifier = ">=3.11.6" },
     { name = "pillow", specifier = ">=12.2.0" },
     { name = "protobuf", specifier = ">=5.29.6" },
     { name = "pyasn1", specifier = ">=0.6.3" },
+    { name = "python-multipart", specifier = ">=0.0.27" },
     { name = "setuptools", specifier = "<70" },
+    { name = "starlette", specifier = ">=1.3.1" },
     { name = "strawberry-graphql", specifier = ">=0.312.3" },
     { name = "urllib3", specifier = ">=2.6.3" },
 ]
@@ -1122,7 +1125,7 @@ requires-dist = [
     { name = "httpx" },
     { name = "hvac", specifier = ">=2.0.0" },
     { name = "langchain", specifier = ">=1.0" },
-    { name = "langchain-core", specifier = ">=1.2.22" },
+    { name = "langchain-core", specifier = ">=1.3.3" },
     { name = "langchain-docling", specifier = ">=2.0,<3.0" },
     { name = "langchain-groq", specifier = ">=0.3.8" },
     { name = "langchain-ibm", specifier = ">=0.3.9" },
@@ -1133,7 +1136,7 @@ requires-dist = [
     { name = "langchain-text-splitters", specifier = ">=1.0,<2.0" },
     { name = "langfuse" },
     { name = "langgraph" },
-    { name = "litellm", specifier = ">=1.83.14" },
+    { name = "litellm", specifier = ">=1.84.0" },
     { name = "loguru" },
     { name = "markdownify" },
     { name = "mcp", extras = ["cli"], specifier = ">=1.23.0" },
@@ -1259,22 +1262,22 @@ wheels = [
 
 [[package]]
 name = "datamodel-code-generator"
-version = "0.65.0"
+version = "0.59.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "argcomplete" },
-    { name = "black", marker = "sys_platform != 'emscripten'" },
+    { name = "black" },
     { name = "genson" },
     { name = "inflect" },
-    { name = "isort", marker = "sys_platform != 'emscripten'" },
+    { name = "isort" },
     { name = "jinja2" },
     { name = "pydantic" },
     { name = "pyyaml" },
     { name = "tomli", marker = "python_full_version < '3.11'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/aa/28/02b8ce032f6cd68d530519e0c3570616c7ba28aad377cb19059001f5ef3b/datamodel_code_generator-0.65.0.tar.gz", hash = "sha256:ccad880007104f5cc462d9f880183fb1ed54f4d8106a3a2ad578861d16548432", size = 1393169 }
+sdist = { url = "https://files.pythonhosted.org/packages/8d/50/21488efdb515afc04039e19d876ee668d85a5c9590a3a4bb25b27f2b99c0/datamodel_code_generator-0.59.0.tar.gz", hash = "sha256:054e4d5568c27db5a993f6b3e1d34af53bd1f6d1b6c18b7166908b0f3dc04bd4", size = 1098070 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/99/dd/8e7254f0117a7599622f0509741c1a051946442bf6bc2135df645b6e5d8f/datamodel_code_generator-0.65.0-py3-none-any.whl", hash = "sha256:2fe413a46932dae930be069b951818a228815cd3056a478527ecc9369a831b60", size = 401994 },
+    { url = "https://files.pythonhosted.org/packages/f6/ef/8e2479e3ba432bb3333d0f01d6bdc520cc7f765ccbfac134b015d806bc2b/datamodel_code_generator-0.59.0-py3-none-any.whl", hash = "sha256:c8c119ab618d24a619d635fef7aa9c96b69e069a4d287c9adfc148ae28368a69", size = 316232 },
 ]
 
 [[package]]
@@ -3038,7 +3041,7 @@ wheels = [
 
 [[package]]
 name = "langchain-core"
-version = "1.3.2"
+version = "1.4.7"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "jsonpatch" },
@@ -3051,9 +3054,9 @@ dependencies = [
     { name = "typing-extensions" },
     { name = "uuid-utils" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/a8/03/7219502e8ca728d65eb44d7a3eb60239230742a70dbfc9241b9bfd61c4ab/langchain_core-1.3.2.tar.gz", hash = "sha256:fd7a50b2f28ba561fd9d7f5d2760bc9e06cf00cdf820a3ccafe88a94ffa8d5b7", size = 911813 }
+sdist = { url = "https://files.pythonhosted.org/packages/ee/2b/fffaff399d20a56d40b9562fa19701e91abd72d8c9d9bc8c2673077b56b6/langchain_core-1.4.7.tar.gz", hash = "sha256:7a825d77de0a3f39adbd9d09612a75e85527e14a52c1601089bcc062972d9f2b", size = 952522 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7d/d5/8fa4431007cbb7cfed7590f4d6a5dea3ad724f4174d248f6642ef5ce7d05/langchain_core-1.3.2-py3-none-any.whl", hash = "sha256:d44a66127f9f8db735bdfd0ab9661bccb47a97113cfd3f2d89c74864422b7274", size = 542390 },
+    { url = "https://files.pythonhosted.org/packages/de/3e/dcdffa60078ae7b3a00ebb4cbbf1a204a14c3609983c604886523a7d4418/langchain_core-1.4.7-py3-none-any.whl", hash = "sha256:bcadd51951140ecdcba98311dbd931ba5de02a5ba8a2288dad5069c1eea2a13d", size = 554941 },
 ]
 
 [[package]]
@@ -3322,7 +3325,7 @@ wheels = [
 
 [[package]]
 name = "litellm"
-version = "1.83.14"
+version = "1.89.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "aiohttp" },
@@ -3338,9 +3341,9 @@ dependencies = [
     { name = "tiktoken" },
     { name = "tokenizers" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/8d/7c/c095649380adc96c8630273c1768c2ad1e74aa2ee1dd8dd05d218a60569f/litellm-1.83.14.tar.gz", hash = "sha256:24aef9b47cdc424c833e32f3727f411741c690832cd1fe4405e0077144fe09c9", size = 14836599 }
+sdist = { url = "https://files.pythonhosted.org/packages/e8/1b/de398e6cef46d4cbc4395c895330f30eab05439bf6d0c5c53b0203661eeb/litellm-1.89.1.tar.gz", hash = "sha256:eb9292f90afe46dcce4bfef6bbeaa54494945813763e1c0917f4e9a1c584c1a4", size = 14071586 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/7f/5c/1b5691575420135e90578543b2bf219497caa33cfd0af64cb38f30288450/litellm-1.83.14-py3-none-any.whl", hash = "sha256:92b11ba2a32cf80707ddf388d18526696c7999a21b418c5e3b6eda1243d2cfdb", size = 16457054 },
+    { url = "https://files.pythonhosted.org/packages/ec/24/81f03088876a13b628fdbaf746ee746e1dff127d63f339ef72f1a3801c91/litellm-1.89.1-py3-none-any.whl", hash = "sha256:a52a67625d89cb1787ef48c4b3c1ab9c2574ea304f56900bc631844297a13bd4", size = 15484855 },
 ]
 
 [[package]]
@@ -7468,15 +7471,15 @@ wheels = [
 
 [[package]]
 name = "starlette"
-version = "1.0.0"
+version = "1.3.1"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "anyio" },
     { name = "typing-extensions", marker = "python_full_version < '3.13'" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/81/69/17425771797c36cded50b7fe44e850315d039f28b15901ab44839e70b593/starlette-1.0.0.tar.gz", hash = "sha256:6a4beaf1f81bb472fd19ea9b918b50dc3a77a6f2e190a12954b25e6ed5eea149", size = 2655289 }
+sdist = { url = "https://files.pythonhosted.org/packages/eb/e3/7c1dc7381d9f8ab7d854328ebfa884e62cb3f3d8549ddfd37c7814f42afa/starlette-1.3.1.tar.gz", hash = "sha256:05d0213193f2fbaae60e2ecb593b4add4262ad4e46536b54abe36f11a71724e0", size = 2703240 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0b/c9/584bc9651441b4ba60cc4d557d8a547b5aff901af35bda3a4ee30c819b82/starlette-1.0.0-py3-none-any.whl", hash = "sha256:d3ec55e0bb321692d275455ddfd3df75fff145d009685eb40dc91fc66b03d38b", size = 72651 },
+    { url = "https://files.pythonhosted.org/packages/ec/bb/2799cc2ede3ed41131f8975621e7213dfc7ef4acbbaadfa440f32500c370/starlette-1.3.1-py3-none-any.whl", hash = "sha256:c7372aae11c3c3f26a42df7bd626cec2f47d03483d261d369516a615a53714c6", size = 73632 },
 ]
 
 [[package]]
@@ -7724,7 +7727,7 @@ wheels = [
 
 [[package]]
 name = "toolguard"
-version = "0.2.20"
+version = "0.2.19"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "datamodel-code-generator" },
@@ -7740,9 +7743,9 @@ dependencies = [
     { name = "pytest-json-report" },
     { name = "smolagents" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/9e/05/4adc710f0b11beb340dfb3be680f539cf509b4566aad40f6cfa9ab6506a9/toolguard-0.2.20.tar.gz", hash = "sha256:d88044bdd72525f2b65355c6526b267c2a41c234836d3a8fa786ee9ef0571333", size = 69224 }
+sdist = { url = "https://files.pythonhosted.org/packages/5c/80/9cd3efd4d32dcf2cb08339ea23d827142e13ba9cee398bb332f840aed367/toolguard-0.2.19.tar.gz", hash = "sha256:a4f11dbfe7d53b3d6b5425005ae2d066a06a80ebe80b212ef3e560d15ffc6f4c", size = 68499 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/71/17/adc658a7262f41d29b408cb2c6fafaff2c051cdca2a62d4b1c525c6cc2e9/toolguard-0.2.20-py3-none-any.whl", hash = "sha256:e8fda5fbe95766ec21be8e61dec268c1725800dd049f3cfa540bacd4adc61e27", size = 100717 },
+    { url = "https://files.pythonhosted.org/packages/ab/82/246bde4c05a167ea25aead64f4626711fb59e8c4f5d6d78d90d7fa4e33bb/toolguard-0.2.19-py3-none-any.whl", hash = "sha256:2102d568e84082466ded4c1d99654cc22d060c9708cfe975e90169eef31dfe97", size = 99932 },
 ]
 
 [[package]]
