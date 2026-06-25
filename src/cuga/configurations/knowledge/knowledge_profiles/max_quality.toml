@@ -12,6 +12,15 @@ description = "Exhaustive retrieval with multilingual embedder + reranker + full
 # MIRACL avg 66.5 across 16 languages. On English-only corpora, an
 # English-tuned 1024d model (bge-large-en-v1.5) wins by ~3 nDCG; flip
 # this key if you do not need multilingual.
+#
+# Vetted multilingual/large alternatives (swap requires re-ingest — the
+# embedding dim is part of vector_config_hash). Pick PER CORPUS via eval,
+# not leaderboard vibes:
+#   - intfloat/multilingual-e5-large   1024d  MIT       fastembed (default; needs query:/passage: prefixes, handled)
+#   - Alibaba-NLP/gte-multilingual-base 768d  Apache-2.0 fastembed — lighter RSS, strong multilingual
+#   - Snowflake/snowflake-arctic-embed-l-v2.0 1024d Apache-2.0 fastembed — MRL-truncatable dims
+#   - BAAI/bge-large-en-v1.5           1024d  MIT       fastembed — English-only, ~3 nDCG over e5 on EN corpora
+# (Models not in fastembed's ONNX list require embedding_provider="huggingface" → torch.)
 model = "intfloat/multilingual-e5-large"
 # Reduced because 1024d × 64 batch × fp32 ≈ 1GB transient RSS; 256 batch
 # would peak ~3.5GB — too risky for the 1024d model on standard hosts.
@@ -45,16 +54,14 @@ hybrid_mode = "auto"
 junk_filter = "off"
 
 [rerank]
-# Reranker module is deferred to a follow-up PR (review comment 11);
-# this profile ships with rerank OFF to avoid runtime ModuleNotFoundError
-# on every search. Flips back to ``enabled = true`` when the reranker
-# follow-up PR lands the module + sentence-transformers dep.
-#
-# Original design: top_k_in >= 3 × default_limit (15) = 45; 60 gives the
-# reranker substantial headroom. CPU cost: ~18s at 100% CPU for 60 pairs.
-enabled = false
+# Cross-encoder rerank ON (fastembed TextCrossEncoder, ONNX/CPU). Highest
+# precision tier — rescores a wide candidate window.
+enabled = true
+# candidate_k: overfetch 60 (>= 3 × default_limit 15 = 45, plus headroom),
+# return default_limit. CPU cost grows with the window (~seconds for 60 pairs).
 top_k_in = 60
-model = "BAAI/bge-reranker-v2-m3"
+# bge-reranker-base = Apache-2.0, fastembed-servable. (bge-reranker-v2-m3 is not.)
+model = "BAAI/bge-reranker-base"
 
 [engine]
 # 4 workers assumes the user has >=8GB RAM headroom for the heavier

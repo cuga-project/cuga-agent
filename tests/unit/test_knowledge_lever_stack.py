@@ -24,7 +24,9 @@ class TestRerankConfigFields:
         c = KnowledgeConfig()
         assert c.rerank_enabled is False
         assert c.rerank_top_k_in == 20
-        assert c.rerank_model == "BAAI/bge-reranker-v2-m3"
+        # Default is the fastembed-servable bge-reranker-base (bge-reranker-v2-m3
+        # is NOT in fastembed's TextCrossEncoder list).
+        assert c.rerank_model == "BAAI/bge-reranker-base"
 
     def test_top_k_bounds_enforced(self):
         from cuga.backend.knowledge.config import KnowledgeConfig
@@ -201,21 +203,19 @@ class TestBalancedProfile:
         assert p["chunking"]["chunk_overlap"] == 150
 
     def test_balanced_pins_bge_base_and_rerank(self):
-        """Balanced is where users opt into bge-base. The reranker module
-        is deferred to a follow-up PR (review comment 11) so this profile
-        ships with rerank.enabled=false; the rerank metadata (top_k_in,
-        model) is preserved so the follow-up only flips the boolean.
+        """Balanced is where users opt into bge-base + the cross-encoder reranker.
+        The reranker module now ships (fastembed TextCrossEncoder), so this
+        profile has rerank.enabled=true with a fastembed-servable model and a
+        candidate window (top_k_in) wide enough for config.validate().
         Switching standard<->balanced INVALIDATES vectors by design.
-
-        TODO(reranker-follow-up): flip this assertion back to ``is True``
-        when the reranker follow-up PR re-enables the engine integration.
         """
         from cuga.backend.knowledge.config import load_profile
 
         p = load_profile("balanced")
         assert p["embeddings"]["model"] == "BAAI/bge-base-en-v1.5"
-        assert p["rerank"]["enabled"] is False
-        # top_k_in metadata kept honest for the follow-up PR.
+        assert p["rerank"]["enabled"] is True
+        assert p["rerank"]["model"] == "BAAI/bge-reranker-base"
+        # candidate_k must clear the 3×return_k floor config.validate() enforces.
         assert p["rerank"]["top_k_in"] >= 3 * p["search"]["default_limit"]
 
     def test_other_profiles_unchanged(self):

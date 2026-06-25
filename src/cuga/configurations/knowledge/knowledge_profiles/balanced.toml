@@ -1,6 +1,6 @@
 [profile]
 name = "Balanced"
-description = "Quality-leaning. Hybrid retrieval + cross-encoder rerank. Bigger embedder (bge-base, 768d). For users who have explicitly opted into the +1.1GB reranker memory floor."
+description = "Quality-leaning. Hybrid retrieval + cross-encoder rerank (bge-reranker-base, ONNX/CPU) + bigger embedder (bge-base, 768d). Adds reranker memory + ~1-3s query latency."
 
 # Pareto-locked profile (2026-06-09).
 # Switching from standard/speed to balanced INVALIDATES collections:
@@ -38,20 +38,18 @@ hybrid_mode = "auto"
 junk_filter = "dry_run"
 
 [rerank]
-# Reranker module is deferred to a follow-up PR (review comment 11);
-# this profile ships with rerank OFF to avoid runtime ModuleNotFoundError
-# on every search. The follow-up PR ships the reranker module, the
-# sentence-transformers dep, and engine bug fixes (review comments 37, 38),
-# and at that point this default flips back to enabled = true.
-#
-# Original design: bge-reranker-v2-m3 delivers +5-15 NDCG@10 over dense
-# candidates. At top_k_in=50 on CPU: ~6s tail latency at 100% CPU; warm
-# the model at startup, not lazily — see engine.warmup().
-enabled = false
-# top_k_in >= 3 × default_limit (12) = 36; we use 50 for headroom.
-# Honored by config.validate() when rerank is re-enabled by a future profile.
+# Cross-encoder rerank ON. RRF-fused candidates are rescored with full
+# bidirectional attention via fastembed's TextCrossEncoder (ONNX/CPU, no torch).
+# Large precision lift (Anthropic contextual-retrieval: -35% to -67% top-k
+# retrieval failures with reranking). Warmed at startup via engine.warmup().
+enabled = true
+# candidate_k: overfetch this many for the reranker, then return default_limit.
+# Must be >= 3 × default_limit (12) = 36; 50 gives headroom (config.validate()).
+# At 50 pairs on CPU expect ~1-3s added tail latency.
 top_k_in = 50
-model = "BAAI/bge-reranker-v2-m3"
+# MUST be in fastembed's TextCrossEncoder list. bge-reranker-base = Apache-2.0,
+# commercial-safe. (bge-reranker-v2-m3 is NOT fastembed-servable.)
+model = "BAAI/bge-reranker-base"
 
 [engine]
 max_ingest_workers = 2
