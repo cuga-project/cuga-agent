@@ -5,12 +5,13 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
-from typing import Any, Iterable, List, Sequence
+from typing import Any, Iterable, List, Optional, Sequence
 
 from loguru import logger
 
 from cuga.backend.cuga_graph.policy.folder_loader import parse_markdown_with_frontmatter
 from cuga.backend.skills.registry import SkillEntry
+from cuga.backend.slash_commands.arg_substitution import validate_arg_names
 
 
 DEFAULT_GLOBAL_SKILLS_ROOT = "~/.config/agents/skills"
@@ -87,7 +88,6 @@ def get_skill_search_roots(
         cuga_root = None
         agents_root = Path(os.getcwd()) / ".agents"
 
-    # Legacy local roots are fallbacks; .agents/skills is the preferred project-local path.
     if cuga_root is not None:
         roots.extend([cuga_root / "skills", cuga_root / ".skills"])
     roots.append(agents_root / "skills")
@@ -126,6 +126,33 @@ def _normalize_requirements(value: Any) -> tuple[str, ...]:
     return tuple(str(item).strip() for item in candidates if str(item).strip())
 
 
+def _normalize_arg_names(value: Any) -> tuple[str, ...]:
+    """Parse the ``arguments`` frontmatter key (whitespace-separated string or YAML list)."""
+    if value is None:
+        return ()
+    if isinstance(value, str):
+        names: Iterable[Any] = value.split()
+    elif isinstance(value, (list, tuple, set)):
+        names = value
+    else:
+        logger.warning(f"Ignoring unsupported skill arguments value: {value!r}")
+        return ()
+    return tuple(s for s in (str(item).strip() for item in names) if s)
+
+
+def _normalize_allowed_tools(value: Any) -> Optional[tuple[str, ...]]:
+    """Parse the ``allowed-tools`` frontmatter key (string or YAML list).
+
+    Returns ``None`` when the key is absent in frontmatter (no restriction).
+    Returns an empty tuple ``()`` when the key is present but empty
+    (``allowed-tools: []``) — "allow nothing, every tool requires approval".
+    The whitelist-enforcement gate keys off this absent-vs-empty distinction.
+    """
+    if value is None:
+        return None
+    return tuple(s for s in (str(item).strip() for item in _as_list(value)) if s)
+
+
 def _parse_skill_file(path: Path) -> SkillEntry | None:
     try:
         frontmatter, body = parse_markdown_with_frontmatter(str(path))
@@ -139,12 +166,18 @@ def _parse_skill_file(path: Path) -> SkillEntry | None:
             raise ValueError(f"unsafe skill name {name_str!r}: path separators and '..' are not allowed")
 
         description_str = _sanitize_for_prompt(str(description).strip(), "description", path)
+
+        arguments = _normalize_arg_names(frontmatter.get("arguments"))
+        validate_arg_names(arguments)
+
         return SkillEntry(
             name=name_str,
             description=description_str,
             body=body.strip(),
             source=str(path),
             requirements=_normalize_requirements(frontmatter.get("requirements")),
+            arguments=arguments,
+            allowed_tools=_normalize_allowed_tools(frontmatter.get("allowed-tools")),
         )
     except Exception as e:
         logger.warning(f"Skipping invalid skill file {path}: {e}")
@@ -164,6 +197,7 @@ def discover_skills(
         global_skills_root=global_skills_root,
         legacy_global_skills_root=legacy_global_skills_root,
     ):
+        # Later roots override earlier — by_name[entry.name] reassignment is intentional.
         for path in _iter_skill_files(skills_dir):
             entry = _parse_skill_file(path)
             if entry:

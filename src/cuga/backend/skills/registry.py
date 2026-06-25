@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import Dict, List, Optional
 
 
 @dataclass(frozen=True)
@@ -13,6 +13,12 @@ class SkillEntry:
     body: str
     source: str
     requirements: tuple[str, ...] = ()  # pip/npm packages declared in frontmatter
+    arguments: tuple[str, ...] = ()  # named args declared in the `arguments` frontmatter key
+    # `allowed-tools` whitelist semantics:
+    #   None  — key absent in frontmatter; no restriction (status quo)
+    #   ()    — key present but empty (`allowed-tools: []`); allow nothing, everything triggers approval
+    #   (..)  — explicit whitelist
+    allowed_tools: Optional[tuple[str, ...]] = None
 
     @property
     def pip_packages(self) -> list[str]:
@@ -30,11 +36,25 @@ class SkillRegistry:
     def summaries(self) -> List[dict[str, str]]:
         return [{"name": e.name, "description": e.description} for e in self._by_name.values()]
 
-    def load_skill(self, name: str) -> str:
+    def entries(self) -> List[SkillEntry]:
+        return list(self._by_name.values())
+
+    def entry(self, name: str) -> Optional[SkillEntry]:
+        return self._by_name.get(name.strip())
+
+    def load_skill(self, name: str, args: str = "") -> str:
         entry = self._by_name.get(name.strip())
         if not entry:
             known = ", ".join(sorted(self._by_name.keys())) or "(none)"
             return f"Unknown skill: {name!r}. Known skills: {known}"
+
+        # Substitution runs on the raw body before install/sandbox wrapping.
+        if args:
+            from cuga.backend.slash_commands.arg_substitution import substitute
+
+            body = substitute(entry.body, args, entry.arguments)
+        else:
+            body = entry.body
 
         parts: list[str] = []
 
@@ -90,10 +110,10 @@ class SkillRegistry:
             "`python -c '...'` → `uv run python -c '...'`; `pip install ...` or `python -m pip install ...` "
             "→ `uv pip install ...`; and `pip list` / `pip show` / `pip freeze` → `uv pip list` / "
             "`uv pip show` / `uv pip freeze`. Never prefix Node/npm with uv: Node commands must start with plain "
-            "`node ...`, npm commands must start with plain `node ...`, npm commands must start with plain `npm ...`, "
+            "`node ...`, npm commands must start with plain `npm ...`, "
             "and packages must be installed locally as `npm install <package>` in `/workspace`. "
             "Do not use `uv npm`, `uv run node`, or `uv run npm`."
         )
         parts.append("")
-        parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{entry.body}")
+        parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{body}")
         return "\n".join(parts)

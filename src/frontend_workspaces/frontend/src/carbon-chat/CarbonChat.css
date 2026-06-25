@@ -434,3 +434,246 @@
     border-top-color: #3d3d3d;
   }
 }
+
+.cuga-slash-dropdown {
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.12);
+  max-height: 320px;
+  overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.cuga-slash-dropdown__status {
+  padding: 12px 14px;
+  color: #6e7781;
+}
+
+.cuga-slash-dropdown__status--error {
+  color: #cf222e;
+}
+
+.cuga-slash-dropdown__list {
+  list-style: none;
+  margin: 0;
+  padding: 4px 0;
+}
+
+.cuga-slash-option {
+  padding: 8px 14px;
+  cursor: pointer;
+  border-left: 2px solid transparent;
+}
+
+.cuga-slash-option--active,
+.cuga-slash-option:hover {
+  background: #f6f8fa;
+  border-left-color: #0969da;
+}
+
+.cuga-slash-option__main {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.cuga-slash-option__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+  color: #1f2328;
+}
+
+.cuga-slash-option__hint {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #6e7781;
+  font-size: 12px;
+}
+
+.cuga-slash-option__kind {
+  margin-left: auto;
+  padding: 2px 8px;
+  border-radius: 10px;
+  font-size: 11px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cuga-slash-option__kind--builtin {
+  background: #ddf4ff;
+  color: #0969da;
+}
+
+.cuga-slash-option__kind--skill {
+  background: #fff8c5;
+  color: #9a6700;
+}
+
+.cuga-slash-option__description {
+  margin-top: 2px;
+  color: #57606a;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+/* CUGA does not currently have an app-wide dark mode. The slash-dropdown
+   dark-mode rules previously living here were dropped to avoid the visual
+   inconsistency of dark chips inside an otherwise light UI. Re-add them
+   (selectors: .cuga-slash-dropdown, .cuga-slash-dropdown__status,
+   .cuga-slash-option*) if/when a dark mode is introduced. */
+
+/* ---------------------------------------------------------------------------
+ * Slash-command chips rendered inline in the chat transcript.
+ *   - .cuga-slash-skill-chip     — collapsed "⚡ /skill" chip for a resolved
+ *                                  slash skill invocation
+ *   - .cuga-slash-suggestions    — clickable suggestion chips for an unknown
+ *                                  slash command
+ * ------------------------------------------------------------------------- */
+
+.cuga-slash-skill-chip {
+  display: inline-flex;
+  flex-direction: column;
+  align-items: flex-start;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.cuga-slash-skill-chip__summary {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #f6f8fa;
+  color: #1f2328;
+  cursor: pointer;
+  font: inherit;
+}
+
+.cuga-slash-skill-chip__summary:hover {
+  background: #eef1f4;
+  border-color: #afb8c1;
+}
+
+.cuga-slash-skill-chip__bolt {
+  color: #9a6700;
+}
+
+.cuga-slash-skill-chip__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+
+.cuga-slash-skill-chip__caret {
+  color: #6e7781;
+  font-size: 11px;
+}
+
+.cuga-slash-skill-chip__details {
+  margin: 6px 0 0;
+  padding: 8px 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  background: #ffffff;
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 12px;
+}
+
+.cuga-slash-skill-chip__details dt {
+  color: #6e7781;
+  font-size: 12px;
+}
+
+.cuga-slash-skill-chip__details dd {
+  margin: 0;
+}
+
+.cuga-slash-skill-chip__details code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  color: #1f2328;
+  overflow-wrap: anywhere;
+}
+
+.cuga-slash-suggestions {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 13px;
+}
+
+.cuga-slash-suggestions__lead {
+  color: #57606a;
+  margin-bottom: 6px;
+}
+
+.cuga-slash-suggestions__lead code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  color: #cf222e;
+}
+
+.cuga-slash-suggestions__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cuga-slash-suggestion {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  border: 1px solid #d0d7de;
+  border-radius: 999px;
+  background: #ffffff;
+  color: #1f2328;
+  cursor: pointer;
+  font: inherit;
+  max-width: 100%;
+}
+
+.cuga-slash-suggestion:hover {
+  background: #f6f8fa;
+  border-color: #0969da;
+}
+
+.cuga-slash-suggestion__name {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-weight: 600;
+}
+
+.cuga-slash-suggestion__description {
+  color: #57606a;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 220px;
+}
+
+.cuga-slash-suggestion__kind {
+  padding: 1px 7px;
+  border-radius: 10px;
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.cuga-slash-suggestion__kind--builtin {
+  background: #ddf4ff;
+  color: #0969da;
+}
+
+.cuga-slash-suggestion__kind--skill {
+  background: #fff8c5;
+  color: #9a6700;
+}
+
+/* CUGA does not currently have an app-wide dark mode. The slash-chip
+   dark-mode rules previously living here were dropped to avoid the visual
+   inconsistency of dark chips inside an otherwise light UI. Re-add them
+   (selectors: .cuga-slash-skill-chip*, .cuga-slash-suggestions*,
+   .cuga-slash-suggestion*) if/when a dark mode is introduced. */

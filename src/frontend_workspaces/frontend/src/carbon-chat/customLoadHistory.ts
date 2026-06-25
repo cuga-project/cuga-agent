@@ -26,6 +26,11 @@ import {
   buildToolApprovalCard,
   createReasoningStep,
 } from "./carbonChatHelpers";
+import {
+  CUGA_USER_DEFINED_KIND,
+  type SlashSuggestionsChipData,
+  type SlashSuggestion,
+} from "./SlashChips";
 
 interface StreamEvent {
   event_name: string;
@@ -81,6 +86,10 @@ async function customLoadHistory(
     const history: HistoryItem[] = [];
     let currentSteps: ReasoningStep[] = [];
     let currentAnswerText = "";
+    // Set after a SlashSuggestions chip so the following redundant plain-text
+    // "Unknown command..." Answer event is skipped on reload (mirrors the
+    // live-turn suppression in customSendMessage.ts).
+    let suppressNextAnswer = false;
 
     for (const event of events) {
       console.log(`Processing event: ${event.event_name}`, event);
@@ -120,6 +129,71 @@ async function customLoadHistory(
           }
           break;
 
+        // Replay a resolved slash-skill invocation as a reasoning step
+        // attached to the assistant message being assembled (mirrors the live
+        // path in customSendMessage.ts). The step lands in the same "Show
+        // details" panel as the planner reasoning that follows.
+        case "SlashSkillInvoked": {
+          try {
+            const parsed = JSON.parse(actualData);
+            const resolvedName = String(parsed?.resolved_name ?? "");
+            const rawInput = String(parsed?.raw_input ?? "");
+            const rawArgs = String(parsed?.raw_args ?? "");
+            // A literal backtick in the user's input would close the inline
+            // code span and break the rendered markdown — escape so the
+            // span stays intact regardless of user content.
+            const escapeBackticks = (s: string) => s.replace(/\\/g, "\\\\").replace(/`/g, "\\`");
+            const stepTitle = `Skill invoked: /${escapeBackticks(resolvedName)}`;
+            const stepContent = [
+              `**Input:** \`${escapeBackticks(rawInput)}\``,
+              `**Resolved skill:** \`${escapeBackticks(resolvedName)}\``,
+              `**Arguments:** \`${rawArgs ? escapeBackticks(rawArgs) : "(none)"}\``,
+            ].join("\n\n");
+            currentSteps.push(createReasoningStep(stepTitle, stepContent));
+          } catch (e) {
+            console.error("Error parsing SlashSkillInvoked history event:", e);
+          }
+          break;
+        }
+
+        case "SlashSuggestions": {
+          try {
+            const parsed = JSON.parse(actualData);
+            const suggestions: SlashSuggestion[] = Array.isArray(parsed?.suggestions)
+              ? parsed.suggestions.map((s: any) => ({
+                  name: String(s?.name ?? ""),
+                  kind: s?.kind === "skill" ? "skill" : "builtin",
+                  description: typeof s?.description === "string" ? s.description : "",
+                  score: typeof s?.score === "number" ? s.score : 0,
+                }))
+              : [];
+            const chipData: SlashSuggestionsChipData = {
+              cuga_kind: CUGA_USER_DEFINED_KIND.SLASH_SUGGESTIONS,
+              raw_input: String(parsed?.raw_input ?? ""),
+              suggestions,
+            };
+            history.push({
+              message: {
+                id: generateMessageId(event.timestamp, "assistant"),
+                output: {
+                  generic: [
+                    {
+                      response_type: MessageResponseTypes.USER_DEFINED,
+                      user_defined: chipData,
+                    },
+                  ],
+                },
+                message_options: { response_user_profile: RESPONSE_USER_PROFILE },
+              } as MessageResponse,
+              time: event.timestamp,
+            });
+            suppressNextAnswer = true;
+          } catch (e) {
+            console.error("Error parsing SlashSuggestions history event:", e);
+          }
+          break;
+        }
+
         case "CodeAgent":
         case "CodeAgent_Reasoning":
         case "Thinking":
@@ -135,6 +209,13 @@ async function customLoadHistory(
 
         case "Answer":
         case "FinalAnswer": {
+          if (suppressNextAnswer) {
+            suppressNextAnswer = false;
+            currentSteps = [];
+            currentAnswerText = "";
+            break;
+          }
+
           const parsed = parseAnswerEventData(actualData, currentAnswerText);
 
           if (parsed.isToolApproval && parsed.policyInfo && parsed.policyData && threadId) {

@@ -96,6 +96,19 @@ run_pytest tests/unit/test_toolguard_provider.py \
 echo "Running A2A tests..."
 run_pytest tests/integration/a2a/ \
     tests/unit/test_a2a_simple_runner_hitl.py
+echo "Running slash-command tests..."
+run_pytest \
+    tests/unit/test_slash_parser.py \
+    tests/unit/test_slash_builtin_discovery.py \
+    tests/unit/test_slash_message_synthesis.py \
+    tests/unit/test_slash_arg_substitution.py \
+    tests/unit/test_slash_command_resolver.py \
+    tests/unit/test_slash_clear_builtin.py \
+    tests/unit/test_slash_skills_builtin.py \
+    tests/unit/test_slash_allowed_tools_enforcement.py \
+    tests/unit/test_slash_langfuse_span.py \
+    tests/unit/test_agent_state_message_rehydration.py \
+    tests/unit/test_stream_event_format.py
 echo "✅ All unit tests passed!"
 
 # Check for test type flag

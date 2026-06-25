@@ -26,7 +26,7 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.agent_graph_adapter import AgentGraphAdapter
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
-from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.state.agent_state import AgentState, ChatHistoryMessage
 from cuga.backend.llm.models import LLMManager
 from cuga.backend.llm.utils.helpers import load_one_prompt
 from cuga.config import settings
@@ -40,7 +40,7 @@ class CugaLiteState(BaseModel):
     """State for CugaLite subgraph.
 
     Shared keys with AgentState:
-    - chat_messages: List[BaseMessage] (primary message history)
+    - chat_messages: List[ChatHistoryMessage] (primary message history)
     - final_answer: str (compatible with parent)
     - pi: str (personal information/user context injected with first message)
     - variables_storage: Dict[str, Dict[str, Any]] (shared variables)
@@ -68,8 +68,8 @@ class CugaLiteState(BaseModel):
     - task_todos: latest todo list from create_update_todos (injected as Current Plan on the system prompt)
     """
 
-    # Shared keys (compatible with AgentState)
-    chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
+    # Shared keys (compatible with AgentState).
+    chat_messages: Optional[List[ChatHistoryMessage]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
     user_id: Optional[str] = None  # Shared with AgentState; None means unset (no user context sent to Evolve)
     thread_id: Optional[str] = None

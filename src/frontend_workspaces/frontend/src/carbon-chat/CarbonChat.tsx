@@ -26,6 +26,8 @@ import {
 import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './customSendMessage';
 import { customLoadHistory } from './customLoadHistory';
 import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
+import { SlashCommandDropdown } from './SlashCommandDropdown';
+import { renderCugaUserDefinedResponse } from './SlashChips';
 import './CarbonChat.css';
 
 // Reset thread ID when conversation restarts
@@ -50,6 +52,11 @@ export function getOrCreateThreadId(): string {
     currentThreadId = generateUUID();
   }
   return currentThreadId;
+}
+
+// Setter used by customSendMessage on a ``ThreadIdChanged`` SSE event.
+export function setThreadId(newThreadId: string): void {
+  currentThreadId = newThreadId;
 }
 
 const DEFAULT_HOMESCREEN = {
@@ -239,6 +246,8 @@ const CarbonChat = ({
   const chatInstanceRef = useRef<ChatInstance | null>(null);
   const chatElementRef = useRef<HTMLElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const wrapperRef = useRef<HTMLDivElement | null>(null);
+  const [chatElement, setChatElement] = useState<HTMLElement | null>(null);
   const skipNextHistoryLoadRef = useRef<string | null>(null);
   const [showDebugPanel, setShowDebugPanel] = useState(false);
   const [debugData, setDebugData] = useState<any>(null);
@@ -406,8 +415,49 @@ const CarbonChat = ({
       return;
     }
 
+    // Relabel Carbon's reasoning-panel toggle from "Show reasoning"/"Hide
+    // reasoning" to "Show details"/"Hide details". The reasoning panel now
+    // also hosts the slash-skill audit step (formerly its own chip), so the
+    // more neutral wording reads better. Carbon's `strings` prop accepts
+    // `reasoningSteps_mainLabelOpen` / `reasoningSteps_mainLabelClosed`, but
+    // the React parent commits the toggle attributes before our `useOnMount`
+    // strings dispatch reaches them, so the labels stay default. Patching
+    // the Lit element directly here is reliable and avoids forking Carbon.
+    const TOGGLE_TAGS = [
+      "cds-aichat-reasoning-steps-toggle",
+      "cds-custom-aichat-reasoning-steps-toggle",
+    ];
+    const applyReasoningToggleLabels = (root: ShadowRoot | Document) => {
+      for (const tag of TOGGLE_TAGS) {
+        const nodes = Array.from(root.querySelectorAll(tag)) as Array<
+          HTMLElement & { openLabelText?: string; closedLabelText?: string }
+        >;
+        for (const el of nodes) {
+          if (el.closedLabelText !== "Show details") {
+            el.closedLabelText = "Show details";
+          }
+          if (el.openLabelText !== "Hide details") {
+            el.openLabelText = "Hide details";
+          }
+          // Mirror the property change onto the attribute so the visible
+          // text inside the toggle's own shadow tree updates immediately.
+          if (el.getAttribute("closed-label-text") !== "Show details") {
+            el.setAttribute("closed-label-text", "Show details");
+          }
+          if (el.getAttribute("open-label-text") !== "Hide details") {
+            el.setAttribute("open-label-text", "Hide details");
+          }
+        }
+      }
+    };
+
     const applyMessageAttachmentDecorations = () => {
       roots.forEach((shadowRoot) => {
+        // Keep the reasoning-toggle relabel inside the per-root pass so it
+        // runs whenever decorations rebuild, but the observer callback also
+        // invokes it directly (without debounce) — relabeling is cheap and
+        // idempotent, and we don't want a queued rAF to delay the label fix.
+        applyReasoningToggleLabels(shadowRoot);
         const requestNodes = Array.from(
           shadowRoot.querySelectorAll(".cds-custom-aichat--message--request"),
         ) as HTMLElement[];
@@ -461,15 +511,36 @@ const CarbonChat = ({
     };
 
     applyMessageAttachmentDecorations();
+
+    // rAF-debounce decoration rebuilds — observer fires per mutation during streaming and a tight rebuild loop is expensive.
+    let scheduled = false;
+    let cancelled = false;
+    let rafHandle = 0;
+    const flush = () => {
+      scheduled = false;
+      if (cancelled) return;
+      applyMessageAttachmentDecorations();
+    };
+    const scheduleDecorations = () => {
+      if (scheduled) return;
+      scheduled = true;
+      rafHandle = window.requestAnimationFrame(flush);
+    };
+
     const observers = roots.map((shadowRoot) => {
       const observer = new MutationObserver(() => {
-        applyMessageAttachmentDecorations();
+        applyReasoningToggleLabels(shadowRoot);
+        scheduleDecorations();
       });
       observer.observe(shadowRoot, { childList: true, subtree: true });
       return observer;
     });
 
-    return () => observers.forEach((observer) => observer.disconnect());
+    return () => {
+      cancelled = true;
+      if (scheduled && rafHandle) window.cancelAnimationFrame(rafHandle);
+      observers.forEach((observer) => observer.disconnect());
+    };
   }, [chatRenderTick, messageAttachmentSnapshots, onPreviewKnowledgeAttachment, resolveChatDomRoots]);
 
   // Wrap the custom send message function to ensure it's properly bound
@@ -506,6 +577,9 @@ const CarbonChat = ({
     console.log('[CarbonChat] handleChatReady called, setting up event listeners');
     chatInstanceRef.current = instance;
     setChatRenderTick((tick) => tick + 1);
+    if (chatElementRef.current) {
+      setChatElement(chatElementRef.current);
+    }
     
     instance.on({
       type: BusEventType.RESTART_CONVERSATION,
@@ -675,6 +749,7 @@ const CarbonChat = ({
       )}
 
       <div
+        ref={wrapperRef}
         className={`cuga-carbon-chat-wrapper${isDragOver ? ' cuga-carbon-composer--dragover' : ''}`}
         onDragEnter={(e) => {
           if (!attachmentsEnabled) return;
@@ -742,6 +817,7 @@ const CarbonChat = ({
           customSendMessage: handleCustomSendMessage,
           customLoadHistory: handleCustomLoadHistory,
         }}
+        renderUserDefinedResponse={renderCugaUserDefinedResponse}
         renderWriteableElements={{
           beforeInputElement: (
             <ComposerToolbar
@@ -791,6 +867,10 @@ const CarbonChat = ({
             }
             event.target.value = "";
           }}
+        />
+        <SlashCommandDropdown
+          chatElement={chatElement}
+          portalContainer={wrapperRef.current}
         />
       </div>
     </>

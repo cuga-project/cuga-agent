@@ -851,6 +851,15 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
+    from cuga.backend.storage.embedding import create_embedding_function
+
+    embed_fn, _embed_dim = await create_embedding_function()
+    if embed_fn is not None:
+        logger.info("Embedding model prefetched for slash command resolver")
+    else:
+        logger.info("No embedding backend available; slash resolver will degrade gracefully")
+
     yield
     logger.info("Application is shutting down...")
 
@@ -1082,6 +1091,59 @@ def _schedule_history_save(
             logger.error(f"Background history save failed for thread {thread_id}: {e}")
 
     task.add_done_callback(_on_done)
+
+
+def _build_slash_skill_registry():
+    if not _skills_effective_enabled():
+        return None
+    try:
+        from cuga.backend.skills import SkillRegistry, discover_skills
+
+        cuga_folder = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        return SkillRegistry(discover_skills(cuga_folder))
+    except Exception:
+        logger.exception("Failed to discover skills for slash dispatch")
+        return None
+
+
+async def _dispatch_slash_for_stream(query: str, thread_id: Optional[str]):
+    """Run ``parse_and_dispatch`` for the streaming HTTP handler.
+
+    Returns ``None`` if anything goes wrong (so the caller falls back to the
+    planner) or a :class:`DispatchResult` for the caller to act on.
+    """
+    try:
+        from cuga.backend.slash_commands import (
+            build_command_resolver,
+            build_slash_registry,
+            parse_and_dispatch,
+        )
+    except Exception:
+        logger.exception("Failed to import slash_commands package")
+        return None
+
+    skill_registry = _build_slash_skill_registry()
+    slash_registry = build_slash_registry(skill_registry)
+
+    def _clear_stop_event(tid: str) -> None:
+        if tid in app_state.stop_events:
+            app_state.stop_events[tid].clear()
+
+    try:
+        return await parse_and_dispatch(
+            query,
+            slash_registry=slash_registry,
+            skill_registry=skill_registry,
+            thread_id=thread_id,
+            clear_stop_event=_clear_stop_event,
+            command_resolver_factory=build_command_resolver,
+        )
+    except Exception:
+        # Log only the command name (token after leading "/"); arguments may
+        # carry secrets and are deliberately omitted.
+        command_name = query.split(maxsplit=1)[0] if query.startswith("/") else "<non-slash>"
+        logger.exception(f"Slash dispatch failed for command {command_name!r}")
+        return None
 
 
 async def save_conversation_to_db(
@@ -1363,6 +1425,125 @@ async def event_stream(
         )
         event_sequence += 1
 
+    slash_result = None
+    if isinstance(query, str):
+        slash_result = await _dispatch_slash_for_stream(query, thread_id)
+        if slash_result is not None and slash_result.kind in ("builtin", "unknown"):
+            answer_text = slash_result.text or ""
+            # When an unknown command has embedding-based suggestions, surface
+            # them as a discrete event so the frontend can render clickable
+            # correction chips. The plain Answer text is kept as a fallback
+            # for clients that don't render the chips.
+            slash_suggestions = slash_result.suggestions
+            suggestions_event_data = (
+                json.dumps(
+                    {
+                        "raw_input": slash_result.raw_input,
+                        "suggestions": [
+                            {
+                                "name": s.name,
+                                "kind": s.kind,
+                                "description": s.description,
+                                "score": round(s.score, 4),
+                            }
+                            for s in slash_suggestions
+                        ],
+                    }
+                )
+                if slash_suggestions
+                else None
+            )
+            # When a slash command (e.g. /clear) rotates to a fresh thread id,
+            # persist the user message and answer against the *new* thread so
+            # the rotated history actually replays on the next turn.
+            effective_thread_id = slash_result.new_thread_id or thread_id
+            if effective_thread_id:
+                if suggestions_event_data is not None:
+                    stream_events_buffer.append(
+                        {
+                            "event_name": "SlashSuggestions",
+                            "event_data": suggestions_event_data,
+                            "timestamp": datetime.datetime.utcnow().isoformat(),
+                            "sequence": event_sequence,
+                        }
+                    )
+                    event_sequence += 1
+                stream_events_buffer.append(
+                    {
+                        "event_name": "Answer",
+                        "event_data": answer_text,
+                        "timestamp": datetime.datetime.utcnow().isoformat(),
+                        "sequence": event_sequence,
+                    }
+                )
+                event_sequence += 1
+                if not disable_history:
+                    slash_state = AgentState(
+                        chat_messages=[HumanMessage(content=query), AIMessage(content=answer_text)],
+                        thread_id=effective_thread_id,
+                        input=query,
+                        url="",
+                    )
+                    await _save_conversation_and_events_async(
+                        agent_id=app_state.agent_id,
+                        thread_id=effective_thread_id,
+                        user_id=user_id,
+                        state=slash_state,
+                        events=stream_events_buffer.copy(),
+                        user_attachments=user_attachments,
+                    )
+            if slash_result.new_thread_id:
+                yield StreamEvent(
+                    name="ThreadIdChanged",
+                    data=json.dumps({"thread_id": slash_result.new_thread_id}),
+                ).format(app_state.output_format, thread_id=thread_id)
+            if suggestions_event_data is not None:
+                yield StreamEvent(name="SlashSuggestions", data=suggestions_event_data).format(
+                    app_state.output_format, thread_id=thread_id
+                )
+            yield StreamEvent(name="Answer", data=answer_text).format(
+                app_state.output_format, thread_id=thread_id
+            )
+            return
+
+    if slash_result is not None and slash_result.kind == "skill" and local_state is not None:
+        # Prepend the synthesized load_skill message quad so the planner sees
+        # the skill as already loaded. ``input`` is the trailing arg block (or
+        # the bare slash invocation when there are no args) so the planner has
+        # a current-turn prompt to act on.
+        existing = list(local_state.chat_messages or [])
+        local_state.chat_messages = list(slash_result.injected_messages) + existing
+        local_state.input = (
+            slash_result.raw_args if slash_result.raw_args else slash_result.raw_input or query
+        )
+
+        # Emit SlashSkillInvoked so the frontend renders the invocation inline (live + on history reload); event is buffered into the saved stream.
+        slash_chip_event_data = json.dumps(
+            {
+                "resolved_name": slash_result.resolved_name,
+                "raw_input": slash_result.raw_input,
+                "raw_args": slash_result.raw_args or "",
+            }
+        )
+        if thread_id:
+            stream_events_buffer.append(
+                {
+                    "event_name": "SlashSkillInvoked",
+                    "event_data": slash_chip_event_data,
+                    "timestamp": datetime.datetime.utcnow().isoformat(),
+                    "sequence": event_sequence,
+                }
+            )
+            event_sequence += 1
+        yield StreamEvent(name="SlashSkillInvoked", data=slash_chip_event_data).format(
+            app_state.output_format, thread_id=thread_id
+        )
+    elif slash_result is not None and slash_result.kind == "skill" and local_state is None:
+        # Silent degradation otherwise: the skill resolved but we have no
+        # local state to inject the synthesized load_skill quad into, so the
+        # planner won't see the skill body. Surface so operators can spot it.
+        logger.warning("Skill dispatched but local_state is None; skipping message injection")
+
     langfuse_handler = (
         CallbackHandler()
         if settings.advanced_features.langfuse_tracing and CallbackHandler is not None
@@ -1404,6 +1585,18 @@ async def event_stream(
                 "filenames": _session_kb.filenames,
             }
 
+    # NOTE: on resume (ActionResponse path), slash_result is None and
+    # skill_allowed_tools is therefore not re-set on run_config. This is
+    # intentional: HITL approval is the trust boundary — once the user has
+    # explicitly approved a tool call, downstream calls within the same skill
+    # turn ride that approval. Re-enforcing the whitelist mid-turn would not add
+    # defense (the approval already happened) and would require persisting the
+    # tuple into LangGraph state. Revisit if a real bypass case emerges.
+    # Propagate ``allowed-tools`` to the tool-approval gate.
+    _skill_allowed_tools = (
+        slash_result.allowed_tools if slash_result is not None and slash_result.kind == "skill" else None
+    )
+
     agent_loop_obj = AgentLoop(
         graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
@@ -1418,6 +1611,7 @@ async def event_stream(
         current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
         knowledge_context=_knowledge_ctx or None,
         special_instructions=getattr(run_agent, "special_instructions", None),
+        skill_allowed_tools=_skill_allowed_tools,
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
 
@@ -1636,7 +1830,14 @@ async def event_stream(
                         latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
-                    name = ((event.split("\n")[0]).split(":")[1]).strip()
+                    try:
+                        name = StreamEvent.parse(event).name
+                    except ValueError as parse_err:
+                        # A malformed event block would otherwise crash the
+                        # stream mid-flight; log and skip so the rest of the
+                        # turn keeps flowing.
+                        logger.warning("Skipping malformed stream event: {}", parse_err)
+                        continue
                     logger.debug("Yield {}".format(event))
                     if name not in ["ChatAgent"]:
                         # Add stream event to buffer instead of immediate DB write
@@ -1651,9 +1852,15 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                        yield StreamEvent(name=name, data=event).format(
-                            app_state.output_format, thread_id=thread_id
-                        )
+                        # WXO mode wraps each event as a Chat Completions
+                        # chunk; DEFAULT mode emits the already-formatted SSE
+                        # block verbatim to avoid double-wrapping.
+                        if app_state.output_format == OutputFormat.WXO:
+                            yield StreamEvent(name=name, data=event).format(
+                                app_state.output_format, thread_id=thread_id
+                            )
+                        else:
+                            yield event
     except Exception as e:
         logger.exception(e)
         logger.error(traceback.format_exc())
@@ -3229,6 +3436,30 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
             "session_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "session"),
         }
     )
+
+
+@app.get("/api/commands")
+async def get_commands(current_user: Optional[UserInfo] = Depends(require_chat_access)):
+    """Return the merged registry of slash commands (built-ins + skills); rebuilt per request so new SKILL.md files appear without restart."""
+    try:
+        from cuga.backend.slash_commands import build_slash_registry
+
+        skill_registry = _build_slash_skill_registry()
+        slash_registry = build_slash_registry(skill_registry)
+        return {
+            "commands": [
+                {
+                    "name": c.name,
+                    "kind": c.kind,
+                    "description": c.description,
+                    "argument_hint": c.argument_hint,
+                }
+                for c in slash_registry.list_commands()
+            ]
+        }
+    except Exception:
+        logger.exception("Failed to build slash command registry")
+        raise HTTPException(status_code=500, detail="Failed to build slash command registry")
 
 
 @app.get("/api/skills")

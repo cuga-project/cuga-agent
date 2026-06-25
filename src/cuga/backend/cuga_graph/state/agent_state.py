@@ -1,11 +1,11 @@
-from typing import Dict, List, Optional, Literal, Any
+from typing import Dict, List, Optional, Literal, Any, Annotated, Union
 import json
 import inspect
 import traceback
 from datetime import datetime
 from pathlib import Path
 
-from langchain_core.messages import AIMessage, BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 from pydantic import BaseModel, Field
 from loguru import logger
 
@@ -913,6 +913,18 @@ def default_state(page, observation, goal, chat_messages=None):
     return state
 
 
+# Message type for CUGA's chat-history fields, persisted via LangGraph's
+# checkpointer. The discriminator keeps subclass fields
+# (``AIMessage.tool_calls``, ``ToolMessage.tool_call_id``) intact across
+# Pydantic dump/rehydrate — a bare ``BaseMessage`` annotation would drop them.
+# Streaming ``*Chunk`` variants are excluded by design: CUGA never persists
+# chunks, so a loud discriminator rejection beats silent demotion.
+ChatHistoryMessage = Annotated[
+    Union[HumanMessage, AIMessage, ToolMessage],
+    Field(discriminator="type"),
+]
+
+
 class SubTaskHistory(BaseModel):
     sub_task: Optional[str] = None
     steps: List[str] = Field(default_factory=list)
@@ -944,11 +956,12 @@ class AgentState(BaseModel):
     current_app_description: Optional[str] = None
     api_last_step: Optional[str] = None
     guidance: Optional[str] = None
-    chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
-    chat_agent_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
-    supervisor_chat_messages: Optional[List[BaseMessage]] = Field(
+    chat_messages: Optional[List[ChatHistoryMessage]] = Field(default_factory=list)
+    chat_agent_messages: Optional[List[ChatHistoryMessage]] = Field(default_factory=list)
+    supervisor_chat_messages: Optional[List[ChatHistoryMessage]] = Field(
         default_factory=list
     )  # Supervisor's conversation history
+
     api_intent_relevant_apps: Optional[List[AnalyzeTaskAppsOutput]] = None
     api_intent_relevant_apps_current: Optional[List[AnalyzeTaskAppsOutput]] = None
     shortlister_relevant_apps: Optional[List[str]] = None

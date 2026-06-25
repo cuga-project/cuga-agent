@@ -1,0 +1,131 @@
+"""Unknown slash-command resolver.
+
+When a user types a slash command that does not match any registered
+command (e.g. ``/sumarize``), this module suggests the most likely intended
+commands using embedding cosine similarity. It is a *suggester*, never an
+auto-corrector: it returns ranked candidates and lets the caller decide
+what to do with them.
+
+Design:
+    index() maintains an in-memory copy of (name, embedding, metadata);
+    resolve() ranks from this copy because the EmbeddingStoreBackend
+    protocol doesn't expose embeddings on list.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Awaitable, Callable, Dict, List, Optional, Sequence, Tuple
+
+from cuga.backend.slash_commands.types import CommandRef
+from cuga.backend.storage.embedding.base import EmbeddingStoreBackend
+
+
+@dataclass(frozen=True)
+class CommandSuggestion:
+    """A single ranked suggestion for an unknown slash command."""
+
+    name: str
+    kind: str
+    description: str
+    score: float
+
+
+def _cosine(a: Sequence[float], b: Sequence[float]) -> float:
+    """Cosine similarity between two vectors; 0.0 for any zero-norm input."""
+    if not a or not b:
+        return 0.0
+    dot = sum(x * y for x, y in zip(a, b))
+    na = sum(x * x for x in a) ** 0.5
+    nb = sum(x * x for x in b) ** 0.5
+    if na == 0.0 or nb == 0.0:
+        return 0.0
+    return dot / (na * nb)
+
+
+class CommandResolver:
+    """Suggests likely-intended commands for an unknown slash command."""
+
+    def __init__(
+        self,
+        store: EmbeddingStoreBackend,
+        embed_fn: Callable[[str], Awaitable[List[float]]],
+    ) -> None:
+        self._store = store
+        self._embed_fn = embed_fn
+        # Each indexed command stores (name_vec, desc_vec_or_None, metadata).
+        # Two embeddings let us score name and description separately and take
+        # the max so a verbose description doesn't drown out a typo'd name.
+        self._index: Dict[str, Tuple[List[float], Optional[List[float]], Dict[str, str]]] = {}
+
+    async def index(self, commands: Sequence[CommandRef]) -> None:
+        """Embed each command's name and description separately; see ``_index`` for the ranking rule."""
+        self._index.clear()
+        for cmd in commands:
+            name_embedding = await self._embed_fn(cmd.name)
+            desc_embedding: Optional[List[float]] = None
+            if cmd.description:
+                desc_embedding = await self._embed_fn(cmd.description)
+            metadata = {
+                "name": cmd.name,
+                "kind": cmd.kind,
+                "description": cmd.description,
+            }
+            await self._store.add(id=cmd.name, embedding=name_embedding, metadata=metadata)
+            self._index[cmd.name] = (name_embedding, desc_embedding, metadata)
+
+    async def resolve(
+        self,
+        raw_name: str,
+        *,
+        limit: int = 3,
+        threshold: float = 0.0,
+    ) -> List[CommandSuggestion]:
+        """Return up to ``limit`` ranked suggestions for ``raw_name``.
+
+        Steps:
+          1. Exact-match short-circuit (case-insensitive, stripped) -> score 1.0.
+          2. Embed ``raw_name``.
+          3. Rank by ``max(cosine(query, name_vec), cosine(query, desc_vec))``.
+          4. Drop the input itself, drop anything below ``threshold``,
+             return the top ``limit``.
+        """
+        normalized = raw_name.strip()
+
+        if not self._index:
+            return []
+
+        lowered = normalized.lower()
+        for name, (_name_vec, _desc_vec, metadata) in self._index.items():
+            if name.lower() == lowered:
+                return [
+                    CommandSuggestion(
+                        name=metadata["name"],
+                        kind=metadata["kind"],
+                        description=metadata["description"],
+                        score=1.0,
+                    )
+                ]
+
+        query_embedding = await self._embed_fn(normalized)
+
+        scored: List[CommandSuggestion] = []
+        for name, (name_vec, desc_vec, metadata) in self._index.items():
+            if name.lower() == lowered:
+                continue
+            score = _cosine(query_embedding, name_vec)
+            if desc_vec is not None:
+                score = max(score, _cosine(query_embedding, desc_vec))
+            if score < threshold:
+                continue
+            scored.append(
+                CommandSuggestion(
+                    name=metadata["name"],
+                    kind=metadata["kind"],
+                    description=metadata["description"],
+                    score=score,
+                )
+            )
+
+        scored.sort(key=lambda s: s.score, reverse=True)
+        return scored[:limit]

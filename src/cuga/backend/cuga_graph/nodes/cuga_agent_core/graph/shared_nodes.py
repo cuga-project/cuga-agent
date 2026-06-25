@@ -203,7 +203,10 @@ def create_call_model_node(
             return limit_cmd
 
         # ── Tool-approval interrupt for generated code ─────────────────────
-        if code and settings.policy.enabled:
+        # Called unconditionally: the skill allowed-tools whitelist runs regardless
+        # of settings.policy.enabled; the ToolApproval policy gate is checked
+        # internally inside check_and_create_approval_interrupt.
+        if code:
             approval_command = await ToolApprovalHandler.check_and_create_approval_interrupt(
                 adapter, state, code, content, config
             )
