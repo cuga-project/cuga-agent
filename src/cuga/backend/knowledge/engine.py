@@ -1617,6 +1617,21 @@ class KnowledgeEngine:
                 docling_dt,
             )
 
+        # Step 4: reranker — only when a profile has it enabled. Load the
+        # cross-encoder now so the first search doesn't pay the model load
+        # (~1-3s). Best-effort: on failure search degrades to fusion ranking.
+        reranker_prewarmed = False
+        if getattr(self._config, "rerank_enabled", False):
+            try:
+                from cuga.backend.knowledge.reranker import prewarm as _rerank_prewarm
+
+                await asyncio.to_thread(
+                    _rerank_prewarm, str(getattr(self._config, "rerank_model", "BAAI/bge-reranker-base"))
+                )
+                reranker_prewarmed = True
+            except Exception as e:  # pragma: no cover - environmental
+                logger.warning("Reranker prewarm failed (will background-load on first search): {}", e)
+
         return {
             "embedding_provider": self._config.embedding_provider,
             "embedding_model": self._config.embedding_model or "auto",
@@ -1624,6 +1639,7 @@ class KnowledgeEngine:
             "docling_prewarmed": docling_loaded,
             "docling_prewarm_seconds": round(docling_dt, 2),
             "docling_prewarm_error": docling_error,
+            "reranker_prewarmed": reranker_prewarmed,
         }
 
     def accelerator_status(self) -> dict[str, Any]:
@@ -2538,7 +2554,13 @@ class KnowledgeEngine:
         # has a wide enough window to find the gold chunk. Without overfetch
         # the encoder can only re-order an already-narrow result set.
         rerank_on = bool(getattr(self._config, "rerank_enabled", False))
-        int(getattr(self._config, "rerank_top_k_in", 20)) if rerank_on else 0
+        # candidate_k vs return_k: when reranking, keep a WIDE candidate window
+        # (overfetch) so the cross-encoder has room to surface the gold chunk,
+        # then trim to ``limit`` (return_k) in the rerank step. When rerank is
+        # off this collapses to ``limit`` — no behavior change. (Previously the
+        # overfetch value was computed and discarded, so reranking only ever
+        # re-ordered the top ``limit`` — defeating the point of reranking.)
+        _overfetch_k = max(limit, int(getattr(self._config, "rerank_top_k_in", 20))) if rerank_on else limit
 
         # Glossary-driven query expansion (client-adaptation). The expanded
         # query hits the embedder + lexical index; the ORIGINAL is preserved
@@ -2617,8 +2639,11 @@ class KnowledgeEngine:
                 )
             return out
 
-        # Pass 1: limit*2 (or just limit when filter is off).
-        first_k = min(200, limit * 2) if _filter_mode != "off" else limit
+        # Pass 1: limit*2 (or just limit when filter is off), but never below the
+        # reranker's candidate window — otherwise overfetch would request more
+        # than we fetched and the rerank step would see a narrow set.
+        _base_k = (limit * 2) if _filter_mode != "off" else limit
+        first_k = min(200, max(_base_k, _overfetch_k))
 
         # Run dense + lexical in parallel when hybrid is on. ``gather``
         # over ``to_thread`` means wall-clock ≈ max(dense, lexical)
@@ -2724,10 +2749,10 @@ class KnowledgeEngine:
                 for k, v in new_stats.reasons.items():
                     _stats.reasons[k] = _stats.reasons.get(k, 0) + v
 
-        # Cap at ``limit`` AFTER the optional drain so we never exceed
-        # the caller's budget but the over-fetch is what makes us
-        # actually MEET it.
-        results = results[:limit]
+        # Cap at the candidate window AFTER the optional drain. When rerank is
+        # off ``_overfetch_k == limit`` so this is the caller's budget; when on,
+        # we keep the wider window and the rerank step below trims to ``limit``.
+        results = results[:_overfetch_k]
         if _stats.filtered_count:
             logger.info(
                 "search_filter mode=%s collection=%s candidates=%d filtered=%d reasons=%s scope=%s query=%r",
@@ -2748,77 +2773,62 @@ class KnowledgeEngine:
         # available, OOM, etc.) we fall back to the fusion ranking and log
         # a warning so search degrades gracefully.
         if rerank_on and len(results) > 1:
-            # Reranker module is deferred to a follow-up PR (Sami #11);
-            # the import lives inside the try so a deployment that opts
-            # in via settings.toml override degrades gracefully instead
-            # of crashing the request. The default profiles ship with
-            # rerank.enabled=false in this PR.
+            # A user query MUST NEVER block on a model download. When the
+            # reranker model isn't loaded yet (e.g. just switched to a profile
+            # that enables it — bge-reranker-base is ~1.1GB), kick a background
+            # load and serve fusion-ranked results NOW; subsequent queries
+            # rerank automatically once it's ready. Any failure (import, load,
+            # rerank) degrades to fusion ranking, never crashes the request.
+            _rerank_model = str(getattr(self._config, "rerank_model", "BAAI/bge-reranker-base"))
             try:
-                from cuga.backend.knowledge.reranker import (  # type: ignore[import-not-found]
-                    RerankedCandidate,
-                    rerank as _rerank,
-                )
+                from cuga.backend.knowledge import reranker as _rr
 
-                candidates = [
-                    RerankedCandidate(
-                        text=r.text,
-                        score=r.score,
-                        metadata={
-                            "filename": r.filename,
-                            "page": r.page,
+                if not _rr.is_ready(_rerank_model):
+                    _rr.ensure_loading(_rerank_model)  # non-blocking background download
+                    logger.info(
+                        "cuga.knowledge.rerank_warming",
+                        extra={"cuga_knowledge_rerank_model": _rerank_model},
+                    )
+                    results = results[:limit]  # fusion ranking until the model is ready
+                else:
+                    candidates = [
+                        _rr.RerankedCandidate(
+                            text=r.text,
+                            score=r.score,
+                            metadata={"filename": r.filename, "page": r.page},
+                            original_score=r.score,
+                        )
+                        for r in results
+                    ]
+                    reranked = await asyncio.to_thread(
+                        _rr.rerank, original_query, candidates, limit, _rerank_model
+                    )
+                    logger.info(
+                        "cuga.knowledge.rerank_applied",
+                        extra={
+                            "cuga_knowledge_rerank_in": len(candidates),
+                            "cuga_knowledge_rerank_out": len(reranked),
+                            "cuga_knowledge_rerank_top_score_orig": (
+                                candidates[0].original_score if candidates else 0
+                            ),
+                            "cuga_knowledge_rerank_top_score_new": (reranked[0].score if reranked else 0),
                         },
-                        original_score=r.score,
                     )
-                    for r in results
-                ]
-                reranked = await asyncio.to_thread(
-                    _rerank,
-                    original_query,
-                    candidates,
-                    limit,
-                    model_name=str(getattr(self._config, "rerank_model", "BAAI/bge-reranker-v2-m3")),
-                )
-                logger.info(
-                    "cuga.knowledge.rerank_applied",
-                    extra={
-                        "cuga_knowledge_rerank_in": len(candidates),
-                        "cuga_knowledge_rerank_out": len(reranked),
-                        "cuga_knowledge_rerank_top_score_orig": (
-                            candidates[0].original_score if candidates else 0
-                        ),
-                        "cuga_knowledge_rerank_top_score_new": (reranked[0].score if reranked else 0),
-                    },
-                )
-                results = [
-                    SearchResult(
-                        text=c.text,
-                        filename=c.metadata.get("filename", "unknown"),
-                        page=c.metadata.get("page", None),
-                        # Keep the fusion score as the displayed score so
-                        # downstream callers don't see suddenly-different
-                        # score units; cross-encoder scores are unbounded
-                        # logits and confuse the score_threshold gate.
-                        score=round(c.original_score, 4),
-                    )
-                    for c in reranked
-                ]
-            except ModuleNotFoundError:
-                logger.warning(
-                    "Reranker enabled but the reranker module is not "
-                    "shipped in this release (deferred to a follow-up PR). "
-                    "Falling back to fusion ranking. Set rerank.enabled=false "
-                    "in your knowledge profile to silence this warning."
-                )
-                results = results[:limit]
+                    results = [
+                        SearchResult(
+                            text=c.text,
+                            filename=c.metadata.get("filename", "unknown"),
+                            page=c.metadata.get("page", None),
+                            # Keep the fusion score as the displayed score so
+                            # downstream callers don't see suddenly-different
+                            # score units; cross-encoder scores are unbounded
+                            # logits and confuse the score_threshold gate.
+                            score=round(c.original_score, 4),
+                        )
+                        for c in reranked
+                    ]
             except Exception as e:
-                # Catches RerankerUnavailableError (the reranker's own
-                # typed error for "module shipped but sentence-transformers
-                # missing at runtime") plus any other reranker failure —
-                # all degrade to the fusion ranking. We catch by base
-                # type to avoid importing RerankerUnavailableError at the
-                # module top level (would defeat the deferred-bundle
-                # cleanup).
-                logger.warning("Reranker failed (%s); falling back to fusion ranking.", e)
+                logger.warning("Reranker unavailable/failed (%s); using fusion ranking.", e)
                 results = results[:limit]
         else:
             # No reranker → still respect the requested limit (we may have
@@ -3245,6 +3255,18 @@ class KnowledgeEngine:
                 self._config.use_gpu,
             )
 
+        # Reranker: if this update has it enabled, start the model download in
+        # the background NOW (non-blocking) so the user's first search after
+        # switching to balanced/max_quality doesn't pay the ~1.1GB fetch. No-op
+        # if already loaded/loading. Searches serve fusion ranking until ready.
+        if getattr(self._config, "rerank_enabled", False):
+            try:
+                from cuga.backend.knowledge.reranker import ensure_loading as _rerank_ensure_loading
+
+                _rerank_ensure_loading(str(self._config.rerank_model))
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Could not start reranker background load: {}", e)
+
         return {
             "embedding_changed": prepared.embedding_changed,
             "chunking_changed": prepared.chunking_changed,
@@ -3311,7 +3333,7 @@ class KnowledgeEngine:
                 # on/off via PATCH should be confirmable from a settings dump.
                 "rerank_enabled": getattr(self._config, "rerank_enabled", False),
                 "rerank_top_k_in": getattr(self._config, "rerank_top_k_in", 20),
-                "rerank_model": getattr(self._config, "rerank_model", "BAAI/bge-reranker-v2-m3"),
+                "rerank_model": getattr(self._config, "rerank_model", "BAAI/bge-reranker-base"),
                 # Noise-filter knobs — readable from UI / SDK / CLI so
                 # operators can confirm a TOML edit took effect without
                 # tailing logs. Both default to safe modes.

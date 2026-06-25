@@ -596,15 +596,17 @@ class KnowledgeConfig:
     client_adaptation_glossary: list[dict[str, Any]] = field(default_factory=list)
 
     # Cross-encoder reranking — opt-in. When enabled, the top
-    # ``rerank_top_k_in`` candidates from dense+sparse RRF fusion are passed
-    # through a sentence-transformers CrossEncoder (default
-    # ``BAAI/bge-reranker-v2-m3``, ~1.1GB RAM) which rescores each pair with
-    # full bidirectional attention. We then return the requested ``limit``
-    # from the rescored set. Search-only; NOT in vector_config_hash — toggling
-    # this never invalidates the vector index.
+    # ``rerank_top_k_in`` candidates (candidate_k) from dense+sparse RRF fusion
+    # are passed through fastembed's TextCrossEncoder (ONNX/CPU, no torch;
+    # default ``BAAI/bge-reranker-base``, Apache-2.0) which rescores each pair
+    # with full bidirectional attention. We then return the requested ``limit``
+    # (return_k) from the rescored set. Search-only; NOT in vector_config_hash —
+    # toggling this never invalidates the vector index. NOTE: the model MUST be
+    # in fastembed's TextCrossEncoder list (bge-reranker-v2-m3 is NOT — it would
+    # force the torch path); light English option: Xenova/ms-marco-MiniLM-L-12-v2.
     rerank_enabled: bool = False
     rerank_top_k_in: int = 20
-    rerank_model: str = "BAAI/bge-reranker-v2-m3"
+    rerank_model: str = "BAAI/bge-reranker-base"
 
     # Fields whose values are credentials. Stripped when publishing snapshots
     # so secrets never cross machines via the snapshot store.
@@ -1060,7 +1062,7 @@ class KnowledgeConfig:
             search_hybrid_mode=profile_search.get("hybrid_mode", search.get("hybrid_mode", "auto")),
             rerank_enabled=profile_rerank.get("enabled", rerank_kb.get("enabled", False)),
             rerank_top_k_in=profile_rerank.get("top_k_in", rerank_kb.get("top_k_in", 20)),
-            rerank_model=profile_rerank.get("model", rerank_kb.get("model", "BAAI/bge-reranker-v2-m3")),
+            rerank_model=profile_rerank.get("model", rerank_kb.get("model", "BAAI/bge-reranker-base")),
             max_upload_size_mb=limits.get("max_upload_size_mb", 100),
             max_url_download_size_mb=limits.get("max_url_download_size_mb", 50),
             max_files_per_request=limits.get("max_files_per_request", 10),
