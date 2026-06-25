@@ -1837,6 +1837,20 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     except HTTPException:
         raise
     except Exception as e:
+        from cuga.backend.knowledge.engine import EmbeddingModelLoadError
+
+        if isinstance(e, EmbeddingModelLoadError):
+            # A bad/just-switched embedding model (e.g. a large local model still
+            # downloading) must not 500 — return an actionable 400 the UI can show.
+            logger.warning("Embedding model load failed during publish: %s", e)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Couldn't load embedding model '{e.model}' ({e.provider}). If it's a large "
+                    "local model it may still be downloading — retry in a moment. Otherwise check "
+                    "the model name and your provider key / connectivity."
+                ),
+            )
         logger.error(f"Failed to save manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

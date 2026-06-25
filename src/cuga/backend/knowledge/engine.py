@@ -755,6 +755,19 @@ class ReindexBusyError(Exception):
         super().__init__(f"Cannot reindex: {pending_count} upload(s) in progress")
 
 
+class EmbeddingModelLoadError(Exception):
+    """Raised when a config change selects an embedding model that fails to load
+    (e.g. a large model still downloading, a bad model name, or unresolved API
+    key). Carries the provider/model so callers can return an actionable message
+    instead of a 500."""
+
+    def __init__(self, provider: str, model: str, cause: Exception):
+        self.provider = provider
+        self.model = model
+        self.cause = cause
+        super().__init__(f"Failed to load embedding model {model!r} (provider {provider!r}): {cause}")
+
+
 class ReindexInProgressError(Exception):
     """Raised when upload is attempted during reindex."""
 
@@ -3261,7 +3274,17 @@ class KnowledgeEngine:
         new_embeddings = None
         new_dim = None
         if embedding_changed:
-            new_embeddings = create_embeddings(validated)
+            # Local providers (fastembed/huggingface) load the model eagerly here,
+            # so a large model still downloading (e.g. multilingual-e5-large is
+            # ~2.2GB with external ONNX weights), a bad model name, or an
+            # unresolved key fails RIGHT HERE. Surface a typed, actionable error
+            # instead of letting an opaque ONNX/HTTP error 500 the publish.
+            try:
+                new_embeddings = create_embeddings(validated)
+            except Exception as e:
+                raise EmbeddingModelLoadError(
+                    validated.embedding_provider, validated.embedding_model or "(default)", e
+                ) from e
             # Probe the new dim only when we have an existing dim to compare
             # against (reindex decision). On a fresh engine with no ingested
             # data we'd be calling a remote API for nothing — and worse, that
