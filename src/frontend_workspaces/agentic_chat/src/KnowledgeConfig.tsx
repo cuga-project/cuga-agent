@@ -304,6 +304,24 @@ interface KnowledgeConfigValues {
   // Trades parse speed for extraction fidelity. Saved with the snapshot.
   docling_pdf_mode?: string;
   docling_layout_engine?: string;
+  // Docling page-chrome filter: "off" | "dry_run" | "enforce". Profile-
+  // driven; drops repetitive headers/footers when "enforce". Sami review.
+  docling_drop_page_chrome?: string;
+  // Reranker knobs — driven by the active profile (e.g. balanced &
+  // max_quality enable; standard/speed disable). Profile-onClick MUST
+  // be able to read/write these without a TS error (Sami C3 root cause).
+  rerank_enabled?: boolean;
+  rerank_top_k_in?: number;
+  rerank_model?: string;
+  // Search-side knobs — same story as rerank.
+  search_hybrid_mode?: string;
+  search_junk_filter?: string;
+  max_search_attempts?: number;
+  default_limit?: number;
+  default_score_threshold?: number;
+  // Ingest-side knob: how many concurrent Docling parses the engine
+  // permits (max_quality bumps this for laptops with headroom).
+  max_ingest_workers?: number;
   // Query transformation (LLM): "off" | "multi_query" | "hyde". Operator-only
   // (Advanced). Search-only — not part of vector_config_hash, no re-index.
   search_query_transform?: string;
@@ -1960,7 +1978,12 @@ export default function KnowledgePanel({
                                 .filter((doc) => !uploadingFiles.some((f) => (f.backendName || f.name) === doc.filename && f.status !== "error"))
                                 .map((doc) => {
                                   const task = taskByName.get(doc.filename);
-                                  const [tagType, tagLabel] = task ? TAG_BY_STATUS[task.status] ?? TAG_BY_STATUS.pending : ["gray", ""];
+                                  // ``as const`` in the else branch keeps the literal
+                                  // type "gray" instead of widening to ``string``, so Tag's
+                                  // strict ``type`` prop accepts it (Sami C3 review).
+                                  const [tagType, tagLabel] = task
+                                    ? TAG_BY_STATUS[task.status] ?? TAG_BY_STATUS.pending
+                                    : (["gray", ""] as const);
                                   return (
                                     <Tile key={doc.filename} style={{ borderLeft: `3px solid ${task ? "#0f62fe" : "#24a148"}` }}>
                                       <Stack orientation="horizontal" gap={4} style={{ alignItems: "center" }}>

@@ -112,12 +112,26 @@ export interface AgentConfig {
   special_instructions?: string;
   policies?: { enablePolicies: boolean; policies: unknown[] };
   homescreen?: HomescreenConfig;
+  // Knowledge config shape MUST stay in sync with ``KnowledgeConfigValues``
+  // in agentic_chat/src/KnowledgeConfig.tsx — they describe the same wire
+  // payload (the PATCH /api/manage/config/draft/knowledge body).
+  // Drifts have caused silent field-drop bugs on version-load + profile-
+  // pick (Sami C3): if a field is in KnowledgeConfigValues but missing
+  // here, the version-history hydrator drops it on the floor and the
+  // profile-onClick writes-without-type-error escape ``tsc -b``.
   knowledge?: {
     enabled?: boolean;
     agent_level_enabled?: boolean;
     session_level_enabled?: boolean;
+    rag_profile?: string;
     embedding_provider?: string;
     embedding_model?: string;
+    embedding_api_key?: string;
+    embedding_base_url?: string;
+    embedding_extra_params?: Record<string, string | number | boolean>;
+    embedding_batch_size?: number;
+    embedding_concurrency?: number;
+    use_gpu?: boolean;
     chunk_size?: number;
     chunk_overlap?: number;
     metric_type?: string;
@@ -126,15 +140,47 @@ export interface AgentConfig {
     max_url_download_size_mb?: number;
     max_files_per_request?: number;
     max_chunks_per_document?: number;
+    // Engine-side knobs surfaced by profiles
+    vector_insert_batch_size?: number;
+    max_ingest_workers?: number;
+    // Docling
+    docling_pdf_mode?: string;
+    docling_layout_engine?: string;
+    docling_drop_page_chrome?: string;
+    // Reranker
+    rerank_enabled?: boolean;
+    rerank_top_k_in?: number;
+    rerank_model?: string;
+    // Search-side
+    search_hybrid_mode?: string;
+    search_junk_filter?: string;
+    search_query_transform?: string;
+    max_search_attempts?: number;
+    default_limit?: number;
+    default_score_threshold?: number;
+    // Client adaptation (prompt rules + glossary)
+    client_adaptation_text?: string;
+    client_adaptation_glossary?: { term: string; definition?: string }[];
   };
 }
 
+// Mirrors the dataclass defaults in src/cuga/backend/knowledge/config.py
+// — SDK users constructing a bare ``KnowledgeConfig()`` get the same
+// shape. Profile overrides (standard / balanced / max_quality) layer on
+// top via the profile loader.
 const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   enabled: false,
   agent_level_enabled: true,
   session_level_enabled: true,
+  rag_profile: "standard",
   embedding_provider: "huggingface",
   embedding_model: "",
+  embedding_api_key: "",
+  embedding_base_url: "",
+  embedding_extra_params: {},
+  embedding_batch_size: 64,
+  embedding_concurrency: 4,
+  use_gpu: true,
   chunk_size: 1000,
   chunk_overlap: 200,
   metric_type: "COSINE",
@@ -143,6 +189,22 @@ const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   max_url_download_size_mb: 50,
   max_files_per_request: 10,
   max_chunks_per_document: 10000,
+  vector_insert_batch_size: 200,
+  max_ingest_workers: 2,
+  docling_pdf_mode: "accurate",
+  docling_layout_engine: "auto",
+  docling_drop_page_chrome: "dry_run",
+  rerank_enabled: false,
+  rerank_top_k_in: 20,
+  rerank_model: "BAAI/bge-reranker-base",
+  search_hybrid_mode: "auto",
+  search_junk_filter: "enforce",
+  search_query_transform: "off",
+  max_search_attempts: 3,
+  default_limit: 10,
+  default_score_threshold: 0.0,
+  client_adaptation_text: "",
+  client_adaptation_glossary: [],
 };
 
 const DEFAULT_HOMESCREEN: HomescreenConfig = {
