@@ -121,6 +121,7 @@ def create_tool_approval_action(
     code_preview: List[str],
     full_code: str,
     approval_message: str = None,
+    return_to: str = "CugaLite",
 ) -> FollowUpAction:
     """
     Create a tool approval follow-up action.
@@ -156,7 +157,7 @@ def create_tool_approval_action(
     return FollowUpAction(
         action_name=f"Approve Tool Execution - {policy_name}",
         action_id=ActionIds.TOOL_APPROVAL,
-        return_to="CugaLite",
+        return_to=return_to,
         additional_data=AdditionalData(
             tool={
                 "required_tools": required_tools,

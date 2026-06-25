@@ -3,11 +3,11 @@
 Copies variables computed by a sub-agent (carried in ``InvokeResult.variables``)
 into the Supervisor's ``supervisor_variables_manager``.
 
-The bridge is driven by a *shared mutable reference* (``_shared_vm_ref: List``)
-that ``execute_agent_tool`` refreshes to the current state's VM before each code
-execution. ``delegate_to_agent`` reads from that ref after the sub-agent returns,
-so variables land in the correct state snapshot even though the delegation closure
-is built at graph-prepare time.
+During each ``execute_agent_tool`` run, a :class:`~cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context.SupervisorExecutionContext`
+is injected into the code executor locals under ``SUPERVISOR_EXEC_KEY``.
+``delegate_to_agent`` reads ``variable_manager`` from that per-run context after
+the sub-agent returns, so variables land in the correct state snapshot without
+storing runtime state on the long-lived graph adapter.
 """
 
 from __future__ import annotations

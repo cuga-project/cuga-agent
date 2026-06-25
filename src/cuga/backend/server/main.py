@@ -859,6 +859,15 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Application is shutting down...")
 
+    await _await_pending_history_saves()
+
+    from cuga.backend.storage import get_storage
+
+    try:
+        await get_storage().close_relational_stores()
+    except Exception as e:
+        logger.debug(f"Relational store shutdown: {e}")
+
     # Terminate the save_reuse server process if it's running
     if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
         logger.info("Terminating save_reuse server...")
@@ -987,6 +996,25 @@ async def setup_page_info(state: AgentState, env: ExtensionEnv | BrowserEnvGymAs
     state.current_app_description = f"web application for '{title}' and url '{url_app_name}'"
 
 
+_history_save_tasks: set[asyncio.Task] = set()
+_history_save_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
+_history_save_locks_guard = asyncio.Lock()
+
+
+async def _conversation_save_lock(agent_id: str, thread_id: str, user_id: str) -> asyncio.Lock:
+    key = (agent_id, thread_id, user_id)
+    async with _history_save_locks_guard:
+        if key not in _history_save_locks:
+            _history_save_locks[key] = asyncio.Lock()
+        return _history_save_locks[key]
+
+
+async def _await_pending_history_saves() -> None:
+    pending = list(_history_save_tasks)
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+
+
 async def _save_conversation_and_events_async(
     agent_id: str,
     thread_id: str,
@@ -994,22 +1022,71 @@ async def _save_conversation_and_events_async(
     state: AgentState,
     events: List[Dict[str, Any]],
     user_attachments: Optional[List[Dict[str, Any]]] = None,
-):
+) -> None:
     """Save conversation history and stream events asynchronously."""
-    try:
-        await save_conversation_to_db(
-            agent_id,
-            thread_id,
-            state,
-            user_id,
+    save_lock = await _conversation_save_lock(agent_id, thread_id, user_id)
+    async with save_lock:
+        try:
+            await save_conversation_to_db(
+                agent_id,
+                thread_id,
+                state,
+                user_id,
+                user_attachments=user_attachments,
+            )
+            if events:
+                conversation_db = get_conversation_db()
+                await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
+                logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
+        except Exception as e:
+            logger.error(f"Error in async save: {e}")
+
+
+def _get_graph_state_values_sync(graph, thread_id: str):
+    snapshot = graph.get_state({"configurable": {"thread_id": thread_id}})
+    if not snapshot or not snapshot.values:
+        return None
+    return snapshot.values
+
+
+async def _aget_graph_state_values(graph, thread_id: str | None):
+    if not graph or not thread_id:
+        return None
+    return await asyncio.to_thread(_get_graph_state_values_sync, graph, thread_id)
+
+
+def _schedule_history_save(
+    *,
+    agent_id: str,
+    thread_id: str,
+    user_id: str,
+    state: AgentState,
+    events: List[Dict[str, Any]],
+    user_attachments: Optional[List[Dict[str, Any]]] = None,
+) -> None:
+    task = asyncio.create_task(
+        _save_conversation_and_events_async(
+            agent_id=agent_id,
+            thread_id=thread_id,
+            user_id=user_id,
+            state=state,
+            events=events,
             user_attachments=user_attachments,
-        )
-        if events:
-            conversation_db = get_conversation_db()
-            await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
-            logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
-    except Exception as e:
-        logger.error(f"Error in async save: {e}")
+        ),
+        name=f"save-history-{thread_id}",
+    )
+    _history_save_tasks.add(task)
+
+    def _on_done(save_task: asyncio.Task) -> None:
+        _history_save_tasks.discard(save_task)
+        try:
+            save_task.result()
+        except asyncio.CancelledError:
+            pass
+        except Exception as e:
+            logger.error(f"Background history save failed for thread {thread_id}: {e}")
+
+    task.add_done_callback(_on_done)
 
 
 async def save_conversation_to_db(
@@ -1212,9 +1289,7 @@ async def event_stream(
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
             try:
-                latest_state_values = run_agent.graph.get_state(
-                    {"configurable": {"thread_id": thread_id}}
-                ).values
+                latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
                 if latest_state_values:
                     # Load existing state for followup questions
                     local_state = AgentState(**latest_state_values)
@@ -1247,7 +1322,7 @@ async def event_stream(
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            latest_state_values = run_agent.graph.get_state({"configurable": {"thread_id": thread_id}}).values
+            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
@@ -1389,9 +1464,7 @@ async def event_stream(
                     if event.interrupt and not event.has_tools:
                         # Update local state from graph
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
-                            ).values
+                            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
                         return
@@ -1417,9 +1490,7 @@ async def event_stream(
                         variables_metadata = {}
                         active_policies = []
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
-                            ).values
+                            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
 
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -1487,14 +1558,16 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                            # Batch save all events and conversation history synchronously (for debugging)
-                            # Skip saving if disable_history is True
+                            # Persist history in the background so Answer reaches the client first
                             if not disable_history:
-                                await _save_conversation_and_events_async(
+                                history_state = local_state if local_state else AgentState()
+                                if hasattr(history_state, "model_copy"):
+                                    history_state = history_state.model_copy(deep=True)
+                                _schedule_history_save(
                                     agent_id=app_state.agent_id,
                                     thread_id=thread_id,
                                     user_id=user_id,
-                                    state=local_state if local_state else AgentState(),
+                                    state=history_state,
                                     events=stream_events_buffer.copy(),
                                     user_attachments=user_attachments,
                                 )
@@ -1507,9 +1580,7 @@ async def event_stream(
                         ).format(app_state.output_format, thread_id=thread_id)
 
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
-                            ).values
+                            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
                         try:
@@ -1524,9 +1595,7 @@ async def event_stream(
                         return
                     elif event.has_tools:
                         if thread_id:
-                            latest_state_values = run_agent.graph.get_state(
-                                {"configurable": {"thread_id": thread_id}}
-                            ).values
+                            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
 
@@ -1569,9 +1638,7 @@ async def event_stream(
                 else:
                     logger.debug("Yield {}".format(event))
                     if thread_id:
-                        latest_state_values = run_agent.graph.get_state(
-                            {"configurable": {"thread_id": thread_id}}
-                        ).values
+                        latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
                     name = ((event.split("\n")[0]).split(":")[1]).strip()
@@ -2961,9 +3028,9 @@ async def get_agent_state(
             raise HTTPException(status_code=503, detail="Agent graph not initialized")
 
         try:
-            state_snapshot = app_state.agent.graph.get_state({"configurable": {"thread_id": thread_id}})
+            state_values = await _aget_graph_state_values(app_state.agent.graph, thread_id)
 
-            if not state_snapshot or not state_snapshot.values:
+            if not state_values:
                 return JSONResponse(
                     {
                         "thread_id": thread_id,
@@ -2975,7 +3042,7 @@ async def get_agent_state(
                     }
                 )
 
-            local_state = AgentState(**state_snapshot.values)
+            local_state = AgentState(**state_values)
             variables_metadata = local_state.variables_manager.get_all_variables_metadata(
                 include_value=False, include_value_preview=True
             )

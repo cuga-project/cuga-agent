@@ -69,47 +69,44 @@ class ConversationHistoryDB:
         if self._schema_ensured:
             return
         store = self._get_store()
-        try:
-            await store.execute("""
-                CREATE TABLE IF NOT EXISTS conversation_history (
-                    tenant_id TEXT NOT NULL DEFAULT '',
-                    instance_id TEXT NOT NULL DEFAULT '',
-                    agent_id TEXT NOT NULL,
-                    thread_id TEXT NOT NULL,
-                    version INTEGER NOT NULL,
-                    user_id TEXT NOT NULL,
-                    messages TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (tenant_id, instance_id, agent_id, thread_id, version, user_id)
-                )
-            """)
-            await store.execute("""
-                CREATE TABLE IF NOT EXISTS stream_events (
-                    tenant_id TEXT NOT NULL DEFAULT '',
-                    instance_id TEXT NOT NULL DEFAULT '',
-                    agent_id TEXT NOT NULL,
-                    thread_id TEXT NOT NULL,
-                    user_id TEXT NOT NULL,
-                    events TEXT NOT NULL,
-                    created_at TEXT NOT NULL,
-                    updated_at TEXT NOT NULL,
-                    PRIMARY KEY (tenant_id, instance_id, agent_id, thread_id, user_id)
-                )
-            """)
-            for idx_sql in [
-                "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
-                "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",
-                "CREATE INDEX IF NOT EXISTS idx_agent_id ON conversation_history(agent_id)",
-                "CREATE INDEX IF NOT EXISTS idx_updated_at ON conversation_history(updated_at)",
-                "CREATE INDEX IF NOT EXISTS idx_stream_thread_id ON stream_events(thread_id)",
-                "CREATE INDEX IF NOT EXISTS idx_stream_user_id ON stream_events(user_id)",
-            ]:
-                await store.execute(idx_sql)
-            await store.commit()
-            self._schema_ensured = True
-        finally:
-            await store.close()
+        await store.execute("""
+            CREATE TABLE IF NOT EXISTS conversation_history (
+                tenant_id TEXT NOT NULL DEFAULT '',
+                instance_id TEXT NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                version INTEGER NOT NULL,
+                user_id TEXT NOT NULL,
+                messages TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, instance_id, agent_id, thread_id, version, user_id)
+            )
+        """)
+        await store.execute("""
+            CREATE TABLE IF NOT EXISTS stream_events (
+                tenant_id TEXT NOT NULL DEFAULT '',
+                instance_id TEXT NOT NULL DEFAULT '',
+                agent_id TEXT NOT NULL,
+                thread_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                events TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (tenant_id, instance_id, agent_id, thread_id, user_id)
+            )
+        """)
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_thread_id ON conversation_history(thread_id)",
+            "CREATE INDEX IF NOT EXISTS idx_user_id ON conversation_history(user_id)",
+            "CREATE INDEX IF NOT EXISTS idx_agent_id ON conversation_history(agent_id)",
+            "CREATE INDEX IF NOT EXISTS idx_updated_at ON conversation_history(updated_at)",
+            "CREATE INDEX IF NOT EXISTS idx_stream_thread_id ON stream_events(thread_id)",
+            "CREATE INDEX IF NOT EXISTS idx_stream_user_id ON stream_events(user_id)",
+        ]:
+            await store.execute(idx_sql)
+        await store.commit()
+        self._schema_ensured = True
 
     async def save_conversation(
         self, agent_id: str, thread_id: str, version: int, user_id: str, messages: List[Dict[str, Any]]
@@ -119,38 +116,35 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                now = datetime.utcnow().isoformat()
-                messages_json = json.dumps(messages)
-                existing = await store.fetchone(
+            now = datetime.utcnow().isoformat()
+            messages_json = json.dumps(messages)
+            existing = await store.fetchone(
+                """
+                SELECT created_at FROM conversation_history
+                WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
+                """,
+                (tenant_id, inst_id, agent_id, thread_id, version, user_id),
+            )
+            if existing:
+                await store.execute(
                     """
-                    SELECT created_at FROM conversation_history
+                    UPDATE conversation_history
+                    SET messages = ?, updated_at = ?
                     WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
                     """,
-                    (tenant_id, inst_id, agent_id, thread_id, version, user_id),
+                    (messages_json, now, tenant_id, inst_id, agent_id, thread_id, version, user_id),
                 )
-                if existing:
-                    await store.execute(
-                        """
-                        UPDATE conversation_history
-                        SET messages = ?, updated_at = ?
-                        WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
-                        """,
-                        (messages_json, now, tenant_id, inst_id, agent_id, thread_id, version, user_id),
-                    )
-                else:
-                    await store.execute(
-                        """
-                        INSERT INTO conversation_history
-                        (tenant_id, instance_id, agent_id, thread_id, version, user_id, messages, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (tenant_id, inst_id, agent_id, thread_id, version, user_id, messages_json, now, now),
-                    )
-                await store.commit()
-                return True
-            finally:
-                await store.close()
+            else:
+                await store.execute(
+                    """
+                    INSERT INTO conversation_history
+                    (tenant_id, instance_id, agent_id, thread_id, version, user_id, messages, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (tenant_id, inst_id, agent_id, thread_id, version, user_id, messages_json, now, now),
+                )
+            await store.commit()
+            return True
         except Exception as e:
             logger.error(f"Error saving conversation: {e}")
             return False
@@ -163,28 +157,25 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                row = await store.fetchone(
-                    """
-                    SELECT agent_id, thread_id, version, user_id, messages, created_at, updated_at
-                    FROM conversation_history
-                    WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
-                    """,
-                    (tenant_id, inst_id, agent_id, thread_id, version, user_id),
+            row = await store.fetchone(
+                """
+                SELECT agent_id, thread_id, version, user_id, messages, created_at, updated_at
+                FROM conversation_history
+                WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
+                """,
+                (tenant_id, inst_id, agent_id, thread_id, version, user_id),
+            )
+            if row:
+                return ConversationHistory(
+                    agent_id=row["agent_id"],
+                    thread_id=row["thread_id"],
+                    version=row["version"],
+                    user_id=row["user_id"],
+                    messages=json.loads(row["messages"]),
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
                 )
-                if row:
-                    return ConversationHistory(
-                        agent_id=row["agent_id"],
-                        thread_id=row["thread_id"],
-                        version=row["version"],
-                        user_id=row["user_id"],
-                        messages=json.loads(row["messages"]),
-                        created_at=row["created_at"],
-                        updated_at=row["updated_at"],
-                    )
-                return None
-            finally:
-                await store.close()
+            return None
         except Exception as e:
             logger.error(f"Error retrieving conversation: {e}")
             return None
@@ -197,41 +188,38 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                if user_id:
-                    rows = await store.fetchall(
-                        """
-                        SELECT agent_id, thread_id, version, user_id, messages, created_at, updated_at
-                        FROM conversation_history
-                        WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id = ?
-                        ORDER BY version DESC
-                        """,
-                        (tenant_id, inst_id, thread_id, user_id),
-                    )
-                else:
-                    rows = await store.fetchall(
-                        """
-                        SELECT agent_id, thread_id, version, user_id, messages, created_at, updated_at
-                        FROM conversation_history
-                        WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
-                        ORDER BY version DESC
-                        """,
-                        (tenant_id, inst_id, thread_id),
-                    )
-                return [
-                    ConversationHistory(
-                        agent_id=row["agent_id"],
-                        thread_id=row["thread_id"],
-                        version=row["version"],
-                        user_id=row["user_id"],
-                        messages=json.loads(row["messages"]),
-                        created_at=row["created_at"],
-                        updated_at=row["updated_at"],
-                    )
-                    for row in rows
-                ]
-            finally:
-                await store.close()
+            if user_id:
+                rows = await store.fetchall(
+                    """
+                    SELECT agent_id, thread_id, version, user_id, messages, created_at, updated_at
+                    FROM conversation_history
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ? AND user_id = ?
+                    ORDER BY version DESC
+                    """,
+                    (tenant_id, inst_id, thread_id, user_id),
+                )
+            else:
+                rows = await store.fetchall(
+                    """
+                    SELECT agent_id, thread_id, version, user_id, messages, created_at, updated_at
+                    FROM conversation_history
+                    WHERE tenant_id = ? AND instance_id = ? AND thread_id = ?
+                    ORDER BY version DESC
+                    """,
+                    (tenant_id, inst_id, thread_id),
+                )
+            return [
+                ConversationHistory(
+                    agent_id=row["agent_id"],
+                    thread_id=row["thread_id"],
+                    version=row["version"],
+                    user_id=row["user_id"],
+                    messages=json.loads(row["messages"]),
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
+                )
+                for row in rows
+            ]
         except Exception as e:
             logger.error(f"Error retrieving thread history: {e}")
             return []
@@ -242,18 +230,15 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                result = await store.fetchone(
-                    """
-                    SELECT MAX(version) as max FROM conversation_history
-                    WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
-                    """,
-                    (tenant_id, inst_id, agent_id, thread_id, user_id),
-                )
-                v = result.get("max") if result else None
-                return v if v is not None else 0
-            finally:
-                await store.close()
+            result = await store.fetchone(
+                """
+                SELECT MAX(version) as max FROM conversation_history
+                WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
+                """,
+                (tenant_id, inst_id, agent_id, thread_id, user_id),
+            )
+            v = result.get("max") if result else None
+            return v if v is not None else 0
         except Exception as e:
             logger.error(f"Error getting latest version: {e}")
             return 0
@@ -264,18 +249,15 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                await store.execute(
-                    """
-                    DELETE FROM conversation_history
-                    WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
-                    """,
-                    (tenant_id, inst_id, agent_id, thread_id, version, user_id),
-                )
-                await store.commit()
-                return True
-            finally:
-                await store.close()
+            await store.execute(
+                """
+                DELETE FROM conversation_history
+                WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
+                """,
+                (tenant_id, inst_id, agent_id, thread_id, version, user_id),
+            )
+            await store.commit()
+            return True
         except Exception as e:
             logger.error(f"Error deleting conversation: {e}")
             return False
@@ -286,15 +268,12 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                await store.execute(
-                    "DELETE FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
-                    (tenant_id, inst_id, agent_id, thread_id, user_id),
-                )
-                await store.commit()
-                return True
-            finally:
-                await store.close()
+            await store.execute(
+                "DELETE FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
+                (tenant_id, inst_id, agent_id, thread_id, user_id),
+            )
+            await store.commit()
+            return True
         except Exception as e:
             logger.error(f"Error deleting stream events: {e}")
             return False
@@ -305,19 +284,16 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                await store.execute(
-                    "DELETE FROM conversation_history WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
-                    (tenant_id, inst_id, agent_id, thread_id, user_id),
-                )
-                await store.execute(
-                    "DELETE FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
-                    (tenant_id, inst_id, agent_id, thread_id, user_id),
-                )
-                await store.commit()
-                return True
-            finally:
-                await store.close()
+            await store.execute(
+                "DELETE FROM conversation_history WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
+                (tenant_id, inst_id, agent_id, thread_id, user_id),
+            )
+            await store.execute(
+                "DELETE FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
+                (tenant_id, inst_id, agent_id, thread_id, user_id),
+            )
+            await store.commit()
+            return True
         except Exception as e:
             logger.error(f"Error deleting thread: {e}")
             return False
@@ -328,68 +304,65 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                rows = await store.fetchall(
+            rows = await store.fetchall(
+                """
+                SELECT thread_id, MAX(version) as latest_version, MAX(updated_at) as updated_at
+                FROM conversation_history
+                WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND user_id = ?
+                GROUP BY thread_id
+                ORDER BY updated_at DESC
+                """,
+                (tenant_id, inst_id, agent_id, user_id),
+            )
+            threads = []
+            for row in rows:
+                thread_id = row["thread_id"]
+                latest_version = row["latest_version"]
+                updated_at = row["updated_at"]
+                messages_row = await store.fetchone(
                     """
-                    SELECT thread_id, MAX(version) as latest_version, MAX(updated_at) as updated_at
-                    FROM conversation_history
-                    WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND user_id = ?
-                    GROUP BY thread_id
-                    ORDER BY updated_at DESC
+                    SELECT messages FROM conversation_history
+                    WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
                     """,
-                    (tenant_id, inst_id, agent_id, user_id),
+                    (tenant_id, inst_id, agent_id, thread_id, latest_version, user_id),
                 )
-                threads = []
-                for row in rows:
-                    thread_id = row["thread_id"]
-                    latest_version = row["latest_version"]
-                    updated_at = row["updated_at"]
-                    messages_row = await store.fetchone(
+                first_message = "New Conversation"
+                if messages_row:
+                    messages = json.loads(messages_row["messages"])
+                    for msg in messages:
+                        role = msg.get("role", "").lower()
+                        if role in ("user", "human"):
+                            content = msg.get("content", "")
+                            if content and content.strip():
+                                first_message = content[:60] + "..." if len(content) > 60 else content
+                                break
+                if first_message == "New Conversation":
+                    stream_row = await store.fetchone(
                         """
-                        SELECT messages FROM conversation_history
-                        WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND version = ? AND user_id = ?
+                        SELECT events FROM stream_events
+                        WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
                         """,
-                        (tenant_id, inst_id, agent_id, thread_id, latest_version, user_id),
+                        (tenant_id, inst_id, agent_id, thread_id, user_id),
                     )
-                    first_message = "New Conversation"
-                    if messages_row:
-                        messages = json.loads(messages_row["messages"])
-                        for msg in messages:
-                            role = msg.get("role", "").lower()
-                            if role in ("user", "human"):
-                                content = msg.get("content", "")
-                                if content and content.strip():
-                                    first_message = content[:60] + "..." if len(content) > 60 else content
+                    if stream_row:
+                        events = json.loads(stream_row["events"])
+                        for event in events:
+                            if event.get("event_name") == "UserMessage":
+                                event_data = event.get("event_data", "")
+                                if event_data and event_data.strip():
+                                    first_message = (
+                                        event_data[:60] + "..." if len(event_data) > 60 else event_data
+                                    )
                                     break
-                    if first_message == "New Conversation":
-                        stream_row = await store.fetchone(
-                            """
-                            SELECT events FROM stream_events
-                            WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
-                            """,
-                            (tenant_id, inst_id, agent_id, thread_id, user_id),
-                        )
-                        if stream_row:
-                            events = json.loads(stream_row["events"])
-                            for event in events:
-                                if event.get("event_name") == "UserMessage":
-                                    event_data = event.get("event_data", "")
-                                    if event_data and event_data.strip():
-                                        first_message = (
-                                            event_data[:60] + "..." if len(event_data) > 60 else event_data
-                                        )
-                                        break
-                    threads.append(
-                        {
-                            "thread_id": thread_id,
-                            "latest_version": latest_version,
-                            "first_message": first_message,
-                            "updated_at": updated_at,
-                        }
-                    )
-                return threads
-            finally:
-                await store.close()
+                threads.append(
+                    {
+                        "thread_id": thread_id,
+                        "latest_version": latest_version,
+                        "first_message": first_message,
+                        "updated_at": updated_at,
+                    }
+                )
+            return threads
         except Exception as e:
             logger.error(f"Error getting threads for agent: {e}")
             return []
@@ -402,39 +375,30 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                now = datetime.utcnow().isoformat()
-                events_json = json.dumps(events)
-                existing = await store.fetchone(
-                    "SELECT created_at FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
-                    (tenant_id, inst_id, agent_id, thread_id, user_id),
+            now = datetime.utcnow().isoformat()
+            events_json = json.dumps(events)
+            existing = await store.fetchone(
+                "SELECT created_at FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
+                (tenant_id, inst_id, agent_id, thread_id, user_id),
+            )
+            if existing:
+                await store.execute(
+                    """
+                    UPDATE stream_events SET events = ?, updated_at = ?
+                    WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
+                    """,
+                    (events_json, now, tenant_id, inst_id, agent_id, thread_id, user_id),
                 )
-                if existing:
-                    row = await store.fetchone(
-                        "SELECT events FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?",
-                        (tenant_id, inst_id, agent_id, thread_id, user_id),
-                    )
-                    existing_events = json.loads(row["events"]) if row and row["events"] else []
-                    combined_events = existing_events + events
-                    await store.execute(
-                        """
-                        UPDATE stream_events SET events = ?, updated_at = ?
-                        WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
-                        """,
-                        (json.dumps(combined_events), now, tenant_id, inst_id, agent_id, thread_id, user_id),
-                    )
-                else:
-                    await store.execute(
-                        """
-                        INSERT INTO stream_events (tenant_id, instance_id, agent_id, thread_id, user_id, events, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (tenant_id, inst_id, agent_id, thread_id, user_id, events_json, now, now),
-                    )
-                await store.commit()
-                return True
-            finally:
-                await store.close()
+            else:
+                await store.execute(
+                    """
+                    INSERT INTO stream_events (tenant_id, instance_id, agent_id, thread_id, user_id, events, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (tenant_id, inst_id, agent_id, thread_id, user_id, events_json, now, now),
+                )
+            await store.commit()
+            return True
         except Exception as e:
             logger.error(f"Error saving stream events: {e}")
             return False
@@ -447,26 +411,23 @@ class ConversationHistoryDB:
             store = self._get_store()
             tenant_id = _tenant_id()
             inst_id = _instance_id()
-            try:
-                row = await store.fetchone(
-                    """
-                    SELECT agent_id, thread_id, user_id, events, created_at, updated_at
-                    FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
-                    """,
-                    (tenant_id, inst_id, agent_id, thread_id, user_id),
+            row = await store.fetchone(
+                """
+                SELECT agent_id, thread_id, user_id, events, created_at, updated_at
+                FROM stream_events WHERE tenant_id = ? AND instance_id = ? AND agent_id = ? AND thread_id = ? AND user_id = ?
+                """,
+                (tenant_id, inst_id, agent_id, thread_id, user_id),
+            )
+            if row:
+                return ConversationStreamHistory(
+                    agent_id=row["agent_id"],
+                    thread_id=row["thread_id"],
+                    user_id=row["user_id"],
+                    events=json.loads(row["events"]),
+                    created_at=row["created_at"],
+                    updated_at=row["updated_at"],
                 )
-                if row:
-                    return ConversationStreamHistory(
-                        agent_id=row["agent_id"],
-                        thread_id=row["thread_id"],
-                        user_id=row["user_id"],
-                        events=json.loads(row["events"]),
-                        created_at=row["created_at"],
-                        updated_at=row["updated_at"],
-                    )
-                return None
-            finally:
-                await store.close()
+            return None
         except Exception as e:
             logger.error(f"Error retrieving stream events: {e}")
             return None

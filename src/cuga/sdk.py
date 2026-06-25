@@ -175,24 +175,33 @@ class PoliciesManager:
         ```
     """
 
-    def __init__(self, agent: "CugaAgent"):
-        """Initialize policies manager with reference to agent."""
+    def __init__(self, agent: Union["CugaAgent", "CugaSupervisor"]):
+        """Initialize policies manager with reference to agent or supervisor."""
         self._agent = agent
         self._fs_sync = None
 
+    def _agent_tool_provider(self) -> Optional[ToolProviderInterface]:
+        """Return tool_provider when the host exposes one (CugaAgent, optional CugaSupervisor)."""
+        return getattr(self._agent, "tool_provider", None)
+
     def _invalidate_toolguard_runtime(self) -> None:
         """Invalidate ToolGuard runtime/cache if the agent provider supports it."""
-        invalidate_toolguard_provider(self._agent.tool_provider)
+        provider = self._agent_tool_provider()
+        if provider is not None:
+            invalidate_toolguard_provider(provider)
 
     def _attach_policy_storage_to_toolguard(self) -> None:
         """Attach current policy storage to the ToolGuard provider wrapper if available."""
+        provider = self._agent_tool_provider()
+        if provider is None:
+            return
         if (
             hasattr(self._agent, "_policy_system")
             and self._agent._policy_system is not None
             and hasattr(self._agent._policy_system, "storage")
         ):
             configure_toolguard_provider(
-                self._agent.tool_provider,
+                provider,
                 policy_storage=self._agent._policy_system.storage,
             )
 
@@ -1787,11 +1796,16 @@ class CugaAgent:
                 return []
             return list(value) if isinstance(value, list) else [value]
 
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import is_langfuse_callback_handler
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import (
+            collect_langfuse_callbacks_from_config,
+            is_langfuse_callback_handler,
+            sync_langfuse_callbacks_from_config,
+        )
 
-        existing = _as_list(run_config.get("callbacks"))
+        caller_callbacks = run_config.get("callbacks")
+        existing = _as_list(caller_callbacks)
         trace_id = run_config["configurable"].get("langfuse_trace_id")
-        per_call_langfuse = any(is_langfuse_callback_handler(cb) for cb in existing)
+        per_call_langfuse = bool(collect_langfuse_callbacks_from_config({"callbacks": caller_callbacks}))
 
         if trace_id or per_call_langfuse:
             built_callbacks = [cb for cb in built_callbacks if not is_langfuse_callback_handler(cb)]
@@ -1799,8 +1813,6 @@ class CugaAgent:
         merged = built_callbacks + existing
         run_config["callbacks"] = merged
         run_config["configurable"]["callbacks"] = merged
-
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
 
         sync_langfuse_callbacks_from_config(run_config)
 
@@ -2739,6 +2751,12 @@ class CugaSupervisor:
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
         special_instructions: Optional[str] = None,
+        tool_provider: Optional[ToolProviderInterface] = None,
+        policy_system: Optional[PolicyConfigurable] = None,
+        cuga_folder: Optional[str] = None,
+        auto_load_policies: Optional[bool] = None,
+        reset_policy_storage: bool = False,
+        filesystem_sync: Optional[bool] = None,
     ):
         """
         Initialize supervisor.
@@ -2755,7 +2773,15 @@ class CugaSupervisor:
             special_instructions: Optional workflow instructions injected into the supervisor's
                 system prompt. Use this to guide the supervisor's multi-turn behaviour
                 (e.g. "search first, then present results, then wait for user selection").
+            tool_provider: Optional provider for MCP/external tools the supervisor calls directly
+            policy_system: Optional PolicyConfigurable instance (auto-created if not provided)
+            cuga_folder: Path to .cuga folder containing policy markdown files
+            auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke
+            reset_policy_storage: If True, clears all existing policies from storage on init
+            filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
         """
+        from cuga.config import settings
+
         self._agents = agents or {}
         self._model = model
         self._description = description
@@ -2765,6 +2791,28 @@ class CugaSupervisor:
         self._graph = None
         self._compiled_graph = None
         self._supervisor_state = None
+        self._policy_system = policy_system
+        self._policies_manager = None
+
+        self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
+        self._auto_load_policies = (
+            auto_load_policies if auto_load_policies is not None else settings.policy.auto_load_policies
+        )
+        self._filesystem_sync = (
+            filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
+        )
+        self._reset_policy_storage = reset_policy_storage
+
+        if tool_provider is not None:
+            policy_storage = self._policy_system.storage if self._policy_system is not None else None
+            self.tool_provider = ensure_toolguard_provider(
+                tool_provider,
+                policy_storage=policy_storage,
+                cuga_folder=self.cuga_folder,
+                enabled=settings.policy.enabled,
+            )
+        else:
+            self.tool_provider = None
 
         # Initialize model from settings if not provided
         if not self._model:
@@ -2799,6 +2847,122 @@ class CugaSupervisor:
         )
 
     @property
+    def policies(self) -> PoliciesManager:
+        """Get the policies manager for this supervisor."""
+        if self._policies_manager is None:
+            self._policies_manager = PoliciesManager(self)
+        return self._policies_manager
+
+    async def initialize(self):
+        """Initialize policy system and other lazy resources."""
+        # Honor reset_policy_storage even without auto-load (parity with CugaAgent.initialize):
+        # _ensure_policy_system clears storage when _reset_policy_storage is set.
+        needs_init = self._auto_load_policies and (
+            not hasattr(self, "_policy_system") or self._policy_system is None
+        )
+        if needs_init or self._reset_policy_storage:
+            await self.policies._ensure_policy_system()
+            logger.debug("Supervisor policy system initialized during initialize()")
+
+    def _create_supervisor_hitl_wrapper_graph(self):
+        """Wrap the supervisor subgraph with HITL + output-formatter callback (parity with CugaAgent)."""
+        from typing import Literal
+
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.types import Command
+
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
+            create_cuga_supervisor_graph,
+        )
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
+            CugaSupervisorState,
+        )
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.suggest_actions import SuggestHumanActions
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.wait_for_response import WaitForResponse
+        from cuga.backend.cuga_graph.utils.nodes_names import ActionIds, NodeNames
+
+        callback_name = "SupervisorSDKCallback"
+
+        supervisor_subgraph = create_cuga_supervisor_graph(
+            supervisor_model=self._model,
+            agents=self._agents,
+            special_instructions=self._special_instructions,
+            tool_provider=self.tool_provider,
+            callbacks=self._callbacks,
+        )
+        compiled_subgraph = supervisor_subgraph.compile()
+
+        async def supervisor_sdk_callback(
+            state: CugaSupervisorState,
+            config: Optional[RunnableConfig] = None,
+        ) -> Command[Literal["SupervisorSubgraph", "SuggestHumanActions", "__end__"]]:
+            if state.sender == NodeNames.WAIT_FOR_RESPONSE and state.hitl_response:
+                if state.hitl_response.action_id == ActionIds.TOOL_APPROVAL:
+                    if state.hitl_response.confirmed:
+                        md = dict(state.supervisor_metadata or {})
+                        md.update({"approval_required": False, "user_approved": True})
+                        state.supervisor_metadata = md
+                        state.hitl_action = None
+                        state.hitl_response = None
+                        state.final_answer = ""
+                        state.execution_complete = False
+                        state.sender = callback_name
+                        return Command(update=state.model_dump(), goto="SupervisorSubgraph")
+                    policy_name = (state.supervisor_metadata or {}).get("policy_name", "Tool Approval")
+                    state.final_answer = (
+                        f"❌ **Execution Cancelled**\n\nYou denied execution required by "
+                        f"**{policy_name}**. The supervisor will not proceed with this task."
+                    )
+                    state.execution_complete = True
+                    state.hitl_action = None
+                    state.hitl_response = None
+                    state.sender = callback_name
+                    return Command(update=state.model_dump(), goto=END)
+
+            if state.hitl_action and state.hitl_action.action_id == ActionIds.TOOL_APPROVAL:
+                state.sender = callback_name
+                return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
+
+            from cuga.backend.cuga_graph.policy.output_formatter_utils import apply_output_formatter_policies
+
+            await apply_output_formatter_policies(
+                state,
+                config,
+                context="Supervisor SDK Callback",
+                metadata_key="supervisor_metadata",
+            )
+
+            state.sender = callback_name
+            return Command(update=state.model_dump(), goto=END)
+
+        suggest_actions = SuggestHumanActions()
+        wait_for_response = WaitForResponse()
+
+        async def dummy_route_to_callback(
+            state: CugaSupervisorState,
+            config: Optional[RunnableConfig] = None,
+        ) -> Command:
+            return Command(update=state.model_dump(), goto=callback_name)
+
+        wrapper = StateGraph(CugaSupervisorState)
+        wrapper.add_node("SupervisorSubgraph", compiled_subgraph)
+        wrapper.add_node(callback_name, supervisor_sdk_callback)
+        wrapper.add_node(suggest_actions.name, suggest_actions.node)
+        wrapper.add_node(wait_for_response.name, wait_for_response.node)
+        for node_name in (
+            "FinalAnswerAgent",
+            NodeNames.CHAT_AGENT,
+            NodeNames.API_PLANNER_AGENT,
+            NodeNames.CUGA_LITE,
+        ):
+            wrapper.add_node(node_name, dummy_route_to_callback)
+
+        wrapper.add_edge(START, "SupervisorSubgraph")
+        wrapper.add_edge("SupervisorSubgraph", callback_name)
+
+        return wrapper
+
+    @property
     def graph(self):
         """
         Get the underlying LangGraph StateGraph (compiled).
@@ -2807,22 +2971,19 @@ class CugaSupervisor:
             Compiled LangGraph graph
         """
         if self._compiled_graph is None:
-            from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
-                create_cuga_supervisor_graph,
-            )
             from langgraph.checkpoint.memory import MemorySaver
 
-            # Create supervisor subgraph
-            supervisor_subgraph = create_cuga_supervisor_graph(
-                supervisor_model=self._model,
-                agents=self._agents,
-                special_instructions=self._special_instructions,
-            )
+            from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 
-            # Compile with checkpointer
+            if self._graph is None:
+                self._graph = self._create_supervisor_hitl_wrapper_graph()
+
             checkpointer = MemorySaver()
-            self._compiled_graph = supervisor_subgraph.compile(checkpointer=checkpointer)
-            logger.debug("Compiled supervisor graph with checkpointer")
+            self._compiled_graph = self._graph.compile(
+                checkpointer=checkpointer,
+                interrupt_before=[NodeNames.WAIT_FOR_RESPONSE],
+            )
+            logger.debug("Compiled supervisor graph with HITL wrapper and checkpointer")
 
         return self._compiled_graph
 
@@ -2846,34 +3007,54 @@ class CugaSupervisor:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
+        needs_init = self._auto_load_policies and (
+            not hasattr(self, "_policy_system") or self._policy_system is None
+        )
+        if needs_init or self._reset_policy_storage:
+            await self.policies._ensure_policy_system()
+            logger.debug("Supervisor policy system initialized during invoke()")
+
         import uuid
         from langchain_core.messages import HumanMessage
 
-        # Setup config
-        if not thread_id:
-            thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
-            logger.debug(f"Auto-generated thread_id: {thread_id}")
+        is_resume = message is None or action_response is not None
+        if is_resume and not thread_id:
+            raise ValueError(
+                "thread_id is required when resuming execution (message=None or action_response provided)"
+            )
 
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {}}
         if self._callbacks:
             config["callbacks"] = self._callbacks
+        if self._policy_system:
+            config["configurable"]["policy_system"] = self._policy_system
 
         # Handle resume case
-        if message is None or action_response is not None:
-            if not thread_id:
-                raise ValueError("thread_id is required when resuming execution")
+        if is_resume:
+            config["configurable"]["thread_id"] = thread_id
 
             # Set session.id for OpenLit observability (if enabled)
             set_session_attribute(thread_id)
 
+            from langgraph.types import Command
+
             if action_response:
-                self.graph.update_state(config, {"hitl_response": action_response})
                 logger.info(
                     f"Resuming execution after HITL response (action_id: {action_response.action_id})"
                 )
-
-            result = await self.graph.ainvoke(None, config=config)
+                result = await self.graph.ainvoke(
+                    Command(resume=action_response.model_dump()),
+                    config=config,
+                )
+            else:
+                result = await self.graph.ainvoke(None, config=config)
         else:
+            if not thread_id:
+                thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
+                logger.debug(f"Auto-generated thread_id: {thread_id}")
+
+            config["configurable"]["thread_id"] = thread_id
+
             # Normal invocation
             from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
                 CugaSupervisorState,
@@ -2903,6 +3084,18 @@ class CugaSupervisor:
         if not final_answer and result.get("error"):
             error_msg = result["error"]
             final_answer = f"Error: {error_msg}"
+
+        if not final_answer:
+            try:
+                state = self.graph.get_state(config)
+                if state.next:
+                    logger.info("Supervisor graph interrupted for human-in-the-loop interaction")
+                    final_answer = (
+                        "⏸️ Execution paused for approval. "
+                        "Use supervisor.invoke(None, thread_id=..., action_response=...) to resume."
+                    )
+            except Exception as e:
+                logger.debug(f"Could not check supervisor interrupt state: {e}")
 
         # Get tool calls if available
         tool_calls = (
