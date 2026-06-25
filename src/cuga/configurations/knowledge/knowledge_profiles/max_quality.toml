@@ -8,23 +8,22 @@ description = "When you need the best, no matter the document."
 # explicitly accepted that cost.
 
 [embeddings]
-# paraphrase-multilingual-mpnet-base-v2: 768d, multilingual (50+ langs), ~1.0GB.
-# Chosen over multilingual-e5-large (1024d, 2.24GB): e5-large's ONNX exceeds
-# protobuf's 2GB limit and splits its weights into an external-data file, which
-# fastembed + onnxruntime (esp. CoreML on macOS) loads unreliably — it 500'd
-# config publish with "external initializer ... Not a directory". mpnet stays
-# UNDER 2GB (single-file ONNX) so it loads cleanly, is ~half the size/faster, and
-# the cross-encoder reranker (rerank section below) compensates for the modest
-# retrieval-quality gap vs the retrieval-tuned e5.
+# mxbai-embed-large-v1: 1024d, ENGLISH, ~0.64GB, Apache-2.0. Best English retrieval
+# embedder in fastembed (top MTEB at release) that still loads cleanly — single-file
+# ONNX, well under protobuf's 2GB external-data threshold (unlike multilingual-e5-large
+# 2.24GB, which splits weights into an external-data file and loads unreliably via
+# fastembed/onnxruntime-CoreML, 500'ing publish). 1024d gives the reranker more
+# semantic resolution than balanced's 768d bge-base — earning the max_quality tier.
+# No query:/passage: prefixes needed (that's e5-only).
 #
-# Multilingual options WITHIN fastembed (swap = re-ingest; dim is in vector_config_hash):
-#   - sentence-transformers/paraphrase-multilingual-mpnet-base-v2  768d  1.0GB  (default; loads cleanly)
-#   - sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2  384d  0.22GB (lighter, weaker)
-#   - intfloat/multilingual-e5-large  1024d 2.24GB (retrieval-tuned but external-data load issues; query:/passage: prefixes handled)
-# Stronger lighter multilingual models (gte-multilingual-base, arctic-embed-l-v2.0)
-# are NOT in fastembed's list — they require embedding_provider="huggingface" (torch).
-model = "sentence-transformers/paraphrase-multilingual-mpnet-base-v2"
-# 768d × 64 batch × fp32 ≈ 0.6GB transient RSS — comfortable headroom.
+# Need MULTILINGUAL instead? swap to (fastembed): paraphrase-multilingual-mpnet-base-v2 (768d, 1.0GB).
+# Other strong ENGLISH options in fastembed (all <2GB, load cleanly):
+#   snowflake/snowflake-arctic-embed-l  1024d 1.02GB Apache  (most retrieval-specialized)
+#   BAAI/bge-large-en-v1.5              1024d 1.2GB  MIT     (proven default)
+# Avoid jinaai/jina-embeddings-v3 (2.29GB external-data + cc-by-nc non-commercial).
+# Any swap re-indexes (dim is in vector_config_hash) — surfaced by the re-index hint.
+model = "mixedbread-ai/mxbai-embed-large-v1"
+# 1024d × 64 batch × fp32 ≈ 0.5GB transient RSS — comfortable headroom.
 batch_size = 64
 concurrency = 4
 
