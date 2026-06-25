@@ -47,6 +47,7 @@ from cuga.backend.skills import (
     discover_skills,
     format_available_skills_block,
 )
+from cuga.backend.server.workspace_sandbox import get_sandbox_env_description
 from cuga.config import settings
 
 
@@ -658,6 +659,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 skills_enabled=skills_enabled,
                 skills_prompt_section=skills_prompt_section,
                 enable_shell_tool=getattr(settings.advanced_features, "enable_shell_tool", False),
+                sandbox_env_info=get_sandbox_env_description(),
                 has_knowledge=has_knowledge_tools,
                 few_shot_examples=few_shot_examples,
                 few_shots_enabled=few_shots_enabled,
