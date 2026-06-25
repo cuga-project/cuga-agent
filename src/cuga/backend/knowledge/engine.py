@@ -540,6 +540,39 @@ def _rrf_fuse(
     return [v[0] for v in fused]
 
 
+def _rrf_fuse_lists(result_lists: list[list["SearchResult"]], k_rrf: int = 60) -> list["SearchResult"]:
+    """Reciprocal Rank Fusion over N ranked lists (same math as ``_rrf_fuse``, any
+    number of legs). Used by the query-transform path, where each query variant ×
+    leg is an independent RRF "expert". Keeps the FIRST list's SearchResult object
+    for a shared chunk (callers pass the base hybrid result first, so it carries
+    the dense score field ``score_threshold`` relies on). Empty/single inputs are
+    returned as-is."""
+    lists = [lst for lst in result_lists if lst]
+    if not lists:
+        return []
+    if len(lists) == 1:
+        return lists[0]
+
+    def _key(r: SearchResult) -> tuple[str, int | None, str]:
+        return (r.filename, r.page, r.text)
+
+    items: dict[tuple[str, int | None, str], list] = {}
+    for lst in lists:
+        for rank, r in enumerate(lst, start=1):
+            k = _key(r)
+            if k in items:
+                items[k][1] += 1.0 / (k_rrf + rank)
+            else:
+                items[k] = [r, 1.0 / (k_rrf + rank)]
+    for r, s in items.values():
+        r.rrf_score = round(s, 6)
+    fused = sorted(
+        items.values(),
+        key=lambda v: (-v[1], v[0].filename, v[0].page if v[0].page is not None else -1),
+    )
+    return [v[0] for v in fused]
+
+
 def _apply_junk_filter(
     results: list["SearchResult"], mode: str
 ) -> tuple[list["SearchResult"], _JunkFilterStats]:
@@ -1309,9 +1342,14 @@ def _get_embedding_dim(embeddings: Embeddings) -> int:
 class KnowledgeEngine:
     """In-process knowledge engine (chunking, embeddings, pluggable vector backends)."""
 
-    def __init__(self, config: KnowledgeConfig):
+    def __init__(self, config: KnowledgeConfig, chat_generator: Any = None):
         config.validate()
         self._config = config
+        # Optional, host-injected chat model for query transformation (multi_query
+        # / HyDE). Duck-typed to the query_transform.ChatGenerator Protocol so the
+        # knowledge package stays standalone (no host import). None → transforms
+        # are inert and search runs on the plain query.
+        self._chat_generator = chat_generator
         self._files_dir = config.persist_dir / "files"
         _smode, _, _pghost = get_storage_connection_params()
         self._metadata = create_knowledge_metadata(config.persist_dir, mode=_smode, postgres_url=_pghost)
@@ -1563,6 +1601,15 @@ class KnowledgeEngine:
                 f"model={self._config.embedding_model or '(default)'}, "
                 f"dim={self._default_embedding_dim}{extra}"
             )
+
+    def set_chat_generator(self, chat_generator: Any) -> None:
+        """Inject (or replace) the host chat model used for query transformation.
+
+        Late-binding setter — cuga builds the engine before its LLM is ready, so
+        the host calls this once the model exists. Pass anything implementing
+        ``query_transform.ChatGenerator`` (async ``generate(prompt) -> str``).
+        """
+        self._chat_generator = chat_generator
 
     async def warmup(self) -> dict[str, Any]:
         """Preload heavyweight resources so callers can gate on readiness.
@@ -2608,6 +2655,18 @@ class KnowledgeEngine:
             # FTS5 sanitization.
             return adapter.search_lexical(query, k=k)
 
+        # Same as the two closures above but parameterized by query string — used
+        # by the query-transform fan-out to retrieve each variant leg.
+        def _dense_q(qv: str, k: int):
+            with self._vector_store_lock:
+                adapter = self._vector_stores[collection]
+            return adapter.search(qv, k=k)
+
+        def _lexical_q(qv: str, k: int):
+            with self._vector_store_lock:
+                adapter = self._vector_stores[collection]
+            return adapter.search_lexical(qv, k=k)
+
         # ``below_threshold_counter`` is a one-element list so the closure
         # can mutate it (avoid `nonlocal` since this function is itself a
         # closure of ``search_with_stats``). Counts dense+lexical chunks
@@ -2644,6 +2703,26 @@ class KnowledgeEngine:
         # than we fetched and the rerank step would see a narrow set.
         _base_k = (limit * 2) if _filter_mode != "off" else limit
         first_k = min(200, max(_base_k, _overfetch_k))
+
+        # Query transformation (multi_query / HyDE), opt-in via
+        # search_query_transform. Kick the LLM generation NOW so it overlaps the
+        # base dense/lexical retrieval below; we await it only when fanning out the
+        # variant legs (after the base fuse). Inert when the knob is off or no chat
+        # model was injected — search then runs exactly the plain-query path. The
+        # transform sees the ORIGINAL query (cleaner intent than alias-padded text).
+        _qt_mode = getattr(self._config, "search_query_transform", "off")
+        _qt_task = None
+        if _qt_mode != "off" and self._chat_generator is not None:
+            from cuga.backend.knowledge.query_transform import expand_query as _expand_query
+
+            _qt_task = asyncio.ensure_future(
+                _expand_query(
+                    _qt_mode,
+                    original_query,
+                    self._chat_generator,
+                    n=int(getattr(self._config, "search_query_transform_n", 3)),
+                )
+            )
 
         # Run dense + lexical in parallel when hybrid is on. ``gather``
         # over ``to_thread`` means wall-clock ≈ max(dense, lexical)
@@ -2709,6 +2788,45 @@ class KnowledgeEngine:
         # RRF fusion (no-op when ``lexical_results`` is empty, so the
         # pure-dense path keeps its original ordering for back-compat).
         results = _rrf_fuse(dense_results, lexical_results)
+
+        # Query-transform fan-out (opt-in). Retrieve each EXTRA variant leg and
+        # RRF-fuse it with the base hybrid result. The base (original query,
+        # dense+lexical) always participates and is passed FIRST, so a bad HyDE
+        # passage or off-target rewrite can only ADD candidates to the pool — it
+        # never replaces the user's query. Variant legs skip the dense
+        # score_threshold (RRF + the reranker decide quality) so they don't perturb
+        # the base below_threshold stat. Whole block is best-effort: any failure
+        # leaves ``results`` as the plain-query fusion.
+        if _qt_task is not None:
+            try:
+                _variants = await _qt_task
+            except Exception:
+                _variants = None
+            if _variants is not None and _variants.active:
+                _legs = [asyncio.to_thread(_dense_q, qv, first_k) for qv in _variants.dense_extra]
+                if _hybrid_on:
+                    _legs += [asyncio.to_thread(_lexical_q, qv, first_k) for qv in _variants.lexical_extra]
+                _scored_legs = await asyncio.gather(*_legs, return_exceptions=True)
+                _variant_lists = [
+                    _materialize(sc, set(), apply_score_threshold=False)
+                    for sc in _scored_legs
+                    if isinstance(sc, list)
+                ]
+                _variant_lists = [vl for vl in _variant_lists if vl]
+                if _variant_lists:
+                    _raw_candidate_count += sum(len(vl) for vl in _variant_lists)
+                    results = _rrf_fuse_lists([results, *_variant_lists])
+                    logger.info(
+                        "cuga.knowledge.query_transform_applied",
+                        extra={
+                            "cuga_knowledge_qt_mode": _qt_mode,
+                            "cuga_knowledge_qt_dense_legs": len(_variants.dense_extra),
+                            "cuga_knowledge_qt_lexical_legs": (
+                                len(_variants.lexical_extra) if _hybrid_on else 0
+                            ),
+                            "cuga_knowledge_qt_fused_count": len(results),
+                        },
+                    )
 
         # Junk filter applies to the unified post-fusion list.
         results, _stats = _apply_junk_filter(results, _filter_mode)

@@ -36,6 +36,9 @@ default_limit = 12
 default_score_threshold = 0.0
 hybrid_mode = "auto"
 junk_filter = "dry_run"
+# LLM query transform (multi_query / hyde). Off by default — eval-gate per corpus
+# before enabling; needs a host-injected chat model. Candidate for multi_query.
+query_transform = "off"
 
 [rerank]
 # Cross-encoder rerank ON. RRF-fused candidates are rescored with full

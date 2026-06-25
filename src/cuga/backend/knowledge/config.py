@@ -578,6 +578,18 @@ class KnowledgeConfig:
     #   "off"  — dense only (skips the lexical leg entirely)
     search_hybrid_mode: str = "auto"
 
+    # Query transformation (LLM-assisted). Off by default — it adds a pre-retrieval
+    # LLM round-trip and its gain is corpus-conditional, so it is eval-gated and
+    # pre-tuned per profile by the cuga team, never a client-facing switch. Needs a
+    # host-injected chat model (KnowledgeEngine.set_chat_generator); inert without
+    # one. Search-only; NOT in vector_config_hash.
+    #   "off"          — plain query only (default)
+    #   "multi_query"  — LLM rewrites; original + (n-1) variants, RRF-fused
+    #   "hyde"         — original query (dense+lexical) PLUS a hypothetical doc as
+    #                    an extra dense leg (never replaces the real query)
+    search_query_transform: str = "off"
+    search_query_transform_n: int = 3  # total query legs for multi_query (original + n-1 rewrites)
+
     # Client adaptation. Operator-supplied markdown appended to the
     # knowledge-agent system prompt — domain glossary, verbatim-preservation
     # rules, anti-hedging rules. Empty string (default) disables the feature.
@@ -758,6 +770,17 @@ class KnowledgeConfig:
             raise ValueError(
                 f"search_hybrid_mode must be one of {SEARCH_HYBRID_MODES}, got {self.search_hybrid_mode!r}"
             )
+        from cuga.backend.knowledge.query_transform import VALID_QUERY_TRANSFORMS
+
+        if self.search_query_transform not in VALID_QUERY_TRANSFORMS:
+            raise ValueError(
+                f"search_query_transform must be one of {VALID_QUERY_TRANSFORMS}, "
+                f"got {self.search_query_transform!r}"
+            )
+        if self.search_query_transform_n < 1 or self.search_query_transform_n > 8:
+            raise ValueError(
+                f"search_query_transform_n must be in [1, 8], got {self.search_query_transform_n}"
+            )
         if self.docling_layout_engine not in ("auto", "onnx", "transformers"):
             raise ValueError(
                 f"docling_layout_engine must be 'auto', 'onnx', or 'transformers', "
@@ -890,6 +913,8 @@ class KnowledgeConfig:
                 ("max_search_attempts", "max_search_attempts"),
                 ("hybrid_mode", "search_hybrid_mode"),
                 ("junk_filter", "search_junk_filter"),
+                ("query_transform", "search_query_transform"),
+                ("query_transform_n", "search_query_transform_n"),
             ):
                 if prof_key in p_srh:
                     merged[target_key] = p_srh[prof_key]
@@ -1060,6 +1085,12 @@ class KnowledgeConfig:
             # CodeRabbit M2.
             search_junk_filter=profile_search.get("junk_filter", search.get("junk_filter", "enforce")),
             search_hybrid_mode=profile_search.get("hybrid_mode", search.get("hybrid_mode", "auto")),
+            search_query_transform=profile_search.get(
+                "query_transform", search.get("query_transform", "off")
+            ),
+            search_query_transform_n=profile_search.get(
+                "query_transform_n", search.get("query_transform_n", 3)
+            ),
             rerank_enabled=profile_rerank.get("enabled", rerank_kb.get("enabled", False)),
             rerank_top_k_in=profile_rerank.get("top_k_in", rerank_kb.get("top_k_in", 20)),
             rerank_model=profile_rerank.get("model", rerank_kb.get("model", "BAAI/bge-reranker-base")),

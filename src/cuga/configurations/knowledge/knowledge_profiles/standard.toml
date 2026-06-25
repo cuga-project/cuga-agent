@@ -52,6 +52,9 @@ hybrid_mode = "auto"
 # dry_run: see what would be filtered without dropping. Same logic as
 # page-chrome — observability without recall risk.
 junk_filter = "dry_run"
+# LLM query transform (multi_query / hyde). Off by default — eval-gate per corpus
+# before enabling; needs a host-injected chat model.
+query_transform = "off"
 
 [rerank]
 # OFF as the shipped default. The reranker is the cheapest single quality
