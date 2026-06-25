@@ -6,6 +6,7 @@ from typing import Any, List, Optional
 from loguru import logger
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState, VariablesManager
+from cuga.config import settings
 from ..base_executor import RemoteExecutor
 
 
@@ -74,6 +75,13 @@ class E2BExecutor(RemoteExecutor):
             trajectory_path = CallApiHelper.get_trajectory_path()
             call_api_helper = CallApiHelper.create_remote_call_api_code(function_call_url, trajectory_path)
 
+            # int() cast: the value is substituted into a code template sent to
+            # the e2b sandbox. A non-int (e.g. a misconfigured env var coerced
+            # to string) would inject syntactically broken Python and surface
+            # as a NameError at sandbox runtime — fail early with a clear
+            # TypeError here instead.
+            sandbox_timeout = int(settings.advanced_features.sandbox_execution_timeout)
+
             complete_code = f"""
 {call_api_helper}
 {tools_code}
@@ -82,7 +90,7 @@ class E2BExecutor(RemoteExecutor):
 
 # Execute and capture locals
 async def main():
-    __result_locals = await asyncio.wait_for(_async_main(), timeout=60)
+    __result_locals = await asyncio.wait_for(_async_main(), timeout={sandbox_timeout})
     print("!!!===!!!")
     print(__result_locals)
 

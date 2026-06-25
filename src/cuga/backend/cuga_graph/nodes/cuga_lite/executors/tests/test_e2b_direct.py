@@ -89,7 +89,7 @@ async def _async_main():
     return locals()
 
 # Execute
-_result_locals = await asyncio.wait_for(_async_main(), timeout=60)
+_result_locals = await asyncio.wait_for(_async_main(), timeout=30)
 print(_result_locals)
 """
 
