@@ -1,6 +1,6 @@
 [profile]
 name = "Standard"
-description = "Default. Hybrid retrieval, no reranker, fits 4GB containers. Fast and accurate enough for ~90% of installs."
+description = "Searches by exact words and meaning together. The default — right for most people."
 
 # Pareto-locked profile (2026-06-09).
 # Designed as the SHIPPED DEFAULT: laptop offline + 4GB-replica K8s safe.

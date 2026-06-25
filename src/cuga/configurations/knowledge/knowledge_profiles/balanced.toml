@@ -1,6 +1,6 @@
 [profile]
 name = "Balanced"
-description = "Quality-leaning. Hybrid retrieval + cross-encoder rerank (bge-reranker-base, ONNX/CPU) + bigger embedder (bge-base, 768d). Adds reranker memory + ~1-3s query latency."
+description = "Takes a second look at top results for sharper answers. Reads tables, adds 1-3 seconds per search."
 
 # Pareto-locked profile (2026-06-09).
 # Switching from standard/speed to balanced INVALIDATES collections:

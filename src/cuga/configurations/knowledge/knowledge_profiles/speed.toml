@@ -1,6 +1,6 @@
 [profile]
 name = "Speed"
-description = "Lowest latency, lowest memory. Dense-only retrieval, no reranker, OCR off. For ingest-heavy workloads or hardware-constrained deploys."
+description = "Quick answers across big libraries. Best on lighter laptops; skips images and scans."
 
 # Pareto-locked profile (2026-06-09).
 # All sections mirror settings.toml's [knowledge.<section>] shape so the
