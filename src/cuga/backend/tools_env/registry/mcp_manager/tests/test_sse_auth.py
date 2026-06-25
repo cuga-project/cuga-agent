@@ -214,6 +214,28 @@ class TestSSETransportAuth:
         parsed = urlparse(MockSSE.call_args.kwargs["url"])
         assert parse_qs(parsed.query) == {"existing": ["1"], "auth_token": ["token456"]}
 
+    def test_api_key_auth_encodes_plus_in_value_with_quote(self):
+        """Base64-like secrets with + must use %2B, not rely on quote_plus semantics."""
+        manager = _make_manager()
+        config = _sse_config(
+            auth=Auth(type="api-key", value="abc+def/ghi=", key="api_key"),
+        )
+
+        fake_transport = MagicMock()
+        with (
+            patch(
+                "cuga.backend.tools_env.registry.mcp_manager.mcp_manager.SSETransport",
+                return_value=fake_transport,
+            ) as MockSSE,
+            patch(
+                "cuga.backend.secrets.resolve_secret",
+                side_effect=lambda v: v,
+            ),
+        ):
+            manager._create_transport("test_server", config)
+
+        assert MockSSE.call_args.kwargs["url"] == "https://example.com/sse?api_key=abc%2Bdef%2Fghi%3D"
+
     def test_missing_url_raises(self):
         """SSE transport without a URL must raise immediately."""
         manager = _make_manager()
