@@ -2180,12 +2180,22 @@ export default function KnowledgePanel({
                               <Stack gap={2}>
                                 {Object.entries(ragProfiles).map(([key, profile]) => {
                                   const isNamedProfile = (knowledgeConfig.rag_profile ?? "standard") === key;
-                                  const chunkingMatches =
+                                  // Re-index is required when ANY field in the backend's
+                                  // vector_config_hash would change — the embedding model AND
+                                  // chunk size/overlap, not chunking alone. Keying only on
+                                  // chunking hid a silent index-stale when a profile swaps the
+                                  // embedder (e.g. standard→balanced: bge-small→bge-base) and
+                                  // mislabelled speed↔standard as free even though their
+                                  // chunk_size differs (1000 vs 800). metric_type is global
+                                  // (COSINE-only, not profile-owned) so it never changes here.
+                                  const vectorConfigMatches =
+                                    (profile.embeddings?.model ?? knowledgeConfig.embedding_model) ===
+                                      knowledgeConfig.embedding_model &&
                                     profile.chunking.chunk_size === knowledgeConfig.chunk_size &&
                                     profile.chunking.chunk_overlap === knowledgeConfig.chunk_overlap;
-                                  // Only show as selected if both the profile name matches AND chunking values match
-                                  const isSelected = isNamedProfile && chunkingMatches;
-                                  const willChangeChunking = !chunkingMatches;
+                                  // Selected only if the profile name matches AND every vector-config field matches.
+                                  const isSelected = isNamedProfile && vectorConfigMatches;
+                                  const willReindex = !vectorConfigMatches;
                                   return (
                                     <Tile
                                       key={key}
@@ -2246,7 +2256,7 @@ export default function KnowledgePanel({
                                           <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--cds-text-secondary)", lineHeight: 1.5 }}>
                                             {profile.description}
                                           </p>
-                                          {!isSelected && willChangeChunking && (
+                                          {!isSelected && willReindex && (
                                             <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.6875rem", color: "var(--cds-support-warning)" }}>
                                               Requires re-indexing existing documents.
                                             </p>
@@ -2888,20 +2898,17 @@ export default function KnowledgePanel({
                             {showAdvanced && (
                               <AccordionItem title="Score & Metric">
                                 <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
-                                  <Select
-                                    id="knowledge-metric-type"
-                                    labelText="Distance Metric"
-                                    value={knowledgeConfig.metric_type ?? "COSINE"}
-                                    onChange={(e: any) => onKnowledgeConfigChange({ ...knowledgeConfig, metric_type: e.target.value })}
-                                  >
-                                    <SelectItem value="COSINE" text="Cosine Similarity" />
-                                    <SelectItem value="IP" text="Inner Product" />
-                                    <SelectItem value="L2" text="L2 Distance" />
-                                  </Select>
-                                  <Button kind="ghost" size="sm" renderIcon={Reset}
-                                    onClick={() => setResetTarget({ section: "Score & Metric", fields: ["metric_type"] })}>
-                                    Reset Score & Metric to defaults
-                                  </Button>
+                                  {/* Read-only: only COSINE is supported end-to-end
+                                      (config.validate() rejects IP/L2), so a dropdown here could
+                                      only ever fail the save. Restore a Select when multi-metric ships. */}
+                                  <div>
+                                    <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
+                                      Distance Metric
+                                    </p>
+                                    <p style={{ fontSize: "0.875rem", color: "var(--cds-text-primary)", margin: "0.25rem 0 0 0" }}>
+                                      Cosine Similarity
+                                    </p>
+                                  </div>
                                 </Stack>
                               </AccordionItem>
                             )}

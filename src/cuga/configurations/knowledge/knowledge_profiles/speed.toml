@@ -8,7 +8,8 @@ description = "Quick lookups for big libraries."
 
 [embeddings]
 # bge-small-en-v1.5 (384d, ~33M params, MTEB retrieval 53.9). Same encoder
-# as standard so switching speed<->standard does NOT invalidate vectors.
+# as standard, but switching speed<->standard DOES re-index: speed uses
+# chunk_size=1000 vs standard=800, and chunk_size is in vector_config_hash.
 model = "BAAI/bge-small-en-v1.5"
 # Fastembed's documented default in 2025+. At 384d, a 256-batch fits in
 # ~150MB transient RSS — safe on any 4GB box.

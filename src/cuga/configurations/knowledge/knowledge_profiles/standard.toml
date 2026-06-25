@@ -9,8 +9,9 @@ description = "The reliable default — right for most."
 
 [embeddings]
 # bge-small-en-v1.5: ~95% of bge-base retrieval at ~3x ingest speed.
-# Same encoder as speed → speed<->standard switching does not invalidate
-# vectors (vector_config_hash unchanged across that pair).
+# Same ENCODER as speed, but speed<->standard still re-indexes: chunk_size
+# differs (speed 1000 vs standard 800) and chunk_size is part of
+# vector_config_hash. The UI surfaces this via the re-index hint.
 model = "BAAI/bge-small-en-v1.5"
 # 128 keeps p99 sane under concurrent prod traffic while still getting
 # most of fastembed's batch-size throughput benefit (256 is the
