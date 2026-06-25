@@ -92,7 +92,10 @@ run_pytest tests/unit/test_cuga_lite_bind_tools.py
 echo "Running ToolGuard provider tests..."
 run_pytest tests/unit/test_toolguard_provider.py \
     tests/unit/test_policy_tool_guide_loading.py \
-    tests/unit/test_async_tool_provider_construction.py
+    tests/unit/test_async_tool_provider_construction.py \
+    tests/unit/test_tool_guard_generation.py \
+    tests/unit/test_tool_guard_generation_route.py \
+    tests/unit/test_tool_guard_generation_route_sync.py
 echo "✅ All unit tests passed!"
 
 # Check for test type flag
