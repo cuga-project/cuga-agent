@@ -2668,11 +2668,11 @@ async def generate_tool_guard_for_policy(
             policy_id=policy_id,
             generation_agent=generation_agent,
         )
-        
+
         # Sync the updated policy back to config_store so /api/manage/config returns it
         try:
             from cuga.backend.server.config_store import load_draft, save_draft
-            
+
             agent_id = "cuga-default"  # TODO: get from request if multi-agent support needed
             config = await load_draft(agent_id)
             if config and "policies" in config and "policies" in config["policies"]:
@@ -2706,7 +2706,7 @@ async def generate_tool_guard_for_policy(
         except Exception as sync_exc:
             logger.warning(f"Failed to sync policy to config_store: {sync_exc}")
             # Don't fail the request if sync fails - the policy is already saved to policy storage
-        
+
         return JSONResponse(result, status_code=200)
     except ValueError as exc:
         return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)

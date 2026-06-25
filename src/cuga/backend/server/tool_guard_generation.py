@@ -51,7 +51,10 @@ async def generate_tool_guards_for_policy(
 
     for tool_name in target_tools:
         try:
-            violating_examples, compliance_examples = await generation_agent.policies.generate_tool_guard_examples(
+            (
+                violating_examples,
+                compliance_examples,
+            ) = await generation_agent.policies.generate_tool_guard_examples(
                 policy_id=policy_id,
                 target_tool=tool_name,
             )
