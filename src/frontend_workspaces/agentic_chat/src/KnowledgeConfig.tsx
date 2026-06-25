@@ -139,8 +139,15 @@ function getReindexStatusLabel(status: ReindexTask["status"]): string {
 // preparing. ``parsed`` / ``embed`` and the fallback all collapse to
 // "Re-reading" — only the insert phase changes the headline.
 function getReindexPhaseHeadline(tasks: ReindexTask[]): string {
+  // "Preparing" only while EVERY task is still pending. Once any task
+  // flips to ``running`` we know the worker has picked it up and is
+  // doing real work (model load, parse, embed) even if no per-file
+  // ``stage`` event has been emitted yet — keeping the headline on
+  // "Preparing" past that point reads as "stuck on the loading screen".
+  if (tasks.length === 0 || tasks.every((t) => t.status === "pending")) {
+    return "Preparing your new reading model";
+  }
   const stages = tasks.flatMap((t) => Object.values(t.file_tasks ?? {}).map((ft) => ft.stage)).filter(Boolean);
-  if (stages.length === 0) return "Preparing your new reading model";
   if (stages.some((s) => s === "insert" || s === "insert_start")) return "Filing everything in its new place";
   return "Re-reading your documents";
 }
@@ -358,6 +365,15 @@ interface KnowledgePanelProps {
   onReindex?: () => Promise<{ count: number; task_ids: string[] } | null>;
   knowledgeReindexing?: boolean;
   ragProfiles?: Record<string, RagProfileMeta>;
+  // Auto-reindex bubbled down from ManagePage: when a draft PATCH
+  // server-triggers a reindex (e.g. profile switch with embedding-dim
+  // change), the response carries task IDs the user never explicitly
+  // asked for. Mirror those into the reindex tile so the user sees
+  // progress immediately instead of the empty "documents vanished"
+  // window. ``triggerKey`` dedupes re-renders. ``onAutoReindexConsumed``
+  // tells the parent we've subscribed and it can clear the trigger.
+  autoReindexTrigger?: { taskIds: string[]; total: number; triggerKey: string } | null;
+  onAutoReindexConsumed?: () => void;
   // Which tab to open the modal on. Uncontrolled-with-initial-value: the
   // parent seeds the initial index via this prop, but the user owns tab
   // navigation from frame 1. Defaults to "documents" (back-compat with
@@ -391,6 +407,8 @@ export default function KnowledgePanel({
   onReindex,
   knowledgeReindexing,
   ragProfiles,
+  autoReindexTrigger,
+  onAutoReindexConsumed,
   initialTab,
   adaptationServerError: adaptationServerErrorProp,
   onAdaptationServerError,
@@ -648,6 +666,27 @@ export default function KnowledgePanel({
     return () => clearInterval(id);
   }, [reindexProgress?.startedAt, reindexProgress?.done]);
 
+  // Snapshot the documents at reindex-start so the list keeps rendering
+  // the user's files (with their ingest dates) throughout the upgrade —
+  // not just during the "Preparing your new reading model" window when
+  // ``documents`` from the server is briefly empty (the new-hash
+  // collection has no rows yet). Cleared on completion; the next poll
+  // refresh of ``documents`` then takes over.
+  const [documentsBeforeReindex, setDocumentsBeforeReindex] = useState<KnowledgeDocument[] | null>(null);
+  useEffect(() => {
+    if (reindexProgress && !reindexProgress.done) {
+      // First transition into a running reindex — capture the current
+      // documents once, then leave the snapshot alone until completion.
+      if (documentsBeforeReindex === null && documents.length > 0) {
+        setDocumentsBeforeReindex(documents);
+      }
+    } else if (documentsBeforeReindex !== null) {
+      // Reindex finished or cleared — drop the snapshot so the live
+      // ``documents`` array drives subsequent renders.
+      setDocumentsBeforeReindex(null);
+    }
+  }, [reindexProgress?.done, reindexProgress?.taskIds.length, documents.length]);
+
   // Stabilize callback props with refs to avoid re-fetch loops when parent re-renders
   const onDocsChangedRef = useRef(onDocsChanged);
   onDocsChangedRef.current = onDocsChanged;
@@ -810,12 +849,16 @@ export default function KnowledgePanel({
   // -------------------------------------------------------------------------
   // Reindex with progress tracking
   // -------------------------------------------------------------------------
-  const startReindexWithProgress = useCallback(async () => {
-    if (!onReindex) return;
-    const result = await onReindex();
-    if (!result || !result.task_ids?.length) return;
-
-    const taskIds = result.task_ids;
+  // Arms the in-flight reindex tile + 2s polling for the given task IDs.
+  // Used by both the manual Reindex button (via ``startReindexWithProgress``,
+  // which POSTs first and then calls this with the returned task IDs) AND
+  // the server-side auto-reindex path (via ``autoReindexTrigger`` from the
+  // PATCH /draft response — the tasks already exist server-side so we just
+  // subscribe). Extracted from the POST flow so a profile-switch migration
+  // gets identical progress UI without the user having to click Reindex
+  // a second time.
+  const armReindexFromTaskIds = useCallback(async (taskIds: string[], total: number) => {
+    if (!taskIds.length) return;
     let initialTasks: ReindexTask[] = taskIds.map((id) => ({ task_id: id, status: "pending" as const }));
     try {
       const res = await api.getKnowledgeTasks();
@@ -835,15 +878,14 @@ export default function KnowledgePanel({
     } catch {
       // Fall back to task IDs until polling resolves filenames.
     }
-    const _reindexStartedAt = Date.now();
     setReindexProgress({
       taskIds,
-      total: result.count,
+      total: total || taskIds.length,
       completed: 0,
       failed: 0,
       tasks: initialTasks,
       done: false,
-      startedAt: _reindexStartedAt,
+      startedAt: Date.now(),
     });
 
     // Poll task statuses every 2s
@@ -894,7 +936,32 @@ export default function KnowledgePanel({
         // Polling failure is transient, keep trying
       }
     }, 2000);
-  }, [onReindex, loadDocuments, checkHealth, onToast]);
+  }, [loadDocuments, checkHealth, onToast]);
+
+  // Manual Reindex button path: POST first to get task IDs, then arm.
+  const startReindexWithProgress = useCallback(async () => {
+    if (!onReindex) return;
+    const result = await onReindex();
+    if (!result || !result.task_ids?.length) return;
+    await armReindexFromTaskIds(result.task_ids, result.count);
+  }, [onReindex, armReindexFromTaskIds]);
+
+  // Server-side auto-reindex path: ManagePage extracts task IDs from a
+  // PATCH /draft/knowledge response and pushes them down here. We arm
+  // the tile + polling without an extra POST (the tasks already exist
+  // on the engine — duplicating the POST would drop their vectors
+  // again and re-spawn workers). ``triggerKey`` dedupes; arming once
+  // per distinct payload and telling the parent we consumed it so the
+  // prop can be cleared.
+  const consumedTriggerKeyRef = useRef<string | null>(null);
+  useEffect(() => {
+    const t = autoReindexTrigger;
+    if (!t || t.taskIds.length === 0) return;
+    if (consumedTriggerKeyRef.current === t.triggerKey) return;
+    consumedTriggerKeyRef.current = t.triggerKey;
+    armReindexFromTaskIds(t.taskIds, t.total);
+    onAutoReindexConsumed?.();
+  }, [autoReindexTrigger?.triggerKey, armReindexFromTaskIds, onAutoReindexConsumed]);
 
   // -------------------------------------------------------------------------
   // Upload handlers
@@ -1806,83 +1873,81 @@ export default function KnowledgePanel({
                         )}
 
 
-                        {documents.length === 0 && uploadingFiles.length === 0 ? (
-                          // During an in-flight reindex the active collection is briefly
-                          // empty (its files are mid-migration to the new-hash collection).
-                          // Showing the "No documents indexed yet" empty state in that
-                          // window reads as "I lost my data". Instead, render the files
-                          // currently being processed by the reindex so the user sees
-                          // their documents are being upgraded, not deleted.
-                          reindexProgress && !reindexProgress.done ? (
-                            <Tile>
-                              <Stack gap={3}>
-                                <p style={{ color: "var(--cds-text-secondary)", margin: 0, fontSize: "0.8125rem" }}>
-                                  Your documents are being upgraded for the new profile. They'll
-                                  reappear here as each one finishes.
+                        {/* Render the user's documents straight through a profile-
+                            switch upgrade. ``documents`` from the server is briefly
+                            empty during the migration (new-hash collection has no
+                            rows yet); ``documentsBeforeReindex`` snapshots the
+                            previous list at reindex-start so the UI keeps showing
+                            the same Tile rows, ingest dates and all, with an
+                            ``Upgrading…`` pill overlaid per row as it runs. */}
+                        {(() => {
+                          const reindexActive = !!(reindexProgress && !reindexProgress.done);
+                          const effectiveDocs = reindexActive && documentsBeforeReindex
+                            ? documentsBeforeReindex
+                            : documents;
+                          const TAG_BY_STATUS = {
+                            completed: ["green", "Ready"],
+                            failed: ["red", "Failed"],
+                            running: ["blue", "Upgrading…"],
+                            pending: ["gray", "Queued"],
+                          } as const;
+                          const taskByName = new Map<string, ReindexTask>();
+                          if (reindexActive && reindexProgress) {
+                            for (const t of reindexProgress.tasks) {
+                              const n = t.filename || Object.values(t.file_tasks ?? {})[0]?.filename;
+                              if (n) taskByName.set(n, t);
+                            }
+                          }
+                          if (effectiveDocs.length === 0 && uploadingFiles.length === 0) {
+                            return (
+                              <Tile>
+                                <p style={{ color: "var(--cds-text-secondary)", margin: 0 }}>
+                                  No documents indexed yet. Upload files to get started.
                                 </p>
-                                <Stack gap={2}>
-                                  {reindexProgress.tasks.map((task) => {
-                                    const fname = task.filename || task.task_id;
-                                    const TAG = {
-                                      completed: ["green", "Ready"],
-                                      failed: ["red", "Failed"],
-                                      running: ["blue", "Upgrading…"],
-                                      pending: ["gray", "Queued"],
-                                    } as const;
-                                    const [tagType, tagLabel] = TAG[task.status] ?? TAG.pending;
-                                    return (
-                                      <Stack
-                                        key={task.task_id}
-                                        orientation="horizontal"
-                                        gap={3}
-                                        style={{ alignItems: "center", opacity: task.status === "pending" ? 0.65 : 1 }}
-                                      >
-                                        <Document size={16} />
-                                        <span style={{ flex: 1, fontSize: "0.875rem", color: "var(--cds-text-primary)" }}>
-                                          {fname}
-                                        </span>
-                                        <Tag size="sm" type={tagType}>{tagLabel}</Tag>
-                                      </Stack>
-                                    );
-                                  })}
-                                </Stack>
-                              </Stack>
-                            </Tile>
-                          ) : (
-                            <Tile>
-                              <p style={{ color: "var(--cds-text-secondary)", margin: 0 }}>
-                                No documents indexed yet. Upload files to get started.
-                              </p>
-                            </Tile>
-                          )
-                        ) : (
-                          <Stack gap={2}>
-                            {documents.filter((doc) => !uploadingFiles.some((f) => (f.backendName || f.name) === doc.filename && f.status !== "error")).map((doc) => (
-                              <Tile key={doc.filename} style={{ borderLeft: "3px solid #24a148" }}>
-                                <Stack orientation="horizontal" gap={4} style={{ alignItems: "center" }}>
-                                  <Document size={16} />
-                                  <span style={{ flex: 1, color: "var(--cds-text-primary)", fontSize: "0.875rem" }}>
-                                    {doc.filename}
-                                  </span>
-                                  {doc.ingested_at && (
-                                    <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
-                                      {new Date(doc.ingested_at).toLocaleDateString()}
-                                    </span>
-                                  )}
-                                  <Button
-                                    type="button"
-                                    kind="danger--ghost"
-                                    size="sm"
-                                    hasIconOnly
-                                    renderIcon={TrashCan}
-                                    iconDescription="Delete document"
-                                    onClick={() => setDeleteConfirm(doc.filename)}
-                                  />
-                                </Stack>
                               </Tile>
-                            ))}
-                          </Stack>
-                        )}
+                            );
+                          }
+                          return (
+                            <Stack gap={2}>
+                              {effectiveDocs
+                                .filter((doc) => !uploadingFiles.some((f) => (f.backendName || f.name) === doc.filename && f.status !== "error"))
+                                .map((doc) => {
+                                  const task = taskByName.get(doc.filename);
+                                  const [tagType, tagLabel] = task ? TAG_BY_STATUS[task.status] ?? TAG_BY_STATUS.pending : ["gray", ""];
+                                  return (
+                                    <Tile key={doc.filename} style={{ borderLeft: `3px solid ${task ? "#0f62fe" : "#24a148"}` }}>
+                                      <Stack orientation="horizontal" gap={4} style={{ alignItems: "center" }}>
+                                        <Document size={16} />
+                                        <span style={{ flex: 1, color: "var(--cds-text-primary)", fontSize: "0.875rem" }}>
+                                          {doc.filename}
+                                        </span>
+                                        {task ? (
+                                          <Tag size="sm" type={tagType}>{tagLabel}</Tag>
+                                        ) : (
+                                          <>
+                                            {doc.ingested_at && (
+                                              <span style={{ fontSize: "0.6875rem", color: "var(--cds-text-secondary)" }}>
+                                                {new Date(doc.ingested_at).toLocaleDateString()}
+                                              </span>
+                                            )}
+                                            <Button
+                                              type="button"
+                                              kind="danger--ghost"
+                                              size="sm"
+                                              hasIconOnly
+                                              renderIcon={TrashCan}
+                                              iconDescription="Delete document"
+                                              onClick={() => setDeleteConfirm(doc.filename)}
+                                            />
+                                          </>
+                                        )}
+                                      </Stack>
+                                    </Tile>
+                                  );
+                                })}
+                            </Stack>
+                          );
+                        })()}
                       </Stack>
                         </>
                       )}

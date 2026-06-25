@@ -274,6 +274,19 @@ export function ManagePage() {
   const [knowledgeSavedSnapshot, setKnowledgeSavedSnapshot] = useState<AgentConfig["knowledge"] | null>(null);
   const [knowledgeReindexNeeded, setKnowledgeReindexNeeded] = useState(false);
   const [knowledgeReindexing, setKnowledgeReindexing] = useState(false);
+  // When a knowledge draft PATCH triggers an auto-reindex on the server
+  // (e.g. user picks a new profile and the embedding-dim changes), the
+  // response carries task_ids in ``auto_reindex.collections[*].result``.
+  // We bubble them down to KnowledgePanel so its reindex tile arms
+  // automatically — without this prop the user has to click "Reindex"
+  // manually to see ANY progress for a server-side migration they
+  // didn't explicitly trigger. ``triggerKey`` is the task-IDs join so a
+  // re-render with the same payload doesn't re-arm twice.
+  const [autoReindexTrigger, setAutoReindexTrigger] = useState<{
+    taskIds: string[];
+    total: number;
+    triggerKey: string;
+  } | null>(null);
   // Adaptation 422 wiring (Sami #60): the autosave PATCH below may return
   // a 422 with the structured ClientAdaptationError.to_dict() body. We
   // surface it into the panel via the controlled-state contract so the
@@ -964,6 +977,35 @@ export function ManagePage() {
         if (res.ok) {
           setCurrentVersion("draft");
           setAdaptationServerError(null);
+          // Forward any server-triggered auto-reindex into the panel so the
+          // reindex tile arms automatically. Without this the user only
+          // sees progress if they click the Reindex button explicitly —
+          // for a dim-changing profile switch (which fires migration on
+          // the server side) that's a confusing "documents vanished, no
+          // feedback" window. ``triggerKey`` is the joined task IDs so a
+          // re-render with the same payload doesn't re-arm.
+          try {
+            const body = await res.clone().json();
+            const collections = body?.auto_reindex?.collections ?? [];
+            const taskIds: string[] = collections
+              .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
+              .filter((id: string) => typeof id === "string" && id.length > 0);
+            if (taskIds.length > 0) {
+              const total = collections.reduce(
+                (sum: number, c: { result?: { count?: number } }) => sum + (c?.result?.count ?? 0),
+                0,
+              );
+              const triggerKey = taskIds.slice().sort().join("|");
+              setAutoReindexTrigger((prev) =>
+                prev?.triggerKey === triggerKey
+                  ? prev
+                  : { taskIds, total: total || taskIds.length, triggerKey },
+              );
+            }
+          } catch {
+            // Body shape mismatch — auto-reindex either didn't fire or
+            // wasn't in the response; the manual Reindex path still works.
+          }
         } else if (res.status === 422) {
           try {
             const body = await res.json();
@@ -2096,6 +2138,8 @@ export function ManagePage() {
           ragProfiles={ragProfiles}
           adaptationServerError={adaptationServerError}
           onAdaptationServerError={setAdaptationServerError}
+          autoReindexTrigger={autoReindexTrigger}
+          onAutoReindexConsumed={() => setAutoReindexTrigger(null)}
           onReindex={async () => {
             setKnowledgeReindexing(true);
             try {
