@@ -1377,6 +1377,24 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     # that prefix so we only reindex what THIS agent owns.
                     sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
                     agent_prefix = f"kb_agent_{sanitized}"
+
+                    # Auto-reindex MUST land docs under the new-hash collection
+                    # name, not under the prior hash. Reindexing in place under
+                    # the prior name re-embeds correctly but leaves the docs
+                    # at the OLD collection name; publish then sees the
+                    # new-hash collection empty and triggers a SECOND
+                    # migration reindex (copy_source_files + reindex). This
+                    # block migrates once: pick a non-empty source dir, copy
+                    # its files to the target name, then reindex the target.
+                    # Publish's migration path then short-circuits via the
+                    # "target collection already has docs, skipping migration"
+                    # branch in save_manage_config_publish.
+                    try:
+                        current_hash = live_engine._config.vector_config_hash()
+                    except Exception:
+                        current_hash = ""
+                    target_collection = f"{agent_prefix}_{current_hash}" if current_hash else agent_prefix
+
                     if files_dir and files_dir.exists():
                         collections = [
                             d.name
@@ -1386,16 +1404,58 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                         ]
                     else:
                         collections = []
+
+                    target_done = False
                     for coll in collections:
                         try:
-                            r = await live_engine.reindex(coll)
-                            triggered_collections.append({"collection": coll, "result": r})
+                            if coll == target_collection:
+                                # Already at the target name — reindex in place.
+                                r = await live_engine.reindex(coll)
+                                triggered_collections.append({"collection": coll, "result": r})
+                                target_done = True
+                            elif not target_done:
+                                # Migrate this collection's files to the
+                                # target name then reindex target. Only do
+                                # this once per request — additional stale
+                                # collection dirs become orphans (cleaned up
+                                # via a separate housekeeping pass).
+                                await live_engine.copy_source_files(coll, target_collection)
+                                r = await live_engine.reindex(target_collection)
+                                triggered_collections.append(
+                                    {
+                                        "collection": target_collection,
+                                        "migrated_from": coll,
+                                        "result": r,
+                                    }
+                                )
+                                target_done = True
+                            else:
+                                # Orphan stale collection — leave for cleanup.
+                                triggered_collections.append({"collection": coll, "skipped": "orphan_stale"})
                         except Exception as rerr:
                             logger.warning("Auto-reindex of %s failed: %s", coll, rerr)
                             triggered_collections.append({"collection": coll, "error": str(rerr)})
+
+                    # Track the runtime collection-name hash so
+                    # ``resolve_collection`` (and any caller that builds the
+                    # agent collection name from ``app_state.knowledge_config_hash``)
+                    # routes to the migrated data, not the orphan old-hash dir.
+                    # Without this, search after a draft-only profile switch
+                    # would hit the empty old collection because resolve_collection
+                    # is keyed off this attribute.
+                    if target_done and current_hash and live_state is not None:
+                        try:
+                            live_state.knowledge_config_hash = current_hash
+                        except Exception as _hash_err:
+                            logger.warning(
+                                "Failed to update knowledge_config_hash after migrate: %s",
+                                _hash_err,
+                            )
+
                     response["auto_reindex"] = {
                         "triggered": True,
                         "scope": agent_prefix,
+                        "target": target_collection,
                         "reason": f"embedding dim changed: {live_apply_result.get('previous_dim')} → {live_apply_result.get('new_dim')}",
                         "collections": triggered_collections,
                     }
