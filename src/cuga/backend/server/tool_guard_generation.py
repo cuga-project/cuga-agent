@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import logging
 from typing import Any, Dict
 
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.policy.models import ToolGuide
 from cuga.config import settings
 from cuga.sdk import CugaAgent
+
+logger = logging.getLogger(__name__)
 
 
 ToolGuardGenerationResult = Dict[str, Any]
@@ -45,6 +48,8 @@ async def generate_tool_guards_for_policy(
         raise LookupError(f"Policy '{policy_id}' was not found")
     if not isinstance(existing_policy, ToolGuide):
         raise TypeError(f"Policy '{policy_id}' is not a Tool Guide policy")
+    if not existing_policy.enabled:
+        raise ValueError(f"Policy '{policy_id}' is disabled")
 
     target_tools = _concrete_target_tools(existing_policy)
     results: list[dict[str, str]] = []
@@ -76,8 +81,11 @@ async def generate_tool_guards_for_policy(
                 tool_guards={tool_name: {"policy_code": policy_code}},
             )
             results.append({"tool": tool_name, "status": "ok"})
-        except Exception as exc:
-            results.append({"tool": tool_name, "status": "error", "message": str(exc)})
+        except Exception:
+            logger.exception("ToolGuard generation failed for tool %s in policy %s", tool_name, policy_id)
+            results.append(
+                {"tool": tool_name, "status": "error", "message": "ToolGuard generation failed for this tool"}
+            )
 
     top_level_status = "ok" if any(result["status"] == "ok" for result in results) else "error"
     return {"status": top_level_status, "policy_id": policy_id, "results": results}

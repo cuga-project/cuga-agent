@@ -2714,9 +2714,9 @@ async def generate_tool_guard_for_policy(
         return JSONResponse({"status": "error", "message": str(exc)}, status_code=404)
     except TypeError as exc:
         return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
-    except Exception as exc:
+    except Exception:
         logger.exception("Failed to generate ToolGuard for policy %s", policy_id)
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=500)
+        return JSONResponse({"status": "error", "message": "Internal server error"}, status_code=500)
 
 
 # Runtime tools injected by Cuga Lite — split by gate so each group only
