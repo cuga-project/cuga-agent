@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import secrets
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -42,6 +43,38 @@ def sanitize_upload_filename(filename: str) -> str:
     if not safe_stem:
         raise ValueError("Invalid filename")
     return f"{safe_stem}{suffix}"
+
+
+def validate_upload_content(data: bytes, filename: str) -> None:
+    """Reject non-UTF-8 or invalid JSON/JSONL/NDJSON payloads before persistence."""
+    suffix = Path(sanitize_upload_filename(filename)).suffix.lower()
+    try:
+        text = data.decode("utf-8")
+    except UnicodeDecodeError as exc:
+        raise ValueError("Upload must be valid UTF-8") from exc
+    if suffix == ".json":
+        try:
+            json.loads(text)
+        except json.JSONDecodeError as exc:
+            raise ValueError(f"Invalid JSON: {exc}") from exc
+        return
+    if suffix in {".jsonl", ".ndjson"}:
+        for line in text.splitlines():
+            if line.strip():
+                try:
+                    json.loads(line)
+                except json.JSONDecodeError as exc:
+                    raise ValueError(f"Invalid JSONL/NDJSON: {exc}") from exc
+        return
+    raise ValueError(f"Unsupported file type {suffix!r}")
+
+
+def _unique_upload_name(safe_name: str, manifest: dict[str, Any]) -> str:
+    existing = {f.get("name") for f in manifest.get("files", [])}
+    if safe_name not in existing:
+        return safe_name
+    stem, suffix = Path(safe_name).stem, Path(safe_name).suffix
+    return f"{stem}_{secrets.token_hex(4)}{suffix}"
 
 
 def relative_upload_path(filename: str) -> str:
@@ -135,10 +168,11 @@ async def upload_workspace_bytes(
     tid = _validated_thread_id(thread_id)
     ensure_thread_workspace_seeded(tid)
     safe_name = sanitize_upload_filename(filename)
+    manifest = read_upload_manifest(tid)
+    safe_name = _unique_upload_name(safe_name, manifest)
+    validate_upload_content(data, safe_name)
     sp = sandbox_upload_path(safe_name)
-    manifest = _merge_manifest_entry(
-        read_upload_manifest(tid), thread_id=tid, filename=safe_name, size_bytes=len(data)
-    )
+    manifest = _merge_manifest_entry(manifest, thread_id=tid, filename=safe_name, size_bytes=len(data))
 
     if workspace_tree_is_sandbox_backed():
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
@@ -198,7 +232,7 @@ async def delete_thread_uploads(thread_id: Optional[str]) -> None:
         f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}", thread_id=safe_tid, operation="delete_uploads"
     )
     if uploads_dir.exists():
-        shutil.rmtree(uploads_dir, ignore_errors=True)
+        shutil.rmtree(uploads_dir)
         logger.info(f"[workspace_upload] removed host uploads for thread={safe_tid}")
 
     if workspace_tree_is_sandbox_backed():
@@ -210,7 +244,7 @@ async def delete_thread_uploads(thread_id: Optional[str]) -> None:
         try:
             await interpreter.sandbox.commands.run(f"rm -rf {uploads_sp}")
         except Exception as exc:
-            logger.debug(f"[workspace_upload] sandbox remove uploads for thread={safe_tid}: {exc}")
+            logger.warning(f"[workspace_upload] sandbox remove uploads for thread={safe_tid}: {exc}")
 
 
 def resolve_host_workspace_path(user_path: str, thread_id: Optional[str]) -> Path:

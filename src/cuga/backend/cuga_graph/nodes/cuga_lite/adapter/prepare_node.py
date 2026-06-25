@@ -311,7 +311,9 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         skills_enabled = False
         _cfg = config.get("configurable", {}) if config else {}
         configurable_special = _cfg.get("special_instructions")
-        effective_special = adapter._special_instructions or configurable_special or ""
+        effective_special = "\n\n".join(
+            part for part in (adapter._special_instructions, configurable_special) if part
+        )
         _cfg_skills = _cfg.get("skills_enabled")
         skills_cfg_on = _cfg_skills if _cfg_skills is not None else getattr(settings.skills, "enabled", False)
         cuga_folder_for_skills = _cfg.get("skills_folder") or os.getenv(

@@ -7,6 +7,7 @@ import re
 import shutil
 import os
 import subprocess
+import tempfile
 import uuid
 import yaml
 import httpx
@@ -70,6 +71,7 @@ from cuga.backend.server.workspace_upload import (
     resolve_host_workspace_path,
     sanitize_upload_filename,
     upload_workspace_bytes,
+    validate_upload_content,
 )
 from cuga.backend.server.workspace_sandbox import (
     NATIVE_WORKSPACE_ROOT,
@@ -97,13 +99,28 @@ def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Op
     return tid or None
 
 
-async def _assert_thread_access(agent_id: str, thread_id: str, user_id: str) -> None:
+async def _assert_thread_access(thread_id: str, user_id: str) -> None:
     """Reject access when thread_id is owned by a different user."""
     conversation_db = get_conversation_db()
     rows = await conversation_db.get_thread_history(thread_id)
     for row in rows:
-        if row.agent_id == agent_id and row.user_id != user_id:
+        if row.user_id and row.user_id != user_id:
             raise HTTPException(status_code=403, detail="Access denied: thread belongs to another user")
+
+
+def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
+    return current_user.sub if current_user else DEFAULT_USER_ID
+
+
+async def _require_workspace_thread_access(
+    request: Request,
+    thread_id: Optional[str],
+    current_user: Optional[UserInfo],
+) -> Optional[str]:
+    tid = _workspace_thread_id(request, thread_id)
+    if tid:
+        await _assert_thread_access(tid, _workspace_user_id(current_user))
+    return tid
 
 
 def _strip_redundant_cuga_workspace_prefix(user_path: str) -> str:
@@ -3294,7 +3311,7 @@ async def get_workspace_tree(
 ):
     """Endpoint to retrieve the workspace folder tree."""
     try:
-        tid = _workspace_thread_id(request, thread_id)
+        tid = await _require_workspace_thread_access(request, thread_id, current_user)
         if workspace_tree_is_native_backed():
             tree = fetch_native_workspace_tree(tid)
             return JSONResponse({"tree": tree})
@@ -3328,7 +3345,7 @@ async def get_workspace_file(
 ):
     """Endpoint to retrieve a file's content from the workspace."""
     try:
-        tid = _workspace_thread_id(request, thread_id)
+        tid = await _require_workspace_thread_access(request, thread_id, current_user)
         if workspace_tree_is_native_backed():
             try:
                 loop = asyncio.get_event_loop()
@@ -3416,8 +3433,8 @@ async def upload_workspace_file(
         if not tid:
             raise HTTPException(status_code=400, detail="thread_id required for workspace upload")
 
-        user_id = current_user.sub if current_user else DEFAULT_USER_ID
-        await _assert_thread_access(agent_id, tid, user_id)
+        user_id = _workspace_user_id(current_user)
+        await _assert_thread_access(tid, user_id)
 
         try:
             sanitize_upload_filename(file.filename or "upload.json")
@@ -3435,20 +3452,27 @@ async def upload_workspace_file(
             except ValueError:
                 pass
 
-        chunks: list[bytes] = []
         total = 0
-        while True:
-            chunk = await file.read(1024 * 1024)
-            if not chunk:
-                break
-            total += len(chunk)
-            if total > MAX_UPLOAD_BYTES:
-                raise HTTPException(
-                    status_code=413,
-                    detail=f"File too large (max {MAX_UPLOAD_BYTES} bytes)",
-                )
-            chunks.append(chunk)
-        content = b"".join(chunks)
+        with tempfile.NamedTemporaryFile() as tmp:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large (max {MAX_UPLOAD_BYTES} bytes)",
+                    )
+                tmp.write(chunk)
+            tmp.flush()
+            tmp.seek(0)
+            content = tmp.read()
+
+        try:
+            validate_upload_content(content, file.filename or "upload.json")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
 
         try:
             result = await upload_workspace_bytes(tid, file.filename or "upload.json", content)
@@ -3476,7 +3500,7 @@ async def download_workspace_file(
 ):
     """Download a file from the workspace."""
     try:
-        tid = _workspace_thread_id(request, thread_id)
+        tid = await _require_workspace_thread_access(request, thread_id, current_user)
         if workspace_tree_is_native_backed():
             try:
                 loop = asyncio.get_event_loop()

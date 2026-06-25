@@ -2537,12 +2537,7 @@ class CugaAgent:
         if self._enable_skills is not None:
             run_config["configurable"]["skills_enabled"] = self._enable_skills
         if self._skills_folder is not None:
-            from pathlib import Path as _Path
-
-            _sf = _Path(self._skills_folder)
-            if _sf.name != ".cuga":
-                _sf = _sf / ".cuga"
-            run_config["configurable"]["skills_folder"] = str(_sf)
+            run_config["configurable"]["skills_folder"] = str(self._skills_folder)
 
         # Handle resume case (message is None or action_response is provided)
         if message is None or action_response is not None:

@@ -47,6 +47,23 @@ def test_merge_manifest_replaces_same_name() -> None:
     assert "shell_path" not in merged["files"][0]
 
 
+def test_validate_upload_content_rejects_invalid_json() -> None:
+    with pytest.raises(ValueError, match="Invalid JSON"):
+        wu.validate_upload_content(b"{not json", "bad.json")
+
+
+def test_validate_upload_content_accepts_jsonl() -> None:
+    wu.validate_upload_content(b'{"a": 1}\n{"b": 2}\n', "events.jsonl")
+
+
+def test_unique_upload_name_appends_suffix_on_collision() -> None:
+    manifest = {"files": [{"name": "foo.json"}]}
+    unique = wu._unique_upload_name("foo.json", manifest)
+    assert unique.startswith("foo_")
+    assert unique.endswith(".json")
+    assert unique != "foo.json"
+
+
 @pytest.mark.asyncio
 async def test_upload_workspace_bytes_host_mode(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
