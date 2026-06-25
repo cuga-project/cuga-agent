@@ -918,6 +918,20 @@ async def lifespan(app: FastAPI):
             logger.debug(f"Knowledge engine aclose: {e}")
         app_state.knowledge_engine.shutdown()
 
+    # Close the process-wide relational-store pool. The shutdown refactor
+    # earlier in this branch dropped this call, which leaked pgvector /
+    # SQLite connections on every restart — Sami C2 review. SQLite would
+    # leave WAL/lock residue under tight up/down cycles; pgvector would
+    # eventually exhaust the connection pool in test loops. Defensive
+    # try/except so a misbehaving store can't block the rest of shutdown.
+    try:
+        from cuga.backend.storage.facade import get_storage
+
+        await get_storage().close_relational_stores()
+        logger.info("Relational stores closed.")
+    except Exception as e:
+        logger.debug(f"close_relational_stores: {e}")
+
     # Clean up embedded assets
     if USE_EMBEDDED_ASSETS:
         embedded_assets.cleanup()

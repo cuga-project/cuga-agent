@@ -2900,14 +2900,21 @@ class KnowledgeEngine:
                     )
                     results = results[:limit]  # fusion ranking until the model is ready
                 else:
+                    # Tag each candidate with its index into ``results`` so the
+                    # reorder after rerank preserves the ORIGINAL SearchResult
+                    # (scope, section_path, dense_rank, lexical_rank, rrf_score).
+                    # Without this, rebuilding fresh SearchResults at the end
+                    # silently zeroes scope → "" — and the envelope's by_source
+                    # bucket lumps every chunk under that phantom empty scope
+                    # when scope="all" + rerank_enabled. Sami C1 review.
                     candidates = [
                         _rr.RerankedCandidate(
                             text=r.text,
                             score=r.score,
-                            metadata={"filename": r.filename, "page": r.page},
+                            metadata={"filename": r.filename, "page": r.page, "_orig_idx": i},
                             original_score=r.score,
                         )
-                        for r in results
+                        for i, r in enumerate(results)
                     ]
                     reranked = await asyncio.to_thread(
                         _rr.rerank, original_query, candidates, limit, _rerank_model
@@ -2923,19 +2930,20 @@ class KnowledgeEngine:
                             "cuga_knowledge_rerank_top_score_new": (reranked[0].score if reranked else 0),
                         },
                     )
-                    results = [
-                        SearchResult(
-                            text=c.text,
-                            filename=c.metadata.get("filename", "unknown"),
-                            page=c.metadata.get("page", None),
-                            # Keep the fusion score as the displayed score so
-                            # downstream callers don't see suddenly-different
-                            # score units; cross-encoder scores are unbounded
-                            # logits and confuse the score_threshold gate.
-                            score=round(c.original_score, 4),
-                        )
-                        for c in reranked
-                    ]
+                    # Reorder original results by the reranker's verdict. All
+                    # provenance fields (scope, section_path, dense_rank,
+                    # lexical_rank, rrf_score) ride through unchanged. The
+                    # displayed score stays the fusion score for unit
+                    # consistency (cross-encoder logits are unbounded and
+                    # would confuse the score_threshold gate downstream).
+                    # Defensive ``isinstance`` guard: a misbehaved reranker
+                    # that drops the index key shouldn't crash search.
+                    reordered: list["SearchResult"] = []
+                    for c in reranked:
+                        idx = c.metadata.get("_orig_idx") if isinstance(c.metadata, dict) else None
+                        if isinstance(idx, int) and 0 <= idx < len(results):
+                            reordered.append(results[idx])
+                    results = reordered or results[:limit]
             except Exception as e:
                 logger.warning("Reranker unavailable/failed (%s); using fusion ranking.", e)
                 results = results[:limit]
