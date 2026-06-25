@@ -146,4 +146,3 @@ async def test_generate_tool_guards_for_policy_rejects_no_concrete_tools(target_
             generation_agent=FakeGenerationAgent(FakePoliciesManager()),
         )
 
-# Made with Bob
