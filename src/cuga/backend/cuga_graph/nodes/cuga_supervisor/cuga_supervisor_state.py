@@ -2,7 +2,7 @@
 CugaSupervisor State - State schema for supervisor subgraph
 """
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Literal
 from pydantic import BaseModel, ConfigDict, Field
 from langchain_core.messages import BaseMessage
 
@@ -19,12 +19,31 @@ class AgentInfo(BaseModel):
     status: str = "available"  # available, busy, error
 
 
+class PlanUpfrontDelegation(BaseModel):
+    """A single delegation step in the plan_upfront strategy plan."""
+
+    agent_name: str
+    task: str
+    variables: List[str] = Field(default_factory=list)
+
+
+class PlanUpfrontPlan(BaseModel):
+    """The LLM-generated plan for plan_upfront strategy."""
+
+    strategy: Literal["sequential", "parallel"] = "sequential"
+    delegations: List[PlanUpfrontDelegation] = Field(default_factory=list)
+    reasoning: Optional[str] = None
+
+
 class CugaSupervisorState(AgentState):
     """
     State for CugaSupervisor subgraph.
 
     Extends AgentState to maintain compatibility while adding supervisor-specific fields.
     """
+
+    # Operation mode
+    supervisor_mode: Literal["conversational", "plan_upfront"] = "conversational"
 
     # Supervisor's own conversation history (separate from sub-agents)
     supervisor_chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
@@ -40,6 +59,11 @@ class CugaSupervisorState(AgentState):
 
     # Supervisor's aggregated variables collected from sub-agents
     supervisor_variables: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
+
+    # Plan upfront fields
+    plan_upfront_plan: Optional[PlanUpfrontPlan] = None
+    aggregated_results: Optional[str] = None
+    synthesized_response: Optional[str] = None
 
     # Conversational mode fields (similar to CugaLiteState)
     tools_prepared: bool = False
