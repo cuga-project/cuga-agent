@@ -36,6 +36,11 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
     with open(yaml_path, "r") as f:
         config = yaml.safe_load(f)
 
+    # Normalize legacy mode value
+    supervisor_cfg = config.get("supervisor", {})
+    if supervisor_cfg.get("mode") == "delegation":
+        supervisor_cfg["mode"] = "plan_upfront"
+
     agents = {}
 
     for agent_config in config.get("agents", []):
