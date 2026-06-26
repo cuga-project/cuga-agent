@@ -29,6 +29,59 @@ _VISIBLE_MAX = 12000
 _REASONING_MAX = 8000
 _COMBINED_MAX = 20000
 
+# Deterministic fast-path for obvious planning/discovery turns.
+#
+# The agent occasionally emits a short first-person plan with no code on a turn
+# where it clearly intends to keep working, e.g. "We need to search student_loan
+# app." or "We need to discover the tool signatures for codebase_comments".
+# The LLM classifier has been observed to misfire on these and finalize the plan
+# as the answer (the "planning-text stall"). We catch the unambiguous cases here
+# so the result does not depend on a flaky model call.
+#
+# This path is intentionally conservative: it only flips False -> True for short
+# text that opens with a first-person intent ("we"/"I"/"let's"/"let me"),
+# optionally behind a discourse marker, followed by a forward-looking action or
+# modal verb. A genuine final answer rarely matches, and the surrounding graph
+# already enforces a step limit before auto-continuing, so an over-fire cannot
+# loop forever.
+_PLANNING_INTENT_RE = re.compile(
+    r"^(?:(?:ok(?:ay)?|now|first(?:ly)?|next|then|so|alright|well)[\s,]+)*"
+    r"(?:we|i|let'?s|let\s+me)\b"
+    r"(?:(?!\.).)*?\b"
+    r"(?:need\s+to|have\s+to|should|must|will|'ll|going\s+to|gonna|"
+    r"start\s+by|begin\s+by|"
+    r"search|discover|find|look\s+up|fetch|call|query|inspect|"
+    r"explore|examine|check|investigate|figure\s+out|determine|"
+    r"retrieve|gather|list|enumerate)\b",
+    re.IGNORECASE,
+)
+
+# A negation usually marks a result or refusal ("I could not find …"), not a
+# forward-looking plan — let those fall through to the LLM classifier / finalize.
+_NEGATION_RE = re.compile(
+    r"\b(?:not|never|unable|cannot|no)\b|\w+n['’]t\b",
+    re.IGNORECASE,
+)
+
+_PLANNING_MAX_LEN = 400
+
+
+def looks_like_planning_text(visible: str) -> bool:
+    """True for a short first-person intent statement that signals more work to come.
+
+    Conservative deterministic detector for the planning-text stall. Returns
+    False for empty text, anything longer than a couple of sentences, or text
+    that reads as a question (clarifying questions should finalize, not loop).
+    """
+    t = (visible or "").strip()
+    if not t or len(t) > _PLANNING_MAX_LEN:
+        return False
+    if t.rstrip().endswith("?"):
+        return False
+    if _NEGATION_RE.search(t):
+        return False
+    return bool(_PLANNING_INTENT_RE.match(t))
+
 
 def build_combined_content_and_reasoning(visible: str, reasoning: str) -> str:
     """Single transcript: user-visible content plus internal reasoning (either part may be omitted)."""
@@ -104,6 +157,9 @@ async def classify_nl_auto_continue(
         return False
     visible = normalize_assistant_text(assistant_visible)
     reasoning = normalize_assistant_text(reasoning_excerpt)
+    if looks_like_planning_text(visible):
+        logger.info("NL auto-continue: planning-text fast-path matched; auto-continuing")
+        return True
     combined = build_combined_content_and_reasoning(visible, reasoning)
     if not combined.strip():
         return False
