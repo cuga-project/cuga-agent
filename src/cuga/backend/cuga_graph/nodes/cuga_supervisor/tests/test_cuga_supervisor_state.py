@@ -106,7 +106,7 @@ class TestCugaSupervisorState:
             plan_upfront_plan=plan.model_dump(),
         )
         assert state.plan_upfront_plan is not None
-        assert state.plan_upfront_plan["strategy"] == "sequential"
+        assert state.plan_upfront_plan.strategy == "sequential"
 
     def test_aggregated_results_default(self):
         state = CugaSupervisorState(input="hello", url="")
