@@ -715,6 +715,34 @@ export default function KnowledgePanel({
     return () => clearInterval(id);
   }, [reindexProgress?.startedAt, reindexProgress?.done]);
 
+  // Auto-dismiss the success notification ~3.5s after a clean reindex.
+  // Why: the "Re-index complete" green InlineNotification used to stay
+  // up until the user clicked X. If the user changed profile right
+  // after a successful reindex, the new "Re-index to apply your
+  // changes" banner was suppressed by the still-visible success
+  // (the banner trigger gates on ``!reindexProgress``, so the next
+  // need-reindex signal couldn't surface until the success was
+  // dismissed). Auto-dismiss on success only — on failure (failed > 0)
+  // we keep the banner up because the user needs to see what failed
+  // and the close-X is the way they acknowledge the warning.
+  //
+  // Edge cases this handles:
+  //   - User changes profile mid-celebration: success dismisses on its
+  //     own, the new "Re-index to apply" banner takes its place.
+  //   - User clicks X during the 3.5s window: cleanup clears the timer,
+  //     no late setState.
+  //   - User closes + reopens modal: reindexProgress is local state,
+  //     resets to null on remount, so the success can't re-fire.
+  //   - User starts another reindex during the window: setReindexProgress
+  //     for the new run resets ``done`` to false; the auto-dismiss
+  //     effect re-evaluates and finds ``!done`` so it doesn't fire.
+  useEffect(() => {
+    if (!reindexProgress?.done) return;
+    if (reindexProgress.failed > 0) return;
+    const t = setTimeout(() => setReindexProgress(null), 3500);
+    return () => clearTimeout(t);
+  }, [reindexProgress?.done, reindexProgress?.failed]);
+
   // Snapshot the documents at reindex-start so the list keeps rendering
   // the user's files (with their ingest dates) throughout the upgrade —
   // not just during the "Preparing your new reading model" window when
@@ -2677,6 +2705,11 @@ export default function KnowledgePanel({
                               subtitle={`${reindexProgress.completed} succeeded${reindexProgress.failed > 0 ? `, ${reindexProgress.failed} failed` : ""}.`}
                               lowContrast
                               onClose={() => setReindexProgress(null)}
+                              // Hide the close button on success — the
+                              // notification auto-dismisses via the effect
+                              // below. On failure, keep X so the user can
+                              // dismiss manually after reading the count.
+                              hideCloseButton={reindexProgress.failed === 0}
                             />
                           )}
 
