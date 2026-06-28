@@ -97,3 +97,49 @@ def test_pydantic_result_is_model_dumped_for_sync_and_async() -> None:
 
     assert asyncio.run(make_tool_awaitable(make_sync)()) == {"value": 7}
     assert asyncio.run(make_tool_awaitable(make_async)()) == {"value": 9}
+
+
+def test_truncates_after_first_block_referencing_probing_tool():
+    text = (
+        "```python\nres = await file_readfile('x')\nprint(res)\n```\n"
+        "```python\nres_2 = res[0]\nprint(res_2)\n```"
+    )
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "res = await file_readfile('x')\nprint(res)"
+
+
+def test_keeps_all_blocks_when_no_probing_tool_referenced():
+    text = (
+        "```python\nres = await file_readfile('x')\nprint(res)\n```\n"
+        "```python\nres_2 = res[0]\nprint(res_2)\n```"
+    )
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"some_other_tool"}))
+    assert code == "res = await file_readfile('x')\nprint(res)\n\nres_2 = res[0]\nprint(res_2)"
+
+
+def test_default_tools_needing_probing_preserves_old_combine_behavior():
+    text = "```python\na = 1\n```\n```python\nb = 2\n```"
+    assert extract_and_combine_codeblocks(text) == "a = 1\n\nb = 2"
+
+
+def test_truncation_keeps_prefix_blocks_before_the_matching_one():
+    text = (
+        "```python\nx = 1\nprint(x)\n```\n"
+        "```python\nres = await file_readfile('x')\nprint(res)\n```\n"
+        "```python\nres_2 = res[0]\n```"
+    )
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "x = 1\nprint(x)\n\nres = await file_readfile('x')\nprint(res)"
+
+
+def test_truncation_is_word_boundary_safe():
+    """A tool name that's a prefix of a longer identifier must not false-match."""
+    text = "```python\nfile_readfile_v2('x')\n```\n```python\ny = 2\n```"
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "file_readfile_v2('x')\n\ny = 2"
+
+
+def test_extract_code_from_model_response_threads_tools_needing_probing_through():
+    content = "```python\nres = await file_readfile('x')\nprint(res)\n```\n```python\nres_2 = res[0]\n```"
+    code = extract_code_from_model_response(content, None, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == "res = await file_readfile('x')\nprint(res)"
