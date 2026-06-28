@@ -2417,47 +2417,6 @@ export default function KnowledgePanel({
                             />
                           )}
 
-                          {/* Env-presets panel surfaced HERE (not behind Advanced).
-                              This is the one-chance moment for the enterprise
-                              client: open the Knowledge tab, see "we noticed
-                              your Watsonx key, one click to use it." Hiding
-                              this behind Advanced wastes the most considered
-                              touchpoint we have. Gated on rows.length > 0 so
-                              users without any provider env vars see nothing
-                              here (locals via Provider Select work as before). */}
-                          {envPresets && envPresets.length > 0 && (
-                            <EnvPresetsPanel
-                              presets={envPresets}
-                              currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
-                              currentModel={knowledgeConfig.embedding_model ?? ""}
-                              onApply={(preset) => {
-                                onPresetApplied?.();
-                                onKnowledgeConfigChange({
-                                  ...knowledgeConfig,
-                                  embedding_provider: preset.default_provider,
-                                  embedding_model: preset.default_model,
-                                  embedding_api_key: "",
-                                  embedding_base_url: "",
-                                  embedding_extra_params: {},
-                                });
-                                onToast?.(
-                                  "success",
-                                  `${preset.label} applied`,
-                                  `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
-                                );
-                              }}
-                              onFocusProviderSelect={() => {
-                                // Opens Advanced (if closed) and scrolls to the Provider Select.
-                                setShowAdvanced(true);
-                                setTimeout(() => {
-                                  const el = document.getElementById("knowledge-embedding-provider");
-                                  el?.focus();
-                                  el?.scrollIntoView({ behavior: "smooth", block: "center" });
-                                }, 50);
-                              }}
-                            />
-                          )}
-
                           {/* ── 3. Retrieval Profile selector ── */}
                           {ragProfiles && Object.keys(ragProfiles).length > 0 && (
                             <Stack gap={3}>
@@ -2733,31 +2692,91 @@ export default function KnowledgePanel({
                               the persistent stale cases. */}
                           {agentLevelEnabled && !reindexProgress && (knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
                             <Stack gap={3}>
-                              {/* Softened per the 3-reviewer pre-client pass:
-                                  was kind="warning" + "danger--tertiary" button
-                                  with the "Re-index recommended" title, which
-                                  reads as alarming for a routine config
-                                  change. Now kind="info" + "tertiary" button,
-                                  title "Update existing documents" — the
-                                  action is routine, the framing should match. */}
+                              {/* Two passes on this notice:
+                                    1. Softened from kind="warning" +
+                                       "danger--tertiary" (alarming for a
+                                       routine change).
+                                    2. Then sharpened — "Update existing
+                                       documents" was too soft, sounded
+                                       optional. The action is in fact
+                                       mandatory if the user wants their
+                                       config change to take effect on
+                                       already-indexed documents (new
+                                       uploads use the new config; existing
+                                       ones don't until re-indexed). Title
+                                       leads with that. */}
                               <InlineNotification
                                 kind="info"
-                                title="Update existing documents"
-                                subtitle="Settings changed. Re-index to apply the new configuration to your indexed documents."
+                                title="Re-index to apply your changes"
+                                subtitle="Existing documents still use the previous embedder. New uploads will use the new configuration, but already-indexed documents need a re-index to switch."
                                 lowContrast
                                 hideCloseButton
                               />
                               {onReindex && (
                                 <Button
                                   type="button"
-                                  kind="tertiary"
+                                  kind="primary"
                                   size="sm"
                                   disabled={knowledgeReindexing}
                                   onClick={startReindexWithProgress}
                                 >
-                                  {knowledgeReindexing ? "Starting..." : "Re-index all documents"}
+                                  {knowledgeReindexing ? "Re-indexing…" : "Re-index now"}
                                 </Button>
                               )}
+                            </Stack>
+                          )}
+
+                          {/* ── 3b. Embedding model (env-presets visible surface) ──
+                              Grouped under its own "Embedding model" heading
+                              so the conceptual scope is clear: this section
+                              picks WHICH embedder runs against your documents.
+                              The 4 Retrieval Profile tiles above pick the
+                              retrieval strategy (chunking + reranker + search
+                              mode), independent of this. Both sit on the main
+                              surface; the Advanced toggle below opens the
+                              manual override path (Provider Select + API
+                              key + base URL). Renders only when at least one
+                              provider is detected in the env — otherwise the
+                              section's only content (env-presets) would be
+                              empty and a heading-with-nothing-under-it reads
+                              broken. */}
+                          {envPresets && envPresets.length > 0 && (
+                            <Stack gap={2}>
+                              <Stack gap={1}>
+                                <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>Embedding model</h4>
+                                <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
+                                  How your documents get embedded for retrieval. We detected these in your environment.
+                                </p>
+                              </Stack>
+                              <EnvPresetsPanel
+                                presets={envPresets}
+                                currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
+                                currentModel={knowledgeConfig.embedding_model ?? ""}
+                                onApply={(preset) => {
+                                  onPresetApplied?.();
+                                  onKnowledgeConfigChange({
+                                    ...knowledgeConfig,
+                                    embedding_provider: preset.default_provider,
+                                    embedding_model: preset.default_model,
+                                    embedding_api_key: "",
+                                    embedding_base_url: "",
+                                    embedding_extra_params: {},
+                                  });
+                                  onToast?.(
+                                    "success",
+                                    `${preset.label} applied`,
+                                    `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
+                                  );
+                                }}
+                                onFocusProviderSelect={() => {
+                                  setShowAdvanced(true);
+                                  setTimeout(() => {
+                                    const el = document.getElementById("knowledge-embedding-provider");
+                                    el?.focus();
+                                    el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                  }, 50);
+                                }}
+                              />
                             </Stack>
                           )}
 
