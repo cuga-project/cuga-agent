@@ -28,6 +28,7 @@ CUGA_WORKSPACE_DIRNAME = "cuga_workspace"
 _SHARED_SEED_FILES = frozenset(
     {
         "contacts.txt",
+        "cuga_knowledge.md",
         "cuga_playbook.md",
         "email_template.md",
         "cities.txt",

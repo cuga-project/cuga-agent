@@ -81,8 +81,12 @@ def test_ensure_thread_workspace_seeded_copies_crm_fixtures(
     shared = local_base_dir()
     shared.mkdir(parents=True)
     (shared / "contacts.txt").write_text("a@example.com", encoding="utf-8")
+    (shared / "cuga_knowledge.md").write_text("# CUGA\n", encoding="utf-8")
 
     ensure_thread_workspace_seeded("thread-1")
     seeded = shared / "thread-1" / "contacts.txt"
     assert seeded.is_file()
     assert seeded.read_text(encoding="utf-8") == "a@example.com"
+    knowledge = shared / "thread-1" / "cuga_knowledge.md"
+    assert knowledge.is_file()
+    assert "CUGA" in knowledge.read_text(encoding="utf-8")
