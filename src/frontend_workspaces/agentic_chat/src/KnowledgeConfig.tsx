@@ -2759,60 +2759,6 @@ export default function KnowledgePanel({
                             </Stack>
                           )}
 
-                          {/* ── 3b. Embedding model (env-presets visible surface) ──
-                              Grouped under its own "Embedding model" heading
-                              so the conceptual scope is clear: this section
-                              picks WHICH embedder runs against your documents.
-                              The 4 Retrieval Profile tiles above pick the
-                              retrieval strategy (chunking + reranker + search
-                              mode), independent of this. Both sit on the main
-                              surface; the Advanced toggle below opens the
-                              manual override path (Provider Select + API
-                              key + base URL). Renders only when at least one
-                              provider is detected in the env — otherwise the
-                              section's only content (env-presets) would be
-                              empty and a heading-with-nothing-under-it reads
-                              broken. */}
-                          {envPresets && envPresets.length > 0 && (
-                            <Stack gap={2}>
-                              <Stack gap={1}>
-                                <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>Embedding model</h4>
-                                <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
-                                  How your documents get embedded for retrieval. We detected these in your environment.
-                                </p>
-                              </Stack>
-                              <EnvPresetsPanel
-                                presets={envPresets}
-                                currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
-                                currentModel={knowledgeConfig.embedding_model ?? ""}
-                                onApply={(preset) => {
-                                  onPresetApplied?.();
-                                  onKnowledgeConfigChange({
-                                    ...knowledgeConfig,
-                                    embedding_provider: preset.default_provider,
-                                    embedding_model: preset.default_model,
-                                    embedding_api_key: "",
-                                    embedding_base_url: "",
-                                    embedding_extra_params: {},
-                                  });
-                                  onToast?.(
-                                    "success",
-                                    `${preset.label} applied`,
-                                    `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
-                                  );
-                                }}
-                                onFocusProviderSelect={() => {
-                                  setShowAdvanced(true);
-                                  setTimeout(() => {
-                                    const el = document.getElementById("knowledge-embedding-provider");
-                                    el?.focus();
-                                    el?.scrollIntoView({ behavior: "smooth", block: "center" });
-                                  }, 50);
-                                }}
-                              />
-                            </Stack>
-                          )}
-
                           {/* ── 4. Advanced settings toggle ──
                               UX rationale: the basic view is just the
                               ON/OFF gate, agent/session scopes, and the
@@ -2848,6 +2794,41 @@ export default function KnowledgePanel({
                           <Accordion align="start" size="md">
                             <AccordionItem title={sectionTitle("Embeddings", embeddingsStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
+                                {/* "Detected in your environment" panel lives here
+                                    inside the Embeddings section — same scope as
+                                    the manual Provider Select + API key + base URL
+                                    fields below. Picking a preset here populates
+                                    the manual fields; typing in the manual fields
+                                    overrides the preset. One conceptual surface,
+                                    two modes of entry. */}
+                                {envPresets && envPresets.length > 0 && (
+                                  <EnvPresetsPanel
+                                    presets={envPresets}
+                                    currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
+                                    currentModel={knowledgeConfig.embedding_model ?? ""}
+                                    onApply={(preset) => {
+                                      onPresetApplied?.();
+                                      onKnowledgeConfigChange({
+                                        ...knowledgeConfig,
+                                        embedding_provider: preset.default_provider,
+                                        embedding_model: preset.default_model,
+                                        embedding_api_key: "",
+                                        embedding_base_url: "",
+                                        embedding_extra_params: {},
+                                      });
+                                      onToast?.(
+                                        "success",
+                                        `${preset.label} applied`,
+                                        `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
+                                      );
+                                    }}
+                                    onFocusProviderSelect={() => {
+                                      const el = document.getElementById("knowledge-embedding-provider");
+                                      el?.focus();
+                                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                    }}
+                                  />
+                                )}
                                 <Stack orientation="horizontal" gap={4}>
                                   <Select
                                     id="knowledge-embedding-provider"

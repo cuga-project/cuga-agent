@@ -413,25 +413,54 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
     else:
         collections = []
 
-    target_done = False
+    # PREVIOUS BUG: the loop picked the FIRST non-target collection,
+    # copied its files to the target, then marked every other source as
+    # ``orphan_stale``. If the user's documents were spread across
+    # multiple old-hash dirs (e.g. uploaded under config A, then config
+    # B, then changed to C), only files from ONE old dir got migrated
+    # — the rest were silently abandoned. User-visible symptom: reindex
+    # tile shows 2 docs when the Documents tab lists 5. Now we copy
+    # files from ALL non-target source dirs into the target BEFORE the
+    # single reindex pass, so no source is left behind.
+    #
+    # File-name collision: shutil.copy2 overwrites, last copy wins.
+    # That's acceptable for the common case (re-uploaded file with same
+    # name = newer is intended). A future migration could dedupe by
+    # mtime if it becomes a real problem.
+    migrated_from: list[str] = []
     for coll in collections:
+        if coll == target_collection:
+            continue
         try:
-            if coll == target_collection:
-                r = await live_engine.reindex(coll)
-                triggered_collections.append({"collection": coll, "result": r})
-                target_done = True
-            elif not target_done:
-                await live_engine.copy_source_files(coll, target_collection)
-                r = await live_engine.reindex(target_collection)
-                triggered_collections.append(
-                    {"collection": target_collection, "migrated_from": coll, "result": r}
-                )
-                target_done = True
+            n = await live_engine.copy_source_files(coll, target_collection)
+            if n > 0:
+                migrated_from.append(coll)
+                triggered_collections.append({"collection": coll, "copied_to": target_collection, "files": n})
             else:
-                triggered_collections.append({"collection": coll, "skipped": "orphan_stale"})
+                triggered_collections.append({"collection": coll, "skipped": "empty"})
         except Exception as rerr:
-            logger.warning("Reindex of %s failed: %s", coll, rerr)
+            logger.warning("copy_source_files %s -> %s failed: %s", coll, target_collection, rerr)
             triggered_collections.append({"collection": coll, "error": str(rerr)})
+
+    # Reindex the target ONCE with the merged file set.
+    target_done = False
+    try:
+        r = await live_engine.reindex(target_collection)
+        triggered_collections.append(
+            {
+                "collection": target_collection,
+                "migrated_from": migrated_from or None,
+                "result": r,
+            }
+        )
+        # ``no_documents`` is still a structural success (no files to
+        # reindex), but we don't treat it as a config promotion — the
+        # collection is empty so the hash flip below would point
+        # searches at a void.
+        target_done = bool(r and r.get("status") not in (None, "no_documents"))
+    except Exception as rerr:
+        logger.warning("Reindex of target %s failed: %s", target_collection, rerr)
+        triggered_collections.append({"collection": target_collection, "error": str(rerr)})
 
     # Route searches + future ingests to the migrated collection.
     if target_done and current_hash and live_state is not None:
