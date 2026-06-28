@@ -318,26 +318,9 @@ export function ManagePage() {
   type DraftSaveStatus =
     | { kind: "idle" }
     | { kind: "saving" }
-    | { kind: "saved"; vectorConfigHash: string | null; applyGeneration: number | null; reindexRequired: boolean }
+    | { kind: "saved" }
     | { kind: "failed"; error: string };
   const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
-  // Stale-bundle banner: consumes the one-time ``cuga:stale-bundle``
-  // CustomEvent that ``apiFetch`` dispatches on X-Cuga-Build-Id mismatch.
-  // Renders as a non-dismissable top-of-page banner with a Reload button —
-  // the user's literal failure mode was clicking the OLD UI bundle and
-  // having no signal that their JS didn't match the server contract.
-  const [staleBundle, setStaleBundle] = useState<{
-    clientBuildId: string;
-    serverBuildId: string;
-  } | null>(null);
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const detail = (e as CustomEvent<{ clientBuildId: string; serverBuildId: string }>).detail;
-      if (detail) setStaleBundle(detail);
-    };
-    window.addEventListener("cuga:stale-bundle", handler);
-    return () => window.removeEventListener("cuga:stale-bundle", handler);
-  }, []);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
   // from optimistic client state. The pill in the header reads this so
@@ -1207,15 +1190,7 @@ export function ManagePage() {
             const body = await res.clone().json();
             // Guard 2: body read is async too; recheck after the await.
             if (ac.signal.aborted) return;
-            // Stamp the server-echoed vector_config_hash + apply_generation
-            // into draftSaveStatus. The pill uses these as proof-of-apply
-            // (distinct from PATCH 2xx, which only proves "draft persisted").
-            setDraftSaveStatus({
-              kind: "saved",
-              vectorConfigHash: typeof body?.vector_config_hash === "string" ? body.vector_config_hash : null,
-              applyGeneration: typeof body?.apply_generation === "number" ? body.apply_generation : null,
-              reindexRequired: Boolean(body?.reindex_required),
-            });
+            setDraftSaveStatus({ kind: "saved" });
             const collections = body?.auto_reindex?.collections ?? [];
             const taskIds: string[] = collections
               .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
@@ -1236,12 +1211,7 @@ export function ManagePage() {
             // Body shape mismatch — auto-reindex either didn't fire or
             // wasn't in the response; the manual Reindex path still works.
             // Still flip to "saved" since the HTTP status was 2xx.
-            setDraftSaveStatus({
-              kind: "saved",
-              vectorConfigHash: null,
-              applyGeneration: null,
-              reindexRequired: false,
-            });
+            setDraftSaveStatus({ kind: "saved" });
           }
         } else if (res.status === 422) {
           // Guard 3: 422 carries an adaptation-server-error blob.
@@ -1629,26 +1599,6 @@ export function ManagePage() {
         linkComponent={Link}
         onOpenSecrets={() => setSecretsModalOpen(true)}
       />
-      {staleBundle && (
-        // Stale-bundle banner — non-dismissable. The user's literal failure
-        // mode was clicking the OLD UI bundle (cached JS) against a server
-        // that had moved on; this surfaces the mismatch with a forced
-        // reload. We don't auto-reload (would destroy in-progress edits);
-        // we let the user choose the moment.
-        <InlineNotification
-          kind="warning"
-          title="A newer version is available"
-          subtitle="The server has been updated since this page loaded. Reload to ensure your changes match the latest contract."
-          lowContrast
-          hideCloseButton
-          actions={
-            <Button kind="ghost" size="sm" onClick={() => window.location.reload()}>
-              Reload
-            </Button>
-          }
-          style={{ maxWidth: "none", margin: "0.5rem 1rem" }}
-        />
-      )}
 
       <div className="manage-layout">
         <div className="manage-config-panel">
@@ -2342,26 +2292,32 @@ export function ManagePage() {
                           The synthesis identified this as the single most
                           important UX addition — without it, no surface
                           answers "what is actually running?" without log-reading. */}
-                      {!loadError && liveKnowledge && (
-                        <p className="manage-save-bar-version" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                          <span
-                            aria-hidden="true"
-                            style={{
-                              display: "inline-block",
-                              width: 8,
-                              height: 8,
-                              borderRadius: "50%",
-                              background: draftSaveStatus.kind === "saved" && draftSaveStatus.reindexRequired
-                                ? "var(--cds-support-warning)"
-                                : "var(--cds-support-success)",
-                            }}
-                          />
-                          <span>
-                            Live: {liveKnowledge.provider} · {liveKnowledge.model}
-                            {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
-                          </span>
-                        </p>
-                      )}
+                      {!loadError && liveKnowledge && (() => {
+                        // Dot turns yellow when draft differs from Live on the
+                        // fields that actually require a republish (embedder).
+                        // Local comparison — no server-side hash needed.
+                        const diverged =
+                          knowledgeConfig.embedding_provider !== liveKnowledge.provider ||
+                          knowledgeConfig.embedding_model !== liveKnowledge.model;
+                        return (
+                          <p className="manage-save-bar-version" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                            <span
+                              aria-hidden="true"
+                              style={{
+                                display: "inline-block",
+                                width: 8,
+                                height: 8,
+                                borderRadius: "50%",
+                                background: diverged ? "var(--cds-support-warning)" : "var(--cds-support-success)",
+                              }}
+                            />
+                            <span>
+                              Live: {liveKnowledge.provider} · {liveKnowledge.model}
+                              {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
+                            </span>
+                          </p>
+                        );
+                      })()}
                       {!loadError && !draftSaving && currentVersion != null && (
                         <p className="manage-save-bar-version">
                           Version: {currentVersion === "draft" ? "draft" : `v${currentVersion}`}

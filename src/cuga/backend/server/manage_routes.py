@@ -1507,22 +1507,6 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     "new_dim",
                 )
             }
-            # Top-level server facts the UI uses to render save-status:
-            #   - vector_config_hash: compare to live's hash → "Draft saved
-            #     · differs from Live" vs "in sync"
-            #   - apply_generation: monotonic counter (Slice B); bumps
-            #     only on supersede-relevant change. UI uses this as
-            #     proof-of-apply distinct from PATCH 2xx (which just
-            #     means "draft persisted").
-            #   - reindex_required: convenience boolean = ANY of
-            #     embedding/chunking/metric changed.
-            response["vector_config_hash"] = live_apply_result.get("vector_config_hash")
-            response["apply_generation"] = live_apply_result.get("apply_generation")
-            response["reindex_required"] = bool(
-                live_apply_result.get("embedding_changed")
-                or live_apply_result.get("chunking_changed")
-                or live_apply_result.get("metric_changed")
-            )
             # If the engine soft-failed (e.g. bad env-var key on provider
             # switch), surface the warning so the UI can toast it without
             # blocking the save.

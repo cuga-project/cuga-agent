@@ -1692,40 +1692,6 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-
-# Build-id stamp on every /api/manage/* response. The client compares its
-# bundled CUGA_BUILD_ID against this header; mismatch surfaces a "newer
-# version available, reload" banner — the one decoration that kills the
-# "did my click work, or did my stale JS reach the server?" failure mode.
-# Source order: env CUGA_BUILD_ID (set at container build) > git short
-# SHA (local dev) > "dev" fallback.
-def _resolve_build_id() -> str:
-    import os
-    import subprocess
-
-    env = os.environ.get("CUGA_BUILD_ID", "").strip()
-    if env:
-        return env
-    try:
-        out = subprocess.check_output(
-            ["git", "rev-parse", "--short=12", "HEAD"], stderr=subprocess.DEVNULL, timeout=2
-        )
-        return out.decode().strip() or "dev"
-    except Exception:
-        return "dev"
-
-
-_CUGA_BUILD_ID = _resolve_build_id()
-
-
-@app.middleware("http")
-async def add_build_id_header(request, call_next):
-    response = await call_next(request)
-    if request.url.path.startswith("/api/manage/") or request.url.path.startswith("/api/knowledge/"):
-        response.headers["X-Cuga-Build-Id"] = _CUGA_BUILD_ID
-    return response
-
-
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 

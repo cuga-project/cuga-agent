@@ -3504,16 +3504,6 @@ class KnowledgeEngine:
             "previous_dim": old_dim,
             "new_dim": prepared.new_embedding_dim if prepared.new_embeddings else old_dim,
             "docling_changed": docling_changed,
-            # Server-side counter the UI uses as the authoritative "did the
-            # apply land?" signal — bumped above when a supersede-relevant
-            # field changed. Lets the client distinguish a successful apply
-            # from a no-op (chunking only) or a soft-failed preflight.
-            "apply_generation": self._apply_generation,
-            # Vector-config hash composing embedder + chunking + metric.
-            # The UI compares this against the LIVE-config hash to render
-            # the "Draft saved · differs from Live" pill — server fact, not
-            # a client-side guess.
-            "vector_config_hash": self._config.vector_config_hash(),
         }
 
     def apply_knowledge_config(self, knowledge_cfg: dict) -> dict[str, Any]:
