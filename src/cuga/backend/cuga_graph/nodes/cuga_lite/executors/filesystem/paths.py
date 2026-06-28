@@ -53,6 +53,23 @@ def safe_thread_id(thread_id: Optional[str]) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
 
 
+def child_path_under(base: Path, *names: str) -> Path:
+    """Join single-name segments under base; reject traversal and escapes."""
+    root = base.resolve()
+    dest = root
+    for name in names:
+        clean = (name or "").replace("\\", "/")
+        if not clean or clean in (".", "..") or "/" in clean:
+            raise ValueError(f"Invalid path segment: {name!r}")
+        dest = dest / clean
+    resolved = dest.resolve()
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Path must stay under {root}") from exc
+    return resolved
+
+
 def skills_enabled() -> bool:
     try:
         from cuga.config import settings
@@ -75,7 +92,7 @@ def thread_workspace_root(thread_id: Optional[str]) -> Path:
     """
     base = local_base_dir()
     if (thread_id or "").strip():
-        return base / safe_thread_id(thread_id)
+        return child_path_under(base, safe_thread_id(thread_id))
     return base
 
 
@@ -89,7 +106,10 @@ def _host_path_from_posix_tail(workspace_root: Path, tail: str) -> Path:
     if not tail or tail == ".":
         return workspace_root
     _reject_traversal(tail)
-    return workspace_root.joinpath(*PurePosixPath(tail).parts)
+    dest = workspace_root
+    for part in PurePosixPath(tail).parts:
+        dest = child_path_under(dest, part)
+    return dest
 
 
 def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
@@ -105,7 +125,7 @@ def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
         return
 
     shared = local_base_dir()
-    dest = shared / safe_tid
+    dest = child_path_under(shared, safe_tid)
     if dest.exists() and any(dest.iterdir()):
         _seeded_threads.add(cache_key)
         return
@@ -119,9 +139,9 @@ def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
         if item.name == safe_tid:
             continue
         if item.is_file() and "crm" in modes and item.name in _SHARED_SEED_FILES:
-            shutil.copy2(item, dest / item.name)
+            shutil.copy2(item, child_path_under(dest, item.name))
         elif item.is_dir() and "ci" in modes and item.name in _SHARED_SEED_DIRS:
-            shutil.copytree(item, dest / item.name, dirs_exist_ok=True)
+            shutil.copytree(item, child_path_under(dest, item.name), dirs_exist_ok=True)
 
     _seeded_threads.add(cache_key)
 

@@ -8,6 +8,9 @@ from pathlib import Path
 import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    child_path_under,
+    ensure_thread_workspace_seeded,
+    local_base_dir,
     resolve_workspace_path,
 )
 from cuga.backend.server import workspace_upload as wu
@@ -61,3 +64,25 @@ def test_format_upload_context_empty_manifest_does_not_raise(
 
     monkeypatch.setattr(os.path, "normpath", broken_normpath)
     assert wu.format_upload_context("thread-1") is None
+
+
+def test_child_path_under_rejects_traversal(tmp_path: Path) -> None:
+    base = tmp_path / "root"
+    base.mkdir()
+    with pytest.raises(ValueError, match="Invalid path segment"):
+        child_path_under(base, "..")
+
+
+def test_ensure_thread_workspace_seeded_copies_crm_fixtures(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("CUGA_THREAD_WORKSPACE_SEED", "crm")
+    shared = local_base_dir()
+    shared.mkdir(parents=True)
+    (shared / "contacts.txt").write_text("a@example.com", encoding="utf-8")
+
+    ensure_thread_workspace_seeded("thread-1")
+    seeded = shared / "thread-1" / "contacts.txt"
+    assert seeded.is_file()
+    assert seeded.read_text(encoding="utf-8") == "a@example.com"

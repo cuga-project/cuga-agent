@@ -296,10 +296,7 @@ class RemoteSandboxBackend(FilesystemBackend):
 
         sp = self._norm(sandbox_path)
         base = local_base_dir().resolve()
-        p = Path(local_path)
-        if not p.is_absolute():
-            p = base / p
-        p = p.resolve()
+        p = Path(local_path).resolve()
         if not p.is_file():
             raise FileNotFoundError(f"Local file not found: {p}")
         try:

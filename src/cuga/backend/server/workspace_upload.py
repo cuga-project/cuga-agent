@@ -15,6 +15,7 @@ from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     VIRTUAL_WORKSPACE_ROOT,
+    child_path_under,
     ensure_thread_workspace_seeded,
     relative_workspace_path,
     resolve_workspace_path,
@@ -100,20 +101,17 @@ def _validated_thread_id(thread_id: Optional[str]) -> str:
 
 def _uploads_root_host(tid: str) -> Path:
     """Host ``uploads/`` dir for a sanitized thread id (static path segments only)."""
-    root = thread_workspace_root(tid).resolve()
-    uploads = (root / UPLOADS_SUBDIR).resolve()
-    uploads.relative_to(root)
-    return uploads
+    return child_path_under(thread_workspace_root(tid), UPLOADS_SUBDIR)
 
 
 def _manifest_host_path(tid: str) -> Path:
-    return _uploads_root_host(tid) / MANIFEST_NAME
+    return child_path_under(_uploads_root_host(tid), MANIFEST_NAME)
 
 
 def _upload_file_host_path(tid: str, safe_name: str) -> Path:
     if Path(safe_name).name != safe_name or safe_name in (".", ".."):
         raise ValueError("Invalid filename")
-    return _uploads_root_host(tid) / safe_name
+    return child_path_under(_uploads_root_host(tid), safe_name)
 
 
 def read_upload_manifest(thread_id: Optional[str]) -> dict[str, Any]:
@@ -200,7 +198,7 @@ async def upload_workspace_bytes(
 
         backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), tid)
         dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = dest.parent / f".upload-{secrets.token_hex(8)}.tmp"
+        tmp = child_path_under(dest.parent, f".upload-{secrets.token_hex(8)}.tmp")
         tmp.write_bytes(data)
         try:
             await backend.upload(str(tmp), sp)
