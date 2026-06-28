@@ -342,6 +342,74 @@ async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict
     return existing
 
 
+async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_state: Any) -> dict[str, Any]:
+    """Migrate documents to the engine's current vector_config_hash dir and reindex.
+
+    Triggered by the user clicking "Re-index" in the UI after changing an
+    embedder/chunking/metric setting. Previously this ran automatically as part
+    of every config-changing PATCH; we moved it here so the user controls the
+    moment (and CPU spend) instead of the PATCH lifecycle dictating it.
+
+    Returns the same ``auto_reindex`` shape the PATCH used to return so the
+    frontend's reindex-tile arming code stays unchanged.
+    """
+    import re as _re
+
+    triggered_collections: list[dict[str, Any]] = []
+    files_dir = getattr(live_engine, "_files_dir", None)
+    sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+    agent_prefix = f"kb_agent_{sanitized}"
+
+    try:
+        current_hash = live_engine._config.vector_config_hash()
+    except Exception:
+        current_hash = ""
+    target_collection = f"{agent_prefix}_{current_hash}" if current_hash else agent_prefix
+
+    if files_dir and files_dir.exists():
+        collections = [
+            d.name
+            for d in files_dir.iterdir()
+            if d.is_dir() and (d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"))
+        ]
+    else:
+        collections = []
+
+    target_done = False
+    for coll in collections:
+        try:
+            if coll == target_collection:
+                r = await live_engine.reindex(coll)
+                triggered_collections.append({"collection": coll, "result": r})
+                target_done = True
+            elif not target_done:
+                await live_engine.copy_source_files(coll, target_collection)
+                r = await live_engine.reindex(target_collection)
+                triggered_collections.append(
+                    {"collection": target_collection, "migrated_from": coll, "result": r}
+                )
+                target_done = True
+            else:
+                triggered_collections.append({"collection": coll, "skipped": "orphan_stale"})
+        except Exception as rerr:
+            logger.warning("Reindex of %s failed: %s", coll, rerr)
+            triggered_collections.append({"collection": coll, "error": str(rerr)})
+
+    # Route searches + future ingests to the migrated collection.
+    if target_done and current_hash and live_state is not None:
+        try:
+            live_state.knowledge_config_hash = current_hash
+        except Exception as _hash_err:
+            logger.warning("Failed to update knowledge_config_hash after migrate: %s", _hash_err)
+
+    return {
+        "triggered": True,
+        "scope": agent_prefix,
+        "target": target_collection,
+        "collections": triggered_collections,
+    }
+
+
 @router.get("/config")
 async def get_manage_config(
     request: Request,
@@ -1513,109 +1581,23 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
             _pf_warn = live_apply_result.get("_preflight_warning")
             if _pf_warn:
                 response["preflight_warning"] = _pf_warn
-            # If the embedding dim actually changed, existing vectors are no
-            # longer compatible — auto-trigger reindex of the requesting
-            # agent's collections only. Scanning every directory under
-            # files_dir would touch collections owned by other agents in
-            # multi-tenant deployments, which is exactly the wrong scope
-            # for a PATCH that targeted a single agent's draft.
+            # When the embedding dim changed, existing vectors are no
+            # longer compatible. We DO NOT auto-trigger reindex anymore —
+            # users typically tweak several settings before they're
+            # ready, and running migration+reindex on every PATCH burns
+            # CPU and makes the UI feel hyperactive. Instead the UI
+            # shows a "Re-index recommended" banner driven by
+            # ``knowledgeReindexNeeded`` (snapshot diff in ManagePage) +
+            # this response's ``auto_reindex.triggered=false`` signal.
+            # The user clicks Re-index when they're done editing — that
+            # call lands on ``POST /api/manage/knowledge/reindex_for_config``
+            # which invokes ``_migrate_and_reindex_for_agent``.
             if live_apply_result.get("dim_changed") and live_engine is not None:
-                triggered_collections: list[dict[str, Any]] = []
-                try:
-                    import re as _re
-
-                    files_dir = getattr(live_engine, "_files_dir", None)
-                    # Agent collections live under ``kb_agent_<sanitized_agent_id>``
-                    # with an optional ``_<config_hash>`` suffix
-                    # (see ``awareness._agent_collection_name``). Filter to
-                    # that prefix so we only reindex what THIS agent owns.
-                    sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
-                    agent_prefix = f"kb_agent_{sanitized}"
-
-                    # Auto-reindex MUST land docs under the new-hash collection
-                    # name, not under the prior hash. Reindexing in place under
-                    # the prior name re-embeds correctly but leaves the docs
-                    # at the OLD collection name; publish then sees the
-                    # new-hash collection empty and triggers a SECOND
-                    # migration reindex (copy_source_files + reindex). This
-                    # block migrates once: pick a non-empty source dir, copy
-                    # its files to the target name, then reindex the target.
-                    # Publish's migration path then short-circuits via the
-                    # "target collection already has docs, skipping migration"
-                    # branch in save_manage_config_publish.
-                    try:
-                        current_hash = live_engine._config.vector_config_hash()
-                    except Exception:
-                        current_hash = ""
-                    target_collection = f"{agent_prefix}_{current_hash}" if current_hash else agent_prefix
-
-                    if files_dir and files_dir.exists():
-                        collections = [
-                            d.name
-                            for d in files_dir.iterdir()
-                            if d.is_dir()
-                            and (d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"))
-                        ]
-                    else:
-                        collections = []
-
-                    target_done = False
-                    for coll in collections:
-                        try:
-                            if coll == target_collection:
-                                # Already at the target name — reindex in place.
-                                r = await live_engine.reindex(coll)
-                                triggered_collections.append({"collection": coll, "result": r})
-                                target_done = True
-                            elif not target_done:
-                                # Migrate this collection's files to the
-                                # target name then reindex target. Only do
-                                # this once per request — additional stale
-                                # collection dirs become orphans (cleaned up
-                                # via a separate housekeeping pass).
-                                await live_engine.copy_source_files(coll, target_collection)
-                                r = await live_engine.reindex(target_collection)
-                                triggered_collections.append(
-                                    {
-                                        "collection": target_collection,
-                                        "migrated_from": coll,
-                                        "result": r,
-                                    }
-                                )
-                                target_done = True
-                            else:
-                                # Orphan stale collection — leave for cleanup.
-                                triggered_collections.append({"collection": coll, "skipped": "orphan_stale"})
-                        except Exception as rerr:
-                            logger.warning("Auto-reindex of %s failed: %s", coll, rerr)
-                            triggered_collections.append({"collection": coll, "error": str(rerr)})
-
-                    # Track the runtime collection-name hash so
-                    # ``resolve_collection`` (and any caller that builds the
-                    # agent collection name from ``app_state.knowledge_config_hash``)
-                    # routes to the migrated data, not the orphan old-hash dir.
-                    # Without this, search after a draft-only profile switch
-                    # would hit the empty old collection because resolve_collection
-                    # is keyed off this attribute.
-                    if target_done and current_hash and live_state is not None:
-                        try:
-                            live_state.knowledge_config_hash = current_hash
-                        except Exception as _hash_err:
-                            logger.warning(
-                                "Failed to update knowledge_config_hash after migrate: %s",
-                                _hash_err,
-                            )
-
-                    response["auto_reindex"] = {
-                        "triggered": True,
-                        "scope": agent_prefix,
-                        "target": target_collection,
-                        "reason": f"embedding dim changed: {live_apply_result.get('previous_dim')} → {live_apply_result.get('new_dim')}",
-                        "collections": triggered_collections,
-                    }
-                except Exception as auto_err:
-                    logger.warning("Auto-reindex discovery failed: %s", auto_err)
-                    response["auto_reindex"] = {"triggered": False, "error": str(auto_err)}
+                response["auto_reindex"] = {
+                    "triggered": False,
+                    "reason": "manual_required",
+                    "dim_change": f"{live_apply_result.get('previous_dim')} -> {live_apply_result.get('new_dim')}",
+                }
         return JSONResponse(response)
     except HTTPException:
         raise
@@ -1627,6 +1609,31 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         # repr(e) so we at least see the class name when str is empty.
         logger.exception(f"Failed to patch draft knowledge: {e!r}")
         raise HTTPException(status_code=500, detail=str(e) or repr(e) or "Unknown server error")
+
+
+@router.post("/knowledge/reindex_for_config")
+async def reindex_for_config_change(request: Request, agent_id: Optional[str] = None):
+    """User-triggered migration + reindex after a config change that requires it.
+
+    Replaces the prior auto-trigger on the PATCH lifecycle: the user clicks
+    "Re-index" in the UI when they're ready, and this endpoint migrates files
+    to the current vector_config_hash dir + re-embeds with the active engine
+    config. Returns the same ``{triggered, target, collections}`` shape the
+    PATCH used to return so the frontend's existing reindex-tile arming code
+    works without changes.
+    """
+    if agent_id is None:
+        agent_id = "cuga-default"
+    live_state = getattr(request.app.state, "app_state", None)
+    live_engine = getattr(live_state, "knowledge_engine", None) if live_state else None
+    if live_engine is None:
+        raise HTTPException(status_code=503, detail="Knowledge engine not ready")
+    try:
+        result = await _migrate_and_reindex_for_agent(agent_id, live_engine, live_state)
+        return JSONResponse(result)
+    except Exception as e:
+        logger.exception(f"reindex_for_config_change failed: {e!r}")
+        raise HTTPException(status_code=500, detail=str(e) or repr(e) or "reindex failed")
 
 
 @router.patch("/config/draft/special_instructions")

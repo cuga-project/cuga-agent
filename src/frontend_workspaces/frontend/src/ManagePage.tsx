@@ -2494,13 +2494,35 @@ export function ManagePage() {
           onReindex={async () => {
             setKnowledgeReindexing(true);
             try {
-              const res = await api.triggerKnowledgeReindex();
+              // Route to the config-aware migration endpoint when the
+              // user's edits changed vector-config fields (embedder /
+              // chunking / metric). That endpoint handles the cross-
+              // hash file migration in addition to the reindex. Plain
+              // re-index of an already-correct collection still goes
+              // through the original endpoint.
+              const res = knowledgeReindexNeeded
+                ? await api.triggerKnowledgeReindexForConfig(effectiveAgentId)
+                : await api.triggerKnowledgeReindex();
               if (res.ok) {
                 const data = await res.json();
                 setKnowledgeReindexing(false);
                 // Settings have been applied — update snapshot so the
                 // "reindex needed" warning clears.
                 setKnowledgeSavedSnapshot({ ...knowledgeConfig });
+                // Both endpoints return task_ids at slightly different
+                // shapes. The new ``reindex_for_config`` returns
+                // {collections: [{result: {task_ids, count}}]} (one
+                // entry per migrated/reindexed collection); the old
+                // /reindex returns {task_ids, count} flat. Normalise.
+                if (Array.isArray(data?.collections)) {
+                  const allTaskIds: string[] = data.collections
+                    .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? []);
+                  const total = data.collections.reduce(
+                    (sum: number, c: { result?: { count?: number } }) => sum + (c?.result?.count ?? 0),
+                    0,
+                  );
+                  return { count: total || allTaskIds.length, task_ids: allTaskIds };
+                }
                 return { count: data.count ?? 0, task_ids: data.task_ids ?? [] };
               } else if (res.status === 409) {
                 addToast("warning", "Cannot re-index", "Uploads in progress. Try again later.");
