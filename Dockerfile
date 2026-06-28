@@ -46,4 +46,3 @@ ENV DYNACONF_SERVER_PORTS__DEMO=7860
 
 # Start the demo_crm service with read-only filesystem and no email services
 CMD ["uv", "run", "cuga", "start", "demo_crm", "--cuga-workspace", "/app/cuga_workspace"]
-

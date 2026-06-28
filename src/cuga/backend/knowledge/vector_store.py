@@ -31,6 +31,11 @@ def create_vector_store(
     persist_dir: Path,
     metric_type: str = "COSINE",
     pgvector_connection_string: str = "",
+    *,
+    embedding_batch_size: int = 64,
+    embedding_concurrency: int = 4,
+    embedder_is_network: bool = False,
+    vector_insert_batch_size: int = 200,
     **kwargs: Any,
 ) -> VectorStoreAdapter:
     """Create a vector store adapter.
@@ -51,7 +56,15 @@ def create_vector_store(
         local_path = str(persist_dir / KNOWLEDGE_LOCAL_VECTORS_DB)
         from cuga.backend.knowledge.storage.local import create_storage_local_knowledge_store
 
-        adapter = create_storage_local_knowledge_store(collection, embeddings, local_path)
+        adapter = create_storage_local_knowledge_store(
+            collection,
+            embeddings,
+            local_path,
+            embedding_batch_size=embedding_batch_size,
+            embedding_concurrency=embedding_concurrency,
+            embedder_is_network=embedder_is_network,
+            vector_insert_batch_size=vector_insert_batch_size,
+        )
         logger.info(
             "Vector store created: backend=storage_local, collection={}, db={}",
             collection,
@@ -71,7 +84,15 @@ def create_vector_store(
             )
         from cuga.backend.knowledge.storage.prod import create_storage_prod_knowledge_store
 
-        adapter = create_storage_prod_knowledge_store(collection, embeddings, pg_url)
+        adapter = create_storage_prod_knowledge_store(
+            collection,
+            embeddings,
+            pg_url,
+            embedding_batch_size=embedding_batch_size,
+            embedding_concurrency=embedding_concurrency,
+            embedder_is_network=embedder_is_network,
+            vector_insert_batch_size=vector_insert_batch_size,
+        )
         logger.info("Vector store created: backend=storage_prod, collection={}", collection)
         return adapter
 

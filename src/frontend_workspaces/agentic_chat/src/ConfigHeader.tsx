@@ -10,6 +10,11 @@ interface ConfigHeaderProps {
   onToggleWorkspace: () => void;
   onToggleKnowledge: () => void;
   knowledgeDocCount: number;
+  // True once the hook has at least one authoritative response (either
+  // from localStorage cache or a successful fetch). Used to decide whether
+  // to render the "(N)" suffix at all — never show "(0)" or stale data
+  // while the count is unknown.
+  knowledgeDocsLoaded?: boolean;
   knowledgeEnabled?: boolean | null;
 }
 
@@ -23,6 +28,7 @@ export function ConfigHeader({
   onToggleWorkspace,
   onToggleKnowledge,
   knowledgeDocCount,
+  knowledgeDocsLoaded,
   knowledgeEnabled,
 }: ConfigHeaderProps) {
   const [activeModal, setActiveModal] = useState<string | null>(null);
@@ -52,7 +58,21 @@ export function ConfigHeader({
         navItems={[
           { label: "Sidebar", onClick: onToggleLeftSidebar },
           { label: "Workspace", onClick: onToggleWorkspace },
-          { label: knowledgeEnabled !== false && knowledgeDocCount > 0 ? `Knowledge (${knowledgeDocCount})` : "Knowledge", onClick: onToggleKnowledge },
+          // Three-way decision so the badge never lies:
+          //   - Disabled         → "Knowledge"
+          //   - Loaded + N>0     → "Knowledge (N)"
+          //   - Loaded + N=0     → "Knowledge"   (don't write "(0)")
+          //   - Not-yet-loaded   → "Knowledge"   (don't write a stale or guessed number)
+          // The "loaded" flag is true after the App-level hook has at least
+          // one authoritative response (localStorage cache or fresh fetch),
+          // so this also covers the publish window: the previous count is
+          // preserved and the user never sees a momentary 0.
+          {
+            label: knowledgeEnabled !== false && knowledgeDocsLoaded && knowledgeDocCount > 0
+              ? `Knowledge (${knowledgeDocCount})`
+              : "Knowledge",
+            onClick: onToggleKnowledge,
+          },
           { label: "Sub Agents", onClick: () => setActiveModal("subagents") },
           { label: "Tools", onClick: () => setActiveModal("tools") },
           { label: "Policies", onClick: () => setActiveModal("policies") },

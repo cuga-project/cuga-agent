@@ -134,3 +134,12 @@ deployment/certs/*.crt
 .env
 .secrets.*
 !*.secrets.baseline
+
+# Knowledge-engine local working state: ``src/.cuga/`` holds operator-
+# uploaded documents, locally-cached embeddings, and the per-agent
+# metadata DB. None of it belongs in a published image — a fresh
+# container should boot with an empty knowledge store. Without this,
+# ``COPY src/ ./src/`` would bake every local PDF (including any
+# customer corpora under ``.cuga/knowledge_*/files/``) into the image.
+**/.cuga/
+.cuga/

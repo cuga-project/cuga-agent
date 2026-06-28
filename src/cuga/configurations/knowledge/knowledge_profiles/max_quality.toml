@@ -1,20 +1,96 @@
 [profile]
 name = "Max Quality"
-description = "Exhaustive multi-hop retrieval. Decomposes questions into sub-queries, cross-references results. Highest accuracy, highest latency and cost."
+description = "When you need the best, no matter the document."
 
-[search]
-max_search_attempts = 8
-default_limit = 30
-default_score_threshold = 0.0
+# Pareto-locked profile (2026-06-09).
+# Switching to max_quality INVALIDATES collections: embedder is 1024d
+# multilingual. Re-ingest required. This profile assumes the user has
+# explicitly accepted that cost.
+
+[embeddings]
+# bge-large-en-v1.5: 1024d, ENGLISH, ~1.2GB, MIT. Proven default — well-trodden on
+# fastembed/CoreML across user reports, single-file ONNX, no graph quirks. 1024d
+# gives the reranker more semantic resolution than balanced's 768d bge-base —
+# earning the max_quality tier.
+#
+# Previously we shipped mxbai-embed-large-v1 (0.64GB) here. On macOS CoreML it
+# splits into 193 partitions across 880/1223 supported nodes and intermittently
+# SIGKILLs the worker mid-embed (leaks a multiprocessing semaphore, takes the
+# demo subprocess down with it). bge-large-en-v1.5 has a simpler graph and
+# avoids that failure mode. Swap requires re-ingest (dim same, but
+# embedding_model is part of vector_config_hash → new collection name).
+#
+# Need MULTILINGUAL instead? swap to (fastembed): paraphrase-multilingual-mpnet-base-v2 (768d, 1.0GB).
+# Other strong ENGLISH options in fastembed (all <2GB, load cleanly):
+#   snowflake/snowflake-arctic-embed-l   1024d 1.02GB Apache  (newer, retrieval-specialized)
+#   mixedbread-ai/mxbai-embed-large-v1   1024d 0.64GB Apache  (smaller, BUT 193-partition CoreML crash)
+# Avoid jinaai/jina-embeddings-v3 (2.29GB external-data + cc-by-nc non-commercial)
+# and intfloat/multilingual-e5-large (2.24GB external-data, fastembed/CoreML load failures).
+# Any swap re-indexes (embedding_model is in vector_config_hash) — surfaced by the re-index hint.
+model = "BAAI/bge-large-en-v1.5"
+# 1024d × 64 batch × fp32 ≈ 0.5GB transient RSS — comfortable headroom.
+batch_size = 64
+concurrency = 4
 
 [chunking]
-chunk_size = 500
-chunk_overlap = 150
+# 1000-tok windows preserve long-form context (legal preambles, multi-
+# page procedure blocks). With 20% overlap, cross-boundary entities are
+# captured without inflating the index materially.
+chunk_size = 1000
+chunk_overlap = 200
+
+[docling]
+# accurate: do_ocr=True, do_table_structure=True. Scanned PDFs work,
+# full fidelity. Slowest parse path.
+pdf_mode = "accurate"
+layout_engine = "auto"
+# off: preserve every chunk. Max-quality users want every signal even
+# if it includes page-chrome noise — the reranker will filter it.
+drop_page_chrome = "off"
+
+[search]
+# Four attempts for deep multi-hop. Each retry rewrites the query;
+# diminishing returns past 4 in empirical testing.
+max_search_attempts = 4
+default_limit = 15
+default_score_threshold = 0.0
+hybrid_mode = "auto"
+# off: do not silently drop anything; reranker decides.
+junk_filter = "off"
+# LLM query transform. Off by shipped default, but max_quality is the RECOMMENDED
+# place to opt in (it always reranks, the load-bearing backstop). cuga AUGMENTS —
+# the original query always runs and variants are extra RRF legs scored by the
+# reranker on the original — so the published HyDE/rewrite regressions (which
+# REPLACE the query) do not apply. Recommended when opted in: multi_query, n=3.
+# Reserve hyde for weak-embedder / OCR / high-vocab-mismatch corpora. Gate the
+# flip on a per-corpus eval (nDCG@10 / recall) run WITH the reranker in the loop.
+# Never enable where the reranker is off (speed/standard). Needs a host LLM.
+query_transform = "off"
+
+[rerank]
+# Cross-encoder rerank ON (fastembed TextCrossEncoder, ONNX/CPU). Highest
+# precision tier — rescores a wide candidate window.
+enabled = true
+# candidate_k: overfetch 60 (>= 3 × default_limit 15 = 45, plus headroom),
+# return default_limit. CPU cost grows with the window (~seconds for 60 pairs).
+top_k_in = 60
+# bge-reranker-base = Apache-2.0, fastembed-servable. (bge-reranker-v2-m3 is not.)
+model = "BAAI/bge-reranker-base"
+
+[engine]
+# 4 workers assumes the user has >=8GB RAM headroom for the heavier
+# 1024d embedder. Reduce if your container is smaller.
+max_ingest_workers = 4
+# Lower than other profiles because 1024d vectors are 2.7x the byte
+# footprint of 384d — keeps pgvector HNSW lock windows short.
+vector_insert_batch_size = 300
 
 [instructions]
 addendum = """
-Maximize retrieval thoroughness. Decompose every question into its constituent sub-questions and search for each independently.
-After initial results, extract entities, dates, and terminology to form follow-up queries.
+You are using the **Max Quality** profile: multilingual embedder, hybrid retrieval, cross-encoder reranking, four search attempts.
+
+Decompose every multi-part question into its constituent sub-questions and search for each independently.
+After initial results, extract entities, dates, version numbers, and domain terminology to form follow-up queries.
 Cross-reference results from different searches to ensure completeness.
 Use all available search attempts before synthesizing your answer.
 When both scopes have documents, search both systematically.

@@ -589,6 +589,24 @@ agent = CugaAgent(tools=[my_tools], enable_knowledge=False)
 
 PDF, DOCX, XLSX, PPTX, HTML, Markdown, images, and more (via Docling).
 
+#### Embedding providers + tuning
+
+The knowledge engine ships four built-in provider categories — `fastembed`
+(default, local), `huggingface` (local), `openai` (network, accepts any
+OpenAI-compatible endpoint via `base_url`), and `ollama` (network) — plus
+`openrouter` for one-key-many-models access to embedding models on
+[openrouter.ai/models](https://openrouter.ai/models?output_modalities=embeddings).
+Provider, model, batch size, and concurrency are all set under
+`[knowledge.embeddings]` in `settings.toml` or via CLI overrides
+(`--embeddings-provider`, `--embeddings-base-url`, `--embeddings-api-key`,
+`--embeddings-model`, `--embeddings-batch-size`, `--embeddings-concurrency`).
+
+> **Full provider matrix + tuning guide** — see the
+> [knowledge engine docs](https://docs.cuga.dev/docs/sdk/knowledge/).
+> Switching provider or model invalidates existing vectors (different
+> dim), so the manage UI surfaces a "Re-index recommended" banner
+> automatically.
+
 ---
 
 ## CugaSupervisor (Multi-Agent)

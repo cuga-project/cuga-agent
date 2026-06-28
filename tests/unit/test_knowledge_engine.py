@@ -104,6 +104,41 @@ class TestMetadataDB:
         assert "restart" in task["file_tasks"]["f.pdf"]["error"]
 
     @pytest.mark.asyncio
+    async def test_recover_stale_tasks_handles_malformed_file_tasks(self, meta_db):
+        # Older builds / partial writes can leave file_task entries missing
+        # the ``status`` key. The recovery path used to KeyError on this,
+        # which 500-ed every knowledge endpoint that called
+        # ``_ensure_metadata_ready`` (list_documents, health, ...). Recovery
+        # must now degrade gracefully: malformed entries get defaulted to
+        # ``pending``-equivalent and re-marked ``failed`` like any other
+        # interrupted file task.
+        await meta_db.create_task(
+            "t-malformed",
+            "col1",
+            3,
+            {
+                "missing_status.pdf": {"filename": "missing_status.pdf"},  # no 'status'
+                "bad_type.pdf": "not a dict",  # non-dict value
+                "ok.pdf": {"filename": "ok.pdf", "status": "processing"},
+            },
+        )
+        await meta_db.update_task("t-malformed", status="running")
+
+        # Must not raise.
+        count = await meta_db.recover_stale_tasks()
+        assert count == 1
+
+        task = await meta_db.get_task("t-malformed")
+        assert task["status"] == "failed"
+        # The entry that DID have a 'status' is normalized to 'failed'.
+        assert task["file_tasks"]["ok.pdf"]["status"] == "failed"
+        # The status-less entry is now backfilled with a status — recovery
+        # is allowed to either skip it OR flag it failed; either way no
+        # KeyError, and the task row above is closed out.
+        ms = task["file_tasks"]["missing_status.pdf"]
+        assert isinstance(ms, dict)  # not mutated to garbage
+
+    @pytest.mark.asyncio
     async def test_purge_old_tasks(self, meta_db):
         await meta_db.create_task("t1", "col1", 1, {})
         purged = await meta_db.purge_old_tasks(max_age_days=7)

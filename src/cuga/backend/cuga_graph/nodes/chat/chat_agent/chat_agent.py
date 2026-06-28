@@ -2,7 +2,6 @@ import asyncio
 import json
 import os
 from typing import Any, List, Optional
-from pathlib import Path
 
 import aiohttp
 from langchain_mcp_adapters.tools import load_mcp_tools
@@ -187,19 +186,19 @@ class ChatAgent(BaseAgent):
         return bool(tool_name and not ChatAgent.should_auto_execute_tool(tool_name))
 
     @staticmethod
-    def _load_knowledge_instructions() -> str:
+    def _load_knowledge_instructions(max_search_attempts: int | None = None) -> str:
+        """Thin wrapper around the shared loader so the chat-agent and
+        cuga_lite paths produce identical contract text given the same
+        ``max_search_attempts`` — drift between them would mean the same
+        user gets different prompts depending on which agent loop runs.
+        """
         try:
-            kb_instructions_path = (
-                Path(__file__).resolve().parents[5]
-                / "configurations"
-                / "knowledge"
-                / "knowledge_instructions.md"
-            )
-            if kb_instructions_path.exists():
-                return kb_instructions_path.read_text(encoding="utf-8").strip()
+            from cuga.backend.knowledge.awareness import load_knowledge_instructions
+
+            return load_knowledge_instructions(max_search_attempts=max_search_attempts)
         except Exception as exc:
             logger.debug(f"Failed to load chat knowledge instructions: {exc}")
-        return ""
+            return ""
 
     @staticmethod
     def _knowledge_enabled(app_state: Any) -> bool:
@@ -227,10 +226,7 @@ class ChatAgent(BaseAgent):
 
         try:
             from cuga.backend.server.main import app as backend_app
-            from cuga.backend.knowledge.awareness import (
-                get_knowledge_summary,
-                format_knowledge_context,
-            )
+            from cuga.backend.knowledge.awareness import assemble_system_prompt_section
             from cuga.backend.knowledge.client import KnowledgeClient
 
             app_state = getattr(backend_app.state, "app_state", None)
@@ -246,23 +242,28 @@ class ChatAgent(BaseAgent):
                 )
                 knowledge_tools = knowledge_client.get_langchain_tools(thread_id=state.thread_id)
 
-                kb_ctx = format_knowledge_context(
-                    agent_id or "cuga-default",
-                    state.thread_id,
-                    engine=engine,
+                # Single seam — the helper handles every step (collection
+                # resolution, doc-list rendering, contract load,
+                # composition, audit hash) and returns the ready-to-inject
+                # block. Identical input → identical prompt_hash here and
+                # in cuga_lite_graph, by construction.
+                assembled = await assemble_system_prompt_section(
+                    engine,
+                    agent_id=agent_id or "cuga-default",
+                    thread_id=state.thread_id,
+                    base_instructions="",  # base prompt is layered by the Jinja template
                     agent_config_hash=knowledge_config_hash,
                 )
-                knowledge_summary = await get_knowledge_summary(
-                    engine,
-                    agent_collection=kb_ctx.get("agent_collection"),
-                    session_collection=kb_ctx.get("session_collection"),
-                    max_search_attempts=getattr(engine._config, "max_search_attempts", None),
-                    default_limit=getattr(engine._config, "default_limit", None),
-                    rag_profile=getattr(engine._config, "rag_profile", "standard"),
-                )
-                if knowledge_summary:
-                    knowledge_block = knowledge_summary
-                    knowledge_instructions = self._load_knowledge_instructions()
+                if assembled.has_knowledge:
+                    # Split back into the two template slots the Jinja
+                    # expects. ``assembled.text`` is "contract + doc_list"
+                    # (no base) and the contract/doc-list characters are
+                    # in the dataclass, so we don't need to re-parse.
+                    # ``client_adaptation_text`` + ``client_adaptation_glossary``
+                    # are picked up inside ``assemble_system_prompt_section``
+                    # from the engine config; nothing to plumb here.
+                    knowledge_block = assembled.text
+                    knowledge_instructions = ""  # already inside ``text``
         except Exception as exc:
             logger.debug(f"Chat knowledge context unavailable: {exc}")
 

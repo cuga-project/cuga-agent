@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -502,8 +501,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         if has_knowledge_tools:
             try:
                 from cuga.backend.knowledge.awareness import (
-                    get_knowledge_summary,
-                    format_knowledge_context,
+                    assemble_system_prompt_section,
                     get_engine_from_app_state,
                 )
 
@@ -527,71 +525,59 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 if not agent_id:
                     agent_id = "cuga-default"
                 awareness_thread_id = cfg.get("thread_id")
-                kb_ctx = format_knowledge_context(
-                    agent_id,
-                    awareness_thread_id,
-                    engine=engine,
-                    agent_config_hash=knowledge_config_hash,
-                )
-                logger.info(
-                    f"Knowledge awareness: agent_id={agent_id}, thread_id={awareness_thread_id}, "
-                    f"agent_collection={kb_ctx.get('agent_collection')}, "
-                    f"session_collection={kb_ctx.get('session_collection')}"
-                )
 
-                if not engine:
-                    logger.warning("Knowledge awareness skipped: engine not available")
-                else:
-                    # Use draft knowledge config for search-time params when running
-                    # in draft mode (Try-It-Out). Published agent always uses engine config.
+                # Use draft knowledge config for search-time params when
+                # running in draft mode (Try-It-Out). Published agent always
+                # uses engine config. Prefer the per-agent
+                # ``draft_knowledge_configs`` dict (multi-tenant safe), fall
+                # back to the legacy singular attribute.
+                _search_cfg = None
+                if engine is not None:
                     _search_cfg = engine._config
-                    _is_draft = agent_id and agent_id.endswith("--draft")
-                    if _is_draft:
+                    if agent_id and agent_id.endswith("--draft"):
                         try:
                             from cuga.backend.server.main import app as _app
 
                             _das = getattr(_app.state, "draft_app_state", None)
-                            _draft_kc = getattr(_das, "draft_knowledge_config", None) if _das else None
+                            _draft_kc = None
+                            if _das is not None:
+                                _base_aid = agent_id[: -len("--draft")]
+                                _cfgs = getattr(_das, "draft_knowledge_configs", None)
+                                if isinstance(_cfgs, dict):
+                                    _draft_kc = _cfgs.get(_base_aid)
+                                if _draft_kc is None:
+                                    _draft_kc = getattr(_das, "draft_knowledge_config", None)
                             if _draft_kc:
                                 _search_cfg = _draft_kc
                         except Exception:
                             pass
-                    knowledge_block = await get_knowledge_summary(
-                        engine,
-                        agent_collection=kb_ctx.get("agent_collection"),
-                        session_collection=kb_ctx.get("session_collection"),
-                        max_search_attempts=getattr(_search_cfg, "max_search_attempts", None)
-                        or getattr(engine._config, "max_search_attempts", None),
-                        default_limit=getattr(_search_cfg, "default_limit", None)
-                        or getattr(engine._config, "default_limit", None),
-                        rag_profile=getattr(_search_cfg, "rag_profile", None)
-                        or getattr(engine._config, "rag_profile", "standard"),
-                    )
-                    if knowledge_block:
-                        # Load knowledge search instructions from dedicated file
-                        knowledge_instructions_text = ""
-                        try:
-                            kb_instructions_path = (
-                                Path(__file__).resolve().parents[5]
-                                / "configurations"
-                                / "knowledge"
-                                / "knowledge_instructions.md"
-                            )
-                            if kb_instructions_path.exists():
-                                knowledge_instructions_text = kb_instructions_path.read_text(
-                                    encoding="utf-8"
-                                ).strip()
-                        except Exception as ki_err:
-                            logger.debug(f"Failed to load knowledge instructions: {ki_err}")
 
-                        # Prepend knowledge block BEFORE other instructions
-                        # so the LLM sees it early and acts on it
-                        effective_instructions = (
-                            f"{knowledge_block}\n\n{knowledge_instructions_text}\n\n{effective_instructions}"
-                            if effective_instructions
-                            else f"{knowledge_block}\n\n{knowledge_instructions_text}"
-                        )
-                        logger.info(f"Knowledge awareness injected: {len(knowledge_block)} chars")
+                # Single seam — assemble_system_prompt_section subsumes the
+                # previous format_knowledge_context + get_knowledge_summary
+                # + knowledge_instructions.md compose dance. Returns a
+                # dataclass with composed text + audit prompt_hash.
+                # Closes review comment 24 ("cuga_lite is the lasting path").
+                assembled = await assemble_system_prompt_section(
+                    engine,
+                    agent_id,
+                    awareness_thread_id,
+                    base_instructions=effective_instructions,
+                    agent_config_hash=knowledge_config_hash,
+                    search_config=_search_cfg,
+                )
+                logger.info(
+                    "Knowledge awareness: agent_id=%s, thread_id=%s, "
+                    "has_knowledge=%s, knowledge_block=%d chars, contract=%d chars, "
+                    "prompt_hash=%s",
+                    agent_id,
+                    awareness_thread_id,
+                    assembled.has_knowledge,
+                    assembled.knowledge_block_chars,
+                    assembled.contract_chars,
+                    assembled.prompt_hash,
+                )
+                if assembled.has_knowledge:
+                    effective_instructions = assembled.text
             except Exception as e:
                 logger.debug(f"Knowledge awareness injection skipped: {e}")
         if lc_bind_tools_meta is not None:

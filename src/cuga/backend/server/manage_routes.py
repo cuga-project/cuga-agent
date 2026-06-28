@@ -928,11 +928,274 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.post("/knowledge/test_embeddings")
+async def test_embeddings_connection(request: Request):
+    """Round-trip a single embed call to validate connectivity + auth + model.
+
+    Body: { provider, model, api_key, base_url, extra_params }
+    Returns: { ok: bool, dim?: int, latency_ms?: int, error?: str, error_class?: str }
+
+    Used by the UI's 'Test connection' button — surfaces failures BEFORE save,
+    rather than 30s into an ingest. Times out at 10s.
+    """
+    import asyncio as _asyncio
+    import time as _time
+
+    body = await request.json()
+    provider = (body.get("provider") or "").strip()
+    model = (body.get("model") or "").strip()
+    api_key = (body.get("api_key") or "").strip()
+    base_url = (body.get("base_url") or "").strip()
+    extra_params = body.get("extra_params") or {}
+    if not provider:
+        raise HTTPException(status_code=400, detail="provider is required")
+
+    from cuga.backend.knowledge.config import KnowledgeConfig
+    from cuga.backend.knowledge.engine import create_embeddings
+    from pathlib import Path
+    import tempfile
+
+    # Build a throwaway config; reuse the same factory the live engine uses
+    # so the test path matches reality.
+    try:
+        cfg = KnowledgeConfig(
+            enabled=True,
+            persist_dir=Path(tempfile.mkdtemp(prefix="cuga-test-emb-")),
+            embedding_provider=provider,
+            embedding_model=model,
+            embedding_api_key=api_key,
+            embedding_base_url=base_url,
+            embedding_extra_params=dict(extra_params),
+        )
+        cfg.validate()
+    except (ValueError, TypeError):
+        logger.exception("Knowledge embedding test config validation failed")
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_class": "InvalidEmbeddingConfiguration",
+                "error": "Invalid knowledge embedding configuration. Check provider, model, base URL, and extra parameters.",
+            }
+        )
+
+    def _do_test() -> dict[str, Any]:
+        t0 = _time.monotonic()
+        try:
+            emb = create_embeddings(cfg)
+            vec = emb.embed_query("connection test")
+            dt_ms = int((_time.monotonic() - t0) * 1000)
+            return {"ok": True, "dim": len(vec), "latency_ms": dt_ms}
+        except Exception:
+            logger.exception("Knowledge embedding connection test failed")
+            return {
+                "ok": False,
+                "error_class": "EmbeddingConnectionFailed",
+                "error": "Embedding connection test failed. Check the base URL, model, and credentials.",
+            }
+
+    try:
+        result = await _asyncio.wait_for(_asyncio.to_thread(_do_test), timeout=10.0)
+        return JSONResponse(result)
+    except _asyncio.TimeoutError:
+        return JSONResponse(
+            {
+                "ok": False,
+                "error_class": "Timeout",
+                "error": "Embedding call did not complete within 10 seconds. "
+                "Check the base URL is reachable and the model is correct.",
+            }
+        )
+
+
+@router.get("/knowledge/defaults")
+async def get_knowledge_defaults():
+    """Return the factory-default knowledge config (dataclass defaults).
+
+    Used by the UI's per-section "Reset to defaults" buttons. Returns the
+    same shape that ``KnowledgeConfig().to_dict(include_secrets=False)``
+    produces — secrets are blank, persist_dir is excluded. Crucially this is
+    NOT the user's settings.toml view — it's the canonical project defaults,
+    so reset semantics are predictable regardless of deployment overrides.
+    """
+    try:
+        from cuga.backend.knowledge.config import KnowledgeConfig
+
+        defaults = KnowledgeConfig().to_dict(include_secrets=False)
+        # Drop internal fields (anything underscore-prefixed) so the UI
+        # doesn't have to know about them.
+        public = {k: v for k, v in defaults.items() if not k.startswith("_")}
+        return JSONResponse({"defaults": public})
+    except Exception as e:
+        logger.error(f"Failed to compute knowledge defaults: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/knowledge/env-presets")
+async def get_knowledge_env_presets():
+    """Detected embedding-provider presets based on environment variables.
+
+    Lets the UI offer "one-click apply" for providers whose credentials
+    are already in the host's environment (``.env`` or shell). Returns
+    ONLY booleans + suggested config — NEVER the actual env values, so
+    the response is safe to surface in any logged-out or shared UI
+    context. The "Apply" action on the UI side just sets
+    embedding_provider + embedding_model and leaves embedding_api_key
+    empty; the engine + LiteLLM then read the matching env var at
+    embed-time.
+    """
+    import os as _os
+
+    # Provider preset catalog. ``required_env`` controls the ready flag;
+    # ``optional_env`` is exposed for completeness so the UI can show
+    # "BASE_URL detected, will override default" hints.
+    PROVIDER_PRESETS = [
+        {
+            "id": "openai",
+            "label": "OpenAI",
+            "required_env": ["OPENAI_API_KEY"],
+            "optional_env": ["OPENAI_BASE_URL"],
+            "default_provider": "openai",
+            "default_model": "text-embedding-3-small",
+        },
+        {
+            "id": "openrouter",
+            "label": "OpenRouter",
+            "required_env": ["OPENROUTER_API_KEY"],
+            "optional_env": [],
+            "default_provider": "openrouter",
+            "default_model": "openai/text-embedding-3-small",
+        },
+        {
+            "id": "watsonx",
+            "label": "IBM Watsonx (via LiteLLM)",
+            # LiteLLM accepts WATSONX_URL or WATSONX_API_BASE. We require
+            # at least one of those two — surface both as detected when
+            # either is present.
+            "required_env": ["WATSONX_APIKEY", "WATSONX_PROJECT_ID"],
+            "optional_env": ["WATSONX_URL", "WATSONX_API_BASE"],
+            "default_provider": "litellm",
+            "default_model": "watsonx/ibm/slate-30m-english-rtrvr",
+        },
+        {
+            "id": "azure",
+            "label": "Azure OpenAI (via LiteLLM)",
+            "required_env": ["AZURE_API_KEY", "AZURE_API_BASE"],
+            "optional_env": ["AZURE_API_VERSION"],
+            "default_provider": "litellm",
+            "default_model": "azure/text-embedding-3-small",
+        },
+        {
+            "id": "cohere",
+            "label": "Cohere (via LiteLLM)",
+            "required_env": ["COHERE_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "cohere/embed-english-v3.0",
+        },
+    ]
+
+    presets = []
+    for p in PROVIDER_PRESETS:
+        env_vars = {
+            v: bool((_os.environ.get(v) or "").strip()) for v in (p["required_env"] + p["optional_env"])
+        }
+        # Watsonx is the lone provider with a "one-of-two" optional rule
+        # (URL or API_BASE). Special-case the ready check: required keys
+        # AND at least one of the URL aliases.
+        if p["id"] == "watsonx":
+            url_ok = env_vars.get("WATSONX_URL") or env_vars.get("WATSONX_API_BASE")
+            ready = all(env_vars[v] for v in p["required_env"]) and bool(url_ok)
+            missing = [v for v in p["required_env"] if not env_vars[v]]
+            if not url_ok:
+                missing.append("WATSONX_URL")
+        else:
+            ready = all(env_vars[v] for v in p["required_env"])
+            missing = [v for v in p["required_env"] if not env_vars[v]]
+        presets.append(
+            {
+                "id": p["id"],
+                "label": p["label"],
+                "default_provider": p["default_provider"],
+                "default_model": p["default_model"],
+                "ready": ready,
+                "env_vars": env_vars,
+                "missing": missing,
+            }
+        )
+
+    # Local providers — no env detection needed; always exposed so the
+    # UI can show them in the "always available" section.
+    always_available = [
+        {
+            "id": "fastembed",
+            "label": "Fastembed (local, default)",
+            "default_provider": "fastembed",
+            "default_model": "BAAI/bge-small-en-v1.5",
+        },
+        {
+            "id": "ollama",
+            "label": "Ollama (local)",
+            "default_provider": "ollama",
+            "default_model": "nomic-embed-text",
+        },
+    ]
+
+    return JSONResponse({"presets": presets, "always_available": always_available})
+
+
+@router.get("/knowledge/accelerator")
+async def get_knowledge_accelerator(request: Request):
+    """Live hardware acceleration status for the running knowledge engine.
+
+    Returns what the user *requested* (use_gpu flag) alongside what the
+    runtime *actually loaded* — so UI can flag silent CPU fallbacks.
+    """
+    try:
+        app_state = getattr(request.app.state, "app_state", None)
+        engine = getattr(app_state, "knowledge_engine", None) if app_state else None
+        if engine is None:
+            return JSONResponse(
+                {"available": False, "reason": "knowledge engine not initialized"},
+                status_code=200,
+            )
+        status = engine.accelerator_status()
+        return JSONResponse({"available": True, **status})
+    except Exception as e:
+        logger.error(f"Failed to read accelerator status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.patch("/config/draft/knowledge")
 async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None):
-    """Update knowledge section of draft. No engine mutation (draft isolation)."""
+    """Update knowledge section of draft AND apply it to the live engine.
+
+    Knowledge config differs from tools/LLM/policies in one important way: it
+    affects how the SAME documents are parsed, embedded, and stored. There's
+    no "preview" semantic where you'd want the draft and live to diverge — a
+    user who sets ``docling_pdf_mode = "fast"`` expects the next upload to
+    use fast mode, full stop.
+
+    So we save to draft (for crash recovery + publish snapshot) AND apply
+    to the live engine immediately. Cheap fields (docling mode, batch sizes,
+    rag_profile) skip the preflight by design in
+    ``KnowledgeEngine.prepare_knowledge_update``; only embedding
+    provider/model changes pay the dim-probe cost.
+
+    If the live apply fails (e.g. a bad embedding key fails preflight),
+    we return 400 and DO NOT save the draft — the saved-but-not-applied
+    case was the previous bug.
+    """
     if agent_id is None:
         agent_id = "cuga-default"
+    # NOTE: previously called ``await request.is_disconnected()`` here as
+    # Slice A telemetry. That call invokes ``self._receive()`` to peek at
+    # the ASGI channel, which can CONSUME the first body chunk and
+    # leave ``await request.json()`` below blocked indefinitely waiting
+    # for a chunk that's already been eaten. Symptom: PATCH hangs at
+    # body.read until the client times out with ClientDisconnect.
+    # Removed — Slice B (engine generation counter) doesn't need this
+    # telemetry, and FastAPI surfaces real disconnects via the normal
+    # exception path anyway.
     try:
         from cuga.backend.server.config_store import _parse_agent_id
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
@@ -956,22 +1219,162 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         known_fields = {f.name for f in _dc_fields(KnowledgeConfig)} - {"persist_dir"}
         filtered = {k: v for k, v in merged.items() if k in known_fields}
 
-        # Validate via shared helper (same coercion + validation as engine apply)
+        # Capture pre-patch adaptation + glossary hashes for diff-logging
+        # (audit trail). Audit-finding B2: glossary changes used to be
+        # invisible in audit logs — we now diff both hashes independently.
+        from cuga.backend.knowledge.config import (
+            ClientAdaptationError,
+            client_adaptation_hash,
+            client_glossary_hash,
+        )
+
+        _prev_adapt_hash = client_adaptation_hash(existing_knowledge.get("client_adaptation_text", ""))
+        _prev_gloss_hash = client_glossary_hash(existing_knowledge.get("client_adaptation_glossary", []))
+
+        # Validate via shared helper (same coercion + validation as engine apply).
+        # ClientAdaptationError carries a machine-readable code + detail dict so
+        # the UI can render specific affordances per failure mode (length /
+        # bidi / control / phrase) — return 422 with structured body.
         try:
-            KnowledgeConfig.coerce_and_validate(filtered)
+            validated = KnowledgeConfig.coerce_and_validate(filtered)
+        except ClientAdaptationError as cae:
+            raise HTTPException(status_code=422, detail=cae.to_dict())
         except (ValueError, TypeError) as ve:
             raise HTTPException(status_code=400, detail=str(ve))
 
-        # Save to draft only — no engine mutation
+        # Apply to the LIVE engine FIRST. If this fails (e.g. preflight
+        # embed_query rejects a bad key/model), surface the error to the
+        # user without saving a broken draft.
+        live_state = getattr(request.app.state, "app_state", None)
+        live_engine = getattr(live_state, "knowledge_engine", None) if live_state else None
+        live_apply_result: dict[str, Any] | None = None
+        if live_engine is not None:
+            import asyncio as _asyncio_apply
+
+            try:
+                # ``apply_knowledge_config`` calls ``prepare_knowledge_update``
+                # which, on embedding-provider/model change, runs a synchronous
+                # ``embed_query("test")`` preflight — a network round-trip to
+                # the embeddings API. Without ``to_thread`` that round-trip
+                # blocks the event loop and stalls every other request for
+                # the duration. Per Sami's review (Dec 2026).
+                live_apply_result = await _asyncio_apply.to_thread(
+                    live_engine.apply_knowledge_config, filtered
+                )
+                logger.info(
+                    "Live engine knowledge config applied: changed=%s, reindex_recommended=%s",
+                    {
+                        k: live_apply_result.get(k)
+                        for k in ("embedding_changed", "chunking_changed", "metric_changed")
+                    },
+                    live_apply_result.get("reindex_recommended"),
+                )
+            except (ValueError, TypeError) as ve:
+                raise HTTPException(status_code=400, detail=f"Engine validation failed: {ve}")
+            except Exception as live_err:
+                # Preflight network/auth errors land here (e.g. embedding API rejected).
+                # IMPORTANT: distinguish two cases:
+                #   (a) USER-supplied a key that the provider rejected — they
+                #       made an explicit choice and the choice is broken.
+                #       Block save, surface error.
+                #   (b) ENV-VAR fallback failed — the user didn't supply a key
+                #       (just switched provider, or relying on server env). The
+                #       failure is about deployment state, not the user's input.
+                #       Soft-fail: save the config, return 200 with a warning
+                #       so the UI can show a toast without blocking. The user
+                #       can fix it by entering their own key or running Test
+                #       connection.
+                _user_supplied_key = bool((knowledge.get("embedding_api_key") or "").strip())
+                _provider = (knowledge.get("embedding_provider") or "").lower()
+                _is_credentialed = _provider in ("openai", "openrouter", "litellm")
+                _err_str = str(live_err)
+                _looks_like_auth = any(
+                    s in _err_str
+                    for s in ("401", "Unauthorized", "Invalid API", "Incorrect API", "AuthenticationError")
+                )
+                if _is_credentialed and not _user_supplied_key and _looks_like_auth:
+                    logger.warning(
+                        "Live engine preflight failed via env-var fallback (no user key supplied) — "
+                        "soft-failing so the user can continue editing: %s",
+                        live_err,
+                    )
+                    live_apply_result = {
+                        "embedding_changed": False,
+                        "chunking_changed": False,
+                        "metric_changed": False,
+                        "reindex_recommended": False,
+                        "dim_changed": False,
+                        "previous_dim": None,
+                        "new_dim": None,
+                        "_preflight_warning": (
+                            "Environment-variable API key was rejected by the provider. "
+                            "Settings saved, but ingest will fail until you set a valid key "
+                            "or fix the env var. Use Test connection to verify."
+                        ),
+                    }
+                    # Do NOT raise — fall through to save the draft so the user
+                    # can keep editing without the toast-storm.
+                else:
+                    logger.warning("Live engine knowledge apply failed: %s", live_err)
+                    raise HTTPException(
+                        status_code=400,
+                        detail=(
+                            "Live knowledge engine rejected the new config. "
+                            "Check the embedding provider/key/model and try again. "
+                            f"Underlying error: {live_err}"
+                        ),
+                    )
+
+        # Now save to draft (post-apply so we only persist configs that the
+        # engine accepted). The draft serves crash recovery + publish snapshot.
         full_draft = await _load_and_patch_draft(agent_id, "knowledge", filtered)
 
+        # Audit log: diff old vs new adaptation hash (NEVER the text itself —
+        # PII + prompt-IP). Lets SREs answer "when did the adaptation change"
+        # without snapshot-by-snapshot diffing.
+        _new_adapt_hash = client_adaptation_hash(validated.client_adaptation_text)
+        _new_gloss_hash = client_glossary_hash(validated.client_adaptation_glossary)
+        if _prev_adapt_hash != _new_adapt_hash:
+            logger.info(
+                "cuga.knowledge.adaptation_patched",
+                extra={
+                    "cuga_knowledge_adaptation_old_hash": _prev_adapt_hash,
+                    "cuga_knowledge_adaptation_new_hash": _new_adapt_hash,
+                    "cuga_knowledge_adaptation_new_len": len(validated.client_adaptation_text),
+                    "cuga_knowledge_agent_id": str(agent_id),
+                    "cuga_knowledge_source": "patch_draft",
+                },
+            )
+        if _prev_gloss_hash != _new_gloss_hash:
+            logger.info(
+                "cuga.knowledge.glossary_patched",
+                extra={
+                    "cuga_knowledge_glossary_old_hash": _prev_gloss_hash,
+                    "cuga_knowledge_glossary_new_hash": _new_gloss_hash,
+                    "cuga_knowledge_glossary_new_count": len(validated.client_adaptation_glossary),
+                    "cuga_knowledge_agent_id": str(agent_id),
+                    "cuga_knowledge_source": "patch_draft",
+                },
+            )
+
         # Store draft knowledge config so Try-It-Out can use it for search behavior.
+        # Per-agent isolation: shared draft_app_state holds a DICT keyed by
+        # base agent_id (stripped of any "--draft" suffix). The legacy
+        # singular attribute is kept in sync for back-compat with any reader
+        # that still expects it on the same instance.
         state = getattr(request.app.state, "draft_app_state", None)
         if state:
             try:
-                from cuga.backend.knowledge.config import KnowledgeConfig as _KC
-
-                state.draft_knowledge_config = _KC.coerce_and_validate(filtered)
+                base_agent_id_for_key = _parse_agent_id(str(agent_id))
+                cfgs = getattr(state, "draft_knowledge_configs", None)
+                if not isinstance(cfgs, dict):
+                    cfgs = {}
+                    state.draft_knowledge_configs = cfgs
+                cfgs[base_agent_id_for_key] = validated
+                # Back-compat shadow: keep singular attr writing the last patch
+                # so any reader still using the singular name sees this agent's
+                # data when it's the only configured agent.
+                state.draft_knowledge_config = validated
             except Exception:
                 pass
         if state:
@@ -997,7 +1400,137 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
             except Exception as rebuild_err:
                 logger.warning("Failed to rebuild draft agent graph after knowledge PATCH: %s", rebuild_err)
 
-        return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+        response: dict[str, Any] = {
+            "status": "success",
+            "version": "draft",
+            "agent_id": agent_id,
+            "live_applied": live_engine is not None,
+        }
+        if live_apply_result:
+            # Expose the engine's change flags so the UI can show the
+            # "reindex recommended" banner without an extra round-trip.
+            response["live_changes"] = {
+                k: live_apply_result.get(k)
+                for k in (
+                    "embedding_changed",
+                    "chunking_changed",
+                    "metric_changed",
+                    "reindex_recommended",
+                    "dim_changed",
+                    "previous_dim",
+                    "new_dim",
+                )
+            }
+            # If the engine soft-failed (e.g. bad env-var key on provider
+            # switch), surface the warning so the UI can toast it without
+            # blocking the save.
+            _pf_warn = live_apply_result.get("_preflight_warning")
+            if _pf_warn:
+                response["preflight_warning"] = _pf_warn
+            # If the embedding dim actually changed, existing vectors are no
+            # longer compatible — auto-trigger reindex of the requesting
+            # agent's collections only. Scanning every directory under
+            # files_dir would touch collections owned by other agents in
+            # multi-tenant deployments, which is exactly the wrong scope
+            # for a PATCH that targeted a single agent's draft.
+            if live_apply_result.get("dim_changed") and live_engine is not None:
+                triggered_collections: list[dict[str, Any]] = []
+                try:
+                    import re as _re
+
+                    files_dir = getattr(live_engine, "_files_dir", None)
+                    # Agent collections live under ``kb_agent_<sanitized_agent_id>``
+                    # with an optional ``_<config_hash>`` suffix
+                    # (see ``awareness._agent_collection_name``). Filter to
+                    # that prefix so we only reindex what THIS agent owns.
+                    sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+                    agent_prefix = f"kb_agent_{sanitized}"
+
+                    # Auto-reindex MUST land docs under the new-hash collection
+                    # name, not under the prior hash. Reindexing in place under
+                    # the prior name re-embeds correctly but leaves the docs
+                    # at the OLD collection name; publish then sees the
+                    # new-hash collection empty and triggers a SECOND
+                    # migration reindex (copy_source_files + reindex). This
+                    # block migrates once: pick a non-empty source dir, copy
+                    # its files to the target name, then reindex the target.
+                    # Publish's migration path then short-circuits via the
+                    # "target collection already has docs, skipping migration"
+                    # branch in save_manage_config_publish.
+                    try:
+                        current_hash = live_engine._config.vector_config_hash()
+                    except Exception:
+                        current_hash = ""
+                    target_collection = f"{agent_prefix}_{current_hash}" if current_hash else agent_prefix
+
+                    if files_dir and files_dir.exists():
+                        collections = [
+                            d.name
+                            for d in files_dir.iterdir()
+                            if d.is_dir()
+                            and (d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"))
+                        ]
+                    else:
+                        collections = []
+
+                    target_done = False
+                    for coll in collections:
+                        try:
+                            if coll == target_collection:
+                                # Already at the target name — reindex in place.
+                                r = await live_engine.reindex(coll)
+                                triggered_collections.append({"collection": coll, "result": r})
+                                target_done = True
+                            elif not target_done:
+                                # Migrate this collection's files to the
+                                # target name then reindex target. Only do
+                                # this once per request — additional stale
+                                # collection dirs become orphans (cleaned up
+                                # via a separate housekeeping pass).
+                                await live_engine.copy_source_files(coll, target_collection)
+                                r = await live_engine.reindex(target_collection)
+                                triggered_collections.append(
+                                    {
+                                        "collection": target_collection,
+                                        "migrated_from": coll,
+                                        "result": r,
+                                    }
+                                )
+                                target_done = True
+                            else:
+                                # Orphan stale collection — leave for cleanup.
+                                triggered_collections.append({"collection": coll, "skipped": "orphan_stale"})
+                        except Exception as rerr:
+                            logger.warning("Auto-reindex of %s failed: %s", coll, rerr)
+                            triggered_collections.append({"collection": coll, "error": str(rerr)})
+
+                    # Track the runtime collection-name hash so
+                    # ``resolve_collection`` (and any caller that builds the
+                    # agent collection name from ``app_state.knowledge_config_hash``)
+                    # routes to the migrated data, not the orphan old-hash dir.
+                    # Without this, search after a draft-only profile switch
+                    # would hit the empty old collection because resolve_collection
+                    # is keyed off this attribute.
+                    if target_done and current_hash and live_state is not None:
+                        try:
+                            live_state.knowledge_config_hash = current_hash
+                        except Exception as _hash_err:
+                            logger.warning(
+                                "Failed to update knowledge_config_hash after migrate: %s",
+                                _hash_err,
+                            )
+
+                    response["auto_reindex"] = {
+                        "triggered": True,
+                        "scope": agent_prefix,
+                        "target": target_collection,
+                        "reason": f"embedding dim changed: {live_apply_result.get('previous_dim')} → {live_apply_result.get('new_dim')}",
+                        "collections": triggered_collections,
+                    }
+                except Exception as auto_err:
+                    logger.warning("Auto-reindex discovery failed: %s", auto_err)
+                    response["auto_reindex"] = {"triggered": False, "error": str(auto_err)}
+        return JSONResponse(response)
     except HTTPException:
         raise
     except Exception as e:
@@ -1074,7 +1607,13 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 if eng_attr is not None:
                     to_dict = getattr(eng_attr, "to_dict", None)
                     if callable(to_dict):
-                        _snap = to_dict()
+                        # Publish snapshot — strip secrets so API keys do not
+                        # cross machines via the snapshot store. Importing
+                        # instances must supply their own keys.
+                        try:
+                            _snap = to_dict(include_secrets=False)
+                        except TypeError:
+                            _snap = to_dict()
                         if isinstance(_snap, dict):
                             knowledge_cfg = _snap
                     elif isinstance(eng_attr, dict):
@@ -1088,7 +1627,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                                 knowledge_cfg = _cand
                                 break
             if knowledge_cfg is None:
-                knowledge_cfg = _KC().to_dict()
+                knowledge_cfg = _KC().to_dict(include_secrets=False)
             if config is None:
                 config = {}
             config["knowledge"] = knowledge_cfg
@@ -1121,12 +1660,18 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # the persisted _vector_config_hash stays at the previous value until
         # that migration succeeds; see promotion after copy_source_files/reindex.
         from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+        from cuga.backend.knowledge.config import client_adaptation_hash as _cah
+        from cuga.backend.knowledge.config import client_glossary_hash as _cgh
 
         _prev_hash = ""
+        _prev_adapt_hash = ""
+        _prev_gloss_hash = ""
         try:
             _prev_config, _ = await load_config(version=None, agent_id=agent_id)
             if _prev_config:
                 _prev_hash = (_prev_config.get("knowledge") or {}).get("_vector_config_hash", "")
+                _prev_adapt_hash = (_prev_config.get("knowledge") or {}).get("_adaptation_hash", "")
+                _prev_gloss_hash = (_prev_config.get("knowledge") or {}).get("_glossary_hash", "")
         except Exception:
             pass
 
@@ -1135,6 +1680,44 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             _vec_hash = _kb_obj.vector_config_hash()
         except Exception:
             _vec_hash = ""
+
+        # Adaptation + glossary hashes for snapshot-level diffability.
+        # NOT folded into _vector_config_hash on purpose (prompt edits don't
+        # invalidate vectors). Stored as separate top-level metadata keys so
+        # the UI can show "v3 → v4: adaptation changed / glossary changed"
+        # without re-reading the bodies.
+        _adapt_text = (
+            knowledge_cfg.get("client_adaptation_text", "") if isinstance(knowledge_cfg, dict) else ""
+        )
+        _glossary_list = (
+            knowledge_cfg.get("client_adaptation_glossary", []) if isinstance(knowledge_cfg, dict) else []
+        )
+        _new_adapt_hash = _cah(_adapt_text)
+        _new_gloss_hash = _cgh(_glossary_list)
+        if _prev_adapt_hash != _new_adapt_hash:
+            logger.info(
+                "cuga.knowledge.adaptation_published",
+                extra={
+                    "cuga_knowledge_adaptation_old_hash": _prev_adapt_hash,
+                    "cuga_knowledge_adaptation_new_hash": _new_adapt_hash,
+                    "cuga_knowledge_adaptation_new_len": len(_adapt_text),
+                    "cuga_knowledge_agent_id": str(agent_id),
+                    "cuga_knowledge_source": "publish",
+                },
+            )
+        if _prev_gloss_hash != _new_gloss_hash:
+            logger.info(
+                "cuga.knowledge.glossary_published",
+                extra={
+                    "cuga_knowledge_glossary_old_hash": _prev_gloss_hash,
+                    "cuga_knowledge_glossary_new_hash": _new_gloss_hash,
+                    "cuga_knowledge_glossary_new_count": len(_glossary_list)
+                    if isinstance(_glossary_list, list)
+                    else 0,
+                    "cuga_knowledge_agent_id": str(agent_id),
+                    "cuga_knowledge_source": "publish",
+                },
+            )
 
         import re as _re_coll
 
@@ -1162,6 +1745,15 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 config["knowledge"]["_vector_config_hash"] = _prev_hash
             else:
                 config["knowledge"]["_vector_config_hash"] = _vec_hash
+
+        # Persist the adaptation + glossary hashes alongside the vector hash
+        # so the version history can show "adaptation changed" / "glossary
+        # changed" indicators without re-reading snapshot bodies. Underscore
+        # prefix follows the existing pattern for snapshot-level metadata
+        # keys (filtered out by coerce_and_validate's known_fields filter on
+        # the next round-trip).
+        config["knowledge"]["_adaptation_hash"] = _new_adapt_hash
+        config["knowledge"]["_glossary_hash"] = _new_gloss_hash
 
         # Snapshot knowledge state for import/export portability.
         # Stores collection name, persist_dir, pinned collection config, and
@@ -1210,7 +1802,23 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         # Keep draft aligned with the just-published configuration because
         # Manage loads draft first on re-entry.
         await save_draft(config or {}, agent_id)
-        ver = await save_config(config or {}, agent_id)
+        # Strip secrets from the PUBLISHED snapshot only — the draft (saved
+        # above) keeps the key so the local engine survives a restart.
+        # Importing instances on other machines must supply their own keys.
+        try:
+            from cuga.backend.knowledge.config import KnowledgeConfig as _KC_strip
+
+            published_config = dict(config or {})
+            kb_pub = published_config.get("knowledge")
+            if isinstance(kb_pub, dict):
+                kb_pub = dict(kb_pub)
+                for _secret in _KC_strip._SECRET_FIELDS:
+                    if _secret in kb_pub and kb_pub[_secret]:
+                        kb_pub[_secret] = ""
+                published_config["knowledge"] = kb_pub
+        except Exception:
+            published_config = config or {}
+        ver = await save_config(published_config, agent_id)
         app_state.config_version = ver
         app_state.tools_include_version = int(ver) if ver else 0
 
@@ -1357,6 +1965,20 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     except HTTPException:
         raise
     except Exception as e:
+        from cuga.backend.knowledge.engine import EmbeddingModelLoadError
+
+        if isinstance(e, EmbeddingModelLoadError):
+            # A bad/just-switched embedding model (e.g. a large local model still
+            # downloading) must not 500 — return an actionable 400 the UI can show.
+            logger.warning("Embedding model load failed during publish: %s", e)
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Couldn't load embedding model '{e.model}' ({e.provider}). If it's a large "
+                    "local model it may still be downloading — retry in a moment. Otherwise check "
+                    "the model name and your provider key / connectivity."
+                ),
+            )
         logger.error(f"Failed to save manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 

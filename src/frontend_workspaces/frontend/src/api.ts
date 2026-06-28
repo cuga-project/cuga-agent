@@ -176,42 +176,64 @@ export async function postManageConfigDraft(config: unknown, agentId?: string): 
   });
 }
 
+// Autosave PATCH helpers — each accepts an optional ``signal`` so the
+// caller can cancel an in-flight request when a newer config arrives
+// (the rapid-profile-pick race). ``apiFetch`` spreads ``init`` into
+// ``fetch``'s second arg, so passing ``signal`` here propagates
+// natively. See CLIENT_CANCELLATION_CONTRACT.md for the contract.
 export async function patchManageConfigDraftAgent(
   agent: { name?: string; description?: string },
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/agent${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ agent }),
+    signal,
   });
 }
 
-export async function patchManageConfigDraftLlm(llm: unknown, agentId?: string): Promise<Response> {
+export async function patchManageConfigDraftLlm(
+  llm: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/llm${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ llm }),
+    signal,
   });
 }
 
-export async function patchManageConfigDraftTools(tools: unknown, agentId?: string): Promise<Response> {
+export async function patchManageConfigDraftTools(
+  tools: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/tools${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ tools }),
+    signal,
   });
 }
 
-export async function patchManageConfigDraftPolicies(policies: unknown, agentId?: string): Promise<Response> {
+export async function patchManageConfigDraftPolicies(
+  policies: unknown,
+  agentId?: string,
+  signal?: AbortSignal,
+): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/policies${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ policies }),
+    signal,
   });
 }
 
@@ -226,25 +248,29 @@ export async function postManageConfig(config: unknown, agentId?: string): Promi
 
 export async function patchManageConfigDraftSpecialInstructions(
   specialInstructions: string,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/special_instructions${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ special_instructions: specialInstructions }),
+    signal,
   });
 }
 
 export async function patchManageConfigDraftKnowledge(
   knowledge: unknown,
-  agentId?: string
+  agentId?: string,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
   return apiFetch(`/api/manage/config/draft/knowledge${q}`, {
     method: "PATCH",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ knowledge }),
+    signal,
   });
 }
 
@@ -365,6 +391,9 @@ let _knowledgeAgentId = "default";
 export function setKnowledgeAgentId(agentId: string) {
   _knowledgeAgentId = agentId;
 }
+export function getKnowledgeAgentId(): string {
+  return _knowledgeAgentId;
+}
 
 /**
  * Central knowledge API helper. Injects X-Agent-ID and optional X-Thread-ID
@@ -389,6 +418,36 @@ function knowledgeApiFetch(
 
 export function getKnowledgeHealth(): Promise<Response> {
   return knowledgeApiFetch("/api/knowledge/health");
+}
+
+export function getKnowledgeAccelerator(): Promise<Response> {
+  return apiFetch("/api/manage/knowledge/accelerator");
+}
+
+export function getKnowledgeDefaults(): Promise<Response> {
+  return apiFetch("/api/manage/knowledge/defaults");
+}
+
+// Detected embedding-provider presets from .env / shell environment.
+// Returns booleans + suggested config only — NEVER the actual env
+// values. Used to power the "Quick setup from environment" panel in
+// the knowledge config UI.
+export function getKnowledgeEnvPresets(): Promise<Response> {
+  return apiFetch("/api/manage/knowledge/env-presets");
+}
+
+export function testEmbeddingsConnection(body: {
+  provider: string;
+  model?: string;
+  api_key?: string;
+  base_url?: string;
+  extra_params?: Record<string, unknown>;
+}): Promise<Response> {
+  return apiFetch("/api/manage/knowledge/test_embeddings", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
 }
 
 export function enableKnowledge(): Promise<Response> {
@@ -420,19 +479,29 @@ export function uploadKnowledgeDocuments(files: File[], replaceDuplicates = true
   });
 }
 
-export function uploadKnowledgeDocument(file: File, replaceDuplicates = true): Promise<Response> {
+export function uploadKnowledgeDocument(
+  file: File,
+  replaceDuplicates = true,
+  wait = true,
+  signal?: AbortSignal,
+): Promise<Response> {
   const formData = new FormData();
   formData.append("files", file);
   formData.append("scope", "agent");
   formData.append("replace_duplicates", String(replaceDuplicates));
+  formData.append("wait", String(wait));
   return knowledgeApiFetch("/api/knowledge/documents", {
     method: "POST",
     body: formData,
+    signal,
   });
 }
 
-export function listKnowledgeDocuments(): Promise<Response> {
-  return knowledgeApiFetch("/api/knowledge/documents?scope=agent");
+export function listKnowledgeDocuments(signal?: AbortSignal): Promise<Response> {
+  return knowledgeApiFetch(
+    "/api/knowledge/documents?scope=agent",
+    signal ? { signal } : undefined,
+  );
 }
 
 export function deleteKnowledgeDocument(filename: string): Promise<Response> {
@@ -475,8 +544,14 @@ export function getKnowledgeTasks(): Promise<Response> {
   return knowledgeApiFetch("/api/knowledge/tasks?scope=agent");
 }
 
-export function getKnowledgeTaskStatus(taskId: string): Promise<Response> {
-  return knowledgeApiFetch(`/api/knowledge/tasks/${encodeURIComponent(taskId)}`);
+export function getKnowledgeTaskStatus(
+  taskId: string,
+  signal?: AbortSignal,
+): Promise<Response> {
+  return knowledgeApiFetch(
+    `/api/knowledge/tasks/${encodeURIComponent(taskId)}`,
+    signal ? { signal } : undefined,
+  );
 }
 
 export function cancelKnowledgeTask(taskId: string): Promise<Response> {
