@@ -674,6 +674,11 @@ class LLMManager:
                 openai_params["temperature"] = temperature
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+                if model_name.startswith('claude-'):
+                    configured_budget = model_settings.get("thinking_budget_tokens")
+                    budget = int(configured_budget) if configured_budget else max(1024, int(max_tokens * 0.6))
+                    openai_params["model_kwargs"] = {"extra_body": {"thinking": {"type": "enabled", "budget_tokens": budget}}}
+                    logger.debug(f"Enabling Claude thinking via proxy: budget_tokens={budget}")
 
             auth_headers = self._get_auth_headers(model_settings, platform)
             if auth_headers:
@@ -758,6 +763,8 @@ class LLMManager:
                 max_tokens=max_tokens,
                 model=model_name,
                 temperature=temperature,
+                timeout=http_timeout,
+                max_retries=2,
                 seed=42,
                 default_headers={"RITS_API_KEY": api_key} if api_key else None,
             )
@@ -772,6 +779,7 @@ class LLMManager:
                 model=model_name,
                 top_p=0.95,
                 temperature=temperature,
+                timeout=http_timeout,
                 seed=42,
             )
         elif platform == "google-genai":
