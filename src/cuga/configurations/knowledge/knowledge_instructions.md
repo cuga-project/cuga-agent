@@ -38,7 +38,7 @@ The engine already runs **glossary aliases + BM25 + dense fusion** for you — y
 1. **Rephrase keywords**: try synonyms or domain terms (`"PTO"` → `"vacation policy"`; `"401k"` → `"retirement plan"`; `"TLS handshake error"` → `"SSL connection failed"`).
 2. **Adjust granularity**: too narrow → drop a constraint (`"Q3 2026 revenue forecast"` → `"Q3 revenue"`); too broad → add a named entity from the user's message (`"benefits"` → `"benefits Sarah Chen enrollment"`).
 3. **Switch the document's language** if the deployment serves multilingual content (English query missed → try the source language).
-4. **Switch scope** as a last resort: session miss → `scope="agent"`; agent miss → `scope="all"`.
+4. **Switch scope** as a last resort only when the engine has not already done it: agent miss → `scope="all"`. For a session miss with `retrieval.fallback_from="session"`, trust the returned `scope="all"` fallback instead of re-issuing manually.
 
 After two refined misses, hedge or ask the user for a more specific term — don't fabricate.
 

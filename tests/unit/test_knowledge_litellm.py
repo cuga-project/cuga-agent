@@ -110,11 +110,44 @@ def test_adapter_passes_base_url_for_self_hosted_proxy():
     emb = _LiteLLMEmbeddings(
         model="openai/x",
         api_key="k",
+        base_url="https://litellm-proxy.internal:4000",
+    )
+    with patch("litellm.embedding", return_value=_mock_response([[0.1]])) as m:
+        emb.embed_documents(["a"])
+    assert m.call_args.kwargs["api_base"] == "https://litellm-proxy.internal:4000"
+
+
+def test_adapter_rejects_remote_http_base_url_by_default():
+    with pytest.raises(ValueError, match="must use https:// for remote hosts"):
+        _LiteLLMEmbeddings(
+            model="openai/x",
+            api_key="k",
+            base_url="http://litellm-proxy.internal:4000",
+        )
+
+
+def test_adapter_allows_local_http_base_url():
+    emb = _LiteLLMEmbeddings(
+        model="openai/x",
+        api_key="k",
+        base_url="http://localhost:4000",
+    )
+    with patch("litellm.embedding", return_value=_mock_response([[0.1]])) as m:
+        emb.embed_documents(["a"])
+    assert m.call_args.kwargs["api_base"] == "http://localhost:4000"
+
+
+def test_adapter_allows_explicit_insecure_internal_base_url():
+    emb = _LiteLLMEmbeddings(
+        model="openai/x",
+        api_key="k",
         base_url="http://litellm-proxy.internal:4000",
+        extra_params={"allow_insecure_transport": True},
     )
     with patch("litellm.embedding", return_value=_mock_response([[0.1]])) as m:
         emb.embed_documents(["a"])
     assert m.call_args.kwargs["api_base"] == "http://litellm-proxy.internal:4000"
+    assert "allow_insecure_transport" not in m.call_args.kwargs
 
 
 def test_adapter_strips_whitespace_from_inputs():
@@ -122,11 +155,11 @@ def test_adapter_strips_whitespace_from_inputs():
     emb = _LiteLLMEmbeddings(
         model="  openai/text-embedding-3-small  ",
         api_key="  sk-fake  ",
-        base_url="  http://x.y  ",
+        base_url="  https://x.y  ",
     )
     assert emb._model == "openai/text-embedding-3-small"
     assert emb._api_key == "sk-fake"
-    assert emb._base_url == "http://x.y"
+    assert emb._base_url == "https://x.y"
 
 
 def test_adapter_rejects_empty_model():

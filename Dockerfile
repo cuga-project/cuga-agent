@@ -1,17 +1,7 @@
 FROM python:3.12-slim-trixie
 
-# The installer requires curl (and certificates) to download the release archive.
-# Tesseract (binary + osd script-detection + curated language packs) powers Docling's
-# multilingual OCR — ``lang=["auto"]`` does per-page script detection via osd.traineddata
-# and then OCRs each page with the matching model. Adds ~130 MB to the image; covers the
-# scripts cuga's knowledge engine ingests (en/he/ar/ru/el/hi/th/ja/ko/zh-Hans).
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        curl ca-certificates \
-        tesseract-ocr tesseract-ocr-osd \
-        tesseract-ocr-eng tesseract-ocr-heb tesseract-ocr-ara \
-        tesseract-ocr-rus tesseract-ocr-ell tesseract-ocr-hin \
-        tesseract-ocr-tha tesseract-ocr-jpn tesseract-ocr-kor \
-        tesseract-ocr-chi-sim && \
+# The installer requires curl (and certificates) to download the release archive
+RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certificates && \
     rm -rf /var/lib/apt/lists/*
 
 # Download the latest installer
@@ -33,12 +23,7 @@ COPY pyproject.toml uv.lock ./
 COPY src/ ./src/
 COPY docs/ ./docs/
 
-# Install dependencies. CPU-only by default — fine for laptops, demos,
-# and HF Spaces. For a CUDA cluster, build the parallel ``Dockerfile.gpu``
-# (nvidia/cuda runtime base + ``uv sync --extra gpu --no-install-package
-# onnxruntime``) — that swaps the CPU onnxruntime for onnxruntime-gpu in a
-# lockfile-managed way, instead of a bolt-on ``uv pip install`` that a later
-# ``uv sync`` would silently revert to CPU.
+# Install dependencies
 RUN uv sync
 
 # Create cuga_workspace directory
@@ -61,4 +46,3 @@ ENV DYNACONF_SERVER_PORTS__DEMO=7860
 
 # Start the demo_crm service with read-only filesystem and no email services
 CMD ["uv", "run", "cuga", "start", "demo_crm", "--cuga-workspace", "/app/cuga_workspace"]
-

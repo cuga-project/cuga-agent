@@ -1005,6 +1005,26 @@ class _PyTorchEmbeddings(Embeddings):
         return self._embed_batch([text])[0]
 
 
+def _is_local_http_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    host = hostname.strip().lower()
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _bool_extra(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
 class _LiteLLMEmbeddings(Embeddings):
     """LangChain Embeddings adapter around litellm.embedding.
 
@@ -1039,11 +1059,26 @@ class _LiteLLMEmbeddings(Embeddings):
             )
         self._model = model.strip()
         self._api_key = (api_key or "").strip() or None
-        self._base_url = (base_url or "").strip() or None
+        base_url_clean = (base_url or "").strip()
+        allow_insecure_transport = _bool_extra((extra_params or {}).get("allow_insecure_transport"))
+        if base_url_clean:
+            parsed = urlparse(base_url_clean)
+            if parsed.scheme not in {"http", "https"}:
+                raise ValueError("LiteLLM embedding_base_url must start with https:// or http://localhost")
+            if (
+                parsed.scheme == "http"
+                and not allow_insecure_transport
+                and not _is_local_http_host(parsed.hostname)
+            ):
+                raise ValueError(
+                    "LiteLLM embedding_base_url must use https:// for remote hosts. "
+                    "Use embedding_extra_params.allow_insecure_transport=true only for trusted internal networks."
+                )
+        self._base_url = base_url_clean or None
         # Provider-specific extras (Azure api_version, Bedrock region, ...).
         # Reserved kwargs that we set ourselves are filtered out to avoid
         # surprising override of api_base/api_key/model/input.
-        _reserved = {"model", "input", "api_key", "api_base"}
+        _reserved = {"model", "input", "api_key", "api_base", "allow_insecure_transport"}
         self._extra_params: dict[str, Any] = {
             k: v for k, v in (extra_params or {}).items() if k not in _reserved
         }

@@ -928,13 +928,6 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
         raise HTTPException(status_code=500, detail=str(e))
 
 
-def _scrub_secret(text: str, secret: str | None) -> str:
-    """Replace API key occurrences in error strings with a masked stub."""
-    if not text or not secret:
-        return text
-    return text.replace(secret, "sk-***REDACTED***")
-
-
 @router.post("/knowledge/test_embeddings")
 async def test_embeddings_connection(request: Request):
     """Round-trip a single embed call to validate connectivity + auth + model.
@@ -975,61 +968,13 @@ async def test_embeddings_connection(request: Request):
             embedding_extra_params=dict(extra_params),
         )
         cfg.validate()
-    except (ValueError, TypeError) as e:
-        # Two-layer safety against CodeQL py/stack-trace-exposure
-        # (Sami's review, Dec 2026):
-        #   1. Log the full exception server-side with traceback so SREs
-        #      can diagnose without the client ever seeing it.
-        #   2. Whitelist the actionable validator messages we author
-        #      ourselves in ``KnowledgeConfig.validate()`` (e.g.
-        #      "chunk_size must be >= 100, got 0"). Operators need these
-        #      to fix their config; suppressing them entirely is hostile UX.
-        #      Any other exception type or unexpected message shape falls
-        #      back to a generic string so internals never leak. The
-        #      whitelist is the validator-message prefixes — they all start
-        #      with a known field name.
+    except (ValueError, TypeError):
         logger.exception("Knowledge embedding test config validation failed")
-        msg_raw = str(e)
-        _KNOWN_VALIDATOR_PREFIXES = (
-            "chunk_size",
-            "chunk_overlap",
-            "metric_type",
-            "max_ingest_workers",
-            "max_pending_tasks",
-            "Unknown embedding_provider",
-            "OpenRouter",
-            "LiteLLM",
-            "HuggingFace",
-            "embedding_extra_params",
-            "max_search_attempts",
-            "mcp_transport",
-            "mcp_port",
-            "rag_profile",
-            "docling_pdf_mode",
-            "docling_layout_engine",
-            "docling_drop_page_chrome",
-            "search_junk_filter",
-            "search_hybrid_mode",
-            "embedding_batch_size",
-            "embedding_concurrency",
-            "vector_insert_batch_size",
-            "rerank_enabled",
-            "rerank_top_k_in",
-            "rerank_model",
-        )
-        if any(msg_raw.startswith(p) for p in _KNOWN_VALIDATOR_PREFIXES):
-            client_msg = _scrub_secret(msg_raw, api_key)
-        else:
-            client_msg = "Invalid knowledge embedding configuration."
-        # Don't echo ``type(e).__name__`` to the client — CodeQL flags
-        # this as information disclosure (py/stack-trace-exposure). The
-        # exception class name is still in server logs via the
-        # ``logger.exception(...)`` call above; operators with log access
-        # have full diagnostic info.
         return JSONResponse(
             {
                 "ok": False,
-                "error": client_msg,
+                "error_class": "InvalidEmbeddingConfiguration",
+                "error": "Invalid knowledge embedding configuration. Check provider, model, base URL, and extra parameters.",
             }
         )
 
