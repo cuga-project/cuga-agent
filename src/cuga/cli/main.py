@@ -694,6 +694,7 @@ def _start_demo_crm_services(
 
         workspace_path = cuga_workspace or os.path.join(os.getcwd(), "cuga_workspace")
         workspace_abs = os.path.abspath(workspace_path)
+        os.environ["CUGA_THREAD_WORKSPACE_SEED"] = "crm"
         app_mgr = _make_app_manager()
         app_mgr.prepare_workspace(workspace_path)
         if sample_memory_data:
@@ -1366,7 +1367,8 @@ def start(
                 logger.info("Starting demo with remote sandbox mode enabled (features.local_sandbox=false)")
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
-            app_mgr.prepare_workspace(workspace_path)
+            if service != "demo_skills":
+                app_mgr.prepare_workspace(workspace_path)
             if app_docs:
                 app_mgr.start_docs()
             if app_oak_health:

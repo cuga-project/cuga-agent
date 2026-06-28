@@ -134,6 +134,10 @@ async def apply_policies_data_to_storage(
 
     for policy_data in policies_data or []:
         try:
+            for _list_key in ("triggers", "steps", "target_tools", "required_tools"):
+                if policy_data.get(_list_key) is None:
+                    policy_data[_list_key] = []
+
             if "triggers" in policy_data and isinstance(policy_data["triggers"], list):
                 for trigger in policy_data["triggers"]:
                     if trigger.get("type") == "natural_language" and "value" in trigger:
@@ -195,13 +199,13 @@ async def apply_policies_data_to_storage(
             elif policy_type == "playbook":
                 from cuga.backend.cuga_graph.policy.models import PlaybookStep
 
-                steps_data = policy_data.get("steps", [])
+                steps_data = policy_data.get("steps") or []
                 steps = [
                     PlaybookStep(
                         step_number=step["step_number"],
                         instruction=step["instruction"],
-                        expected_outcome=step["expected_outcome"],
-                        tools_allowed=step.get("tools_allowed", []),
+                        expected_outcome=step.get("expected_outcome"),
+                        tools_allowed=step.get("tools_allowed") or [],
                     )
                     for step in steps_data
                 ]
@@ -209,7 +213,7 @@ async def apply_policies_data_to_storage(
                     id=policy_data["id"],
                     name=policy_data["name"],
                     description=policy_data["description"],
-                    triggers=policy_data["triggers"],
+                    triggers=policy_data.get("triggers") or [],
                     markdown_content=policy_data.get("markdown_content", ""),
                     steps=steps,
                     priority=policy_data.get("priority", 50),

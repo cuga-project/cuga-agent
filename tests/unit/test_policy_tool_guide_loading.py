@@ -55,3 +55,29 @@ async def test_apply_policies_data_to_storage_loads_tool_guide_with_null_tool_gu
     assert len(storage.policies) == 1
     assert isinstance(storage.policies[0], ToolGuide)
     assert storage.policies[0].tool_guards == {}
+
+
+@pytest.mark.asyncio
+async def test_apply_policies_data_to_storage_loads_playbook_with_null_triggers_and_steps() -> None:
+    storage = FakePolicyStorage()
+
+    result = await apply_policies_data_to_storage(
+        storage,
+        [
+            {
+                "type": "playbook",
+                "id": "playbook_1",
+                "name": "Playbook 1",
+                "description": "Test playbook",
+                "triggers": None,
+                "steps": None,
+                "markdown_content": "# Guide",
+            }
+        ],
+        clear_existing=False,
+    )
+
+    assert result == {"count": 1, "errors": []}
+    assert len(storage.policies) == 1
+    assert storage.policies[0].triggers == []
+    assert storage.policies[0].steps == []

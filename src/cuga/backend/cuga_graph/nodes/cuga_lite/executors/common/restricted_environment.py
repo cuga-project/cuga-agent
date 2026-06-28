@@ -1,6 +1,7 @@
 import asyncio
 import json
 from cuga.config import settings
+from .benchmark_mode import is_relaxed_execution
 
 
 class RestrictedEnvironment:
@@ -25,7 +26,7 @@ class RestrictedEnvironment:
         Returns:
             Restricted import function, or original import if benchmark mode is enabled
         """
-        if RestrictedEnvironment.is_benchmark_mode():
+        if is_relaxed_execution():
             return __builtins__['__import__'] if isinstance(__builtins__, dict) else __builtins__.__import__
 
         _original_import = (
@@ -49,7 +50,7 @@ class RestrictedEnvironment:
         Returns:
             Dictionary of safe builtins, or full builtins if benchmark mode is enabled
         """
-        if RestrictedEnvironment.is_benchmark_mode():
+        if is_relaxed_execution():
             # Return full builtins in benchmark mode
             if isinstance(__builtins__, dict):
                 return __builtins__.copy()
@@ -132,7 +133,7 @@ class RestrictedEnvironment:
         Returns:
             Dictionary of restricted globals, or unrestricted globals if benchmark mode is enabled
         """
-        if RestrictedEnvironment.is_benchmark_mode():
+        if is_relaxed_execution():
             # In benchmark mode, return unrestricted globals
             unrestricted_globals = {
                 "__builtins__": safe_builtins,

@@ -77,7 +77,7 @@ def _fetch(path: str) -> str:
 
 def _install_skill_files(tmp_path: Path) -> None:
     """Place the real pptx SKILL.md and pptxgenjs companion guide in the skills directory."""
-    skill_dir = tmp_path / ".agents" / "skills" / "pptx"
+    skill_dir = tmp_path / ".cuga" / "skills" / "pptx"
     skill_dir.mkdir(parents=True, exist_ok=True)
 
     (skill_dir / "SKILL.md").write_text(_fetch("SKILL.md"), encoding="utf-8")

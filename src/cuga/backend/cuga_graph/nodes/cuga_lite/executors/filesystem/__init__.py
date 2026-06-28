@@ -13,9 +13,12 @@ from .models import (
     UploadResult,
 )
 from .paths import (
+    normalize_shell_command_paths,
     public_workspace_path,
+    relative_workspace_path,
     resolve_workspace_path,
     safe_thread_id,
+    shell_workspace_path,
     skills_enabled,
     thread_workspace_root,
 )
@@ -44,6 +47,9 @@ __all__ = [
     "resolve_workspace_path",
     "thread_workspace_root",
     "public_workspace_path",
+    "relative_workspace_path",
+    "shell_workspace_path",
+    "normalize_shell_command_paths",
     "safe_thread_id",
     "skills_enabled",
 ]

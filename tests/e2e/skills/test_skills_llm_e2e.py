@@ -71,6 +71,13 @@ from .skills_artifact import COMPLIANCE_SCORER, PARTS_CATALOG, VENDOR_ONBOARDING
 _RESULTS: list[dict] = []
 
 
+def _normalize_hyphens(text: str) -> str:
+    """Replace Unicode dash variants with ASCII hyphen for robust assertions."""
+    for ch in ("\u2010", "\u2011", "\u2012", "\u2013", "\u2014", "\u2015", "\u2212"):
+        text = text.replace(ch, "-")
+    return text
+
+
 def _report(
     *,
     skill: str,
@@ -295,7 +302,8 @@ async def test_parts_catalog_returns_internal_code(
         expected=PARTS_CATALOG.expected,
         actual=final_answer,
     )
-    assert PARTS_CATALOG.expected in final_answer, (
+    normalized = _normalize_hyphens(final_answer)
+    assert PARTS_CATALOG.expected in normalized, (
         f"Expected part code 'PRU-2267-K' in final answer. Got: {final_answer[:500]!r}"
     )
 

@@ -1,10 +1,10 @@
 """Agent skills: SKILL.md discovery and load_skill tool.
 
-Skills are discovered from:
-  - .agents/skills/**/SKILL.md  (preferred project-local)
-  - ~/.config/agents/skills/**/SKILL.md  (preferred global)
-  - .cuga/skills/**/SKILL.md and .cuga/.skills/**/SKILL.md  (legacy project-local fallbacks)
-  - ~/.config/cuga/skills/**/SKILL.md  (legacy global fallback)
+Skills are discovered from one root only (``settings.skills.root``, default ``cuga``):
+  - cuga          → ``<CUGA folder>/skills/**/SKILL.md`` (default: ``.cuga/skills``)
+  - agents        → ``<project>/.agents/skills/**/SKILL.md``
+  - global_agents → ~/.config/agents/skills/**/SKILL.md
+  - global_cuga   → ~/.config/cuga/skills/**/SKILL.md
 
 Code execution uses the standard executor pipeline — the same Python sandbox the
 agent always writes code in (local, E2B, or OpenSandbox depending on config).

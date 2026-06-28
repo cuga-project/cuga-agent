@@ -1,0 +1,67 @@
+extensions:
+  # Return values of workspace path helpers are confined under cuga_workspace.
+  # See child_path_under() and tests/unit/test_resolve_workspace_path.py.
+  - addsTo:
+      pack: codeql/python-all
+      extensible: barrierModel
+    data:
+      - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[child_path_under].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[safe_thread_id].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[resolve_workspace_path].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[thread_workspace_root].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[assert_resolved_path_under].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[write_bytes_under].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[read_bytes_under].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.server.workspace_upload",
+          "Member[sanitize_upload_filename].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.server.workspace_upload",
+          "Member[_validated_thread_id].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.server.workspace_upload",
+          "Member[_uploads_root_host].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.server.workspace_upload",
+          "Member[_manifest_host_path].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.server.workspace_upload",
+          "Member[_upload_file_host_path].ReturnValue",
+          "path-injection",
+        ]

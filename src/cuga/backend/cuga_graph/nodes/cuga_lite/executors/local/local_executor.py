@@ -7,7 +7,7 @@ from typing import Any
 from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
 from ..common.security import SecurityValidator
-from ..common.benchmark_mode import is_benchmark_mode
+from ..common.benchmark_mode import is_relaxed_execution
 
 
 class LocalExecutor(BaseExecutor):
@@ -54,7 +54,7 @@ class LocalExecutor(BaseExecutor):
         """
         self._timeout = timeout
         with contextlib.redirect_stdout(io.StringIO()) as f:
-            benchmark_mode = is_benchmark_mode()
+            benchmark_mode = is_relaxed_execution()
 
             restricted_import = RestrictedEnvironment.create_restricted_import(self.ALLOWED_MODULES)
 

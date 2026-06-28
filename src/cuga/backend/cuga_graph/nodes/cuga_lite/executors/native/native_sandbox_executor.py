@@ -32,8 +32,12 @@ from loguru import logger
 # Canonical workspace path logic lives in the consolidated filesystem
 # package. ``native_thread_workspace_root`` is re-exported under its
 # historical name for back-compat (workspace_sandbox.py imports it).
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.run_output import (
+    format_run_command_output,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     CUGA_WORKSPACE_DIRNAME,
+    normalize_shell_command_paths,
     thread_workspace_root as native_thread_workspace_root,
 )
 
@@ -199,9 +203,10 @@ class NativeSandboxExecutor:
 
     async def _run_sandboxed(
         self, cmd: str, *, thread_id: Optional[str] = None, timeout: int = 120
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, int]:
         self._check_platform()
         self._ensure_policy()
+        cmd = normalize_shell_command_paths(cmd)
         # Native uses one shared /tmp/.venv. It is created lazily once, not per command.
         await self._ensure_venv()
         workspace_root = native_thread_workspace_root(thread_id)
@@ -215,6 +220,7 @@ class NativeSandboxExecutor:
             f"cd {wr_q} && "
             f"export HOME={wr_q} "
             f"TMPDIR={wr_q} "
+            f"UV_NO_CONFIG=1 "
             f"XDG_CACHE_HOME={shlex.quote(str(workspace_root / '.cache'))} "
             f"UV_CACHE_DIR={shlex.quote(str(workspace_root / '.uv-cache'))} "
             f"NPM_CONFIG_CACHE={shlex.quote(str(workspace_root / '.npm'))} "
@@ -242,11 +248,12 @@ class NativeSandboxExecutor:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             stdout_text = stdout.decode(errors="replace")
             stderr_text = stderr.decode(errors="replace")
-            if proc.returncode != 0:
+            returncode = proc.returncode or 0
+            if returncode != 0:
                 stderr_text = (stderr_text + "\n" if stderr_text else "") + (
-                    f"sandbox-exec exited with status {proc.returncode}"
+                    f"sandbox-exec exited with status {returncode}"
                 )
-            return stdout_text, stderr_text
+            return stdout_text, stderr_text, returncode
         except asyncio.TimeoutError:
             proc.kill()
             raise TimeoutError(f"Command timed out after {timeout}s")
@@ -265,11 +272,8 @@ class NativeSandboxExecutor:
                 cmd: Shell command (e.g. "uv pip install pandas", "node script.js", "npm install")
             """
             try:
-                stdout, stderr = await executor._run_sandboxed(cmd, thread_id=thread_id)
-                output = stdout
-                if stderr.strip():
-                    output += f"\n[stderr]\n{stderr}"
-                return output or "(command completed with no output)"
+                stdout, stderr, returncode = await executor._run_sandboxed(cmd, thread_id=thread_id)
+                return format_run_command_output(stdout, stderr, failed=returncode != 0)
             except TimeoutError as exc:
                 return f"[run_command error] {exc}"
             except Exception as exc:
@@ -295,11 +299,17 @@ class NativeSandboxExecutor:
                 coroutine=self.create_run_command_tool(thread_id),
                 name="run_command",
                 description=(
-                    "Run a shell command inside the native macOS sandbox and return its output. "
+                    "Run a shell command inside the native macOS sandbox and return stdout as a plain string "
+                    "(appends `\\n[stderr]\\n...` on failure) — not a dict. "
                     "The working directory is the sandbox workspace — use relative paths for all files "
-                    "(e.g. `node ./script.js`, `uv run ./script.py`). "
+                    "(e.g. `node ./script.js`, `python ./script.py`, or `uv run --no-project ./script.py`). "
                     "The sandbox virtual environment is pre-activated. "
-                    "Use uv only for Python packages (`uv pip install ...`); never `python -m ...` directly — use `uv run python -m ...`. "
+                    "Install with `uv pip install ...`. Verify with `python -c \"import pkg; print('ok')\"` "
+                    "or `uv pip show pkg` — not `python -m pip` or `pip show`. "
+                    "Run with `python ./script.py` first; retry with `uv run --no-project ...` if that fails. "
+                    "Write scripts with write_file before running them. "
+                    "For uploaded/session files use `./uploads/...` in shell commands (or `/workspace/...` — "
+                    "rewritten automatically); `read_file` accepts both. "
                     "Node commands: plain `node ...`; npm commands: plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`. "
                     "Skills are available at `./skills/<skill_name>/`."

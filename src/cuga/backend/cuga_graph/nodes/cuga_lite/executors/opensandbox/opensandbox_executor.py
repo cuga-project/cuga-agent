@@ -39,6 +39,12 @@ from langchain_core.tools import StructuredTool
 from loguru import logger
 
 from cuga.config import settings
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.run_output import (
+    format_run_command_output,
+)
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    normalize_shell_command_paths,
+)
 from ..base_executor import RemoteExecutor
 
 
@@ -188,9 +194,7 @@ class OpenSandboxExecutor(RemoteExecutor):
     async def _upload_skills_to_sandbox(self, interpreter: Any, cuga_folder: Optional[str] = None) -> None:
         """Upload discovered skill folders into /workspace/skills/ in the sandbox.
 
-        Mirrors ``cuga.backend.skills.loader.discover_skills`` precedence:
-        global legacy ``~/.config/cuga/skills`` → global ``~/.config/agents/skills`` →
-        project legacy ``.cuga/skills`` / ``.cuga/.skills`` → project ``.agents/skills``.
+        Uses the same single root as ``discover_skills`` (``settings.skills.root``).
         """
         from opensandbox.models import WriteEntry  # type: ignore[import]
         from cuga.backend.skills.loader import discover_skills
@@ -266,14 +270,14 @@ class OpenSandboxExecutor(RemoteExecutor):
                 from code_interpreter import SupportedLanguage  # type: ignore[import]
 
                 interpreter = await executor._get_or_create_interpreter(thread_id)
+                cmd = normalize_shell_command_paths(cmd)
                 sandbox_cmd = f"cd {VIRTUAL_WORKSPACE_ROOT} && source {VENV_PATH}/bin/activate && {cmd}"
                 result = await interpreter.codes.run(sandbox_cmd, language=SupportedLanguage.BASH)
                 stdout = "".join(line.text for line in result.logs.stdout)
                 stderr = "".join(line.text for line in result.logs.stderr)
-                output = stdout
-                if stderr.strip():
-                    output += f"\n[stderr]\n{stderr}"
-                return output or "(command completed with no output)"
+                exit_code = getattr(result, "exit_code", getattr(result, "return_code", None))
+                failed = bool(getattr(result, "error", None)) or (exit_code is not None and exit_code != 0)
+                return format_run_command_output(stdout, stderr, failed=failed)
             except Exception as exc:
                 return f"[run_command error] {exc}"
 
@@ -307,8 +311,11 @@ class OpenSandboxExecutor(RemoteExecutor):
                 description=(
                     "Run a shell command inside the sandbox and return its output. "
                     "Commands run from /workspace with the sandbox virtual environment activated. "
-                    "Use uv only for Python package installs and inspection (`uv pip install ...`, `uv pip list`, `uv pip show ...`). "
-                    "Never run `python -m ...` directly; use `uv run python -m ...`. Python scripts should run as `uv run /workspace/file.py`. "
+                    "Install with `uv pip install ...`. Verify with `python -c \"import pkg; print('ok')\"` "
+                    "or `uv pip show pkg` — not `python -m pip` or `pip show`. "
+                    "Run with `python ./script.py` first; retry with `uv run --no-project ...` if that fails. "
+                    "Uploaded files live under `./uploads/` (manifest `shell_path`); `/workspace/...` paths "
+                    "from `read_file`/`list_files` are rewritten for shell automatically. "
                     "Node commands must start with plain `node ...`; npm commands must start with plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`."
                 ),
