@@ -5,7 +5,7 @@ git-style edit diffs, JSON contracts); a ``FilesystemBackend`` supplies the
 raw storage primitives. Two backends:
 
 * ``HostWorkspaceBackend`` — host filesystem under ``<cwd>/cuga_workspace``
-  (per-thread or shared per ``settings.skills.enabled``). Serves the chat
+  (per-thread when ``thread_id`` is set). Serves the chat
   agent and the ``local`` / ``native`` sandbox modes.
 * ``RemoteSandboxBackend`` — a thin adapter over ``OpenSandboxExecutor``'s
   remote ``interpreter.sandbox.files.*`` API for the ``opensandbox`` mode.
@@ -67,7 +67,7 @@ class FilesystemBackend(ABC):
     async def download(self, sandbox_path: str, filename: Optional[str]) -> DownloadResult: ...
 
     @abstractmethod
-    async def upload(self, local_path: str, sandbox_path: str) -> UploadResult: ...
+    async def upload(self, local_path: Path | str, sandbox_path: str) -> UploadResult: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -176,10 +176,13 @@ class HostWorkspaceBackend(FilesystemBackend):
             dest.write_bytes(data)
         return DownloadResult(sandbox_path=sandbox_path, local_path=str(dest.resolve()), size_bytes=len(data))
 
-    async def upload(self, local_path: str, sandbox_path: str) -> UploadResult:
+    async def upload(self, local_path: Path | str, sandbox_path: str) -> UploadResult:
+        from .paths import assert_resolved_path_under
+
         p = Path(local_path)
         if not p.is_absolute():
             p = local_base_dir() / p
+        p = assert_resolved_path_under(p, local_base_dir())
         if not p.exists():
             raise FileNotFoundError(f"Local file not found: {p}")
         dest = self._resolve(sandbox_path, operation="upload_file")
@@ -291,19 +294,21 @@ class RemoteSandboxBackend(FilesystemBackend):
         logger.info(f"[RemoteSandboxBackend] Downloaded {sp} → {dest} ({len(data)} bytes)")
         return DownloadResult(sandbox_path=sp, local_path=str(dest), size_bytes=len(data))
 
-    async def upload(self, local_path: str, sandbox_path: str) -> UploadResult:
+    async def upload(self, local_path: Path | str, sandbox_path: str) -> UploadResult:
         from opensandbox.models import WriteEntry  # type: ignore[import]
 
-        p = Path(local_path)
-        if not p.is_absolute():
-            p = local_base_dir() / p
-        if not p.exists():
-            raise FileNotFoundError(f"Local file not found: {p}")
+        from .paths import local_base_dir, read_bytes_under
+
         sp = self._norm(sandbox_path)
+        base = local_base_dir()
+        try:
+            payload = read_bytes_under(Path(local_path), base)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Local file not found: {local_path}") from exc
         interp = await self._interp()
-        await interp.sandbox.files.write_files([WriteEntry(path=sp, data=p.read_bytes())])
-        logger.info(f"[RemoteSandboxBackend] Uploaded {p} → {sp}")
-        return UploadResult(local_path=str(p), sandbox_path=sp)
+        await interp.sandbox.files.write_files([WriteEntry(path=sp, data=payload)])
+        logger.info(f"[RemoteSandboxBackend] Uploaded {local_path} → {sp}")
+        return UploadResult(local_path=str(local_path), sandbox_path=sp)
 
 
 __all__ = [

@@ -7,6 +7,7 @@ import re
 import shutil
 import os
 import subprocess
+import tempfile
 import uuid
 import yaml
 import httpx
@@ -16,7 +17,7 @@ from typing import List, Dict, Any, Union, Optional
 from pathlib import Path
 import traceback
 from pydantic import BaseModel, ValidationError
-from fastapi import Depends, FastAPI, Request, HTTPException, Query
+from fastapi import Depends, FastAPI, Request, HTTPException, Query, File, UploadFile
 from fastapi.responses import FileResponse, StreamingResponse, JSONResponse, RedirectResponse, Response
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -62,6 +63,16 @@ from cuga.config import (
 )
 from cuga.backend.server import manage_routes
 from cuga.backend.server import secrets_routes
+from cuga.backend.server.workspace_upload import (
+    MAX_UPLOAD_BYTES,
+    delete_thread_uploads,
+    fetch_host_workspace_tree,
+    format_upload_context,
+    resolve_host_workspace_path,
+    sanitize_upload_filename,
+    upload_workspace_bytes,
+    validate_upload_content,
+)
 from cuga.backend.server.workspace_sandbox import (
     NATIVE_WORKSPACE_ROOT,
     SANDBOX_WORKSPACE_ROOT,
@@ -86,6 +97,30 @@ DEFAULT_USER_ID = "default_user"
 def _workspace_thread_id(request: Request, query_thread_id: Optional[str]) -> Optional[str]:
     tid = (query_thread_id or "").strip() or (request.headers.get("x-thread-id") or "").strip()
     return tid or None
+
+
+async def _assert_thread_access(thread_id: str, user_id: str) -> None:
+    """Reject access when thread_id is owned by a different user."""
+    conversation_db = get_conversation_db()
+    rows = await conversation_db.get_thread_history(thread_id)
+    for row in rows:
+        if row.user_id and row.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Access denied: thread belongs to another user")
+
+
+def _workspace_user_id(current_user: Optional[UserInfo]) -> str:
+    return current_user.sub if current_user else DEFAULT_USER_ID
+
+
+async def _require_workspace_thread_access(
+    request: Request,
+    thread_id: Optional[str],
+    current_user: Optional[UserInfo],
+) -> Optional[str]:
+    tid = _workspace_thread_id(request, thread_id)
+    if tid:
+        await _assert_thread_access(tid, _workspace_user_id(current_user))
+    return tid
 
 
 def _strip_redundant_cuga_workspace_prefix(user_path: str) -> str:
@@ -1391,6 +1426,8 @@ async def event_stream(
                 "filenames": _session_kb.filenames,
             }
 
+    _upload_ctx = format_upload_context(thread_id) if thread_id else None
+
     agent_loop_obj = AgentLoop(
         graph=run_agent.graph,
         langfuse_handler=langfuse_handler,
@@ -1404,6 +1441,7 @@ async def event_stream(
         enable_filesystem_tools=getattr(run_agent, "enable_filesystem_tools", None),
         current_llm=app_state.current_llm if agent is None else getattr(draft_app_state, "current_llm", None),
         knowledge_context=_knowledge_ctx or None,
+        upload_context=_upload_ctx,
         special_instructions=getattr(run_agent, "special_instructions", None),
     )
     logger.debug(f"Resume: {resume.model_dump_json() if resume else ''}")
@@ -2394,6 +2432,7 @@ async def delete_conversation(
 
         if success:
             await _delete_session_knowledge_for_thread(request.app.state.app_state, conversation_id)
+            await delete_thread_uploads(conversation_id)
             logger.info(f"Deleted conversation and stream events: {conversation_id}")
             return JSONResponse({"status": "success", "message": "Conversation deleted"})
         else:
@@ -3253,7 +3292,7 @@ async def get_workspace_tree(
 ):
     """Endpoint to retrieve the workspace folder tree."""
     try:
-        tid = _workspace_thread_id(request, thread_id)
+        tid = await _require_workspace_thread_access(request, thread_id, current_user)
         if workspace_tree_is_native_backed():
             tree = fetch_native_workspace_tree(tid)
             return JSONResponse({"tree": tree})
@@ -3264,45 +3303,12 @@ async def get_workspace_tree(
                 tree = await fetch_sandbox_workspace_tree(tid)
             except Exception as e:
                 logger.warning(f"Sandbox workspace tree failed: {e}")
-                raise HTTPException(status_code=503, detail="Sandbox workspace unavailable") from e
+                tree = fetch_host_workspace_tree(tid)
+                if not tree:
+                    raise HTTPException(status_code=503, detail="Sandbox workspace unavailable") from e
             return JSONResponse({"tree": tree})
 
-        workspace_path = Path(os.getcwd()) / "cuga_workspace"
-
-        if not workspace_path.exists():
-            workspace_path.mkdir(parents=True, exist_ok=True)
-            return JSONResponse({"tree": []})
-
-        def build_tree(path: Path, base_path: Path) -> dict:
-            """Recursively build file tree.
-
-            Paths must be relative to ``cuga_workspace`` (not include a ``cuga_workspace/``
-            prefix) so ``_resolve_path_under_cuga_workspace`` matches the file on disk.
-            """
-            relative_path = str(path.relative_to(base_path))
-
-            if path.is_file():
-                return {"name": path.name, "path": relative_path, "type": "file"}
-            else:
-                children = []
-                try:
-                    for item in sorted(path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
-                        if not item.name.startswith('.'):
-                            children.append(build_tree(item, base_path))
-                except PermissionError:
-                    pass
-
-                return {"name": path.name, "path": relative_path, "type": "directory", "children": children}
-
-        tree = []
-        visible = [
-            item
-            for item in sorted(workspace_path.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower()))
-            if not item.name.startswith('.')
-        ]
-        for item in visible:
-            tree.append(build_tree(item, workspace_path))
-
+        tree = fetch_host_workspace_tree(tid)
         return JSONResponse({"tree": tree})
     except HTTPException:
         raise
@@ -3320,7 +3326,7 @@ async def get_workspace_file(
 ):
     """Endpoint to retrieve a file's content from the workspace."""
     try:
-        tid = _workspace_thread_id(request, thread_id)
+        tid = await _require_workspace_thread_access(request, thread_id, current_user)
         if workspace_tree_is_native_backed():
             try:
                 loop = asyncio.get_event_loop()
@@ -3358,7 +3364,7 @@ async def get_workspace_file(
             return JSONResponse({"content": content, "path": str(path)})
 
         try:
-            file_path = _resolve_path_under_cuga_workspace(path)
+            file_path = resolve_host_workspace_path(path, tid)
         except ValueError:
             raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
 
@@ -3392,6 +3398,80 @@ async def get_workspace_file(
         raise HTTPException(status_code=500, detail=f"Failed to load file: {str(e)}")
 
 
+@app.post("/api/workspace/upload")
+async def upload_workspace_file(
+    request: Request,
+    file: UploadFile = File(...),
+    thread_id: Optional[str] = Query(None),
+    agent_id: str = Query("cuga-default"),
+    current_user: Optional[UserInfo] = Depends(require_chat_access),
+):
+    """Upload a file into the thread workspace under ``/workspace/uploads/``."""
+    try:
+        tid = _workspace_thread_id(request, thread_id)
+        if workspace_tree_is_sandbox_backed() and not tid:
+            raise HTTPException(status_code=400, detail="thread_id required for sandbox workspace")
+        if not tid:
+            raise HTTPException(status_code=400, detail="thread_id required for workspace upload")
+
+        user_id = _workspace_user_id(current_user)
+        await _assert_thread_access(tid, user_id)
+
+        try:
+            sanitize_upload_filename(file.filename or "upload.json")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        content_length = request.headers.get("content-length")
+        if content_length:
+            try:
+                if int(content_length) > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large (max {MAX_UPLOAD_BYTES} bytes)",
+                    )
+            except ValueError:
+                pass
+
+        total = 0
+        with tempfile.NamedTemporaryFile() as tmp:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                total += len(chunk)
+                if total > MAX_UPLOAD_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"File too large (max {MAX_UPLOAD_BYTES} bytes)",
+                    )
+                tmp.write(chunk)
+            tmp.flush()
+            tmp.seek(0)
+            content = tmp.read()
+
+        try:
+            validate_upload_content(content, file.filename or "upload.json")
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e)) from e
+
+        try:
+            result = await upload_workspace_bytes(tid, file.filename or "upload.json", content)
+        except ValueError as e:
+            msg = str(e)
+            if "too large" in msg.lower():
+                raise HTTPException(status_code=413, detail=msg) from e
+            raise HTTPException(status_code=400, detail=msg) from e
+
+        logger.info(f"Workspace upload: {result['path']} ({result['size_bytes']} bytes) thread={tid}")
+        return JSONResponse({"status": "success", **result})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to upload workspace file: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to upload file: {str(e)}")
+
+
 @app.get("/api/workspace/download")
 async def download_workspace_file(
     request: Request,
@@ -3401,7 +3481,7 @@ async def download_workspace_file(
 ):
     """Download a file from the workspace."""
     try:
-        tid = _workspace_thread_id(request, thread_id)
+        tid = await _require_workspace_thread_access(request, thread_id, current_user)
         if workspace_tree_is_native_backed():
             try:
                 loop = asyncio.get_event_loop()
@@ -3445,7 +3525,7 @@ async def download_workspace_file(
             )
 
         try:
-            file_path = _resolve_path_under_cuga_workspace(path)
+            file_path = resolve_host_workspace_path(path, tid)
         except ValueError:
             raise HTTPException(status_code=403, detail="Access denied: Path outside workspace")
 

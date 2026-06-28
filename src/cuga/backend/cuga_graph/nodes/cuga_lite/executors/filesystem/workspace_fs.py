@@ -19,6 +19,8 @@ are deliberately NOT returned by :meth:`as_structured_tools` — they are host
 from __future__ import annotations
 
 import re
+import textwrap
+from pathlib import PurePosixPath
 from typing import Any, Callable, List, Optional
 
 from langchain_core.tools import StructuredTool
@@ -85,6 +87,78 @@ def _apply_file_edits(content: str, edits: List[dict], path: str, dry_run: bool)
     return content, f"{status}\n\n" + "\n".join(diff_lines)
 
 
+def _is_python_script_path(path: str) -> bool:
+    return PurePosixPath(path.replace("\\", "/")).suffix.lower() == ".py"
+
+
+def _line_indent(line: str) -> int:
+    return len(line) - len(line.lstrip(" \t"))
+
+
+def _strip_block_indent(lines: list[str], block: int) -> list[str]:
+    out: list[str] = []
+    for line in lines:
+        if _line_indent(line) >= block and line[:block].isspace():
+            out.append(line[block:])
+        else:
+            out.append(line)
+    return out
+
+
+def _python_compiles(content: str) -> bool:
+    try:
+        compile(content, "<script>", "exec")
+    except SyntaxError:
+        return False
+    return True
+
+
+def _peel_agent_block_indent(content: str) -> str:
+    """Strip one block-indent level when imports are at column 0 and the body is indented."""
+    lines = content.splitlines()
+    non_blank = [(i, _line_indent(ln)) for i, ln in enumerate(lines) if ln.strip()]
+    if not non_blank or non_blank[0][1] != 0:
+        return content
+    later_indents = [ind for _, ind in non_blank[1:] if ind > 0]
+    if not later_indents:
+        return content
+    block = min(later_indents)
+    suffix = "\n" if content.endswith("\n") else ""
+    return "\n".join(_strip_block_indent(lines, block)) + suffix
+
+
+def _normalize_python_script_content(content: str) -> str:
+    """Strip block-indent agents add inside triple-quoted script strings.
+
+    ``textwrap.dedent`` handles the all-lines-indented case. Agents often put
+    imports at column 0 and indent the rest one block level; peel that
+    structurally so real syntax errors surface at the correct line.
+    """
+    content = textwrap.dedent(content).lstrip("\n")
+    if _python_compiles(content):
+        return content
+    return _peel_agent_block_indent(content)
+
+
+def _validate_python_script(content: str, path: str) -> str | None:
+    """Return an error message when *content* is not valid Python, else None."""
+    try:
+        compile(content, path, "exec")
+    except SyntaxError as exc:
+        line_no = exc.lineno or "?"
+        msg = f"Python syntax error at line {line_no}: {exc.msg}"
+        lines = content.splitlines()
+        if isinstance(line_no, int) and 1 <= line_no <= len(lines):
+            msg += f"\n  >>> {lines[line_no - 1].rstrip()}"
+        if "unexpected indent" in (exc.msg or "").lower():
+            msg += (
+                " When building script strings in a code block, do not indent lines inside "
+                '"""...""" — top-level statements must start at column 0.'
+            )
+        return msg
+    return None
+
+
 class WorkspaceFilesystem:
     """LLM-facing filesystem operations over a pluggable backend."""
 
@@ -109,6 +183,11 @@ class WorkspaceFilesystem:
 
     async def write_file(self, path: str, content: str) -> str:
         try:
+            if _is_python_script_path(path):
+                content = _normalize_python_script_content(content)
+                py_err = _validate_python_script(content, path)
+                if py_err:
+                    return f"[write_file error] {py_err}. Rewrite and retry."
             display = await self.backend.write_text(path, content, operation="write_file")
             return f"File written: {display} ({len(content)} chars)"
         except Exception as exc:
@@ -198,7 +277,9 @@ class WorkspaceFilesystem:
                 description=(
                     "Write text content into a file in the workspace. Use relative paths "
                     "(e.g. `./script.js`). Overwrites existing files; parent directories "
-                    "are created automatically."
+                    "are created automatically. For `.py` scripts, content is syntax-checked "
+                    "before write — top-level lines must start at column 0 (no leading indent "
+                    "from triple-quoted strings in your code block)."
                 ),
             ),
             StructuredTool.from_function(

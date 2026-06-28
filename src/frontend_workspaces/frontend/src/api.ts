@@ -305,9 +305,12 @@ export async function deleteConversation(threadId: string): Promise<Response> {
   });
 }
 
-export async function getWorkspaceTree(threadId?: string): Promise<Response> {
-  const q = threadId ? `?thread_id=${encodeURIComponent(threadId)}` : "";
-  return apiFetch(`/api/workspace/tree${q}`);
+export async function getWorkspaceTree(threadId?: string, forceRefresh = false): Promise<Response> {
+  const params = new URLSearchParams();
+  if (threadId) params.set("thread_id", threadId);
+  if (forceRefresh) params.set("_", String(Date.now()));
+  const q = params.toString();
+  return apiFetch(`/api/workspace/tree${q ? `?${q}` : ""}`);
 }
 
 export async function getWorkspaceFile(path: string, threadId?: string): Promise<Response> {
@@ -320,6 +323,17 @@ export async function getWorkspaceDownload(path: string, threadId?: string): Pro
   const params = new URLSearchParams({ path });
   if (threadId) params.set("thread_id", threadId);
   return apiFetch(`/api/workspace/download?${params.toString()}`);
+}
+
+export async function uploadWorkspaceFile(file: File, threadId: string): Promise<Response> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const params = new URLSearchParams({ thread_id: threadId });
+  return apiFetch(`/api/workspace/upload?${params.toString()}`, {
+    method: "POST",
+    headers: { "X-Thread-ID": threadId },
+    body: formData,
+  });
 }
 
 export async function getAgents(): Promise<Response> {

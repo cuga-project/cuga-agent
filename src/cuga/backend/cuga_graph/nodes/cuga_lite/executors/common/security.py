@@ -3,7 +3,7 @@ import re
 from typing import List, Set, Tuple
 from loguru import logger
 
-from .benchmark_mode import is_benchmark_mode
+from .benchmark_mode import is_relaxed_execution
 
 
 class SecurityValidator:
@@ -106,7 +106,7 @@ class SecurityValidator:
         Raises:
             ImportError: If dangerous or disallowed imports are found
         """
-        if is_benchmark_mode():
+        if is_relaxed_execution():
             return
 
         try:
@@ -152,7 +152,7 @@ class SecurityValidator:
         Raises:
             PermissionError: If dangerous modules are detected
         """
-        if is_benchmark_mode():
+        if is_relaxed_execution():
             return
 
         for dangerous_module in ['os', 'sys', 'subprocess', 'pathlib', 'shutil']:
@@ -176,7 +176,7 @@ class SecurityValidator:
         Raises:
             PermissionError: If dangerous modules or suspicious patterns are detected
         """
-        if is_benchmark_mode():
+        if is_relaxed_execution():
             return
 
         SecurityValidator.validate_dangerous_modules(wrapped_code)
@@ -204,7 +204,7 @@ class SecurityValidator:
         Returns:
             Filtered dictionary with dangerous modules removed, or original dict if benchmark mode
         """
-        if is_benchmark_mode():
+        if is_relaxed_execution():
             return locals_dict
 
         return {k: v for k, v in locals_dict.items() if k not in SecurityValidator.DANGEROUS_MODULE_NAMES}
@@ -219,7 +219,7 @@ class SecurityValidator:
         Raises:
             AssertionError: If dangerous modules are found
         """
-        if is_benchmark_mode():
+        if is_relaxed_execution():
             return
 
         assert 'os' not in restricted_globals, "Security violation: os module in restricted_globals!"
@@ -237,7 +237,7 @@ class SecurityValidator:
         Raises:
             ValueError: If code doesn't use any context variables
         """
-        if is_benchmark_mode():
+        if is_relaxed_execution():
             return
         if not context_locals:
             return

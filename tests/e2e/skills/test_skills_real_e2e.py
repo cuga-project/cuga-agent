@@ -59,7 +59,7 @@ def _fetch_skill_md(skill_path: str) -> str:
 
 def _install_skill(tmp_path: Path, dir_name: str, content: str) -> None:
     """Write a SKILL.md to the skills directory under tmp_path."""
-    skill_dir = tmp_path / ".agents" / "skills" / dir_name
+    skill_dir = tmp_path / ".cuga" / "skills" / dir_name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(content, encoding="utf-8")
 

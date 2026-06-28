@@ -12,12 +12,12 @@ export function useWorkspaceTree(pollInterval: number = 15000) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const loadWorkspaceTree = useCallback(async () => {
+  const loadWorkspaceTree = useCallback(async (forceRefresh = false) => {
     try {
       setLoading(true);
       setError(null);
       const { workspaceService } = await import('./workspaceService');
-      const data = await workspaceService.getWorkspaceTree();
+      const data = await workspaceService.getWorkspaceTree(forceRefresh);
       setFileTree(data.tree || []);
     } catch (err) {
       console.error("Error loading workspace:", err);
@@ -41,6 +41,6 @@ export function useWorkspaceTree(pollInterval: number = 15000) {
     fileTree,
     loading,
     error,
-    refresh: loadWorkspaceTree
+    refresh: () => loadWorkspaceTree(true),
   };
 }

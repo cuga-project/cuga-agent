@@ -281,6 +281,7 @@ class AgentLoop:
         enable_filesystem_tools: Optional[bool] = None,
         current_llm: Optional[Any] = None,
         knowledge_context: Optional[dict[str, Any]] = None,
+        upload_context: Optional[str] = None,
         special_instructions: Optional[str] = None,
     ):
         self.env_pointer = env_pointer
@@ -297,6 +298,7 @@ class AgentLoop:
         self.enable_filesystem_tools = enable_filesystem_tools
         self.current_llm = current_llm
         self.knowledge_context = knowledge_context
+        self.upload_context = upload_context
         self.special_instructions = special_instructions
 
     async def stream_event(self, event: StreamEvent) -> Generator[str, None, None]:
@@ -515,6 +517,8 @@ class AgentLoop:
                 config["configurable"]["agent_knowledge"] = self.knowledge_context["agent_knowledge"]
             if "session_knowledge" in self.knowledge_context:
                 config["configurable"]["session_knowledge"] = self.knowledge_context["session_knowledge"]
+        if self.upload_context:
+            config["configurable"]["upload_context"] = self.upload_context
 
         return self.graph.astream(
             state if state else Command(resume=resume.model_dump()) if not both_none else None,

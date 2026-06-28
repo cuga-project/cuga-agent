@@ -1,7 +1,7 @@
 from pathlib import Path
 from unittest.mock import patch
 
-from cuga.backend.skills.loader import discover_skills, get_skill_search_roots
+from cuga.backend.skills.loader import discover_skills, get_skill_root
 from cuga.backend.skills.registry import SkillEntry, SkillRegistry
 
 
@@ -15,36 +15,34 @@ def _write_skill(root: Path, name: str, description: str, body: str = "Body", re
     )
 
 
-def test_skill_search_roots_prioritize_agents_paths_with_legacy_fallbacks(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_get_skill_root_defaults_to_cuga(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
 
-    roots = get_skill_search_roots(
+    root = get_skill_root(
         ".cuga",
         global_skills_root=str(tmp_path / "global_agents"),
         legacy_global_skills_root=str(tmp_path / "global_cuga"),
     )
 
-    assert roots == [
-        tmp_path / "global_cuga",
-        tmp_path / "global_agents",
-        tmp_path / ".cuga" / "skills",
-        tmp_path / ".cuga" / ".skills",
-        tmp_path / ".agents" / "skills",
-    ]
+    assert root == tmp_path / ".cuga" / "skills"
 
 
-def test_discover_skills_agents_paths_override_legacy_fallbacks_and_preserve_requirements(
-    tmp_path: Path, monkeypatch
-) -> None:
+def test_get_skill_root_agents_preset(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+
+    root = get_skill_root(".cuga", root="agents")
+
+    assert root == tmp_path / ".agents" / "skills"
+
+
+def test_discover_skills_uses_single_root_only(tmp_path: Path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     global_cuga = tmp_path / "global_cuga"
     global_agents = tmp_path / "global_agents"
 
     _write_skill(global_cuga, "shared", "legacy global")
     _write_skill(global_agents, "shared", "agents global")
-    _write_skill(tmp_path / ".cuga" / "skills", "shared", "legacy local")
+    _write_skill(tmp_path / ".cuga" / "skills", "shared", "cuga local")
     _write_skill(
         tmp_path / ".agents" / "skills",
         "shared",
@@ -60,19 +58,35 @@ def test_discover_skills_agents_paths_override_legacy_fallbacks_and_preserve_req
     )
     by_name = {entry.name: entry for entry in entries}
 
-    assert by_name["shared"].description == "agents local"
-    assert by_name["shared"].requirements == ("python-pptx", "npm:sharp")
-    assert by_name["global_only"].description == "only global agents"
+    assert set(by_name) == {"shared"}
+    assert by_name["shared"].description == "cuga local"
 
 
-def test_skill_registry_load_skill_emits_install_steps_for_requirements() -> None:
+def test_discover_skills_agents_root_reads_agents_directory_only(tmp_path: Path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    _write_skill(tmp_path / ".cuga" / "skills", "cuga_only", "cuga local")
+    _write_skill(
+        tmp_path / ".agents" / "skills",
+        "agents_only",
+        "agents local",
+        requirements="[python-pptx, npm:sharp]",
+    )
+
+    entries = discover_skills(".cuga", root="agents")
+    by_name = {entry.name: entry for entry in entries}
+
+    assert set(by_name) == {"agents_only"}
+    assert by_name["agents_only"].requirements == ("python-pptx", "npm:sharp")
+
+
+def test_skill_registry_load_skill_includes_install_normalization_guidance() -> None:
     registry = SkillRegistry(
         [
             SkillEntry(
                 name="deck",
                 description="Deck skill",
-                body="Make slides.",
-                source="/tmp/SKILL.md",
+                body="## Dependencies\n\nuv pip install python-pptx",
+                source="/skills/deck/SKILL.md",
                 requirements=("python-pptx", "npm:sharp"),
             )
         ]
@@ -80,13 +94,38 @@ def test_skill_registry_load_skill_emits_install_steps_for_requirements() -> Non
 
     loaded = registry.load_skill("deck")
 
-    assert "await run_command('uv pip install --quiet python-pptx')" in loaded
-    assert "await run_command('npm install sharp')" in loaded
-    assert "STEP 2 — SKILL INSTRUCTIONS" in loaded
-    assert "`python -m <module> ...` → `uv run python -m <module> ...`" in loaded
-    assert "`pip list` / `pip show` / `pip freeze` → `uv pip list`" in loaded
-    assert "must never be rewritten as `uv npm`" in loaded
-    assert "Do not use `uv npm`, `uv run node`, or `uv run npm`" in loaded
+    assert "await run_command('uv pip install" not in loaded
+    assert "uv pip install python-pptx" in loaded
+    assert "STEP 1 — SKILL INSTRUCTIONS" in loaded
+    assert "STEP 2 — SKILL INSTRUCTIONS" not in loaded
+    assert "follow that skill's own structure" in loaded
+    assert "uv pip install" in loaded
+    assert "python -c" in loaded
+    assert "python -m pip" in loaded
+    assert "retry once with" in loaded
+    assert "Never use bare `uv run`" in loaded
+    assert "Do NOT list or explore" in loaded
+    assert "never `uv npm`" in loaded.lower() or "never `uv npm` or `uv run node`" in loaded
+
+
+def test_skill_registry_load_skill_without_requirements_skips_install_step() -> None:
+    registry = SkillRegistry(
+        [
+            SkillEntry(
+                name="analysis",
+                description="Analysis skill",
+                body="Analyze uploads.",
+                source="/skills/deck/SKILL.md",
+            )
+        ]
+    )
+
+    loaded = registry.load_skill("analysis")
+
+    assert "INSTALL REQUIREMENTS" not in loaded
+    assert "STEP 1 — SKILL INSTRUCTIONS" in loaded
+    assert "STEP 2 — SKILL INSTRUCTIONS" not in loaded
+    assert "Analyze uploads." in loaded
 
 
 # ---------------------------------------------------------------------------
@@ -95,8 +134,8 @@ def test_skill_registry_load_skill_emits_install_steps_for_requirements() -> Non
 
 
 def _write_agents_skill(root: Path, name: str, description: str = "desc", body: str = "Body") -> None:
-    """Write a SKILL.md under root/.agents/skills/<name>/SKILL.md (the standard discovery path)."""
-    skill_dir = root / ".agents" / "skills" / name
+    """Write a SKILL.md under root/.cuga/skills/<name>/SKILL.md (default discovery path)."""
+    skill_dir = root / ".cuga" / "skills" / name
     skill_dir.mkdir(parents=True, exist_ok=True)
     (skill_dir / "SKILL.md").write_text(
         f"---\nname: {name}\ndescription: {description}\n---\n{body}\n",
