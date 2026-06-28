@@ -2274,15 +2274,14 @@ export function ManagePage() {
                           : "Disconnected"}
                       </span>
                     </div>
-                    {(knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
-                      <InlineNotification
-                        kind="warning"
-                        title="Re-index recommended"
-                        subtitle="Settings changed. Existing documents may use outdated embeddings."
-                        lowContrast
-                        hideCloseButton
-                      />
-                    )}
+                    {/* The "Re-index recommended" InlineNotification used to
+                        live here as a call-to-action to open the modal. It's
+                        gone now because (a) the Live pill above already
+                        signals divergence via its dot color + tooltip, and
+                        (b) the modal itself shows the actionable "Update
+                        existing documents" notification when the user opens
+                        it. Duplicating the warning on the agent card was the
+                        most-cited noise source in the pre-client review. */}
                     <Button
                       kind="secondary"
                       size="sm"
@@ -2396,50 +2395,51 @@ export function ManagePage() {
                           important UX addition — without it, no surface
                           answers "what is actually running?" without log-reading. */}
                       {!loadError && liveKnowledge && (() => {
-                        // Dot turns yellow when draft differs from Live on the
-                        // fields that actually require a republish (embedder).
-                        // Local comparison — no server-side hash needed.
-                        const diverged =
-                          (!!knowledgeConfig.embedding_model &&
-                            knowledgeConfig.embedding_model !== liveKnowledge.model) ||
-                          knowledgeConfig.embedding_provider !== liveKnowledge.provider;
-                        const tooltipLabel = diverged
-                          ? `Draft differs from Live (now ${knowledgeConfig.embedding_provider} · ${knowledgeConfig.embedding_model || "(default)"}). Click Publish to apply.`
-                          : `Live config matches your draft.`;
+                        // "Diverged" means a Publish would change what's
+                        // actually serving traffic. Reuses the same equivalence
+                        // helper the Re-index banner uses, so both signals
+                        // agree on what counts as a meaningful change. Avoids
+                        // duplicating the empty-model-as-default rule.
+                        const diverged = !isIndexConfigEquivalent(knowledgeConfig, {
+                          ...DEFAULT_KNOWLEDGE_CONFIG,
+                          embedding_provider: liveKnowledge.provider,
+                          embedding_model: liveKnowledge.model,
+                          chunk_size: knowledgeConfig.chunk_size,
+                          chunk_overlap: knowledgeConfig.chunk_overlap,
+                          metric_type: knowledgeConfig.metric_type,
+                        });
+                        const label = (
+                          <>
+                            Live: {liveKnowledge.provider} · {liveKnowledge.model}
+                            {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
+                          </>
+                        );
+                        // In-sync: plain Carbon Tag, green. No tooltip — the
+                        // label is self-explanatory. Diverged: warm-gray Tag
+                        // wrapped in Tooltip with the actionable hint. Tooltip
+                        // child must be a single focusable element; a Tag with
+                        // tabIndex satisfies that without inventing a button
+                        // wrapper to mimic plain text.
+                        if (!diverged) {
+                          return (
+                            <Tag type="green" size="sm" className="manage-save-bar-version">
+                              {label}
+                            </Tag>
+                          );
+                        }
                         return (
-                          <Tooltip label={tooltipLabel} align="bottom">
+                          <Tooltip
+                            label={`Draft differs from Live (now ${knowledgeConfig.embedding_provider} · ${knowledgeConfig.embedding_model || "(default)"}). Click Publish to apply.`}
+                            align="bottom"
+                          >
                             <button
                               type="button"
-                              style={{
-                                background: "none",
-                                border: "none",
-                                padding: 0,
-                                cursor: diverged ? "help" : "default",
-                                display: "inline-flex",
-                                alignItems: "center",
-                                gap: 6,
-                                font: "inherit",
-                                color: "inherit",
-                              }}
+                              style={{ background: "none", border: "none", padding: 0, cursor: "help" }}
                               className="manage-save-bar-version"
-                              aria-label={tooltipLabel}
                             >
-                              <span
-                                aria-hidden="true"
-                                style={{
-                                  display: "inline-block",
-                                  width: 8,
-                                  height: 8,
-                                  borderRadius: "50%",
-                                  background: diverged
-                                    ? "var(--cds-support-warning)"
-                                    : "var(--cds-support-success)",
-                                }}
-                              />
-                              <span>
-                                Live: {liveKnowledge.provider} · {liveKnowledge.model}
-                                {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
-                              </span>
+                              <Tag type="warm-gray" size="sm">
+                                {label}
+                              </Tag>
                             </button>
                           </Tooltip>
                         );

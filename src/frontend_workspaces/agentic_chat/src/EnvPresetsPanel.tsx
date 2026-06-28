@@ -1,6 +1,6 @@
 import React from "react";
 import { ContainedList, ContainedListItem, Tag, Tooltip, Button, Link } from "@carbon/react";
-import { Information } from "@carbon/icons-react";
+import { Information, Checkmark } from "@carbon/icons-react";
 
 export interface EnvPreset {
   id: string;
@@ -219,8 +219,12 @@ export function EnvPresetsPanel({
 
           let actionSlot: React.ReactNode;
           if (active) {
+            // green + Checkmark per the Carbon-designer review: success
+            // semantics over neutral-blue, matches the rest of the app's
+            // "this is the current state" tag color (Saved pill is also
+            // green + Checkmark — consistent vocabulary).
             actionSlot = (
-              <Tag type="blue" size="sm">
+              <Tag type="green" size="sm" renderIcon={Checkmark}>
                 Active
               </Tag>
             );
@@ -253,7 +257,13 @@ export function EnvPresetsPanel({
               renderIcon={() => <Monogram id={preset.id} />}
               action={
                 <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  <Tag type={category === "Enterprise" ? "purple" : "outline"} size="sm">
+                  {/* Outline for both Cloud + Enterprise — the category
+                      text earns its place (signals deployment context),
+                      but coloring it purple-vs-outline was category soup
+                      that fought the action-color vocabulary (green/red
+                      = state, blue = primary action). Single outline keeps
+                      the info without competing for attention. */}
+                  <Tag type="outline" size="sm">
                     {category}
                   </Tag>
                   {actionSlot}

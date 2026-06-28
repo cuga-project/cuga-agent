@@ -2462,7 +2462,38 @@ export default function KnowledgePanel({
                           {ragProfiles && Object.keys(ragProfiles).length > 0 && (
                             <Stack gap={3}>
                               <Stack gap={1}>
-                                <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>Retrieval Profile</h4>
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                                  <h4 style={{ margin: 0, fontSize: "0.875rem", fontWeight: 600 }}>Retrieval Profile</h4>
+                                  {/* Save-status pill at the surface the user is
+                                      actually editing. The previous location
+                                      (inside the Advanced accordion, next to
+                                      Test connection) was invisible during the
+                                      most common edit path (clicking profile
+                                      tiles). Reviewer's "second pill" call.
+                                      ``recentlySaved`` keeps "Saved" up only
+                                      for 3s so it doesn't become a permanent
+                                      sticker. */}
+                                  {saveState === "saving" && (
+                                    <Tag type="gray" size="sm" renderIcon={Renew}>
+                                      Saving…
+                                    </Tag>
+                                  )}
+                                  {saveState === "saving-slow" && (
+                                    <Tag type="gray" size="sm" renderIcon={Renew}>
+                                      Still saving
+                                    </Tag>
+                                  )}
+                                  {saveState === "saved" && recentlySaved && (
+                                    <Tag type="green" size="sm" renderIcon={Checkmark}>
+                                      Saved
+                                    </Tag>
+                                  )}
+                                  {saveState === "failed" && (
+                                    <Tag type="red" size="sm" renderIcon={ErrorFilled}>
+                                      Couldn&apos;t save
+                                    </Tag>
+                                  )}
+                                </span>
                                 <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: 0 }}>
                                   Balance retrieval accuracy against response speed and cost.
                                 </p>
