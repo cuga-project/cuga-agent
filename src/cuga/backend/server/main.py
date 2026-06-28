@@ -88,6 +88,11 @@ from cuga.backend.server.workspace_sandbox import (
 from cuga.backend.server.auth import require_auth, require_chat_access, require_manage_access
 from cuga.backend.server.auth.dependencies import _auth_enabled, _authorization_enabled
 from cuga.backend.server.auth.models import TokenResponse, UserInfo
+from cuga.backend.server.tool_guard_generation import (
+    build_tool_guard_generation_agent,
+    generate_tool_guards_for_policy,
+)
+from cuga.backend.cuga_graph.policy.models import ToolGuide
 from cuga.backend.server.conversation_history import get_conversation_db
 
 # Default user ID for conversation history
@@ -2467,6 +2472,104 @@ async def save_memory_config(
         raise HTTPException(status_code=500, detail=f"Failed to save memory config: {str(e)}")
 
 
+def _policy_to_frontend_dict(policy_dict: dict) -> dict:
+    """Map a Policy.model_dump() to the frontend representation."""
+    frontend_policy: dict = {
+        "id": policy_dict["id"],
+        "name": policy_dict["name"],
+        "description": policy_dict["description"],
+        "policy_type": policy_dict["type"],
+        "enabled": policy_dict.get("enabled", True),
+        "triggers": policy_dict.get("triggers", []),
+        "priority": policy_dict.get("priority", 50),
+    }
+    policy_type = policy_dict["type"]
+    if policy_type == "intent_guard":
+        frontend_policy["intent_examples"] = policy_dict.get("intent_examples", [])
+        frontend_policy["response"] = policy_dict.get("response", {})
+        frontend_policy["allow_override"] = policy_dict.get("allow_override", False)
+    elif policy_type == "playbook":
+        frontend_policy["markdown_content"] = policy_dict.get("markdown_content", "")
+        frontend_policy["steps"] = policy_dict.get("steps", [])
+        frontend_policy["inject_as_system_prompt"] = policy_dict.get("inject_as_system_prompt", True)
+    elif policy_type == "tool_guide":
+        frontend_policy["target_tools"] = policy_dict.get("target_tools", [])
+        frontend_policy["target_apps"] = policy_dict.get("target_apps")
+        frontend_policy["guide_content"] = policy_dict.get("guide_content", "")
+        frontend_policy["tool_guards"] = policy_dict.get("tool_guards")
+        frontend_policy["prepend"] = policy_dict.get("prepend", False)
+    elif policy_type == "tool_approval":
+        frontend_policy["required_tools"] = policy_dict.get("required_tools", [])
+        frontend_policy["required_apps"] = policy_dict.get("required_apps")
+        frontend_policy["approval_message"] = policy_dict.get("approval_message")
+        frontend_policy["show_code_preview"] = policy_dict.get("show_code_preview", True)
+        frontend_policy["auto_approve_after"] = policy_dict.get("auto_approve_after")
+    elif policy_type == "output_formatter":
+        frontend_policy["format_type"] = policy_dict.get("format_type", "markdown")
+        frontend_policy["format_config"] = policy_dict.get("format_config", "")
+    return frontend_policy
+
+
+_TOOL_GUARD_SYNC_ERROR_MESSAGES = {
+    "missing_policies_section": "Configuration store is missing policies",
+    "policy_not_in_config": "Policy not found in configuration store",
+    "stale_config_version": "Configuration was updated concurrently; refresh and retry",
+    "no_published_version": "No published configuration version available",
+    "unexpected": "Failed to sync policy to configuration store",
+}
+
+
+async def _sync_policy_to_config_store(
+    *,
+    policy_id: str,
+    updated_policy,
+    use_draft: bool,
+    agent_id: str = "cuga-default",
+) -> tuple[bool, str | None]:
+    from cuga.backend.server.config_store import (
+        load_config,
+        load_draft,
+        save_draft,
+        update_published_config_at_version,
+    )
+
+    if use_draft:
+        config = await load_draft(agent_id)
+        config_version = None
+    else:
+        config, config_version = await load_config(None, agent_id)
+
+    policies_section = (config or {}).get("policies")
+    if not policies_section or "policies" not in policies_section:
+        logger.warning("Tool guard sync skipped: config store missing policies section")
+        return False, "missing_policies_section"
+
+    policy_list = policies_section["policies"]
+    policy_index = next((i for i, p in enumerate(policy_list) if p.get("id") == policy_id), None)
+    if policy_index is None:
+        logger.warning("Tool guard sync failed: policy %s not found in config store", policy_id)
+        return False, "policy_not_in_config"
+
+    policy_list[policy_index] = _policy_to_frontend_dict(updated_policy.model_dump())
+
+    if use_draft:
+        await save_draft(config, agent_id)
+    elif config_version is not None:
+        if not await update_published_config_at_version(config, agent_id, config_version):
+            logger.warning(
+                "Tool guard sync failed: stale config version %s for policy %s",
+                config_version,
+                policy_id,
+            )
+            return False, "stale_config_version"
+    else:
+        logger.warning("Tool guard sync failed: no published config version for policy %s", policy_id)
+        return False, "no_published_version"
+
+    logger.info("Synced updated policy %s to config_store (draft=%s)", policy_id, use_draft)
+    return True, None
+
+
 @app.get("/api/config/policies")
 async def get_policies_config(
     request: Request,
@@ -2512,45 +2615,7 @@ async def get_policies_config(
         policies_objs = await storage.list_policies(enabled_only=False)
 
         # Convert Policy objects to frontend format
-        policies = []
-        for policy_obj in policies_objs:
-            policy_dict = policy_obj.model_dump()
-            # Map backend field names to frontend expectations
-            frontend_policy = {
-                "id": policy_dict["id"],
-                "name": policy_dict["name"],
-                "description": policy_dict["description"],
-                "policy_type": policy_dict["type"],
-                "enabled": policy_dict.get("enabled", True),
-                "triggers": policy_dict.get("triggers", []),
-                "priority": policy_dict.get("priority", 50),
-            }
-
-            # Add type-specific fields
-            if policy_dict["type"] == "intent_guard":
-                frontend_policy["intent_examples"] = policy_dict.get("intent_examples", [])
-                frontend_policy["response"] = policy_dict.get("response", {})
-                frontend_policy["allow_override"] = policy_dict.get("allow_override", False)
-            elif policy_dict["type"] == "playbook":
-                frontend_policy["markdown_content"] = policy_dict.get("markdown_content", "")
-                frontend_policy["steps"] = policy_dict.get("steps", [])
-                frontend_policy["inject_as_system_prompt"] = policy_dict.get("inject_as_system_prompt", True)
-            elif policy_dict["type"] == "tool_guide":
-                frontend_policy["target_tools"] = policy_dict.get("target_tools", [])
-                frontend_policy["target_apps"] = policy_dict.get("target_apps")
-                frontend_policy["guide_content"] = policy_dict.get("guide_content", "")
-                frontend_policy["prepend"] = policy_dict.get("prepend", False)
-            elif policy_dict["type"] == "tool_approval":
-                frontend_policy["required_tools"] = policy_dict.get("required_tools", [])
-                frontend_policy["required_apps"] = policy_dict.get("required_apps")
-                frontend_policy["approval_message"] = policy_dict.get("approval_message")
-                frontend_policy["show_code_preview"] = policy_dict.get("show_code_preview", True)
-                frontend_policy["auto_approve_after"] = policy_dict.get("auto_approve_after")
-            elif policy_dict["type"] == "output_formatter":
-                frontend_policy["format_type"] = policy_dict.get("format_type", "markdown")
-                frontend_policy["format_config"] = policy_dict.get("format_config", "")
-
-            policies.append(frontend_policy)
+        policies = [_policy_to_frontend_dict(p.model_dump()) for p in policies_objs]
 
         if need_disconnect:
             await storage.disconnect()
@@ -2687,6 +2752,127 @@ async def save_policies_config(
             },
             status_code=500,
         )
+
+
+@app.post("/api/config/policies/{policy_id}/tool-guards/generate")
+async def generate_tool_guard_for_policy(
+    policy_id: str,
+    request: Request,
+    current_user: Optional[UserInfo] = Depends(require_auth),
+):
+    """Generate and persist ToolGuards for a saved Tool Guide policy."""
+    if not settings.policy.enabled:
+        return JSONResponse(
+            {"status": "error", "message": "Policy system is disabled in settings"},
+            status_code=403,
+        )
+
+    use_draft = str(request.headers.get("X-Use-Draft", "") or "").lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    state = draft_app_state if use_draft else app_state
+    policy_system = getattr(state, "policy_system", None)
+    runtime_agent = getattr(state, "agent", None)
+
+    if policy_system is None or getattr(policy_system, "storage", None) is None:
+        return JSONResponse(
+            {"status": "error", "message": "Policy system is not initialized"},
+            status_code=503,
+        )
+
+    existing_policy = await policy_system.storage.get_policy(policy_id)
+    if existing_policy is None:
+        return JSONResponse(
+            {"status": "error", "message": f"Policy '{policy_id}' was not found"},
+            status_code=404,
+        )
+    if not isinstance(existing_policy, ToolGuide):
+        return JSONResponse(
+            {"status": "error", "message": f"Policy '{policy_id}' is not a Tool Guide policy"},
+            status_code=400,
+        )
+    if not existing_policy.enabled:
+        return JSONResponse(
+            {"status": "error", "message": f"Policy '{policy_id}' is disabled"},
+            status_code=400,
+        )
+    target_tools = list(existing_policy.target_tools or [])
+    if not target_tools or target_tools == ["*"] or "*" in target_tools:
+        return JSONResponse(
+            {"status": "error", "message": "Select specific target tools to generate a guard"},
+            status_code=400,
+        )
+    if runtime_agent is None or getattr(runtime_agent, "tool_provider", None) is None:
+        return JSONResponse(
+            {"status": "error", "message": "Tool provider is not initialized"},
+            status_code=503,
+        )
+
+    try:
+        _model = None
+        _llm_config = getattr(runtime_agent, "llm_config", None)
+        if _llm_config:
+            try:
+                from cuga.backend.llm.models import create_llm_from_config
+
+                _model = create_llm_from_config(_llm_config)
+            except ValueError:
+                logger.warning(
+                    "Failed to build model from llm_config for ToolGuard generation; using default"
+                )
+        generation_agent = build_tool_guard_generation_agent(
+            policy_system=policy_system,
+            tool_provider=runtime_agent.tool_provider,
+            model=_model,
+        )
+        result = await generate_tool_guards_for_policy(
+            policy_system=policy_system,
+            policy_id=policy_id,
+            generation_agent=generation_agent,
+        )
+
+        updated_policy = await policy_system.storage.get_policy(policy_id)
+        if updated_policy is not None:
+            result["tool_guards"] = updated_policy.tool_guards or {}
+
+        agent_id = "cuga-default"  # TODO: get from request if multi-agent support needed
+        try:
+            if updated_policy is None:
+                result["config_synced"] = False
+                result["sync_error"] = _TOOL_GUARD_SYNC_ERROR_MESSAGES["unexpected"]
+            else:
+                config_synced, sync_error_code = await _sync_policy_to_config_store(
+                    policy_id=policy_id,
+                    updated_policy=updated_policy,
+                    use_draft=use_draft,
+                    agent_id=agent_id,
+                )
+                result["config_synced"] = config_synced
+                if sync_error_code:
+                    result["sync_error"] = _TOOL_GUARD_SYNC_ERROR_MESSAGES.get(
+                        sync_error_code,
+                        _TOOL_GUARD_SYNC_ERROR_MESSAGES["unexpected"],
+                    )
+        except Exception as sync_exc:
+            logger.warning("Failed to sync policy to config_store: %s", sync_exc)
+            result["config_synced"] = False
+            result["sync_error"] = _TOOL_GUARD_SYNC_ERROR_MESSAGES["unexpected"]
+
+        return JSONResponse(result, status_code=200)
+    except ValueError as exc:
+        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+    except LookupError:
+        return JSONResponse({"status": "error", "message": "Policy not found"}, status_code=404)
+    except TypeError:
+        return JSONResponse(
+            {"status": "error", "message": "Invalid policy type for tool guard generation"}, status_code=400
+        )
+    except Exception:
+        logger.exception("Failed to generate ToolGuard for policy %s", policy_id)
+        return JSONResponse({"status": "error", "message": "Internal server error"}, status_code=500)
 
 
 # Runtime tools injected by Cuga Lite — split by gate so each group only
