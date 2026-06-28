@@ -1949,7 +1949,6 @@ class CugaAgent:
                     # User denied - set final answer and end
                     policy_name = state.cuga_lite_metadata.get("policy_name", "Tool Approval Policy")
                     state.final_answer = f"❌ **Execution Cancelled**\n\nYou denied the execution of restricted tools required by **{policy_name}**.\n\nThe agent will not proceed with this task."
-                    state.execution_complete = True
                     # Set sender to CugaLite so FinalAnswerAgent handles it properly
                     state.sender = NodeNames.CUGA_LITE
                     return Command(update=state.model_dump(), goto=NodeNames.FINAL_ANSWER_AGENT)
@@ -2052,7 +2051,11 @@ class CugaAgent:
             from cuga.config import settings
 
             config = KnowledgeConfig.from_settings(settings)
-            engine = KnowledgeEngine(config)
+            from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+            # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
+            # lazy + inert unless a profile enables search_query_transform.
+            engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
@@ -2261,15 +2264,18 @@ class CugaAgent:
             # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
             self._apply_callbacks(run_config)
 
-            # If action_response provided, update state with it
+            from langgraph.types import Command
+
             if action_response:
-                self.graph.update_state(run_config, {"hitl_response": action_response})
                 logger.info(
                     f"Resuming execution after HITL response (action_id: {action_response.action_id})"
                 )
-
-            # Resume by invoking with None (LangGraph pattern for resuming)
-            result = await self.graph.ainvoke(None, config=run_config)
+                result = await self.graph.ainvoke(
+                    Command(resume=action_response.model_dump()),
+                    config=run_config,
+                )
+            else:
+                result = await self.graph.ainvoke(None, config=run_config)
 
             # Extract final answer
             final_answer = result.get("final_answer", "")
@@ -2574,14 +2580,14 @@ class CugaAgent:
             # Add knowledge engine for awareness injection
             self._inject_knowledge_to_config(run_config)
 
-            # If action_response provided, update state with it
+            from langgraph.types import Command
+
+            resume_input = Command(resume=action_response.model_dump()) if action_response else None
             if action_response:
-                self.graph.update_state(run_config, {"hitl_response": action_response})
                 logger.info(f"Streaming resume after HITL response (action_id: {action_response.action_id})")
 
-            # Stream resume by invoking with None
             async for state in self.graph.astream(
-                None,
+                resume_input,
                 config=run_config,
                 stream_mode="updates",
                 subgraphs=True,

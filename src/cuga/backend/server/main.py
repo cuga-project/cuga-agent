@@ -314,7 +314,11 @@ class DraftAppState:
         self.agent: Optional[DynamicAgentGraph] = None
         self.policy_system: Optional[Any] = None
         self.policy_filesystem_sync: Optional[Any] = None  # PolicyFilesystemSync instance for draft
-        self.draft_knowledge_config: Optional[Any] = None  # Draft knowledge config for Try-It-Out
+        self.draft_knowledge_config: Optional[Any] = None  # Legacy singular — kept for back-compat
+        # Per-agent draft knowledge configs (multi-tenant safe). Key: base
+        # agent_id (without "--draft" suffix). Readers should prefer this
+        # dict and only fall back to the singular attr above.
+        self.draft_knowledge_configs: Dict[str, Any] = {}
 
 
 # Create a single instance of the AppState class to be used throughout the application.
@@ -501,7 +505,11 @@ async def lifespan(app: FastAPI):
             return  # Already running
 
         app_state.set_subsystem_status("knowledge", "starting", "Initializing knowledge engine")
-        app_state.knowledge_engine = KnowledgeEngine(kb_config)
+        from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+        # Inject cuga's LLM for optional query transformation (multi_query / HyDE).
+        # Lazy + inert unless a profile enables search_query_transform.
+        app_state.knowledge_engine = KnowledgeEngine(kb_config, chat_generator=CugaChatGenerator())
 
         # Initialize session provider for ownership enforcement
         from cuga.backend.knowledge.session_provider import PersistentSessionProvider
@@ -565,7 +573,9 @@ async def lifespan(app: FastAPI):
 
         async def _warm():
             try:
-                app_state.set_subsystem_status("knowledge", "starting", "Loading knowledge embedding model")
+                app_state.set_subsystem_status(
+                    "knowledge", "starting", "Loading knowledge embedding + parser models"
+                )
                 warmup_result = await app_state.knowledge_engine.warmup()
                 app_state.set_subsystem_status(
                     "knowledge", "ready", "Knowledge subsystem ready", warmup_result
@@ -704,6 +714,39 @@ async def lifespan(app: FastAPI):
             )
         except Exception as _cfg_err:
             logger.warning("Startup: failed to apply saved config: %s", _cfg_err)
+
+        # Apply the published KNOWLEDGE config to the live engine on startup.
+        # Without this the engine reads only from settings.toml — any change a
+        # user published (provider, model, base_url, layout_engine, ...) would
+        # be reset on every restart. This is the import-on-restart path.
+        # Secrets are stripped on disk so embedding_api_key is "" here; engine
+        # falls back to OPENAI_API_KEY / OPENROUTER_API_KEY env vars at first
+        # embed call. If no env-var either, first ingest fails with a clear
+        # missing-key error — same as if the user never set a key.
+        try:
+            _saved_knowledge = (_startup_config or {}).get("knowledge") or {}
+            _live_engine = getattr(app_state, "knowledge_engine", None)
+            if _saved_knowledge and _live_engine is not None:
+                # Strip noise that's not part of the public config shape.
+                _saved_kb = {k: v for k, v in _saved_knowledge.items() if not k.startswith("_")}
+                if _saved_kb:
+                    _result = _live_engine.apply_knowledge_config(_saved_kb)
+                    logger.info(
+                        "Startup: applied saved knowledge config to engine — "
+                        "provider=%s, model=%s, pdf_mode=%s, layout_engine=%s; "
+                        "engine reports embedding_changed=%s, dim_changed=%s",
+                        _saved_kb.get("embedding_provider", "?"),
+                        _saved_kb.get("embedding_model", "?"),
+                        _saved_kb.get("docling_pdf_mode", "?"),
+                        _saved_kb.get("docling_layout_engine", "?"),
+                        _result.get("embedding_changed"),
+                        _result.get("dim_changed"),
+                    )
+        except Exception as _kb_err:
+            logger.warning(
+                "Startup: failed to apply saved knowledge config (engine will use settings.toml only): %s",
+                _kb_err,
+            )
 
     # Initialise knowledge_config_hash on app_state so that resolve_collection()
     # can route to the correct hash-based collection from the first request.
@@ -859,15 +902,6 @@ async def lifespan(app: FastAPI):
     yield
     logger.info("Application is shutting down...")
 
-    await _await_pending_history_saves()
-
-    from cuga.backend.storage import get_storage
-
-    try:
-        await get_storage().close_relational_stores()
-    except Exception as e:
-        logger.debug(f"Relational store shutdown: {e}")
-
     # Terminate the save_reuse server process if it's running
     if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:
         logger.info("Terminating save_reuse server...")
@@ -888,6 +922,20 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.debug(f"Knowledge engine aclose: {e}")
         app_state.knowledge_engine.shutdown()
+
+    # Close the process-wide relational-store pool. The shutdown refactor
+    # earlier in this branch dropped this call, which leaked pgvector /
+    # SQLite connections on every restart — Sami C2 review. SQLite would
+    # leave WAL/lock residue under tight up/down cycles; pgvector would
+    # eventually exhaust the connection pool in test loops. Defensive
+    # try/except so a misbehaving store can't block the rest of shutdown.
+    try:
+        from cuga.backend.storage.facade import get_storage
+
+        await get_storage().close_relational_stores()
+        logger.info("Relational stores closed.")
+    except Exception as e:
+        logger.debug(f"close_relational_stores: {e}")
 
     # Clean up embedded assets
     if USE_EMBEDDED_ASSETS:
@@ -996,25 +1044,6 @@ async def setup_page_info(state: AgentState, env: ExtensionEnv | BrowserEnvGymAs
     state.current_app_description = f"web application for '{title}' and url '{url_app_name}'"
 
 
-_history_save_tasks: set[asyncio.Task] = set()
-_history_save_locks: dict[tuple[str, str, str], asyncio.Lock] = {}
-_history_save_locks_guard = asyncio.Lock()
-
-
-async def _conversation_save_lock(agent_id: str, thread_id: str, user_id: str) -> asyncio.Lock:
-    key = (agent_id, thread_id, user_id)
-    async with _history_save_locks_guard:
-        if key not in _history_save_locks:
-            _history_save_locks[key] = asyncio.Lock()
-        return _history_save_locks[key]
-
-
-async def _await_pending_history_saves() -> None:
-    pending = list(_history_save_tasks)
-    if pending:
-        await asyncio.gather(*pending, return_exceptions=True)
-
-
 async def _save_conversation_and_events_async(
     agent_id: str,
     thread_id: str,
@@ -1022,71 +1051,22 @@ async def _save_conversation_and_events_async(
     state: AgentState,
     events: List[Dict[str, Any]],
     user_attachments: Optional[List[Dict[str, Any]]] = None,
-) -> None:
+):
     """Save conversation history and stream events asynchronously."""
-    save_lock = await _conversation_save_lock(agent_id, thread_id, user_id)
-    async with save_lock:
-        try:
-            await save_conversation_to_db(
-                agent_id,
-                thread_id,
-                state,
-                user_id,
-                user_attachments=user_attachments,
-            )
-            if events:
-                conversation_db = get_conversation_db()
-                await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
-                logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
-        except Exception as e:
-            logger.error(f"Error in async save: {e}")
-
-
-def _get_graph_state_values_sync(graph, thread_id: str):
-    snapshot = graph.get_state({"configurable": {"thread_id": thread_id}})
-    if not snapshot or not snapshot.values:
-        return None
-    return snapshot.values
-
-
-async def _aget_graph_state_values(graph, thread_id: str | None):
-    if not graph or not thread_id:
-        return None
-    return await asyncio.to_thread(_get_graph_state_values_sync, graph, thread_id)
-
-
-def _schedule_history_save(
-    *,
-    agent_id: str,
-    thread_id: str,
-    user_id: str,
-    state: AgentState,
-    events: List[Dict[str, Any]],
-    user_attachments: Optional[List[Dict[str, Any]]] = None,
-) -> None:
-    task = asyncio.create_task(
-        _save_conversation_and_events_async(
-            agent_id=agent_id,
-            thread_id=thread_id,
-            user_id=user_id,
-            state=state,
-            events=events,
+    try:
+        await save_conversation_to_db(
+            agent_id,
+            thread_id,
+            state,
+            user_id,
             user_attachments=user_attachments,
-        ),
-        name=f"save-history-{thread_id}",
-    )
-    _history_save_tasks.add(task)
-
-    def _on_done(save_task: asyncio.Task) -> None:
-        _history_save_tasks.discard(save_task)
-        try:
-            save_task.result()
-        except asyncio.CancelledError:
-            pass
-        except Exception as e:
-            logger.error(f"Background history save failed for thread {thread_id}: {e}")
-
-    task.add_done_callback(_on_done)
+        )
+        if events:
+            conversation_db = get_conversation_db()
+            await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
+            logger.debug(f"Batch saved {len(events)} stream events for thread {thread_id}")
+    except Exception as e:
+        logger.error(f"Error in async save: {e}")
 
 
 async def save_conversation_to_db(
@@ -1245,7 +1225,12 @@ async def _next_event_or_stop(stream, stop_event):
 
 
 def apply_request_user_context(state: AgentState, user_id: Optional[str]) -> None:
-    """Propagate the authenticated user and service scope onto the graph state."""
+    """Propagate the authenticated user and service scope onto the graph state.
+
+    Kept as a single helper (not inlined into ``event_stream``) so the
+    user-id + service-scope assignment is exercised by ``test_server_user_id_propagation``
+    against the real production code path rather than a re-implementation.
+    """
     from cuga.config import get_service_instance_id, get_tenant_id
 
     state.user_id = user_id
@@ -1289,7 +1274,9 @@ async def event_stream(
         # Check if we have existing state for this thread_id (for followup questions)
         if thread_id:
             try:
-                latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
+                latest_state_values = run_agent.graph.get_state(
+                    {"configurable": {"thread_id": thread_id}}
+                ).values
                 if latest_state_values:
                     # Load existing state for followup questions
                     local_state = AgentState(**latest_state_values)
@@ -1322,7 +1309,7 @@ async def event_stream(
     else:
         # For resume, fetch state from LangGraph
         if thread_id:
-            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
+            latest_state_values = run_agent.graph.get_state({"configurable": {"thread_id": thread_id}}).values
             if latest_state_values:
                 local_state = AgentState(**latest_state_values)
                 local_state.thread_id = thread_id
@@ -1464,7 +1451,9 @@ async def event_stream(
                     if event.interrupt and not event.has_tools:
                         # Update local state from graph
                         if thread_id:
-                            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
+                            latest_state_values = run_agent.graph.get_state(
+                                {"configurable": {"thread_id": thread_id}}
+                            ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
                         return
@@ -1490,7 +1479,9 @@ async def event_stream(
                         variables_metadata = {}
                         active_policies = []
                         if thread_id:
-                            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
+                            latest_state_values = run_agent.graph.get_state(
+                                {"configurable": {"thread_id": thread_id}}
+                            ).values
 
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
@@ -1558,16 +1549,14 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                            # Persist history in the background so Answer reaches the client first
+                            # Batch save all events and conversation history synchronously (for debugging)
+                            # Skip saving if disable_history is True
                             if not disable_history:
-                                history_state = local_state if local_state else AgentState()
-                                if hasattr(history_state, "model_copy"):
-                                    history_state = history_state.model_copy(deep=True)
-                                _schedule_history_save(
+                                await _save_conversation_and_events_async(
                                     agent_id=app_state.agent_id,
                                     thread_id=thread_id,
                                     user_id=user_id,
-                                    state=history_state,
+                                    state=local_state if local_state else AgentState(),
                                     events=stream_events_buffer.copy(),
                                     user_attachments=user_attachments,
                                 )
@@ -1580,7 +1569,9 @@ async def event_stream(
                         ).format(app_state.output_format, thread_id=thread_id)
 
                         if thread_id:
-                            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
+                            latest_state_values = run_agent.graph.get_state(
+                                {"configurable": {"thread_id": thread_id}}
+                            ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
                         try:
@@ -1595,7 +1586,9 @@ async def event_stream(
                         return
                     elif event.has_tools:
                         if thread_id:
-                            latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
+                            latest_state_values = run_agent.graph.get_state(
+                                {"configurable": {"thread_id": thread_id}}
+                            ).values
                             if latest_state_values:
                                 local_state = AgentState(**latest_state_values)
 
@@ -1638,7 +1631,9 @@ async def event_stream(
                 else:
                     logger.debug("Yield {}".format(event))
                     if thread_id:
-                        latest_state_values = await _aget_graph_state_values(run_agent.graph, thread_id)
+                        latest_state_values = run_agent.graph.get_state(
+                            {"configurable": {"thread_id": thread_id}}
+                        ).values
                         if latest_state_values:
                             local_state = AgentState(**latest_state_values)
                     name = ((event.split("\n")[0]).split(":")[1]).strip()
@@ -1704,16 +1699,6 @@ app.add_middleware(
 
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
-
-
-if getattr(settings, "a2a", None) and getattr(settings.a2a, "enabled", False):
-    # The A2A package is only imported when explicitly enabled in settings,
-    # so disabled deployments pay no import-time cost for it. All runner
-    # wiring lives in cuga.backend.server.a2a.runner — main.py just
-    # delegates the mount.
-    from cuga.backend.server.a2a.runner import build_a2a_router_for_settings  # noqa: E402
-
-    app.include_router(build_a2a_router_for_settings(settings.a2a, app_state))
 
 
 @app.get("/health")
@@ -3089,9 +3074,9 @@ async def get_agent_state(
             raise HTTPException(status_code=503, detail="Agent graph not initialized")
 
         try:
-            state_values = await _aget_graph_state_values(app_state.agent.graph, thread_id)
+            state_snapshot = app_state.agent.graph.get_state({"configurable": {"thread_id": thread_id}})
 
-            if not state_values:
+            if not state_snapshot or not state_snapshot.values:
                 return JSONResponse(
                     {
                         "thread_id": thread_id,
@@ -3103,7 +3088,7 @@ async def get_agent_state(
                     }
                 )
 
-            local_state = AgentState(**state_values)
+            local_state = AgentState(**state_snapshot.values)
             variables_metadata = local_state.variables_manager.get_all_variables_metadata(
                 include_value=False, include_value_preview=True
             )
@@ -3218,12 +3203,9 @@ async def get_subagents_config(current_user: Optional[UserInfo] = Depends(requir
             source_config = {"type": "direct"}
 
             if agent_config.get('a2a_protocol', {}).get('enabled'):
-                a2a_protocol = agent_config.get('a2a_protocol', {})
                 source_config = {
                     "type": "a2a",
-                    # Supervisor YAML uses `endpoint` (matching delegation.py); fall
-                    # back to `url` for any older configs that used that key.
-                    "url": a2a_protocol.get('endpoint') or a2a_protocol.get('url', ''),
+                    "url": agent_config.get('a2a_protocol', {}).get('url', ''),
                     "name": agent_name,
                 }
             elif mcp_servers:

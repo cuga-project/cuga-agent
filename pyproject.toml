@@ -48,6 +48,13 @@ dependencies = [
     "boto3>=1.34.0",
     # Knowledge engine (replaces OpenRAG)
     "langchain-docling>=2.0,<3.0",
+    # EasyOCR is the cross-platform safety net so OCR Just Works on a
+    # fresh ``uv sync`` even when tesseract isn't on PATH. Tesseract
+    # (system binary) is preferred when available — see
+    # ``engine._select_ocr_engine_options``. Test
+    # ``test_no_tesseract_falls_back_to_easyocr`` documents that this
+    # fallback path must remain importable.
+    "easyocr",
     "torch", # explicit: forces pytorch-cpu index via [tool.uv.sources], avoids 3.5GB nvidia-cuda wheels
     "torchvision", # explicit: must match torch variant (cpu) to avoid operator registration errors
     "langchain-ollama>=0.2.0",

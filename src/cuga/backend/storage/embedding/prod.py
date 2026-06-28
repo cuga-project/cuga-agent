@@ -90,27 +90,62 @@ class ProdEmbeddingStore:
     def _aux_keys(self) -> List[str]:
         return list(self._schema.auxiliary_columns.keys())
 
-    async def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
-        pool = await self._get_pool()
+    def _upsert_sql(self) -> str:
+        """Build the INSERT ... ON CONFLICT DO UPDATE statement once.
+
+        Shared between ``add`` (one row via ``executemany`` of length 1) and
+        ``add_many`` so schema/UPSERT order lives in exactly one place.
+        """
         id_col = self._schema.id_column
         meta_keys = self._meta_keys()
         aux_keys = self._aux_keys()
-        full = {id_col: id, **metadata}
         meta_keys_no_id = [k for k in meta_keys if k != id_col]
         cols = ["embedding", id_col] + meta_keys_no_id + aux_keys
-        n = len(cols)
-        ph = _placeholders(n)
+        ph = _placeholders(len(cols))
         col_list = ", ".join(cols)
-        values = [embedding, id] + [full.get(k) for k in meta_keys_no_id] + [full.get(k) for k in aux_keys]
         upsert = ", ".join(f"{c} = EXCLUDED.{c}" for c in ["embedding"] + meta_keys + aux_keys)
         scope = self._scope_cols()
         conflict_cols = f"{', '.join(scope + [id_col])}" if scope else id_col
+        return (
+            f"INSERT INTO {self._collection_name} ({col_list}) VALUES ({ph}) "
+            f"ON CONFLICT ({conflict_cols}) DO UPDATE SET {upsert}"
+        )
+
+    def _row_values(self, id_: str, embedding: List[float], metadata: Dict[str, Any]) -> List[Any]:
+        id_col = self._schema.id_column
+        meta_keys = self._meta_keys()
+        aux_keys = self._aux_keys()
+        meta_keys_no_id = [k for k in meta_keys if k != id_col]
+        full = {id_col: id_, **metadata}
+        return [embedding, id_] + [full.get(k) for k in meta_keys_no_id] + [full.get(k) for k in aux_keys]
+
+    async def add(self, id: str, embedding: List[float], metadata: Dict[str, Any]) -> None:
+        # Delegate to add_many so the SQL/row layout lives in one place. The
+        # single-row upsert via executemany has identical pool/transaction
+        # semantics to the original direct conn.execute.
+        await self.add_many([(id, embedding, metadata)])
+
+    async def add_many(
+        self,
+        items: List[tuple[str, List[float], Dict[str, Any]]],
+    ) -> None:
+        """Bulk-upsert items via a single ``executemany`` (issue #183 step 3).
+
+        One ``pool.acquire`` and one ``conn.transaction`` per batch instead of
+        per item, which is the big win on pgvector where each row was
+        previously a network round-trip.
+        """
+        if not items:
+            return
+        pool = await self._get_pool()
+        sql = self._upsert_sql()
+        rows = [self._row_values(id_, embedding, metadata) for id_, embedding, metadata in items]
+        # ``conn.transaction`` so a mid-batch failure rolls back cleanly.
+        # The original ``add`` had implicit per-row transactions; the bulk
+        # path needs an explicit one to retain the same safety.
         async with pool.acquire() as conn:
-            await conn.execute(
-                f"INSERT INTO {self._collection_name} ({col_list}) VALUES ({ph}) "
-                f"ON CONFLICT ({conflict_cols}) DO UPDATE SET {upsert}",
-                *values,
-            )
+            async with conn.transaction():
+                await conn.executemany(sql, rows)
 
     async def search(
         self, query_embedding: List[float], limit: int, metadata_filter: Dict[str, Any]

@@ -160,23 +160,56 @@ mcp = FastMCP(
 @mcp.tool()
 async def search_knowledge(
     query: str,
-    scope: str = "agent",
+    scope: str = "all",
     agent_id: str = "",
     thread_id: str = "",
 ) -> dict[str, Any]:
     """Search documents in the knowledge base.
 
-    Use only scopes enabled for the current agent. Disabled scopes will fail.
-    When using scope="session", thread_id is required to identify the conversation.
-    Returns results with text, filename, and page number.
+    Scopes: ``"all"`` (default — both agent + session), ``"agent"``,
+    ``"session"``. See the Knowledge Tool Contract block in your system
+    prompt for query-writing rules, scope-restriction rules, how to read
+    ``by_source`` / ``scope_legend`` / ``partial`` / ``error``, and the
+    iterative-search budget — this docstring is intentionally terse to
+    keep the contract the single source of truth.
     """
-    resp = await _request(
-        "POST",
-        "/api/knowledge/search",
-        headers=_identity_headers(agent_id, thread_id),
-        json={"scope": scope, "query": query},
-    )
-    return resp.json()
+    try:
+        resp = await _request(
+            "POST",
+            "/api/knowledge/search",
+            headers=_identity_headers(agent_id, thread_id),
+            json={"scope": scope, "query": query},
+        )
+        return resp.json()
+    except httpx.HTTPStatusError as e:
+        # Convert HTTP errors into a structured response so the LLM can
+        # decide what to do (retry, fall back, ask the user) instead of
+        # seeing an opaque exception trace. Preserve the backend's detail
+        # string when it's a JSON body, otherwise the raw text.
+        #
+        # We do NOT set ``partial=True`` here: with ``results=[]`` the
+        # call returned nothing usable, and the canonical contract tells
+        # the LLM partial means "at least one scope succeeded — answer
+        # with what you have." Hallucinating from an empty set would be
+        # the worst possible failure mode. The presence of ``error``
+        # alone is the signal to retry or move on.
+        detail: Any
+        try:
+            detail = e.response.json().get("detail", e.response.text)
+        except Exception:
+            detail = e.response.text
+        return {
+            "scope": scope,
+            "results": [],
+            "error": f"HTTP {e.response.status_code}: {detail}",
+        }
+    except httpx.HTTPError as e:
+        # Network-level: DNS, connection refused, timeout. Same contract.
+        return {
+            "scope": scope,
+            "results": [],
+            "error": f"Knowledge service unreachable: {e}",
+        }
 
 
 @mcp.tool()
