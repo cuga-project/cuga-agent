@@ -38,6 +38,35 @@ export async function getUiConfig(): Promise<{ hide_cuga_logo: boolean; brand_na
   return uiConfigCache;
 }
 
+// Build-id stamped at compile time by webpack DefinePlugin. The backend
+// stamps the matching value on /api/manage/* + /api/knowledge/* responses
+// via X-Cuga-Build-Id. A mismatch means the browser is running an older
+// bundle than the server expects — the user has stale JS that doesn't
+// match the current API contract. We fire a one-time CustomEvent so the
+// app can render a forced-reload banner without auto-reloading
+// destructively. Both sides resolve from env CUGA_BUILD_ID > git short
+// SHA > "dev".
+declare const CUGA_BUILD_ID: string;
+
+let _staleBundleNotified = false;
+function checkBuildIdMismatch(res: Response): void {
+  if (_staleBundleNotified) return;
+  const serverId = res.headers.get("X-Cuga-Build-Id");
+  if (!serverId) return; // route doesn't stamp (non-manage/knowledge) — ignore
+  if (typeof CUGA_BUILD_ID === "undefined" || !CUGA_BUILD_ID) return;
+  if (serverId === CUGA_BUILD_ID) return;
+  // "dev" on either side is the explicit "I'm running uncommitted local
+  // changes" sentinel — don't fire the banner in that case (the developer
+  // is iterating; the mismatch is expected).
+  if (serverId === "dev" || CUGA_BUILD_ID === "dev") return;
+  _staleBundleNotified = true;
+  window.dispatchEvent(
+    new CustomEvent("cuga:stale-bundle", {
+      detail: { clientBuildId: CUGA_BUILD_ID, serverBuildId: serverId },
+    }),
+  );
+}
+
 export async function apiFetch(
   url: string | URL,
   init?: RequestInit
@@ -49,6 +78,7 @@ export async function apiFetch(
     credentials: "include",
     headers: { ...init?.headers },
   });
+  checkBuildIdMismatch(res);
   if (res.status === 401) {
     const config = await getAuthConfig();
     if (config.enabled) {

@@ -136,6 +136,25 @@ export default {
     }),
     new webpack.DefinePlugin({
       FAKE_STREAM: JSON.stringify(fakeStream),
+      // Frozen at build time. The backend stamps the same value on
+      // /api/manage/* + /api/knowledge/* responses via X-Cuga-Build-Id;
+      // the client compares to detect stale bundles (the "did my old
+      // JS reach the server?" failure mode) and surfaces a forced-reload
+      // banner on mismatch. Source order: env CUGA_BUILD_ID > git short
+      // SHA > "dev". The two sides must compute it identically.
+      CUGA_BUILD_ID: JSON.stringify(
+        (process.env.CUGA_BUILD_ID || "").trim() ||
+          (() => {
+            try {
+              return require("child_process")
+                .execSync("git rev-parse --short=12 HEAD", { stdio: ["ignore", "pipe", "ignore"] })
+                .toString()
+                .trim();
+            } catch {
+              return "dev";
+            }
+          })(),
+      ),
     }),
   ],
   devtool: process.env.NODE_ENV === "production" ? false : "source-map",
