@@ -19,7 +19,7 @@ from __future__ import annotations
 import os
 import re
 import shutil
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 VIRTUAL_WORKSPACE_ROOT = "/workspace"
@@ -79,15 +79,27 @@ def thread_workspace_root(thread_id: Optional[str]) -> Path:
     return base
 
 
+def _posix_path(raw: str) -> str:
+    """Normalize agent paths with POSIX rules so ``/workspace`` is never OS-absolutized."""
+    return str(PurePosixPath(raw.replace("\\", "/")))
+
+
+def _host_path_from_posix_tail(workspace_root: Path, tail: str) -> Path:
+    """Join a POSIX-relative tail onto ``workspace_root`` using local path segments."""
+    if not tail or tail == ".":
+        return workspace_root
+    _reject_traversal(tail)
+    return workspace_root.joinpath(*PurePosixPath(tail).parts)
+
+
 def ensure_thread_workspace_seeded(thread_id: Optional[str]) -> None:
     """Copy shared CRM/CI fixtures into an empty per-thread workspace when opted in via env."""
     modes = _seed_modes()
     if not modes:
         return
-    tid = (thread_id or "").strip()
-    if not tid:
+    if not (thread_id or "").strip():
         return
-    safe_tid = safe_thread_id(tid)
+    safe_tid = safe_thread_id(thread_id)
     cache_key = (str(local_base_dir().resolve()), safe_tid)
     if cache_key in _seeded_threads:
         return
@@ -142,28 +154,32 @@ def resolve_workspace_path(
     if not raw:
         raise ValueError("empty path")
     _reject_traversal(raw)
-    if (thread_id or "").strip():
-        ensure_thread_workspace_seeded(thread_id)
-    normalized = os.path.normpath(raw.replace("\\", "/"))
-    workspace_root = thread_workspace_root(thread_id).resolve()
 
-    if normalized == VIRTUAL_WORKSPACE_ROOT:
+    safe_tid: Optional[str] = None
+    if (thread_id or "").strip():
+        safe_tid = safe_thread_id(thread_id)
+        ensure_thread_workspace_seeded(safe_tid)
+
+    posix = _posix_path(raw)
+    workspace_root = thread_workspace_root(safe_tid).resolve()
+
+    if posix == VIRTUAL_WORKSPACE_ROOT:
         dest = workspace_root
-    elif normalized.startswith(VIRTUAL_WORKSPACE_ROOT + "/"):
-        dest = workspace_root / normalized[len(VIRTUAL_WORKSPACE_ROOT) :].lstrip("/")
+    elif posix.startswith(VIRTUAL_WORKSPACE_ROOT + "/"):
+        dest = _host_path_from_posix_tail(workspace_root, posix[len(VIRTUAL_WORKSPACE_ROOT) + 1 :])
     else:
         matched_legacy = False
         for legacy in _LEGACY_ROOTS:
-            if normalized == legacy:
+            if posix == legacy:
                 dest = workspace_root
                 matched_legacy = True
                 break
-            if normalized.startswith(legacy + "/"):
-                dest = workspace_root / normalized[len(legacy) :].lstrip("/")
+            if posix.startswith(legacy + "/"):
+                dest = _host_path_from_posix_tail(workspace_root, posix[len(legacy) + 1 :])
                 matched_legacy = True
                 break
         if not matched_legacy:
-            dest = workspace_root / normalized.lstrip("/")
+            dest = _host_path_from_posix_tail(workspace_root, posix.lstrip("/"))
 
     resolved = dest.resolve()
     try:

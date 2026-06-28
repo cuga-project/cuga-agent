@@ -98,13 +98,29 @@ def _validated_thread_id(thread_id: Optional[str]) -> str:
     return safe_thread_id(thread_id)
 
 
-def _manifest_host_path(thread_id: Optional[str]) -> Path:
-    tid = _validated_thread_id(thread_id)
-    return resolve_workspace_path(manifest_sandbox_path(), thread_id=tid, operation="read_manifest")
+def _uploads_root_host(tid: str) -> Path:
+    """Host ``uploads/`` dir for a sanitized thread id (static path segments only)."""
+    root = thread_workspace_root(tid).resolve()
+    uploads = (root / UPLOADS_SUBDIR).resolve()
+    uploads.relative_to(root)
+    return uploads
+
+
+def _manifest_host_path(tid: str) -> Path:
+    return _uploads_root_host(tid) / MANIFEST_NAME
+
+
+def _upload_file_host_path(tid: str, safe_name: str) -> Path:
+    if Path(safe_name).name != safe_name or safe_name in (".", ".."):
+        raise ValueError("Invalid filename")
+    return _uploads_root_host(tid) / safe_name
 
 
 def read_upload_manifest(thread_id: Optional[str]) -> dict[str, Any]:
-    path = _manifest_host_path(thread_id)
+    if not (thread_id or "").strip():
+        return {"thread_id": "", "files": []}
+    tid = _validated_thread_id(thread_id)
+    path = _manifest_host_path(tid)
     if not path.is_file():
         return {"thread_id": thread_id or "", "files": []}
     try:
@@ -117,7 +133,8 @@ def read_upload_manifest(thread_id: Optional[str]) -> dict[str, Any]:
 
 
 def _write_manifest_host(thread_id: Optional[str], manifest: dict[str, Any]) -> None:
-    path = _manifest_host_path(thread_id)
+    tid = _validated_thread_id(thread_id)
+    path = _manifest_host_path(tid)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
 
@@ -165,6 +182,8 @@ async def upload_workspace_bytes(
     if len(data) > MAX_UPLOAD_BYTES:
         raise ValueError(f"File too large ({len(data)} bytes; max {MAX_UPLOAD_BYTES})")
 
+    if not (thread_id or "").strip():
+        raise ValueError("thread_id is required for uploads")
     tid = _validated_thread_id(thread_id)
     ensure_thread_workspace_seeded(tid)
     safe_name = sanitize_upload_filename(filename)
@@ -173,16 +192,15 @@ async def upload_workspace_bytes(
     validate_upload_content(data, safe_name)
     sp = sandbox_upload_path(safe_name)
     manifest = _merge_manifest_entry(manifest, thread_id=tid, filename=safe_name, size_bytes=len(data))
+    dest = _upload_file_host_path(tid, safe_name)
 
     if workspace_tree_is_sandbox_backed():
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
 
         backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), tid)
-        dest = resolve_workspace_path(sp, thread_id=tid, operation="upload_file")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
-        tmp = dest.parent / f".upload-{safe_name}.tmp"
+        tmp = dest.parent / f".upload-{secrets.token_hex(8)}.tmp"
         tmp.write_bytes(data)
         try:
             await backend.upload(str(tmp), sp)
@@ -191,7 +209,6 @@ async def upload_workspace_bytes(
         _write_manifest_host(tid, manifest)
         await _write_manifest_remote(tid, manifest)
     else:
-        dest = resolve_workspace_path(sp, thread_id=tid, operation="upload_file")
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_bytes(data)
         _write_manifest_host(tid, manifest)
@@ -228,9 +245,7 @@ async def delete_thread_uploads(thread_id: Optional[str]) -> None:
     if not tid:
         return
     safe_tid = _validated_thread_id(tid)
-    uploads_dir = resolve_workspace_path(
-        f"{VIRTUAL_WORKSPACE_ROOT}/{UPLOADS_SUBDIR}", thread_id=safe_tid, operation="delete_uploads"
-    )
+    uploads_dir = _uploads_root_host(safe_tid)
     if uploads_dir.exists():
         shutil.rmtree(uploads_dir)
         logger.info(f"[workspace_upload] removed host uploads for thread={safe_tid}")
