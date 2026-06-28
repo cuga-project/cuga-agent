@@ -64,6 +64,44 @@ def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool |
     return out
 
 
+def _redact_secrets_in_config(config: dict[str, Any]) -> None:
+    """Strip API keys / tokens / passwords from a config payload before
+    returning it to the client. The engine reads the real values from
+    its in-memory state (loaded from config_store on startup) — the GET
+    API doesn't need to round-trip them.
+
+    Why: the prior GET /api/manage/config response returned the full
+    draft including ``knowledge.embedding_api_key`` in cleartext. Anyone
+    with HTTP access to the running server (default: 127.0.0.1:7860, no
+    auth gate) could curl out the key. Now redacted to an empty string.
+
+    PATCH symmetry: ``patch_draft_knowledge`` treats an EMPTY
+    ``embedding_api_key`` as "preserve existing stored value" rather
+    than "clear" — so the round-trip GET → form-renders empty → PATCH
+    on save → empty doesn't wipe the stored key. Explicitly typing a
+    new value still overwrites (the user's clear intent). To clear,
+    the user can delete via CLI or restart with the env-var cleared.
+
+    Substring rule mirrors ``_is_secret`` used by the env-presets
+    endpoint so both API surfaces agree on what counts as secret.
+    """
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for k, v in list(node.items()):
+                ku = (k or "").upper()
+                is_secret = any(s in ku for s in ("API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD"))
+                if is_secret and isinstance(v, str) and v:
+                    node[k] = ""
+                elif isinstance(v, (dict, list)):
+                    _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(config)
+
+
 def _merge_feature_flags_defaults(config: dict[str, Any]) -> None:
     """Fill config.feature_flags from stored advanced_features, then global settings.
 
@@ -433,12 +471,14 @@ async def get_manage_config(
                 return JSONResponse({"config": {}, "version": "draft", "agent_id": agent_id})
             _merge_mcp_yaml_into_config(config)
             _merge_feature_flags_defaults(config)
+            _redact_secrets_in_config(config)
             return JSONResponse({"config": config, "version": "draft", "agent_id": agent_id})
         config, ver = await load_config(version, agent_id)
         if config is None:
             return JSONResponse({"config": {}, "agent_id": agent_id})
         _merge_mcp_yaml_into_config(config)
         _merge_feature_flags_defaults(config)
+        _redact_secrets_in_config(config)
         return JSONResponse({"config": config, "version": ver, "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to load manage config: {e}")
@@ -1364,6 +1404,22 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
 
         existing_draft = await load_draft(agent_id) or {}
         existing_knowledge = existing_draft.get("knowledge", {})
+
+        # Secret-preservation: ``GET /api/manage/config`` redacts secret
+        # fields (api_key / token / password) to empty strings. So when
+        # the UI form re-saves WITHOUT the user explicitly touching one
+        # of those fields, the PATCH body carries an empty string for it
+        # — which, naively merged, would wipe out the legitimately-stored
+        # value. Strip empty-string secrets from the incoming patch so
+        # the merge below preserves what's already stored. The user can
+        # still explicitly type a new value to overwrite; only EMPTY
+        # values get the preserve treatment.
+        for _k in list(knowledge.keys()):
+            _ku = _k.upper()
+            _is_secret = any(s in _ku for s in ("API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD"))
+            if _is_secret and isinstance(knowledge[_k], str) and knowledge[_k] == "":
+                knowledge.pop(_k, None)
+
         merged = {**existing_knowledge, **knowledge}
 
         # Filter to known KnowledgeConfig fields only

@@ -27,7 +27,28 @@ def _local_db_path() -> str:
     if path:
         return path
     os.makedirs(DBS_DIR, exist_ok=True)
-    return os.path.join(DBS_DIR, "cuga.db")
+    db_path = os.path.join(DBS_DIR, "cuga.db")
+    # User-only file perms (0o600) for the SQLite DB that holds agent
+    # configs — including UI-entered embedding_api_key / OAuth client
+    # secrets / future fields. Default umask leaves it 0o644 (world-
+    # readable on the host), and config_store has no encryption layer.
+    # Matches the .internal_token pattern in server/main.py.
+    #
+    # Pre-create the file (touch) before SQLite sees it so the mode
+    # is set on first creation, not retroactively. SQLite's open is
+    # idempotent — touching first doesn't break its schema init.
+    try:
+        if not os.path.exists(db_path):
+            # touch + chmod before SQLite ever sees the file
+            with open(db_path, "a"):
+                pass
+        os.chmod(db_path, 0o600)
+    except OSError:
+        # Best-effort hardening — skip on filesystems that don't honor
+        # POSIX modes (Windows mounts, certain network FS). Not security
+        # critical there since the OS layer enforces its own ACLs.
+        pass
+    return db_path
 
 
 def _postgres_url() -> str:
