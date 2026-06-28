@@ -2051,7 +2051,11 @@ class CugaAgent:
             from cuga.config import settings
 
             config = KnowledgeConfig.from_settings(settings)
-            engine = KnowledgeEngine(config)
+            from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+            # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
+            # lazy + inert unless a profile enables search_query_transform.
+            engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:

@@ -1,9 +1,7 @@
-import React, { useState, useEffect, useRef, useCallback } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import { X, FileText, Trash2, Upload, Lock } from "lucide-react";
-import {
-  listKnowledgeDocuments,
-} from "../../frontend/src/api";
 import { useSessionKnowledgeAttachments } from "../../frontend/src/knowledge/useSessionKnowledgeAttachments";
+import * as api from "../../frontend/src/api";
 import "./KnowledgeSidePanel.css";
 
 interface KnowledgeDoc {
@@ -19,6 +17,18 @@ interface KnowledgeSidePanelProps {
   threadId: string;
   sessionDocsVersion: number;
   onSessionDocsChanged: () => void;
+  // Agent-level docs: prop is OPTIONAL. The original design wanted a
+  // shared App-level ``useAgentKnowledgeDocs`` hook so the badge count
+  // and the panel had one source of truth (avoids the 6→0→6 flicker on
+  // enabled-flag transitions). That hook was never built, and both
+  // current callers (App.tsx, ChatLanding.tsx) stopped passing the
+  // prop — leading to ``agentDocs.length`` blowing up on undefined at
+  // line 178 (the "blank page" bug). Until the App-level hook lands,
+  // the panel self-fetches as a fallback when ``agentDocs`` isn't
+  // provided. ``onDocCountChanged`` lets the parent track the count
+  // for the badge — both callers were already passing this; it just
+  // needed to be on the interface.
+  agentDocs?: KnowledgeDoc[];
   onDocCountChanged?: (count: number) => void;
   inline?: boolean;
   knowledgeEnabled?: boolean | null;
@@ -41,6 +51,7 @@ export function KnowledgeSidePanel({
   threadId,
   sessionDocsVersion,
   onSessionDocsChanged,
+  agentDocs: agentDocsProp,
   onDocCountChanged,
   inline = false,
   knowledgeEnabled = true,
@@ -48,18 +59,47 @@ export function KnowledgeSidePanel({
   sessionKnowledgeEnabled = true,
   agentLabel,
 }: KnowledgeSidePanelProps) {
-  const [agentDocs, setAgentDocs] = useState<KnowledgeDoc[]>([]);
   const [dragover, setDragover] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const agentScopeEnabled = knowledgeEnabled !== false && agentKnowledgeEnabled !== false;
   const sessionScopeEnabled = knowledgeEnabled !== false && sessionKnowledgeEnabled !== false;
+
+  // Self-fetch fallback: if no parent provided ``agentDocs``, load
+  // them from the engine ourselves so the panel actually shows
+  // documents instead of crashing on ``undefined.length`` (the bug
+  // the user filed: badge click → blank page). Cached locally and
+  // only re-fetched when the panel opens, the agent scope toggles
+  // on, or the parent bumps ``sessionDocsVersion`` to signal a
+  // mutation. The pre-existing "6→0→6 flicker" risk this comment
+  // mentions is avoided by NOT resetting ``localAgentDocs`` on
+  // every render — only on successful fetch.
+  const [localAgentDocs, setLocalAgentDocs] = useState<KnowledgeDoc[]>([]);
+  useEffect(() => {
+    if (agentDocsProp !== undefined) return; // parent owns the data
+    if (!agentScopeEnabled || !isOpen) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const res = await api.listKnowledgeDocuments();
+        if (!res.ok || cancelled) return;
+        const body = await res.json();
+        if (cancelled) return;
+        const docs = (body?.documents ?? []) as KnowledgeDoc[];
+        setLocalAgentDocs(docs);
+      } catch {
+        // Network/decode failure — keep the last-known docs to avoid
+        // the 6→0→6 flicker the prior commit was trying to prevent.
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [agentDocsProp, agentScopeEnabled, isOpen, sessionDocsVersion]);
+
+  const agentDocs: KnowledgeDoc[] = agentDocsProp ?? localAgentDocs;
   const effectiveThreadId = sessionScopeEnabled ? threadId : "";
   const conversationReady = sessionScopeEnabled && Boolean(effectiveThreadId);
   const disabledAgentLabel = agentLabel || "this agent";
-
-  // Stabilize callback ref to avoid re-render cascades
-  const onDocCountChangedRef = useRef(onDocCountChanged);
-  onDocCountChangedRef.current = onDocCountChanged;
 
   const {
     documents: sessionDocs,
@@ -73,35 +113,15 @@ export function KnowledgeSidePanel({
     onSessionDocsChanged,
   });
 
-  // Report total doc count to parent
+  // Notify the parent of total doc count changes so the section badge
+  // (which the user clicks to open this panel) reflects what we
+  // actually show. Without this, a parent that relies solely on the
+  // ``onDocCountChanged`` callback for its badge count would never
+  // see updates when the panel self-fetches its own agent docs.
+  // sessionDocs comes from ``useSessionKnowledgeAttachments`` above.
   useEffect(() => {
-    if (knowledgeEnabled === false) {
-      onDocCountChangedRef.current?.(0);
-      return;
-    }
-    onDocCountChangedRef.current?.((agentScopeEnabled ? agentDocs.length : 0) + (sessionScopeEnabled ? sessionDocs.length : 0));
-  }, [agentDocs.length, agentScopeEnabled, knowledgeEnabled, sessionDocs.length, sessionScopeEnabled]);
-
-  // Fetch agent-level docs once on mount
-  useEffect(() => {
-    if (!agentScopeEnabled) {
-      setAgentDocs([]);
-      return;
-    }
-    let cancelled = false;
-    (async () => {
-      try {
-        const res = await listKnowledgeDocuments();
-        if (res.ok) {
-          const data = await res.json();
-          if (!cancelled) setAgentDocs(data.documents ?? []);
-        }
-      } catch (err) {
-        console.error("Failed to load agent knowledge docs:", err);
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [agentScopeEnabled]);
+    onDocCountChanged?.(agentDocs.length + sessionDocs.length);
+  }, [agentDocs.length, sessionDocs.length, onDocCountChanged]);
 
   const handleDeleteSessionDoc = async (filename: string) => {
     if (!effectiveThreadId) return;

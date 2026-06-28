@@ -26,7 +26,15 @@ For more information, visit: https://cuga.dev
 from cuga.sdk import CugaAgent, CugaSupervisor, run_agent, InvokeResult
 from cuga.backend.cuga_graph.nodes.cuga_lite.tracking.tracker import tracked_tool
 from cuga.backend.knowledge import KnowledgeClient, KnowledgeEngine
-from cuga.backend.knowledge.config import KnowledgeConfig
+from cuga.backend.knowledge.config import (
+    CLIENT_ADAPTATION_MAX_CHARS,
+    CLIENT_GLOSSARY_MAX_ENTRIES,
+    ClientAdaptationError,
+    KnowledgeConfig,
+    client_adaptation_hash,
+    client_glossary_hash,
+)
+from cuga.backend.knowledge.query_expansion import expand_query_with_glossary
 
 __version__ = "0.2.20"
 __all__ = [
@@ -38,4 +46,12 @@ __all__ = [
     "KnowledgeClient",
     "KnowledgeEngine",
     "KnowledgeConfig",
+    # Client-adaptation SDK surface — operators can build / validate / hash
+    # adaptation text without going through the HTTP layer.
+    "CLIENT_ADAPTATION_MAX_CHARS",
+    "CLIENT_GLOSSARY_MAX_ENTRIES",
+    "ClientAdaptationError",
+    "client_adaptation_hash",
+    "client_glossary_hash",
+    "expand_query_with_glossary",
 ]
