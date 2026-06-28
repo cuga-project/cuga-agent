@@ -321,6 +321,22 @@ export function ManagePage() {
     | { kind: "saved" }
     | { kind: "failed"; error: string };
   const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
+  // Safety net: if "saving" persists >60s, force it to failed. Covers
+  // the edge case where a response goes to an aborted controller and
+  // no newer PATCH replaces the "saving" state (the user saw this:
+  // server returned 500 but the pill stayed stuck because the response
+  // landed on an aborted handler). 60s is generous for a local backend
+  // PATCH — anything beyond that means something's wrong worth showing.
+  useEffect(() => {
+    if (draftSaveStatus.kind !== "saving") return;
+    const t = setTimeout(() => {
+      setDraftSaveStatus({
+        kind: "failed",
+        error: "Save took too long — server may be busy. Try again.",
+      });
+    }, 60_000);
+    return () => clearTimeout(t);
+  }, [draftSaveStatus]);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
   // from optimistic client state. The pill in the header reads this so
@@ -1250,9 +1266,22 @@ export function ManagePage() {
           }
         } else {
           // 4xx / 5xx without a 422 body. Surface as failed so the pill
-          // doesn't stay stuck on "Saving…".
+          // doesn't stay stuck on "Saving…". Log to console too — when
+          // a user reports "stuck on Saving" we need a breadcrumb in dev
+          // tools to confirm the server response did come back.
           if (ac.signal.aborted) return;
-          setDraftSaveStatus({ kind: "failed", error: `Save failed (${res.status})` });
+          let detail = "";
+          try {
+            const body = await res.clone().text();
+            detail = body ? body.slice(0, 200) : "";
+          } catch {
+            // ignore body read failures — fallback to status code only
+          }
+          console.error(`[ManagePage] knowledge PATCH failed: ${res.status}`, detail);
+          setDraftSaveStatus({
+            kind: "failed",
+            error: detail ? `Save failed (${res.status}): ${detail}` : `Save failed (${res.status})`,
+          });
         }
       } catch (err) {
         // AbortError is expected when a newer autosave superseded us.
@@ -1261,6 +1290,7 @@ export function ManagePage() {
         // Network failure (real). Previously silent — the literal bug
         // the user just hit. Now flips the pill to "failed" with a Retry
         // button (consumed by KnowledgeConfig).
+        console.error("[ManagePage] knowledge PATCH threw:", err);
         setDraftSaveStatus({
           kind: "failed",
           error: err instanceof Error ? err.message : "Couldn't save — check your connection",

@@ -1620,8 +1620,13 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to patch draft knowledge: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # ``logger.exception`` captures the full traceback. The prior
+        # ``logger.error(f"...: {e}")`` swallowed everything when
+        # ``str(e)`` was empty (some libs raise bare Exception() with
+        # no args) and left us no breadcrumb to diagnose. Include
+        # repr(e) so we at least see the class name when str is empty.
+        logger.exception(f"Failed to patch draft knowledge: {e!r}")
+        raise HTTPException(status_code=500, detail=str(e) or repr(e) or "Unknown server error")
 
 
 @router.patch("/config/draft/special_instructions")
