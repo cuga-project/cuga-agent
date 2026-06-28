@@ -1,0 +1,62 @@
+# Secret-backed CI for pull requests from forks.
+#
+# Fork PRs on `pull_request` never receive secrets. This workflow uses
+# `pull_request_target` plus the `external-testing` environment: the job
+# starts automatically on every fork PR update, pauses at the environment gate,
+# and a required reviewer approves via GitHub's "Review deployments" button
+# before secrets are exposed.
+#
+# Maintainer flow (no label needed):
+#   1. Fork PR opens or updates → workflow queues automatically.
+#   2. GitHub emails required reviewers / shows "Review deployments" on the run.
+#   3. Review the PR diff, click Approve and deploy.
+#   4. Tests run with external-testing secrets.
+#
+# Repo setting note: "Require approval for first-time contributors" under
+# Settings → Actions only gates `pull_request` workflows (no secrets). This
+# environment gate is what protects secret-backed fork CI.
+name: External Fork Tests
+
+on:
+  pull_request_target:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  unit-tests:
+    name: Unit Tests (fork, external-testing)
+    if: github.event.pull_request.head.repo.fork
+    runs-on: ubuntu-latest
+    environment: external-testing
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+
+    steps:
+      - name: Checkout fork head
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --all-extras --dev
+
+      - name: Install Playwright browsers
+        run: uv run playwright install --with-deps chromium
+
+      - name: Run unit tests
+        run: bash src/scripts/run_tests.sh --skip-stability

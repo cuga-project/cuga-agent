@@ -17,6 +17,8 @@ permissions:
 jobs:
   unit-tests:
     name: Unit Tests
+    # Fork PRs have no secrets on pull_request; see external-fork-tests.yml.
+    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -64,7 +66,7 @@ jobs:
       # structurally cannot reproduce the bug class (MVCC visibility,
       # per-batch transaction commits, asyncpg pool reuse, HNSW page
       # locks). This job runs the MVT against a real pgvector container.
-      CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING: postgresql://cuga:cuga@localhost:5432/cuga_test
+      CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING: postgresql://cuga:cuga@localhost:5432/cuga_test  # pragma: allowlist secret
 
     services:
       pgvector:
@@ -73,7 +75,7 @@ jobs:
         image: pgvector/pgvector:0.8.0-pg16
         env:
           POSTGRES_USER: cuga
-          POSTGRES_PASSWORD: cuga
+          POSTGRES_PASSWORD: cuga  # pragma: allowlist secret
           POSTGRES_DB: cuga_test
         ports:
           - 5432:5432
@@ -106,8 +108,10 @@ jobs:
         run: uv sync --all-extras --dev
 
       - name: Enable pgvector extension
+        env:
+          PGPASSWORD: cuga  # pragma: allowlist secret
         run: |
-          PGPASSWORD=cuga psql -h localhost -U cuga -d cuga_test \
+          psql -h localhost -U cuga -d cuga_test \
             -c "CREATE EXTENSION IF NOT EXISTS vector;"
 
       - name: Run pgvector integration tests (MVT)
