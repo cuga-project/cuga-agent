@@ -982,9 +982,7 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
                 if toml_model:
                     model = toml_model
                 logger.debug(
-                    "create_llm_from_config: using agent.code from TOML (local mode) — provider=%s model=%s",
-                    platform,
-                    model,
+                    f"create_llm_from_config: using agent.code from TOML (local mode) — provider={platform} model={model}"
                 )
         except Exception:
             pass

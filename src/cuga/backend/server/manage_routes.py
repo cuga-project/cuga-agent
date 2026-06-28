@@ -409,7 +409,7 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
                     n = await live_engine.copy_source_files(source, target)
                     triggered.append({"copied_from": source, "to": target, "files": n})
                 except Exception as cerr:
-                    logger.warning("copy %s -> %s failed: %s", source, target, cerr)
+                    logger.warning(f"copy {source} -> {target} failed: {cerr}")
                     return {"triggered": False, "target": target, "error": "copy_failed"}
         finally:
             live_engine._reindex_in_progress.discard(source)
@@ -420,7 +420,7 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
         triggered.append({"collection": target, "result": r})
         ok = bool(r and r.get("status") not in (None, "no_documents"))
     except Exception as rerr:
-        logger.warning("Reindex of %s failed: %s", target, rerr)
+        logger.warning(f"Reindex of {target} failed: {rerr}")
         triggered.append({"collection": target, "error": str(rerr)})
         ok = False
 
@@ -432,7 +432,7 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
         try:
             live_state.knowledge_config_hash = target_hash
         except Exception as herr:
-            logger.warning("Failed to update knowledge_config_hash: %s", herr)
+            logger.warning(f"Failed to update knowledge_config_hash: {herr}")
 
     return {"triggered": True, "target": target, "collections": triggered}
 
