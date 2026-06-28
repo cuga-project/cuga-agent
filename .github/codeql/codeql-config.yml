@@ -1,0 +1,3 @@
+# Default CodeQL setup auto-discovers model extensions under
+# .github/codeql/extensions/*/qlpack.yml (see workspace-path-sanitizers/).
+name: cuga-agent-codeql

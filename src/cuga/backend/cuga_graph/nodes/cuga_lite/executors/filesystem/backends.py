@@ -67,7 +67,7 @@ class FilesystemBackend(ABC):
     async def download(self, sandbox_path: str, filename: Optional[str]) -> DownloadResult: ...
 
     @abstractmethod
-    async def upload(self, local_path: str, sandbox_path: str) -> UploadResult: ...
+    async def upload(self, local_path: Path | str, sandbox_path: str) -> UploadResult: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -176,10 +176,13 @@ class HostWorkspaceBackend(FilesystemBackend):
             dest.write_bytes(data)
         return DownloadResult(sandbox_path=sandbox_path, local_path=str(dest.resolve()), size_bytes=len(data))
 
-    async def upload(self, local_path: str, sandbox_path: str) -> UploadResult:
+    async def upload(self, local_path: Path | str, sandbox_path: str) -> UploadResult:
+        from .paths import assert_resolved_path_under
+
         p = Path(local_path)
         if not p.is_absolute():
             p = local_base_dir() / p
+        p = assert_resolved_path_under(p, local_base_dir())
         if not p.exists():
             raise FileNotFoundError(f"Local file not found: {p}")
         dest = self._resolve(sandbox_path, operation="upload_file")
@@ -291,15 +294,13 @@ class RemoteSandboxBackend(FilesystemBackend):
         logger.info(f"[RemoteSandboxBackend] Downloaded {sp} → {dest} ({len(data)} bytes)")
         return DownloadResult(sandbox_path=sp, local_path=str(dest), size_bytes=len(data))
 
-    async def upload(self, local_path: str, sandbox_path: str) -> UploadResult:
+    async def upload(self, local_path: Path | str, sandbox_path: str) -> UploadResult:
         from opensandbox.models import WriteEntry  # type: ignore[import]
 
-        sp = self._norm(sandbox_path)
-        base = local_base_dir().resolve()
-        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
-            assert_resolved_path_under,
-        )
+        from .paths import assert_resolved_path_under
 
+        sp = self._norm(sandbox_path)
+        base = local_base_dir()
         p = assert_resolved_path_under(Path(local_path), base)
         if not p.is_file():
             raise FileNotFoundError(f"Local file not found: {p}")

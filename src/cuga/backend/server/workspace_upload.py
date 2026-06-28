@@ -201,7 +201,7 @@ async def upload_workspace_bytes(
         tmp = child_path_under(dest.parent, f".upload-{secrets.token_hex(8)}.tmp")
         tmp.write_bytes(data)
         try:
-            await backend.upload(str(tmp), sp)
+            await backend.upload(tmp, sp)
         finally:
             tmp.unlink(missing_ok=True)
         _write_manifest_host(tid, manifest)

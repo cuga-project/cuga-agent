@@ -54,32 +54,34 @@ def safe_thread_id(thread_id: Optional[str]) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
 
 
-def child_path_under(base: Path, *names: str) -> Path:
-    """Join single-name segments under base; reject traversal and escapes."""
-    root = base.resolve()
-    dest = root
-    for name in names:
+def _normpath_under(base_path: str, *segments: str) -> Path:
+    """Join segments under ``base_path`` using normpath + prefix check (CodeQL-safe)."""
+    fullpath = base_path
+    for name in segments:
         clean = (name or "").replace("\\", "/")
         if not clean or clean in (".", "..") or "/" in clean:
             raise ValueError(f"Invalid path segment: {name!r}")
-        dest = dest / clean  # codeql[py/path-injection] segment validated above
-    resolved = dest.resolve()  # codeql[py/path-injection]
-    try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"Path must stay under {root}") from exc
-    return resolved
+        fullpath = os.path.normpath(os.path.join(fullpath, clean))
+    if not (fullpath == base_path or fullpath.startswith(base_path + os.sep)):
+        raise ValueError(f"Path must stay under {base_path}")
+    return Path(fullpath)
+
+
+def child_path_under(base: Path, *names: str) -> Path:
+    """Join single-name segments under base; reject traversal and escapes."""
+    base_path = os.path.normpath(os.path.realpath(str(base)))
+    if not names:
+        return Path(base_path)
+    return _normpath_under(base_path, *names)
 
 
 def assert_resolved_path_under(path: Path, base: Path) -> Path:
-    """Return ``path.resolve()`` after verifying it stays under ``base``."""
-    root = base.resolve()
-    resolved = path.resolve()
-    try:
-        resolved.relative_to(root)
-    except ValueError as exc:
-        raise ValueError(f"Path must stay under {root}") from exc
-    return resolved
+    """Return ``path`` after realpath + prefix verification under ``base``."""
+    base_path = os.path.normpath(os.path.realpath(str(base)))
+    fullpath = os.path.normpath(os.path.realpath(str(path)))
+    if not (fullpath == base_path or fullpath.startswith(base_path + os.sep)):
+        raise ValueError(f"Path must stay under {base_path}")
+    return Path(fullpath)
 
 
 def skills_enabled() -> bool:
