@@ -31,6 +31,7 @@ import {
   RadioButtonGroup,
   RadioButton,
   TextArea,
+  Tooltip,
 } from "@carbon/react";
 import { CugaHeader } from "./CugaHeader";
 import {
@@ -348,24 +349,43 @@ export function ManagePage() {
   type DraftSaveStatus =
     | { kind: "idle" }
     | { kind: "saving" }
+    | { kind: "saving-slow" }
     | { kind: "saved" }
     | { kind: "failed"; error: string };
   const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
-  // Safety net: if "saving" persists >60s, force it to failed. Covers
-  // the edge case where a response goes to an aborted controller and
-  // no newer PATCH replaces the "saving" state (the user saw this:
-  // server returned 500 but the pill stayed stuck because the response
-  // landed on an aborted handler). 60s is generous for a local backend
-  // PATCH — anything beyond that means something's wrong worth showing.
+  // Slow-network safety net. The PATCH should normally complete in
+  // 1-3s for fastembed and 2-5s for a network embedder preflight.
+  // Beyond ~25s the user starts to wonder if anything's happening;
+  // beyond ~90s it's almost certainly stuck. Two-stage approach
+  // (per the pre-client review — the prior single-flip at 60s lied
+  // to users on slow corporate VPNs where 30-45s saves are normal):
+  //
+  //   1. At 25s, soften copy: "Still saving — your network is slow."
+  //      Keeps the user informed without forcing a fail-state on a
+  //      perfectly-healthy slow save.
+  //   2. At 90s, abort the in-flight controller AND flip to failed.
+  //      Aborting prevents a stale-snapshot overwrite if the response
+  //      arrives later. Without the abort, a 100s-late PATCH could
+  //      land "Saved" state on top of whatever new edits the user
+  //      made in the meantime.
   useEffect(() => {
     if (draftSaveStatus.kind !== "saving") return;
-    const t = setTimeout(() => {
+    const slow = setTimeout(() => {
+      setDraftSaveStatus((prev) =>
+        prev.kind === "saving" ? { kind: "saving-slow" } : prev,
+      );
+    }, 25_000);
+    const fail = setTimeout(() => {
+      knowledgeAbortRef.current?.abort();
       setDraftSaveStatus({
         kind: "failed",
         error: "Save took too long — server may be busy. Try again.",
       });
-    }, 60_000);
-    return () => clearTimeout(t);
+    }, 90_000);
+    return () => {
+      clearTimeout(slow);
+      clearTimeout(fail);
+    };
   }, [draftSaveStatus]);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
@@ -2380,25 +2400,48 @@ export function ManagePage() {
                         // fields that actually require a republish (embedder).
                         // Local comparison — no server-side hash needed.
                         const diverged =
-                          knowledgeConfig.embedding_provider !== liveKnowledge.provider ||
-                          knowledgeConfig.embedding_model !== liveKnowledge.model;
+                          (!!knowledgeConfig.embedding_model &&
+                            knowledgeConfig.embedding_model !== liveKnowledge.model) ||
+                          knowledgeConfig.embedding_provider !== liveKnowledge.provider;
+                        const tooltipLabel = diverged
+                          ? `Draft differs from Live (now ${knowledgeConfig.embedding_provider} · ${knowledgeConfig.embedding_model || "(default)"}). Click Publish to apply.`
+                          : `Live config matches your draft.`;
                         return (
-                          <p className="manage-save-bar-version" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
-                            <span
-                              aria-hidden="true"
+                          <Tooltip label={tooltipLabel} align="bottom">
+                            <button
+                              type="button"
                               style={{
-                                display: "inline-block",
-                                width: 8,
-                                height: 8,
-                                borderRadius: "50%",
-                                background: diverged ? "var(--cds-support-warning)" : "var(--cds-support-success)",
+                                background: "none",
+                                border: "none",
+                                padding: 0,
+                                cursor: diverged ? "help" : "default",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                font: "inherit",
+                                color: "inherit",
                               }}
-                            />
-                            <span>
-                              Live: {liveKnowledge.provider} · {liveKnowledge.model}
-                              {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
-                            </span>
-                          </p>
+                              className="manage-save-bar-version"
+                              aria-label={tooltipLabel}
+                            >
+                              <span
+                                aria-hidden="true"
+                                style={{
+                                  display: "inline-block",
+                                  width: 8,
+                                  height: 8,
+                                  borderRadius: "50%",
+                                  background: diverged
+                                    ? "var(--cds-support-warning)"
+                                    : "var(--cds-support-success)",
+                                }}
+                              />
+                              <span>
+                                Live: {liveKnowledge.provider} · {liveKnowledge.model}
+                                {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
+                              </span>
+                            </button>
+                          </Tooltip>
                         );
                       })()}
                       {!loadError && !draftSaving && currentVersion != null && (

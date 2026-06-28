@@ -425,6 +425,7 @@ interface KnowledgePanelProps {
   draftSaveStatus?:
     | { kind: "idle" }
     | { kind: "saving" }
+    | { kind: "saving-slow" }
     | { kind: "saved" }
     | { kind: "failed"; error: string };
   onRetryDraftSave?: () => void;
@@ -671,9 +672,10 @@ export default function KnowledgePanel({
   // corresponds to a real network event. The "saved" pill auto-hides
   // after 3s of quiescence via the local ``recentlySaved`` flag below
   // so the user doesn't see a permanent "Saved" sticker.
-  const saveState: "idle" | "saving" | "saved" | "failed" = (() => {
+  const saveState: "idle" | "saving" | "saving-slow" | "saved" | "failed" = (() => {
     if (!draftSaveStatus || draftSaveStatus.kind === "idle") return "idle";
     if (draftSaveStatus.kind === "saving") return "saving";
+    if (draftSaveStatus.kind === "saving-slow") return "saving-slow";
     if (draftSaveStatus.kind === "saved") return "saved";
     return "failed";
   })();
@@ -2415,6 +2417,47 @@ export default function KnowledgePanel({
                             />
                           )}
 
+                          {/* Env-presets panel surfaced HERE (not behind Advanced).
+                              This is the one-chance moment for the enterprise
+                              client: open the Knowledge tab, see "we noticed
+                              your Watsonx key, one click to use it." Hiding
+                              this behind Advanced wastes the most considered
+                              touchpoint we have. Gated on rows.length > 0 so
+                              users without any provider env vars see nothing
+                              here (locals via Provider Select work as before). */}
+                          {envPresets && envPresets.length > 0 && (
+                            <EnvPresetsPanel
+                              presets={envPresets}
+                              currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
+                              currentModel={knowledgeConfig.embedding_model ?? ""}
+                              onApply={(preset) => {
+                                onPresetApplied?.();
+                                onKnowledgeConfigChange({
+                                  ...knowledgeConfig,
+                                  embedding_provider: preset.default_provider,
+                                  embedding_model: preset.default_model,
+                                  embedding_api_key: "",
+                                  embedding_base_url: "",
+                                  embedding_extra_params: {},
+                                });
+                                onToast?.(
+                                  "success",
+                                  `${preset.label} applied`,
+                                  `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
+                                );
+                              }}
+                              onFocusProviderSelect={() => {
+                                // Opens Advanced (if closed) and scrolls to the Provider Select.
+                                setShowAdvanced(true);
+                                setTimeout(() => {
+                                  const el = document.getElementById("knowledge-embedding-provider");
+                                  el?.focus();
+                                  el?.scrollIntoView({ behavior: "smooth", block: "center" });
+                                }, 50);
+                              }}
+                            />
+                          )}
+
                           {/* ── 3. Retrieval Profile selector ── */}
                           {ragProfiles && Object.keys(ragProfiles).length > 0 && (
                             <Stack gap={3}>
@@ -2659,17 +2702,24 @@ export default function KnowledgePanel({
                               the persistent stale cases. */}
                           {agentLevelEnabled && !reindexProgress && (knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
                             <Stack gap={3}>
+                              {/* Softened per the 3-reviewer pre-client pass:
+                                  was kind="warning" + "danger--tertiary" button
+                                  with the "Re-index recommended" title, which
+                                  reads as alarming for a routine config
+                                  change. Now kind="info" + "tertiary" button,
+                                  title "Update existing documents" — the
+                                  action is routine, the framing should match. */}
                               <InlineNotification
-                                kind="warning"
-                                title="Re-index recommended"
-                                subtitle="Settings changed. Click Re-index to update existing documents with the new configuration."
+                                kind="info"
+                                title="Update existing documents"
+                                subtitle="Settings changed. Re-index to apply the new configuration to your indexed documents."
                                 lowContrast
                                 hideCloseButton
                               />
                               {onReindex && (
                                 <Button
                                   type="button"
-                                  kind="danger--tertiary"
+                                  kind="tertiary"
                                   size="sm"
                                   disabled={knowledgeReindexing}
                                   onClick={startReindexWithProgress}
@@ -2715,38 +2765,6 @@ export default function KnowledgePanel({
                           <Accordion align="start" size="md">
                             <AccordionItem title={sectionTitle("Embeddings", embeddingsStatus)}>
                               <Stack gap={4} style={{ paddingTop: "0.5rem" }}>
-                                {envPresets && envPresets.length > 0 && (
-                                  <EnvPresetsPanel
-                                    presets={envPresets}
-                                    currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
-                                    currentModel={knowledgeConfig.embedding_model ?? ""}
-                                    onApply={(preset) => {
-                                      // Signal first so the parent's autosave
-                                      // ref is set BEFORE the state update fires
-                                      // the effect — otherwise the effect reads
-                                      // the ref pre-bump and still debounces 800ms.
-                                      onPresetApplied?.();
-                                      onKnowledgeConfigChange({
-                                        ...knowledgeConfig,
-                                        embedding_provider: preset.default_provider,
-                                        embedding_model: preset.default_model,
-                                        embedding_api_key: "",
-                                        embedding_base_url: "",
-                                        embedding_extra_params: {},
-                                      });
-                                      onToast?.(
-                                        "success",
-                                        `${preset.label} applied`,
-                                        `Provider set to ${preset.default_provider}; model set to ${preset.default_model}. The engine will read credentials from the environment.`,
-                                      );
-                                    }}
-                                    onFocusProviderSelect={() => {
-                                      const el = document.getElementById("knowledge-embedding-provider");
-                                      el?.focus();
-                                      el?.scrollIntoView({ behavior: "smooth", block: "center" });
-                                    }}
-                                  />
-                                )}
                                 <Stack orientation="horizontal" gap={4}>
                                   <Select
                                     id="knowledge-embedding-provider"
@@ -3015,6 +3033,17 @@ export default function KnowledgePanel({
                                       Saving…
                                     </Tag>
                                   )}
+                                  {/* saving-slow: 25s+ into the save with no
+                                      response yet. Softer copy than a fail
+                                      state — corporate VPNs / first-time
+                                      Watsonx endpoint resolution can take
+                                      30-45s and a perfectly-healthy save
+                                      shouldn't read as broken. */}
+                                  {saveState === "saving-slow" && (
+                                    <Tag type="gray" size="sm" renderIcon={Renew}>
+                                      Still saving — network is slow
+                                    </Tag>
+                                  )}
                                   {saveState === "saved" && recentlySaved && (
                                     <Tag type="green" size="sm" renderIcon={Checkmark}>
                                       Saved
@@ -3026,7 +3055,6 @@ export default function KnowledgePanel({
                                       size="sm"
                                       renderIcon={ErrorFilled}
                                       onClick={() => onRetryDraftSave?.()}
-                                      title={draftSaveStatus.error}
                                       style={{ color: "var(--cds-support-error)" }}
                                     >
                                       Couldn&apos;t save — Retry
@@ -3075,6 +3103,24 @@ export default function KnowledgePanel({
                                         ? "You can now upload documents on the Documents tab."
                                         : testResult.error || "No detail returned."
                                     }
+                                  />
+                                )}
+
+                                {/* Full autosave-failure detail. Replaces the
+                                    prior native ``title=`` attribute tooltip
+                                    on the Retry button (which truncated to
+                                    ~80 chars and was invisible on most
+                                    screens). Surfaces the full server error
+                                    so debugging a 422 / 500 doesn't require
+                                    opening the browser network tab. */}
+                                {saveState === "failed" && draftSaveStatus?.kind === "failed" && (
+                                  <InlineNotification
+                                    kind="error"
+                                    lowContrast
+                                    hideCloseButton={false}
+                                    onCloseButtonClick={() => onRetryDraftSave?.()}
+                                    title="Couldn't save your changes"
+                                    subtitle={draftSaveStatus.error || "No detail returned."}
                                   />
                                 )}
 
