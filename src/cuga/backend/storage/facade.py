@@ -1,4 +1,3 @@
-import os
 from typing import TYPE_CHECKING, Optional
 
 from cuga.config import DBS_DIR, settings
@@ -26,29 +25,21 @@ def _local_db_path() -> str:
     path = getattr(settings, "storage", None) and getattr(settings.storage, "local_db_path", "") or ""
     if path:
         return path
-    os.makedirs(DBS_DIR, exist_ok=True)
-    db_path = os.path.join(DBS_DIR, "cuga.db")
-    # User-only file perms (0o600) for the SQLite DB that holds agent
-    # configs — including UI-entered embedding_api_key / OAuth client
-    # secrets / future fields. Default umask leaves it 0o644 (world-
-    # readable on the host), and config_store has no encryption layer.
-    # Matches the .internal_token pattern in server/main.py.
-    #
-    # Pre-create the file (touch) before SQLite sees it so the mode
-    # is set on first creation, not retroactively. SQLite's open is
-    # idempotent — touching first doesn't break its schema init.
+    # User-only perms (0o600) on the SQLite DB that holds UI-entered
+    # api_keys / OAuth client_secrets / future credential fields. Default
+    # umask = 0o644 (world-readable). pathlib.Path.touch sets mode on
+    # CREATE; chmod handles the existing-file case. Best-effort: skip on
+    # FS that don't honor POSIX modes (Windows / network mounts).
+    from pathlib import Path as _Path
+
+    p = _Path(DBS_DIR) / "cuga.db"
     try:
-        if not os.path.exists(db_path):
-            # touch + chmod before SQLite ever sees the file
-            with open(db_path, "a"):
-                pass
-        os.chmod(db_path, 0o600)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.touch(mode=0o600, exist_ok=True)
+        p.chmod(0o600)
     except OSError:
-        # Best-effort hardening — skip on filesystems that don't honor
-        # POSIX modes (Windows mounts, certain network FS). Not security
-        # critical there since the OS layer enforces its own ACLs.
         pass
-    return db_path
+    return str(p)
 
 
 def _postgres_url() -> str:

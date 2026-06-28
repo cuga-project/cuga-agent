@@ -64,40 +64,29 @@ def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool |
     return out
 
 
+_SECRET_FIELD_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD")  # KEY covers APIKEY + API_KEY both
+
+
+def _is_secret_field_name(name: str) -> bool:
+    """One rule for "is this field name a secret?" — used by the env-presets
+    endpoint, the GET-redactor, and the PATCH-preserver so they can't drift
+    when a sixth secret substring gets added."""
+    return any(s in (name or "").upper() for s in _SECRET_FIELD_SUBSTRINGS)
+
+
 def _redact_secrets_in_config(config: dict[str, Any]) -> None:
-    """Strip API keys / tokens / passwords from a config payload before
-    returning it to the client. The engine reads the real values from
-    its in-memory state (loaded from config_store on startup) — the GET
-    API doesn't need to round-trip them.
-
-    Why: the prior GET /api/manage/config response returned the full
-    draft including ``knowledge.embedding_api_key`` in cleartext. Anyone
-    with HTTP access to the running server (default: 127.0.0.1:7860, no
-    auth gate) could curl out the key. Now redacted to an empty string.
-
-    PATCH symmetry: ``patch_draft_knowledge`` treats an EMPTY
-    ``embedding_api_key`` as "preserve existing stored value" rather
-    than "clear" — so the round-trip GET → form-renders empty → PATCH
-    on save → empty doesn't wipe the stored key. Explicitly typing a
-    new value still overwrites (the user's clear intent). To clear,
-    the user can delete via CLI or restart with the env-var cleared.
-
-    Substring rule mirrors ``_is_secret`` used by the env-presets
-    endpoint so both API surfaces agree on what counts as secret.
-    """
+    """In-place: replace secret-named non-empty string fields with ''.
+    Walks nested dicts. PATCH preserves stored values on empty incoming
+    (see patch_draft_knowledge)."""
 
     def _walk(node: Any) -> None:
-        if isinstance(node, dict):
-            for k, v in list(node.items()):
-                ku = (k or "").upper()
-                is_secret = any(s in ku for s in ("API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD"))
-                if is_secret and isinstance(v, str) and v:
-                    node[k] = ""
-                elif isinstance(v, (dict, list)):
-                    _walk(v)
-        elif isinstance(node, list):
-            for item in node:
-                _walk(item)
+        if not isinstance(node, dict):
+            return
+        for k, v in list(node.items()):
+            if _is_secret_field_name(k) and isinstance(v, str) and v:
+                node[k] = ""
+            elif isinstance(v, dict):
+                _walk(v)
 
     _walk(config)
 
@@ -1208,12 +1197,10 @@ async def get_knowledge_env_presets():
                 return (_os.environ.get(n) or "").strip()
         return ""
 
-    def _is_secret(name: str) -> bool:
-        # Anything that looks like credential material never leaves the
-        # server. Conservative substring rule covers KEY / APIKEY / TOKEN
-        # / SECRET / PASSWORD across all known providers.
-        upper = name.upper()
-        return any(s in upper for s in ("KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD"))
+    # Local alias to ``_is_secret_field_name`` (top of file). One rule
+    # across env-presets / GET-redactor / PATCH-preserver — adding a
+    # sixth substring updates all three call sites.
+    _is_secret = _is_secret_field_name
 
     PROVIDER_PRESETS = [
         {
@@ -1438,15 +1425,10 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         # fields (api_key / token / password) to empty strings. So when
         # the UI form re-saves WITHOUT the user explicitly touching one
         # of those fields, the PATCH body carries an empty string for it
-        # — which, naively merged, would wipe out the legitimately-stored
-        # value. Strip empty-string secrets from the incoming patch so
-        # the merge below preserves what's already stored. The user can
-        # still explicitly type a new value to overwrite; only EMPTY
-        # values get the preserve treatment.
+        # Preserve stored secrets on empty incoming (GET redacts to "";
+        # naive merge would wipe). Explicit non-empty overwrites normally.
         for _k in list(knowledge.keys()):
-            _ku = _k.upper()
-            _is_secret = any(s in _ku for s in ("API_KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD"))
-            if _is_secret and isinstance(knowledge[_k], str) and knowledge[_k] == "":
+            if _is_secret_field_name(_k) and knowledge[_k] == "":
                 knowledge.pop(_k, None)
 
         merged = {**existing_knowledge, **knowledge}
