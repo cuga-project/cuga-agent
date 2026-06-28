@@ -80,7 +80,6 @@ class CugaLiteHumanInTheLoopHandler:
             # User denied - set final answer and end
             policy_name = state.cuga_lite_metadata.get("policy_name", "Tool Approval Policy")
             state.final_answer = f"❌ **Execution Cancelled**\n\nYou denied the execution of restricted tools required by **{policy_name}**.\n\nThe agent will not proceed with this task."
-            state.execution_complete = True
             state.sender = node_name
             return Command(update=state.model_dump(), goto=NodeNames.FINAL_ANSWER_AGENT)
 
