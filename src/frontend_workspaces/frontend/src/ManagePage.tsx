@@ -321,6 +321,34 @@ export function ManagePage() {
     | { kind: "saved"; vectorConfigHash: string | null; applyGeneration: number | null; reindexRequired: boolean }
     | { kind: "failed"; error: string };
   const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
+  // Stale-bundle banner: consumes the one-time ``cuga:stale-bundle``
+  // CustomEvent that ``apiFetch`` dispatches on X-Cuga-Build-Id mismatch.
+  // Renders as a non-dismissable top-of-page banner with a Reload button —
+  // the user's literal failure mode was clicking the OLD UI bundle and
+  // having no signal that their JS didn't match the server contract.
+  const [staleBundle, setStaleBundle] = useState<{
+    clientBuildId: string;
+    serverBuildId: string;
+  } | null>(null);
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const detail = (e as CustomEvent<{ clientBuildId: string; serverBuildId: string }>).detail;
+      if (detail) setStaleBundle(detail);
+    };
+    window.addEventListener("cuga:stale-bundle", handler);
+    return () => window.removeEventListener("cuga:stale-bundle", handler);
+  }, []);
+  // Live-config truth anchor. Sourced from GET /api/manage/config
+  // (published=true) on mount and after every successful Publish — never
+  // from optimistic client state. The pill in the header reads this so
+  // the user ALWAYS knows what's actually serving production traffic,
+  // independent of what the draft has been edited to. The 6-expert
+  // synthesis identified this as the most important addition: without
+  // it, no UI surface answers "what is actually running right now?"
+  // without log-reading.
+  const [liveKnowledge, setLiveKnowledge] = useState<
+    { provider: string; model: string; version: number | null } | null
+  >(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
@@ -658,6 +686,18 @@ export function ManagePage() {
         const publishedRes = await api.getManageConfig(false, effectiveAgentId);
         if (publishedRes.ok) {
           const data = await publishedRes.json();
+          // Stamp the Live truth anchor from the PUBLISHED knowledge config.
+          // Independent of whatever the draft is — this is the pill the
+          // header always reads. Refreshed after every successful Publish
+          // via the same endpoint, never updated optimistically.
+          const liveKn = data?.config?.knowledge;
+          if (liveKn && typeof liveKn === "object") {
+            setLiveKnowledge({
+              provider: typeof liveKn.embedding_provider === "string" ? liveKn.embedding_provider : "fastembed",
+              model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "(default)",
+              version: typeof data.version === "number" ? data.version : null,
+            });
+          }
           if (data.config && Object.keys(data.config).length > 0) {
             Object.assign(out, data.config);
             if (Array.isArray(out.tools)) {
@@ -1405,6 +1445,17 @@ export function ManagePage() {
 
         setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
         setSaveStatus("success");
+        // Refresh the Live truth anchor with what we just published. The
+        // header pill now reflects the new live state immediately — no
+        // re-fetch round-trip and no risk of the pill drifting from
+        // reality between Publish and the next page load.
+        setLiveKnowledge({
+          provider: typeof knowledgeConfig.embedding_provider === "string" ? knowledgeConfig.embedding_provider : "fastembed",
+          model: typeof knowledgeConfig.embedding_model === "string" && knowledgeConfig.embedding_model
+            ? knowledgeConfig.embedding_model
+            : "(default)",
+          version: typeof data.version === "number" ? data.version : null,
+        });
         // Snapshot the knowledge config so reindex detection compares against
         // the just-published state, not the initial load.
         setKnowledgeSavedSnapshot({ ...knowledgeConfig });
@@ -1578,6 +1629,26 @@ export function ManagePage() {
         linkComponent={Link}
         onOpenSecrets={() => setSecretsModalOpen(true)}
       />
+      {staleBundle && (
+        // Stale-bundle banner — non-dismissable. The user's literal failure
+        // mode was clicking the OLD UI bundle (cached JS) against a server
+        // that had moved on; this surfaces the mismatch with a forced
+        // reload. We don't auto-reload (would destroy in-progress edits);
+        // we let the user choose the moment.
+        <InlineNotification
+          kind="warning"
+          title="A newer version is available"
+          subtitle="The server has been updated since this page loaded. Reload to ensure your changes match the latest contract."
+          lowContrast
+          hideCloseButton
+          actions={
+            <Button kind="ghost" size="sm" onClick={() => window.location.reload()}>
+              Reload
+            </Button>
+          }
+          style={{ maxWidth: "none", margin: "0.5rem 1rem" }}
+        />
+      )}
 
       <div className="manage-layout">
         <div className="manage-config-panel">
@@ -2262,6 +2333,34 @@ export function ManagePage() {
                       )}
                       {!loadError && importStatus === "error" && (
                         <InlineNotification kind="error" title="Import failed" subtitle={importError ?? "Import failed"} lowContrast hideCloseButton />
+                      )}
+                      {/* Live truth anchor — what's actually serving production
+                          traffic right now. Sourced from GET /api/manage/config
+                          (published) on mount + after every successful Publish.
+                          Dot color: green when draft matches Live (no pending
+                          changes), yellow when the user has unpublished edits.
+                          The synthesis identified this as the single most
+                          important UX addition — without it, no surface
+                          answers "what is actually running?" without log-reading. */}
+                      {!loadError && liveKnowledge && (
+                        <p className="manage-save-bar-version" style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                          <span
+                            aria-hidden="true"
+                            style={{
+                              display: "inline-block",
+                              width: 8,
+                              height: 8,
+                              borderRadius: "50%",
+                              background: draftSaveStatus.kind === "saved" && draftSaveStatus.reindexRequired
+                                ? "var(--cds-support-warning)"
+                                : "var(--cds-support-success)",
+                            }}
+                          />
+                          <span>
+                            Live: {liveKnowledge.provider} · {liveKnowledge.model}
+                            {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
+                          </span>
+                        </p>
                       )}
                       {!loadError && !draftSaving && currentVersion != null && (
                         <p className="manage-save-bar-version">

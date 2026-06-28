@@ -2647,12 +2647,24 @@ export default function KnowledgePanel({
                             />
                           )}
 
-                          {agentLevelEnabled && !reindexProgress && (knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
+                          {/* Re-index recommended notice — narrowed per the
+                              6-expert config-flow synthesis. The prior trigger
+                              ``knowledgeReindexNeeded`` (snapshot-vs-current
+                              diff) is now redundant with the save-status pill
+                              that the user sees the moment they change a
+                              vector-config field; surfacing both was the
+                              most-cited confusion source ("did it work? it's
+                              still asking me to reindex"). Keep only the
+                              persistent cases: ``knowledgeStale`` (server
+                              detected vectors-under-old-config that survived
+                              a prior failed reindex) and ``knowledgeReindexDeferred``
+                              (user explicitly dismissed a prior prompt). */}
+                          {agentLevelEnabled && !reindexProgress && (knowledgeStale || knowledgeReindexDeferred) && (
                             <Stack gap={3}>
                               <InlineNotification
                                 kind="warning"
                                 title="Re-index recommended"
-                                subtitle="Settings changed. Existing documents may use outdated embeddings."
+                                subtitle="Some documents weren't re-indexed after a prior config change. Run re-index to update them."
                                 lowContrast
                                 hideCloseButton
                               />
