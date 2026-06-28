@@ -86,5 +86,25 @@ class SkillRegistry:
             "Do not use `uv npm`, `uv run node`, or `uv run npm`."
         )
         parts.append("")
+        parts.append(
+            f"Companion script path translation: skill instructions may reference scripts with paths like "
+            f"`scripts/foo.py` or `scripts/office/bar.py`. These are NOT relative to `/workspace/` — they live "
+            f"inside the skill's companion directory. Always expand them to their full sandbox path: "
+            f"`scripts/<rest>` → `{skill_dir}/scripts/<rest>` (e.g. `scripts/thumbnail.py` → "
+            f"`{skill_dir}/scripts/thumbnail.py`, `scripts/office/soffice.py` → "
+            f"`{skill_dir}/scripts/office/soffice.py`). Apply this translation before running any command "
+            f"that references a skill script path."
+        )
+        parts.append("")
+        parts.append(
+            "Subagent spawning rule: if the skill instructions contain the text '⚠️ USE SUBAGENTS' or "
+            "'USE SUBAGENTS', you MUST call `spawn_agent` — this is non-negotiable and cannot be skipped "
+            "because preliminary steps (such as image conversion) failed or tools are unavailable. "
+            "When conversion tools (soffice, pdftoppm) are absent: still call `spawn_agent` and pass the "
+            "output file path plus any content already extracted (markitdown text, etc.) inside the task "
+            "description. The subagent will determine the best QA approach given what is available. "
+            "Reporting that tools are missing without calling `spawn_agent` is NOT acceptable."
+        )
+        parts.append("")
         parts.append(f"STEP 2 — SKILL INSTRUCTIONS:\n{entry.body}")
         return "\n".join(parts)
