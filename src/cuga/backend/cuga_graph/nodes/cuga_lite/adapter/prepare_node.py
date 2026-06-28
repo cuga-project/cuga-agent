@@ -11,6 +11,7 @@ from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.code_extraction import make_tool_awaitable
+from cuga.backend.cuga_graph.nodes.cuga_lite.adapter.arg_coercion import make_coercing_callable
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import create_update_todos_tool
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.execution_policy import (
     ExecutionRouter,
@@ -338,6 +339,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         # Wrap to make awaitable (agent always uses await). Filesystem path
         # rewriting is no longer needed here — filesystem tools come from
         # the consolidated runtime class below, not from MCP.
+        # Pre-flight arg coercion+validation re-introduces the StructuredTool's
+        # args_schema (bypassed by calling .coroutine directly) right at this
+        # point. Default-off; R2 (the guesser) is separately gated + shadow-logged.
+        _af = getattr(settings, "advanced_features", None)
+        _coerce_enabled = bool(getattr(_af, "cuga_lite_arg_coercion", False))
+        _coerce_dict_scalar = bool(getattr(_af, "cuga_lite_arg_coercion_dict_scalar", False))
+
         for tool in tools_for_execution:
             # Extract tool function - StructuredTool may use .func, .coroutine, or ._run
             # IMPORTANT: Prefer coroutine over func to avoid run_in_executor issues
@@ -352,6 +360,12 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 tool_func = getattr(tool, '_run', None)
 
             if tool_func:
+                tool_func = make_coercing_callable(
+                    tool_func,
+                    getattr(tool, "args_schema", None),
+                    enable=_coerce_enabled,
+                    enable_dict_scalar=_coerce_dict_scalar,
+                )
                 adapter._tools_context[tool.name] = make_tool_awaitable(tool_func)
             else:
                 logger.warning(f"Tool '{tool.name}' has no callable function, skipping")
