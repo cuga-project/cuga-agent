@@ -207,6 +207,36 @@ const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   client_adaptation_glossary: [],
 };
 
+// "Effective index equivalence" for the Re-index banner. Two configs are
+// equivalent for the vector index when every field contributing to the
+// engine's ``vector_config_hash`` resolves to the same effective value:
+//
+//   - embedding_provider, embedding_model, chunk_size, chunk_overlap, metric_type
+//
+// Special case: ``embedding_model = ""`` is the Provider Select's reset
+// value, meaning "use this provider's default". On the SAME provider the
+// engine resolves it to the same default the saved snapshot already
+// captured — so empty current model = match. Without this normalisation,
+// reverting via the Select keeps the Re-index banner stuck up forever.
+//
+// Other fields (numeric chunking, enum metric_type) never produce empty
+// values via the UI today; if a future UI surface introduces one, add
+// the same empty-means-default branch here. One place to extend.
+function isIndexConfigEquivalent(
+  current: NonNullable<AgentConfig["knowledge"]>,
+  saved: NonNullable<AgentConfig["knowledge"]>,
+): boolean {
+  if (current.embedding_provider !== saved.embedding_provider) return false;
+  // Empty current model on the same provider == use provider default == match saved.
+  const modelExplicitlyDifferent =
+    !!current.embedding_model && current.embedding_model !== saved.embedding_model;
+  if (modelExplicitlyDifferent) return false;
+  if (current.chunk_size !== saved.chunk_size) return false;
+  if (current.chunk_overlap !== saved.chunk_overlap) return false;
+  if (current.metric_type !== saved.metric_type) return false;
+  return true;
+}
+
 const DEFAULT_HOMESCREEN: HomescreenConfig = {
   isOn: true,
   greeting: "Hello, how can I help you today?",
@@ -1140,37 +1170,30 @@ export function ManagePage() {
     };
   }, [tools, effectiveAgentId, addToast]);
 
-  // Knowledge reindex detection — compare current config against the last
-  // saved/published state. Merge snapshot with defaults so missing fields
-  // (e.g. first demo config that only has _vector_config_hash) don't
-  // trigger a false positive.
+  // Knowledge reindex detection — compare current config against the
+  // last saved/published state. The principle: only flag "needs
+  // re-index" when the CURRENT config would produce a different
+  // vector index than the SAVED config. Two configs are equivalent
+  // for the index when every field the engine's vector_config_hash
+  // considers (provider, model, chunk_size, chunk_overlap, metric)
+  // resolves to the same effective value.
   //
-  // Empty-string normalisation: the Provider Select's onChange resets
-  // ``embedding_model`` to "" (and api_key/base_url/extra_params too).
-  // When a user picks Watsonx then reverts to the original provider
-  // via the Select dropdown, ``embedding_model`` ends up "" while the
-  // snapshot still holds the original model name ("BAAI/bge-small-...").
-  // Treating "" as "use provider default" makes the comparison
-  // functionally honest — same provider + empty current model + any
-  // snapshot model is "effectively unchanged" (engine will pick the
-  // default for that provider, which is what the snapshot used).
-  // The chunking fields are numeric so the same trap doesn't apply.
+  // ``embedding_model = ""`` is the Provider Select's reset value
+  // (means "use provider default"). On the SAME provider, an empty
+  // current model is functionally equivalent to whatever specific
+  // model the snapshot holds — the engine picks the same default at
+  // embed time. The general pattern: for every field where the UI
+  // can produce an empty/unset value that the engine resolves to the
+  // saved value, treat empty current as a match.
+  //
+  // Only ``embedding_model`` needs this treatment today (numeric
+  // chunking fields never empty after edits; metric_type comes from
+  // a Select with concrete enum values). Adding more cases is a
+  // one-line change in ``isIndexConfigEquivalent``.
   useEffect(() => {
     if (!knowledgeSavedSnapshot) return;
     const saved = { ...DEFAULT_KNOWLEDGE_CONFIG, ...knowledgeSavedSnapshot };
-    const providerChanged = knowledgeConfig.embedding_provider !== saved.embedding_provider;
-    // Model changed ONLY if user typed a specific non-empty model that
-    // differs from the snapshot. An empty model on the same provider
-    // means "use provider default" — equivalent to the snapshot.
-    const modelChanged = providerChanged
-      ? true
-      : !!knowledgeConfig.embedding_model && knowledgeConfig.embedding_model !== saved.embedding_model;
-    const changed =
-      providerChanged ||
-      modelChanged ||
-      knowledgeConfig.chunk_size !== saved.chunk_size ||
-      knowledgeConfig.chunk_overlap !== saved.chunk_overlap ||
-      knowledgeConfig.metric_type !== saved.metric_type;
+    const changed = !isIndexConfigEquivalent(knowledgeConfig, saved);
     setKnowledgeReindexNeeded(changed && knowledgeDocCount > 0);
   }, [knowledgeConfig, knowledgeSavedSnapshot, knowledgeDocCount]);
 
