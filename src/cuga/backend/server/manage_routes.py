@@ -1045,9 +1045,39 @@ async def get_knowledge_env_presets():
     """
     import os as _os
 
-    # Provider preset catalog. ``required_env`` controls the ready flag;
-    # ``optional_env`` is exposed for completeness so the UI can show
-    # "BASE_URL detected, will override default" hints.
+    # Slot semantics: each entry in ``required_env`` / ``optional_env`` is
+    # a single var name OR a pipe-separated alias group ("A|B"). The slot
+    # is satisfied if ANY alias is set. Lets us collapse the old watsonx
+    # special case (WATSONX_URL OR WATSONX_API_BASE) AND accept the
+    # WATSONX_APIKEY / WATSONX_API_KEY spelling variation LiteLLM itself
+    # accepts upstream.
+    def _aliases(spec: str) -> list[str]:
+        return spec.split("|")
+
+    def _env_set(name: str) -> bool:
+        v = (_os.environ.get(name) or "").strip()
+        if not v:
+            return False
+        # Reject angle-bracket placeholders ("<your-key>") — common in .env
+        # templates and would falsely flag the slot as ready.
+        return not (v.startswith("<") and v.endswith(">"))
+
+    def _slot_set(spec: str) -> bool:
+        return any(_env_set(n) for n in _aliases(spec))
+
+    def _slot_first_value(spec: str) -> str:
+        for n in _aliases(spec):
+            if _env_set(n):
+                return (_os.environ.get(n) or "").strip()
+        return ""
+
+    def _is_secret(name: str) -> bool:
+        # Anything that looks like credential material never leaves the
+        # server. Conservative substring rule covers KEY / APIKEY / TOKEN
+        # / SECRET / PASSWORD across all known providers.
+        upper = name.upper()
+        return any(s in upper for s in ("KEY", "APIKEY", "TOKEN", "SECRET", "PASSWORD"))
+
     PROVIDER_PRESETS = [
         {
             "id": "openai",
@@ -1068,13 +1098,20 @@ async def get_knowledge_env_presets():
         {
             "id": "watsonx",
             "label": "IBM Watsonx (via LiteLLM)",
-            # LiteLLM accepts WATSONX_URL or WATSONX_API_BASE. We require
-            # at least one of those two — surface both as detected when
-            # either is present.
-            "required_env": ["WATSONX_APIKEY", "WATSONX_PROJECT_ID"],
-            "optional_env": ["WATSONX_URL", "WATSONX_API_BASE"],
+            # Aliases: LiteLLM accepts both APIKEY and API_KEY for Watsonx
+            # creds AND either URL or API_BASE for the endpoint. Slot-level
+            # alias support eliminates the old watsonx special case.
+            "required_env": [
+                "WATSONX_APIKEY|WATSONX_API_KEY",
+                "WATSONX_PROJECT_ID",
+                "WATSONX_URL|WATSONX_API_BASE",
+            ],
+            "optional_env": [],
             "default_provider": "litellm",
-            "default_model": "watsonx/ibm/slate-30m-english-rtrvr",
+            # intfloat/multilingual-e5-large is a stronger general-purpose
+            # default than the prior IBM slate-30m (multilingual coverage,
+            # better OOTB retrieval quality on enterprise corpora).
+            "default_model": "watsonx/intfloat/multilingual-e5-large",
         },
         {
             "id": "azure",
@@ -1092,25 +1129,73 @@ async def get_knowledge_env_presets():
             "default_provider": "litellm",
             "default_model": "cohere/embed-english-v3.0",
         },
+        # Broader provider coverage for "many companies" — each ships
+        # hidden by the UI's row filter (no env vars set → no row).
+        {
+            "id": "gemini",
+            "label": "Google Gemini (via LiteLLM)",
+            "required_env": ["GEMINI_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "gemini/text-embedding-004",
+        },
+        {
+            "id": "voyage",
+            "label": "Voyage AI (via LiteLLM)",
+            "required_env": ["VOYAGE_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "voyage/voyage-3",
+        },
+        {
+            "id": "mistral",
+            "label": "Mistral AI (via LiteLLM)",
+            "required_env": ["MISTRAL_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "mistral/mistral-embed",
+        },
+        {
+            "id": "togetherai",
+            "label": "Together AI (via LiteLLM)",
+            "required_env": ["TOGETHERAI_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "together_ai/BAAI/bge-large-en-v1.5",
+        },
+        {
+            "id": "jina",
+            "label": "Jina AI (via LiteLLM)",
+            "required_env": ["JINA_AI_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "jina_ai/jina-embeddings-v3",
+        },
     ]
 
     presets = []
     for p in PROVIDER_PRESETS:
-        env_vars = {
-            v: bool((_os.environ.get(v) or "").strip()) for v in (p["required_env"] + p["optional_env"])
-        }
-        # Watsonx is the lone provider with a "one-of-two" optional rule
-        # (URL or API_BASE). Special-case the ready check: required keys
-        # AND at least one of the URL aliases.
-        if p["id"] == "watsonx":
-            url_ok = env_vars.get("WATSONX_URL") or env_vars.get("WATSONX_API_BASE")
-            ready = all(env_vars[v] for v in p["required_env"]) and bool(url_ok)
-            missing = [v for v in p["required_env"] if not env_vars[v]]
-            if not url_ok:
-                missing.append("WATSONX_URL")
-        else:
-            ready = all(env_vars[v] for v in p["required_env"])
-            missing = [v for v in p["required_env"] if not env_vars[v]]
+        all_slots = p["required_env"] + p["optional_env"]
+
+        # env_vars: every alias name (including unfilled ones) so the UI
+        # can show which specific spelling was found.
+        env_vars: dict[str, bool] = {}
+        # env_values: ONLY non-secret vars that are actually set. Surfaces
+        # the URL / region / project-id / base path the UI needs to render
+        # "what was detected" alongside the row. Credential material
+        # (KEY / TOKEN / SECRET / PASSWORD / APIKEY) is filtered out.
+        env_values: dict[str, str] = {}
+        for slot in all_slots:
+            for name in _aliases(slot):
+                is_set = _env_set(name)
+                env_vars[name] = is_set
+                if is_set and not _is_secret(name):
+                    env_values[name] = (_os.environ.get(name) or "").strip()
+
+        ready = all(_slot_set(s) for s in p["required_env"])
+        # Surface the canonical (first) name for each unset required slot.
+        missing = [_aliases(s)[0] for s in p["required_env"] if not _slot_set(s)]
+
         presets.append(
             {
                 "id": p["id"],
@@ -1119,6 +1204,7 @@ async def get_knowledge_env_presets():
                 "default_model": p["default_model"],
                 "ready": ready,
                 "env_vars": env_vars,
+                "env_values": env_values,
                 "missing": missing,
             }
         )
