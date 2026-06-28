@@ -1040,11 +1040,12 @@ async def test_embeddings_connection(request: Request):
             vec = emb.embed_query("connection test")
             dt_ms = int((_time.monotonic() - t0) * 1000)
             return {"ok": True, "dim": len(vec), "latency_ms": dt_ms}
-        except Exception as e:
+        except Exception:
+            logger.exception("Knowledge embedding connection test failed")
             return {
                 "ok": False,
-                "error_class": type(e).__name__,
-                "error": _scrub_secret(str(e), api_key),
+                "error_class": "EmbeddingConnectionFailed",
+                "error": "Embedding connection test failed. Check the base URL, model, and credentials.",
             }
 
     try:
@@ -1241,19 +1242,15 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
     """
     if agent_id is None:
         agent_id = "cuga-default"
-    # Slice A telemetry — the UI now aborts an in-flight knowledge PATCH
-    # when the user picks another profile within the 800ms debounce
-    # window (see CLIENT_CANCELLATION_CONTRACT.md). The request still
-    # arrives here intact, but logging the disconnect at DEBUG level
-    # lets SREs correlate "duplicate apply" patterns with client-side
-    # cancellation. Slice B (engine generation counter) will
-    # short-circuit the actual apply work when this returns True.
-    if await request.is_disconnected():
-        logger.debug(
-            "patch_draft_knowledge: client disconnected before handler ran "
-            "(agent_id=%s) — Slice B will short-circuit apply work in a follow-up.",
-            agent_id,
-        )
+    # NOTE: previously called ``await request.is_disconnected()`` here as
+    # Slice A telemetry. That call invokes ``self._receive()`` to peek at
+    # the ASGI channel, which can CONSUME the first body chunk and
+    # leave ``await request.json()`` below blocked indefinitely waiting
+    # for a chunk that's already been eaten. Symptom: PATCH hangs at
+    # body.read until the client times out with ClientDisconnect.
+    # Removed — Slice B (engine generation counter) doesn't need this
+    # telemetry, and FastAPI surfaces real disconnects via the normal
+    # exception path anyway.
     try:
         from cuga.backend.server.config_store import _parse_agent_id
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
