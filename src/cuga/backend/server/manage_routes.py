@@ -370,91 +370,171 @@ async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict
 
 
 async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_state: Any) -> dict[str, Any]:
-    """Migrate documents to the engine's current vector_config_hash dir and reindex.
+    """Re-embed the user's CURRENT documents with the new config.
 
-    Triggered by the user clicking "Re-index" in the UI after changing an
-    embedder/chunking/metric setting. Previously this ran automatically as part
-    of every config-changing PATCH; we moved it here so the user controls the
-    moment (and CPU spend) instead of the PATCH lifecycle dictating it.
+    Source-identification rule (single-source / active-snapshot-only):
+    the Re-index source is exactly one collection — the dir referenced
+    by ``app_state.knowledge_config_hash`` (the same dir
+    ``resolve_agent_collection`` returns, which is what
+    ``list_documents`` reads). The target is
+    ``kb_agent_<sanitized>_<engine._config.vector_config_hash()>``.
+    "Re-index" means literally: re-embed the documents currently
+    visible in the Documents tab with the new settings.
 
-    Returns the same ``auto_reindex`` shape the PATCH used to return so the
-    frontend's reindex-tile arming code stays unchanged.
+    Other ``kb_agent_<sanitized>_*`` dirs are treated as
+    potentially-published historical snapshots and preserved untouched.
+    We surface them in the response for observability; we never
+    read, copy, or delete them. Auto-GC is a separate dedicated pass.
+
+    Linearization: ``app_state.knowledge_config_hash`` flips ONLY
+    after ``engine.reindex(target)`` returns a non-empty success. On
+    failure, the pointer stays on the prior active so reads remain
+    correct. Concurrent ingests collide with the engine's existing
+    ``ReindexBusyError`` / ``_reindex_deferred`` machinery via the
+    busy flag we set on ``source`` before copy.
+
+    Replaces the prior iterdir()-driven multi-source merge that
+    fabricated synthetic snapshots out of historical dirs (the
+    "4 PDFs visible, 2 reindexed" bug).
     """
     import re as _re
 
-    triggered_collections: list[dict[str, Any]] = []
-    files_dir = getattr(live_engine, "_files_dir", None)
     sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
     agent_prefix = f"kb_agent_{sanitized}"
 
     try:
-        current_hash = live_engine._config.vector_config_hash()
+        target_hash = live_engine._config.vector_config_hash()
     except Exception:
-        current_hash = ""
-    target_collection = f"{agent_prefix}_{current_hash}" if current_hash else agent_prefix
+        target_hash = ""
+    target_collection = f"{agent_prefix}_{target_hash}" if target_hash else agent_prefix
 
-    if files_dir and files_dir.exists():
-        collections = [
-            d.name
-            for d in files_dir.iterdir()
-            if d.is_dir() and (d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"))
-        ]
-    else:
-        collections = []
+    # SOURCE = active snapshot ONLY. The dir resolve_agent_collection
+    # routes to today. Legacy state with no knowledge_config_hash =
+    # bare prefix dir (one-time migration; promote a hash on success).
+    active_hash = getattr(live_state, "knowledge_config_hash", "") or ""
+    source_collection = f"{agent_prefix}_{active_hash}" if active_hash else agent_prefix
 
-    # PREVIOUS BUG: the loop picked the FIRST non-target collection,
-    # copied its files to the target, then marked every other source as
-    # ``orphan_stale``. If the user's documents were spread across
-    # multiple old-hash dirs (e.g. uploaded under config A, then config
-    # B, then changed to C), only files from ONE old dir got migrated
-    # — the rest were silently abandoned. User-visible symptom: reindex
-    # tile shows 2 docs when the Documents tab lists 5. Now we copy
-    # files from ALL non-target source dirs into the target BEFORE the
-    # single reindex pass, so no source is left behind.
-    #
-    # File-name collision: shutil.copy2 overwrites, last copy wins.
-    # That's acceptable for the common case (re-uploaded file with same
-    # name = newer is intended). A future migration could dedupe by
-    # mtime if it becomes a real problem.
-    migrated_from: list[str] = []
-    for coll in collections:
-        if coll == target_collection:
-            continue
+    files_dir = getattr(live_engine, "_files_dir", None)
+    triggered_collections: list[dict[str, Any]] = []
+
+    # Idempotent no-op when source == target (Re-index without
+    # changing the vector config, or already migrated). Skip copy,
+    # one reindex pass, no pointer flip needed.
+    if source_collection == target_collection:
         try:
-            n = await live_engine.copy_source_files(coll, target_collection)
-            if n > 0:
-                migrated_from.append(coll)
-                triggered_collections.append({"collection": coll, "copied_to": target_collection, "files": n})
-            else:
-                triggered_collections.append({"collection": coll, "skipped": "empty"})
+            r = await live_engine.reindex(target_collection)
+            triggered_collections.append(
+                {"collection": target_collection, "result": r, "role": "active==target"}
+            )
+            ok = bool(r and r.get("status") not in (None, "no_documents"))
         except Exception as rerr:
-            logger.warning("copy_source_files %s -> %s failed: %s", coll, target_collection, rerr)
-            triggered_collections.append({"collection": coll, "error": str(rerr)})
+            logger.warning("Reindex of %s failed: %s", target_collection, rerr)
+            triggered_collections.append({"collection": target_collection, "error": str(rerr)})
+            ok = False
+        return {
+            "triggered": True,
+            "scope": agent_prefix,
+            "target": target_collection,
+            "source": source_collection,
+            "collections": triggered_collections,
+            "ok": ok,
+        }
 
-    # Reindex the target ONCE with the merged file set.
-    target_done = False
+    # Refuse rather than fabricate by merging siblings if active dir is
+    # missing on disk (restore of a version whose source files were
+    # never materialized). UI/CLI is the recovery path.
+    if files_dir is not None:
+        src_dir = files_dir / source_collection
+        if not src_dir.exists():
+            return {
+                "triggered": False,
+                "scope": agent_prefix,
+                "target": target_collection,
+                "source": source_collection,
+                "active_hash": active_hash,
+                "error": "active_snapshot_missing",
+            }
+
+    # Busy flag on SOURCE before copy. Engine.reindex manages the
+    # target flag itself. This blocks concurrent uploads to source
+    # via the existing ReindexBusyError path.
+    live_engine._reindex_in_progress.add(source_collection)
+    copied = 0
+    try:
+        async with (
+            live_engine._get_collection_lock(source_collection),
+            live_engine._get_collection_lock(target_collection),
+        ):
+            try:
+                copied = await live_engine.copy_source_files(source_collection, target_collection)
+                triggered_collections.append(
+                    {
+                        "collection": source_collection,
+                        "copied_to": target_collection,
+                        "files": copied,
+                        "role": "active_source",
+                    }
+                )
+            except Exception as cerr:
+                logger.warning(
+                    "copy_source_files %s -> %s failed: %s",
+                    source_collection,
+                    target_collection,
+                    cerr,
+                )
+                triggered_collections.append(
+                    {"collection": source_collection, "error": str(cerr), "role": "active_source"}
+                )
+                # Half-copied target — do NOT proceed to reindex, do
+                # NOT flip the pointer. Active stays authoritative;
+                # retry is safe (copy2 overwrites, reindex is idempotent).
+                return {
+                    "triggered": False,
+                    "scope": agent_prefix,
+                    "target": target_collection,
+                    "source": source_collection,
+                    "collections": triggered_collections,
+                    "error": "copy_failed",
+                }
+    finally:
+        live_engine._reindex_in_progress.discard(source_collection)
+        live_engine._reindex_deferred.discard(source_collection)
+
+    # Surface historical snapshots in the response — observability only,
+    # no reads/copies/deletes. A future GC pass classifies these against
+    # config_store.agent_configs to find truly-abandoned dirs.
+    if files_dir and files_dir.exists():
+        for d in files_dir.iterdir():
+            if not d.is_dir():
+                continue
+            if d.name == target_collection or d.name == source_collection:
+                continue
+            if d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"):
+                triggered_collections.append(
+                    {"collection": d.name, "role": "historical_snapshot", "action": "preserved"}
+                )
+
+    # Single reindex pass against the migrated file set.
     try:
         r = await live_engine.reindex(target_collection)
         triggered_collections.append(
             {
                 "collection": target_collection,
-                "migrated_from": migrated_from or None,
+                "migrated_from": source_collection if copied else None,
                 "result": r,
             }
         )
-        # ``no_documents`` is still a structural success (no files to
-        # reindex), but we don't treat it as a config promotion — the
-        # collection is empty so the hash flip below would point
-        # searches at a void.
-        target_done = bool(r and r.get("status") not in (None, "no_documents"))
+        ok = bool(r and r.get("status") not in (None, "no_documents"))
     except Exception as rerr:
         logger.warning("Reindex of target %s failed: %s", target_collection, rerr)
         triggered_collections.append({"collection": target_collection, "error": str(rerr)})
+        ok = False
 
-    # Route searches + future ingests to the migrated collection.
-    if target_done and current_hash and live_state is not None:
+    # Pointer flips only on a real reindex success. Failure leaves
+    # searches on the verified-good prior active.
+    if ok and target_hash and live_state is not None:
         try:
-            live_state.knowledge_config_hash = current_hash
+            live_state.knowledge_config_hash = target_hash
         except Exception as _hash_err:
             logger.warning("Failed to update knowledge_config_hash after migrate: %s", _hash_err)
 
@@ -462,7 +542,9 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
         "triggered": True,
         "scope": agent_prefix,
         "target": target_collection,
+        "source": source_collection,
         "collections": triggered_collections,
+        "ok": ok,
     }
 
 
