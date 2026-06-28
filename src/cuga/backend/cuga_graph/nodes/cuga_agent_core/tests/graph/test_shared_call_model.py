@@ -90,6 +90,16 @@ def _mock_settings(policy_enabled=False):
     return SimpleNamespace(advanced_features=adv, policy=policy)
 
 
+def _mock_settings_guard(require_tool_call=False, policy_enabled=False):
+    """Settings with the require-tool-call-before-final guard knob set."""
+    adv = SimpleNamespace(
+        cuga_lite_max_steps=50,
+        require_tool_call_before_final=require_tool_call,
+    )
+    policy = SimpleNamespace(enabled=policy_enabled)
+    return SimpleNamespace(advanced_features=adv, policy=policy)
+
+
 # The factory under test — imported lazily so we see ImportError (RED) clearly.
 def _get_factory():
     from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes import (
@@ -357,3 +367,69 @@ async def test_multi_block_response_not_truncated_when_no_probing_tools(mock_sum
     assert result.update["script"] == (
         "res = await file_readfile('./x')\nprint(res)\n\nres_2 = res[0][0:15]\nprint(res_2)"
     )
+
+
+# ── 9. require_tool_call_before_final guard ───────────────────────────────
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_guard_blocks_final_answer_with_zero_tool_calls(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()  # default classify → does not auto-continue
+    state = _make_state(metadata={})  # no code executed yet
+    model = _mock_model("The answer is VISA 42.3%.")
+    settings = _mock_settings_guard(require_tool_call=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    # Instead of ENDing with the ungrounded answer, it injects a directive
+    # and loops back to call_model.
+    assert result.goto == "call_model"
+    assert result.update["execution_complete"] is False
+    assert "tool" in result.update["chat_messages"][-1].content.lower()
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_guard_allows_final_answer_after_tool_call(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state(metadata={"code_exec_count": 1})  # a tool/code block ran
+    model = _mock_model("The answer is 42.")
+    settings = _mock_settings_guard(require_tool_call=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "The answer is 42."
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_code_path_records_exec_count(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state(metadata={"code_exec_count": 1})
+    model = _mock_model("```python\nprint('hi')\n```")
+    settings = _mock_settings_guard(require_tool_call=True)
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == "sandbox"
+    assert result.update["cuga_lite_metadata"]["code_exec_count"] == 2
