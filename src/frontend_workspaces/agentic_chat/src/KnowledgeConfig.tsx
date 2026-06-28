@@ -2419,8 +2419,17 @@ export default function KnowledgePanel({
                                       knowledgeConfig.embedding_model &&
                                     profile.chunking.chunk_size === knowledgeConfig.chunk_size &&
                                     profile.chunking.chunk_overlap === knowledgeConfig.chunk_overlap;
-                                  // Selected only if the profile name matches AND every vector-config field matches.
-                                  const isSelected = isNamedProfile && vectorConfigMatches;
+                                  // Selected by USER INTENT (the profile name in config), not by
+                                  // exact field-for-field equality. The named profile is the baseline;
+                                  // edits to advanced settings are overrides on top of it, not a
+                                  // reason to drop the profile from the selected state. ``Modified``
+                                  // tag inside the selected tile signals the drift (see below).
+                                  const isSelected = isNamedProfile;
+                                  // True when this is the selected profile AND the user has edited
+                                  // a vector-config field — drives the "Modified" Tag + the in-tile
+                                  // reindex hint. The non-selected reindex hint (offered to OTHER
+                                  // profiles to inform their decision) still uses ``willReindex`` below.
+                                  const isModified = isNamedProfile && !vectorConfigMatches;
                                   const willReindex = !vectorConfigMatches;
                                   return (
                                     <Tile
@@ -2477,8 +2486,13 @@ export default function KnowledgePanel({
                                           }}
                                         />
                                         <Stack gap={1} style={{ flex: 1 }}>
-                                          <span style={{ fontWeight: 600, fontSize: "0.875rem", color: "var(--cds-text-primary)" }}>
-                                            {profile.name}
+                                          <span style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                                            <span style={{ fontWeight: 600, fontSize: "0.875rem", color: "var(--cds-text-primary)" }}>
+                                              {profile.name}
+                                            </span>
+                                            {isModified && (
+                                              <Tag type="cool-gray" size="sm">Modified</Tag>
+                                            )}
                                           </span>
                                           <p style={{ margin: 0, fontSize: "0.75rem", color: "var(--cds-text-secondary)", lineHeight: 1.5 }}>
                                             {profile.description}
@@ -2486,6 +2500,11 @@ export default function KnowledgePanel({
                                           {!isSelected && willReindex && (
                                             <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.6875rem", color: "var(--cds-support-warning)" }}>
                                               Requires re-indexing existing documents.
+                                            </p>
+                                          )}
+                                          {isModified && (
+                                            <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.6875rem", color: "var(--cds-support-warning)" }}>
+                                              Your edits override profile defaults — re-indexing will run on Publish.
                                             </p>
                                           )}
                                         </Stack>
