@@ -1144,12 +1144,30 @@ export function ManagePage() {
   // saved/published state. Merge snapshot with defaults so missing fields
   // (e.g. first demo config that only has _vector_config_hash) don't
   // trigger a false positive.
+  //
+  // Empty-string normalisation: the Provider Select's onChange resets
+  // ``embedding_model`` to "" (and api_key/base_url/extra_params too).
+  // When a user picks Watsonx then reverts to the original provider
+  // via the Select dropdown, ``embedding_model`` ends up "" while the
+  // snapshot still holds the original model name ("BAAI/bge-small-...").
+  // Treating "" as "use provider default" makes the comparison
+  // functionally honest — same provider + empty current model + any
+  // snapshot model is "effectively unchanged" (engine will pick the
+  // default for that provider, which is what the snapshot used).
+  // The chunking fields are numeric so the same trap doesn't apply.
   useEffect(() => {
     if (!knowledgeSavedSnapshot) return;
     const saved = { ...DEFAULT_KNOWLEDGE_CONFIG, ...knowledgeSavedSnapshot };
+    const providerChanged = knowledgeConfig.embedding_provider !== saved.embedding_provider;
+    // Model changed ONLY if user typed a specific non-empty model that
+    // differs from the snapshot. An empty model on the same provider
+    // means "use provider default" — equivalent to the snapshot.
+    const modelChanged = providerChanged
+      ? true
+      : !!knowledgeConfig.embedding_model && knowledgeConfig.embedding_model !== saved.embedding_model;
     const changed =
-      knowledgeConfig.embedding_provider !== saved.embedding_provider ||
-      knowledgeConfig.embedding_model !== saved.embedding_model ||
+      providerChanged ||
+      modelChanged ||
       knowledgeConfig.chunk_size !== saved.chunk_size ||
       knowledgeConfig.chunk_overlap !== saved.chunk_overlap ||
       knowledgeConfig.metric_type !== saved.metric_type;
