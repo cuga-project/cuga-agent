@@ -296,13 +296,13 @@ class RemoteSandboxBackend(FilesystemBackend):
 
         sp = self._norm(sandbox_path)
         base = local_base_dir().resolve()
-        p = Path(local_path).resolve()
+        from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+            assert_resolved_path_under,
+        )
+
+        p = assert_resolved_path_under(Path(local_path), base)
         if not p.is_file():
             raise FileNotFoundError(f"Local file not found: {p}")
-        try:
-            p.relative_to(base)
-        except ValueError as exc:
-            raise ValueError(f"Local upload must stay under {base}") from exc
         interp = await self._interp()
         await interp.sandbox.files.write_files([WriteEntry(path=sp, data=p.read_bytes())])
         logger.info(f"[RemoteSandboxBackend] Uploaded {p} → {sp}")

@@ -289,11 +289,15 @@ def fetch_host_workspace_tree(thread_id: Optional[str]) -> list[dict[str, Any]]:
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         rel = Path(dirpath).relative_to(root)
         if rel.parts:
-            dir_lines.append(str(Path(sandbox_root, *rel.parts)).replace("\\", "/"))
+            dir_lines.append(  # codeql[py/path-injection] paths from os.walk under validated root
+                str(Path(sandbox_root, *rel.parts)).replace("\\", "/")
+            )
         for name in filenames:
             if name.startswith("."):
                 continue
-            file_lines.append(str(Path(sandbox_root, *rel.parts, name)).replace("\\", "/"))
+            file_lines.append(  # codeql[py/path-injection] paths from os.walk under validated root
+                str(Path(sandbox_root, *rel.parts, name)).replace("\\", "/")
+            )
 
     from cuga.backend.server.workspace_sandbox import sandbox_paths_to_tree
 

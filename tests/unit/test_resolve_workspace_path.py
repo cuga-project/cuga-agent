@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
+    assert_resolved_path_under,
     child_path_under,
     ensure_thread_workspace_seeded,
     local_base_dir,
@@ -71,6 +72,15 @@ def test_child_path_under_rejects_traversal(tmp_path: Path) -> None:
     base.mkdir()
     with pytest.raises(ValueError, match="Invalid path segment"):
         child_path_under(base, "..")
+
+
+def test_assert_resolved_path_under_rejects_escape(tmp_path: Path) -> None:
+    base = tmp_path / "root"
+    base.mkdir()
+    outside = tmp_path / "outside.txt"
+    outside.write_text("x", encoding="utf-8")
+    with pytest.raises(ValueError, match="Path must stay under"):
+        assert_resolved_path_under(outside, base)
 
 
 def test_ensure_thread_workspace_seeded_copies_crm_fixtures(

@@ -62,8 +62,19 @@ def child_path_under(base: Path, *names: str) -> Path:
         clean = (name or "").replace("\\", "/")
         if not clean or clean in (".", "..") or "/" in clean:
             raise ValueError(f"Invalid path segment: {name!r}")
-        dest = dest / clean
-    resolved = dest.resolve()
+        dest = dest / clean  # codeql[py/path-injection] segment validated above
+    resolved = dest.resolve()  # codeql[py/path-injection]
+    try:
+        resolved.relative_to(root)
+    except ValueError as exc:
+        raise ValueError(f"Path must stay under {root}") from exc
+    return resolved
+
+
+def assert_resolved_path_under(path: Path, base: Path) -> Path:
+    """Return ``path.resolve()`` after verifying it stays under ``base``."""
+    root = base.resolve()
+    resolved = path.resolve()
     try:
         resolved.relative_to(root)
     except ValueError as exc:
