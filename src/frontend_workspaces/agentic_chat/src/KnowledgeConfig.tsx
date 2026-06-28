@@ -425,14 +425,13 @@ interface KnowledgePanelProps {
   draftSaveStatus?:
     | { kind: "idle" }
     | { kind: "saving" }
-    | {
-        kind: "saved";
-        vectorConfigHash: string | null;
-        applyGeneration: number | null;
-        reindexRequired: boolean;
-      }
+    | { kind: "saved" }
     | { kind: "failed"; error: string };
   onRetryDraftSave?: () => void;
+  // Fired on an explicit env-preset "Use" click so the parent can bypass
+  // the keystroke-coalesce debounce on the autosave PATCH. No payload —
+  // the config change itself goes through onKnowledgeConfigChange.
+  onPresetApplied?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +458,7 @@ export default function KnowledgePanel({
   onAdaptationServerError,
   draftSaveStatus,
   onRetryDraftSave,
+  onPresetApplied,
 }: KnowledgePanelProps) {
   // Uncontrolled-with-initial-value: seed from the prop on first render
   // (the modal is unmounted on close so the prop is always fresh on next
@@ -2723,6 +2723,11 @@ export default function KnowledgePanel({
                                     currentProvider={knowledgeConfig.embedding_provider ?? "auto"}
                                     currentModel={knowledgeConfig.embedding_model ?? ""}
                                     onApply={(preset) => {
+                                      // Signal first so the parent's autosave
+                                      // ref is set BEFORE the state update fires
+                                      // the effect — otherwise the effect reads
+                                      // the ref pre-bump and still debounces 800ms.
+                                      onPresetApplied?.();
                                       onKnowledgeConfigChange({
                                         ...knowledgeConfig,
                                         embedding_provider: preset.default_provider,

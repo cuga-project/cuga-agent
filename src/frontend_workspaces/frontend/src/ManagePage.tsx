@@ -422,6 +422,11 @@ export function ManagePage() {
   // gated on ``signal.aborted`` so they can't poison state we set
   // for the newer config. See CLIENT_CANCELLATION_CONTRACT.md.
   const knowledgeAbortRef = useRef<AbortController | null>(null);
+  // Preset clicks (env-presets "Use" button) bypass the 800ms autosave
+  // debounce — the debounce coalesces keystrokes, but a deliberate
+  // button click should feel instant. Set true in onPresetApplied,
+  // consumed + reset in the autosave effect on next run.
+  const forceImmediateSaveRef = useRef<boolean>(false);
   const toolsAbortRef = useRef<AbortController | null>(null);
   const llmAbortRef = useRef<AbortController | null>(null);
   const agentAbortRef = useRef<AbortController | null>(null);
@@ -1158,6 +1163,13 @@ export function ManagePage() {
     const ac = new AbortController();
     knowledgeAbortRef.current = ac;
 
+    // Preset clicks set forceImmediateSaveRef so the user sees "Saving…"
+    // on the next microtask instead of waiting for the keystroke-coalesce
+    // window. Read + consume here so the next plain field edit goes back
+    // to the 800ms debounce.
+    const debounceMs = forceImmediateSaveRef.current ? 0 : 800;
+    forceImmediateSaveRef.current = false;
+
     const t = setTimeout(async () => {
       // Defensive: if a NEWER effect run replaced the ref mid-debounce
       // (clearTimeout in cleanup should have caught us, but the timer
@@ -1254,7 +1266,7 @@ export function ManagePage() {
           error: err instanceof Error ? err.message : "Couldn't save — check your connection",
         });
       }
-    }, 800);
+    }, debounceMs);
     return () => {
       clearTimeout(t);
       // Do NOT .abort() in cleanup. The cleanup fires before EVERY
@@ -2424,6 +2436,11 @@ export function ManagePage() {
             // the autosave useEffect. Cheap and reuses the existing PATCH
             // pipeline rather than maintaining a parallel retry path.
             setKnowledgeConfig((prev) => ({ ...prev }));
+          }}
+          onPresetApplied={() => {
+            // The user just clicked an explicit "Use" button — bypass the
+            // keystroke-coalesce debounce so "Saving…" appears immediately.
+            forceImmediateSaveRef.current = true;
           }}
           knowledgeReindexNeeded={knowledgeReindexNeeded}
           knowledgeStale={knowledgeStale}
