@@ -541,7 +541,7 @@ async def lifespan(app: FastAPI):
                 scheme = "https" if ssl_enabled or getattr(auth, "require_https", False) else "http"
                 os.environ["CUGA_BACKEND_URL"] = f"{scheme}://localhost:{os.environ.get('PORT', '7860')}"
 
-        logger.info("Knowledge engine started at %s", kb_config.persist_dir)
+        logger.info(f"Knowledge engine started at {kb_config.persist_dir}")
         app_state.set_subsystem_status(
             "knowledge",
             "starting",
@@ -559,12 +559,12 @@ async def lifespan(app: FastAPI):
 
                     run_http(host="127.0.0.1", port=kb_config.mcp_port)
                 except Exception as e:
-                    logger.error("Knowledge MCP HTTP server failed: %s", e)
+                    logger.error(f"Knowledge MCP HTTP server failed: {e}")
 
             _mcp_thread = threading.Thread(target=_start_knowledge_mcp, daemon=True, name="knowledge-mcp")
             _mcp_thread.start()
             app_state._knowledge_mcp_started = True
-            logger.info("Knowledge MCP server starting on http://127.0.0.1:%s", kb_config.mcp_port)
+            logger.info(f"Knowledge MCP server starting on http://127.0.0.1:{kb_config.mcp_port}")
 
         async def _warm():
             try:
@@ -637,7 +637,7 @@ async def lifespan(app: FastAPI):
                     filesystem_sync=app_state.policy_filesystem_sync,
                 )
                 await app_state.policy_system.initialize()
-                logger.info("Manager mode: applied %s policies from config", len(policies_list))
+                logger.info(f"Manager mode: applied {len(policies_list)} policies from config")
             registry_url = get_registry_base_url()
             async with httpx.AsyncClient() as client:
                 r = await client.post(f"{registry_url}/reload", timeout=10.0)
@@ -646,7 +646,7 @@ async def lifespan(app: FastAPI):
                 "Manager mode: config loaded (version=%s), managed MCP written, registry reloaded", version
             )
         except Exception as e:
-            logger.warning("Manager mode startup: %s", e)
+            logger.warning(f"Manager mode startup: {e}")
 
     # Start the save_reuse server if configured
 
@@ -708,7 +708,7 @@ async def lifespan(app: FastAPI):
                 _startup_llm_cfg.get("model"),
             )
         except Exception as _cfg_err:
-            logger.warning("Startup: failed to apply saved config: %s", _cfg_err)
+            logger.warning(f"Startup: failed to apply saved config: {_cfg_err}")
 
         # Apply the published KNOWLEDGE config to the live engine on startup.
         # Without this the engine reads only from settings.toml — any change a
@@ -845,7 +845,7 @@ async def lifespan(app: FastAPI):
         await draft_storage.initialize_async()
         draft_app_state.policy_system = PolicyConfigurable(storage=draft_storage)
         await draft_app_state.policy_system.initialize()
-        logger.info("Draft policy system initialized (collection: %s)", draft_collection)
+        logger.info(f"Draft policy system initialized (collection: {draft_collection})")
 
     draft_tool_provider = CombinedToolProvider(
         get_include_by_app=_get_draft_include_by_app, agent_id=draft_agent_id
@@ -861,7 +861,7 @@ async def lifespan(app: FastAPI):
 
             await _apply_published_config(draft_app_state, draft_config)
         except Exception as _e:
-            logger.debug("Startup: failed to apply draft LLM config: %s", _e)
+            logger.debug(f"Startup: failed to apply draft LLM config: {_e}")
     draft_app_state.agent = DynamicAgentGraph(
         None,
         langfuse_handler=langfuse_handler,

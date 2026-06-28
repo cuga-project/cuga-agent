@@ -532,7 +532,7 @@ async def reload_config(
                 await mcp_manager.shutdown()
             mcp_manager = new_manager
             registry = new_registry
-            logger.info("Registry reloaded from %s", config_path)
+            logger.info(f"Registry reloaded from {config_path}")
             return {"status": "ok", "source": config_path, "tool_count": len(services)}
     except Exception as e:
         logger.exception("Reload failed: %s", e)

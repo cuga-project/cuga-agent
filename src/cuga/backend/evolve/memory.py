@@ -64,7 +64,7 @@ async def build_evolve_special_instructions_extension(
         if evolve_section:
             extra += evolve_section
             logger.info("Evolve: Injected guidelines into system prompt")
-            logger.debug("Evolve: Injected guidelines section (%d chars)", len(evolve_section))
+            logger.debug(f"Evolve: Injected guidelines section ({len(evolve_section)} chars)")
 
     memory_query = state.sub_task or get_latest_memory_query(state.chat_messages)
     current_user_id = normalize_evolve_identifier(getattr(state, "user_id", None))
@@ -86,7 +86,7 @@ async def build_evolve_special_instructions_extension(
         def _log_store_error(task: asyncio.Task) -> None:
             exc = task.exception() if not task.cancelled() else None
             if exc:
-                logger.warning("Evolve: store_user_facts failed (non-blocking): %s", exc)
+                logger.warning(f"Evolve: store_user_facts failed (non-blocking): {exc}")
 
         _store_task = asyncio.create_task(
             EvolveIntegration.store_user_facts(
@@ -108,6 +108,6 @@ async def build_evolve_special_instructions_extension(
         if preference_section:
             extra += preference_section
             logger.info("Evolve: Injected user preference context into system prompt")
-            logger.debug("Evolve: Injected user preference section (%d chars)", len(preference_section))
+            logger.debug(f"Evolve: Injected user preference section ({len(preference_section)} chars)")
 
     return extra

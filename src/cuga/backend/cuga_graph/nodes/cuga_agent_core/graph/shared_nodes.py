@@ -228,7 +228,7 @@ def create_call_model_node(
 
         should_continue = await adapter.classify_auto_continue(state, active_model, content, reasoning)
         if should_continue:
-            logger.info("%s: NL response classified as interim — auto-continuing", adapter.sender_name)
+            logger.info(f"{adapter.sender_name}: NL response classified as interim — auto-continuing")
             return Command(
                 goto="call_model",
                 update={

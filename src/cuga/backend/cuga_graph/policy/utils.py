@@ -129,8 +129,8 @@ async def apply_policies_data_to_storage(
             try:
                 await storage.delete_policy(policy_obj.id)
             except Exception as e:
-                logger.warning("Failed to delete existing policy %s: %s", policy_obj.id, e)
-        logger.info("Cleared %d existing policies", len(existing_policies))
+                logger.warning(f"Failed to delete existing policy {policy_obj.id}: {e}")
+        logger.info(f"Cleared {len(existing_policies)} existing policies")
 
     for policy_data in policies_data or []:
         try:
@@ -273,7 +273,7 @@ async def apply_policies_data_to_storage(
             elif policy_type == PolicyType.CUSTOM:
                 policy = CustomPolicy(**policy_data)
             else:
-                logger.warning("Unknown policy type: %s", policy_type)
+                logger.warning(f"Unknown policy type: {policy_type}")
                 errors.append(
                     f"Unknown policy type '{policy_type}' for policy '{policy_data.get('name', 'unknown')}'"
                 )
@@ -285,7 +285,7 @@ async def apply_policies_data_to_storage(
                 try:
                     filesystem_sync.save_policy_to_file(policy)
                 except Exception as e:
-                    logger.warning("Failed to save policy to filesystem: %s", e)
+                    logger.warning(f"Failed to save policy to filesystem: {e}")
         except Exception as e:
             error_msg = f"Failed to load policy '{policy_data.get('name', 'unknown')}': {e}"
             logger.error(error_msg)
