@@ -435,8 +435,26 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const isToolGuideSaved = (policy: ToolGuidePolicy) =>
     savedToolGuideSnapshots[policy.id] === normalizeToolGuideForSnapshot(policy);
 
-  const hasGeneratedToolGuard = (policy: ToolGuidePolicy) => {
-    return Object.values(policy.tool_guards ?? {}).some((guard) => Boolean(guard?.policy_code));
+  const allTargetToolsHaveGuard = (policy: ToolGuidePolicy) => {
+    const targetTools = policy.target_tools ?? [];
+    if (!hasConcreteTargetTools(policy)) {
+      return false;
+    }
+    return targetTools.every((tool) => Boolean(policy.tool_guards?.[tool]?.policy_code));
+  };
+
+  const mergeToolGuardsIntoPolicy = (
+    policyId: string,
+    toolGuards: Record<string, ToolGuardData>
+  ) => {
+    setConfig((prev) => ({
+      ...prev,
+      policies: prev.policies.map((p) =>
+        p.id === policyId && p.policy_type === "tool_guide"
+          ? { ...p, tool_guards: toolGuards }
+          : p
+      ),
+    }));
   };
 
   const hasConcreteTargetTools = (policy: ToolGuidePolicy) => {
@@ -596,7 +614,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         headers["X-Use-Draft"] = "true";
       }
 
-      const response = await fetch(
+      const response = await api.apiFetch(
         `/api/config/policies/${encodeURIComponent(policyId)}/tool-guards/generate`,
         {
           method: "POST",
@@ -623,8 +641,13 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
 
       const result = await response.json();
 
-      // Refetch policies to get updated tool_guards
-      await loadConfig();
+      if (result.config_synced === false) {
+        if (result.tool_guards) {
+          mergeToolGuardsIntoPolicy(policyId, result.tool_guards);
+        }
+      } else {
+        await loadConfig();
+      }
 
       // Build toast message based on results
       const successTools = result.results
@@ -636,15 +659,20 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
 
       if (successTools.length > 0 && failedTools.length === 0) {
         setToastMessage({
-          kind: "success",
-          title: "Guard generated",
-          subtitle: `Tool guard created for: ${successTools.join(", ")}`,
+          kind: result.config_synced === false ? "warning" : "success",
+          title: result.config_synced === false ? "Guard generated (sync pending)" : "Guard generated",
+          subtitle:
+            result.config_synced === false
+              ? `${successTools.join(", ")} generated in policy storage but config sync failed. ${result.sync_error ?? "Refresh and save before publishing."}`
+              : `Tool guard created for: ${successTools.join(", ")}`,
         });
       } else if (successTools.length > 0 && failedTools.length > 0) {
         setToastMessage({
           kind: "warning",
           title: "Partial success",
-          subtitle: `Generated for ${successTools.join(", ")}. Failed: ${failedTools.join(", ")}`,
+          subtitle: `Generated for ${successTools.join(", ")}. Failed: ${failedTools.join(", ")}${
+            result.config_synced === false ? `. Config sync failed: ${result.sync_error ?? "refresh before publishing"}` : ""
+          }`,
         });
       } else {
         setToastMessage({
@@ -1439,8 +1467,10 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                             hasIconOnly
                             renderIcon={Security}
                             iconDescription={
-                              hasGeneratedToolGuard(policy)
-                                ? "Guard already generated"
+                              allTargetToolsHaveGuard(policy)
+                                ? "All target tools already have guards"
+                                : !policy.enabled
+                                ? "Policy is disabled"
                                 : !config.enablePolicies
                                 ? "Policies disabled"
                                 : !hasConcreteTargetTools(policy)
@@ -1449,11 +1479,11 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                             }
                             tooltipPosition="bottom"
                             onClick={() => {
-                              if (hasGeneratedToolGuard(policy)) {
+                              if (allTargetToolsHaveGuard(policy)) {
                                 setToastMessage({
                                   kind: "success",
-                                  title: "Tool guard already generated",
-                                  subtitle: "This policy already has a tool guard.",
+                                  title: "Tool guards already generated",
+                                  subtitle: "All target tools already have guards.",
                                 });
                               } else {
                                 generateToolGuard(policy.id);
@@ -1462,10 +1492,11 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                             disabled={
                               generatingToolGuardPolicyId !== null ||
                               !config.enablePolicies ||
-                              hasGeneratedToolGuard(policy) ||
+                              !policy.enabled ||
+                              allTargetToolsHaveGuard(policy) ||
                               !hasConcreteTargetTools(policy)
                             }
-                            className={hasGeneratedToolGuard(policy) ? "guard-generated" : ""}
+                            className={allTargetToolsHaveGuard(policy) ? "guard-generated" : ""}
                           />
                         )}
                       <Stack orientation="horizontal" gap={2}>
@@ -1495,7 +1526,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                         <span>{policy.target_tools.includes("*") ? "All tools" : `${policy.target_tools.length} tool(s)`}</span>
                         {policy.target_apps && policy.target_apps.length > 0 && <span>{policy.target_apps.length} app(s)</span>}
                         <span>Priority: {policy.priority}</span>
-                        {hasGeneratedToolGuard(policy) && (
+                        {allTargetToolsHaveGuard(policy) && (
                           <span
                             style={{
                               backgroundColor: "var(--cds-support-success)",

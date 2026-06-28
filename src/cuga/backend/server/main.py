@@ -2486,6 +2486,66 @@ def _policy_to_frontend_dict(policy_dict: dict) -> dict:
     return frontend_policy
 
 
+_TOOL_GUARD_SYNC_ERROR_MESSAGES = {
+    "missing_policies_section": "Configuration store is missing policies",
+    "policy_not_in_config": "Policy not found in configuration store",
+    "stale_config_version": "Configuration was updated concurrently; refresh and retry",
+    "no_published_version": "No published configuration version available",
+    "unexpected": "Failed to sync policy to configuration store",
+}
+
+
+async def _sync_policy_to_config_store(
+    *,
+    policy_id: str,
+    updated_policy,
+    use_draft: bool,
+    agent_id: str = "cuga-default",
+) -> tuple[bool, str | None]:
+    from cuga.backend.server.config_store import (
+        load_config,
+        load_draft,
+        save_draft,
+        update_published_config_at_version,
+    )
+
+    if use_draft:
+        config = await load_draft(agent_id)
+        config_version = None
+    else:
+        config, config_version = await load_config(None, agent_id)
+
+    policies_section = (config or {}).get("policies")
+    if not policies_section or "policies" not in policies_section:
+        logger.warning("Tool guard sync skipped: config store missing policies section")
+        return False, "missing_policies_section"
+
+    policy_list = policies_section["policies"]
+    policy_index = next((i for i, p in enumerate(policy_list) if p.get("id") == policy_id), None)
+    if policy_index is None:
+        logger.warning("Tool guard sync failed: policy %s not found in config store", policy_id)
+        return False, "policy_not_in_config"
+
+    policy_list[policy_index] = _policy_to_frontend_dict(updated_policy.model_dump())
+
+    if use_draft:
+        await save_draft(config, agent_id)
+    elif config_version is not None:
+        if not await update_published_config_at_version(config, agent_id, config_version):
+            logger.warning(
+                "Tool guard sync failed: stale config version %s for policy %s",
+                config_version,
+                policy_id,
+            )
+            return False, "stale_config_version"
+    else:
+        logger.warning("Tool guard sync failed: no published config version for policy %s", policy_id)
+        return False, "no_published_version"
+
+    logger.info("Synced updated policy %s to config_store (draft=%s)", policy_id, use_draft)
+    return True, None
+
+
 @app.get("/api/config/policies")
 async def get_policies_config(
     request: Request,
@@ -2710,6 +2770,11 @@ async def generate_tool_guard_for_policy(
             {"status": "error", "message": f"Policy '{policy_id}' is not a Tool Guide policy"},
             status_code=400,
         )
+    if not existing_policy.enabled:
+        return JSONResponse(
+            {"status": "error", "message": f"Policy '{policy_id}' is disabled"},
+            status_code=400,
+        )
     target_tools = list(existing_policy.target_tools or [])
     if not target_tools or target_tools == ["*"] or "*" in target_tools:
         return JSONResponse(
@@ -2730,7 +2795,7 @@ async def generate_tool_guard_for_policy(
                 from cuga.backend.llm.models import create_llm_from_config
 
                 _model = create_llm_from_config(_llm_config)
-            except Exception:
+            except ValueError:
                 logger.warning(
                     "Failed to build model from llm_config for ToolGuard generation; using default"
                 )
@@ -2745,46 +2810,42 @@ async def generate_tool_guard_for_policy(
             generation_agent=generation_agent,
         )
 
-        # Sync the updated policy back to config_store so /api/manage/config returns it
-        try:
-            from cuga.backend.server.config_store import (
-                load_config,
-                load_draft,
-                save_draft,
-                update_published_config_at_version,
-            )
+        updated_policy = await policy_system.storage.get_policy(policy_id)
+        if updated_policy is not None:
+            result["tool_guards"] = updated_policy.tool_guards or {}
 
-            agent_id = "cuga-default"  # TODO: get from request if multi-agent support needed
-            if use_draft:
-                config = await load_draft(agent_id)
-                config_version = None
+        agent_id = "cuga-default"  # TODO: get from request if multi-agent support needed
+        try:
+            if updated_policy is None:
+                result["config_synced"] = False
+                result["sync_error"] = _TOOL_GUARD_SYNC_ERROR_MESSAGES["unexpected"]
             else:
-                config, config_version = await load_config(None, agent_id)
-            if config and "policies" in config and "policies" in config["policies"]:
-                # Find and update the policy in config
-                updated_policy = await policy_system.storage.get_policy(policy_id)
-                if updated_policy:
-                    policy_list = config["policies"]["policies"]
-                    for i, p in enumerate(policy_list):
-                        if p.get("id") == policy_id:
-                            policy_list[i] = _policy_to_frontend_dict(updated_policy.model_dump())
-                            break
-                    if use_draft:
-                        await save_draft(config, agent_id)
-                    elif config_version is not None:
-                        await update_published_config_at_version(config, agent_id, config_version)
-                    logger.info(f"Synced updated policy {policy_id} to config_store (draft={use_draft})")
+                config_synced, sync_error_code = await _sync_policy_to_config_store(
+                    policy_id=policy_id,
+                    updated_policy=updated_policy,
+                    use_draft=use_draft,
+                    agent_id=agent_id,
+                )
+                result["config_synced"] = config_synced
+                if sync_error_code:
+                    result["sync_error"] = _TOOL_GUARD_SYNC_ERROR_MESSAGES.get(
+                        sync_error_code,
+                        _TOOL_GUARD_SYNC_ERROR_MESSAGES["unexpected"],
+                    )
         except Exception as sync_exc:
-            logger.warning(f"Failed to sync policy to config_store: {sync_exc}")
-            # Don't fail the request if sync fails - the policy is already saved to policy storage
+            logger.warning("Failed to sync policy to config_store: %s", sync_exc)
+            result["config_synced"] = False
+            result["sync_error"] = _TOOL_GUARD_SYNC_ERROR_MESSAGES["unexpected"]
 
         return JSONResponse(result, status_code=200)
     except ValueError as exc:
         return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
-    except LookupError as exc:
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=404)
-    except TypeError as exc:
-        return JSONResponse({"status": "error", "message": str(exc)}, status_code=400)
+    except LookupError:
+        return JSONResponse({"status": "error", "message": "Policy not found"}, status_code=404)
+    except TypeError:
+        return JSONResponse(
+            {"status": "error", "message": "Invalid policy type for tool guard generation"}, status_code=400
+        )
     except Exception:
         logger.exception("Failed to generate ToolGuard for policy %s", policy_id)
         return JSONResponse({"status": "error", "message": "Internal server error"}, status_code=500)

@@ -87,10 +87,16 @@ def patch_generation(monkeypatch):
             "status": "ok",
             "policy_id": "tool_guide_1",
             "results": [{"tool": "book_flight", "status": "ok"}],
+            "tool_guards": {"book_flight": {"policy_code": "def guard(): pass"}},
+            "config_synced": True,
         }
     )
     monkeypatch.setattr("cuga.backend.server.main.build_tool_guard_generation_agent", build_agent)
     monkeypatch.setattr("cuga.backend.server.main.generate_tool_guards_for_policy", generate)
+    monkeypatch.setattr(
+        "cuga.backend.server.main._sync_policy_to_config_store",
+        AsyncMock(return_value=(True, None)),
+    )
     return build_agent, generate
 
 
@@ -101,11 +107,11 @@ def test_generate_tool_guard_route_happy_path(client, monkeypatch):
     response = client.post("/api/config/policies/tool_guide_1/tool-guards/generate")
 
     assert response.status_code == 200
-    assert response.json() == {
-        "status": "ok",
-        "policy_id": "tool_guide_1",
-        "results": [{"tool": "book_flight", "status": "ok"}],
-    }
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["policy_id"] == "tool_guide_1"
+    assert body["results"] == [{"tool": "book_flight", "status": "ok"}]
+    assert body["config_synced"] is True
     build_agent.assert_called_once()
     generate.assert_called_once()
 
@@ -157,4 +163,19 @@ def test_generate_tool_guard_route_rejects_no_concrete_tools(client, monkeypatch
     assert response.json() == {
         "status": "error",
         "message": "Select specific target tools to generate a guard",
+    }
+
+
+def test_generate_tool_guard_route_rejects_disabled_policy(client, monkeypatch):
+    policy = make_tool_guide()
+    policy.enabled = False
+    patch_states(monkeypatch, policy)
+    patch_generation(monkeypatch)
+
+    response = client.post("/api/config/policies/tool_guide_1/tool-guards/generate")
+
+    assert response.status_code == 400
+    assert response.json() == {
+        "status": "error",
+        "message": "Policy 'tool_guide_1' is disabled",
     }

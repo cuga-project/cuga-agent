@@ -145,3 +145,16 @@ async def test_generate_tool_guards_for_policy_rejects_no_concrete_tools(target_
             policy_id="tool_guide_1",
             generation_agent=FakeGenerationAgent(FakePoliciesManager()),
         )
+
+
+@pytest.mark.asyncio
+async def test_generate_tool_guards_for_policy_rejects_disabled_policy():
+    policy = make_tool_guide()
+    policy.enabled = False
+
+    with pytest.raises(ValueError, match="disabled"):
+        await generate_tool_guards_for_policy(
+            policy_system=FakePolicySystem(policy),
+            policy_id="tool_guide_1",
+            generation_agent=FakeGenerationAgent(FakePoliciesManager()),
+        )

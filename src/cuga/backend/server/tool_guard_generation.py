@@ -52,7 +52,7 @@ async def generate_tool_guards_for_policy(
         raise ValueError(f"Policy '{policy_id}' is disabled")
 
     target_tools = _concrete_target_tools(existing_policy)
-    results: list[dict[str, str]] = []
+    results: list[dict[str, Any]] = []
 
     for tool_name in target_tools:
         try:

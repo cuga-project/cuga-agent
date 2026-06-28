@@ -171,7 +171,9 @@ def test_sync_writes_to_published_store_when_no_draft_header(client, monkeypatch
     response = client.post("/api/config/policies/guide_1/tool-guards/generate")
 
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["config_synced"] is True
 
     published, version = asyncio.run(load_config(None, "cuga-default"))
     draft = asyncio.run(load_draft("cuga-default"))
@@ -202,7 +204,9 @@ def test_sync_writes_to_draft_store_when_draft_header_set(client, monkeypatch):
     )
 
     assert response.status_code == 200
-    assert response.json()["status"] == "ok"
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["config_synced"] is True
 
     draft = asyncio.run(load_draft("cuga-default"))
     published, _ = asyncio.run(load_config(None, "cuga-default"))
@@ -214,3 +218,24 @@ def test_sync_writes_to_draft_store_when_draft_header_set(client, monkeypatch):
 
     # Published store must NOT have been touched (still None since we never seeded it)
     assert published is None
+
+
+def test_sync_failure_when_policy_missing_from_config(client, monkeypatch):
+    """If the policy ID is absent from config store, generation succeeds but sync is reported as failed."""
+    reset_config_db()
+
+    policy = make_tool_guide()
+    config = _config_with_policy(policy)
+    config["policies"]["policies"][0]["id"] = "other_policy"
+    asyncio.run(save_config(config, "cuga-default"))
+
+    _patch_states_and_generation(monkeypatch, policy)
+
+    response = client.post("/api/config/policies/guide_1/tool-guards/generate")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "ok"
+    assert body["config_synced"] is False
+    assert body["sync_error"] == "Policy not found in configuration store"
+    assert body["tool_guards"]["book_flight"]["policy_code"]
