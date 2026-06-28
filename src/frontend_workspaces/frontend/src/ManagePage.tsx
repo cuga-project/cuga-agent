@@ -2590,32 +2590,24 @@ export function ManagePage() {
               if (res.ok) {
                 const data = await res.json();
                 setKnowledgeReindexing(false);
-                // The migration endpoint can return triggered:false on
-                // structural failures (active snapshot missing, copy
-                // failed). Status is 2xx but the response carries an
-                // ``error`` field. Surface clearly rather than silently
-                // arming an empty reindex tile.
+                // triggered:false ⇒ structural failure (status 2xx, ``error`` field set).
                 if (data?.triggered === false) {
-                  const errCode = typeof data.error === "string" ? data.error : "unknown";
-                  const msg =
-                    errCode === "active_snapshot_missing"
-                      ? "Your active document set isn't on disk. If you restored an older version, the source files need to be re-uploaded or migrated via CLI."
-                      : errCode === "copy_failed"
-                        ? "Couldn't copy your documents to the new collection. Check disk space / permissions and try again."
-                        : `Re-index couldn't run (${errCode}).`;
-                  addToast("error", "Re-index didn't run", msg);
+                  const ERR: Record<string, string> = {
+                    active_snapshot_missing:
+                      "Your active document set isn't on disk. If you restored an older version, re-upload or migrate via CLI.",
+                    copy_failed:
+                      "Couldn't copy your documents to the new collection. Check disk space / permissions and retry.",
+                    reindex_failed:
+                      "Re-index ran but didn't embed anything. Check server logs and retry.",
+                  };
+                  const code = typeof data.error === "string" ? data.error : "unknown";
+                  addToast("error", "Re-index didn't run", ERR[code] || `Re-index couldn't run (${code}).`);
                   return null;
                 }
-                // Settings have been applied — update snapshot so the
-                // "reindex needed" warning clears.
+                // Settings applied — clear the "reindex needed" warning.
                 setKnowledgeSavedSnapshot({ ...knowledgeConfig });
-                // Both endpoints return task_ids at slightly different
-                // shapes. The new ``reindex_for_config`` returns
-                // {collections: [{result: {task_ids, count}}]} (one
-                // entry per migrated/reindexed collection); historical-
-                // snapshot rows have role="historical_snapshot" with no
-                // result block, so the flatMap naturally skips them.
-                // The old /reindex returns {task_ids, count} flat.
+                // /reindex_for_config returns {collections: [{result: {task_ids, count}}]};
+                // /reindex returns {task_ids, count} flat. Normalize.
                 if (Array.isArray(data?.collections)) {
                   const allTaskIds: string[] = data.collections
                     .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? []);

@@ -3690,28 +3690,45 @@ class KnowledgeEngine:
         logger.info(f"Dropped collection vectors {collection} (files preserved)")
 
     async def copy_source_files(self, source_collection: str, target_collection: str) -> int:
-        """Copy source files from one collection to another.
-
-        Returns the number of files copied. Does not re-ingest — call reindex()
-        on the target collection after copying.
-        """
+        """Mirror source's files into target. Removes stale files in target
+        (files not present in source) BEFORE copying so a prior failed
+        migration can't leave ghosts that get re-embedded at next reindex.
+        Refuses source==target (would delete source's own files). Does not
+        re-ingest — call reindex() on target after."""
         import shutil
 
         source_collection = _sanitize_collection(source_collection)
         target_collection = _sanitize_collection(target_collection)
+        if source_collection == target_collection:
+            return 0
         src_dir = self._files_dir / source_collection
         dst_dir = self._files_dir / target_collection
-
         if not src_dir.exists():
             return 0
 
         dst_dir.mkdir(parents=True, exist_ok=True)
+        src_names = {f.name for f in src_dir.iterdir() if f.is_file()}
+        stale = 0
+        for f in list(dst_dir.iterdir()):
+            if f.is_file() and f.name not in src_names:
+                f.unlink()
+                stale += 1
+
         count = 0
         for f in src_dir.iterdir():
             if f.is_file():
                 shutil.copy2(str(f), str(dst_dir / f.name))
                 count += 1
-        logger.info("Copied %d source files from %s to %s", count, source_collection, target_collection)
+        if stale:
+            logger.info(
+                "Removed %d stale file(s) from %s; copied %d from %s",
+                stale,
+                target_collection,
+                count,
+                source_collection,
+            )
+        else:
+            logger.info("Copied %d source files from %s to %s", count, source_collection, target_collection)
         return count
 
     async def reindex(self, collection: str) -> dict[str, Any]:
