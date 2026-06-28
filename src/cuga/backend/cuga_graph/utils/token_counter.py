@@ -191,6 +191,15 @@ MODEL_CONTEXT_SIZES = {
     "google/gemini-pro": 32768,
     "google/gemini-exp": 2000000,
     # ============================================================================
+    # Google Gemma Models
+    # ============================================================================
+    "gemma-4-31b-it": 131072,
+    "gemma-4-27b-it": 131072,
+    "gemma-4": 131072,
+    "google/gemma-4-31b-it": 131072,
+    "google/gemma-4-27b-it": 131072,
+    "google/gemma-4": 131072,
+    # ============================================================================
     # Meta Llama Models
     # ============================================================================
     "llama-4-maverick-17b-128e-instruct-fp8": 128000,
@@ -486,16 +495,20 @@ class TokenCounter:
             normalized_name = model_name.split('/', 1)[1]
             logger.debug(f"Normalized model name from '{model_name}' to '{normalized_name}'")
 
-        # Try exact match first
-        if normalized_name in MODEL_CONTEXT_SIZES:
-            return MODEL_CONTEXT_SIZES[normalized_name]
+        # Try exact match first (case-insensitive), checking both original and normalized name
+        model_name_lower = model_name.lower()
+        normalized_lower = normalized_name.lower()
+        if model_name_lower in MODEL_CONTEXT_SIZES:
+            return MODEL_CONTEXT_SIZES[model_name_lower]
+        if normalized_lower in MODEL_CONTEXT_SIZES:
+            return MODEL_CONTEXT_SIZES[normalized_lower]
 
         # Try partial match (e.g., "gpt-4-0613" matches "gpt-4", "gpt-4.1" matches "gpt-4")
         # Sort keys by length (descending) to match longer prefixes first
         # This ensures "gpt-4o" matches before "gpt-4"
         sorted_keys = sorted(MODEL_CONTEXT_SIZES.keys(), key=len, reverse=True)
         for key in sorted_keys:
-            if normalized_name.startswith(key):
+            if normalized_lower.startswith(key):
                 logger.debug(
                     f"Matched '{normalized_name}' to '{key}' with context size {MODEL_CONTEXT_SIZES[key]}"
                 )
