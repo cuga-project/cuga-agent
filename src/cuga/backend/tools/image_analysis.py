@@ -26,6 +26,15 @@ from langchain_core.tools import StructuredTool
 from loguru import logger
 from pydantic import BaseModel, Field
 
+# Model name substrings that indicate text-only inference — skip primary and go
+# straight to IMAGE_ANALYSIS_MODEL so we don't burn the HTTP timeout for nothing.
+# Only include models that are definitively text-only across all versions.
+# Do NOT add families with multimodal variants (e.g. gemma-4 supports vision).
+_KNOWN_NON_VISION_PATTERNS = (
+    "gpt-oss",
+    "falcon",
+)
+
 _MEDIA_TYPE_MAP = {
     ".jpg": "image/jpeg",
     ".jpeg": "image/jpeg",
@@ -101,21 +110,38 @@ async def analyze_image(image: str, question: str) -> str:
     ]
 
     # ── attempt 1: primary model ────────────────────────────────────────────
+    # Skip if the primary model is a known text-only model — hitting it would
+    # just waste the full HTTP timeout before falling back to IMAGE_ANALYSIS_MODEL.
+    _skip_primary = False
     try:
-        from cuga.backend.llm.models import LLMManager
-        from cuga.config import settings
+        from cuga.config import settings as _settings
 
-        primary_llm = LLMManager().get_model(settings.agent.code.model)
-        msg = HumanMessage(content=multimodal_content)
-        result = await primary_llm.ainvoke([msg])
-        text = result.content if isinstance(result.content, str) else str(result.content)
-        logger.info("analyze_image: primary model succeeded")
-        return text
-    except Exception as exc:
-        logger.info(
-            f"analyze_image: primary model rejected vision content ({type(exc).__name__}: {exc}), "
-            "falling back to IMAGE_ANALYSIS_MODEL"
-        )
+        _primary_name = (_settings.agent.code.model.get("model_name") or "").lower()
+        if any(pat in _primary_name for pat in _KNOWN_NON_VISION_PATTERNS):
+            logger.info(
+                f"analyze_image: primary model {_primary_name!r} is a known non-vision model, "
+                "skipping directly to IMAGE_ANALYSIS_MODEL"
+            )
+            _skip_primary = True
+    except Exception:
+        pass
+
+    if not _skip_primary:
+        try:
+            from cuga.backend.llm.models import LLMManager
+            from cuga.config import settings
+
+            primary_llm = LLMManager().get_model(settings.agent.code.model)
+            msg = HumanMessage(content=multimodal_content)
+            result = await primary_llm.ainvoke([msg])
+            text = result.content if isinstance(result.content, str) else str(result.content)
+            logger.info("analyze_image: primary model succeeded")
+            return text
+        except Exception as exc:
+            logger.info(
+                f"analyze_image: primary model rejected vision content ({type(exc).__name__}: {exc}), "
+                "falling back to IMAGE_ANALYSIS_MODEL"
+            )
 
     # ── attempt 2: IMAGE_ANALYSIS_MODEL fallback ────────────────────────────
     import litellm
