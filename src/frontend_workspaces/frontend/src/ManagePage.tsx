@@ -307,6 +307,20 @@ export function ManagePage() {
   const [policies, setPolicies] = useState<NonNullable<AgentConfig["policies"]>>(DEFAULT_CONFIG.policies ?? { enablePolicies: true, policies: [] });
   const [history, setHistory] = useState<ConfigVersion[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  // Knowledge draft autosave status — sourced from the PATCH lifecycle,
+  // NOT from a setTimeout. The prior implementation in KnowledgeConfig.tsx
+  // claimed "Saved" after 1500ms regardless of whether the network call
+  // had returned; the user couldn't distinguish a real save from a silent
+  // network failure. Lifted here so the same machine drives both the
+  // inline pill AND the Live-vs-Draft comparison the synthesis calls for.
+  // ``saved`` and ``failed`` carry the server-echoed vector_config_hash
+  // and apply_generation so the UI has authoritative proof-of-apply.
+  type DraftSaveStatus =
+    | { kind: "idle" }
+    | { kind: "saving" }
+    | { kind: "saved"; vectorConfigHash: string | null; applyGeneration: number | null; reindexRequired: boolean }
+    | { kind: "failed"; error: string };
+  const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
@@ -1126,6 +1140,10 @@ export function ManagePage() {
       // (clearTimeout in cleanup should have caught us, but the timer
       // can race the cleanup in rare microtask interleavings), skip.
       if (knowledgeAbortRef.current !== ac) return;
+      // Transition to "saving" the moment the network call goes out.
+      // Pill in the panel reads this — replaces the prior setTimeout-driven
+      // "saved after 1500ms" lie with a real network-event signal.
+      setDraftSaveStatus({ kind: "saving" });
       try {
         const res = await api.patchManageConfigDraftKnowledge(
           knowledgeConfig,
@@ -1149,6 +1167,15 @@ export function ManagePage() {
             const body = await res.clone().json();
             // Guard 2: body read is async too; recheck after the await.
             if (ac.signal.aborted) return;
+            // Stamp the server-echoed vector_config_hash + apply_generation
+            // into draftSaveStatus. The pill uses these as proof-of-apply
+            // (distinct from PATCH 2xx, which only proves "draft persisted").
+            setDraftSaveStatus({
+              kind: "saved",
+              vectorConfigHash: typeof body?.vector_config_hash === "string" ? body.vector_config_hash : null,
+              applyGeneration: typeof body?.apply_generation === "number" ? body.apply_generation : null,
+              reindexRequired: Boolean(body?.reindex_required),
+            });
             const collections = body?.auto_reindex?.collections ?? [];
             const taskIds: string[] = collections
               .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
@@ -1168,6 +1195,13 @@ export function ManagePage() {
           } catch {
             // Body shape mismatch — auto-reindex either didn't fire or
             // wasn't in the response; the manual Reindex path still works.
+            // Still flip to "saved" since the HTTP status was 2xx.
+            setDraftSaveStatus({
+              kind: "saved",
+              vectorConfigHash: null,
+              applyGeneration: null,
+              reindexRequired: false,
+            });
           }
         } else if (res.status === 422) {
           // Guard 3: 422 carries an adaptation-server-error blob.
@@ -1181,18 +1215,34 @@ export function ManagePage() {
             if (err && typeof err.error === "string" && typeof err.message === "string") {
               setAdaptationServerError(err as AdaptationServerErrorShape);
             }
+            // 422 is a save failure (server rejected). Pill flips to failed
+            // so the user has a non-silent signal alongside the field-level
+            // inline error rendered next to Provider Select.
+            setDraftSaveStatus({
+              kind: "failed",
+              error: (err && err.message) || "Couldn't apply — see provider error below",
+            });
           } catch {
             // 422 without a JSON body — leave the prior error in place.
+            setDraftSaveStatus({ kind: "failed", error: "Save rejected by server" });
           }
+        } else {
+          // 4xx / 5xx without a 422 body. Surface as failed so the pill
+          // doesn't stay stuck on "Saving…".
+          if (ac.signal.aborted) return;
+          setDraftSaveStatus({ kind: "failed", error: `Save failed (${res.status})` });
         }
       } catch (err) {
         // AbortError is expected when a newer autosave superseded us.
         // Stay silent — the next effect run will issue a fresh PATCH.
         if (isAbortError(err)) return;
-        // Network failure (real) — silent (transient flake clears on
-        // the next change). NOT silenced via a blanket catch above
-        // because we want AbortError to be the ONLY no-op; any other
-        // error type would surface here if we wanted to.
+        // Network failure (real). Previously silent — the literal bug
+        // the user just hit. Now flips the pill to "failed" with a Retry
+        // button (consumed by KnowledgeConfig).
+        setDraftSaveStatus({
+          kind: "failed",
+          error: err instanceof Error ? err.message : "Couldn't save — check your connection",
+        });
       }
     }, 800);
     return () => {
@@ -2313,6 +2363,13 @@ export function ManagePage() {
           onToast={(kind: "error" | "success" | "warning", title: string, message: string) => addToast(kind, title, message)}
           knowledgeConfig={knowledgeConfig}
           onKnowledgeConfigChange={setKnowledgeConfig}
+          draftSaveStatus={draftSaveStatus}
+          onRetryDraftSave={() => {
+            // Retry: bump the same field with its current value to retrigger
+            // the autosave useEffect. Cheap and reuses the existing PATCH
+            // pipeline rather than maintaining a parallel retry path.
+            setKnowledgeConfig((prev) => ({ ...prev }));
+          }}
           knowledgeReindexNeeded={knowledgeReindexNeeded}
           knowledgeStale={knowledgeStale}
           knowledgeReindexDeferred={knowledgeReindexDeferred}

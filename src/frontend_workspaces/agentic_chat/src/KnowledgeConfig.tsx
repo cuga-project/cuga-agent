@@ -414,6 +414,25 @@ interface KnowledgePanelProps {
   // affordance only — never sees a real 422 today).
   adaptationServerError?: AdaptationServerError | null;
   onAdaptationServerError?: (error: AdaptationServerError | null) => void;
+  // Draft autosave status driven by the actual PATCH lifecycle (NOT a
+  // setTimeout). The prior implementation here used a 1500ms timer to
+  // claim "Saved" whether or not the network call actually returned;
+  // the user couldn't distinguish a real save from a silent network
+  // failure (the literal bug they hit). Now sourced from ManagePage's
+  // PATCH .then/.catch handlers — every state corresponds to a real
+  // network event. ``onRetryDraftSave`` re-fires the PATCH from the
+  // "failed" state.
+  draftSaveStatus?:
+    | { kind: "idle" }
+    | { kind: "saving" }
+    | {
+        kind: "saved";
+        vectorConfigHash: string | null;
+        applyGeneration: number | null;
+        reindexRequired: boolean;
+      }
+    | { kind: "failed"; error: string };
+  onRetryDraftSave?: () => void;
 }
 
 // ---------------------------------------------------------------------------
@@ -438,6 +457,8 @@ export default function KnowledgePanel({
   initialTab,
   adaptationServerError: adaptationServerErrorProp,
   onAdaptationServerError,
+  draftSaveStatus,
+  onRetryDraftSave,
 }: KnowledgePanelProps) {
   // Uncontrolled-with-initial-value: seed from the prop on first render
   // (the modal is unmounted on close so the prop is always fresh on next
@@ -641,30 +662,30 @@ export default function KnowledgePanel({
     }
   }, [resetTarget, defaultsCache, knowledgeConfig, onKnowledgeConfigChange, onToast]);
 
-  // Save-state indicator: when the user edits a knowledge field, the actual
-  // PATCH happens in ManagePage's debounced effect (800 ms). We can't easily
-  // capture the completion signal from here, so we track it locally based on
-  // change-vs-quiescence. Carbon for AI recommends always surfacing
-  // persistence state so users know what's actually committed. The failure
-  // case is already covered by the toast in ManagePage.
-  const [saveState, setSaveState] = useState<"idle" | "saving" | "saved">("idle");
-  const knowledgeConfigSig = JSON.stringify(knowledgeConfig ?? {});
-  const firstSigRef = useRef<string | null>(null);
+  // Save-state indicator: driven by the parent's ``draftSaveStatus`` prop,
+  // which is sourced from the actual PATCH lifecycle in ManagePage
+  // (.then/.catch handlers). The prior implementation here used a 1500ms
+  // setTimeout to claim "Saved" whether or not the network call had
+  // returned — the literal bug behind the user's "I changed to Watsonx
+  // but logs show bge-small still" report. Now every visible state
+  // corresponds to a real network event. The "saved" pill auto-hides
+  // after 3s of quiescence via the local ``recentlySaved`` flag below
+  // so the user doesn't see a permanent "Saved" sticker.
+  const saveState: "idle" | "saving" | "saved" | "failed" = (() => {
+    if (!draftSaveStatus || draftSaveStatus.kind === "idle") return "idle";
+    if (draftSaveStatus.kind === "saving") return "saving";
+    if (draftSaveStatus.kind === "saved") return "saved";
+    return "failed";
+  })();
+  const [recentlySaved, setRecentlySaved] = useState(false);
   useEffect(() => {
-    if (firstSigRef.current === null) {
-      firstSigRef.current = knowledgeConfigSig;
-      return;
+    if (saveState === "saved") {
+      setRecentlySaved(true);
+      const t = setTimeout(() => setRecentlySaved(false), 3000);
+      return () => clearTimeout(t);
     }
-    if (firstSigRef.current === knowledgeConfigSig) return;
-    firstSigRef.current = knowledgeConfigSig;
-    setSaveState("saving");
-    const t1 = setTimeout(() => setSaveState("saved"), 1500); // match ManagePage's ~800ms debounce + small buffer
-    const t2 = setTimeout(() => setSaveState("idle"), 4000);
-    return () => {
-      clearTimeout(t1);
-      clearTimeout(t2);
-    };
-  }, [knowledgeConfigSig]);
+    setRecentlySaved(false);
+  }, [saveState, draftSaveStatus]);
 
   // Reindex progress state
   const [reindexProgress, setReindexProgress] = useState<{
@@ -2966,16 +2987,35 @@ export default function KnowledgePanel({
                                     {testing ? "Testing…" : "Test connection"}
                                   </Button>
 
-                                  {/* Save-state Tag (Carbon for AI persistence cue) */}
+                                  {/* Save-state indicator: each variant maps to a real
+                                      PATCH lifecycle event (saving/2xx/non-2xx/network).
+                                      The prior 1500ms-setTimeout "Saved" sticker that
+                                      lied is gone — now the user sees a "Saving…" tag
+                                      while the network call is in flight, "Saved" only
+                                      AFTER a 2xx response (auto-hides after 3s via
+                                      ``recentlySaved``), and a red "Couldn't save"
+                                      button-tag with one-click Retry on any failure. */}
                                   {saveState === "saving" && (
                                     <Tag type="gray" size="sm" renderIcon={Renew}>
                                       Saving…
                                     </Tag>
                                   )}
-                                  {saveState === "saved" && (
+                                  {saveState === "saved" && recentlySaved && (
                                     <Tag type="green" size="sm" renderIcon={Checkmark}>
                                       Saved
                                     </Tag>
+                                  )}
+                                  {saveState === "failed" && draftSaveStatus?.kind === "failed" && (
+                                    <Button
+                                      kind="ghost"
+                                      size="sm"
+                                      renderIcon={ErrorFilled}
+                                      onClick={() => onRetryDraftSave?.()}
+                                      title={draftSaveStatus.error}
+                                      style={{ color: "var(--cds-support-error)" }}
+                                    >
+                                      Couldn&apos;t save — Retry
+                                    </Button>
                                   )}
 
                                   {/* Key-source chip — only shown when no test result is up
