@@ -3721,14 +3721,10 @@ class KnowledgeEngine:
                 count += 1
         if stale:
             logger.info(
-                "Removed %d stale file(s) from %s; copied %d from %s",
-                stale,
-                target_collection,
-                count,
-                source_collection,
+                f"Removed {stale} stale file(s) from {target_collection}; copied {count} from {source_collection}"
             )
         else:
-            logger.info("Copied %d source files from %s to %s", count, source_collection, target_collection)
+            logger.info(f"Copied {count} source files from {source_collection} to {target_collection}")
         return count
 
     async def reindex(self, collection: str) -> dict[str, Any]:
