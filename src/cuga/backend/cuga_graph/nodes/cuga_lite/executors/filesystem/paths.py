@@ -54,8 +54,8 @@ def safe_thread_id(thread_id: Optional[str]) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", raw)
 
 
-def _normpath_under(base_path: str, *segments: str) -> Path:
-    """Join segments under ``base_path`` using normpath + prefix check (CodeQL-safe)."""
+def _normpath_under(base_path: str, *segments: str) -> str:
+    """Join segments under ``base_path``; return validated path string (CodeQL-safe)."""
     fullpath = base_path
     for name in segments:
         clean = (name or "").replace("\\", "/")
@@ -64,7 +64,7 @@ def _normpath_under(base_path: str, *segments: str) -> Path:
         fullpath = os.path.normpath(os.path.join(fullpath, clean))
     if not (fullpath == base_path or fullpath.startswith(base_path + os.sep)):
         raise ValueError(f"Path must stay under {base_path}")
-    return Path(fullpath)
+    return fullpath
 
 
 def child_path_under(base: Path, *names: str) -> Path:
@@ -72,7 +72,7 @@ def child_path_under(base: Path, *names: str) -> Path:
     base_path = os.path.normpath(os.path.realpath(str(base)))
     if not names:
         return Path(base_path)
-    return _normpath_under(base_path, *names)
+    return Path(_normpath_under(base_path, *names))
 
 
 def assert_resolved_path_under(path: Path, base: Path) -> Path:
@@ -82,6 +82,39 @@ def assert_resolved_path_under(path: Path, base: Path) -> Path:
     if not (fullpath == base_path or fullpath.startswith(base_path + os.sep)):
         raise ValueError(f"Path must stay under {base_path}")
     return Path(fullpath)
+
+
+def write_bytes_under(base: Path, data: bytes, *segments: str) -> Path:
+    """Write ``data`` under ``base``/segments using normpath+startswith then ``open``."""
+    base_path = os.path.normpath(os.path.realpath(str(base)))
+    fullpath = _normpath_under(base_path, *segments) if segments else base_path
+    parent = os.path.dirname(fullpath)
+    if parent:
+        os.makedirs(parent, exist_ok=True)
+    with open(fullpath, "wb") as handle:
+        handle.write(data)
+    return Path(fullpath)
+
+
+def read_bytes_under(path: Path, base: Path) -> bytes:
+    """Read a file after verifying its resolved path stays under ``base``."""
+    base_path = os.path.normpath(os.path.realpath(str(base)))
+    fullpath = os.path.normpath(os.path.realpath(str(path)))
+    if not (fullpath == base_path or fullpath.startswith(base_path + os.sep)):
+        raise ValueError(f"Path must stay under {base_path}")
+    if not os.path.isfile(fullpath):
+        raise FileNotFoundError(f"File not found: {fullpath}")
+    with open(fullpath, "rb") as handle:
+        return handle.read()
+
+
+def remove_file_under(path: Path, base: Path) -> None:
+    """Remove a file after verifying its resolved path stays under ``base``."""
+    base_path = os.path.normpath(os.path.realpath(str(base)))
+    fullpath = os.path.normpath(os.path.realpath(str(path)))
+    if not (fullpath == base_path or fullpath.startswith(base_path + os.sep)):
+        raise ValueError(f"Path must stay under {base_path}")
+    os.remove(fullpath)
 
 
 def skills_enabled() -> bool:

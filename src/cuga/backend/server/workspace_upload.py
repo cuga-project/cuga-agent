@@ -17,11 +17,14 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     VIRTUAL_WORKSPACE_ROOT,
     child_path_under,
     ensure_thread_workspace_seeded,
+    local_base_dir,
     relative_workspace_path,
+    remove_file_under,
     resolve_workspace_path,
     safe_thread_id,
     shell_workspace_path,
     thread_workspace_root,
+    write_bytes_under,
 )
 from cuga.backend.server.workspace_sandbox import workspace_tree_is_sandbox_backed
 
@@ -190,25 +193,23 @@ async def upload_workspace_bytes(
     validate_upload_content(data, safe_name)
     sp = sandbox_upload_path(safe_name)
     manifest = _merge_manifest_entry(manifest, thread_id=tid, filename=safe_name, size_bytes=len(data))
-    dest = _upload_file_host_path(tid, safe_name)
+    workspace_base = local_base_dir()
 
     if workspace_tree_is_sandbox_backed():
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.backends import RemoteSandboxBackend
         from cuga.backend.cuga_graph.nodes.cuga_lite.executors.code_executor import CodeExecutor
 
         backend = RemoteSandboxBackend(CodeExecutor._get_opensandbox_executor(), tid)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        tmp = child_path_under(dest.parent, f".upload-{secrets.token_hex(8)}.tmp")
-        tmp.write_bytes(data)
+        tmp_name = f".upload-{secrets.token_hex(8)}.tmp"
+        tmp = write_bytes_under(workspace_base, data, tid, UPLOADS_SUBDIR, tmp_name)
         try:
             await backend.upload(tmp, sp)
         finally:
-            tmp.unlink(missing_ok=True)
+            remove_file_under(tmp, workspace_base)
         _write_manifest_host(tid, manifest)
         await _write_manifest_remote(tid, manifest)
     else:
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(data)
+        write_bytes_under(workspace_base, data, tid, UPLOADS_SUBDIR, safe_name)
         _write_manifest_host(tid, manifest)
 
     return {

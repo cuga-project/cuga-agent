@@ -12,7 +12,10 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     child_path_under,
     ensure_thread_workspace_seeded,
     local_base_dir,
+    read_bytes_under,
+    remove_file_under,
     resolve_workspace_path,
+    write_bytes_under,
 )
 from cuga.backend.server import workspace_upload as wu
 
@@ -81,6 +84,17 @@ def test_assert_resolved_path_under_rejects_escape(tmp_path: Path) -> None:
     outside.write_text("x", encoding="utf-8")
     with pytest.raises(ValueError, match="Path must stay under"):
         assert_resolved_path_under(outside, base)
+
+
+def test_write_and_read_bytes_under_thread_uploads(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    base = local_base_dir()
+    base.mkdir()
+    written = write_bytes_under(base, b'{"ok": true}', "thread-1", "uploads", "data.json")
+    assert written.is_file()
+    assert read_bytes_under(written, base) == b'{"ok": true}'
+    remove_file_under(written, base)
+    assert not written.exists()
 
 
 def test_ensure_thread_workspace_seeded_copies_crm_fixtures(

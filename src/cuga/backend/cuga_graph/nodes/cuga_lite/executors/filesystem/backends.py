@@ -297,17 +297,18 @@ class RemoteSandboxBackend(FilesystemBackend):
     async def upload(self, local_path: Path | str, sandbox_path: str) -> UploadResult:
         from opensandbox.models import WriteEntry  # type: ignore[import]
 
-        from .paths import assert_resolved_path_under
+        from .paths import local_base_dir, read_bytes_under
 
         sp = self._norm(sandbox_path)
         base = local_base_dir()
-        p = assert_resolved_path_under(Path(local_path), base)
-        if not p.is_file():
-            raise FileNotFoundError(f"Local file not found: {p}")
+        try:
+            payload = read_bytes_under(Path(local_path), base)
+        except FileNotFoundError as exc:
+            raise FileNotFoundError(f"Local file not found: {local_path}") from exc
         interp = await self._interp()
-        await interp.sandbox.files.write_files([WriteEntry(path=sp, data=p.read_bytes())])
-        logger.info(f"[RemoteSandboxBackend] Uploaded {p} → {sp}")
-        return UploadResult(local_path=str(p), sandbox_path=sp)
+        await interp.sandbox.files.write_files([WriteEntry(path=sp, data=payload)])
+        logger.info(f"[RemoteSandboxBackend] Uploaded {local_path} → {sp}")
+        return UploadResult(local_path=str(local_path), sandbox_path=sp)
 
 
 __all__ = [

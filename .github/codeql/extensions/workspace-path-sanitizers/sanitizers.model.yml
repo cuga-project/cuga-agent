@@ -31,6 +31,16 @@ extensions:
           "path-injection",
         ]
       - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[write_bytes_under].ReturnValue",
+          "path-injection",
+        ]
+      - [
+          "cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths",
+          "Member[read_bytes_under].ReturnValue",
+          "path-injection",
+        ]
+      - [
           "cuga.backend.server.workspace_upload",
           "Member[sanitize_upload_filename].ReturnValue",
           "path-injection",
