@@ -214,8 +214,18 @@ def create_call_model_node(
         meta_value = adapter.build_metadata_update(state, playbook_fired=playbook_fired)
         meta_update = {adapter.metadata_key: meta_value}
 
+        # ── Require-tool-call-before-final guard (default-off; gated) ──────
+        # Tracks whether any tool/code block has executed this task, carried
+        # inside the adapter metadata dict so no graph state schema change is
+        # needed (works for lite / supervisor / core).
+        require_tool_call = bool(getattr(settings.advanced_features, "require_tool_call_before_final", False))
+        code_exec_count = int((adapter.get_metadata(state) or {}).get("code_exec_count", 0) or 0)
+
         # ── Route: code → execute node; text → END or auto-continue ────────
         if code:
+            if require_tool_call:
+                # Record that at least one tool/code block has run this task.
+                meta_value["code_exec_count"] = code_exec_count + 1
             return Command(
                 goto=adapter.execute_node_name,
                 update={
@@ -233,6 +243,31 @@ def create_call_model_node(
                 goto="call_model",
                 update={
                     adapter.messages_key: final_messages + [HumanMessage(content="continue")],
+                    "script": None,
+                    "final_answer": "",
+                    "execution_complete": False,
+                    "step_count": new_step_count,
+                    **meta_update,
+                },
+            )
+
+        # Model wants to finalize. Guard: refuse a final answer produced without
+        # any tool/code execution (e.g. a confident hallucination); inject a
+        # directive and continue instead. Bounded by the step limit.
+        if require_tool_call and code_exec_count == 0:
+            logger.warning(
+                "%s: require_tool_call_before_final — final answer with 0 tool calls; injecting directive and continuing",
+                adapter.sender_name,
+            )
+            directive = (
+                "You have not called any tool yet, so this answer is not grounded in retrieved data. "
+                "Call at least one tool to obtain the actual values before giving a final answer. "
+                "Do not answer from prior knowledge."
+            )
+            return Command(
+                goto="call_model",
+                update={
+                    adapter.messages_key: final_messages + [HumanMessage(content=directive)],
                     "script": None,
                     "final_answer": "",
                     "execution_complete": False,
