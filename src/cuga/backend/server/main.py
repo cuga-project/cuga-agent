@@ -189,9 +189,7 @@ def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: 
 
 
 def _skills_effective_enabled() -> bool:
-    return getattr(settings.skills, "enabled", False) and getattr(
-        settings.advanced_features, "enable_shell_tool", False
-    )
+    return getattr(settings.skills, "enabled", False)
 
 
 try:
