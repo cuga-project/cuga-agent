@@ -68,6 +68,68 @@ async def test_async_tool_execution(mock_state):
 
 
 @pytest.mark.asyncio
+async def test_unknown_tool_name_gets_correction(mock_state):
+    """A fabricated tool name returns a correction listing the closest real tools.
+
+    Regression guard for the gpt-oss tool-name hallucination loop: calling a
+    non-existent tool used to surface only a raw NameError, so the agent kept
+    re-inventing the same bogus name until the step limit. The correction must
+    name the closest real tool so the agent can recover in one step.
+    """
+
+    async def mondial_geo_get_top_country_by_gdp_and_agriculture() -> int:
+        return 0
+
+    async def mondial_geo_get_mountain_count_by_country(country: str) -> int:
+        return 0
+
+    # References a real tool (so the context-usage guard passes) then calls a
+    # fabricated one — mirrors the real trajectory where the agent invents
+    # generic CRUD names after a valid find_tools/real-tool reference.
+    code = (
+        "mc = mondial_geo_get_mountain_count_by_country\n"
+        "result = await mondial_geo_get_countries_countries_get()\n"
+        "print(result)"
+    )
+    result, _ = await CodeExecutor.eval_with_tools_async(
+        code=code,
+        _locals={
+            'mondial_geo_get_top_country_by_gdp_and_agriculture': (
+                mondial_geo_get_top_country_by_gdp_and_agriculture
+            ),
+            'mondial_geo_get_mountain_count_by_country': mondial_geo_get_mountain_count_by_country,
+        },
+        state=mock_state,
+        mode='local',
+    )
+
+    assert "tool-name correction" in result
+    assert "mondial_geo_get_countries_countries_get" in result
+    assert "Did you mean" in result
+    # the real tool the shortlister meant must be offered as a candidate
+    assert "mondial_geo_get_top_country_by_gdp_and_agriculture" in result
+
+
+@pytest.mark.asyncio
+async def test_unknown_name_no_close_match_points_to_find_tools(mock_state):
+    """With no similar tool loaded, the correction tells the agent to re-query find_tools."""
+
+    async def authors_get_author_details(author_id: int) -> dict:
+        return {}
+
+    code = "ad = authors_get_author_details\nresult = await repo_browser()\nprint(result)"
+    result, _ = await CodeExecutor.eval_with_tools_async(
+        code=code,
+        _locals={'authors_get_author_details': authors_get_author_details},
+        state=mock_state,
+        mode='local',
+    )
+
+    assert "tool-name correction" in result
+    assert "find_tools" in result
+
+
+@pytest.mark.asyncio
 async def test_dangerous_import_blocked(mock_state):
     """Test that dangerous imports are blocked."""
     code = "import os\nos.system('echo hello')"

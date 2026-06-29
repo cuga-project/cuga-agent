@@ -50,8 +50,7 @@ sub_task_keep_last_n = 5  # Number of most recent generated variables to keep wh
 code_executor_keep_last_n = -1  # Number of variables to keep after code execution: -1 = keep all, 1 = keep last 1, 2 = keep last 2, etc.
 cuga_lite_max_steps = 70  # Maximum number of steps (call_model + sandbox cycles) before returning error
 sandbox_execution_timeout = 30  # Seconds; per-block wall clock for sandbox code execution (incl. embedded LLM calls like find_tools). Env: DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT
-cuga_lite_arg_coercion = false  # Pre-flight coerce+validate tool kwargs against the tool's input schema before the call (fixes the dict-as-string bug; safe rules R1/R3/R5). Off = current behavior. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_ARG_COERCION
-cuga_lite_arg_coercion_dict_scalar = false  # R2 guesser: unwrap a single-key dict whose key != param into its lone scalar. Off = shadow-log only (no mutation). Requires cuga_lite_arg_coercion. Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_ARG_COERCION_DICT_SCALAR
+cuga_lite_warn_suspect_args = true  # Warn (never coerce) when a CugaLite tool kwarg looks malformed for its schema: dict/list where a scalar is required (dict-as-string), or a stringized number. Diagnostic only — args forwarded unchanged. Was Change #4 coercion, now WONTFIX/detection-only (see arg_warning.py). Env: DYNACONF_ADVANCED_FEATURES__CUGA_LITE_WARN_SUSPECT_ARGS
 # bind_tools: generic default is none; resolved model ``gpt-oss-20b`` uses model_runtime_profile.py
 # mode: none | find_tools | all | apps | tools | apps_and_tools  (apps_and_tools = union of app tools + listed names)
 cuga_lite_bind_tools_mode = "none"
