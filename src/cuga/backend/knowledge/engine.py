@@ -3934,8 +3934,21 @@ class KnowledgeEngine:
         return self._config.chunk_size, self._config.chunk_overlap
 
     def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
-        """Token-aware splitter when an HF tokenizer is available for the
-        active embedder; char-based fallback otherwise. See #387 follow-up."""
+        """Token-aware splitter when a tokenizer is known for the active
+        embedder; char-based fallback otherwise. See #387 follow-up.
+
+        Dispatch order (first match wins):
+          1. HF tokenizer for litellm/openrouter HF-listed orgs (intfloat/,
+             BAAI/bge, sentence-transformers/, …) — exact unit.
+          2. tiktoken cl100k_base for openai-native + azure routes
+             (including litellm/openai/* and litellm/azure/*) — also exact.
+          3. HuggingFace-provider model's own tokenizer — exact.
+          4. Char-based fallback (cohere/voyage/gemini/ollama/fastembed
+             plain-text and any unlisted slash-model). Operator canary log
+             fires for the unlisted-HF-style case so we can collect
+             telemetry on which orgs to add to the allow-list (mirrors
+             the canary already firing in ``_build_docling_chunker``).
+        """
 
         def _hf_splitter(tok):
             # ``from_huggingface_tokenizer`` overcounts BOS/EOS by ~2 tokens
@@ -3947,8 +3960,11 @@ class KnowledgeEngine:
             )
 
         provider = (self._config.embedding_provider or "").lower()
+        model_raw = self._config.embedding_model or ""
+
+        # 1. HF allow-list (litellm/openrouter HF-style routes).
         if provider in ("litellm", "openrouter", "openai"):
-            repo_id = _hf_repo_id_for_chunk_sizing(self._config.embedding_model or "")
+            repo_id = _hf_repo_id_for_chunk_sizing(model_raw)
             if repo_id:
                 auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
                 if auto_tok is not None:
@@ -3956,6 +3972,30 @@ class KnowledgeEngine:
                         return _hf_splitter(auto_tok)
                     except Exception as e:
                         logger.warning(f"from_huggingface_tokenizer failed ({e}); char fallback.")
+
+            # 2. tiktoken for openai-native / azure routes. cl100k_base is
+            # exactly what text-embedding-3-* and ada-002 use; for azure
+            # it's a near-perfect approximation. Strip ONLY the outer
+            # routing prefix (litellm/ or openrouter/) — don't use
+            # ``_strip_litellm_route_prefix`` because that also strips
+            # ``openai/`` and ``azure/``, which would erase the marker
+            # we're trying to detect.
+            outer = model_raw.lower()
+            for outer_prefix in ("litellm/", "openrouter/"):
+                if outer.startswith(outer_prefix):
+                    outer = outer[len(outer_prefix) :]
+                    break
+            if provider == "openai" or outer.startswith(("openai/", "azure/")):
+                try:
+                    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                        encoding_name="cl100k_base",
+                        chunk_size=chunk_size,
+                        chunk_overlap=chunk_overlap,
+                    )
+                except Exception as e:
+                    logger.warning(f"from_tiktoken_encoder failed ({e}); char fallback.")
+
+        # 3. HF-provider — reuse the embedder's own tokenizer.
         elif provider == "huggingface":
             try:
                 self._ensure_embeddings()
@@ -3964,6 +4004,25 @@ class KnowledgeEngine:
                     return _hf_splitter(emb._tokenizer)
             except Exception as e:
                 logger.warning(f"HF-provider tokenizer reuse failed ({e}); char fallback.")
+
+        # 4. Char-based fallback. For unlisted HF-style slash-models on
+        # litellm/openrouter routes, fire the same canary the chunker
+        # path fires — this is the splitter-side mirror of #387's
+        # silent-degradation signal. ``_warn_unlisted_embedder_once``
+        # dedups by (provider, model, encoding_name), so the chunker and
+        # splitter sides each fire ONCE per process per unlisted model.
+        # The "char_based_split" sentinel distinguishes the splitter
+        # origin from the chunker's "cl100k_base" key.
+        if provider in ("litellm", "openrouter"):
+            stripped = _strip_litellm_route_prefix(model_raw) or model_raw
+            stripped_lo = stripped.lower()
+            if (
+                "/" in stripped
+                and _hf_repo_id_for_chunk_sizing(model_raw) is None
+                and not stripped_lo.startswith(("openai/", "azure/"))
+            ):
+                _warn_unlisted_embedder_once(provider, stripped, "char_based_split")
+
         return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     def _build_docling_chunker(self, chunk_size: int):
