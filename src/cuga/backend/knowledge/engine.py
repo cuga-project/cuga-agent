@@ -3934,24 +3934,18 @@ class KnowledgeEngine:
         return self._config.chunk_size, self._config.chunk_overlap
 
     def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
-        """Build a token-aware splitter for plain-text + emergency-resplit paths.
+        """Token-aware splitter when an HF tokenizer is available for the
+        active embedder; char-based fallback otherwise. See #387 follow-up."""
 
-        Issue #387 follow-up: HybridChunker correctly measures in tokens for
-        Docling-parseable formats, but the plain-text path and the emergency
-        oversized-chunk re-split historically used
-        ``RecursiveCharacterTextSplitter(chunk_size=chunk_size)`` directly —
-        interpreting the user's token-target (e.g. 800) as CHARS. For dense
-        / multilingual content an 800-char piece can be 600-800 XLM-RoBERTa
-        tokens, exceeding e5-large's 512 ceiling and getting silently
-        truncated at embed time.
+        def _hf_splitter(tok):
+            # ``from_huggingface_tokenizer`` overcounts BOS/EOS by ~2 tokens
+            # for e5/BGE (langchain#30184) — harmless under-fill, not the
+            # truncation we're fixing.
+            cap = min(chunk_size, _hf_tokenizer_seq_limit(tok))
+            return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+                tok, chunk_size=cap, chunk_overlap=min(chunk_overlap, cap // 4)
+            )
 
-        When the active embedder has an HF tokenizer we know about (the
-        same one HybridChunker uses), build a token-counting splitter via
-        ``RecursiveCharacterTextSplitter.from_huggingface_tokenizer`` and
-        cap at ``min(chunk_size, model_max_seq_length)``. Otherwise fall
-        back to char-based — the user's chunk_size is then a char target,
-        matching the previous behavior for legacy paths.
-        """
         provider = (self._config.embedding_provider or "").lower()
         if provider in ("litellm", "openrouter", "openai"):
             repo_id = _hf_repo_id_for_chunk_sizing(self._config.embedding_model or "")
@@ -3959,36 +3953,18 @@ class KnowledgeEngine:
                 auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
                 if auto_tok is not None:
                     try:
-                        seq = _hf_tokenizer_seq_limit(auto_tok)
-                        cap = min(chunk_size, seq)
-                        overlap = min(chunk_overlap, max(cap // 4, 1))
-                        return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
-                            auto_tok, chunk_size=cap, chunk_overlap=overlap
-                        )
+                        return _hf_splitter(auto_tok)
                     except Exception as e:
-                        logger.warning(
-                            f"from_huggingface_tokenizer failed ({e}); falling back to char-based splitter."
-                        )
-        if provider == "huggingface":
+                        logger.warning(f"from_huggingface_tokenizer failed ({e}); char fallback.")
+        elif provider == "huggingface":
             try:
                 self._ensure_embeddings()
                 emb = self._default_embeddings
-                if hasattr(emb, "_tokenizer") and emb._tokenizer is not None:
-                    seq = _hf_tokenizer_seq_limit(emb._tokenizer)
-                    cap = min(chunk_size, seq)
-                    overlap = min(chunk_overlap, max(cap // 4, 1))
-                    return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
-                        emb._tokenizer, chunk_size=cap, chunk_overlap=overlap
-                    )
+                if getattr(emb, "_tokenizer", None) is not None:
+                    return _hf_splitter(emb._tokenizer)
             except Exception as e:
-                logger.warning(
-                    f"_build_text_splitter HF-provider reuse failed ({e}); "
-                    f"falling back to char-based splitter."
-                )
-        return RecursiveCharacterTextSplitter(
-            chunk_size=chunk_size,
-            chunk_overlap=chunk_overlap,
-        )
+                logger.warning(f"HF-provider tokenizer reuse failed ({e}); char fallback.")
+        return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     def _build_docling_chunker(self, chunk_size: int):
         """Build a HybridChunker that respects our chunk_size config.
