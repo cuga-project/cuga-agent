@@ -112,33 +112,72 @@ class TestHfRepoIdForChunkSizing:
 
 
 class TestHfTokenizerSeqLimit:
+    """Helper returns the SAFE chunk-token cap (raw max minus a margin
+    that covers embedder-side wrapping). Tests assert against the
+    margined value because that's the actual contract. Imported here so
+    a margin change updates the assertions in one place."""
+
+    def _safe(self, raw):
+        from cuga.backend.knowledge.engine import _HF_TOKEN_SAFETY_MARGIN
+
+        return raw - _HF_TOKEN_SAFETY_MARGIN
+
     def test_normal_512(self):
         tok = SimpleNamespace(model_max_length=512)
-        assert _hf_tokenizer_seq_limit(tok) == 512
+        assert _hf_tokenizer_seq_limit(tok) == self._safe(512)
 
     def test_large_model_8192(self):
-        # bge-m3 has 8192 — make sure we don't accidentally clamp it.
+        # bge-m3 has 8192 — should be passed through (minus margin).
         tok = SimpleNamespace(model_max_length=8192)
-        assert _hf_tokenizer_seq_limit(tok) == 8192
+        assert _hf_tokenizer_seq_limit(tok) == self._safe(8192)
 
     def test_very_large_integer_sentinel_defaults_to_512(self):
-        # transformers' VERY_LARGE_INTEGER convention means "unset". We must
-        # NOT pass that to the chunker as a real ceiling — it'd produce
-        # gargantuan chunks the embedder would then truncate.
+        # transformers' VERY_LARGE_INTEGER convention means "unset". We
+        # default to 512 - margin (BERT / XLM-R convention).
         tok = SimpleNamespace(model_max_length=int(1e30))
-        assert _hf_tokenizer_seq_limit(tok) == 512
+        assert _hf_tokenizer_seq_limit(tok) == self._safe(512)
 
     def test_missing_attr_defaults_to_512(self):
         tok = SimpleNamespace()
-        assert _hf_tokenizer_seq_limit(tok) == 512
+        assert _hf_tokenizer_seq_limit(tok) == self._safe(512)
 
     def test_none_defaults_to_512(self):
         tok = SimpleNamespace(model_max_length=None)
-        assert _hf_tokenizer_seq_limit(tok) == 512
+        assert _hf_tokenizer_seq_limit(tok) == self._safe(512)
 
     def test_zero_defaults_to_512(self):
         tok = SimpleNamespace(model_max_length=0)
-        assert _hf_tokenizer_seq_limit(tok) == 512
+        assert _hf_tokenizer_seq_limit(tok) == self._safe(512)
+
+    def test_regression_518_over_512_watsonx_e5(self):
+        """Regression for user-reported QA bug on PR #383:
+
+            litellm.ContextWindowExceededError: This model's maximum
+            context length is 512 tokens. However, you requested 518
+            tokens in the input for embedding generation.
+
+        The +6 overhead came from e5's "passage: " prefix +
+        provider-side BOS/EOS that the local tokenizer never saw at
+        chunk-count time. The safety margin (default 16) prevents this
+        recurrence by capping the chunker to 496 for an e5-large
+        tokenizer (512 - 16) — leaves 16 tokens of headroom for any
+        reasonable wrapping a hosted provider can throw at us.
+        """
+        from cuga.backend.knowledge.engine import _HF_TOKEN_SAFETY_MARGIN
+
+        tok = SimpleNamespace(model_max_length=512)
+        cap = _hf_tokenizer_seq_limit(tok)
+        # Cap must leave at least the observed 6-token overhead of slack.
+        assert cap <= 512 - 6, f"Cap {cap} doesn't leave room for the 518>512 overhead the user hit"
+        # And the margin must be at least the observed overhead.
+        assert _HF_TOKEN_SAFETY_MARGIN >= 6
+
+    def test_margin_does_not_underflow_to_zero(self):
+        # Defensive: tiny model_max_length (synthetic / corrupt config)
+        # must not return <= 0 — that would break the chunker.
+        tok = SimpleNamespace(model_max_length=4)  # smaller than margin
+        cap = _hf_tokenizer_seq_limit(tok)
+        assert cap >= 1
 
 
 class TestLoadHfTokenizerCachesFailure:

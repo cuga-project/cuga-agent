@@ -1240,14 +1240,44 @@ def _load_hf_tokenizer_for_chunking(repo_id: str):
         return None
 
 
+# Safety margin subtracted from the HF tokenizer's raw model_max_length
+# before we hand the cap to the chunker / splitter. Covers two
+# embedder-side overheads the local tokenizer doesn't see at chunk-count
+# time:
+#
+#   (a) BOS/EOS asymmetry — ``tokenizer.encode(text)`` adds them when the
+#       chunker measures, but some hosted embedders re-tokenize the
+#       chunk text with their own special-token policy on top.
+#   (b) e5-family ``"query: "`` / ``"passage: "`` prefix that hosted
+#       providers (notably watsonx) auto-prepend before embed — 3-4
+#       XLM-RoBERTa tokens the chunker never sees.
+#
+# User-reported smoking gun on PR #383 manual QA (cuga 16:22:28 log):
+# chunker capped at 512, watsonx still rejected with
+# ``This model's maximum context length is 512 tokens. However, you
+#  requested 518 tokens`` — a +6 overhead consistent with prefix + BOS.
+# 16 is generous enough for any current provider's wrapping; we'd
+# rather lose ~3% of context window than fail ingest on edge chunks.
+_HF_TOKEN_SAFETY_MARGIN = 16
+
+
 def _hf_tokenizer_seq_limit(tok) -> int:
-    """Read the HF tokenizer's max input length. Sentinel (>= 1e6) means
-    'unset' — default to 512 (BERT / XLM-RoBERTa convention)."""
+    """Return the safe chunk-token cap for this tokenizer's model.
+
+    NOT the raw ``model_max_length`` — that's the embedder's HARD limit,
+    and the chunker can't count provider-side wrapping (special tokens,
+    e5 prefixes). Subtracts ``_HF_TOKEN_SAFETY_MARGIN`` so chunks at
+    the returned cap survive the embedder's wrapping. See the constant's
+    docstring for the user-reported bug this prevents.
+
+    Sentinel (>= 1e6) means 'unset' → defaults to 512 - margin (BERT /
+    XLM-RoBERTa convention)."""
     try:
         mml = int(getattr(tok, "model_max_length", 0) or 0)
     except (TypeError, ValueError):
-        return 512
-    return mml if 0 < mml < 1_000_000 else 512
+        return max(1, 512 - _HF_TOKEN_SAFETY_MARGIN)
+    raw = mml if 0 < mml < 1_000_000 else 512
+    return max(1, raw - _HF_TOKEN_SAFETY_MARGIN)
 
 
 def _resolve_tiktoken_encoding(model_name: str):
