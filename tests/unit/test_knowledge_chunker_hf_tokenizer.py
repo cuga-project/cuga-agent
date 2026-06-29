@@ -28,6 +28,7 @@ from cuga.backend.knowledge.engine import (
     _hf_tokenizer_seq_limit,
     _load_hf_tokenizer_for_chunking,
     _strip_litellm_route_prefix,
+    _warn_unlisted_embedder_once,
 )
 
 
@@ -178,3 +179,42 @@ class TestLoadHfTokenizerCachesFailure:
             _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
             _load_hf_tokenizer_for_chunking("BAAI/bge-large-en-v1.5")
             assert m.call_count == 2
+
+
+class TestWarnUnlistedEmbedderObservability:
+    """Operator canary for the silent-degradation failure mode that the HF
+    allow-list doesn't cover. The WARNING converts an invisible bug (chunks
+    silently sized in cl100k against a 512-token e5 window) into a single
+    log line operators can grep for. Deduped per (provider, model, encoding)
+    via lru_cache so it never spams per-document."""
+
+    def setup_method(self):
+        _warn_unlisted_embedder_once.cache_clear()
+
+    def test_warns_once_per_unique_tuple(self, monkeypatch):
+        # Three calls with the same args -> exactly ONE log line.
+        # Loguru's logger doesn't integrate with caplog, so monkeypatch it.
+        from cuga.backend.knowledge import engine as eng
+
+        calls: list[str] = []
+        monkeypatch.setattr(eng.logger, "warning", lambda msg, *a, **k: calls.append(msg))
+        _warn_unlisted_embedder_once("litellm", "mistralai/mistral-embed-x", "cl100k_base")
+        _warn_unlisted_embedder_once("litellm", "mistralai/mistral-embed-x", "cl100k_base")
+        _warn_unlisted_embedder_once("litellm", "mistralai/mistral-embed-x", "cl100k_base")
+        msgs = [m for m in calls if "allow-list" in m]
+        assert len(msgs) == 1, f"expected 1 warning, got {len(msgs)}: {msgs}"
+        assert "mistralai/mistral-embed-x" in msgs[0]
+        assert "litellm" in msgs[0]
+
+    def test_warns_separately_for_distinct_models(self, monkeypatch):
+        # Different models from the same provider each get their own warning.
+        from cuga.backend.knowledge import engine as eng
+
+        calls: list[str] = []
+        monkeypatch.setattr(eng.logger, "warning", lambda msg, *a, **k: calls.append(msg))
+        _warn_unlisted_embedder_once("litellm", "orgA/embedder-x", "cl100k_base")
+        _warn_unlisted_embedder_once("litellm", "orgB/embedder-y", "cl100k_base")
+        msgs = [m for m in calls if "allow-list" in m]
+        assert len(msgs) == 2
+        assert any("orgA/embedder-x" in m for m in msgs)
+        assert any("orgB/embedder-y" in m for m in msgs)

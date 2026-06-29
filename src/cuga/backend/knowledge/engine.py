@@ -1278,6 +1278,29 @@ def _resolve_tiktoken_encoding(model_name: str):
         return tiktoken.get_encoding("cl100k_base")
 
 
+@functools.lru_cache(maxsize=64)
+def _warn_unlisted_embedder_once(provider: str, model: str, encoding_name: str) -> None:
+    """Operator-visible canary for the silent-degradation failure mode behind
+    #387: a litellm/openrouter-routed slash-containing embedder fell through
+    to tiktoken cl100k_base because its org wasn't in
+    ``_HF_CHUNK_TOKENIZER_PREFIXES``. Chunks will be sized in cl100k tokens
+    against the model's real (typically smaller) context window — potentially
+    truncated at embed time, degrading retrieval quality silently.
+
+    Deduped by lru_cache so the warning fires ONCE per (provider, model,
+    encoding) per process, never per-document. The existing DEBUG log at
+    the tiktoken-branch tail covers the expected cases (openai/text-*,
+    cohere/voyage/gemini); this WARNING is the gated "unexpected" canary
+    for unlisted HF-style models. See issue draft attached to commit."""
+    logger.warning(
+        f"HybridChunker: embedder {model!r} (provider={provider!r}) is not in the "
+        f"HF-tokenizer allow-list; chunk sizing uses tiktoken {encoding_name} as an "
+        f"approximation. If retrieval quality is low on non-English / long-form "
+        f"content, extend _HF_CHUNK_TOKENIZER_PREFIXES in "
+        f"src/cuga/backend/knowledge/engine.py or open an issue with the repo id."
+    )
+
+
 @functools.lru_cache(maxsize=1)
 def _fastembed_docling_tokenizer_cls():
     """HybridChunker tokenizer using fastembed's Rust tokenizer (avoids HF MiniLM download)."""
@@ -4043,12 +4066,29 @@ class KnowledgeEngine:
                     encoding=encoding,
                     max_tokens=chunk_size,
                 )
+                # Operator canary for the silent-degradation surface that the
+                # HF allow-list doesn't cover (see _warn_unlisted_embedder_once).
+                # Gated tight so the expected cases stay quiet: only fires when
+                # a litellm/openrouter route carries a slash-containing model
+                # AND we landed on cl100k_base AND the model didn't match the
+                # HF allow-list. cohere/voyage/gemini/mistral are exempted by
+                # the provider filter — they don't ship via these prefixes.
+                provider = (self._config.embedding_provider or "").lower()
+                model_raw = self._config.embedding_model or ""
+                stripped = _strip_litellm_route_prefix(model_raw) or model_raw
+                enc_name = getattr(encoding, "name", "")
+                if (
+                    provider in {"litellm", "openrouter"}
+                    and "/" in stripped
+                    and enc_name == "cl100k_base"
+                    and _hf_repo_id_for_chunk_sizing(model_raw) is None
+                ):
+                    _warn_unlisted_embedder_once(provider, stripped, enc_name)
                 logger.debug(
-                    "HybridChunker tokenizer: tiktoken (encoding={!r}, "
-                    "embedding_provider={!r}, model={!r}); zero-download fallback",
-                    getattr(encoding, "name", "?"),
-                    self._config.embedding_provider,
-                    self._config.embedding_model or "default",
+                    f"HybridChunker tokenizer: tiktoken (encoding={enc_name!r}, "
+                    f"embedding_provider={self._config.embedding_provider!r}, "
+                    f"model={self._config.embedding_model or 'default'!r}); "
+                    f"zero-download fallback"
                 )
                 return HybridChunker(tokenizer=tok)
             except Exception as tok_err:  # pragma: no cover - defensive
