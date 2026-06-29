@@ -1180,18 +1180,10 @@ _LITELLM_ROUTE_PREFIXES = (
 )
 
 
-# Curated HF-org allow-list: embedders routed via litellm/openrouter whose REAL
-# tokenizer is on the HF Hub (sentencepiece / WordPiece — NOT OpenAI BPE). For
-# these, ``_resolve_tiktoken_encoding`` would silently fall back to cl100k_base
-# and the chunker would size chunks in cl100k tokens — which, for multilingual
-# content fed to e5/bge models, can be 1.5–3x the model's real XLM-RoBERTa /
-# BERT token count and overflow max_seq_length=512, causing silent truncation
-# at embed time. Match here to load the model's own tokenizer instead.
-#
-# Intentionally narrow — extending is a one-line PR. An AutoConfig probe is
-# rejected (network call on hot path) and an "any-slash" heuristic is rejected
-# (would wrongly catch ``openai/text-embedding-3-small`` that tiktoken handles
-# natively). See issue #387 for the bug repro.
+# HF orgs whose embedders ship via litellm/openrouter and need their real
+# tokenizer for chunk sizing instead of cl100k_base. Extending is a one-line
+# PR; unlisted models fall through to tiktoken (canary warns operators).
+# See #387.
 _HF_CHUNK_TOKENIZER_PREFIXES = (
     "intfloat/",
     "baai/bge",
@@ -1231,11 +1223,8 @@ def _hf_repo_id_for_chunk_sizing(model_name: str) -> Optional[str]:
 
 @functools.lru_cache(maxsize=8)
 def _load_hf_tokenizer_for_chunking(repo_id: str):
-    """Load an HF tokenizer for chunk sizing. Memoizes the None failure path
-    too so a one-time corp-proxy outage / hub timeout at process start does
-    not re-fire the hub call on every doc ingested in the session. lazy
-    ``transformers`` import keeps cuga startup cost unchanged for users who
-    never ingest with a litellm-routed HF embedder."""
+    """Load HF tokenizer; memoizes None so a one-time hub timeout doesn't
+    re-fire per ingest. Lazy transformers import."""
     try:
         from transformers import AutoTokenizer
 
@@ -1245,21 +1234,20 @@ def _load_hf_tokenizer_for_chunking(repo_id: str):
         return None
     except Exception as e:
         logger.warning(
-            f"HF tokenizer load failed for chunk sizing (repo={repo_id!r}, err={e!r}); "
-            f"falling back to tiktoken cl100k_base. Pre-cache via HF_HOME to silence."
+            f"HF tokenizer load failed (repo={repo_id!r}, err={e!r}); "
+            f"falling back to tiktoken. Pre-cache via HF_HOME to silence."
         )
         return None
 
 
 def _hf_tokenizer_seq_limit(tok) -> int:
-    """Read the model's max input length from a HF tokenizer. transformers
-    uses a VERY_LARGE_INTEGER sentinel (1e30) to mean 'unset' — sanitize to
-    512, the universal default across BERT / XLM-RoBERTa / DistilBERT.
-    Defensive against non-numeric values (test mocks, custom tokenizers)."""
-    mml = getattr(tok, "model_max_length", None)
-    if not isinstance(mml, (int, float)) or not (0 < mml < 1_000_000):
+    """Read the HF tokenizer's max input length. Sentinel (>= 1e6) means
+    'unset' — default to 512 (BERT / XLM-RoBERTa convention)."""
+    try:
+        mml = int(getattr(tok, "model_max_length", 0) or 0)
+    except (TypeError, ValueError):
         return 512
-    return int(mml)
+    return mml if 0 < mml < 1_000_000 else 512
 
 
 def _resolve_tiktoken_encoding(model_name: str):
@@ -1280,18 +1268,9 @@ def _resolve_tiktoken_encoding(model_name: str):
 
 @functools.lru_cache(maxsize=64)
 def _warn_unlisted_embedder_once(provider: str, model: str, encoding_name: str) -> None:
-    """Operator-visible canary for the silent-degradation failure mode behind
-    #387: a litellm/openrouter-routed slash-containing embedder fell through
-    to tiktoken cl100k_base because its org wasn't in
-    ``_HF_CHUNK_TOKENIZER_PREFIXES``. Chunks will be sized in cl100k tokens
-    against the model's real (typically smaller) context window — potentially
-    truncated at embed time, degrading retrieval quality silently.
-
-    Deduped by lru_cache so the warning fires ONCE per (provider, model,
-    encoding) per process, never per-document. The existing DEBUG log at
-    the tiktoken-branch tail covers the expected cases (openai/text-*,
-    cohere/voyage/gemini); this WARNING is the gated "unexpected" canary
-    for unlisted HF-style models. See issue draft attached to commit."""
+    """Operator canary: warn once per (provider, model, encoding) when chunker
+    falls back to cl100k_base for a litellm/openrouter HF-style model not on
+    the allow-list. See #387, gating criterion in #395."""
     logger.warning(
         f"HybridChunker: embedder {model!r} (provider={provider!r}) is not in the "
         f"HF-tokenizer allow-list; chunk sizing uses tiktoken {encoding_name} as an "
@@ -4011,15 +3990,9 @@ class KnowledgeEngine:
                         f"HuggingFace chunker tokenizer reuse failed ({hf_err}); falling back to tiktoken."
                     )
 
-            # NEW (issue #387): litellm/openrouter-routed HF-style embedders
-            # (intfloat/, BAAI/bge*, sentence-transformers/, ...) use their
-            # OWN tokenizer for chunk sizing — NOT cl100k_base. The route
-            # prefix (watsonx/, litellm/, openai/, ...) is stripped, and we
-            # match against ``_HF_CHUNK_TOKENIZER_PREFIXES``. Models outside
-            # the allow-list (openai/text-embedding-3-*, cohere/*, voyage-*,
-            # gemini-*, watsonx/ibm/slate-*) fall through to tiktoken — for
-            # those, cl100k_base is either correct (OpenAI) or the best
-            # approximation we have without vendor SDKs.
+            # litellm/openrouter-routed HF-style embedders use their own
+            # tokenizer for chunk sizing (issue #387). Unlisted models fall
+            # through to tiktoken — same behavior as before this branch.
             if self._config.embedding_provider in ("litellm", "openrouter", "openai"):
                 repo_id = _hf_repo_id_for_chunk_sizing(self._config.embedding_model or "")
                 if repo_id:
@@ -4066,13 +4039,9 @@ class KnowledgeEngine:
                     encoding=encoding,
                     max_tokens=chunk_size,
                 )
-                # Operator canary for the silent-degradation surface that the
-                # HF allow-list doesn't cover (see _warn_unlisted_embedder_once).
-                # Gated tight so the expected cases stay quiet: only fires when
-                # a litellm/openrouter route carries a slash-containing model
-                # AND we landed on cl100k_base AND the model didn't match the
-                # HF allow-list. cohere/voyage/gemini/mistral are exempted by
-                # the provider filter — they don't ship via these prefixes.
+                # Canary: warn once when a litellm/openrouter route hit
+                # cl100k_base for a slash-containing model not on the HF
+                # allow-list. See _warn_unlisted_embedder_once.
                 provider = (self._config.embedding_provider or "").lower()
                 model_raw = self._config.embedding_model or ""
                 stripped = _strip_litellm_route_prefix(model_raw) or model_raw

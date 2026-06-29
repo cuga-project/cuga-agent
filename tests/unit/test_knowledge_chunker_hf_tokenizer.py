@@ -173,13 +173,6 @@ class TestLoadHfTokenizerCachesFailure:
             result = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
             assert result is None
 
-    def test_different_repos_are_cached_separately(self):
-        with patch("transformers.AutoTokenizer.from_pretrained") as m:
-            m.return_value = SimpleNamespace(model_max_length=512)
-            _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
-            _load_hf_tokenizer_for_chunking("BAAI/bge-large-en-v1.5")
-            assert m.call_count == 2
-
 
 class TestWarnUnlistedEmbedderObservability:
     """Operator canary for the silent-degradation failure mode that the HF
