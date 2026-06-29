@@ -88,7 +88,7 @@ def load_knowledge_instructions(max_search_attempts: int | None = None) -> str:
     try:
         text = instructions_path.read_text(encoding="utf-8").strip()
     except Exception as exc:
-        logger.debug("Failed to load knowledge_instructions.md: %s", exc)
+        logger.debug(f"Failed to load knowledge_instructions.md: {exc}")
         return ""
     # The .md template is calibrated for "3 attempts" wording; when the
     # active profile sets a different budget we substitute. Falling back to
@@ -316,7 +316,7 @@ async def get_knowledge_summary(
             if addendum:
                 summary += f"\n{addendum}\n"
         except Exception as e:
-            logger.warning("Failed to load profile addendum for %s: %s", rag_profile, e)
+            logger.warning(f"Failed to load profile addendum for {rag_profile}: {e}")
 
     # Recency tail — strong imperative that lands right before the user
     # message in the composed prompt. The prior "Remember to apply…"

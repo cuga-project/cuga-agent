@@ -3024,7 +3024,7 @@ class KnowledgeEngine:
                             reordered.append(results[idx])
                     results = reordered or results[:limit]
             except Exception as e:
-                logger.warning("Reranker unavailable/failed (%s); using fusion ranking.", e)
+                logger.warning(f"Reranker unavailable/failed ({e}); using fusion ranking.")
                 results = results[:limit]
         else:
             # No reranker → still respect the requested limit (we may have
@@ -3343,7 +3343,7 @@ class KnowledgeEngine:
                 expanded = {k: v for k, v in expanded.items() if v is not None}
                 knowledge_cfg = {**expanded, **knowledge_cfg}
             except FileNotFoundError:
-                logger.warning("Profile %s not found, ignoring", profile_name)
+                logger.warning(f"Profile {profile_name} not found, ignoring")
 
         validated = KnowledgeConfig.coerce_and_validate(knowledge_cfg, base=self._config)
 
@@ -3711,7 +3711,7 @@ class KnowledgeEngine:
             if f.is_file():
                 shutil.copy2(str(f), str(dst_dir / f.name))
                 count += 1
-        logger.info("Copied %d source files from %s to %s", count, source_collection, target_collection)
+        logger.info(f"Copied {count} source files from {source_collection} to {target_collection}")
         return count
 
     async def reindex(self, collection: str) -> dict[str, Any]:

@@ -58,13 +58,13 @@ def knowledge_config_get(
         with _ur.urlopen(url, timeout=10) as resp:  # noqa: S310 — operator tool
             payload = _json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        logger.error("Failed to fetch knowledge settings from %s: %s", url, exc)
+        logger.error(f"Failed to fetch knowledge settings from {url}: {exc}")
         raise typer.Exit(code=1)
 
     knowledge_cfg = payload.get("knowledge", payload)
     if field:
         if field not in knowledge_cfg:
-            logger.error("Unknown field %r. Available: %s", field, sorted(knowledge_cfg.keys()))
+            logger.error(f"Unknown field {field!r}. Available: {sorted(knowledge_cfg.keys())}")
             raise typer.Exit(code=1)
         value = knowledge_cfg[field]
         typer.echo(_json.dumps(value) if json_output else str(value))
@@ -109,7 +109,7 @@ def knowledge_config_set(
         with _ur.urlopen(req, timeout=10) as resp:  # noqa: S310 — operator tool
             typer.echo(resp.read().decode("utf-8"))
     except Exception as exc:
-        logger.error("Failed to update knowledge settings: %s", exc)
+        logger.error(f"Failed to update knowledge settings: {exc}")
         raise typer.Exit(code=1)
 
 
@@ -156,7 +156,7 @@ def knowledge_snapshot_export(
         with _ur.urlopen(url, timeout=15) as resp:  # noqa: S310 — operator tool
             payload = _json.loads(resp.read().decode("utf-8"))
     except Exception as exc:
-        logger.error("Failed to fetch manage config from %s: %s", url, exc)
+        logger.error(f"Failed to fetch manage config from {url}: {exc}")
         raise typer.Exit(code=1)
 
     config = payload.get("config", {})
@@ -185,7 +185,7 @@ def knowledge_snapshot_export(
             _json.dump(snapshot, f, indent=2, ensure_ascii=False)
             f.write("\n")
     except OSError as exc:
-        logger.error("Failed to write snapshot to %s: %s", output, exc)
+        logger.error(f"Failed to write snapshot to {output}: {exc}")
         raise typer.Exit(code=1)
 
     typer.echo(f"Knowledge snapshot exported to {output} (agent_id={agent_id})")
@@ -218,10 +218,10 @@ def knowledge_snapshot_import(
         with open(input, encoding="utf-8") as f:
             snapshot = _json.load(f)
     except OSError as exc:
-        logger.error("Failed to read snapshot file %s: %s", input, exc)
+        logger.error(f"Failed to read snapshot file {input}: {exc}")
         raise typer.Exit(code=1)
     except _json.JSONDecodeError as exc:
-        logger.error("Snapshot file %s is not valid JSON: %s", input, exc)
+        logger.error(f"Snapshot file {input} is not valid JSON: {exc}")
         raise typer.Exit(code=1)
 
     schema = snapshot.get("schema")
@@ -259,7 +259,7 @@ def knowledge_snapshot_import(
         with _ur.urlopen(req, timeout=30) as resp:  # noqa: S310 — operator tool
             typer.echo(resp.read().decode("utf-8"))
     except Exception as exc:
-        logger.error("Failed to apply snapshot via PATCH %s: %s", url, exc)
+        logger.error(f"Failed to apply snapshot via PATCH {url}: {exc}")
         raise typer.Exit(code=1)
 
     typer.echo(

@@ -124,7 +124,7 @@ def _uv_sync_opensandbox_extra() -> None:
         )
         raise typer.Exit(1)
     except subprocess.CalledProcessError as e:
-        logger.error("uv sync --extra opensandbox failed (exit %s)", e.returncode)
+        logger.error(f"uv sync --extra opensandbox failed (exit {e.returncode})")
         raise typer.Exit(1) from e
 
 
@@ -1236,7 +1236,7 @@ def start(
             os.environ[_env_name] = _value
             _suffix = _env_name.split("__")[-1]
             _shown = "<redacted>" if _suffix in _SECRET_SUFFIXES else _value
-            logger.info("Embedding override: %s=%s", _suffix, _shown)
+            logger.info(f"Embedding override: {_suffix}={_shown}")
 
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
@@ -1257,7 +1257,7 @@ def start(
             managed_path = ensure_managed_mcp_file_exists(get_managed_mcp_path())
             os.environ["MCP_SERVERS_FILE"] = "none"
             _apply_local_demo_workspace_env()
-            logger.info("Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE=%s", managed_path)
+            logger.info(f"Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE={managed_path}")
             setup_demo_manage_config("manager", tools=resolved_tools, filesystem=app_filesystem)
 
             app_mgr = _make_app_manager()
@@ -1348,7 +1348,7 @@ def start(
 
         try:
             fs_for_demo = app_filesystem
-            logger.info("🧹 Resetting config db and setting up manage %s...", demo_preset)
+            logger.info(f"🧹 Resetting config db and setting up manage {demo_preset}...")
             setup_demo_manage_config(demo_preset, tools=resolved_tools, filesystem=fs_for_demo)
             logger.info("🧹 Checking for existing processes on required ports...")
             app_mgr = _make_app_manager()
@@ -1458,7 +1458,7 @@ def start(
                         for _d in _files_dir_h.iterdir():
                             if _d.is_dir() and _d.name.startswith("kb_"):
                                 _shutil_hard.rmtree(_d, ignore_errors=True)
-                                logger.info("🧹 --hard-reset: removed %s", _d.name)
+                                logger.info(f"🧹 --hard-reset: removed {_d.name}")
                     # Drop the lock file too — the regular reset path
                     # respects it (won't wipe while a server is running),
                     # but with --hard-reset the user is explicitly
@@ -1471,7 +1471,7 @@ def start(
                         except OSError:
                             pass
                 except Exception as _hr_err:
-                    logger.warning("--hard-reset extra cleanup failed: %s (continuing)", _hr_err)
+                    logger.warning(f"--hard-reset extra cleanup failed: {_hr_err} (continuing)")
             logger.info("🧹 Setting up demo_knowledge config...")
             setup_demo_manage_config(
                 "demo_knowledge", tools=resolved_tools, reset_knowledge=reset, filesystem=app_filesystem
