@@ -3933,6 +3933,63 @@ class KnowledgeEngine:
         """Get chunk_size and chunk_overlap from _config (source of truth after publish)."""
         return self._config.chunk_size, self._config.chunk_overlap
 
+    def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
+        """Build a token-aware splitter for plain-text + emergency-resplit paths.
+
+        Issue #387 follow-up: HybridChunker correctly measures in tokens for
+        Docling-parseable formats, but the plain-text path and the emergency
+        oversized-chunk re-split historically used
+        ``RecursiveCharacterTextSplitter(chunk_size=chunk_size)`` directly —
+        interpreting the user's token-target (e.g. 800) as CHARS. For dense
+        / multilingual content an 800-char piece can be 600-800 XLM-RoBERTa
+        tokens, exceeding e5-large's 512 ceiling and getting silently
+        truncated at embed time.
+
+        When the active embedder has an HF tokenizer we know about (the
+        same one HybridChunker uses), build a token-counting splitter via
+        ``RecursiveCharacterTextSplitter.from_huggingface_tokenizer`` and
+        cap at ``min(chunk_size, model_max_seq_length)``. Otherwise fall
+        back to char-based — the user's chunk_size is then a char target,
+        matching the previous behavior for legacy paths.
+        """
+        provider = (self._config.embedding_provider or "").lower()
+        if provider in ("litellm", "openrouter", "openai"):
+            repo_id = _hf_repo_id_for_chunk_sizing(self._config.embedding_model or "")
+            if repo_id:
+                auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
+                if auto_tok is not None:
+                    try:
+                        seq = _hf_tokenizer_seq_limit(auto_tok)
+                        cap = min(chunk_size, seq)
+                        overlap = min(chunk_overlap, max(cap // 4, 1))
+                        return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+                            auto_tok, chunk_size=cap, chunk_overlap=overlap
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"from_huggingface_tokenizer failed ({e}); falling back to char-based splitter."
+                        )
+        if provider == "huggingface":
+            try:
+                self._ensure_embeddings()
+                emb = self._default_embeddings
+                if hasattr(emb, "_tokenizer") and emb._tokenizer is not None:
+                    seq = _hf_tokenizer_seq_limit(emb._tokenizer)
+                    cap = min(chunk_size, seq)
+                    overlap = min(chunk_overlap, max(cap // 4, 1))
+                    return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+                        emb._tokenizer, chunk_size=cap, chunk_overlap=overlap
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"_build_text_splitter HF-provider reuse failed ({e}); "
+                    f"falling back to char-based splitter."
+                )
+        return RecursiveCharacterTextSplitter(
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+
     def _build_docling_chunker(self, chunk_size: int):
         """Build a HybridChunker that respects our chunk_size config.
 
@@ -4424,10 +4481,11 @@ class KnowledgeEngine:
             ".conf",
         ):
             text = file_path.read_text(errors="replace")
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-            )
+            # Token-aware split when we have an HF tokenizer for the active
+            # embedder — guarantees no chunk exceeds the model's max_seq_length.
+            # Falls back to char-based for providers without an HF tokenizer
+            # (legacy fastembed default, cohere/voyage/gemini under cl100k).
+            splitter = self._build_text_splitter(chunk_size, chunk_overlap)
             chunks = splitter.split_text(text)
             docs = [Document(page_content=chunk, metadata={"page": i + 1}) for i, chunk in enumerate(chunks)]
         else:
@@ -4449,16 +4507,42 @@ class KnowledgeEngine:
 
         logger.info(f"Loaded {len(docs)} raw chunks from {file_path.name}")
 
-        # Post-process: re-split any oversized chunks from Docling
-        # This ensures stored chunk_size/chunk_overlap settings are respected
-        # even for Docling-parsed formats.
-        if docs and any(len(d.page_content) > chunk_size * 2 for d in docs):
-            splitter = RecursiveCharacterTextSplitter(
-                chunk_size=chunk_size,
-                chunk_overlap=chunk_overlap,
-            )
+        # Post-process re-split (issue #387 follow-up). The old version of
+        # this block fired whenever any chunk's CHAR length exceeded
+        # ``chunk_size * 2`` (with ``chunk_size`` being the user's
+        # token-target like 800). That conflates two units:
+        #   - HybridChunker measures in TOKENS via the model's tokenizer
+        #     and produces chunks bounded by ``min(chunk_size, model_max_seq_length)``
+        #     in those tokens (after #387 fix).
+        #   - RecursiveCharacterTextSplitter measures in CHARS. Feeding it
+        #     ``chunk_size=800`` produced 800-char pieces, which for dense
+        #     content (academic English, multilingual, code) can be
+        #     600-800 XLM-RoBERTa tokens — past e5-large's 512 ceiling.
+        #     The embedder then silently truncated, evidenced in user
+        #     logs by ``[transformers] Token indices sequence length is
+        #     longer than the specified maximum sequence length for this
+        #     model (716 > 512)``.
+        #
+        # The re-split exists as a safety net for the rare case Docling
+        # returns a single pathological mega-chunk (file with no natural
+        # breaks, or a non-tokenizer-aware fallback path). Raise the
+        # threshold so the safety net only fires for those, not for
+        # normal HybridChunker output. Anything HybridChunker produces
+        # with a configured tokenizer is already token-bounded; this
+        # split would only WEAKEN that guarantee.
+        _EMERGENCY_CHAR_THRESHOLD = 100_000  # ~25k tokens — past any embedder context
+        if docs and any(len(d.page_content) > _EMERGENCY_CHAR_THRESHOLD for d in docs):
+            # Use the token-aware splitter — guarantees the safety-split
+            # output fits the embedder regardless of script density.
+            splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+            n_before = len(docs)
             docs = splitter.split_documents(docs)
-            logger.info(f"Re-split into {len(docs)} chunks (chunk_size={chunk_size})")
+            logger.warning(
+                f"Emergency re-split for {file_path.name}: HybridChunker "
+                f"returned a chunk > {_EMERGENCY_CHAR_THRESHOLD} chars; "
+                f"token-aware split {n_before} -> {len(docs)} chunks. "
+                f"Investigate the source file's structure if this is recurrent."
+            )
 
         return docs
 
