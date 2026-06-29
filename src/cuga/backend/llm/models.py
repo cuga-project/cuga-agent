@@ -625,6 +625,11 @@ class LLMManager:
         api_version = self._get_api_version(model_settings, platform)
         base_url = self._get_base_url(model_settings, platform)
         http_timeout = self._get_http_timeout(model_settings)
+        logger.info(
+            f"Sampling config for {platform}/{model_name}: "
+            f"temperature={temperature}, top_p={model_settings.get('top_p', 1.0)}, "
+            f"max_tokens={max_tokens}"
+        )
         if platform == "azure":
             api_version = str(model_settings.get('api_version'))
             is_reasoning = self._is_reasoning_model(model_name)
@@ -644,6 +649,7 @@ class LLMManager:
                     timeout=http_timeout,
                     azure_deployment=model_name + "-" + api_version,
                     temperature=temperature,
+                    top_p=model_settings.get('top_p', 1.0),
                     max_tokens=max_tokens,
                 )
         elif platform == "openai":
@@ -657,6 +663,7 @@ class LLMManager:
 
             if not is_reasoning:
                 openai_params["temperature"] = temperature
+                openai_params["top_p"] = model_settings.get('top_p', 1.0)
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
 
@@ -743,6 +750,7 @@ class LLMManager:
                 max_tokens=max_tokens,
                 model=model_name,
                 temperature=temperature,
+                top_p=model_settings.get('top_p', 1.0),
                 seed=42,
             )
         elif platform == "rits-restricted":
@@ -794,6 +802,7 @@ class LLMManager:
 
             if not is_reasoning:
                 openrouter_params["temperature"] = temperature
+                openrouter_params["top_p"] = model_settings.get('top_p', 1.0)
             else:
                 logger.debug(f"Skipping temperature for reasoning model: {model_name}")
 
@@ -826,6 +835,7 @@ class LLMManager:
             }
             if not is_reasoning:
                 litellm_params["temperature"] = temperature
+                litellm_params["top_p"] = model_settings.get('top_p', 1.0)
             else:
                 logger.debug(f"Skipping temperature for reasoning model (litellm): {model_name}")
             # Tell litellm to use the OpenAI-compatible code path without parsing
@@ -881,7 +891,10 @@ class LLMManager:
         if is_mock_llm_enabled():
             mock = clone_load_test_mock_chat_model()
             return self._update_model_parameters(
-                mock, temperature=0.1, max_tokens=max_tokens, max_completion_tokens=max_tokens
+                mock,
+                temperature=model_settings.get('temperature', 0.1),
+                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
             )
 
         # Check if pre-instantiated model is available
@@ -889,7 +902,9 @@ class LLMManager:
             logger.debug(f"Using pre-instantiated model: {type(self._pre_instantiated_model).__name__}")
             # Update parameters for the task
             updated_model = self._update_model_parameters(
-                self._pre_instantiated_model, temperature=0.1, max_tokens=max_tokens
+                self._pre_instantiated_model,
+                temperature=model_settings.get('temperature', 0.1),
+                max_tokens=max_tokens,
             )
             return updated_model
 
@@ -908,7 +923,10 @@ class LLMManager:
             # Update parameters for the task
             cached_model = self._models[cache_key]
             updated_model = self._update_model_parameters(
-                cached_model, temperature=0.1, max_tokens=max_tokens, max_completion_tokens=max_tokens
+                cached_model,
+                temperature=model_settings.get('temperature', 0.1),
+                max_tokens=max_tokens,
+                max_completion_tokens=max_tokens,
             )
             return updated_model
 
@@ -920,7 +938,11 @@ class LLMManager:
         self._models[cache_key] = model
 
         # Update parameters for the task
-        updated_model = self._update_model_parameters(model, temperature=0.1, max_tokens=max_tokens)
+        updated_model = self._update_model_parameters(
+            model,
+            temperature=model_settings.get('temperature', 0.1),
+            max_tokens=max_tokens,
+        )
         return updated_model
 
 
