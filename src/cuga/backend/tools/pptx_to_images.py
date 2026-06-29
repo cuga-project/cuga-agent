@@ -54,18 +54,146 @@ def _find_soffice() -> str | None:
     return None
 
 
+_WORKSPACE_ROOTS = [
+    Path("/workspace"),
+    Path.home() / "workspace",
+]
+
+
 def _resolve(path: str) -> Path:
     p = Path(path)
     if p.is_absolute():
         return p
+    # Strip an explicit /workspace/ prefix and re-resolve
     if path.startswith("/workspace/"):
-        return Path(path[len("/workspace/"):])
+        p = Path(path[len("/workspace/"):])
+    # Prefer the candidate that actually exists on disk
+    candidates = [p.resolve(), *(root / p for root in _WORKSPACE_ROOTS)]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
+    # Return the raw path; the caller will emit a clear "not found" error
     return p
+
+
+_SHIM_SO = Path(tempfile.gettempdir()) / "lo_socket_shim.so"
+
+_SHIM_C = r"""
+#define _GNU_SOURCE
+#include <dlfcn.h>
+#include <errno.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
+static int (*real_socket)(int, int, int);
+static int (*real_socketpair)(int, int, int, int[2]);
+static int (*real_listen)(int, int);
+static int (*real_accept)(int, struct sockaddr *, socklen_t *);
+static int (*real_close)(int);
+static int (*real_read)(int, void *, size_t);
+
+static int is_shimmed[1024];
+static int peer_of[1024];
+static int wake_r[1024];
+static int wake_w[1024];
+static int listener_fd = -1;
+
+__attribute__((constructor))
+static void init(void) {
+    real_socket     = dlsym(RTLD_NEXT, "socket");
+    real_socketpair = dlsym(RTLD_NEXT, "socketpair");
+    real_listen     = dlsym(RTLD_NEXT, "listen");
+    real_accept     = dlsym(RTLD_NEXT, "accept");
+    real_close      = dlsym(RTLD_NEXT, "close");
+    real_read       = dlsym(RTLD_NEXT, "read");
+    for (int i = 0; i < 1024; i++) { peer_of[i] = wake_r[i] = wake_w[i] = -1; }
+}
+
+int socket(int domain, int type, int protocol) {
+    if (domain == AF_UNIX) {
+        int fd = real_socket(domain, type, protocol);
+        if (fd >= 0) return fd;
+        int sv[2];
+        if (real_socketpair(domain, type, protocol, sv) == 0) {
+            if (sv[0] >= 0 && sv[0] < 1024) {
+                is_shimmed[sv[0]] = 1;
+                peer_of[sv[0]] = sv[1];
+                int wp[2];
+                if (pipe(wp) == 0) { wake_r[sv[0]] = wp[0]; wake_w[sv[0]] = wp[1]; }
+            }
+            return sv[0];
+        }
+        errno = EPERM; return -1;
+    }
+    return real_socket(domain, type, protocol);
+}
+
+int listen(int sockfd, int backlog) {
+    if (sockfd >= 0 && sockfd < 1024 && is_shimmed[sockfd]) { listener_fd = sockfd; return 0; }
+    return real_listen(sockfd, backlog);
+}
+
+int accept(int sockfd, struct sockaddr *addr, socklen_t *addrlen) {
+    if (sockfd >= 0 && sockfd < 1024 && is_shimmed[sockfd]) {
+        if (wake_r[sockfd] >= 0) { char buf; real_read(wake_r[sockfd], &buf, 1); }
+        errno = ECONNABORTED; return -1;
+    }
+    return real_accept(sockfd, addr, addrlen);
+}
+
+int close(int fd) {
+    if (fd >= 0 && fd < 1024 && is_shimmed[fd]) {
+        int was_listener = (fd == listener_fd);
+        is_shimmed[fd] = 0;
+        if (wake_w[fd] >= 0) { char c = 0; write(wake_w[fd], &c, 1); real_close(wake_w[fd]); wake_w[fd] = -1; }
+        if (wake_r[fd] >= 0) { real_close(wake_r[fd]); wake_r[fd] = -1; }
+        if (peer_of[fd] >= 0) { real_close(peer_of[fd]); peer_of[fd] = -1; }
+        if (was_listener) _exit(0);
+    }
+    return real_close(fd);
+}
+"""
+
+
+def _af_unix_blocked() -> bool:
+    import socket as _socket  # noqa: PLC0415
+    try:
+        s = _socket.socket(_socket.AF_UNIX, _socket.SOCK_STREAM)
+        s.close()
+        return False
+    except OSError:
+        return True
+
+
+def _ensure_shim() -> Path | None:
+    if _SHIM_SO.exists():
+        return _SHIM_SO
+    gcc = shutil.which("gcc")
+    if not gcc:
+        return None
+    src = Path(tempfile.gettempdir()) / "lo_socket_shim.c"
+    src.write_text(_SHIM_C)
+    try:
+        result = subprocess.run(
+            [gcc, "-shared", "-fPIC", "-o", str(_SHIM_SO), str(src), "-ldl"],
+            capture_output=True,
+        )
+        if result.returncode != 0:
+            return None
+    finally:
+        src.unlink(missing_ok=True)
+    return _SHIM_SO
 
 
 def _soffice_env() -> dict:
     env = os.environ.copy()
     env["SAL_USE_VCLPLUGIN"] = "svp"
+    if _af_unix_blocked():
+        shim = _ensure_shim()
+        if shim:
+            env["LD_PRELOAD"] = str(shim)
     return env
 
 
@@ -291,13 +419,6 @@ def _rgb_from_pptx_color(
 def _fill_color(fill, theme_palette: dict) -> tuple[int, int, int] | None:
     """Resolve a FillFormat to an RGB tuple, handling solid and theme fills."""
     try:
-        from pptx.enum.dml import MSO_THEME_COLOR  # noqa: PLC0415
-        fill_type = fill.type
-        # None means no fill / inherited; anything other than solid we skip
-        from pptx.enum.dml import PP_MEDIA_TYPE  # noqa: PLC0415
-    except Exception:
-        pass
-    try:
         return _rgb_from_pptx_color(fill.fore_color, theme_palette)
     except Exception:
         return None
@@ -383,9 +504,10 @@ def _render_slide(slide, px_w: int, px_h: int, emu_w: int, emu_h: int, dpi: int,
     return img
 
 
-def _draw_text_frame(draw, tf, left: int, top: int, width: int, height: int, font, dpi: int) -> None:
+def _draw_text_frame(draw, tf, left: int, top: int, width: int, height: int, font, dpi: int, theme_palette: dict | None = None) -> None:
     from PIL import ImageFont  # noqa: PLC0415
 
+    tp = theme_palette or {}
     padding = max(4, dpi // 50)
     x = left + padding
     y = top + padding
@@ -400,7 +522,7 @@ def _draw_text_frame(draw, tf, left: int, top: int, width: int, height: int, fon
                 continue
             # font colour
             try:
-                c = _rgb_from_pptx_color(run.font.color)
+                c = _rgb_from_pptx_color(run.font.color, tp)
                 color = c if c else (30, 30, 30)
             except Exception:
                 color = (30, 30, 30)

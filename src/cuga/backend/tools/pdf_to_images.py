@@ -21,12 +21,22 @@ from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
 
 
+_WORKSPACE_ROOTS = [
+    Path("/workspace"),
+    Path.home() / "workspace",
+]
+
+
 def _resolve(path: str) -> Path:
     p = Path(path)
     if p.is_absolute():
         return p
     if path.startswith("/workspace/"):
-        return Path(path[len("/workspace/"):])
+        p = Path(path[len("/workspace/"):])
+    candidates = [p.resolve(), *(root / p for root in _WORKSPACE_ROOTS)]
+    for candidate in candidates:
+        if candidate.exists():
+            return candidate
     return p
 
 
