@@ -168,12 +168,12 @@ class SimpleA2ARunner:
                     yield self._input_required_event(pending)
                     return
 
-                logger.info("A2A auto-approving HITL action %s", pending.get("action_id"))
+                logger.info(f"A2A auto-approving HITL action {pending.get('action_id')}")
                 resume = self._build_response(pending, True, None)
 
             # Exhausted the resume budget (or the stream ended cleanly with no
             # answer and no pending interrupt) without a terminal answer.
-            logger.warning("A2A event stream completed without a final answer (thread_id=%s)", thread_id)
+            logger.warning(f"A2A event stream completed without a final answer (thread_id={thread_id})")
             yield A2AStreamEvent("final_answer", {"text": "Agent completed processing"}, final=True)
 
         except Exception as exc:
@@ -270,7 +270,7 @@ class SimpleA2ARunner:
         try:
             snapshot = graph.get_state({"configurable": {"thread_id": thread_id}})
         except Exception:
-            logger.debug("A2A: could not read graph state for thread %s", thread_id, exc_info=True)
+            logger.debug(f"A2A: could not read graph state for thread {thread_id}", exc_info=True)
             return None
 
         if not getattr(snapshot, "next", None):

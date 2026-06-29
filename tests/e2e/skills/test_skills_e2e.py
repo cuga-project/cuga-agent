@@ -36,7 +36,7 @@ from .skills_artifact import (
 
 
 class TestSkillDiscovery:
-    def test_skill_discovered_from_agents_skills_directory(
+    def test_skill_discovered_from_cuga_skills_directory(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.chdir(tmp_path)
@@ -118,64 +118,60 @@ class TestSkillRegistry:
         assert "Verify it" in loaded
         assert loaded.index("Do the thing") < loaded.index("Verify it")
 
-    def test_pip_requirements_emit_uv_install_commands(self) -> None:
+    def test_pip_requirements_do_not_auto_emit_install_commands(self) -> None:
         registry = self._make_registry(
-            "slide_maker", "## Make slides", requirements=("python-pptx", "pandas")
+            "slide_maker",
+            "## Dependencies\n\n`uv pip install python-pptx pandas`",
+            requirements=("python-pptx", "pandas"),
         )
 
         loaded = registry.load_skill("slide_maker")
 
-        assert "uv pip install" in loaded
+        assert "await run_command('uv pip install" not in loaded
         assert "python-pptx" in loaded
         assert "pandas" in loaded
+        assert "follow that skill's own structure" in loaded
 
-    def test_npm_requirements_emit_npm_install_commands(self) -> None:
+    def test_npm_requirements_do_not_auto_emit_install_commands(self) -> None:
         registry = self._make_registry(
-            "image_tool", "## Image processing", requirements=("npm:sharp", "npm:imagemin")
+            "image_tool",
+            "## Setup\n\n`npm install sharp imagemin`",
+            requirements=("npm:sharp", "npm:imagemin"),
         )
 
         loaded = registry.load_skill("image_tool")
 
-        assert "npm install" in loaded
+        assert "await run_command('npm install" not in loaded
         assert "sharp" in loaded
         assert "imagemin" in loaded
 
-    def test_mixed_pip_and_npm_requirements(self) -> None:
-        registry = self._make_registry("mixed_skill", "## Mixed", requirements=("python-pptx", "npm:sharp"))
+    def test_mixed_requirements_keep_skill_body_without_generated_install_block(self) -> None:
+        registry = self._make_registry(
+            "mixed_skill",
+            "## Mixed\n\nInstall what this section says.",
+            requirements=("python-pptx", "npm:sharp"),
+        )
 
         loaded = registry.load_skill("mixed_skill")
 
-        assert "uv pip install --quiet python-pptx" in loaded
-        assert "npm install sharp" in loaded
-        assert loaded.index("STEP 1") < loaded.index("STEP 2")
+        assert "INSTALL REQUIREMENTS" not in loaded
+        assert "Install what this section says." in loaded
+        assert "STEP 1 — SKILL INSTRUCTIONS" in loaded
 
-    def test_pip_install_followed_by_verification_command(self) -> None:
+    def test_no_auto_pip_show_or_npm_list_commands(self) -> None:
         registry = self._make_registry("deck", "## Make slides", requirements=("python-pptx",))
 
         loaded = registry.load_skill("deck")
 
-        assert "uv pip show" in loaded
-        assert "python-pptx" in loaded
+        assert "await run_command('uv pip show" not in loaded
+        assert "await run_command('npm list" not in loaded
 
-    def test_npm_install_followed_by_verification_command(self) -> None:
-        registry = self._make_registry("img", "## Image tool", requirements=("npm:sharp",))
-
-        loaded = registry.load_skill("img")
-
-        assert "npm list" in loaded
-        assert "sharp" in loaded
-
-    def test_verification_appears_after_install_and_before_step2(self) -> None:
+    def test_skill_body_install_guidance_precedes_instructions(self) -> None:
         registry = self._make_registry("mixed", "## Mixed", requirements=("python-pptx", "npm:sharp"))
 
         loaded = registry.load_skill("mixed")
 
-        pip_show_pos = loaded.index("uv pip show")
-        npm_list_pos = loaded.index("npm list")
-        step2_pos = loaded.index("STEP 2")
-
-        assert pip_show_pos < step2_pos
-        assert npm_list_pos < step2_pos
+        assert loaded.index("follow that skill's own structure") < loaded.index("STEP 1 — SKILL INSTRUCTIONS")
 
     def test_load_skill_unknown_name_returns_helpful_error(self) -> None:
         registry = self._make_registry("known_skill", "## Body")

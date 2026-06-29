@@ -430,13 +430,13 @@ def list_profiles() -> dict[str, dict[str, Any]]:
     """
     profiles: dict[str, dict[str, Any]] = {}
     if not _PROFILES_DIR.is_dir():
-        logger.warning("Knowledge profiles directory not found: %s", _PROFILES_DIR)
+        logger.warning(f"Knowledge profiles directory not found: {_PROFILES_DIR}")
         return profiles
     for name in VALID_PROFILES:
         try:
             profiles[name] = load_profile(name)
         except Exception as e:
-            logger.warning("Failed to load profile %s: %s", name, e)
+            logger.warning(f"Failed to load profile {name}: {e}")
     return profiles
 
 
@@ -1026,7 +1026,7 @@ class KnowledgeConfig:
             profile_rerank = profile_data.get("rerank", {})
             profile_engine = profile_data.get("engine", {})
         except Exception as e:
-            logger.warning("Failed to load profile '%s' at startup: %s", profile_name, e)
+            logger.warning(f"Failed to load profile '{profile_name}' at startup: {e}")
             profile_search = {}
             profile_chunking = {}
             profile_embeddings = {}

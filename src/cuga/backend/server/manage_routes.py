@@ -203,7 +203,7 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
             secrets_mode = getattr(_secrets, "mode", "local") or "local"
             force_env = bool(getattr(_secrets, "force_env", False))
         except Exception as _e:
-            logger.debug("Failed to get secrets settings: %s", _e)
+            logger.debug(f"Failed to get secrets settings: {_e}")
             secrets_mode = "local"
             force_env = False
 
@@ -219,7 +219,7 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
             try:
                 LLMManager()._models.clear()
             except Exception as _e:
-                logger.debug("Failed to clear LLM cache (force_env): %s", _e)
+                logger.debug(f"Failed to clear LLM cache (force_env): {_e}")
             app_state.current_llm = None
         else:
             try:
@@ -273,9 +273,9 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
                 filesystem_sync=app_state.policy_filesystem_sync,
             )
             await app_state.policy_system.initialize()
-            logger.info("Applied %s policies from saved config", len(policies_list))
+            logger.info(f"Applied {len(policies_list)} policies from saved config")
         except Exception as policy_err:
-            logger.warning("Failed to apply policies from config: %s", policy_err)
+            logger.warning(f"Failed to apply policies from config: {policy_err}")
     if os.getenv("CUGA_MANAGER_MODE", "").lower() in ("true", "1", "yes", "on"):
         try:
             registry_url = get_registry_base_url()
@@ -283,7 +283,7 @@ async def _apply_published_config(app_state: Any, config: dict[str, Any]) -> Non
                 r = await client.post(f"{registry_url}/reload", timeout=10.0)
                 r.raise_for_status()
         except Exception as reload_err:
-            logger.warning("Manager mode: write YAML/reload failed: %s", reload_err)
+            logger.warning(f"Manager mode: write YAML/reload failed: {reload_err}")
 
 
 def _apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
@@ -297,7 +297,7 @@ def _apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
         _secrets = getattr(settings, "secrets", None)
         force_env = bool(getattr(_secrets, "force_env", False))
     except Exception as _e:
-        logger.debug("Failed to get secrets settings: %s", _e)
+        logger.debug(f"Failed to get secrets settings: {_e}")
         force_env = False
 
     if force_env:
@@ -312,7 +312,7 @@ def _apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
         try:
             LLMManager()._models.clear()
         except Exception as _e:
-            logger.debug("Failed to clear LLM cache (force_env): %s", _e)
+            logger.debug(f"Failed to clear LLM cache (force_env): {_e}")
         state.current_llm = None
     else:
         try:
@@ -323,7 +323,7 @@ def _apply_llm_to_state(state: Any, llm_cfg: dict) -> None:
                 llm_cfg.get("model"),
             )
         except Exception as _e:
-            logger.warning("Failed to create LLM from PATCH: %s", _e)
+            logger.warning(f"Failed to create LLM from PATCH: {_e}")
             state.current_llm = None
         if llm_cfg.get("model"):
             os.environ["MODEL_NAME"] = str(llm_cfg["model"])
@@ -357,7 +357,7 @@ def _apply_llm_to_draft_state(state: Any, llm_cfg: dict) -> None:
             llm_cfg.get("model"),
         )
     except Exception as _e:
-        logger.warning("Failed to create LLM for draft state: %s", _e)
+        logger.warning(f"Failed to create LLM for draft state: {_e}")
         state.current_llm = None
 
 
@@ -804,9 +804,9 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                         policy_errors = {"policy_errors": result["errors"]}
                         logger.warning(f"Policy application had {len(result['errors'])} errors")
 
-                    logger.info("Applied %s policies to draft from saved config", result.get("count", 0))
+                    logger.info(f"Applied {result.get('count', 0)} policies to draft from saved config")
                 except Exception as policy_err:
-                    logger.warning("Failed to apply policies to draft from config: %s", policy_err)
+                    logger.warning(f"Failed to apply policies to draft from config: {policy_err}")
                     logger.exception("[DEBUG] Full policy error traceback:")
                     policy_errors = {"policy_errors": [str(policy_err)]}
 
@@ -973,7 +973,7 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
                 if reload_data.get("status") == "partial" and "errors" in reload_data:
                     tool_errors = reload_data["errors"]
         except Exception as reload_err:
-            logger.warning("Failed to reload registry for PATCH tools: %s", reload_err)
+            logger.warning(f"Failed to reload registry for PATCH tools: {reload_err}")
 
         _apply_llm_to_draft_state(state, full_draft.get("llm") or {})
         try:
@@ -996,7 +996,7 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
                 draft_agent.llm_config = full_draft.get("llm") or None
                 await draft_agent.build_graph()
         except Exception as rebuild_err:
-            logger.error("Failed to rebuild draft agent graph after PATCH tools: %s", rebuild_err)
+            logger.error(f"Failed to rebuild draft agent graph after PATCH tools: {rebuild_err}")
 
         response_data = {
             "status": "partial" if tool_errors else "success",
@@ -1058,7 +1058,7 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
                 )
                 await state.policy_system.initialize()
             except Exception as policy_err:
-                logger.warning("Failed to apply policies from PATCH: %s", policy_err)
+                logger.warning(f"Failed to apply policies from PATCH: {policy_err}")
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to patch draft policies: {e}")
@@ -1629,7 +1629,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     r = await client.post(f"{registry_url}/reload?agent_id={draft_agent_id}", timeout=10.0)
                     r.raise_for_status()
             except Exception as reload_err:
-                logger.warning("Failed to reload registry for PATCH knowledge: %s", reload_err)
+                logger.warning(f"Failed to reload registry for PATCH knowledge: {reload_err}")
 
             try:
                 draft_agent = getattr(state, "agent", None)
@@ -1641,7 +1641,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     draft_agent.llm_config = llm_cfg if llm_cfg else None
                     await draft_agent.build_graph()
             except Exception as rebuild_err:
-                logger.warning("Failed to rebuild draft agent graph after knowledge PATCH: %s", rebuild_err)
+                logger.warning(f"Failed to rebuild draft agent graph after knowledge PATCH: {rebuild_err}")
 
         response: dict[str, Any] = {
             "status": "success",
@@ -1925,7 +1925,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 if not _target_docs_precheck and _old_docs_precheck:
                     _defer_vector_hash_promotion = True
             except Exception as _pre_err:
-                logger.warning("Vector migration precheck failed: %s", _pre_err)
+                logger.warning(f"Vector migration precheck failed: {_pre_err}")
 
         if _vec_hash:
             if _defer_vector_hash_promotion:
@@ -1983,7 +1983,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     ]
                 config["knowledge_state"] = _state
             except Exception as _snap_err:
-                logger.warning("Failed to snapshot knowledge state: %s", _snap_err)
+                logger.warning(f"Failed to snapshot knowledge state: {_snap_err}")
 
         # Phase B: Save version + commit knowledge immediately after
         # Keep draft aligned with the just-published configuration because
@@ -2090,10 +2090,10 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                             await engine.copy_source_files(_old_collection, _new_collection)
                             reindex_info = await engine.reindex(_new_collection)
                         except Exception as mig_err:
-                            logger.warning("Document migration failed: %s", mig_err)
+                            logger.warning(f"Document migration failed: {mig_err}")
                             reindex_info = {"status": "failed", "error": str(mig_err)}
             except Exception as e:
-                logger.warning("Failed to check docs for migration: %s", e)
+                logger.warning(f"Failed to check docs for migration: {e}")
 
         if _defer_vector_hash_promotion and ver:
             _promote_failed = reindex_info and reindex_info.get("status") == "failed"
@@ -2130,9 +2130,9 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                             }
                             engine._reindex_deferred.add(_new_collection)
                         else:
-                            logger.warning("Reindex failed: %s", reindex_err)
+                            logger.warning(f"Reindex failed: {reindex_err}")
             except Exception as e:
-                logger.warning("Failed to check docs for reindex: %s", e)
+                logger.warning(f"Failed to check docs for reindex: {e}")
 
         if _vec_hash:
             if reindex_info and reindex_info.get("status") == "failed":
@@ -2157,7 +2157,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
         if isinstance(e, EmbeddingModelLoadError):
             # A bad/just-switched embedding model (e.g. a large local model still
             # downloading) must not 500 — return an actionable 400 the UI can show.
-            logger.warning("Embedding model load failed during publish: %s", e)
+            logger.warning(f"Embedding model load failed during publish: {e}")
             raise HTTPException(
                 status_code=400,
                 detail=(

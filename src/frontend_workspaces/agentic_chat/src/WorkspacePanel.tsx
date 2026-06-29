@@ -1,6 +1,6 @@
-import React, { useState, useEffect, useCallback } from "react";
-import { Folder, File, ChevronRight, ChevronDown, X, Download, FileText, RefreshCw, Trash2, Info } from "lucide-react";
-import { apiFetch } from "../../frontend/src/api";
+import React, { useState, useEffect, useCallback, useRef } from "react";
+import { Folder, File, ChevronRight, ChevronDown, X, Download, FileText, RefreshCw, Trash2, Info, Upload } from "lucide-react";
+import { apiFetch, uploadWorkspaceFile } from "../../frontend/src/api";
 import "./WorkspacePanel.css";
 
 interface FileNode {
@@ -18,6 +18,14 @@ interface WorkspacePanelProps {
   workspaceFilesystemRoot?: string;
 }
 
+const JSON_UPLOAD_SUFFIXES = [".json", ".jsonl", ".ndjson"];
+
+function filterJsonUploadFiles(files: File[]): File[] {
+  return files.filter((file) =>
+    JSON_UPLOAD_SUFFIXES.some((suffix) => file.name.toLowerCase().endsWith(suffix)),
+  );
+}
+
 export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, workspaceFilesystemRoot = "cuga_workspace" }: WorkspacePanelProps) {
   const [fileTree, setFileTree] = useState<FileNode[]>([]);
   const [expandedFolders, setExpandedFolders] = useState<Set<string>>(new Set());
@@ -26,13 +34,14 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
   const [error, setError] = useState<string | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState<{ file: FileNode; isOpen: boolean } | null>(null);
   const [isDragOver, setIsDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
 
-  const loadWorkspaceTree = useCallback(async () => {
+  const loadWorkspaceTree = useCallback(async (forceRefresh = false) => {
     try {
       setError(null);
       const { workspaceService } = await import('./workspaceService');
       const tid = threadId?.trim() || undefined;
-      const data = await workspaceService.getWorkspaceTree(false, tid);
+      const data = await workspaceService.getWorkspaceTree(forceRefresh, tid);
       setFileTree(data.tree || []);
     } catch (err) {
       console.error("Error loading workspace:", err);
@@ -162,26 +171,23 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
     setDeleteConfirmation(null);
   };
 
-  // Drag and drop handlers - DISABLED
   const handleDragEnter = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Disabled: Upload functionality is not available
-    // if (e.dataTransfer?.types.includes('Files')) {
-    //   setIsDragOver(true);
-    // }
+    if (e.dataTransfer?.types.includes("Files")) {
+      setIsDragOver(true);
+    }
   };
 
   const handleDragLeave = (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Disabled: Upload functionality is not available
-    // const rect = e.currentTarget.getBoundingClientRect();
-    // const x = e.clientX;
-    // const y = e.clientY;
-    // if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
-    //   setIsDragOver(false);
-    // }
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX;
+    const y = e.clientY;
+    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+      setIsDragOver(false);
+    }
   };
 
   const handleDragOver = (e: React.DragEvent) => {
@@ -192,46 +198,59 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
   const handleDrop = async (e: React.DragEvent) => {
     e.preventDefault();
     e.stopPropagation();
-    // Disabled: Upload functionality is not available
-    // setIsDragOver(false);
-    // const files = Array.from(e.dataTransfer.files);
-    // if (files.length > 0) {
-    //   await handleFileUpload(files);
-    // }
+    setIsDragOver(false);
+    const files = filterJsonUploadFiles(Array.from(e.dataTransfer.files));
+    if (files.length > 0) {
+      await handleFileUpload(files);
+    }
   };
 
   const handleFileUpload = async (files: File[]) => {
+    const tid = threadId?.trim();
+    if (!tid) {
+      setError("Start a chat before uploading files");
+      return;
+    }
+
     setLoading(true);
     setError(null);
 
     try {
       const uploadPromises = files.map(async (file) => {
-        const formData = new FormData();
-        formData.append('file', file);
-
-        // Upload to cuga_workspace directory
-        const response = await apiFetch('/api/workspace/upload', {
-          method: 'POST',
-          body: formData,
-        });
-
+        const response = await uploadWorkspaceFile(file, tid);
         if (!response.ok) {
-          throw new Error(`Failed to upload ${file.name}: ${response.statusText}`);
+          let detail = response.statusText;
+          try {
+            const body = await response.json();
+            detail = body.detail || detail;
+          } catch {
+            // ignore
+          }
+          throw new Error(`Failed to upload ${file.name}: ${detail}`);
         }
-
         return await response.json();
       });
 
       await Promise.all(uploadPromises);
-
-      // Refresh the workspace tree after successful uploads
       await loadWorkspaceTree();
     } catch (err) {
-      console.error('Error uploading files:', err);
-      setError(`Upload failed: ${err instanceof Error ? err.message : 'Unknown error'}`);
+      console.error("Error uploading files:", err);
+      setError(`Upload failed: ${err instanceof Error ? err.message : "Unknown error"}`);
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleUploadClick = () => {
+    fileInputRef.current?.click();
+  };
+
+  const handleFileInputChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const files = e.target.files ? Array.from(e.target.files) : [];
+    if (files.length > 0) {
+      await handleFileUpload(files);
+    }
+    e.target.value = "";
   };
 
   const renderFileTree = (nodes: FileNode[], level: number = 0) => {
@@ -318,9 +337,24 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
             </div>
           </div>
           <div className="workspace-panel-actions">
+            <input
+              ref={fileInputRef}
+              type="file"
+              accept=".json,.jsonl,.ndjson"
+              multiple
+              style={{ display: "none" }}
+              onChange={handleFileInputChange}
+            />
             <button
               className="workspace-refresh-btn"
-              onClick={loadWorkspaceTree}
+              onClick={handleUploadClick}
+              title="Upload JSON files"
+            >
+              <Upload size={16} />
+            </button>
+            <button
+              className="workspace-refresh-btn"
+              onClick={() => void loadWorkspaceTree(true)}
               title="Refresh"
             >
               <RefreshCw size={16} />
@@ -345,7 +379,7 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
             <div className="workspace-empty">
               <Folder size={48} className="empty-icon" />
               <p>Workspace is empty</p>
-              <small>Files created by agents will appear here</small>
+              <small>Upload JSON files — they appear under {workspaceFilesystemRoot}/uploads/</small>
             </div>
           ) : (
             <div className="file-tree">
@@ -402,15 +436,14 @@ export function WorkspacePanel({ isOpen, onToggle, highlightedFile, threadId, wo
         </div>
       )}
 
-      {/* Drag overlay disabled */}
-      {/* {isDragOver && (
+      {isDragOver && (
         <div className="workspace-drag-overlay">
           <div className="workspace-drag-content">
             <div className="workspace-drag-icon">📁</div>
-            <div className="workspace-drag-text">Drop files here to upload</div>
+            <div className="workspace-drag-text">Drop JSON files here to upload</div>
           </div>
         </div>
-      )} */}
+      )}
 
       {/* Delete confirmation modal disabled */}
       {/* {deleteConfirmation?.isOpen && (

@@ -97,7 +97,7 @@ class _TraceSink:
         try:
             line = json.dumps(record, ensure_ascii=False)
         except (TypeError, ValueError) as exc:
-            logger.warning("trace serialization failed: %s; record dropped", exc)
+            logger.warning(f"trace serialization failed: {exc}; record dropped")
             return
 
         with self._lock:
@@ -107,7 +107,7 @@ class _TraceSink:
                     f.write(line + "\n")
             except OSError as exc:
                 # File-system pressure / permissions — log once, never crash.
-                logger.warning("trace write failed for %s: %s", path, exc)
+                logger.warning(f"trace write failed for {path}: {exc}")
 
     def _enter_override(self, path: Path) -> None:
         self._override_path = path

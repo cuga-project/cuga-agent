@@ -190,7 +190,7 @@ class CugaSupervisorNode(BaseNode):
         except Exception as e:
             # Use % formatting to avoid issues with curly braces in error messages
             error_msg = str(e)
-            logger.error("Error in CugaSupervisor subgraph: %s", error_msg, exc_info=True)
+            logger.error(f"Error in CugaSupervisor subgraph: {error_msg}", exc_info=True)
             state.final_answer = f"Error in supervisor execution: {error_msg}"
             state.sender = self.name
             return Command(update=state.model_dump(), goto="FinalAnswerAgent")

@@ -184,10 +184,10 @@ def load_cuga_policy_entries_for_demo(cuga_folder: str | None = None) -> list[di
                 policy_data["policy_type"] = policy_data.get("type", policy_type)
                 policies.append(policy_data)
             except Exception as e:
-                logger.warning("Skipping demo policy preload from %s: %s", policy_file, e)
+                logger.warning(f"Skipping demo policy preload from {policy_file}: {e}")
 
     if policies:
-        logger.info("Preloaded %s local .cuga policy file(s) into demo config", len(policies))
+        logger.info(f"Preloaded {len(policies)} local .cuga policy file(s) into demo config")
 
     return policies
 
@@ -566,21 +566,21 @@ def setup_demo_manage_config(
                 prefix = f"kb_agent_{_san}"
 
                 def _on_rmtree_error(func, path, exc_info):
-                    logger.warning("Knowledge reset: failed to remove %s: %s", path, exc_info[1])
+                    logger.warning(f"Knowledge reset: failed to remove {path}: {exc_info[1]}")
 
                 files_dir = _kc.persist_dir / "files"
                 if files_dir.exists():
                     for d in files_dir.iterdir():
                         if d.is_dir() and d.name.startswith(prefix):
                             shutil.rmtree(d, onerror=_on_rmtree_error)
-                            logger.info("Knowledge reset: cleared %s", d.name)
+                            logger.info(f"Knowledge reset: cleared {d.name}")
 
                 for db_file in ("knowledge.db", "metadata.db", "knowledge_vectors.db"):
                     for suffix in ("", "-wal", "-shm"):
                         p = _kc.persist_dir / (db_file + suffix)
                         if p.exists():
                             p.unlink()
-                            logger.info("Knowledge reset: removed %s", p.name)
+                            logger.info(f"Knowledge reset: removed {p.name}")
 
                 session_state = _kc.persist_dir.parent / "session_knowledge.json"
                 if session_state.exists():
@@ -595,7 +595,7 @@ def setup_demo_manage_config(
         except SystemExit:
             raise
         except Exception as e:
-            logger.warning("Knowledge reset: cleanup failed: %s", e)
+            logger.warning(f"Knowledge reset: cleanup failed: {e}")
 
     if tools is None:
         defaults = get_default_apps_for_preset(demo_type)

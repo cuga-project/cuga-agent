@@ -104,7 +104,7 @@ def create_agent_delegation_func(
                     description_prefix=f"from {agent_name}",
                 )
                 if bridged:
-                    logger.info("Bridged %d variable(s) from %s: %s", len(bridged), agent_name, bridged)
+                    logger.info(f"Bridged {len(bridged)} variable(s) from {agent_name}: {bridged}")
 
             answer = result.answer if hasattr(result, "answer") else str(result)
             result_vars = getattr(result, "variables", None) or None

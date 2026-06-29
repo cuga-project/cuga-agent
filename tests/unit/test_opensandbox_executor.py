@@ -197,7 +197,7 @@ async def test_sandbox_cached_even_when_upload_fails(tmp_path, monkeypatch) -> N
 
     # Write a real skill so discover_skills returns something and triggers the upload path
     monkeypatch.chdir(tmp_path)
-    skill_dir = tmp_path / ".agents" / "skills" / "my_skill"
+    skill_dir = tmp_path / ".cuga" / "skills" / "my_skill"
     skill_dir.mkdir(parents=True)
     (skill_dir / "SKILL.md").write_text(
         "---\nname: my_skill\ndescription: A skill\n---\nBody\n", encoding="utf-8"

@@ -155,7 +155,7 @@ def build_a2a_router_for_settings(
 
     if supervisor_path:
         runner: Any = SupervisorA2ARunner(app_state, supervisor_path)
-        logger.info("A2A inbound: routing requests through supervisor at %s", supervisor_path)
+        logger.info(f"A2A inbound: routing requests through supervisor at {supervisor_path}")
     elif event_stream_func is not None:
         from cuga.backend.server.a2a.simple_runner import SimpleA2ARunner
 

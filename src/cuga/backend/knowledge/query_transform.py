@@ -97,7 +97,7 @@ async def expand_query(
         variants = await asyncio.wait_for(_generate(mode, q, generator, n), timeout=timeout_s)
     except Exception as e:
         # Fail open — search proceeds on the plain query, never blocked/broken.
-        logger.warning("cuga.knowledge.query_transform_degraded mode=%s err=%r", mode, e)
+        logger.warning(f"cuga.knowledge.query_transform_degraded mode={mode} err={e!r}")
         return QueryVariants()
 
     _CACHE[key] = variants
