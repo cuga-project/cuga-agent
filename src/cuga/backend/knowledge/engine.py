@@ -4042,15 +4042,23 @@ class KnowledgeEngine:
                 # Canary: warn once when a litellm/openrouter route hit
                 # cl100k_base for a slash-containing model not on the HF
                 # allow-list. See _warn_unlisted_embedder_once.
+                #
+                # Stripped names that begin with ``openai/`` or ``azure/``
+                # are EXEMPTED — for those, cl100k_base IS the correct
+                # tokenizer (e.g. ``litellm/openai/text-embedding-3-small``
+                # resolves to text-embedding-3-small under cl100k by
+                # design, not as a silent fallback).
                 provider = (self._config.embedding_provider or "").lower()
                 model_raw = self._config.embedding_model or ""
                 stripped = _strip_litellm_route_prefix(model_raw) or model_raw
+                stripped_lo = stripped.lower()
                 enc_name = getattr(encoding, "name", "")
                 if (
                     provider in {"litellm", "openrouter"}
                     and "/" in stripped
                     and enc_name == "cl100k_base"
                     and _hf_repo_id_for_chunk_sizing(model_raw) is None
+                    and not stripped_lo.startswith(("openai/", "azure/"))
                 ):
                     _warn_unlisted_embedder_once(provider, stripped, enc_name)
                 logger.debug(

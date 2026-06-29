@@ -1426,70 +1426,56 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         if not isinstance(knowledge, dict):
             raise HTTPException(status_code=400, detail="knowledge must be a dict")
 
-        # Merge with existing draft knowledge
+        # Imports needed inside the lock.
         from cuga.backend.server.config_store import load_draft
-
-        existing_draft = await load_draft(agent_id) or {}
-        existing_knowledge = existing_draft.get("knowledge", {})
-
-        # Secret-preservation: ``GET /api/manage/config`` redacts secret
-        # fields (api_key / token / password) to empty strings. So when
-        # the UI form re-saves WITHOUT the user explicitly touching one
-        # of those fields, the PATCH body carries an empty string for it
-        # Preserve stored secrets on empty incoming (GET redacts to "";
-        # naive merge would wipe). Explicit non-empty overwrites normally.
-        for _k in list(knowledge.keys()):
-            if _is_secret_field_name(_k) and knowledge[_k] == "":
-                knowledge.pop(_k, None)
-
-        merged = {**existing_knowledge, **knowledge}
-
-        # Filter to known KnowledgeConfig fields only
         from cuga.backend.knowledge.config import KnowledgeConfig
         from dataclasses import fields as _dc_fields
-
-        known_fields = {f.name for f in _dc_fields(KnowledgeConfig)} - {"persist_dir"}
-        filtered = {k: v for k, v in merged.items() if k in known_fields}
-
-        # Capture pre-patch adaptation + glossary hashes for diff-logging
-        # (audit trail). Audit-finding B2: glossary changes used to be
-        # invisible in audit logs — we now diff both hashes independently.
         from cuga.backend.knowledge.config import (
             ClientAdaptationError,
             client_adaptation_hash,
             client_glossary_hash,
         )
 
-        _prev_adapt_hash = client_adaptation_hash(existing_knowledge.get("client_adaptation_text", ""))
-        _prev_gloss_hash = client_glossary_hash(existing_knowledge.get("client_adaptation_glossary", []))
-
-        # Validate via shared helper (same coercion + validation as engine apply).
-        # ClientAdaptationError carries a machine-readable code + detail dict so
-        # the UI can render specific affordances per failure mode (length /
-        # bidi / control / phrase) — return 422 with structured body.
-        try:
-            validated = KnowledgeConfig.coerce_and_validate(filtered)
-        except ClientAdaptationError as cae:
-            raise HTTPException(status_code=422, detail=cae.to_dict())
-        except (ValueError, TypeError) as ve:
-            raise HTTPException(status_code=400, detail=str(ve))
-
-        # Apply to the LIVE engine FIRST. If this fails (e.g. preflight
-        # embed_query rejects a bad key/model), surface the error to the
-        # user without saving a broken draft.
-        #
-        # The engine-apply + draft-save pair must be atomic against
-        # concurrent PATCHes to the same agent — otherwise a tools/llm/
-        # policy PATCH whose load-modify-write interleaves between our
-        # apply and our save can read pre-knowledge state, modify its
-        # section, and save back — wiping the knowledge change we just
-        # applied to the engine. Symptom: engine on the new embedder,
-        # DB draft still on the old one. The per-agent lock serializes
-        # all draft PATCHes for this agent; see ``_agent_draft_lock``.
+        # The READ-MERGE-VALIDATE-APPLY-SAVE sequence below MUST run inside
+        # the per-agent lock — otherwise two concurrent same-section PATCHes
+        # both read the pre-PATCH draft, both compute their own ``filtered``
+        # against stale ``existing_knowledge``, and the later writer's save
+        # wipes the earlier's section change (cross-section + same-section
+        # LMW races are both closed by this single critical section).
+        # ``_save_draft_section_unlocked`` is used inside because asyncio.Lock
+        # is non-reentrant.
         live_state = getattr(request.app.state, "app_state", None)
         live_engine = getattr(live_state, "knowledge_engine", None) if live_state else None
         live_apply_result: dict[str, Any] | None = None
         async with _agent_draft_lock(str(agent_id)):
+            existing_draft = await load_draft(agent_id) or {}
+            existing_knowledge = existing_draft.get("knowledge", {})
+
+            # Preserve stored secrets on empty incoming (GET redacts to "";
+            # naive merge would wipe). Explicit non-empty overwrites normally.
+            for _k in list(knowledge.keys()):
+                if _is_secret_field_name(_k) and knowledge[_k] == "":
+                    knowledge.pop(_k, None)
+
+            merged = {**existing_knowledge, **knowledge}
+            known_fields = {f.name for f in _dc_fields(KnowledgeConfig)} - {"persist_dir"}
+            filtered = {k: v for k, v in merged.items() if k in known_fields}
+
+            # Capture pre-patch hashes for audit-log diff (B2 finding —
+            # glossary changes used to be invisible).
+            _prev_adapt_hash = client_adaptation_hash(existing_knowledge.get("client_adaptation_text", ""))
+            _prev_gloss_hash = client_glossary_hash(existing_knowledge.get("client_adaptation_glossary", []))
+
+            # Validate via shared helper (same coercion + validation as engine apply).
+            # ClientAdaptationError carries a machine-readable code + detail dict so
+            # the UI can render specific affordances per failure mode.
+            try:
+                validated = KnowledgeConfig.coerce_and_validate(filtered)
+            except ClientAdaptationError as cae:
+                raise HTTPException(status_code=422, detail=cae.to_dict())
+            except (ValueError, TypeError) as ve:
+                raise HTTPException(status_code=400, detail=str(ve))
+
             if live_engine is not None:
                 try:
                     # ``apply_knowledge_config`` calls ``prepare_knowledge_update``

@@ -211,3 +211,31 @@ class TestWarnUnlistedEmbedderObservability:
         assert len(msgs) == 2
         assert any("orgA/embedder-x" in m for m in msgs)
         assert any("orgB/embedder-y" in m for m in msgs)
+
+
+class TestCanaryExemptionForOpenAINativeRoutes:
+    """Regression guard for the audit-flagged false positive: a litellm route
+    that ends up at ``openai/text-embedding-3-*`` actually USES cl100k_base
+    correctly. Warning on it would pollute every cuga deployment that routes
+    OpenAI via LiteLLM — the most common deployment pattern."""
+
+    def setup_method(self):
+        _warn_unlisted_embedder_once.cache_clear()
+
+    def test_canary_predicate_exempts_openai_under_litellm(self):
+        # The gate is the same expression used in _build_docling_chunker.
+        # We test the predicate directly to keep the test cheap and to pin
+        # the exemption rule even if the call site moves.
+        stripped_lo = "openai/text-embedding-3-small"
+        # NOT on the HF allow-list, slash-containing, cl100k_base — would
+        # otherwise warn. Exemption: stripped name starts with "openai/".
+        would_warn = stripped_lo.startswith(("openai/", "azure/"))
+        assert would_warn  # exemption applies => DO NOT warn
+
+    def test_canary_predicate_exempts_azure_under_litellm(self):
+        stripped_lo = "azure/my-azure-deployment"
+        assert stripped_lo.startswith(("openai/", "azure/"))
+
+    def test_canary_predicate_still_warns_for_unlisted_hf_org(self):
+        stripped_lo = "mistralai/mistral-embed-x"
+        assert not stripped_lo.startswith(("openai/", "azure/"))

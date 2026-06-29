@@ -368,8 +368,16 @@ export function ManagePage() {
   //      arrives later. Without the abort, a 100s-late PATCH could
   //      land "Saved" state on top of whatever new edits the user
   //      made in the meantime.
+  // Depend on the saving-family BOOLEAN, not the full status object —
+  // otherwise the 25s slow-state transition (saving → saving-slow) re-runs
+  // this effect, the cleanup CLEARS the 90s fail timer, the new run early-
+  // returns (state is now "saving-slow", not "saving"), and the abort+fail
+  // safety net never fires. Audit caught this — UI hangs forever on a hung
+  // PATCH that crosses the 25s mark.
+  const isSavingFamily =
+    draftSaveStatus.kind === "saving" || draftSaveStatus.kind === "saving-slow";
   useEffect(() => {
-    if (draftSaveStatus.kind !== "saving") return;
+    if (!isSavingFamily) return;
     const slow = setTimeout(() => {
       setDraftSaveStatus((prev) =>
         prev.kind === "saving" ? { kind: "saving-slow" } : prev,
@@ -377,16 +385,20 @@ export function ManagePage() {
     }, 25_000);
     const fail = setTimeout(() => {
       knowledgeAbortRef.current?.abort();
-      setDraftSaveStatus({
-        kind: "failed",
-        error: "Save took too long — server may be busy. Try again.",
-      });
+      setDraftSaveStatus((prev) =>
+        prev.kind === "saving" || prev.kind === "saving-slow"
+          ? {
+              kind: "failed",
+              error: "Save took too long — server may be busy. Try again.",
+            }
+          : prev,
+      );
     }, 90_000);
     return () => {
       clearTimeout(slow);
       clearTimeout(fail);
     };
-  }, [draftSaveStatus]);
+  }, [isSavingFamily]);
   // Live-config truth anchor. Sourced from GET /api/manage/config
   // (published=true) on mount and after every successful Publish — never
   // from optimistic client state. The pill in the header reads this so
