@@ -1,5 +1,6 @@
 """Manage endpoints: draft config (auto-save) and publish (new version)."""
 
+import asyncio
 import os
 from collections.abc import Mapping
 from typing import Any, Optional
@@ -360,13 +361,52 @@ def _apply_llm_to_draft_state(state: Any, llm_cfg: dict) -> None:
         state.current_llm = None
 
 
-async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict[str, Any]:
+# Per-agent serialization for draft load-modify-write. Without this, two
+# concurrent PATCHes to the SAME agent (e.g. user clicks Use on Watsonx —
+# autosave fires PATCH /draft/knowledge — types in a tools field —
+# autosave fires PATCH /draft/tools) interleave their read-modify-write:
+#
+#   PATCH knowledge: load(draft_v0) → set knowledge=watsonx → save(v0+watsonx)
+#   PATCH tools:     load(draft_v0) → set tools=new        → save(v0+tools) ← knowledge LOST
+#
+# Result: tools updated, knowledge silently reverted. User-visible as
+# "I clicked Use on Watsonx but the draft still shows fastembed".
+#
+# The patch_draft_knowledge handler ALSO acquires this lock for a wider
+# critical section (engine apply + draft save together) so the live
+# engine and the persisted draft can't desync if a PATCH is aborted
+# between them. asyncio.Lock is NON-reentrant — callers that already
+# hold the lock MUST use the *_unlocked variant of the save helper.
+_AGENT_DRAFT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _agent_draft_lock(agent_id: str) -> asyncio.Lock:
+    """Get-or-create the per-agent draft lock. Creating on demand
+    keeps us out of import-time event-loop dependency issues."""
+    lock = _AGENT_DRAFT_LOCKS.get(agent_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _AGENT_DRAFT_LOCKS[agent_id] = lock
+    return lock
+
+
+async def _save_draft_section_unlocked(agent_id: str, section: str, value: Any) -> dict[str, Any]:
+    """Lock-free load-modify-write. ONLY use this when the caller already
+    holds ``_agent_draft_lock(agent_id)``. External callers should use
+    ``_load_and_patch_draft`` instead."""
     from cuga.backend.server.config_store import load_draft, save_draft
 
     existing = await load_draft(agent_id) or {}
     existing[section] = value
     await save_draft(existing, agent_id)
     return existing
+
+
+async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict[str, Any]:
+    """Locked load-modify-write. Serializes concurrent PATCHes to the
+    same agent so cross-section writes don't clobber each other."""
+    async with _agent_draft_lock(agent_id):
+        return await _save_draft_section_unlocked(agent_id, section, value)
 
 
 async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_state: Any) -> dict[str, Any]:
@@ -1437,89 +1477,100 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         # Apply to the LIVE engine FIRST. If this fails (e.g. preflight
         # embed_query rejects a bad key/model), surface the error to the
         # user without saving a broken draft.
+        #
+        # The engine-apply + draft-save pair must be atomic against
+        # concurrent PATCHes to the same agent — otherwise a tools/llm/
+        # policy PATCH whose load-modify-write interleaves between our
+        # apply and our save can read pre-knowledge state, modify its
+        # section, and save back — wiping the knowledge change we just
+        # applied to the engine. Symptom: engine on the new embedder,
+        # DB draft still on the old one. The per-agent lock serializes
+        # all draft PATCHes for this agent; see ``_agent_draft_lock``.
         live_state = getattr(request.app.state, "app_state", None)
         live_engine = getattr(live_state, "knowledge_engine", None) if live_state else None
         live_apply_result: dict[str, Any] | None = None
-        if live_engine is not None:
-            import asyncio as _asyncio_apply
-
-            try:
-                # ``apply_knowledge_config`` calls ``prepare_knowledge_update``
-                # which, on embedding-provider/model change, runs a synchronous
-                # ``embed_query("test")`` preflight — a network round-trip to
-                # the embeddings API. Without ``to_thread`` that round-trip
-                # blocks the event loop and stalls every other request for
-                # the duration. Per Sami's review (Dec 2026).
-                live_apply_result = await _asyncio_apply.to_thread(
-                    live_engine.apply_knowledge_config, filtered
-                )
-                logger.info(
-                    "Live engine knowledge config applied: changed=%s, reindex_recommended=%s",
-                    {
-                        k: live_apply_result.get(k)
-                        for k in ("embedding_changed", "chunking_changed", "metric_changed")
-                    },
-                    live_apply_result.get("reindex_recommended"),
-                )
-            except (ValueError, TypeError) as ve:
-                raise HTTPException(status_code=400, detail=f"Engine validation failed: {ve}")
-            except Exception as live_err:
-                # Preflight network/auth errors land here (e.g. embedding API rejected).
-                # IMPORTANT: distinguish two cases:
-                #   (a) USER-supplied a key that the provider rejected — they
-                #       made an explicit choice and the choice is broken.
-                #       Block save, surface error.
-                #   (b) ENV-VAR fallback failed — the user didn't supply a key
-                #       (just switched provider, or relying on server env). The
-                #       failure is about deployment state, not the user's input.
-                #       Soft-fail: save the config, return 200 with a warning
-                #       so the UI can show a toast without blocking. The user
-                #       can fix it by entering their own key or running Test
-                #       connection.
-                _user_supplied_key = bool((knowledge.get("embedding_api_key") or "").strip())
-                _provider = (knowledge.get("embedding_provider") or "").lower()
-                _is_credentialed = _provider in ("openai", "openrouter", "litellm")
-                _err_str = str(live_err)
-                _looks_like_auth = any(
-                    s in _err_str
-                    for s in ("401", "Unauthorized", "Invalid API", "Incorrect API", "AuthenticationError")
-                )
-                if _is_credentialed and not _user_supplied_key and _looks_like_auth:
-                    logger.warning(
-                        "Live engine preflight failed via env-var fallback (no user key supplied) — "
-                        "soft-failing so the user can continue editing: %s",
-                        live_err,
+        async with _agent_draft_lock(str(agent_id)):
+            if live_engine is not None:
+                try:
+                    # ``apply_knowledge_config`` calls ``prepare_knowledge_update``
+                    # which, on embedding-provider/model change, runs a synchronous
+                    # ``embed_query("test")`` preflight — a network round-trip to
+                    # the embeddings API. Without ``to_thread`` that round-trip
+                    # blocks the event loop and stalls every other request for
+                    # the duration. Per Sami's review (Dec 2026).
+                    live_apply_result = await asyncio.to_thread(live_engine.apply_knowledge_config, filtered)
+                    logger.info(
+                        f"Live engine knowledge config applied: "
+                        f"embedding_changed={live_apply_result.get('embedding_changed')}, "
+                        f"chunking_changed={live_apply_result.get('chunking_changed')}, "
+                        f"metric_changed={live_apply_result.get('metric_changed')}, "
+                        f"reindex_recommended={live_apply_result.get('reindex_recommended')}"
                     )
-                    live_apply_result = {
-                        "embedding_changed": False,
-                        "chunking_changed": False,
-                        "metric_changed": False,
-                        "reindex_recommended": False,
-                        "dim_changed": False,
-                        "previous_dim": None,
-                        "new_dim": None,
-                        "_preflight_warning": (
-                            "Environment-variable API key was rejected by the provider. "
-                            "Settings saved, but ingest will fail until you set a valid key "
-                            "or fix the env var. Use Test connection to verify."
-                        ),
-                    }
-                    # Do NOT raise — fall through to save the draft so the user
-                    # can keep editing without the toast-storm.
-                else:
-                    logger.warning("Live engine knowledge apply failed: %s", live_err)
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Live knowledge engine rejected the new config. "
-                            "Check the embedding provider/key/model and try again. "
-                            f"Underlying error: {live_err}"
-                        ),
+                except (ValueError, TypeError) as ve:
+                    raise HTTPException(status_code=400, detail=f"Engine validation failed: {ve}")
+                except Exception as live_err:
+                    # Preflight network/auth errors land here (e.g. embedding API rejected).
+                    # IMPORTANT: distinguish two cases:
+                    #   (a) USER-supplied a key that the provider rejected — they
+                    #       made an explicit choice and the choice is broken.
+                    #       Block save, surface error.
+                    #   (b) ENV-VAR fallback failed — the user didn't supply a key
+                    #       (just switched provider, or relying on server env). The
+                    #       failure is about deployment state, not the user's input.
+                    #       Soft-fail: save the config, return 200 with a warning
+                    #       so the UI can show a toast without blocking. The user
+                    #       can fix it by entering their own key or running Test
+                    #       connection.
+                    _user_supplied_key = bool((knowledge.get("embedding_api_key") or "").strip())
+                    _provider = (knowledge.get("embedding_provider") or "").lower()
+                    _is_credentialed = _provider in ("openai", "openrouter", "litellm")
+                    _err_str = str(live_err)
+                    _looks_like_auth = any(
+                        s in _err_str
+                        for s in (
+                            "401",
+                            "Unauthorized",
+                            "Invalid API",
+                            "Incorrect API",
+                            "AuthenticationError",
+                        )
                     )
+                    if _is_credentialed and not _user_supplied_key and _looks_like_auth:
+                        logger.warning(
+                            f"Live engine preflight failed via env-var fallback (no user key "
+                            f"supplied) — soft-failing so the user can continue editing: {live_err}"
+                        )
+                        live_apply_result = {
+                            "embedding_changed": False,
+                            "chunking_changed": False,
+                            "metric_changed": False,
+                            "reindex_recommended": False,
+                            "dim_changed": False,
+                            "previous_dim": None,
+                            "new_dim": None,
+                            "_preflight_warning": (
+                                "Environment-variable API key was rejected by the provider. "
+                                "Settings saved, but ingest will fail until you set a valid key "
+                                "or fix the env var. Use Test connection to verify."
+                            ),
+                        }
+                        # Do NOT raise — fall through to save the draft so the user
+                        # can keep editing without the toast-storm.
+                    else:
+                        logger.warning(f"Live engine knowledge apply failed: {live_err}")
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Live knowledge engine rejected the new config. "
+                                "Check the embedding provider/key/model and try again. "
+                                f"Underlying error: {live_err}"
+                            ),
+                        )
 
-        # Now save to draft (post-apply so we only persist configs that the
-        # engine accepted). The draft serves crash recovery + publish snapshot.
-        full_draft = await _load_and_patch_draft(agent_id, "knowledge", filtered)
+            # Save to draft (lock-free variant — we already hold the lock).
+            # Post-apply ordering means we only persist configs the engine
+            # accepted; the draft serves crash recovery + publish snapshot.
+            full_draft = await _save_draft_section_unlocked(agent_id, "knowledge", filtered)
 
         # Audit log: diff old vs new adaptation hash (NEVER the text itself —
         # PII + prompt-IP). Lets SREs answer "when did the adaptation change"
