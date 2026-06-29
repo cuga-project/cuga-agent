@@ -1,19 +1,70 @@
 [profile]
 name = "Speed"
-description = "Fastest responses, single search pass. Lowest latency and cost, lower accuracy. Best for simple lookups in well-structured documents."
+description = "Quick lookups for big libraries."
 
-[search]
-max_search_attempts = 1
-default_limit = 10
-default_score_threshold = 0.0
+# Pareto-locked profile (2026-06-09).
+# All sections mirror settings.toml's [knowledge.<section>] shape so the
+# same keys apply at both layers; profile values override settings.toml.
+
+[embeddings]
+# bge-small-en-v1.5 (384d, ~33M params, MTEB retrieval 53.9). Same encoder
+# as standard, but switching speed<->standard DOES re-index: speed uses
+# chunk_size=1000 vs standard=800, and chunk_size is in vector_config_hash.
+model = "BAAI/bge-small-en-v1.5"
+# Fastembed's documented default in 2025+. At 384d, a 256-batch fits in
+# ~150MB transient RSS — safe on any 4GB box.
+batch_size = 256
+# Only used for network embedders (openai/ollama).
+concurrency = 4
 
 [chunking]
-chunk_size = 1500
+# Larger chunks → fewer chunks → less embed work. No reranker means
+# precision isn't gated by chunk granularity. 10% overlap retained for
+# cross-boundary entities in procedural docs.
+chunk_size = 1000
 chunk_overlap = 100
+
+[docling]
+# fast: do_ocr=False, do_table_structure=False. ~3-10x speedup on
+# text-heavy born-digital PDFs. NO scanned-PDF support — speed profile
+# users have explicitly opted out of that.
+pdf_mode = "fast"
+# Fastest CPU layout backend.
+layout_engine = "onnx"
+# enforce: drop chunks classified as page header/footer at ingest time.
+drop_page_chrome = "enforce"
+
+[search]
+# Two attempts = one retry. Single-attempt is too tight even for speed.
+max_search_attempts = 2
+default_limit = 10
+default_score_threshold = 0.0
+# Pure dense. Hybrid adds a BM25 leg that's nearly free but speed has
+# signaled latency over recall. Literal-identifier queries will regress
+# vs auto — accepted tradeoff.
+hybrid_mode = "off"
+# enforce: drop noise chunks (line numbers, code fences). Some false-
+# positive risk on academic-paper corpora.
+junk_filter = "enforce"
+# LLM query transform (multi_query / hyde). Off everywhere by default — adds a
+# pre-retrieval LLM round-trip, gain is corpus-conditional; eval-gate then flip.
+query_transform = "off"
+
+[rerank]
+# OFF. Reranker is +1.1GB RAM, +3s cold start. Speed cannot afford either.
+enabled = false
+
+[engine]
+# Fits 4GB containers; raise only if you know your host has room.
+max_ingest_workers = 2
+# Universal sweet spot: in sqlite-vec range (500-2000), below pgvector
+# LWLock cliff (~1000, per pgvector#766).
+vector_insert_batch_size = 500
 
 [instructions]
 addendum = """
-You have a single search attempt. Make it count — craft the most precise query you can.
-Do not decompose the question into sub-queries.
-If results are partial, answer with what you have and note any gaps.
+You are using the **Speed** profile: dense-only retrieval, two search attempts max.
+Be decisive on your first query — pick the most specific question terms you have.
+If the first search returns nothing useful, refine ONCE with different phrasing; do not loop.
+When both scopes have documents, search the most-likely scope first; only fall back to the other if the first comes up empty.
 """

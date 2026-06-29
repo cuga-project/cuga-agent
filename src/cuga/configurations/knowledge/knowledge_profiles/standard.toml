@@ -1,16 +1,73 @@
 [profile]
 name = "Standard"
-description = "Balanced speed and accuracy. Multi-hop retrieval with moderate result counts. Works well for most use cases."
+description = "The reliable default — right for most."
+
+# Pareto-locked profile (2026-06-09).
+# Designed as the SHIPPED DEFAULT: laptop offline + 4GB-replica K8s safe.
+# No silent drops (junk-filter + page-chrome in dry_run), no reranker
+# cold-start, no OCR weights on hot path.
+
+[embeddings]
+# bge-small-en-v1.5: ~95% of bge-base retrieval at ~3x ingest speed.
+# Same ENCODER as speed, but speed<->standard still re-indexes: chunk_size
+# differs (speed 1000 vs standard 800) and chunk_size is part of
+# vector_config_hash. The UI surfaces this via the re-index hint.
+model = "BAAI/bge-small-en-v1.5"
+# 128 keeps p99 sane under concurrent prod traffic while still getting
+# most of fastembed's batch-size throughput benefit (256 is the
+# documented upper, 128 is the operations-friendly default).
+batch_size = 128
+concurrency = 4
+
+[chunking]
+# 800/100 is the consensus floor for procedural / technical-product docs
+# (multi-line tables, numbered procedure steps fit in one chunk).
+# Smaller than speed because more chunks → better recall for the dense
+# top-K window when there is no reranker to compensate.
+chunk_size = 800
+chunk_overlap = 100
+
+[docling]
+# balanced: do_ocr=False, do_table_structure=True. Most born-digital
+# PDFs work; tables extracted. Scanned PDFs need 'accurate'.
+pdf_mode = "balanced"
+layout_engine = "auto"
+# dry_run: log what would be dropped without dropping. Avoids silent
+# recall loss on long-tail (legal, scanned) corpora while keeping the
+# observability operators need to validate enforce-mode safety.
+# See docling issues #1568, #1272, #2058 — false-positive drift in
+# header/footer detection is active in 2026.
+drop_page_chrome = "dry_run"
 
 [search]
 max_search_attempts = 2
-default_limit = 15
+# User-hard-floor honored.
+default_limit = 10
 default_score_threshold = 0.0
+# auto: BM25 + dense fused via RRF. BM25 leg is essentially free on
+# FTS5 and recovers literal-identifier queries (error codes, CLI flags,
+# version strings) that kill pure-dense retrieval. +15-30% recall on
+# technical-doc corpora.
+hybrid_mode = "auto"
+# dry_run: see what would be filtered without dropping. Same logic as
+# page-chrome — observability without recall risk.
+junk_filter = "dry_run"
+# LLM query transform (multi_query / hyde). Off by default — eval-gate per corpus
+# before enabling; needs a host-injected chat model.
+query_transform = "off"
 
-[chunking]
-chunk_size = 1000
-chunk_overlap = 200
+[rerank]
+# OFF as the shipped default. The reranker is the cheapest single quality
+# lever (+5-15 NDCG@10), but it costs +1.1GB RAM per replica and +3s cold
+# start. The 90% of users who never touch defaults should not pay that
+# tax. Quality users opt into 'balanced' and accept the re-ingest.
+enabled = false
+
+[engine]
+max_ingest_workers = 2
+vector_insert_batch_size = 500
 
 [instructions]
-# No addendum — the base knowledge_instructions.md is calibrated for this profile.
+# No addendum — the base knowledge_instructions.md is calibrated for this
+# profile. The profile's *behavior* is the addendum.
 addendum = ""

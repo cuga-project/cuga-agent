@@ -29,6 +29,7 @@ from cuga.backend.server.demo_manage_setup import (
 )
 from cuga.backend.server.managed_mcp import ensure_managed_mcp_file_exists, get_managed_mcp_path
 from cuga.cli.app_manager import AppManager
+from cuga.cli.knowledge_cmds import knowledge_app
 
 instructions_manager = InstructionsManager()
 
@@ -123,7 +124,7 @@ def _uv_sync_opensandbox_extra() -> None:
         )
         raise typer.Exit(1)
     except subprocess.CalledProcessError as e:
-        logger.error("uv sync --extra opensandbox failed (exit %s)", e.returncode)
+        logger.error(f"uv sync --extra opensandbox failed (exit {e.returncode})")
         raise typer.Exit(1) from e
 
 
@@ -185,6 +186,16 @@ app = typer.Typer(
 )
 
 app.add_typer(policy_app, name="policy")
+# ``cuga knowledge`` lives in its own module per Sami review
+# (cli/main.py was overloaded). ``knowledge_app`` is imported at the
+# top alongside the other ``cuga.*`` modules; the wire here mirrors
+# ``policy_app`` above.
+app.add_typer(knowledge_app, name="knowledge")
+
+# ``cuga knowledge`` subcommand group — read/write the running engine's
+# knowledge config from the CLI without having to curl the API. Combines:
+#   - perf: config get/set + snapshot export/import (no-API JSON ops)
+#   - client-adaptation: adaptation get/set/clear + glossary get/set + doctor
 
 # Global variables to track running direct processes (registry/demo)
 direct_processes = {}
@@ -683,6 +694,7 @@ def _start_demo_crm_services(
 
         workspace_path = cuga_workspace or os.path.join(os.getcwd(), "cuga_workspace")
         workspace_abs = os.path.abspath(workspace_path)
+        os.environ["CUGA_THREAD_WORKSPACE_SEED"] = "crm"
         app_mgr = _make_app_manager()
         app_mgr.prepare_workspace(workspace_path)
         if sample_memory_data:
@@ -908,10 +920,175 @@ def start(
         "--reset",
         help="For demo_knowledge: Wipe all knowledge data (vector DB, metadata, files, sessions) before starting fresh",
     ),
+    hard_reset: bool = typer.Option(
+        False,
+        "--hard-reset",
+        help="For demo_knowledge: --reset PLUS drop every agent collection on disk (orphan files dirs from prior profile/embedder iterations). Use this when an embedder change left stale collection dirs behind that the OOBE seed skips over.",
+    ),
     cuga_workspace: str | None = typer.Option(
         None,
         "--cuga-workspace",
         help="Path to cuga workspace; when set, configures policy env so all file operations use this dir (manager/demo_crm)",
+    ),
+    embeddings_provider: str | None = typer.Option(
+        None,
+        "--embeddings-provider",
+        help="Override knowledge embeddings provider "
+        "(fastembed | huggingface | openai | ollama | openrouter | litellm). "
+        "Use 'litellm' for a unified interface across providers — pass any model with a provider prefix "
+        "(e.g. 'openai/text-embedding-3-small', 'cohere/embed-english-v3.0', 'azure/<deployment>'). "
+        "Use 'openrouter' to pick from openrouter.ai/models?output_modalities=embeddings with a single key — "
+        "just set --embeddings-api-key + --embeddings-model. "
+        "For other OpenAI-compatible endpoints (Together, Fireworks) use 'openai' + --embeddings-base-url. "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER.",
+    ),
+    embeddings_model: str | None = typer.Option(
+        None,
+        "--embeddings-model",
+        help="Override knowledge embeddings model (provider-specific). Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL.",
+    ),
+    embeddings_base_url: str | None = typer.Option(
+        None,
+        "--embeddings-base-url",
+        help="Override knowledge embeddings endpoint URL (use for OpenAI-compatible providers). "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__BASE_URL.",
+    ),
+    embeddings_api_key: str | None = typer.Option(
+        None,
+        "--embeddings-api-key",
+        help="Override knowledge embeddings API key (use for openai / OpenAI-compatible providers). "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__API_KEY.",
+    ),
+    embeddings_batch_size: int | None = typer.Option(
+        None,
+        "--embeddings-batch-size",
+        help="Override knowledge embeddings sub-batch size (default 64). Smaller = finer ingest progress; "
+        "larger = lower per-call overhead. Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__BATCH_SIZE.",
+    ),
+    embeddings_concurrency: int | None = typer.Option(
+        None,
+        "--embeddings-concurrency",
+        help="Override knowledge embeddings concurrency for network providers (default 4, no-op on local providers). "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__CONCURRENCY.",
+    ),
+    docling_pdf_mode: str | None = typer.Option(
+        None,
+        "--docling-pdf-mode",
+        help="Override knowledge Docling PDF parsing level: 'fast' (OCR + tables off; digital PDFs only, "
+        "~3-10x faster), 'balanced' (OCR off, tables on; most digital PDFs), or 'accurate' (default; "
+        "OCR + tables on; scanned PDFs supported). Sets DYNACONF_KNOWLEDGE__DOCLING__PDF_MODE.",
+    ),
+    use_gpu: bool | None = typer.Option(
+        None,
+        "--use-gpu/--no-use-gpu",
+        help="Override knowledge embeddings GPU autodetect. Default: autodetect (CUDA / Apple CoreML); "
+        "pass --no-use-gpu to force CPU. No effect on cloud providers. "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__USE_GPU.",
+    ),
+    embeddings_extra_params: str | None = typer.Option(
+        None,
+        "--embeddings-extra-params",
+        help="Provider-specific embedding kwargs as JSON (Azure: api_version + azure_deployment; "
+        "Bedrock: aws_region_name). Example: "
+        "'{\"api_version\":\"2024-02-15\",\"azure_deployment\":\"my-dep\"}'. "
+        "Sets DYNACONF_KNOWLEDGE__EMBEDDINGS__EXTRA_PARAMS.",
+    ),
+    docling_layout_engine: str | None = typer.Option(
+        None,
+        "--docling-layout-engine",
+        help="Override Docling layout backend: 'auto' (default — ONNX on Mac, ONNX+CUDA on NVIDIA), "
+        "'onnx' (explicit), or 'transformers' (PyTorch — engages MPS/CUDA via device_map; "
+        "only path to Apple GPU for layout). Sets DYNACONF_KNOWLEDGE__DOCLING__LAYOUT_ENGINE.",
+    ),
+    # === Knowledge tuning knobs (parity with UI Settings tab) ===
+    knowledge_enabled: bool | None = typer.Option(
+        None,
+        "--knowledge-enabled/--no-knowledge-enabled",
+        help="Toggle the knowledge subsystem globally. Sets DYNACONF_KNOWLEDGE__ENABLED.",
+    ),
+    agent_level_enabled: bool | None = typer.Option(
+        None,
+        "--agent-level-knowledge/--no-agent-level-knowledge",
+        help="Toggle permanent (agent-level) knowledge documents. Sets DYNACONF_KNOWLEDGE__AGENT_LEVEL_ENABLED.",
+    ),
+    session_level_enabled: bool | None = typer.Option(
+        None,
+        "--session-level-knowledge/--no-session-level-knowledge",
+        help="Toggle ephemeral (session-level) knowledge documents. Sets DYNACONF_KNOWLEDGE__SESSION_LEVEL_ENABLED.",
+    ),
+    chunk_size: int | None = typer.Option(
+        None,
+        "--chunk-size",
+        help="Override knowledge chunk size in tokens (default 1000). Sets DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_SIZE.",
+    ),
+    chunk_overlap: int | None = typer.Option(
+        None,
+        "--chunk-overlap",
+        help="Override knowledge chunk overlap in tokens (default 200; must be < chunk_size). Sets DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_OVERLAP.",
+    ),
+    vector_insert_batch_size: int | None = typer.Option(
+        None,
+        "--vector-insert-batch-size",
+        help="Override vector-store insert batch size (default 200). Caps each add_many transaction. "
+        "Sets DYNACONF_KNOWLEDGE__ENGINE__VECTOR_INSERT_BATCH_SIZE.",
+    ),
+    rag_profile: str | None = typer.Option(
+        None,
+        "--rag-profile",
+        help="RAG profile preset: 'speed' | 'standard' | 'balanced' | 'max_quality' | 'custom'. "
+        "Sets DYNACONF_KNOWLEDGE__SEARCH__RAG_PROFILE.",
+    ),
+    metric_type: str | None = typer.Option(
+        None,
+        "--knowledge-metric-type",
+        help="Vector-distance metric: 'COSINE' | 'IP' | 'L2'. Sets DYNACONF_KNOWLEDGE__SEARCH__METRIC_TYPE.",
+    ),
+    max_upload_size_mb: int | None = typer.Option(
+        None,
+        "--knowledge-max-upload-mb",
+        help="Max upload size per file in MB (default 100). Sets DYNACONF_KNOWLEDGE__LIMITS__MAX_UPLOAD_SIZE_MB.",
+    ),
+    max_files_per_request: int | None = typer.Option(
+        None,
+        "--knowledge-max-files-per-request",
+        help="Max files per upload request (default 10). Sets DYNACONF_KNOWLEDGE__LIMITS__MAX_FILES_PER_REQUEST.",
+    ),
+    max_url_download_size_mb: int | None = typer.Option(
+        None,
+        "--knowledge-max-url-download-mb",
+        help="Max size for URL-fetched documents in MB (default 50). Sets DYNACONF_KNOWLEDGE__LIMITS__MAX_URL_DOWNLOAD_SIZE_MB.",
+    ),
+    max_chunks_per_document: int | None = typer.Option(
+        None,
+        "--knowledge-max-chunks-per-doc",
+        help="Cap chunks per document (default 10000). Sets DYNACONF_KNOWLEDGE__LIMITS__MAX_CHUNKS_PER_DOCUMENT.",
+    ),
+    max_pending_tasks: int | None = typer.Option(
+        None,
+        "--knowledge-max-pending-tasks",
+        help="Max queued ingestion tasks per collection (default 10). "
+        "Sets DYNACONF_KNOWLEDGE__ENGINE__MAX_PENDING_TASKS.",
+    ),
+    knowledge_search_junk_filter: str | None = typer.Option(
+        None,
+        "--knowledge-search-junk-filter",
+        help="Retrieval-time noise filter: 'off' (never filter), 'dry_run' (default; "
+        "count + log what would be filtered, return everything), 'enforce' (drop). "
+        "Sets DYNACONF_KNOWLEDGE__SEARCH__JUNK_FILTER.",
+    ),
+    knowledge_docling_drop_page_chrome: str | None = typer.Option(
+        None,
+        "--knowledge-docling-drop-page-chrome",
+        help="Ingest-time drop of pure page_footer/page_header chunks (Docling labels): "
+        "'off', 'dry_run', or 'enforce' (default). "
+        "Sets DYNACONF_KNOWLEDGE__DOCLING__DROP_PAGE_CHROME.",
+    ),
+    knowledge_search_hybrid_mode: str | None = typer.Option(
+        None,
+        "--knowledge-search-hybrid-mode",
+        help="Hybrid retrieval (BM25 + dense, RRF-fused). "
+        "'auto' (default) runs both legs in parallel; 'off' uses dense only. "
+        "Sets DYNACONF_KNOWLEDGE__SEARCH__HYBRID_MODE.",
     ),
 ):
     """
@@ -960,8 +1137,106 @@ def start(
     """
     validate_service(service)
 
-    if reset and service != "demo_knowledge":
-        logger.warning("--reset is only supported for demo_knowledge and will be ignored for '%s'", service)
+    if (reset or hard_reset) and service != "demo_knowledge":
+        logger.warning(
+            "--reset/--hard-reset is only supported for demo_knowledge and will be ignored for '%s'", service
+        )
+    # --hard-reset is a strict superset of --reset. Treat them as equivalent
+    # for the "wipe knowledge data" path; the extra dir-pruning happens in
+    # the demo_knowledge block below where files_dir is in scope.
+    if hard_reset:
+        reset = True
+
+    # Embedding overrides — set as DYNACONF env vars BEFORE the service blocks
+    # below so the engine picks them up when settings is first loaded. These
+    # flags work for any service that touches the knowledge engine; the
+    # validation of the provider value happens later inside KnowledgeConfig.
+    _embedding_flag_env = [
+        ("DYNACONF_KNOWLEDGE__EMBEDDINGS__PROVIDER", embeddings_provider),
+        ("DYNACONF_KNOWLEDGE__EMBEDDINGS__MODEL", embeddings_model),
+        ("DYNACONF_KNOWLEDGE__EMBEDDINGS__BASE_URL", embeddings_base_url),
+        ("DYNACONF_KNOWLEDGE__EMBEDDINGS__API_KEY", embeddings_api_key),
+        (
+            "DYNACONF_KNOWLEDGE__EMBEDDINGS__BATCH_SIZE",
+            str(embeddings_batch_size) if embeddings_batch_size is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__EMBEDDINGS__CONCURRENCY",
+            str(embeddings_concurrency) if embeddings_concurrency is not None else None,
+        ),
+        ("DYNACONF_KNOWLEDGE__DOCLING__PDF_MODE", docling_pdf_mode),
+        (
+            "DYNACONF_KNOWLEDGE__EMBEDDINGS__USE_GPU",
+            ("true" if use_gpu else "false") if use_gpu is not None else None,
+        ),
+        # extra_params is a JSON dict — DYNACONF supports the @json marker prefix
+        # to coerce env strings to JSON values; if user typed bad JSON, dynaconf
+        # surfaces the parse error at settings-load time (acceptable failure mode).
+        (
+            "DYNACONF_KNOWLEDGE__EMBEDDINGS__EXTRA_PARAMS",
+            f"@json {embeddings_extra_params}" if embeddings_extra_params is not None else None,
+        ),
+        ("DYNACONF_KNOWLEDGE__DOCLING__LAYOUT_ENGINE", docling_layout_engine),
+        # Bool toggles — coerce to "true"/"false" only when the flag was set.
+        (
+            "DYNACONF_KNOWLEDGE__ENABLED",
+            ("true" if knowledge_enabled else "false") if knowledge_enabled is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__AGENT_LEVEL_ENABLED",
+            ("true" if agent_level_enabled else "false") if agent_level_enabled is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__SESSION_LEVEL_ENABLED",
+            ("true" if session_level_enabled else "false") if session_level_enabled is not None else None,
+        ),
+        # Numeric tuning knobs — DYNACONF reads strings; settings.toml typing
+        # coerces back to int on load.
+        ("DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_SIZE", str(chunk_size) if chunk_size is not None else None),
+        (
+            "DYNACONF_KNOWLEDGE__CHUNKING__CHUNK_OVERLAP",
+            str(chunk_overlap) if chunk_overlap is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__ENGINE__VECTOR_INSERT_BATCH_SIZE",
+            str(vector_insert_batch_size) if vector_insert_batch_size is not None else None,
+        ),
+        ("DYNACONF_KNOWLEDGE__SEARCH__RAG_PROFILE", rag_profile),
+        ("DYNACONF_KNOWLEDGE__SEARCH__METRIC_TYPE", metric_type),
+        (
+            "DYNACONF_KNOWLEDGE__LIMITS__MAX_UPLOAD_SIZE_MB",
+            str(max_upload_size_mb) if max_upload_size_mb is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__LIMITS__MAX_FILES_PER_REQUEST",
+            str(max_files_per_request) if max_files_per_request is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__LIMITS__MAX_URL_DOWNLOAD_SIZE_MB",
+            str(max_url_download_size_mb) if max_url_download_size_mb is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__LIMITS__MAX_CHUNKS_PER_DOCUMENT",
+            str(max_chunks_per_document) if max_chunks_per_document is not None else None,
+        ),
+        (
+            "DYNACONF_KNOWLEDGE__ENGINE__MAX_PENDING_TASKS",
+            str(max_pending_tasks) if max_pending_tasks is not None else None,
+        ),
+        ("DYNACONF_KNOWLEDGE__SEARCH__JUNK_FILTER", knowledge_search_junk_filter),
+        ("DYNACONF_KNOWLEDGE__DOCLING__DROP_PAGE_CHROME", knowledge_docling_drop_page_chrome),
+        ("DYNACONF_KNOWLEDGE__SEARCH__HYBRID_MODE", knowledge_search_hybrid_mode),
+    ]
+    # Names that hold a credential must NEVER appear in logs even at INFO.
+    # Redaction list is matched against the SUFFIX after the last ``__`` so
+    # any new ``DYNACONF_..._API_KEY``-style env var is covered automatically.
+    _SECRET_SUFFIXES = {"API_KEY", "TOKEN", "SECRET", "PASSWORD"}
+    for _env_name, _value in _embedding_flag_env:
+        if _value is not None:
+            os.environ[_env_name] = _value
+            _suffix = _env_name.split("__")[-1]
+            _shown = "<redacted>" if _suffix in _SECRET_SUFFIXES else _value
+            logger.info(f"Embedding override: {_suffix}={_shown}")
 
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
@@ -982,7 +1257,7 @@ def start(
             managed_path = ensure_managed_mcp_file_exists(get_managed_mcp_path())
             os.environ["MCP_SERVERS_FILE"] = "none"
             _apply_local_demo_workspace_env()
-            logger.info("Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE=%s", managed_path)
+            logger.info(f"Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE={managed_path}")
             setup_demo_manage_config("manager", tools=resolved_tools, filesystem=app_filesystem)
 
             app_mgr = _make_app_manager()
@@ -1073,7 +1348,7 @@ def start(
 
         try:
             fs_for_demo = app_filesystem
-            logger.info("🧹 Resetting config db and setting up manage %s...", demo_preset)
+            logger.info(f"🧹 Resetting config db and setting up manage {demo_preset}...")
             setup_demo_manage_config(demo_preset, tools=resolved_tools, filesystem=fs_for_demo)
             logger.info("🧹 Checking for existing processes on required ports...")
             app_mgr = _make_app_manager()
@@ -1092,7 +1367,8 @@ def start(
                 logger.info("Starting demo with remote sandbox mode enabled (features.local_sandbox=false)")
                 os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
 
-            app_mgr.prepare_workspace(workspace_path)
+            if service != "demo_skills":
+                app_mgr.prepare_workspace(workspace_path)
             if app_docs:
                 app_mgr.start_docs()
             if app_oak_health:
@@ -1162,6 +1438,40 @@ def start(
         try:
             if reset:
                 logger.info("🧹 Resetting knowledge data...")
+            # ``--hard-reset`` additionally drops EVERY agent collection
+            # directory under files_dir before the demo seed runs. The
+            # regular ``--reset`` path only wipes the current agent's
+            # files dir + dbs; orphan dirs left over from prior profile
+            # iterations (e.g. an old mxbai-pinned collection that's no
+            # longer reachable after switching to bge-large) stay on
+            # disk and clutter diagnostics. ``--hard-reset`` says "yes,
+            # I really want a clean slate."
+            if hard_reset:
+                try:
+                    import shutil as _shutil_hard
+                    from cuga.backend.knowledge.config import KnowledgeConfig as _KC_hard
+                    from cuga.config import settings as _settings_hard
+
+                    _kc_h = _KC_hard.from_settings(_settings_hard)
+                    _files_dir_h = _kc_h.persist_dir / "files"
+                    if _files_dir_h.exists():
+                        for _d in _files_dir_h.iterdir():
+                            if _d.is_dir() and _d.name.startswith("kb_"):
+                                _shutil_hard.rmtree(_d, ignore_errors=True)
+                                logger.info(f"🧹 --hard-reset: removed {_d.name}")
+                    # Drop the lock file too — the regular reset path
+                    # respects it (won't wipe while a server is running),
+                    # but with --hard-reset the user is explicitly
+                    # saying they've stopped everything.
+                    _lock_h = _kc_h.persist_dir / ".lock"
+                    if _lock_h.exists():
+                        try:
+                            _lock_h.unlink()
+                            logger.info("🧹 --hard-reset: removed stale .lock")
+                        except OSError:
+                            pass
+                except Exception as _hr_err:
+                    logger.warning(f"--hard-reset extra cleanup failed: {_hr_err} (continuing)")
             logger.info("🧹 Setting up demo_knowledge config...")
             setup_demo_manage_config(
                 "demo_knowledge", tools=resolved_tools, reset_knowledge=reset, filesystem=app_filesystem
@@ -1869,6 +2179,142 @@ def status(
 
     # Validate service for any other service
     validate_service(service)
+
+
+@app.command(
+    help="Diagnose cuga's GPU stack — print device visibility, ONNX providers, "
+    "torch CUDA, fastembed session, shm, image build flag. Copy-pasteable for "
+    "support tickets.",
+    short_help="GPU health check",
+)
+def doctor() -> None:
+    """Print a structured GPU diagnosis.
+
+    Reads the actual loaded runtime — not just config — so a misconfigured
+    image (CPU build, missing libcudnn, --gpus all forgotten, ...) surfaces
+    as a single readable report instead of multiple buried log lines. Designed
+    to be run inside the container/pod with ``docker exec`` / ``kubectl exec``
+    immediately after deploy.
+    """
+    import os as _os
+    import platform as _platform
+    import shutil as _shutil
+    import subprocess as _subprocess
+
+    def _row(label: str, value: str) -> None:
+        typer.echo(f"  {label:<28} {value}")
+
+    typer.echo("\n[cuga doctor] GPU stack diagnosis")
+    typer.echo("=" * 60)
+
+    # 1. Image / env signals
+    typer.echo("\n[1] Image / environment")
+    _row("python", _platform.python_version())
+    _row("platform", f"{_platform.system()} {_platform.machine()}")
+    _row("CUGA_GPU_BUILD", _os.environ.get("CUGA_GPU_BUILD", "(unset → CPU image)"))
+    _row("CUGA_GPU_REQUIRED", _os.environ.get("CUGA_GPU_REQUIRED", "(unset → warn-only)"))
+
+    # 2. NVIDIA driver visibility
+    typer.echo("\n[2] NVIDIA driver visibility")
+    nvsmi = _shutil.which("nvidia-smi")
+    if not nvsmi:
+        _row("nvidia-smi", "NOT FOUND on PATH (container can't see the GPU)")
+    else:
+        try:
+            out = _subprocess.run(
+                [nvsmi, "--query-gpu=name,driver_version,memory.total,memory.free", "--format=csv,noheader"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if out.returncode == 0 and out.stdout.strip():
+                for line in out.stdout.strip().splitlines():
+                    _row("gpu", line.strip())
+            else:
+                _row("nvidia-smi", f"exit {out.returncode}: {out.stderr.strip()[:120]}")
+        except Exception as e:
+            _row("nvidia-smi", f"ERROR: {e!r}")
+
+    # 3. onnxruntime providers
+    typer.echo("\n[3] onnxruntime")
+    try:
+        import onnxruntime as _ort
+
+        providers = _ort.get_available_providers()
+        _row("ort version", _ort.__version__)
+        _row("available providers", str(providers))
+        if "CUDAExecutionProvider" in providers:
+            _row("status", "GPU-capable (CUDA)")
+        elif "CoreMLExecutionProvider" in providers:
+            _row("status", "GPU-capable (CoreML / Apple Silicon)")
+        else:
+            _row(
+                "status",
+                "CPU-only (GPU support is deferred to a follow-up release)",
+            )
+    except Exception as e:
+        _row("onnxruntime", f"IMPORT FAILED: {e!r}")
+
+    # 4. torch CUDA
+    typer.echo("\n[4] torch / CUDA")
+    try:
+        import torch
+
+        _row("torch version", torch.__version__)
+        _row("cuda.is_available", str(torch.cuda.is_available()))
+        if torch.cuda.is_available():
+            _row("device count", str(torch.cuda.device_count()))
+            _row("device 0 name", torch.cuda.get_device_name(0))
+            _row("cudnn version", str(torch.backends.cudnn.version()))
+            try:
+                free, total = torch.cuda.mem_get_info(0)
+                _row("device 0 mem", f"{free / (1024**3):.1f} GB free / {total / (1024**3):.1f} GB total")
+            except Exception:
+                pass
+    except Exception as e:
+        _row("torch", f"IMPORT FAILED: {e!r}")
+
+    # 5. fastembed loaded providers (the actual runtime, not the list)
+    typer.echo("\n[5] fastembed live session")
+    try:
+        from fastembed import TextEmbedding
+
+        # Use the model the engine's auto-default uses so we test what users actually hit.
+        m = TextEmbedding("BAAI/bge-small-en-v1.5")
+        sess_providers: list[str] = []
+        cur = m
+        for _ in range(4):
+            for a in ("model", "_model", "session", "_session", "ort_session"):
+                obj = getattr(cur, a, None)
+                if obj is None:
+                    continue
+                if hasattr(obj, "get_providers"):
+                    sess_providers = list(obj.get_providers())
+                    break
+                cur = obj
+                break
+            if sess_providers:
+                break
+        _row("active providers", str(sess_providers) if sess_providers else "(could not introspect)")
+        if sess_providers and "CUDAExecutionProvider" in sess_providers:
+            _row("status", "embed will use GPU")
+        elif sess_providers:
+            _row("status", "embed will run on CPU")
+    except Exception as e:
+        _row("fastembed", f"FAILED: {e!r}")
+
+    # 6. /dev/shm size (Docling DataLoader workers OOM at the 64 MB default)
+    typer.echo("\n[6] /dev/shm")
+    try:
+        out = _subprocess.run(["df", "-h", "/dev/shm"], capture_output=True, text=True, timeout=3)
+        for line in out.stdout.strip().splitlines()[-1:]:
+            _row("size", line.strip())
+        _row("recommended", ">= 2G for Docling transformers layout DataLoader")
+    except Exception as e:
+        _row("/dev/shm", f"NOT CHECKABLE: {e!r}")
+
+    typer.echo("\n" + "=" * 60)
+    typer.echo("Tip: paste this entire output into a support ticket or PR comment.\n")
 
 
 @app.command(help="Test sandbox execution", short_help="Test sandbox")

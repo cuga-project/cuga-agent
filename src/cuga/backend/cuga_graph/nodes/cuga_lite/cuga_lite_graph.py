@@ -54,6 +54,7 @@ class CugaLiteState(BaseModel):
     - hitl_response: Optional[ActionResponse] (human-in-the-loop response)
     - sender: str (node that sent the current state)
     - service_scope: Dict[str, str] (tenant_id, instance_id for multi-tenant/prod scoping)
+    - user_id: Optional[str] (caller user ID for Evolve attribution; None when unset)
 
     Subgraph-only keys:
     - script, execution_complete, error, metrics
@@ -70,7 +71,7 @@ class CugaLiteState(BaseModel):
     # Shared keys (compatible with AgentState)
     chat_messages: Optional[List[BaseMessage]] = Field(default_factory=list)
     final_answer: Optional[str] = ""
-    user_id: Optional[str] = None
+    user_id: Optional[str] = None  # Shared with AgentState; None means unset (no user context sent to Evolve)
     thread_id: Optional[str] = None
     service_scope: Optional[Dict[str, str]] = Field(
         default_factory=lambda: {"tenant_id": "", "instance_id": ""}

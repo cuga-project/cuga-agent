@@ -40,10 +40,38 @@ def get_storage_connection_params() -> tuple[str, str, str]:
 
 
 class StorageFacade:
+    def __init__(self) -> None:
+        self._relational_stores: dict[str, "RelationalStore"] = {}
+
     def get_relational_store(self, db_name: str) -> "RelationalStore":
         from cuga.backend.storage.relational import get_relational_store
 
-        return get_relational_store(db_name, _storage_mode(), _local_db_path(), _postgres_url())
+        if db_name not in self._relational_stores:
+            self._relational_stores[db_name] = get_relational_store(
+                db_name, _storage_mode(), _local_db_path(), _postgres_url()
+            )
+        return self._relational_stores[db_name]
+
+    async def close_relational_stores(self) -> None:
+        for store in self._relational_stores.values():
+            await store.close()
+        self._relational_stores.clear()
+
+    def invalidate_relational_stores(self) -> None:
+        """Drop cached relational stores so the next access reopens against current files.
+
+        Used after destructive operations (e.g. reset_config_db) that delete the backing
+        local DB file out from under cached connections. Closes connections synchronously
+        when the store supports it; otherwise drops the reference for lazy reopen.
+        """
+        for store in self._relational_stores.values():
+            close_sync = getattr(store, "close_sync", None)
+            if callable(close_sync):
+                try:
+                    close_sync()
+                except Exception:
+                    pass
+        self._relational_stores.clear()
 
     def get_embedding_store(
         self, collection_name: str, schema: "EmbeddingSchemaConfig"

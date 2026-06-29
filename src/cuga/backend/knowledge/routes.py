@@ -69,6 +69,98 @@ def _extract_task_error(task: dict[str, Any], fallback: str = "Ingestion failed"
     return fallback
 
 
+# Stage weights for the unified upload progress bar. Tuned empirically
+# from per-stage timings (parse_s / embed_s / insert_s) over a mixed
+# corpus; values sum to 1.0 and intentionally overweight parse since
+# it's the most variable stage.
+_STAGE_WEIGHTS = {"parse": 0.45, "embed": 0.40, "insert": 0.15}
+
+# Module-level strong-ref set for fire-and-forget background ingests. The
+# asyncio event loop holds only WEAK references to tasks created with
+# ``create_task`` (CPython docs explicitly warn: "A task that isn't
+# referenced elsewhere may be garbage collected at any time, even before
+# it's done."). Request-local lists drop refs the moment the handler
+# returns — exactly the window where a fire-and-forget ingest is most
+# vulnerable. Keep them here; the done_callback discards on completion
+# so the set bounds at "currently-running ingests".
+_BACKGROUND_INGEST_TASKS: set[Any] = set()
+
+
+def _weighted_pct_for_file_task(file_task: dict[str, Any]) -> float:
+    """Map a file_task's current stage + progress into a 0..1 overall fraction.
+
+    Each engine emit overwrites the whole file_task entry, so we infer prior
+    stages from the current one: being in "embed" implies parse is done, etc.
+    Indeterminate windows (status=processing but no stage yet) report a small
+    nonzero value so the bar starts moving immediately.
+    """
+    status = file_task.get("status")
+    if status == "indexed":
+        return 1.0
+    if status in ("failed", "cancelled", "skipped"):
+        return 0.0
+
+    parse_w = _STAGE_WEIGHTS["parse"]
+    embed_w = _STAGE_WEIGHTS["embed"]
+    insert_w = _STAGE_WEIGHTS["insert"]
+
+    stage = file_task.get("stage")
+    progress = file_task.get("progress") or {}
+    done = int(progress.get("done", 0) or 0)
+    total = int(progress.get("total", 0) or 0)
+    frac = (done / total) if total > 0 else 0.0
+    frac = max(0.0, min(1.0, frac))
+
+    if stage == "parsed":
+        return parse_w
+    if stage == "embed":
+        return parse_w + embed_w * frac
+    if stage == "insert_start":
+        return parse_w + embed_w
+    if stage == "insert":
+        return parse_w + embed_w + insert_w * frac
+    if status == "processing":
+        return 0.03  # just started, give the bar a visible nudge
+    return 0.0
+
+
+def _enrich_task(task: dict[str, Any]) -> dict[str, Any]:
+    """Attach UI-friendly fields to the task payload.
+
+    - ``weighted_pct`` (0..1): single number driving the frontend bar; stage
+      internals are kept server-side so we can re-tune weights without a
+      frontend deploy.
+    - ``ui_phase``: distinguishes the indistinguishable-from-the-outside
+      states the UI must render differently. ``queued`` (waiting on the
+      per-collection lock), ``working`` (ingest actively running),
+      ``done``, ``failed``.
+
+    Single-file uploads use the first file_task entry; multi-file (legacy)
+    tasks aggregate via mean.
+    """
+    file_tasks = task.get("file_tasks") or {}
+    if isinstance(file_tasks, dict) and file_tasks:
+        pcts = [_weighted_pct_for_file_task(ft) for ft in file_tasks.values() if isinstance(ft, dict)]
+        if pcts:
+            task["weighted_pct"] = round(sum(pcts) / len(pcts), 4)
+    if "weighted_pct" not in task:
+        task["weighted_pct"] = 1.0 if task.get("status") == "completed" else 0.0
+
+    status = task.get("status")
+    if status == "completed":
+        task["ui_phase"] = "done"
+    elif status in ("failed", "cancelled"):
+        task["ui_phase"] = "failed"
+    elif status == "running":
+        task["ui_phase"] = "working"
+    else:
+        # pending: either freshly created or blocked on the per-collection lock.
+        # Either way, no stage progress has been emitted yet — surface this so
+        # the UI can show "Queued" instead of a frozen 3% bar.
+        task["ui_phase"] = "queued"
+    return task
+
+
 # --- Enable (on-demand engine start) ---
 
 
@@ -161,10 +253,23 @@ async def update_settings(request: Request):
     engine = _get_engine(request)
     body = await request.json()
     knowledge_settings = body.get("knowledge", body)
-    return engine.update_settings(**knowledge_settings)
+    try:
+        return engine.update_settings(**knowledge_settings)
+    except ValueError as e:
+        # Config validation errors (typo'd enum, bad numeric range, etc.)
+        # surface as 400 with the validator's message instead of a 500
+        # stacktrace. The validator messages already name the offending
+        # field, so the operator can fix the request without digging logs.
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 # --- Search ---
+
+
+_SCOPE_LEGEND = {
+    "agent": "Persistent knowledge available across all conversations (configured at agent setup).",
+    "session": "Documents uploaded in this conversation only.",
+}
 
 
 @knowledge_router.post("/search")
@@ -172,30 +277,189 @@ async def search(
     request: Request,
     identity: KnowledgeIdentity = Depends(require_internal_or_auth),
 ):
+    """Search the knowledge base.
+
+    ``scope`` accepts:
+      - ``"agent"`` — search only the persistent agent KB.
+      - ``"session"`` — search only this conversation's KB. **Auto-fallback**:
+        if 0 results above threshold AND the agent scope is wired, the
+        engine internally retries as ``scope="all"`` and the response
+        carries ``retrieval.fallback_from = "session"``. Saves the LLM a
+        round-trip + makes "prefer narrow" safe.
+      - ``"all"`` — search both, merge via per-scope quota + cross-scope
+        RRF (so a thin scope can't be drowned by a fat one). Scopes the
+        caller is not authorized for, or that are disabled in config,
+        are silently skipped; if none remain the response is empty.
+
+    Response envelope shape — see ``envelope.build_retrieval_envelope``.
+    The single source of truth for the wire schema lives there so the
+    SDK + HTTP route can't drift.
+    """
+    from cuga.backend.knowledge.envelope import build_retrieval_envelope
+
     engine = _get_engine(request)
     _ensure_enabled(engine)
     body = await request.json()
     scope = body.get("scope", "agent")
-    collection = resolve_collection(identity, scope, request)
-
-    results = await engine.search(
-        collection=collection,
-        query=body.get("query", ""),
-        limit=body.get("limit", engine._config.default_limit),
-        score_threshold=body.get("score_threshold", engine._config.default_score_threshold),
-    )
+    query = body.get("query", "")
+    limit = body.get("limit", engine._config.default_limit)
+    score_threshold = body.get("score_threshold", engine._config.default_score_threshold)
     include_scores = body.get("include_scores", False)
-    return {
-        "results": [
-            {
-                "text": r.text,
-                "filename": r.filename,
-                "page": r.page,
-                **({"score": r.score} if include_scores else {}),
-            }
-            for r in results
-        ]
-    }
+    filter_mode = getattr(engine._config, "search_junk_filter", "dry_run")
+
+    _tid_preview = (identity.thread_id or "")[:12] + "..." if identity.thread_id else "-"
+    _query_preview = (query or "")[:60]
+
+    async def _run_multi(scope_requested: str, fallback_from: str | None):
+        """Run ``scope='all'`` style multi-scope search. Returns the
+        finalized envelope dict ready to ship to the wire. Centralized
+        here so the auto-fallback path and the direct ``scope='all'``
+        path produce identical envelopes.
+        """
+        scoped_collections: list[tuple[str, str]] = []
+        for _scope in ("agent", "session"):
+            try:
+                scoped_collections.append((_scope, resolve_collection(identity, _scope, request)))
+            except HTTPException as e:
+                logger.debug(
+                    "search scope=all: dropping scope=%s (%s: %s)",
+                    _scope,
+                    e.status_code,
+                    e.detail,
+                )
+        # Per-scope cap (Option B) is the right default when the caller
+        # *asked* for "all" — they want each side's best chunks. The
+        # auto-fallback path (session → 0 hits → retry as "all") instead
+        # passes ``fallback_from="session"``; in that case revert to the
+        # fixed-total budget so the LLM's response-size expectation is
+        # preserved (it asked for ``limit``, not ``limit × n_scopes``).
+        results, multi_stats = await engine.search_multi(
+            scoped_collections=scoped_collections,
+            query=query,
+            limit=limit,
+            score_threshold=score_threshold,
+            per_scope_limit=(fallback_from is None),
+        )
+        env = build_retrieval_envelope(
+            results=results,
+            scope_requested=scope_requested,
+            multi_stats=multi_stats,
+            single_stats=None,
+            single_scope_name=None,
+            filter_mode=filter_mode,
+            fallback_from=fallback_from,
+            include_scores=include_scores,
+        )
+        _emit_canonical_log(
+            tid_preview=_tid_preview,
+            query_preview=_query_preview,
+            scope_requested=scope_requested,
+            env=env,
+        )
+        return env
+
+    if scope == "all":
+        return await _run_multi(scope_requested="all", fallback_from=None)
+
+    # Single-scope path. ``resolve_collection`` raises 403/400 on
+    # disabled/unauthorized so explicit callers get a clear error
+    # instead of silent emptiness.
+    collection = resolve_collection(identity, scope, request)
+    results, single_stats = await engine.search_with_stats(
+        collection=collection,
+        query=query,
+        limit=limit,
+        score_threshold=score_threshold,
+        scope=scope,
+    )
+    # Stamp ``scope`` on any result that's missing it (legacy paths,
+    # mock fakes) so the wire shape is identical to the multi-scope
+    # branch — one chunk schema regardless of how the search was issued.
+    for r in results:
+        if not r.scope:
+            r.scope = scope
+
+    # Auto-fallback: scope="session" + 0 hits above threshold + agent is
+    # wired → internally re-run as "all". Makes B's "prefer narrow"
+    # contract rule risk-free for the LLM. Single internal retry, no
+    # loops (the second call switches scope so termination is structural).
+    if scope == "session" and not results:
+        # Check if agent is even available before retrying. If not,
+        # just return the empty session envelope — there's nowhere to
+        # fall back to.
+        agent_available = True
+        try:
+            resolve_collection(identity, "agent", request)
+        except HTTPException:
+            agent_available = False
+        if agent_available:
+            logger.info(
+                "search session: 0 hits → auto-fallback to scope='all' (thread_id=%s query=%r)",
+                _tid_preview,
+                _query_preview,
+            )
+            return await _run_multi(scope_requested="all", fallback_from="session")
+
+    env = build_retrieval_envelope(
+        results=results,
+        scope_requested=scope,
+        multi_stats=None,
+        single_stats=single_stats,
+        single_scope_name=scope,
+        filter_mode=filter_mode,
+        fallback_from=None,
+        include_scores=include_scores,
+    )
+    _emit_canonical_log(
+        tid_preview=_tid_preview,
+        query_preview=_query_preview,
+        scope_requested=scope,
+        env=env,
+    )
+    return env
+
+
+def _emit_canonical_log(
+    *,
+    tid_preview: str,
+    query_preview: str,
+    scope_requested: str,
+    env: dict[str, Any],
+) -> None:
+    """Emit a single canonical INFO line per search.
+
+    One log per search × one schema = SRE can grep ``search retrieval``
+    and answer "did session match?", "what was filtered and why?",
+    "did the engine auto-fallback?" without enabling DEBUG. Replaces
+    the previous "interesting case → INFO; else DEBUG" branching
+    which missed the user-reported failure (1 session hit looked
+    fine in the trigger but the user couldn't tell what was filtered).
+    """
+    retrieval = env.get("retrieval", {})
+    by_scope = retrieval.get("by_scope", {})
+    hits_by_scope = {s: v.get("returned", 0) for s, v in by_scope.items()}
+    filtered_by_scope = {s: v.get("filtered", 0) for s, v in by_scope.items()}
+    candidates_by_scope = {s: v.get("candidates", 0) for s, v in by_scope.items()}
+    reasons_by_scope = {s: v["reasons"] for s, v in by_scope.items() if v.get("reasons")}
+    logger.info(
+        "search retrieval thread_id=%s query=%r scope=%s "
+        "searched=%s failed=%s partial=%s fallback_from=%s "
+        "hits_by_scope=%s candidates_by_scope=%s "
+        "filtered_by_scope=%s reasons_by_scope=%s "
+        "recommendation=%s",
+        tid_preview,
+        query_preview,
+        scope_requested,
+        list(by_scope.keys()),
+        retrieval.get("failed_scopes", []),
+        retrieval.get("partial", False),
+        retrieval.get("fallback_from"),
+        hits_by_scope,
+        candidates_by_scope,
+        filtered_by_scope,
+        reasons_by_scope,
+        retrieval.get("recommendation"),
+    )
 
 
 # --- Documents ---
@@ -207,8 +471,20 @@ async def upload_documents(
     files: list[UploadFile] = File(...),
     scope: str = Form("agent"),
     replace_duplicates: bool = Form(True),
+    wait: bool = Form(True),
     identity: KnowledgeIdentity = Depends(require_internal_or_auth),
 ):
+    """Upload one or more documents.
+
+    ``wait=true`` (default) preserves the legacy synchronous contract: the
+    response carries the terminal task (status=completed|failed). The MCP
+    ``ingest_knowledge`` tool and the session-attachment hook depend on this.
+
+    ``wait=false`` returns 202 with a ``queued`` task per file as soon as
+    validation passes. The caller polls ``GET /tasks/{task_id}`` for
+    ``weighted_pct`` and the terminal status. Used by the Knowledge Settings
+    UI so the user gets a live progress bar instead of a frozen "Processing".
+    """
     engine = _get_engine(request)
     _ensure_enabled(engine)
     ensure_agent_scope_manage_if_needed(identity, scope)
@@ -219,13 +495,48 @@ async def upload_documents(
             status_code=400, detail=f"Max {engine._config.max_files_per_request} files per request"
         )
 
+    import asyncio
     import tempfile
     from pathlib import Path
 
-    # Process each file: validate, ingest (awaited), return final status.
-    # Frontend sends 1 file per request for real-time per-file feedback.
-    # Multiple files still supported for SDK/MCP callers.
     results: list[dict] = []
+
+    async def _cleanup_after_ingest(coro: Any, tmp_path: Path, task_id: str, filename_for_error: str) -> None:
+        """Run the background ingest and guarantee terminal state in metadata.
+
+        ``_ingest_inner`` already marks the task as ``failed`` on parse/embed/
+        insert errors, but ``_run_ingest`` runs setup steps (config load,
+        vector-store cache, collection lock) outside that try/except. A raise
+        there would leave the task stuck in ``pending`` forever, and the
+        polling UI would spin until its 10-min cap. We catch unconditionally
+        and write a terminal ``failed`` row so the frontend bar resolves.
+        """
+        try:
+            await coro
+        except Exception as exc:  # noqa: BLE001 — intentional catch-all for background task
+            logger.exception("Background ingest failed for task %s: %s", task_id, exc)
+            try:
+                await engine._metadata.update_task(
+                    task_id,
+                    status="failed",
+                    processed_files=1,
+                    failed_files=1,
+                    file_tasks={
+                        filename_for_error: {
+                            "filename": filename_for_error,
+                            "status": "failed",
+                            "error": str(exc) or exc.__class__.__name__,
+                        }
+                    },
+                )
+            except Exception as meta_exc:  # noqa: BLE001
+                logger.exception("Failed to mark task %s as failed: %s", task_id, meta_exc)
+        finally:
+            tmp_path.unlink(missing_ok=True)
+
+    # Note: strong refs to fire-and-forget tasks live in the module-level
+    # ``_BACKGROUND_INGEST_TASKS`` set, not here. Request-local storage
+    # would be GC'd the moment the handler returns.
 
     for upload_file in files:
         with tempfile.NamedTemporaryFile(suffix=f"_{upload_file.filename}", delete=False) as tmp:
@@ -259,21 +570,58 @@ async def upload_documents(
             tmp_path.unlink(missing_ok=True)
             raise HTTPException(status_code=409, detail="Reindex in progress, try again later")
 
-        # Await ingestion — response returns final status (no polling)
-        try:
-            await engine._run_ingest(
-                collection, tmp_path, filename_clean, task_info["task_id"], replace_duplicates
+        if wait:
+            try:
+                await engine._run_ingest(
+                    collection, tmp_path, filename_clean, task_info["task_id"], replace_duplicates
+                )
+            finally:
+                tmp_path.unlink(missing_ok=True)
+
+            task = await engine.get_task(task_info["task_id"])
+            task = task or {"task_id": task_info["task_id"], "filename": filename_clean, "status": "unknown"}
+
+            if len(files) == 1 and task.get("status") == "failed":
+                raise HTTPException(status_code=400, detail=_extract_task_error(task))
+
+            results.append(_enrich_task(task))
+        else:
+            # Fire-and-forget background ingest. ``_cleanup_after_ingest``
+            # guarantees the temp file is unlinked AND the task lands in a
+            # terminal state even if ``_run_ingest`` raises before
+            # ``_ingest_inner`` can record the failure.
+            bg = asyncio.create_task(
+                _cleanup_after_ingest(
+                    engine._run_ingest(
+                        collection,
+                        tmp_path,
+                        filename_clean,
+                        task_info["task_id"],
+                        replace_duplicates,
+                    ),
+                    tmp_path,
+                    task_info["task_id"],
+                    filename_clean,
+                )
             )
-        finally:
-            tmp_path.unlink(missing_ok=True)
-
-        task = await engine.get_task(task_info["task_id"])
-        task = task or {"task_id": task_info["task_id"], "filename": filename_clean, "status": "unknown"}
-
-        if len(files) == 1 and task.get("status") == "failed":
-            raise HTTPException(status_code=400, detail=_extract_task_error(task))
-
-        results.append(task)
+            _BACKGROUND_INGEST_TASKS.add(bg)
+            # Two callbacks: discard from the strong-ref set on completion
+            # (bounds the set at currently-running ingests), and retrieve
+            # the exception so we don't see "Task exception was never
+            # retrieved" warnings in the loop log.
+            bg.add_done_callback(_BACKGROUND_INGEST_TASKS.discard)
+            bg.add_done_callback(lambda t: t.exception())
+            results.append(
+                _enrich_task(
+                    {
+                        "task_id": task_info["task_id"],
+                        "collection": collection,
+                        "filename": filename_clean,
+                        "status": "pending",
+                        "file_tasks": {filename_clean: {"filename": filename_clean, "status": "pending"}},
+                    }
+                )
+            )
 
     if len(results) == 1:
         return results[0]
@@ -311,9 +659,30 @@ async def list_documents(
     scope: str = Query("agent"),
     identity: KnowledgeIdentity = Depends(require_internal_or_auth),
 ):
+    # Explicit guard: session scope without a thread_id is an error, not an
+    # empty result. ``resolve_collection`` already 400s on this, but stating
+    # it at the route level makes the contract obvious and matches the
+    # /search route — and rules out any chance of an unrelated session
+    # initialization path silently producing an empty list when the caller
+    # never identified the conversation.
+    if scope == "session" and not (identity.thread_id or "").strip():
+        raise HTTPException(
+            status_code=400,
+            detail="X-Thread-ID required for scope=session (cannot list session documents without identifying the conversation)",
+        )
     engine = _get_engine(request)
     collection = resolve_collection(identity, scope, request)
     docs = await engine.list_documents(collection)
+    # When session-scope list comes back empty even though the caller
+    # identified a thread, log it. Pairs with the search route returning
+    # docs from the same collection — if the two diverge, this log gives
+    # us the collection name to inspect.
+    if scope == "session" and not docs:
+        logger.info(
+            "list_documents: session scope returned empty for collection=%s, thread_id=%s",
+            collection,
+            (identity.thread_id or "")[:12] + "...",
+        )
     return {
         "documents": [
             {
@@ -454,7 +823,7 @@ async def get_task(
     if task["collection"] != expected_collection:
         raise HTTPException(status_code=403, detail="access denied")
 
-    return task
+    return _enrich_task(task)
 
 
 @knowledge_router.post("/tasks/{task_id}/cancel")

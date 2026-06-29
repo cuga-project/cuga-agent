@@ -1,20 +1,69 @@
 [profile]
 name = "Balanced"
-description = "More thorough search with extra retrieval passes and more results per search. Better recall for complex questions. Moderate latency increase."
+description = "Sharper answers, a few seconds slower."
 
-[search]
-max_search_attempts = 5
-default_limit = 20
-default_score_threshold = 0.0
+# Pareto-locked profile (2026-06-09).
+# Switching from standard/speed to balanced INVALIDATES collections:
+# embedding_model changes 384d → 768d. Re-ingest required.
+
+[embeddings]
+# bge-base-en-v1.5 (768d, ~110M params). +0 to +2 MTEB retrieval vs
+# bge-small alone; the real lift in this profile comes from the reranker.
+model = "BAAI/bge-base-en-v1.5"
+# 128 stays sane on prod p99. 768d vectors are 2x the wire+disk cost of
+# 384d but well within batch-budget for 128.
+batch_size = 128
+concurrency = 4
 
 [chunking]
+# 800-tok windows are the consensus floor for procedural docs with
+# tables and multi-line callouts. Smaller chunks → more candidates for
+# the reranker to rescore → higher final precision.
 chunk_size = 800
-chunk_overlap = 200
+chunk_overlap = 150
+
+[docling]
+# balanced parse: tables on, OCR off.
+pdf_mode = "balanced"
+layout_engine = "auto"
+drop_page_chrome = "dry_run"
+
+[search]
+# Three attempts covers most multi-hop decomposition.
+max_search_attempts = 3
+# Above the floor.
+default_limit = 12
+default_score_threshold = 0.0
+hybrid_mode = "auto"
+junk_filter = "dry_run"
+# LLM query transform (multi_query / hyde). Off by default — eval-gate per corpus
+# before enabling; needs a host-injected chat model. Candidate for multi_query.
+query_transform = "off"
+
+[rerank]
+# Cross-encoder rerank ON. RRF-fused candidates are rescored with full
+# bidirectional attention via fastembed's TextCrossEncoder (ONNX/CPU, no torch).
+# Large precision lift (Anthropic contextual-retrieval: -35% to -67% top-k
+# retrieval failures with reranking). Warmed at startup via engine.warmup().
+enabled = true
+# candidate_k: overfetch this many for the reranker, then return default_limit.
+# Must be >= 3 × default_limit (12) = 36; 50 gives headroom (config.validate()).
+# At 50 pairs on CPU expect ~1-3s added tail latency.
+top_k_in = 50
+# MUST be in fastembed's TextCrossEncoder list. bge-reranker-base = Apache-2.0,
+# commercial-safe. (bge-reranker-v2-m3 is NOT fastembed-servable.)
+model = "BAAI/bge-reranker-base"
+
+[engine]
+max_ingest_workers = 2
+vector_insert_batch_size = 500
 
 [instructions]
 addendum = """
-You have extra search capacity. On your first search, use a broad query to understand what is available.
-Then refine with 2-3 targeted follow-up queries.
-Consider decomposing complex questions into sub-questions and searching for each.
-When both scopes have documents, search both systematically.
+You are using the **Balanced** profile: hybrid retrieval (BM25+dense) with cross-encoder reranking enabled. Result quality is high; query latency includes a ~1-3s rerank step.
+
+On your first search, use a broad query to surface the relevant region of the index — the reranker will sort within it.
+Then refine with 1-2 targeted follow-up queries to fill gaps.
+Decompose complex multi-part questions into independent sub-queries when the parts are conceptually distinct.
+When both scopes have documents, search both systematically; the reranker fuses results across queries effectively.
 """

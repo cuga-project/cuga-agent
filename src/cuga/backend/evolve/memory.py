@@ -16,7 +16,7 @@ from cuga.backend.evolve.formatting import (
     get_first_human_message_content,
     get_latest_memory_query,
 )
-from cuga.backend.evolve.integration import EvolveIntegration
+from cuga.backend.evolve.integration import EvolveIntegration, normalize_evolve_identifier
 from cuga.config import settings
 
 
@@ -43,8 +43,18 @@ async def build_evolve_special_instructions_extension(
     task_description = state.sub_task or get_first_human_message_content(state.chat_messages)
     if task_description:
         try:
+            # Extract multi-user parameters from state for Evolve attribution
+            _evolve_user_id = normalize_evolve_identifier(getattr(state, 'user_id', None))
+            _evolve_namespace_id = (getattr(state, 'service_scope', {}) or {}).get('tenant_id') or None
+            _evolve_session_id = getattr(state, 'thread_id', None)
+
             evolve_guidelines = await asyncio.wait_for(
-                EvolveIntegration.get_guidelines(task_description),
+                EvolveIntegration.get_guidelines(
+                    task_description,
+                    user_id=_evolve_user_id,
+                    namespace_id=_evolve_namespace_id,
+                    session_id=_evolve_session_id,
+                ),
                 timeout=timeout,
             )
         except Exception:
@@ -54,10 +64,10 @@ async def build_evolve_special_instructions_extension(
         if evolve_section:
             extra += evolve_section
             logger.info("Evolve: Injected guidelines into system prompt")
-            logger.debug("Evolve: Injected guidelines section (%d chars)", len(evolve_section))
+            logger.debug(f"Evolve: Injected guidelines section ({len(evolve_section)} chars)")
 
     memory_query = state.sub_task or get_latest_memory_query(state.chat_messages)
-    current_user_id = str(getattr(state, "user_id", "") or "").strip()
+    current_user_id = normalize_evolve_identifier(getattr(state, "user_id", None))
     if current_user_id and memory_query:
         current_agent_id = str(configurable.get("agent_id") or "").strip()
         thread_id_for_memory = str(
@@ -76,7 +86,7 @@ async def build_evolve_special_instructions_extension(
         def _log_store_error(task: asyncio.Task) -> None:
             exc = task.exception() if not task.cancelled() else None
             if exc:
-                logger.warning("Evolve: store_user_facts failed (non-blocking): %s", exc)
+                logger.warning(f"Evolve: store_user_facts failed (non-blocking): {exc}")
 
         _store_task = asyncio.create_task(
             EvolveIntegration.store_user_facts(
@@ -98,6 +108,6 @@ async def build_evolve_special_instructions_extension(
         if preference_section:
             extra += preference_section
             logger.info("Evolve: Injected user preference context into system prompt")
-            logger.debug("Evolve: Injected user preference section (%d chars)", len(preference_section))
+            logger.debug(f"Evolve: Injected user preference section ({len(preference_section)} chars)")
 
     return extra

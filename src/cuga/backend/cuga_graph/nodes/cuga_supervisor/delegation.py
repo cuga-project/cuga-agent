@@ -7,6 +7,9 @@ from typing import Any, Callable, Dict, List, Optional
 
 from loguru import logger
 
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
+    resolve_supervisor_execution_context,
+)
 from cuga.config import settings
 
 
@@ -31,6 +34,29 @@ def resolve_names_from_caller_frame(variable_names: List[str]) -> Dict[str, Any]
     finally:
         del frame
     return resolved
+
+
+def _record_delegation(
+    adapter: Any,
+    agent_name: str,
+    *,
+    result: Any = None,
+    answer: Any,
+    variables: Optional[Dict[str, Any]] = None,
+) -> None:
+    exec_ctx = resolve_supervisor_execution_context()
+    if exec_ctx is None or exec_ctx.state is None:
+        return
+
+    record = getattr(adapter, "record_delegation", None)
+    if callable(record):
+        record(
+            exec_ctx.state,
+            agent_name,
+            result=result,
+            answer=answer,
+            variables=variables,
+        )
 
 
 def create_agent_delegation_func(
@@ -60,19 +86,36 @@ def create_agent_delegation_func(
                 thread_id=f"supervisor_conversational_{agent_name}",
                 variables=vars_to_pass if vars_to_pass else None,
             )
-            if hasattr(result, "variables") and result.variables and adapter._shared_vm_ref[0] is not None:
+
+            exec_ctx = resolve_supervisor_execution_context()
+            if (
+                hasattr(result, "variables")
+                and result.variables
+                and exec_ctx is not None
+                and exec_ctx.variable_manager is not None
+            ):
                 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.variable_bridge import (
                     VariableBridge,
                 )
 
                 bridged = VariableBridge.bridge(
                     result.variables,
-                    adapter._shared_vm_ref[0],
+                    exec_ctx.variable_manager,
                     description_prefix=f"from {agent_name}",
                 )
                 if bridged:
-                    logger.info("Bridged %d variable(s) from %s: %s", len(bridged), agent_name, bridged)
-            return result.answer if hasattr(result, "answer") else str(result)
+                    logger.info(f"Bridged {len(bridged)} variable(s) from {agent_name}: {bridged}")
+
+            answer = result.answer if hasattr(result, "answer") else str(result)
+            result_vars = getattr(result, "variables", None) or None
+            _record_delegation(
+                adapter,
+                agent_name,
+                result=result,
+                answer=answer,
+                variables=result_vars,
+            )
+            return answer
 
         if isinstance(agent_or_config, dict) and agent_or_config.get("type") == "external":
             a2a_config = agent_or_config.get("config", {}).get("a2a_protocol", {})
@@ -90,7 +133,9 @@ def create_agent_delegation_func(
                     timeout=float(a2a_config.get("timeout", 30)),
                     variables=vars_to_pass if vars_to_pass else None,
                 )
-                return result.get("result", "")
+                answer = result.get("result", "")
+                _record_delegation(adapter, agent_name, answer=answer)
+                return answer
 
             a2a_protocol = A2AProtocol(endpoint=endpoint, transport=transport)
             await a2a_protocol.connect()
@@ -104,10 +149,14 @@ def create_agent_delegation_func(
                     context={"thread_id": None},
                     variables=vars_to_pass,
                 )
-                return result.get("result", "")
+                answer = result.get("result", "")
+                _record_delegation(adapter, agent_name, answer=answer)
+                return answer
             finally:
                 await a2a_protocol.disconnect()
 
-        return f"Error: Unknown agent type for {agent_name}"
+        error_answer = f"Error: Unknown agent type for {agent_name}"
+        _record_delegation(adapter, agent_name, answer=error_answer)
+        return error_answer
 
     return delegate_to_agent

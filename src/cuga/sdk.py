@@ -68,7 +68,7 @@ Tool Approval Example (with HITL):
     ```
 """
 
-from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING
+from typing import List, Optional, Dict, Any, Union, TYPE_CHECKING, Tuple
 import uuid
 from loguru import logger
 from pydantic import BaseModel, Field
@@ -90,6 +90,12 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.langchain import (
     DirectLangChainToolsProvider,
 )
 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import ToolProviderInterface
+from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
+    configure_toolguard_provider,
+    ensure_toolguard_provider,
+    invalidate_toolguard_provider,
+    unwrap_tool_provider,
+)
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
 from cuga.backend.cuga_graph.nodes.answer.final_answer_agent.prompts.load_prompt import (
     FinalAnswerAppworldOutput,
@@ -169,10 +175,35 @@ class PoliciesManager:
         ```
     """
 
-    def __init__(self, agent: "CugaAgent"):
-        """Initialize policies manager with reference to agent."""
+    def __init__(self, agent: Union["CugaAgent", "CugaSupervisor"]):
+        """Initialize policies manager with reference to agent or supervisor."""
         self._agent = agent
         self._fs_sync = None
+
+    def _agent_tool_provider(self) -> Optional[ToolProviderInterface]:
+        """Return tool_provider when the host exposes one (CugaAgent, optional CugaSupervisor)."""
+        return getattr(self._agent, "tool_provider", None)
+
+    def _invalidate_toolguard_runtime(self) -> None:
+        """Invalidate ToolGuard runtime/cache if the agent provider supports it."""
+        provider = self._agent_tool_provider()
+        if provider is not None:
+            invalidate_toolguard_provider(provider)
+
+    def _attach_policy_storage_to_toolguard(self) -> None:
+        """Attach current policy storage to the ToolGuard provider wrapper if available."""
+        provider = self._agent_tool_provider()
+        if provider is None:
+            return
+        if (
+            hasattr(self._agent, "_policy_system")
+            and self._agent._policy_system is not None
+            and hasattr(self._agent._policy_system, "storage")
+        ):
+            configure_toolguard_provider(
+                provider,
+                policy_storage=self._agent._policy_system.storage,
+            )
 
     async def _ensure_policy_system(self) -> Optional[PolicyConfigurable]:
         """Ensure policy system is initialized if enabled.
@@ -259,6 +290,7 @@ class PoliciesManager:
                 logger.error(f"Failed to auto-load policies from {self._agent.cuga_folder}: {e}")
                 raise e
 
+        self._attach_policy_storage_to_toolguard()
         return self._agent._policy_system
 
     async def add_intent_guard(
@@ -536,8 +568,174 @@ class PoliciesManager:
             except Exception as e:
                 logger.warning(f"Failed to save policy to filesystem: {e}")
 
+        self._invalidate_toolguard_runtime()
         logger.info(f"Added Tool Guide policy: {policy.id}")
         return policy.id
+
+    async def update_tool_guide(
+        self,
+        policy_id: str,
+        name: Optional[str] = None,
+        description: Optional[str] = None,
+        guide_content: Optional[str] = None,
+    ) -> str:
+        """
+        Update an existing Tool Guide policy's name, description, and/or guide content.
+
+        Args:
+            policy_id: ID of the existing Tool Guide policy to update
+            name: New policy name (optional)
+            description: New policy description (optional)
+            guide_content: New guide content (optional)
+
+        Returns:
+            Policy ID
+
+        Raises:
+            ValueError: If policy not found or not a ToolGuide type
+
+        Example:
+            ```python
+            await agent.policies.update_tool_guide(
+                policy_id="tool_guide_abc123",
+                name="Updated Policy Name",
+                description="Updated description",
+                guide_content="## Updated guide content"
+            )
+            ```
+        """
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            logger.warning("Policy system is disabled - skipping update_tool_guide")
+            return None
+
+        # Retrieve the existing policy
+        existing_policy = await policy_system.storage.get_policy(policy_id)
+        if existing_policy is None:
+            raise ValueError(f"Policy with ID '{policy_id}' not found")
+
+        # Verify it's a ToolGuide policy
+        if not isinstance(existing_policy, ToolGuide):
+            raise ValueError(
+                f"Policy '{policy_id}' is not a ToolGuide policy (type: {type(existing_policy).__name__})"
+            )
+
+        # Create updated policy with new values (or keep existing if not provided)
+        updated_policy = ToolGuide(
+            id=existing_policy.id,
+            name=name if name is not None else existing_policy.name,
+            description=description if description is not None else existing_policy.description,
+            guide_content=guide_content if guide_content is not None else existing_policy.guide_content,
+            target_tools=existing_policy.target_tools,
+            target_apps=existing_policy.target_apps,
+            triggers=existing_policy.triggers,
+            tool_guards=existing_policy.tool_guards,
+            prepend=existing_policy.prepend,
+            priority=existing_policy.priority,
+            enabled=existing_policy.enabled,
+            metadata=existing_policy.metadata,
+        )
+
+        # Update in storage
+        await policy_system.storage.update_policy(updated_policy)
+        await policy_system.initialize()  # Reload policies
+
+        # Save to filesystem if sync is enabled
+        if self._fs_sync:
+            try:
+                self._fs_sync.save_policy_to_file(updated_policy)
+                logger.debug(f"Saved updated policy '{policy_id}' to filesystem")
+            except Exception as e:
+                logger.warning(f"Failed to save updated policy to filesystem: {e}")
+
+        self._invalidate_toolguard_runtime()
+        logger.info(f"Updated Tool Guide policy '{policy_id}'")
+        return policy_id
+
+    async def update_tool_guard(
+        self,
+        policy_id: str,
+        tool_guards: Dict[str, Dict[str, Any]],
+    ) -> str:
+        """
+        Update an existing Tool Guide policy with tool_guards.
+
+        Args:
+            policy_id: ID of the existing Tool Guide policy to update
+            tool_guards: Dict of tool guards (key: tool_name, value: dict with 'violating_examples', 'compliance_examples', 'policy_code')
+
+        Returns:
+            Policy ID
+
+        Raises:
+            ValueError: If policy not found or not a ToolGuide type
+
+        Example:
+            ```python
+            await agent.policies.update_tool_guard(
+                policy_id="tool_guide_abc123",
+                tool_guards={
+                    "delete_file": {
+                        "description": "Guard rules for file deletion",
+                        "violating_examples": ["Delete system files"],
+                        "compliance_examples": ["Delete user files with confirmation"],
+                        "policy_code": ""
+                    }
+                }
+            )
+            ```
+        """
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            logger.warning("Policy system is disabled - skipping update_tool_guard")
+            return None
+
+        # Retrieve the existing policy
+        existing_policy = await policy_system.storage.get_policy(policy_id)
+        if existing_policy is None:
+            raise ValueError(f"Policy with ID '{policy_id}' not found")
+
+        # Verify it's a ToolGuide policy
+        if not isinstance(existing_policy, ToolGuide):
+            raise ValueError(
+                f"Policy '{policy_id}' is not a ToolGuide policy (type: {type(existing_policy).__name__})"
+            )
+
+        from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_policy_updates import merge_tool_guards
+
+        tool_guards_obj = merge_tool_guards(existing_policy.tool_guards, tool_guards)
+
+        # Create updated policy with merged tool_guards
+        updated_policy = ToolGuide(
+            id=existing_policy.id,
+            name=existing_policy.name,
+            description=existing_policy.description,
+            triggers=existing_policy.triggers,
+            target_tools=existing_policy.target_tools,
+            target_apps=existing_policy.target_apps,
+            guide_content=existing_policy.guide_content,
+            tool_guards=tool_guards_obj,
+            prepend=existing_policy.prepend,
+            priority=existing_policy.priority,
+            enabled=existing_policy.enabled,
+            metadata=existing_policy.metadata,
+        )
+
+        # Update in storage
+        await policy_system.storage.update_policy(updated_policy)
+        await policy_system.initialize()  # Reload policies
+
+        # Save to filesystem if sync is enabled
+        if self._fs_sync:
+            try:
+                self._fs_sync.save_policy_to_file(updated_policy)
+                logger.debug(f"Saved updated policy '{policy_id}' to filesystem")
+            except Exception as e:
+                logger.warning(f"Failed to save updated policy to filesystem: {e}")
+
+        self._invalidate_toolguard_runtime()
+        logger.info(f"Updated Tool Guide policy '{policy_id}' with tool_guards")
+        return policy_id
 
     async def add_tool_approval(
         self,
@@ -754,6 +952,7 @@ class PoliciesManager:
                 except Exception as e:
                     logger.warning(f"Failed to delete policy from filesystem: {e}")
 
+            self._invalidate_toolguard_runtime()
             logger.info(f"Deleted policy: {policy_id}")
             return True
         except Exception as e:
@@ -877,6 +1076,7 @@ class PoliciesManager:
 
         # Reload policies in the system
         await policy_system.initialize()
+        self._invalidate_toolguard_runtime()
 
         logger.info(f"✅ Loaded {result['count']} policies from {file_path} (enabled: {result['enabled']})")
 
@@ -912,6 +1112,7 @@ class PoliciesManager:
                 await policy_system.storage.delete_policy(policy.id)
 
             await policy_system.initialize()
+            self._invalidate_toolguard_runtime()
             logger.info(f"Cleared {len(policies)} policies from storage")
             return True
         except Exception as e:
@@ -1013,6 +1214,7 @@ class PoliciesManager:
 
         # Reinitialize policy system after loading
         await policy_system.initialize()
+        self._invalidate_toolguard_runtime()
 
         if result['errors']:
             logger.warning(f"Encountered {len(result['errors'])} errors while loading policies:")
@@ -1117,11 +1319,11 @@ class PoliciesManager:
         policy_system = await self._ensure_policy_system()
         if policy_system is None:
             logger.warning("Policy system is disabled - skipping sync")
-            return {"loaded": 0, "removed": 0, "errors": ["Policy system is disabled"]}
+            return {"loaded": 0, "removed": 0, "errors": ["Policy system is disabled"], "files": []}
 
         if not self._fs_sync:
             logger.warning("Filesystem sync not initialized - skipping")
-            return {"loaded": 0, "removed": 0, "errors": ["Filesystem sync not initialized"]}
+            return {"loaded": 0, "removed": 0, "errors": ["Filesystem sync not initialized"], "files": []}
 
         try:
             # Load policies from filesystem
@@ -1138,7 +1340,183 @@ class PoliciesManager:
             }
         except Exception as e:
             logger.error(f"Failed to sync from filesystem: {e}")
-            return {"loaded": 0, "removed": 0, "errors": [str(e)]}
+            return {
+                "loaded": 0,
+                "removed": 0,
+                "errors": [str(e)],
+                "files": [],
+            }
+
+    async def generate_tool_guard_examples(
+        self, policy_id: str, target_tool: str
+    ) -> Tuple[List[str], List[str]]:
+        """
+        Generate violating and compliance examples for a specific tool in a policy.
+
+        This method uses the ToolGuardManager to generate examples that demonstrate
+        both violations and compliance with the policy guidelines for a specific tool.
+
+        Args:
+            policy_id: The ID of the policy to generate examples for
+            target_tool: The specific tool name to generate examples for
+
+        Returns:
+            Tuple of (violating_examples, compliance_examples)
+
+        Raises:
+            ValueError: If policy not found, not a ToolGuide, or target_tool not in policy
+            RuntimeError: If ToolGuardManager initialization fails
+
+        Example:
+            ```python
+            agent = CugaAgent(tools=[delete_file])
+
+            # Add a tool guide policy
+            policy_id = await agent.policies.add_tool_guide(
+                name="File Safety",
+                target_tools=["delete_file"],
+                content="Never delete system files"
+            )
+
+            # Generate examples
+            violating, compliance = await agent.policies.generate_tool_guard_examples(
+                policy_id=policy_id,
+                target_tool="delete_file"
+            )
+
+            print(f"Violating: {violating}")
+            print(f"Compliance: {compliance}")
+            ```
+        """
+        from cuga.backend.cuga_graph.policy.tool_guard.manager import ToolGuardManager
+        from cuga.backend.cuga_graph.policy.models import PolicyType
+
+        # Ensure policy system is initialized
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            raise RuntimeError("Policy system is disabled")
+
+        # Get the policy
+        policy_data = await self.get(policy_id)
+        if policy_data is None:
+            raise ValueError(f"Policy with ID '{policy_id}' not found")
+
+        policy = policy_data.get('policy')
+        if policy is None:
+            raise ValueError(f"Could not retrieve policy object for ID '{policy_id}'")
+
+        # Validate policy type
+        if policy.type != PolicyType.TOOL_GUIDE:
+            raise ValueError(
+                f"Policy must be of type 'tool_guide', got '{policy.type}'. "
+                f"Only tool_guide policies can generate examples."
+            )
+
+        # Create and initialize ToolGuardManager
+        manager = ToolGuardManager(self._agent)
+        await manager.initialize()
+
+        # Generate examples using the manager
+        violating_examples, compliance_examples = await manager.generate_examples(
+            policy=policy, target_tool=target_tool
+        )
+
+        return violating_examples, compliance_examples
+
+    async def generate_tool_guard_code(
+        self, policy_id: str, target_tool: str, app_name: Optional[str] = None
+    ) -> str:
+        """
+        Generate guard code for a specific tool in a policy.
+
+        This method uses the ToolGuardManager to generate executable guard code
+        that validates tool usage compliance with the policy guidelines.
+
+        Args:
+            policy_id: The ID of the policy to generate guard code for
+            target_tool: The specific tool name to generate guard code for
+            app_name: Application name for the generated code. If None, will be auto-detected
+                     from provider apps/tools when unambiguous
+
+        Returns:
+            String containing the generated guard code
+
+        Raises:
+            ValueError: If policy not found, not a ToolGuide, target_tool not in policy,
+                       or if the policy doesn't have examples for the target tool
+            RuntimeError: If ToolGuardManager initialization fails
+
+        Example:
+            ```python
+            agent = CugaAgent(tools=[delete_file])
+
+            # Add a tool guide policy with examples
+            policy_id = await agent.policies.add_tool_guide(
+                name="File Safety",
+                target_tools=["delete_file"],
+                content="Never delete system files"
+            )
+
+            # Generate examples first
+            violating, compliance = await agent.policies.generate_tool_guard_examples(
+                policy_id=policy_id,
+                target_tool="delete_file"
+            )
+
+            # Update policy with examples
+            await agent.policies.update_tool_guard(
+                policy_id=policy_id,
+                tool_guards={
+                    "delete_file": {
+                        "violating_examples": violating,
+                        "compliance_examples": compliance
+                    }
+                }
+            )
+
+            # Generate guard code (app_name auto-detected from tool metadata)
+            guard_code = await agent.policies.generate_tool_guard_code(
+                policy_id=policy_id,
+                target_tool="delete_file"
+            )
+
+            print(f"Generated guard code:\n{guard_code}")
+            ```
+        """
+        from cuga.backend.cuga_graph.policy.tool_guard.manager import ToolGuardManager
+        from cuga.backend.cuga_graph.policy.models import PolicyType
+
+        # Ensure policy system is initialized
+        policy_system = await self._ensure_policy_system()
+        if policy_system is None:
+            raise RuntimeError("Policy system is disabled")
+
+        # Get the policy
+        policy_data = await self.get(policy_id)
+        if policy_data is None:
+            raise ValueError(f"Policy with ID '{policy_id}' not found")
+
+        policy = policy_data.get('policy')
+        if policy is None:
+            raise ValueError(f"Could not retrieve policy object for ID '{policy_id}'")
+
+        # Validate policy type
+        if policy.type != PolicyType.TOOL_GUIDE:
+            raise ValueError(
+                f"Policy must be of type 'tool_guide', got '{policy.type}'. "
+                f"Only tool_guide policies can generate guard code."
+            )
+
+        # Create and initialize ToolGuardManager
+        manager = ToolGuardManager(self._agent)
+        await manager.initialize()
+
+        # Generate guard code using the manager
+        guard_code = await manager.generate_guard_code(
+            policy=policy, target_tool=target_tool, app_name=app_name
+        )
+
+        return guard_code
 
 
 class CugaAgent:
@@ -1225,6 +1603,8 @@ class CugaAgent:
         reset_policy_storage: bool = False,
         filesystem_sync: Optional[bool] = None,
         enable_knowledge: Optional[bool] = None,
+        enable_skills: Optional[bool] = None,
+        skills_folder: Optional[str] = None,
     ):
         """
         Initialize the CUGA Agent.
@@ -1241,6 +1621,8 @@ class CugaAgent:
             reset_policy_storage: If True, clears all existing policies from storage on init
             filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
             enable_knowledge: If True, enable knowledge tools; False to disable; None to auto-detect from settings
+            enable_skills: If True, enable agent skills (SKILL.md / load_skill). None = auto from settings.
+            skills_folder: Workspace root or `.cuga` folder containing `skills/`. Defaults to cwd / CUGA_FOLDER env var.
 
         Example with tool approval policy:
             ```python
@@ -1287,16 +1669,29 @@ class CugaAgent:
         # Knowledge configuration
         self._enable_knowledge = enable_knowledge  # None = auto from settings
 
-        # Setup tool provider
+        # Skills configuration
+        self._enable_skills = enable_skills  # None = auto from settings
+        self._skills_folder = skills_folder  # None = use CUGA_FOLDER / cwd
+
+        # Setup tool provider. ToolGuard is installed immediately as a transparent
+        # provider-level decorator so create-agent-first, add-guard-later flows work.
+        policy_storage = self._policy_system.storage if self._policy_system is not None else None
         if tool_provider:
-            self.tool_provider = tool_provider
+            base_provider = tool_provider
             logger.info("Using custom tool provider")
         elif tools:
-            self.tool_provider = DirectLangChainToolsProvider(tools=tools, app_name="runtime_tools")
+            base_provider = DirectLangChainToolsProvider(tools=tools, app_name="runtime_tools")
             logger.info(f"Created DirectLangChainToolsProvider with {len(tools)} tools")
         else:
-            self.tool_provider = DirectLangChainToolsProvider(tools=[], app_name="runtime_tools")
+            base_provider = DirectLangChainToolsProvider(tools=[], app_name="runtime_tools")
             logger.warning("No tools provided - agent will have limited capabilities")
+
+        self.tool_provider = ensure_toolguard_provider(
+            base_provider,
+            policy_storage=policy_storage,
+            cuga_folder=self.cuga_folder,
+            enabled=settings.policy.enabled,
+        )
 
         # Track knowledge auto-injection (lazy — runs on first graph build)
         self._knowledge_auto_injected = False
@@ -1401,11 +1796,16 @@ class CugaAgent:
                 return []
             return list(value) if isinstance(value, list) else [value]
 
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import is_langfuse_callback_handler
+        from cuga.backend.cuga_graph.utils.langfuse_tracing import (
+            collect_langfuse_callbacks_from_config,
+            is_langfuse_callback_handler,
+            sync_langfuse_callbacks_from_config,
+        )
 
-        existing = _as_list(run_config.get("callbacks"))
+        caller_callbacks = run_config.get("callbacks")
+        existing = _as_list(caller_callbacks)
         trace_id = run_config["configurable"].get("langfuse_trace_id")
-        per_call_langfuse = any(is_langfuse_callback_handler(cb) for cb in existing)
+        per_call_langfuse = bool(collect_langfuse_callbacks_from_config({"callbacks": caller_callbacks}))
 
         if trace_id or per_call_langfuse:
             built_callbacks = [cb for cb in built_callbacks if not is_langfuse_callback_handler(cb)]
@@ -1413,8 +1813,6 @@ class CugaAgent:
         merged = built_callbacks + existing
         run_config["callbacks"] = merged
         run_config["configurable"]["callbacks"] = merged
-
-        from cuga.backend.cuga_graph.utils.langfuse_tracing import sync_langfuse_callbacks_from_config
 
         sync_langfuse_callbacks_from_config(run_config)
 
@@ -1436,8 +1834,9 @@ class CugaAgent:
                     kb_config = KnowledgeConfig.from_settings(settings)
                     kb_enabled = kb_config.enabled
 
-                if kb_enabled and isinstance(self.tool_provider, DirectLangChainToolsProvider):
-                    existing_names = {t.name for t in self.tool_provider.tools}
+                provider_for_knowledge = unwrap_tool_provider(self.tool_provider)
+                if kb_enabled and isinstance(provider_for_knowledge, DirectLangChainToolsProvider):
+                    existing_names = {t.name for t in provider_for_knowledge.tools}
                     knowledge_tools = self.knowledge.get_langchain_tools()
                     new_tools = [t for t in knowledge_tools if t.name not in existing_names]
                     if new_tools:
@@ -1550,7 +1949,6 @@ class CugaAgent:
                     # User denied - set final answer and end
                     policy_name = state.cuga_lite_metadata.get("policy_name", "Tool Approval Policy")
                     state.final_answer = f"❌ **Execution Cancelled**\n\nYou denied the execution of restricted tools required by **{policy_name}**.\n\nThe agent will not proceed with this task."
-                    state.execution_complete = True
                     # Set sender to CugaLite so FinalAnswerAgent handles it properly
                     state.sender = NodeNames.CUGA_LITE
                     return Command(update=state.model_dump(), goto=NodeNames.FINAL_ANSWER_AGENT)
@@ -1653,7 +2051,11 @@ class CugaAgent:
             from cuga.config import settings
 
             config = KnowledgeConfig.from_settings(settings)
-            engine = KnowledgeEngine(config)
+            from cuga.backend.knowledge_llm_bridge import CugaChatGenerator
+
+            # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
+            # lazy + inert unless a profile enables search_query_transform.
+            engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:
@@ -1823,6 +2225,12 @@ class CugaAgent:
         # Pass track_tool_calls flag via configurable
         run_config["configurable"]["track_tool_calls"] = track_tool_calls
 
+        # Pass skills configuration via configurable (overrides settings when set)
+        if self._enable_skills is not None:
+            run_config["configurable"]["skills_enabled"] = self._enable_skills
+        if self._skills_folder is not None:
+            run_config["configurable"]["skills_folder"] = str(self._skills_folder)
+
         # Ensure graph is created (needed for state retrieval)
         _ = self.graph
 
@@ -1848,15 +2256,18 @@ class CugaAgent:
             # Add callbacks (TokenUsageTracker + user callbacks merged with per-call callbacks)
             self._apply_callbacks(run_config)
 
-            # If action_response provided, update state with it
+            from langgraph.types import Command
+
             if action_response:
-                self.graph.update_state(run_config, {"hitl_response": action_response})
                 logger.info(
                     f"Resuming execution after HITL response (action_id: {action_response.action_id})"
                 )
-
-            # Resume by invoking with None (LangGraph pattern for resuming)
-            result = await self.graph.ainvoke(None, config=run_config)
+                result = await self.graph.ainvoke(
+                    Command(resume=action_response.model_dump()),
+                    config=run_config,
+                )
+            else:
+                result = await self.graph.ainvoke(None, config=run_config)
 
             # Extract final answer
             final_answer = result.get("final_answer", "")
@@ -2001,6 +2412,21 @@ class CugaAgent:
             error_msg = result['error']
             final_answer = f"Error: {error_msg}"
 
+        # Fallback: if final_answer is still empty, look at the last non-empty AI message.
+        # Reasoning models sometimes return content='' with the answer only in
+        # additional_kwargs['reasoning_content'], so check both fields.
+        if not final_answer:
+            for msg in reversed(result.get("chat_messages", [])):
+                if getattr(msg, "type", None) != "ai":
+                    continue
+                text = getattr(msg, "content", "") or (
+                    getattr(msg, "additional_kwargs", {}).get("reasoning_content", "")
+                )
+                if text:
+                    final_answer = text
+                    logger.debug("final_answer extracted from last AI chat message (fallback)")
+                    break
+
         # Check if graph interrupted for approval
         if not final_answer:
             try:
@@ -2113,6 +2539,12 @@ class CugaAgent:
         # Setup config (shallow-copied so we don't mutate the caller's dict)
         run_config = self._prepare_run_config(config)
 
+        # Pass skills configuration via configurable (overrides settings when set)
+        if self._enable_skills is not None:
+            run_config["configurable"]["skills_enabled"] = self._enable_skills
+        if self._skills_folder is not None:
+            run_config["configurable"]["skills_folder"] = str(self._skills_folder)
+
         # Handle resume case (message is None or action_response is provided)
         if message is None or action_response is not None:
             if not thread_id:
@@ -2135,14 +2567,14 @@ class CugaAgent:
             # Add knowledge engine for awareness injection
             self._inject_knowledge_to_config(run_config)
 
-            # If action_response provided, update state with it
+            from langgraph.types import Command
+
+            resume_input = Command(resume=action_response.model_dump()) if action_response else None
             if action_response:
-                self.graph.update_state(run_config, {"hitl_response": action_response})
                 logger.info(f"Streaming resume after HITL response (action_id: {action_response.action_id})")
 
-            # Stream resume by invoking with None
             async for state in self.graph.astream(
-                None,
+                resume_input,
                 config=run_config,
                 stream_mode="updates",
                 subgraphs=True,
@@ -2199,8 +2631,9 @@ class CugaAgent:
         """
         Add a tool to the agent dynamically.
 
-        Note: This only works if using DirectLangChainToolsProvider.
-        The graph will need to be recreated on next invocation.
+        Note: This only works if using DirectLangChainToolsProvider directly or
+        wrapped by ToolGuardingToolProvider. The graph will need to be recreated
+        on next invocation.
 
         Args:
             tool: LangChain tool to add
@@ -2218,15 +2651,19 @@ class CugaAgent:
             result = await agent.invoke("Use new_tool with 5")
             ```
         """
-        if isinstance(self.tool_provider, DirectLangChainToolsProvider):
+        base_provider = unwrap_tool_provider(self.tool_provider)
+        if isinstance(base_provider, DirectLangChainToolsProvider) and hasattr(
+            self.tool_provider, "add_tool"
+        ):
             self.tool_provider.add_tool(tool)
+            invalidate_toolguard_provider(self.tool_provider)
             # Reset graph so it gets recreated with new tools
             self._graph = None
             self._compiled_graph = None
             logger.info(f"Added tool '{tool.name}' - graph will be recreated on next invocation")
         else:
             raise ValueError(
-                "add_tool() only works with DirectLangChainToolsProvider. "
+                "add_tool() only works with DirectLangChainToolsProvider or compatible wrapped providers. "
                 "Use a custom tool provider for dynamic tool management."
             )
 
@@ -2307,6 +2744,12 @@ class CugaSupervisor:
         callbacks: Optional[List[BaseCallbackHandler]] = None,
         cuga_lite_max_steps: Optional[int] = None,
         special_instructions: Optional[str] = None,
+        tool_provider: Optional[ToolProviderInterface] = None,
+        policy_system: Optional[PolicyConfigurable] = None,
+        cuga_folder: Optional[str] = None,
+        auto_load_policies: Optional[bool] = None,
+        reset_policy_storage: bool = False,
+        filesystem_sync: Optional[bool] = None,
     ):
         """
         Initialize supervisor.
@@ -2323,7 +2766,15 @@ class CugaSupervisor:
             special_instructions: Optional workflow instructions injected into the supervisor's
                 system prompt. Use this to guide the supervisor's multi-turn behaviour
                 (e.g. "search first, then present results, then wait for user selection").
+            tool_provider: Optional provider for MCP/external tools the supervisor calls directly
+            policy_system: Optional PolicyConfigurable instance (auto-created if not provided)
+            cuga_folder: Path to .cuga folder containing policy markdown files
+            auto_load_policies: If True, automatically loads policies from cuga_folder on first invoke
+            reset_policy_storage: If True, clears all existing policies from storage on init
+            filesystem_sync: If True, saves policies to .cuga when added/updated (default: True)
         """
+        from cuga.config import settings
+
         self._agents = agents or {}
         self._model = model
         self._description = description
@@ -2333,6 +2784,28 @@ class CugaSupervisor:
         self._graph = None
         self._compiled_graph = None
         self._supervisor_state = None
+        self._policy_system = policy_system
+        self._policies_manager = None
+
+        self.cuga_folder = cuga_folder if cuga_folder is not None else settings.policy.cuga_folder
+        self._auto_load_policies = (
+            auto_load_policies if auto_load_policies is not None else settings.policy.auto_load_policies
+        )
+        self._filesystem_sync = (
+            filesystem_sync if filesystem_sync is not None else settings.policy.filesystem_sync
+        )
+        self._reset_policy_storage = reset_policy_storage
+
+        if tool_provider is not None:
+            policy_storage = self._policy_system.storage if self._policy_system is not None else None
+            self.tool_provider = ensure_toolguard_provider(
+                tool_provider,
+                policy_storage=policy_storage,
+                cuga_folder=self.cuga_folder,
+                enabled=settings.policy.enabled,
+            )
+        else:
+            self.tool_provider = None
 
         # Initialize model from settings if not provided
         if not self._model:
@@ -2367,6 +2840,122 @@ class CugaSupervisor:
         )
 
     @property
+    def policies(self) -> PoliciesManager:
+        """Get the policies manager for this supervisor."""
+        if self._policies_manager is None:
+            self._policies_manager = PoliciesManager(self)
+        return self._policies_manager
+
+    async def initialize(self):
+        """Initialize policy system and other lazy resources."""
+        # Honor reset_policy_storage even without auto-load (parity with CugaAgent.initialize):
+        # _ensure_policy_system clears storage when _reset_policy_storage is set.
+        needs_init = self._auto_load_policies and (
+            not hasattr(self, "_policy_system") or self._policy_system is None
+        )
+        if needs_init or self._reset_policy_storage:
+            await self.policies._ensure_policy_system()
+            logger.debug("Supervisor policy system initialized during initialize()")
+
+    def _create_supervisor_hitl_wrapper_graph(self):
+        """Wrap the supervisor subgraph with HITL + output-formatter callback (parity with CugaAgent)."""
+        from typing import Literal
+
+        from langgraph.graph import END, START, StateGraph
+        from langgraph.types import Command
+
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
+            create_cuga_supervisor_graph,
+        )
+        from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
+            CugaSupervisorState,
+        )
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.suggest_actions import SuggestHumanActions
+        from cuga.backend.cuga_graph.nodes.human_in_the_loop.wait_for_response import WaitForResponse
+        from cuga.backend.cuga_graph.utils.nodes_names import ActionIds, NodeNames
+
+        callback_name = "SupervisorSDKCallback"
+
+        supervisor_subgraph = create_cuga_supervisor_graph(
+            supervisor_model=self._model,
+            agents=self._agents,
+            special_instructions=self._special_instructions,
+            tool_provider=self.tool_provider,
+            callbacks=self._callbacks,
+        )
+        compiled_subgraph = supervisor_subgraph.compile()
+
+        async def supervisor_sdk_callback(
+            state: CugaSupervisorState,
+            config: Optional[RunnableConfig] = None,
+        ) -> Command[Literal["SupervisorSubgraph", "SuggestHumanActions", "__end__"]]:
+            if state.sender == NodeNames.WAIT_FOR_RESPONSE and state.hitl_response:
+                if state.hitl_response.action_id == ActionIds.TOOL_APPROVAL:
+                    if state.hitl_response.confirmed:
+                        md = dict(state.supervisor_metadata or {})
+                        md.update({"approval_required": False, "user_approved": True})
+                        state.supervisor_metadata = md
+                        state.hitl_action = None
+                        state.hitl_response = None
+                        state.final_answer = ""
+                        state.execution_complete = False
+                        state.sender = callback_name
+                        return Command(update=state.model_dump(), goto="SupervisorSubgraph")
+                    policy_name = (state.supervisor_metadata or {}).get("policy_name", "Tool Approval")
+                    state.final_answer = (
+                        f"❌ **Execution Cancelled**\n\nYou denied execution required by "
+                        f"**{policy_name}**. The supervisor will not proceed with this task."
+                    )
+                    state.execution_complete = True
+                    state.hitl_action = None
+                    state.hitl_response = None
+                    state.sender = callback_name
+                    return Command(update=state.model_dump(), goto=END)
+
+            if state.hitl_action and state.hitl_action.action_id == ActionIds.TOOL_APPROVAL:
+                state.sender = callback_name
+                return Command(update=state.model_dump(), goto=NodeNames.SUGGEST_HUMAN_ACTIONS)
+
+            from cuga.backend.cuga_graph.policy.output_formatter_utils import apply_output_formatter_policies
+
+            await apply_output_formatter_policies(
+                state,
+                config,
+                context="Supervisor SDK Callback",
+                metadata_key="supervisor_metadata",
+            )
+
+            state.sender = callback_name
+            return Command(update=state.model_dump(), goto=END)
+
+        suggest_actions = SuggestHumanActions()
+        wait_for_response = WaitForResponse()
+
+        async def dummy_route_to_callback(
+            state: CugaSupervisorState,
+            config: Optional[RunnableConfig] = None,
+        ) -> Command:
+            return Command(update=state.model_dump(), goto=callback_name)
+
+        wrapper = StateGraph(CugaSupervisorState)
+        wrapper.add_node("SupervisorSubgraph", compiled_subgraph)
+        wrapper.add_node(callback_name, supervisor_sdk_callback)
+        wrapper.add_node(suggest_actions.name, suggest_actions.node)
+        wrapper.add_node(wait_for_response.name, wait_for_response.node)
+        for node_name in (
+            "FinalAnswerAgent",
+            NodeNames.CHAT_AGENT,
+            NodeNames.API_PLANNER_AGENT,
+            NodeNames.CUGA_LITE,
+        ):
+            wrapper.add_node(node_name, dummy_route_to_callback)
+
+        wrapper.add_edge(START, "SupervisorSubgraph")
+        wrapper.add_edge("SupervisorSubgraph", callback_name)
+
+        return wrapper
+
+    @property
     def graph(self):
         """
         Get the underlying LangGraph StateGraph (compiled).
@@ -2375,22 +2964,19 @@ class CugaSupervisor:
             Compiled LangGraph graph
         """
         if self._compiled_graph is None:
-            from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
-                create_cuga_supervisor_graph,
-            )
             from langgraph.checkpoint.memory import MemorySaver
 
-            # Create supervisor subgraph
-            supervisor_subgraph = create_cuga_supervisor_graph(
-                supervisor_model=self._model,
-                agents=self._agents,
-                special_instructions=self._special_instructions,
-            )
+            from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
 
-            # Compile with checkpointer
+            if self._graph is None:
+                self._graph = self._create_supervisor_hitl_wrapper_graph()
+
             checkpointer = MemorySaver()
-            self._compiled_graph = supervisor_subgraph.compile(checkpointer=checkpointer)
-            logger.debug("Compiled supervisor graph with checkpointer")
+            self._compiled_graph = self._graph.compile(
+                checkpointer=checkpointer,
+                interrupt_before=[NodeNames.WAIT_FOR_RESPONSE],
+            )
+            logger.debug("Compiled supervisor graph with HITL wrapper and checkpointer")
 
         return self._compiled_graph
 
@@ -2414,34 +3000,54 @@ class CugaSupervisor:
         # Initialize OpenLit observability (idempotent, no-op if disabled or not installed)
         init_openlit()
 
+        needs_init = self._auto_load_policies and (
+            not hasattr(self, "_policy_system") or self._policy_system is None
+        )
+        if needs_init or self._reset_policy_storage:
+            await self.policies._ensure_policy_system()
+            logger.debug("Supervisor policy system initialized during invoke()")
+
         import uuid
         from langchain_core.messages import HumanMessage
 
-        # Setup config
-        if not thread_id:
-            thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
-            logger.debug(f"Auto-generated thread_id: {thread_id}")
+        is_resume = message is None or action_response is not None
+        if is_resume and not thread_id:
+            raise ValueError(
+                "thread_id is required when resuming execution (message=None or action_response provided)"
+            )
 
-        config = {"configurable": {"thread_id": thread_id}}
+        config = {"configurable": {}}
         if self._callbacks:
             config["callbacks"] = self._callbacks
+        if self._policy_system:
+            config["configurable"]["policy_system"] = self._policy_system
 
         # Handle resume case
-        if message is None or action_response is not None:
-            if not thread_id:
-                raise ValueError("thread_id is required when resuming execution")
+        if is_resume:
+            config["configurable"]["thread_id"] = thread_id
 
             # Set session.id for OpenLit observability (if enabled)
             set_session_attribute(thread_id)
 
+            from langgraph.types import Command
+
             if action_response:
-                self.graph.update_state(config, {"hitl_response": action_response})
                 logger.info(
                     f"Resuming execution after HITL response (action_id: {action_response.action_id})"
                 )
-
-            result = await self.graph.ainvoke(None, config=config)
+                result = await self.graph.ainvoke(
+                    Command(resume=action_response.model_dump()),
+                    config=config,
+                )
+            else:
+                result = await self.graph.ainvoke(None, config=config)
         else:
+            if not thread_id:
+                thread_id = f"supervisor_{uuid.uuid4().hex[:8]}"
+                logger.debug(f"Auto-generated thread_id: {thread_id}")
+
+            config["configurable"]["thread_id"] = thread_id
+
             # Normal invocation
             from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_state import (
                 CugaSupervisorState,
@@ -2471,6 +3077,18 @@ class CugaSupervisor:
         if not final_answer and result.get("error"):
             error_msg = result["error"]
             final_answer = f"Error: {error_msg}"
+
+        if not final_answer:
+            try:
+                state = self.graph.get_state(config)
+                if state.next:
+                    logger.info("Supervisor graph interrupted for human-in-the-loop interaction")
+                    final_answer = (
+                        "⏸️ Execution paused for approval. "
+                        "Use supervisor.invoke(None, thread_id=..., action_response=...) to resume."
+                    )
+            except Exception as e:
+                logger.debug(f"Could not check supervisor interrupt state: {e}")
 
         # Get tool calls if available
         tool_calls = (

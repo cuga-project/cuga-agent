@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from pathlib import Path
 from typing import Any, Callable, Optional
 
 from langchain_core.runnables import RunnableConfig
@@ -71,6 +70,21 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         Disable few-shots entirely via ``advanced_features.cuga_lite_enable_few_shots`` in settings.toml
         or ``cuga_lite_enable_few_shots`` in configurable (skips prefix chat few-shots).
         """
+        # Reset cross-task state at the start of a fresh conversation.
+        # adapter._task_todos_ref is closure-scoped per compiled graph and
+        # outlives a single .invoke(); state.task_todos can also persist via a
+        # thread-keyed checkpointer. We detect "fresh conversation" by message
+        # count (<=1 means just the user's initial message).
+        # The closure ref is cleared in place; state.task_todos is propagated
+        # via every Command.update returned below because in-place state
+        # mutation does not persist through LangGraph.
+        # Note: this does not cover "new task as a follow-up turn on the same
+        # thread" (chat_messages > 1 with a topic change) — tracked separately.
+        is_fresh_conversation = len(state.chat_messages or []) <= 1
+        if is_fresh_conversation:
+            adapter._task_todos_ref.clear()
+            state.task_todos = None
+
         configurable = config.get("configurable", {}) if config else {}
         enable_todos = (
             configurable.get("enable_todos")
@@ -109,6 +123,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
             # If policy returned a command (e.g., BLOCK_INTENT), execute it immediately
             if command:
+                # Propagate the task_todos reset through the policy-returned
+                # Command so LangGraph persists it; the in-place state mutation
+                # above does not survive the node return.
+                if is_fresh_conversation and isinstance(getattr(command, "update", None), dict):
+                    command.update.setdefault("task_todos", None)
                 return command
 
             # If policy returned metadata (e.g., playbook guidance), store it
@@ -291,18 +310,21 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         skill_entries = []
         skills_prompt_section = ""
         skills_enabled = False
-        configurable_special = (
-            (config or {}).get("configurable", {}).get("special_instructions") if config else None
+        _cfg = config.get("configurable", {}) if config else {}
+        configurable_special = _cfg.get("special_instructions")
+        effective_special = "\n\n".join(
+            part for part in (adapter._special_instructions, configurable_special) if part
         )
-        effective_special = adapter._special_instructions or configurable_special or ""
-        # Skills and agent-spawning are parent-agent concerns. Skip both when running
-        # inside a sub-agent so the sub-agent doesn't inherit spawn/skill tools and
-        # inadvertently trigger recursive spawning.
+        _cfg_skills = _cfg.get("skills_enabled")
+        skills_cfg_on = _cfg_skills if _cfg_skills is not None else getattr(settings.skills, "enabled", False)
+        cuga_folder_for_skills = _cfg.get("skills_folder") or os.getenv(
+            "CUGA_FOLDER", settings.policy.cuga_folder
+        )
         from cuga.backend.agent_spawn.runtime import _spawn_depth as _agent_spawn_depth
 
         _is_subagent = _agent_spawn_depth.get() > 0
-        skills_cfg_on = getattr(settings.skills, "enabled", False) and not _is_subagent
-        cuga_folder_for_skills = os.getenv("CUGA_FOLDER", settings.policy.cuga_folder)
+        if _is_subagent:
+            skills_cfg_on = False
         _skill_callable_tools: list = []
         if skills_cfg_on:
             skill_entries = discover_skills(cuga_folder_for_skills)
@@ -321,19 +343,13 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                         adapter._tools_context[_sk_tool.name] = make_tool_awaitable(_sk_fn)
                 skills_prompt_section = format_available_skills_block(skill_registry)
                 skills_enabled = True
-                logger.info(
-                    f"Loaded {len(skill_entries)} agent skill(s) from .agents/skills and "
-                    f"~/.config/agents/skills with legacy {cuga_folder_for_skills}/skills and "
-                    "~/.config/cuga/skills fallbacks"
-                )
 
         agent_spawn_tools = []
         agents_prompt_section = ""
         agents_enabled = False
 
         # Resolve thread_id early for per-thread workspace selection.
-        _cfg_for_thread = config.get("configurable", {}) if config else {}
-        _runtime_thread_id_for_fs = _cfg_for_thread.get("thread_id") or state.thread_id or adapter._thread_id
+        _runtime_thread_id_for_fs = _cfg.get("thread_id") or state.thread_id or adapter._thread_id
 
         # Update tools context with all execution tools.
         # Wrap to make awaitable (agent always uses await). Filesystem path
@@ -522,6 +538,11 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         # Inject knowledge base awareness if knowledge tools are available
         effective_instructions = adapter._instructions
+        upload_context = _cfg.get("upload_context")
+        if upload_context:
+            effective_instructions = (
+                f"{upload_context}\n\n{effective_instructions}" if effective_instructions else upload_context
+            )
         # Detect knowledge tools — works for both registry (app named
         # "knowledge") and SDK mode (tools under "runtime_tools")
         has_knowledge_tools = any(getattr(app, "name", "") == "knowledge" for app in (apps_for_prompt or []))
@@ -542,8 +563,7 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         if has_knowledge_tools:
             try:
                 from cuga.backend.knowledge.awareness import (
-                    get_knowledge_summary,
-                    format_knowledge_context,
+                    assemble_system_prompt_section,
                     get_engine_from_app_state,
                 )
 
@@ -567,71 +587,59 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
                 if not agent_id:
                     agent_id = "cuga-default"
                 awareness_thread_id = cfg.get("thread_id")
-                kb_ctx = format_knowledge_context(
-                    agent_id,
-                    awareness_thread_id,
-                    engine=engine,
-                    agent_config_hash=knowledge_config_hash,
-                )
-                logger.info(
-                    f"Knowledge awareness: agent_id={agent_id}, thread_id={awareness_thread_id}, "
-                    f"agent_collection={kb_ctx.get('agent_collection')}, "
-                    f"session_collection={kb_ctx.get('session_collection')}"
-                )
 
-                if not engine:
-                    logger.warning("Knowledge awareness skipped: engine not available")
-                else:
-                    # Use draft knowledge config for search-time params when running
-                    # in draft mode (Try-It-Out). Published agent always uses engine config.
+                # Use draft knowledge config for search-time params when
+                # running in draft mode (Try-It-Out). Published agent always
+                # uses engine config. Prefer the per-agent
+                # ``draft_knowledge_configs`` dict (multi-tenant safe), fall
+                # back to the legacy singular attribute.
+                _search_cfg = None
+                if engine is not None:
                     _search_cfg = engine._config
-                    _is_draft = agent_id and agent_id.endswith("--draft")
-                    if _is_draft:
+                    if agent_id and agent_id.endswith("--draft"):
                         try:
                             from cuga.backend.server.main import app as _app
 
                             _das = getattr(_app.state, "draft_app_state", None)
-                            _draft_kc = getattr(_das, "draft_knowledge_config", None) if _das else None
+                            _draft_kc = None
+                            if _das is not None:
+                                _base_aid = agent_id[: -len("--draft")]
+                                _cfgs = getattr(_das, "draft_knowledge_configs", None)
+                                if isinstance(_cfgs, dict):
+                                    _draft_kc = _cfgs.get(_base_aid)
+                                if _draft_kc is None:
+                                    _draft_kc = getattr(_das, "draft_knowledge_config", None)
                             if _draft_kc:
                                 _search_cfg = _draft_kc
                         except Exception:
                             pass
-                    knowledge_block = await get_knowledge_summary(
-                        engine,
-                        agent_collection=kb_ctx.get("agent_collection"),
-                        session_collection=kb_ctx.get("session_collection"),
-                        max_search_attempts=getattr(_search_cfg, "max_search_attempts", None)
-                        or getattr(engine._config, "max_search_attempts", None),
-                        default_limit=getattr(_search_cfg, "default_limit", None)
-                        or getattr(engine._config, "default_limit", None),
-                        rag_profile=getattr(_search_cfg, "rag_profile", None)
-                        or getattr(engine._config, "rag_profile", "standard"),
-                    )
-                    if knowledge_block:
-                        # Load knowledge search instructions from dedicated file
-                        knowledge_instructions_text = ""
-                        try:
-                            kb_instructions_path = (
-                                Path(__file__).resolve().parents[5]
-                                / "configurations"
-                                / "knowledge"
-                                / "knowledge_instructions.md"
-                            )
-                            if kb_instructions_path.exists():
-                                knowledge_instructions_text = kb_instructions_path.read_text(
-                                    encoding="utf-8"
-                                ).strip()
-                        except Exception as ki_err:
-                            logger.debug(f"Failed to load knowledge instructions: {ki_err}")
 
-                        # Prepend knowledge block BEFORE other instructions
-                        # so the LLM sees it early and acts on it
-                        effective_instructions = (
-                            f"{knowledge_block}\n\n{knowledge_instructions_text}\n\n{effective_instructions}"
-                            if effective_instructions
-                            else f"{knowledge_block}\n\n{knowledge_instructions_text}"
-                        )
-                        logger.info(f"Knowledge awareness injected: {len(knowledge_block)} chars")
+                # Single seam — assemble_system_prompt_section subsumes the
+                # previous format_knowledge_context + get_knowledge_summary
+                # + knowledge_instructions.md compose dance. Returns a
+                # dataclass with composed text + audit prompt_hash.
+                # Closes review comment 24 ("cuga_lite is the lasting path").
+                assembled = await assemble_system_prompt_section(
+                    engine,
+                    agent_id,
+                    awareness_thread_id,
+                    base_instructions=effective_instructions,
+                    agent_config_hash=knowledge_config_hash,
+                    search_config=_search_cfg,
+                )
+                logger.info(
+                    "Knowledge awareness: agent_id=%s, thread_id=%s, "
+                    "has_knowledge=%s, knowledge_block=%d chars, contract=%d chars, "
+                    "prompt_hash=%s",
+                    agent_id,
+                    awareness_thread_id,
+                    assembled.has_knowledge,
+                    assembled.knowledge_block_chars,
+                    assembled.contract_chars,
+                    assembled.prompt_hash,
+                )
+                if assembled.has_knowledge:
+                    effective_instructions = assembled.text
             except Exception as e:
                 logger.debug(f"Knowledge awareness injection skipped: {e}")
         if lc_bind_tools_meta is not None:
@@ -684,19 +692,23 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
 
         reflection_apps_snapshot = format_apps_for_prompt(apps_for_prompt or [])
 
-        return Command(
-            goto="call_model",
-            update={
-                "tools_prepared": True,
-                "prepared_prompt": dynamic_prompt,
-                "step_count": 0,
-                "cuga_lite_metadata": state.cuga_lite_metadata,
-                "reflection_apps": reflection_apps_snapshot,
-                "reflection_enable_find_tools": enable_find_tools,
-                "reflection_skills_enabled": skills_enabled,
-                "reflection_skills_prompt_section": skills_prompt_section,
-                "mcp_few_shot_messages": few_shot_examples,
-            },
-        )
+        update_payload: dict[str, Any] = {
+            "tools_prepared": True,
+            "prepared_prompt": dynamic_prompt,
+            "step_count": 0,
+            "cuga_lite_metadata": state.cuga_lite_metadata,
+            "reflection_apps": reflection_apps_snapshot,
+            "reflection_enable_find_tools": enable_find_tools,
+            "reflection_skills_enabled": skills_enabled,
+            "reflection_skills_prompt_section": skills_prompt_section,
+            "mcp_few_shot_messages": few_shot_examples,
+        }
+        if is_fresh_conversation:
+            # Carry the task_todos reset through LangGraph state so the
+            # state.task_todos fallback path in prepare_system_content sees an
+            # empty value on the next turn.
+            update_payload["task_todos"] = None
+
+        return Command(goto="call_model", update=update_payload)
 
     return prepare_tools_and_apps

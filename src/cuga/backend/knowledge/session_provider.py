@@ -244,7 +244,7 @@ class PersistentSessionProvider(SessionProvider):
                 len(self._agents),
             )
         except Exception:
-            logger.warning("Failed to load knowledge state from %s", self._path, exc_info=True)
+            logger.warning(f"Failed to load knowledge state from {self._path}", exc_info=True)
 
     def _persist(self) -> None:
         """Write full state to disk. Called on every mutation."""
@@ -256,7 +256,7 @@ class PersistentSessionProvider(SessionProvider):
             }
             self._path.write_text(json.dumps(payload, indent=2))
         except Exception:
-            logger.warning("Failed to persist knowledge state to %s", self._path, exc_info=True)
+            logger.warning(f"Failed to persist knowledge state to {self._path}", exc_info=True)
 
     # -- override mutating methods to add write-through ----------------------
 

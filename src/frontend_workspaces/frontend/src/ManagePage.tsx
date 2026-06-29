@@ -59,6 +59,29 @@ import "./ManagePage.css";
 
 export type { ToolEntry } from "./types/tools";
 
+// Mirror of ``AdaptationServerError`` from
+// ``agentic_chat/src/ClientAdaptationPanel.tsx``. Declared locally as a
+// type-only shape because the agentic_chat workspace's package exports
+// don't re-export it. The server's ``ClientAdaptationError.to_dict()``
+// shape is the source of truth (see ``config.py``); the union of
+// ``error`` values must stay in sync between server and these two
+// frontend declarations.
+interface AdaptationServerErrorShape {
+  error:
+    | "length_exceeded"
+    | "bidi_override"
+    | "control_char"
+    | "contract_override_phrase"
+    | "type_error"
+    | "null_byte";
+  message: string;
+  phrase?: string;
+  pattern?: string;
+  codepoint?: string;
+  length?: number;
+  max?: number;
+}
+
 export interface HomescreenConfig {
   isOn?: boolean;
   greeting?: string;
@@ -89,12 +112,26 @@ export interface AgentConfig {
   special_instructions?: string;
   policies?: { enablePolicies: boolean; policies: unknown[] };
   homescreen?: HomescreenConfig;
+  // Knowledge config shape MUST stay in sync with ``KnowledgeConfigValues``
+  // in agentic_chat/src/KnowledgeConfig.tsx — they describe the same wire
+  // payload (the PATCH /api/manage/config/draft/knowledge body).
+  // Drifts have caused silent field-drop bugs on version-load + profile-
+  // pick (Sami C3): if a field is in KnowledgeConfigValues but missing
+  // here, the version-history hydrator drops it on the floor and the
+  // profile-onClick writes-without-type-error escape ``tsc -b``.
   knowledge?: {
     enabled?: boolean;
     agent_level_enabled?: boolean;
     session_level_enabled?: boolean;
+    rag_profile?: string;
     embedding_provider?: string;
     embedding_model?: string;
+    embedding_api_key?: string;
+    embedding_base_url?: string;
+    embedding_extra_params?: Record<string, string | number | boolean>;
+    embedding_batch_size?: number;
+    embedding_concurrency?: number;
+    use_gpu?: boolean;
     chunk_size?: number;
     chunk_overlap?: number;
     metric_type?: string;
@@ -103,15 +140,47 @@ export interface AgentConfig {
     max_url_download_size_mb?: number;
     max_files_per_request?: number;
     max_chunks_per_document?: number;
+    // Engine-side knobs surfaced by profiles
+    vector_insert_batch_size?: number;
+    max_ingest_workers?: number;
+    // Docling
+    docling_pdf_mode?: string;
+    docling_layout_engine?: string;
+    docling_drop_page_chrome?: string;
+    // Reranker
+    rerank_enabled?: boolean;
+    rerank_top_k_in?: number;
+    rerank_model?: string;
+    // Search-side
+    search_hybrid_mode?: string;
+    search_junk_filter?: string;
+    search_query_transform?: string;
+    max_search_attempts?: number;
+    default_limit?: number;
+    default_score_threshold?: number;
+    // Client adaptation (prompt rules + glossary)
+    client_adaptation_text?: string;
+    client_adaptation_glossary?: { term: string; definition?: string }[];
   };
 }
 
+// Mirrors the dataclass defaults in src/cuga/backend/knowledge/config.py
+// — SDK users constructing a bare ``KnowledgeConfig()`` get the same
+// shape. Profile overrides (standard / balanced / max_quality) layer on
+// top via the profile loader.
 const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   enabled: false,
   agent_level_enabled: true,
   session_level_enabled: true,
+  rag_profile: "standard",
   embedding_provider: "huggingface",
   embedding_model: "",
+  embedding_api_key: "",
+  embedding_base_url: "",
+  embedding_extra_params: {},
+  embedding_batch_size: 64,
+  embedding_concurrency: 4,
+  use_gpu: true,
   chunk_size: 1000,
   chunk_overlap: 200,
   metric_type: "COSINE",
@@ -120,6 +189,22 @@ const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   max_url_download_size_mb: 50,
   max_files_per_request: 10,
   max_chunks_per_document: 10000,
+  vector_insert_batch_size: 200,
+  max_ingest_workers: 2,
+  docling_pdf_mode: "accurate",
+  docling_layout_engine: "auto",
+  docling_drop_page_chrome: "dry_run",
+  rerank_enabled: false,
+  rerank_top_k_in: 20,
+  rerank_model: "BAAI/bge-reranker-base",
+  search_hybrid_mode: "auto",
+  search_junk_filter: "enforce",
+  search_query_transform: "off",
+  max_search_attempts: 3,
+  default_limit: 10,
+  default_score_threshold: 0.0,
+  client_adaptation_text: "",
+  client_adaptation_glossary: [],
 };
 
 const DEFAULT_HOMESCREEN: HomescreenConfig = {
@@ -164,6 +249,17 @@ const POLICY_TYPE_LABELS: Record<string, string> = {
   tool_approval: "Tool approval",
   output_formatter: "Output formatters",
 };
+
+// AbortController + fetch rejects with a DOMException whose ``name`` is
+// "AbortError". The intentional-cancel path swallows this silently;
+// every other error type still surfaces normally. Centralised so the 5
+// autosave families can rely on the same predicate.
+function isAbortError(err: unknown): boolean {
+  if (err instanceof DOMException && err.name === "AbortError") return true;
+  // Node/jsdom polyfill paths can throw a plain Error with name set.
+  if (err instanceof Error && err.name === "AbortError") return true;
+  return false;
+}
 
 function policiesSummary(policies: unknown[]): { total: number; byType: Record<string, number> } {
   const byType: Record<string, number> = {};
@@ -251,6 +347,25 @@ export function ManagePage() {
   const [knowledgeSavedSnapshot, setKnowledgeSavedSnapshot] = useState<AgentConfig["knowledge"] | null>(null);
   const [knowledgeReindexNeeded, setKnowledgeReindexNeeded] = useState(false);
   const [knowledgeReindexing, setKnowledgeReindexing] = useState(false);
+  // When a knowledge draft PATCH triggers an auto-reindex on the server
+  // (e.g. user picks a new profile and the embedding-dim changes), the
+  // response carries task_ids in ``auto_reindex.collections[*].result``.
+  // We bubble them down to KnowledgePanel so its reindex tile arms
+  // automatically — without this prop the user has to click "Reindex"
+  // manually to see ANY progress for a server-side migration they
+  // didn't explicitly trigger. ``triggerKey`` is the task-IDs join so a
+  // re-render with the same payload doesn't re-arm twice.
+  const [autoReindexTrigger, setAutoReindexTrigger] = useState<{
+    taskIds: string[];
+    total: number;
+    triggerKey: string;
+  } | null>(null);
+  // Adaptation 422 wiring (Sami #60): the autosave PATCH below may return
+  // a 422 with the structured ClientAdaptationError.to_dict() body. We
+  // surface it into the panel via the controlled-state contract so the
+  // operator sees what they need to fix instead of a silent no-save.
+  // Cleared on the next successful save.
+  const [adaptationServerError, setAdaptationServerError] = useState<AdaptationServerErrorShape | null>(null);
   const [knowledgeStale, setKnowledgeStale] = useState(false);
   const [knowledgeReindexDeferred, setKnowledgeReindexDeferred] = useState(false);
   const [ragProfiles, setRagProfiles] = useState<Record<string, any>>({});
@@ -275,8 +390,35 @@ export function ManagePage() {
   const toolsSaveTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const llmBlurSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const specialInstructionsSaveRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Per-autosave-family AbortControllers. When a new config change
+  // arrives we ``.abort()`` the prior controller so the in-flight
+  // PATCH (which is sending a NOW-STALE payload) is cancelled
+  // client-side. Side-effects from a late-arriving response are
+  // gated on ``signal.aborted`` so they can't poison state we set
+  // for the newer config. See CLIENT_CANCELLATION_CONTRACT.md.
+  const knowledgeAbortRef = useRef<AbortController | null>(null);
+  const toolsAbortRef = useRef<AbortController | null>(null);
+  const llmAbortRef = useRef<AbortController | null>(null);
+  const agentAbortRef = useRef<AbortController | null>(null);
+  const specialInstructionsAbortRef = useRef<AbortController | null>(null);
   const llmConfigRef = useRef(llmConfig);
   llmConfigRef.current = llmConfig;
+
+  // Abort all in-flight autosave PATCHes on unmount so the browser
+  // can release the connection slots immediately. Without this, a
+  // hung PATCH (server slow / network blip) would tie up a slot
+  // until the request naturally fails. The native fetch is aborted
+  // on page unload too, but explicit cleanup is the right pattern
+  // for SPAs that swap routes without a full document unload.
+  useEffect(() => {
+    return () => {
+      knowledgeAbortRef.current?.abort();
+      toolsAbortRef.current?.abort();
+      llmAbortRef.current?.abort();
+      agentAbortRef.current?.abort();
+      specialInstructionsAbortRef.current?.abort();
+    };
+  }, []);
 
   useEffect(() => {
     api.getAgentContext()
@@ -797,8 +939,15 @@ export function ManagePage() {
 
   const saveLlmDraft = useCallback(async () => {
     setDraftSaving(true);
+    // Cancel any prior in-flight LLM PATCH (the user might blur from
+    // one input straight into another while the first save is still
+    // on the wire). Side-effects below are guarded by signal.aborted.
+    llmAbortRef.current?.abort();
+    const ac = new AbortController();
+    llmAbortRef.current = ac;
     try {
-      const res = await api.patchManageConfigDraftLlm(llmConfigRef.current, effectiveAgentId);
+      const res = await api.patchManageConfigDraftLlm(llmConfigRef.current, effectiveAgentId, ac.signal);
+      if (ac.signal.aborted) return;
       setDraftSaving(false);
       if (res.ok) {
         setCurrentVersion("draft");
@@ -807,6 +956,7 @@ export function ManagePage() {
         addToast("error", "Draft Save Failed", `Failed to save LLM (${res.status} ${res.statusText})`);
       }
     } catch (error) {
+      if (isAbortError(error)) return; // superseded by newer blur/save — silent
       setDraftSaving(false);
       addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
     }
@@ -823,8 +973,14 @@ export function ManagePage() {
   const saveSpecialInstructionsDraft = useCallback(
     async (value: string, showToast = false) => {
       if (showToast) setDraftSaving(true);
+      // Cancel any prior in-flight special-instructions PATCH (the
+      // user might keep typing — each keystroke schedules a save).
+      specialInstructionsAbortRef.current?.abort();
+      const ac = new AbortController();
+      specialInstructionsAbortRef.current = ac;
       try {
-        const res = await api.patchManageConfigDraftSpecialInstructions(value, effectiveAgentId);
+        const res = await api.patchManageConfigDraftSpecialInstructions(value, effectiveAgentId, ac.signal);
+        if (ac.signal.aborted) return;
         if (showToast) setDraftSaving(false);
         if (res.ok) {
           setCurrentVersion("draft");
@@ -833,6 +989,7 @@ export function ManagePage() {
           addToast("error", "Draft Save Failed", `Failed to save (${res.status} ${res.statusText})`);
         }
       } catch (err) {
+        if (isAbortError(err)) return; // superseded — silent
         if (showToast) {
           setDraftSaving(false);
           addToast("error", "Draft Save Failed", err instanceof Error ? err.message : "Network error");
@@ -855,11 +1012,17 @@ export function ManagePage() {
 
   const saveAgentDraft = useCallback(async () => {
     setDraftSaving(true);
+    // Cancel any prior in-flight agent-meta PATCH.
+    agentAbortRef.current?.abort();
+    const ac = new AbortController();
+    agentAbortRef.current = ac;
     try {
       const res = await api.patchManageConfigDraftAgent(
         { name: agentName.trim(), description: agentDescription.trim() || undefined },
-        effectiveAgentId
+        effectiveAgentId,
+        ac.signal,
       );
+      if (ac.signal.aborted) return;
       setDraftSaving(false);
       if (res.ok) {
         setCurrentVersion("draft");
@@ -868,6 +1031,7 @@ export function ManagePage() {
         addToast("error", "Draft Save Failed", `Failed to save agent (${res.status} ${res.statusText})`);
       }
     } catch (error) {
+      if (isAbortError(error)) return; // superseded — silent
       setDraftSaving(false);
       addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
     }
@@ -875,16 +1039,26 @@ export function ManagePage() {
 
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
+    // Abort prior tools-autosave + arm a new controller. Mirrors the
+    // knowledge autosave pattern (see CLIENT_CANCELLATION_CONTRACT.md);
+    // the tools side-effects (toast, draftSaving spinner) are gated on
+    // ``ac.signal.aborted`` so a stale response can't double-toast.
+    toolsAbortRef.current?.abort();
+    const ac = new AbortController();
+    toolsAbortRef.current = ac;
     const t = setTimeout(() => {
       toolsSaveTimeoutRef.current = null;
+      if (toolsAbortRef.current !== ac) return;
       (async () => {
         setDraftSaving(true);
         try {
-          const res = await api.patchManageConfigDraftTools(tools, effectiveAgentId);
+          const res = await api.patchManageConfigDraftTools(tools, effectiveAgentId, ac.signal);
+          if (ac.signal.aborted) return;
           setDraftSaving(false);
           if (res.ok) {
             setCurrentVersion("draft");
             const data = await res.json().catch(() => ({}));
+            if (ac.signal.aborted) return;
             if (data.status === "partial" && data.tool_errors) {
               Object.entries(data.tool_errors as Record<string, { error?: string; message?: string }>).forEach(
                 ([toolName, err]) => addToast("warning", `Tool: ${toolName}`, err?.error || err?.message || "Unknown error")
@@ -896,6 +1070,7 @@ export function ManagePage() {
             addToast("error", "Draft Save Failed", `Failed to save tools (${res.status} ${res.statusText})`);
           }
         } catch (error) {
+          if (isAbortError(error)) return; // superseded by newer autosave — silent
           setDraftSaving(false);
           addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
         }
@@ -923,20 +1098,112 @@ export function ManagePage() {
     setKnowledgeReindexNeeded(changed && knowledgeDocCount > 0);
   }, [knowledgeConfig, knowledgeSavedSnapshot, knowledgeDocCount]);
 
-  // Debounced auto-save for knowledge config
+  // Debounced auto-save for knowledge config. On 422 the server returns a
+  // structured ClientAdaptationError.to_dict() body — push it into the
+  // KnowledgePanel via the controlled-state contract so the operator
+  // sees what's wrong instead of a silent no-save (Sami #60).
+  //
+  // Race fix (Slice A): when the user picks a new profile while a prior
+  // PATCH is still in flight, the prior controller is .abort()-ed and
+  // its response is dropped via the ``signal.aborted`` guards below.
+  // Server-side state still mutates for the aborted request (the
+  // server doesn't honor client disconnects today) — that's Slice B's
+  // job. Here we just stop the UI from rendering TWO reindex tiles for
+  // the same user action. See CLIENT_CANCELLATION_CONTRACT.md.
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
+
+    // Cancel any prior in-flight PATCH for this family. We do this
+    // OUTSIDE the setTimeout so the abort fires immediately on the
+    // user's next pick — not after another 800 ms wait. Helps the
+    // server's request budget too.
+    knowledgeAbortRef.current?.abort();
+    const ac = new AbortController();
+    knowledgeAbortRef.current = ac;
+
     const t = setTimeout(async () => {
+      // Defensive: if a NEWER effect run replaced the ref mid-debounce
+      // (clearTimeout in cleanup should have caught us, but the timer
+      // can race the cleanup in rare microtask interleavings), skip.
+      if (knowledgeAbortRef.current !== ac) return;
       try {
-        const res = await api.patchManageConfigDraftKnowledge(knowledgeConfig, effectiveAgentId);
+        const res = await api.patchManageConfigDraftKnowledge(
+          knowledgeConfig,
+          effectiveAgentId,
+          ac.signal,
+        );
+        // Guard 1: between request and response, a newer autosave may
+        // have aborted us. Don't apply this response's side-effects.
+        if (ac.signal.aborted) return;
         if (res.ok) {
           setCurrentVersion("draft");
+          setAdaptationServerError(null);
+          // Forward any server-triggered auto-reindex into the panel so the
+          // reindex tile arms automatically. Without this the user only
+          // sees progress if they click the Reindex button explicitly —
+          // for a dim-changing profile switch (which fires migration on
+          // the server side) that's a confusing "documents vanished, no
+          // feedback" window. ``triggerKey`` is the joined task IDs so a
+          // re-render with the same payload doesn't re-arm.
+          try {
+            const body = await res.clone().json();
+            // Guard 2: body read is async too; recheck after the await.
+            if (ac.signal.aborted) return;
+            const collections = body?.auto_reindex?.collections ?? [];
+            const taskIds: string[] = collections
+              .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
+              .filter((id: string) => typeof id === "string" && id.length > 0);
+            if (taskIds.length > 0) {
+              const total = collections.reduce(
+                (sum: number, c: { result?: { count?: number } }) => sum + (c?.result?.count ?? 0),
+                0,
+              );
+              const triggerKey = taskIds.slice().sort().join("|");
+              setAutoReindexTrigger((prev) =>
+                prev?.triggerKey === triggerKey
+                  ? prev
+                  : { taskIds, total: total || taskIds.length, triggerKey },
+              );
+            }
+          } catch {
+            // Body shape mismatch — auto-reindex either didn't fire or
+            // wasn't in the response; the manual Reindex path still works.
+          }
+        } else if (res.status === 422) {
+          // Guard 3: 422 carries an adaptation-server-error blob.
+          // Don't surface the validation error for a config the user
+          // has already moved past.
+          if (ac.signal.aborted) return;
+          try {
+            const body = await res.json();
+            if (ac.signal.aborted) return;
+            const err = (body && (body.detail ?? body)) as Partial<AdaptationServerErrorShape> | null;
+            if (err && typeof err.error === "string" && typeof err.message === "string") {
+              setAdaptationServerError(err as AdaptationServerErrorShape);
+            }
+          } catch {
+            // 422 without a JSON body — leave the prior error in place.
+          }
         }
-      } catch {
-        // silent
+      } catch (err) {
+        // AbortError is expected when a newer autosave superseded us.
+        // Stay silent — the next effect run will issue a fresh PATCH.
+        if (isAbortError(err)) return;
+        // Network failure (real) — silent (transient flake clears on
+        // the next change). NOT silenced via a blanket catch above
+        // because we want AbortError to be the ONLY no-op; any other
+        // error type would surface here if we wanted to.
       }
     }, 800);
-    return () => clearTimeout(t);
+    return () => {
+      clearTimeout(t);
+      // Do NOT .abort() in cleanup. The cleanup fires before EVERY
+      // effect re-run, and by the time it runs we've already moved to
+      // a new controller via the body's ``ref.current = ac`` line at
+      // the top. Aborting in cleanup would race with the new effect.
+      // The next effect run's ``knowledgeAbortRef.current?.abort()``
+      // at the top is the correct cancellation point.
+    };
   }, [knowledgeConfig, effectiveAgentId]);
 
   useEffect(() => {
@@ -1604,7 +1871,7 @@ export function ManagePage() {
                   <InlineLoading description="Loading skills…" />
                 ) : skills.length === 0 ? (
                   <p className="cds--type-body-compact-01" style={{ color: "var(--cds-text-secondary)" }}>
-                    No skills found. Add SKILL.md files under <code>.cuga/.skills/</code> or <code>.cuga/skills/</code>.
+                    No skills found. Add SKILL.md files under <code>.cuga/skills/</code> (default) or set <code>[skills] root</code> in settings.toml.
                   </p>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
@@ -2051,6 +2318,20 @@ export function ManagePage() {
           knowledgeReindexDeferred={knowledgeReindexDeferred}
           knowledgeReindexing={knowledgeReindexing}
           ragProfiles={ragProfiles}
+          adaptationServerError={adaptationServerError}
+          onAdaptationServerError={setAdaptationServerError}
+          autoReindexTrigger={autoReindexTrigger}
+          onAutoReindexConsumed={() => setAutoReindexTrigger(null)}
+          onAutoReindexComplete={() => {
+            // The engine has finished re-embedding under the current
+            // knowledgeConfig. Refresh the saved-config snapshot so the
+            // "Reindex needed" banner (which compares snapshot vs.
+            // current) clears. Previously the snapshot only updated on
+            // Publish, leaving the banner stuck even after a successful
+            // auto-reindex.
+            setKnowledgeSavedSnapshot({ ...knowledgeConfig });
+            setKnowledgeReindexNeeded(false);
+          }}
           onReindex={async () => {
             setKnowledgeReindexing(true);
             try {

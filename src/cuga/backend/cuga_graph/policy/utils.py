@@ -14,6 +14,7 @@ from cuga.backend.cuga_graph.policy.models import (
     Policy,
     PolicyType,
     ToolGuide,
+    ToolGuard,
     ToolApproval,
 )
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
@@ -128,11 +129,15 @@ async def apply_policies_data_to_storage(
             try:
                 await storage.delete_policy(policy_obj.id)
             except Exception as e:
-                logger.warning("Failed to delete existing policy %s: %s", policy_obj.id, e)
-        logger.info("Cleared %d existing policies", len(existing_policies))
+                logger.warning(f"Failed to delete existing policy {policy_obj.id}: {e}")
+        logger.info(f"Cleared {len(existing_policies)} existing policies")
 
     for policy_data in policies_data or []:
         try:
+            for _list_key in ("triggers", "steps", "target_tools", "required_tools"):
+                if policy_data.get(_list_key) is None:
+                    policy_data[_list_key] = []
+
             if "triggers" in policy_data and isinstance(policy_data["triggers"], list):
                 for trigger in policy_data["triggers"]:
                     if trigger.get("type") == "natural_language" and "value" in trigger:
@@ -194,13 +199,13 @@ async def apply_policies_data_to_storage(
             elif policy_type == "playbook":
                 from cuga.backend.cuga_graph.policy.models import PlaybookStep
 
-                steps_data = policy_data.get("steps", [])
+                steps_data = policy_data.get("steps") or []
                 steps = [
                     PlaybookStep(
                         step_number=step["step_number"],
                         instruction=step["instruction"],
-                        expected_outcome=step["expected_outcome"],
-                        tools_allowed=step.get("tools_allowed", []),
+                        expected_outcome=step.get("expected_outcome"),
+                        tools_allowed=step.get("tools_allowed") or [],
                     )
                     for step in steps_data
                 ]
@@ -208,13 +213,24 @@ async def apply_policies_data_to_storage(
                     id=policy_data["id"],
                     name=policy_data["name"],
                     description=policy_data["description"],
-                    triggers=policy_data["triggers"],
+                    triggers=policy_data.get("triggers") or [],
                     markdown_content=policy_data.get("markdown_content", ""),
                     steps=steps,
                     priority=policy_data.get("priority", 50),
                     enabled=policy_data.get("enabled", True),
                 )
             elif policy_type == "tool_guide":
+                raw_tool_guards = policy_data.get("tool_guards")
+                tool_guards = (
+                    {
+                        tool_name: (
+                            guard_config if isinstance(guard_config, ToolGuard) else ToolGuard(**guard_config)
+                        )
+                        for tool_name, guard_config in raw_tool_guards.items()
+                    }
+                    if isinstance(raw_tool_guards, dict)
+                    else {}
+                )
                 policy = ToolGuide(
                     id=policy_data["id"],
                     name=policy_data["name"],
@@ -223,6 +239,7 @@ async def apply_policies_data_to_storage(
                     target_tools=policy_data.get("target_tools", []),
                     target_apps=policy_data.get("target_apps"),
                     guide_content=policy_data.get("guide_content", ""),
+                    tool_guards=tool_guards,
                     prepend=policy_data.get("prepend", False),
                     priority=policy_data.get("priority", 50),
                     enabled=policy_data.get("enabled", True),
@@ -260,7 +277,7 @@ async def apply_policies_data_to_storage(
             elif policy_type == PolicyType.CUSTOM:
                 policy = CustomPolicy(**policy_data)
             else:
-                logger.warning("Unknown policy type: %s", policy_type)
+                logger.warning(f"Unknown policy type: {policy_type}")
                 errors.append(
                     f"Unknown policy type '{policy_type}' for policy '{policy_data.get('name', 'unknown')}'"
                 )
@@ -272,7 +289,7 @@ async def apply_policies_data_to_storage(
                 try:
                     filesystem_sync.save_policy_to_file(policy)
                 except Exception as e:
-                    logger.warning("Failed to save policy to filesystem: %s", e)
+                    logger.warning(f"Failed to save policy to filesystem: {e}")
         except Exception as e:
             error_msg = f"Failed to load policy '{policy_data.get('name', 'unknown')}': {e}"
             logger.error(error_msg)
@@ -423,8 +440,8 @@ async def restore_policies(storage: PolicyStorage, backup_dir: str) -> int:
         for policy_type in PolicyType:
             backup_file = backup_path / f"policies_{policy_type.value}.json"
             if backup_file.exists():
-                count = await load_policies_from_json(str(backup_file), storage)
-                total_count += count
+                result = await load_policies_from_json(str(backup_file), storage)
+                total_count += result.get("count", 0)
 
         logger.info(f"Restored {total_count} policies from {backup_dir}")
         return total_count
@@ -522,16 +539,18 @@ def format_policy_summary(policy: Policy) -> str:
     Returns:
         Formatted summary string
     """
+    policy_triggers = getattr(policy, "triggers", None) or []
+
     lines = [
         f"Policy: {policy.name} ({policy.id})",
         f"Type: {policy.type}",
         f"Description: {policy.description}",
         f"Priority: {policy.priority}",
         f"Enabled: {'Yes' if policy.enabled else 'No'}",
-        f"Triggers: {len(policy.triggers)}",
+        f"Triggers: {len(policy_triggers)}",
     ]
 
-    for i, trigger in enumerate(policy.triggers):
+    for i, trigger in enumerate(policy_triggers):
         value = getattr(trigger, 'value', 'N/A')
         if isinstance(value, list):
             value_str = ', '.join(value) if value else '[]'

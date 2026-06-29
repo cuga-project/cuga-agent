@@ -42,7 +42,7 @@ def _enable_skills(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(_paths, "skills_enabled", lambda: True)
 
 
-async def _run(executor: _lse.LocalSandboxExecutor, cmd: str, thread_id: str) -> tuple[str, str]:
+async def _run(executor: _lse.LocalSandboxExecutor, cmd: str, thread_id: str) -> tuple[str, str, int]:
     return await executor._run_command(cmd, thread_id=thread_id, timeout=30)
 
 
@@ -64,7 +64,7 @@ def test_local_sandbox_relative_paths_land_in_per_thread_cuga_workspace(
     _fake_venv_python(thread_root)
 
     executor = _lse.LocalSandboxExecutor()
-    stdout, stderr = asyncio.run(_run(executor, "echo hello > out.txt", "thread-A"))
+    stdout, stderr, _rc = asyncio.run(_run(executor, "echo hello > out.txt", "thread-A"))
 
     expected = parent / safe
     assert _lse.local_thread_workspace_root("thread-A").resolve() == expected.resolve()
@@ -106,17 +106,20 @@ def test_local_sandbox_two_threads_are_isolated(tmp_path: Path, monkeypatch: pyt
     assert not (parent / "out.txt").exists()
 
 
-def test_local_thread_workspace_root_is_shared_when_skills_off(
+def test_local_thread_workspace_root_is_per_thread_even_when_skills_off(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """With skills disabled, all threads collapse to `<cwd>/cuga_workspace/`."""
+    """With a thread_id, workspaces stay isolated even when skills are disabled."""
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(_paths, "skills_enabled", lambda: False)
 
     a = _lse.local_thread_workspace_root("thread-A")
     b = _lse.local_thread_workspace_root("thread-B")
     none = _lse.local_thread_workspace_root(None)
-    assert a == b == none == tmp_path / "cuga_workspace"
+    assert a == tmp_path / "cuga_workspace" / "thread-A"
+    assert b == tmp_path / "cuga_workspace" / "thread-B"
+    assert none == tmp_path / "cuga_workspace"
+    assert a != b != none
 
 
 def test_local_thread_workspace_root_is_per_thread_when_skills_on(
@@ -131,3 +134,53 @@ def test_local_thread_workspace_root_is_per_thread_when_skills_on(
     assert a == tmp_path / "cuga_workspace" / "thread-A"
     assert b == tmp_path / "cuga_workspace" / "thread_B"
     assert a != b
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell idioms")
+def test_local_sandbox_run_command_rewrites_workspace_upload_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``head /workspace/uploads/foo.json`` works after rewrite to ``./uploads/...``."""
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+
+    parent = tmp_path / "cuga_workspace"
+    thread_root = parent / _lse._safe_thread_id("thread-A")
+    uploads = thread_root / "uploads"
+    uploads.mkdir(parents=True)
+    (uploads / "data.json").write_text('{"ok": true}\n')
+    _fake_venv_python(thread_root)
+
+    executor = _lse.LocalSandboxExecutor()
+    stdout, stderr, rc = asyncio.run(_run(executor, "head -n 1 /workspace/uploads/data.json", "thread-A"))
+    assert rc == 0
+    assert '{"ok": true}' in stdout
+    assert "No such file" not in stderr
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="POSIX shell idioms")
+def test_run_command_omits_stderr_on_success_with_warnings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """DeprecationWarning on stderr must not break json.loads on stdout JSON."""
+    import json
+
+    monkeypatch.chdir(tmp_path)
+    _enable_skills(monkeypatch)
+    thread_root = tmp_path / "cuga_workspace" / _lse._safe_thread_id("thread-A")
+    thread_root.mkdir(parents=True)
+    py = _fake_venv_python(thread_root)
+    py.unlink()
+    py.symlink_to(sys.executable)
+
+    executor = _lse.LocalSandboxExecutor()
+    run = executor.create_run_command_tool("thread-A")
+    out = asyncio.run(
+        run(
+            "python -c \"import datetime, json; "
+            "datetime.datetime.utcfromtimestamp(1); "
+            "print(json.dumps({'ok': True}))\""
+        )
+    )
+    assert "[stderr]" not in out
+    assert json.loads(out.split("\n[stderr]\n", 1)[0].strip()) == {"ok": True}

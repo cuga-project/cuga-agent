@@ -1,6 +1,7 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef } from "react";
 import * as api from "../../frontend/src/api";
+import "./PoliciesConfig.css";
 import {
   ComposedModal,
   ModalHeader,
@@ -27,8 +28,9 @@ import {
   FormGroup,
   Tile,
   Toggle,
+  InlineLoading,
 } from "@carbon/react";
-import { Save, Add, TrashCan, ChevronDown, ChevronUp, Download, Upload } from "@carbon/icons-react";
+import { Save, Add, TrashCan, ChevronDown, ChevronUp, Download, Upload, Security } from "@carbon/icons-react";
 
 interface PolicyTrigger {
   type: "keyword" | "natural_language" | "app" | "always";
@@ -73,6 +75,12 @@ interface PlaybookPolicy {
   priority: number;
 }
 
+interface ToolGuardData {
+  violating_examples?: string[];
+  compliance_examples?: string[];
+  policy_code?: string;
+}
+
 interface ToolGuidePolicy {
   id: string;
   name: string;
@@ -85,6 +93,7 @@ interface ToolGuidePolicy {
   guide_content: string;
   prepend: boolean;
   priority: number;
+  tool_guards?: Record<string, ToolGuardData> | null;
 }
 
 interface ToolApprovalPolicy {
@@ -226,6 +235,8 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const [availableApps, setAvailableApps] = useState<AppInfo[]>([]);
   const [toolsLoading, setToolsLoading] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ kind: "success" | "error" | "warning"; title: string; subtitle: string } | null>(null);
+  const [savedToolGuideSnapshots, setSavedToolGuideSnapshots] = useState<Record<string, string>>({});
+  const [generatingToolGuardPolicyId, setGeneratingToolGuardPolicyId] = useState<string | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -241,25 +252,28 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         const data = await response.json();
         const configData = data.config || {};
         const policiesData = configData.policies || {};
-        const normalizedPolicies = (policiesData.policies ?? []).map((policy: Policy) => ({
-          ...policy,
-          triggers: policy.triggers.map((trigger: PolicyTrigger) => {
-            if (trigger.type === "natural_language" && trigger.value !== undefined) {
-              const normalizedValue = Array.isArray(trigger.value)
-                ? trigger.value
-                : typeof trigger.value === "string"
-                ? [trigger.value]
-                : [];
-              return { ...trigger, value: normalizedValue };
-            }
-            return trigger;
-          }),
-        }));
+        const normalizedPolicies = (policiesData.policies ?? []).map((policy: Policy) => {
+          return {
+            ...policy,
+            triggers: policy.triggers.map((trigger: PolicyTrigger) => {
+              if (trigger.type === "natural_language" && trigger.value !== undefined) {
+                const normalizedValue = Array.isArray(trigger.value)
+                  ? trigger.value
+                  : typeof trigger.value === "string"
+                  ? [trigger.value]
+                  : [];
+                return { ...trigger, value: normalizedValue };
+              }
+              return trigger;
+            }),
+          };
+        });
 
         setConfig({
           enablePolicies: policiesData.enablePolicies ?? true,
           policies: normalizedPolicies,
         });
+        updateSavedToolGuideSnapshots(normalizedPolicies);
       }
     } catch (error) {
       console.error("[PoliciesConfig] Error loading config:", error);
@@ -368,6 +382,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
       }
 
       if (response.ok) {
+        updateSavedToolGuideSnapshots(normalizedPolicies);
         setToastMessage({
           kind: "success",
           title: "Policies imported",
@@ -393,6 +408,60 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
       });
     }
   };
+  const normalizeToolGuideForSnapshot = (policy: ToolGuidePolicy) =>
+    JSON.stringify({
+      id: policy.id,
+      name: policy.name,
+      description: policy.description,
+      enabled: policy.enabled,
+      priority: policy.priority,
+      target_tools: policy.target_tools ?? [],
+      target_apps: policy.target_apps ?? null,
+      guide_content: policy.guide_content ?? "",
+      prepend: policy.prepend ?? false,
+      tool_guards: policy.tool_guards ?? {},
+    });
+
+  const updateSavedToolGuideSnapshots = (policies: Policy[]) => {
+    const snapshots: Record<string, string> = {};
+    policies.forEach((policy) => {
+      if (policy.policy_type === "tool_guide") {
+        snapshots[policy.id] = normalizeToolGuideForSnapshot(policy as ToolGuidePolicy);
+      }
+    });
+    setSavedToolGuideSnapshots(snapshots);
+  };
+
+  const isToolGuideSaved = (policy: ToolGuidePolicy) =>
+    savedToolGuideSnapshots[policy.id] === normalizeToolGuideForSnapshot(policy);
+
+  const allTargetToolsHaveGuard = (policy: ToolGuidePolicy) => {
+    const targetTools = policy.target_tools ?? [];
+    if (!hasConcreteTargetTools(policy)) {
+      return false;
+    }
+    return targetTools.every((tool) => Boolean(policy.tool_guards?.[tool]?.policy_code));
+  };
+
+  const mergeToolGuardsIntoPolicy = (
+    policyId: string,
+    toolGuards: Record<string, ToolGuardData>
+  ) => {
+    setConfig((prev) => ({
+      ...prev,
+      policies: prev.policies.map((p) =>
+        p.id === policyId && p.policy_type === "tool_guide"
+          ? { ...p, tool_guards: toolGuards }
+          : p
+      ),
+    }));
+  };
+
+  const hasConcreteTargetTools = (policy: ToolGuidePolicy) => {
+    const targetTools = policy.target_tools ?? [];
+    return targetTools.length > 0 && !targetTools.includes("*");
+  };
+
 
   const saveConfig = async () => {
     if (document.activeElement instanceof HTMLElement) {
@@ -463,6 +532,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
           title: "Policies saved successfully",
           subtitle: `${normalizedConfig.policies.length} ${normalizedConfig.policies.length === 1 ? 'policy' : 'policies'} saved`,
         });
+        updateSavedToolGuideSnapshots(config.policies);
         onSave?.(normalizedConfig);
         setTimeout(() => {
           setSaveStatus("idle");
@@ -496,6 +566,131 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
         subtitle: errorMessage,
       });
       setTimeout(() => setSaveStatus("idle"), 2000);
+    }
+  };
+
+  const generateToolGuard = async (policyId: string) => {
+    if (generatingToolGuardPolicyId !== null) {
+      return;
+    }
+
+    const policy = config.policies.find((p) => p.id === policyId);
+    if (!policy || policy.policy_type !== "tool_guide") {
+      setToastMessage({
+        kind: "error",
+        title: "Cannot generate guard",
+        subtitle: "Policy not found or not a tool guide",
+      });
+      return;
+    }
+
+    const toolGuide = policy as ToolGuidePolicy;
+
+    // Save-first check
+    if (!isToolGuideSaved(toolGuide)) {
+      setToastMessage({
+        kind: "warning",
+        title: "Save required",
+        subtitle: "Save the tool guide before generating a guard.",
+      });
+      return;
+    }
+
+    // Concrete target tools check
+    if (!hasConcreteTargetTools(toolGuide)) {
+      setToastMessage({
+        kind: "error",
+        title: "Cannot generate guard",
+        subtitle: "Select specific target tools to generate a guard.",
+      });
+      return;
+    }
+
+    setGeneratingToolGuardPolicyId(policyId);
+
+    try {
+      const headers: Record<string, string> = {};
+      if (draftMode) {
+        headers["X-Use-Draft"] = "true";
+      }
+
+      const response = await api.apiFetch(
+        `/api/config/policies/${encodeURIComponent(policyId)}/tool-guards/generate`,
+        {
+          method: "POST",
+          headers,
+        }
+      );
+
+      if (!response.ok) {
+        const errorText = await response.text();
+        let errorMessage = "Failed to generate tool guard";
+        try {
+          const errorData = JSON.parse(errorText);
+          errorMessage = errorData.message || errorMessage;
+        } catch {
+          errorMessage = errorText || errorMessage;
+        }
+        setToastMessage({
+          kind: "error",
+          title: "Generation failed",
+          subtitle: errorMessage,
+        });
+        return;
+      }
+
+      const result = await response.json();
+
+      if (result.config_synced === false) {
+        if (result.tool_guards) {
+          mergeToolGuardsIntoPolicy(policyId, result.tool_guards);
+        }
+      } else {
+        await loadConfig();
+      }
+
+      // Build toast message based on results
+      const successTools = result.results
+        .filter((r: { status: string }) => r.status === "ok")
+        .map((r: { tool: string }) => r.tool);
+      const failedTools = result.results
+        .filter((r: { status: string }) => r.status === "error")
+        .map((r: { tool: string }) => r.tool);
+
+      if (successTools.length > 0 && failedTools.length === 0) {
+        setToastMessage({
+          kind: result.config_synced === false ? "warning" : "success",
+          title: result.config_synced === false ? "Guard generated (sync pending)" : "Guard generated",
+          subtitle:
+            result.config_synced === false
+              ? `${successTools.join(", ")} generated in policy storage but config sync failed. ${result.sync_error ?? "Refresh and save before publishing."}`
+              : `Tool guard created for: ${successTools.join(", ")}`,
+        });
+      } else if (successTools.length > 0 && failedTools.length > 0) {
+        setToastMessage({
+          kind: "warning",
+          title: "Partial success",
+          subtitle: `Generated for ${successTools.join(", ")}. Failed: ${failedTools.join(", ")}${
+            result.config_synced === false ? `. Config sync failed: ${result.sync_error ?? "refresh before publishing"}` : ""
+          }`,
+        });
+      } else {
+        setToastMessage({
+          kind: "error",
+          title: "Generation failed",
+          subtitle: `Failed to generate guards for: ${failedTools.join(", ")}`,
+        });
+      }
+    } catch (error) {
+      const errorMessage =
+        error instanceof Error ? error.message : "Network error occurred";
+      setToastMessage({
+        kind: "error",
+        title: "Generation failed",
+        subtitle: errorMessage,
+      });
+    } finally {
+      setGeneratingToolGuardPolicyId(null);
     }
   };
 
@@ -1236,7 +1431,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
           </Tile>
         ) : (
           <Stack gap={4}>
-            {ToolGuides.map((policy) => {
+            {ToolGuides.map((policy: ToolGuidePolicy) => {
               const isExpanded = expandedPolicy === policy.id;
               return (
                 <Tile key={policy.id} style={{ padding: 0, border: "1px solid var(--cds-border-subtle)" }}>
@@ -1263,6 +1458,47 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           />
                         </div>
                       </Stack>
+                        {generatingToolGuardPolicyId === policy.id ? (
+                          <InlineLoading description="Generating..." />
+                        ) : (
+                          <Button
+                            kind="ghost"
+                            size="sm"
+                            hasIconOnly
+                            renderIcon={Security}
+                            iconDescription={
+                              allTargetToolsHaveGuard(policy)
+                                ? "All target tools already have guards"
+                                : !policy.enabled
+                                ? "Policy is disabled"
+                                : !config.enablePolicies
+                                ? "Policies disabled"
+                                : !hasConcreteTargetTools(policy)
+                                ? "Select specific target tools to generate a guard"
+                                : "Generate tool guard"
+                            }
+                            tooltipPosition="bottom"
+                            onClick={() => {
+                              if (allTargetToolsHaveGuard(policy)) {
+                                setToastMessage({
+                                  kind: "success",
+                                  title: "Tool guards already generated",
+                                  subtitle: "All target tools already have guards.",
+                                });
+                              } else {
+                                generateToolGuard(policy.id);
+                              }
+                            }}
+                            disabled={
+                              generatingToolGuardPolicyId !== null ||
+                              !config.enablePolicies ||
+                              !policy.enabled ||
+                              allTargetToolsHaveGuard(policy) ||
+                              !hasConcreteTargetTools(policy)
+                            }
+                            className={allTargetToolsHaveGuard(policy) ? "guard-generated" : ""}
+                          />
+                        )}
                       <Stack orientation="horizontal" gap={2}>
                         <Button
                           kind="ghost"
@@ -1286,10 +1522,24 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                       </Stack>
                     </Stack>
                     {!isExpanded && (
-                      <Stack orientation="horizontal" gap={4} style={{ marginTop: "0.5rem", marginLeft: "2.5rem", color: "var(--cds-text-secondary)", fontSize: "0.75rem" }}>
+                      <Stack orientation="horizontal" gap={4} style={{ marginTop: "0.5rem", marginLeft: "2.5rem", color: "var(--cds-text-secondary)", fontSize: "0.75rem", alignItems: "center" }}>
                         <span>{policy.target_tools.includes("*") ? "All tools" : `${policy.target_tools.length} tool(s)`}</span>
                         {policy.target_apps && policy.target_apps.length > 0 && <span>{policy.target_apps.length} app(s)</span>}
                         <span>Priority: {policy.priority}</span>
+                        {allTargetToolsHaveGuard(policy) && (
+                          <span
+                            style={{
+                              backgroundColor: "var(--cds-support-success)",
+                              color: "var(--cds-text-on-color)",
+                              padding: "0.125rem 0.5rem",
+                              borderRadius: "0.25rem",
+                              fontSize: "0.625rem",
+                              fontWeight: 600,
+                            }}
+                          >
+                            Guarded
+                          </span>
+                        )}
                       </Stack>
                     )}
                   </div>

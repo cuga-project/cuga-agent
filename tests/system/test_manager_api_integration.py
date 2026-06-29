@@ -98,6 +98,7 @@ class ManagerProcess:
         # Set environment variable for manager mode
         env = os.environ.copy()
         env["CUGA_MANAGER_MODE"] = "true"
+        env["CUGA_THREAD_WORKSPACE_SEED"] = "ci"
 
         # Create log file in tests/system directory
         self.log_file = Path(__file__).parent / "manager.logs"

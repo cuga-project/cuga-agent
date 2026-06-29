@@ -5,7 +5,7 @@ if [ "$1" = "--help" ] || [ "$1" = "-h" ]; then
     echo "Usage: $0 [OPTION]"
     echo ""
     echo "Test runner script:"
-    echo "  (no args)    Run default tests (registry + e2e + stability tests)"
+    echo "  (no args)    Run default tests (registry + e2e + load + stability tests)"
     echo "  unit_tests         Run unit tests only (registry + agent-core + cuga-lite + supervisor + knowledge)"
     echo "  --skip-stability   Run all tests except stability tests"
     echo "  --help, -h   Show this help message"
@@ -89,6 +89,16 @@ run_pytest \
     tests/integration/test_knowledge_integration.py
 echo "Running cuga_lite bind_tools tests..."
 run_pytest tests/unit/test_cuga_lite_bind_tools.py
+echo "Running ToolGuard provider tests..."
+run_pytest tests/unit/test_toolguard_provider.py \
+    tests/unit/test_policy_tool_guide_loading.py \
+    tests/unit/test_async_tool_provider_construction.py \
+    tests/unit/test_tool_guard_generation.py \
+    tests/unit/test_tool_guard_generation_route.py \
+    tests/unit/test_tool_guard_generation_route_sync.py
+echo "Running A2A tests..."
+run_pytest tests/integration/a2a/ \
+    tests/unit/test_a2a_simple_runner_hitl.py
 echo "✅ All unit tests passed!"
 
 # Check for test type flag
@@ -101,6 +111,11 @@ else
     run_pytest ./src/cuga/sdk_core/tests/
     echo "Running manager API integration tests..."
     run_pytest ./tests/system/test_manager_api_integration.py
+    echo "Running load test helpers..."
+    run_pytest ./src/system_tests/load/tests/
+    run_pytest tests/unit/test_load_test_mock_llm.py
+    echo "Running mocked concurrent load test..."
+    run_pytest ./src/system_tests/load/load_test_with_mocked_llm.py --load-test-users 5
     if [ -n "$SKIP_STABILITY" ]; then
         echo "Skipping stability tests (--skip-stability)"
         echo "✅ All tests passed!"

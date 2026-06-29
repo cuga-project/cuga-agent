@@ -7,9 +7,18 @@ on:
     branches: [ main, develop ]
   workflow_dispatch:
 
+# Workflow-level least-privilege per CodeQL Actions hardening rule. Both
+# jobs only need to read repo contents; the pgvector job's services block
+# runs in the GHA runner sandbox, not against the repo. Override on a
+# per-job basis if any future job needs to write (e.g. publish, comment).
+permissions:
+  contents: read
+
 jobs:
   unit-tests:
     name: Unit Tests
+    # Fork PRs have no secrets on pull_request; see external-fork-tests.yml.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
@@ -20,22 +29,102 @@ jobs:
 
     steps:
       - name: Checkout code
-        uses: actions/checkout@v5
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
       
       - name: Install uv
-        uses: astral-sh/setup-uv@v6
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
       
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: '3.12'
       
       - name: Install dependencies
         run: uv sync --all-extras --dev
-      
+
       - name: Install Playwright browsers
         run: uv run playwright install --with-deps chromium
       
       - name: Run unit tests
         run: bash src/scripts/run_tests.sh --skip-stability
 
+  pgvector-integration:
+    name: pgvector Integration
+    runs-on: ubuntu-latest
+    # Parallel to unit-tests — a pgvector flake doesn't gate the
+    # 709 mock tests, and the unit-tests job's wall-clock subsumes ours.
+    # MVT scope per the 2-expert debate (2026-06-10): 2 tests on every
+    # PR. The full 8-scenario matrix (HNSW contention, container kill,
+    # pool exhaustion, etc.) is tracked in a follow-up issue and runs
+    # nightly.
+    env:
+      # Address Sami's pgvector QA gate: orphan-vector rollback in
+      # ``adapter.py::_add_all`` was previously only exercised against
+      # mocked / sqlite-vec backends. sqlite-vec's atomic-write semantics
+      # structurally cannot reproduce the bug class (MVCC visibility,
+      # per-batch transaction commits, asyncpg pool reuse, HNSW page
+      # locks). This job runs the MVT against a real pgvector container.
+      CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING: postgresql://cuga:cuga@localhost:5432/cuga_test  # pragma: allowlist secret
+
+    services:
+      pgvector:
+        # Pinned tag (NOT :latest) — pg16 line is stable for pgvector
+        # 0.7+, which the langchain_postgres dep tree requires.
+        image: pgvector/pgvector:0.8.0-pg16
+        env:
+          POSTGRES_USER: cuga
+          POSTGRES_PASSWORD: cuga  # pragma: allowlist secret
+          POSTGRES_DB: cuga_test
+        ports:
+          - 5432:5432
+        # ``--health-start-period 10s`` absorbs first-boot WAL init;
+        # without it pgvector 0.8.0/pg16 cold start flakes ~2% on
+        # shared GHA runners. ``pg_isready`` (not just TCP-open) is the
+        # signal that the extension can be created.
+        options: >-
+          --health-cmd "pg_isready -U cuga -d cuga_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+          --health-start-period 10s
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies (headless suite — no Playwright)
+        run: uv sync --all-extras --dev
+
+      - name: Enable pgvector extension
+        env:
+          PGPASSWORD: cuga  # pragma: allowlist secret
+        run: |
+          psql -h localhost -U cuga -d cuga_test \
+            -c "CREATE EXTENSION IF NOT EXISTS vector;"
+
+      - name: Run pgvector integration tests (MVT)
+        run: uv run pytest tests/integration/test_knowledge_pgvector_rollback.py
+              -v -m pgvector --maxfail=3 --durations=10
+        env:
+          PYTHONUNBUFFERED: "1"
+
+      - name: Dump Postgres logs on failure
+        if: failure()
+        run: |
+          docker ps -a
+          for cid in $(docker ps -aq); do
+            echo "=== logs $cid ==="
+            docker logs "$cid" 2>&1 | tail -100 || true
+          done

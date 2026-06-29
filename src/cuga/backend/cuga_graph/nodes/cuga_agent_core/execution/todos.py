@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
@@ -69,12 +69,15 @@ def _serialize_todos_for_store(todos_list: List[Any]) -> List[Dict[str, str]]:
 async def create_update_todos_tool(
     agent_state: Optional[Any] = None,
     todos_store_ref: Optional[List[Dict[str, str]]] = None,
+    write_todos: Optional[Callable[[List[Dict[str, str]]], None]] = None,
 ) -> StructuredTool:
     """Create a create_update_todos StructuredTool for managing task todos.
 
     Args:
         agent_state: Optional AgentState (reserved for future use)
         todos_store_ref: Mutable list shared with the graph; latest todos are written here for the system prompt.
+        write_todos: Optional callback receiving the serialized todos. Lets a caller persist todos into
+            run-local state (e.g. the supervisor) instead of a shared list, avoiding cross-run bleed.
 
     Returns:
         StructuredTool configured for creating and updating todos
@@ -120,10 +123,13 @@ async def create_update_todos_tool(
                 # Last resort: wrap in a list
                 todos_list = [Todo(**input_data) if isinstance(input_data, dict) else input_data]
 
-        if todos_store_ref is not None:
+        if todos_store_ref is not None or write_todos is not None:
             serialized = _serialize_todos_for_store(todos_list)
-            todos_store_ref.clear()
-            todos_store_ref.extend(serialized)
+            if todos_store_ref is not None:
+                todos_store_ref.clear()
+                todos_store_ref.extend(serialized)
+            if write_todos is not None:
+                write_todos(serialized)
 
         normalized = [t if isinstance(t, Todo) else Todo(**t) for t in todos_list]
         return TodosOutput(todos=normalized)

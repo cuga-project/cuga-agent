@@ -42,7 +42,9 @@ class ScriptedGraphRunner:
     on_run: Optional[Callable[[str, Optional[str]], None]] = None
     received: List[tuple[str, Optional[str]]] = field(default_factory=list)
 
-    async def run(self, message: str, context_id: Optional[str] = None) -> AsyncIterator[FakeStreamEvent]:
+    async def run(
+        self, message: str, context_id: Optional[str] = None, approval: Optional[dict] = None
+    ) -> AsyncIterator[FakeStreamEvent]:
         self.received.append((message, context_id))
         if self.on_run is not None:
             self.on_run(message, context_id)

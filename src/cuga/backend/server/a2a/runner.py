@@ -74,7 +74,9 @@ class SupervisorA2ARunner:
             self._app_state.a2a_supervisor = supervisor
             return supervisor
 
-    async def run(self, message: str, context_id: Optional[str] = None) -> AsyncIterator[A2AStreamEvent]:
+    async def run(
+        self, message: str, context_id: Optional[str] = None, approval: Optional[dict] = None
+    ) -> AsyncIterator[A2AStreamEvent]:
         """Invoke the supervisor and emit one terminal event with its answer.
 
         Errors during graph execution are caught and surfaced as a
@@ -110,7 +112,9 @@ class PlaceholderA2ARunner:
     so callers get a well-formed Task envelope instead of an HTTP 5xx.
     """
 
-    async def run(self, message: str, context_id: Optional[str] = None) -> AsyncIterator[A2AStreamEvent]:
+    async def run(
+        self, message: str, context_id: Optional[str] = None, approval: Optional[dict] = None
+    ) -> AsyncIterator[A2AStreamEvent]:
         """Yield a single terminal event explaining the missing config."""
         yield A2AStreamEvent(
             "final_answer",
@@ -136,21 +140,35 @@ def _settings_to_card_dict(a2a_settings: Any) -> dict[str, Any]:
     }
 
 
-def build_a2a_router_for_settings(a2a_settings: Any, app_state: Any) -> APIRouter:
+def build_a2a_router_for_settings(
+    a2a_settings: Any, app_state: Any, event_stream_func: Any = None
+) -> APIRouter:
     """Build the A2A FastAPI router bound to a runner picked by settings.
 
     If ``a2a_settings.supervisor_config_path`` is set we lazily front the
-    real CUGA supervisor; otherwise we mount a placeholder so the
-    endpoints at least respond with a well-formed Task envelope.
+    real CUGA supervisor; if ``event_stream_func`` is provided we use the
+    simple runner that directly uses CUGA's event stream; otherwise we mount
+    a placeholder so the endpoints at least respond with a well-formed Task envelope.
     Returns a router ready for ``app.include_router(...)``.
     """
     supervisor_path = getattr(a2a_settings, "supervisor_config_path", "") or ""
+
     if supervisor_path:
         runner: Any = SupervisorA2ARunner(app_state, supervisor_path)
-        logger.info("A2A inbound: routing requests through supervisor at %s", supervisor_path)
+        logger.info(f"A2A inbound: routing requests through supervisor at {supervisor_path}")
+    elif event_stream_func is not None:
+        from cuga.backend.server.a2a.simple_runner import SimpleA2ARunner
+
+        auto_approve = bool(getattr(a2a_settings, "auto_approve", False))
+        runner = SimpleA2ARunner(app_state, event_stream_func, auto_approve=auto_approve)
+        logger.info(
+            "A2A inbound: routing requests through simple runner (direct CUGA agent, auto_approve=%s)",
+            auto_approve,
+        )
     else:
         runner = PlaceholderA2ARunner()
         logger.warning(
             "A2A inbound enabled but settings.a2a.supervisor_config_path is empty; using placeholder runner."
         )
+
     return build_router(runner=runner, settings=_settings_to_card_dict(a2a_settings))

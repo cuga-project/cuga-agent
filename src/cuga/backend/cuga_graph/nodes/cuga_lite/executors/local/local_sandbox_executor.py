@@ -33,10 +33,14 @@ from loguru import logger
 # Canonical workspace path logic now lives in the consolidated filesystem
 # package. Re-exported here under the historical names for back-compat
 # (external imports of ``local_thread_workspace_root`` / ``_resolve_workspace_path``).
+from cuga.backend.cuga_graph.nodes.cuga_lite.executors.common.run_output import (
+    format_run_command_output,
+)
 from cuga.backend.cuga_graph.nodes.cuga_lite.executors.filesystem.paths import (
     CUGA_WORKSPACE_DIRNAME,
     VIRTUAL_WORKSPACE_ROOT,
     local_base_dir as _local_base_dir,
+    normalize_shell_command_paths,
     public_workspace_path as _public_workspace_path,
     resolve_workspace_path as _resolve_workspace_path,
     safe_thread_id as _safe_thread_id,
@@ -109,7 +113,7 @@ class LocalSandboxExecutor:
             )
             await proc2.communicate()
             if proc2.returncode != 0:
-                logger.error("[LocalSandbox] python -m venv failed for %s", venv)
+                logger.error(f"[LocalSandbox] python -m venv failed for {venv}")
         return venv
 
     def _command_env(self, workspace_root: Path, venv: Path) -> dict[str, str]:
@@ -134,21 +138,29 @@ class LocalSandboxExecutor:
         env["PATH"] = bindir + os.pathsep + env.get("PATH", "")
         return env
 
-    def _copy_skills_to_workspace(self, thread_id: Optional[str] = None) -> None:
+    def _copy_skills_to_workspace(
+        self,
+        thread_id: Optional[str] = None,
+        cuga_folder: Optional[str] = None,
+        skills_enabled: Optional[bool] = None,
+    ) -> None:
         """Copy discovered skill folders into the per-thread /workspace/skills directory."""
         from cuga.config import settings
 
-        if not getattr(settings.skills, "enabled", False):
+        enabled = skills_enabled if skills_enabled is not None else getattr(settings.skills, "enabled", False)
+        if not enabled:
             return
         try:
             from cuga.backend.skills.loader import discover_skills
         except Exception:
             return
 
-        cuga_folder = (os.getenv("CUGA_FOLDER") or "").strip() or (
-            getattr(settings.policy, "cuga_folder", None) or ""
-        ).strip()
-        skill_entries = discover_skills(cuga_folder or None)
+        resolved_folder = (
+            cuga_folder
+            or (os.getenv("CUGA_FOLDER") or "").strip()
+            or (getattr(settings.policy, "cuga_folder", None) or "").strip()
+        )
+        skill_entries = discover_skills(resolved_folder or None)
 
         copied = 0
         for skill_entry in skill_entries:
@@ -178,7 +190,8 @@ class LocalSandboxExecutor:
 
     async def _run_command(
         self, cmd: str, *, thread_id: Optional[str] = None, timeout: int = 120
-    ) -> tuple[str, str]:
+    ) -> tuple[str, str, int]:
+        cmd = normalize_shell_command_paths(cmd)
         workspace_root = local_thread_workspace_root(thread_id)
         workspace_root.mkdir(parents=True, exist_ok=True)
         venv = await self._ensure_workspace_venv(workspace_root)
@@ -207,9 +220,10 @@ class LocalSandboxExecutor:
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             stdout_text = stdout.decode(errors="replace")
             stderr_text = stderr.decode(errors="replace")
-            if proc.returncode != 0:
-                stderr_text = (stderr_text + "\n" if stderr_text else "") + f"(exit code {proc.returncode})"
-            return stdout_text, stderr_text
+            returncode = proc.returncode or 0
+            if returncode != 0:
+                stderr_text = (stderr_text + "\n" if stderr_text else "") + f"(exit code {returncode})"
+            return stdout_text, stderr_text, returncode
         except asyncio.TimeoutError:
             proc.kill()
             raise TimeoutError(f"Command timed out after {timeout}s")
@@ -224,11 +238,8 @@ class LocalSandboxExecutor:
                 cmd: Shell command (e.g. "uv pip install pandas", "node script.js")
             """
             try:
-                stdout, stderr = await executor._run_command(cmd, thread_id=thread_id)
-                output = stdout
-                if stderr.strip():
-                    output += f"\n[stderr]\n{stderr}"
-                return output or "(command completed with no output)"
+                stdout, stderr, returncode = await executor._run_command(cmd, thread_id=thread_id)
+                return format_run_command_output(stdout, stderr, failed=returncode != 0)
             except TimeoutError as exc:
                 return f"[run_command error] {exc}"
             except Exception as exc:
@@ -236,25 +247,35 @@ class LocalSandboxExecutor:
 
         return run_command
 
-    def create_sandbox_tools(self, thread_id: Optional[str] = None) -> list[StructuredTool]:
+    def create_sandbox_tools(
+        self,
+        thread_id: Optional[str] = None,
+        cuga_folder: Optional[str] = None,
+        skills_enabled: Optional[bool] = None,
+    ) -> list[StructuredTool]:
         """Return the run_command StructuredTool for local (unsandboxed) execution.
 
         Filesystem tools (read/write/list/edit/...) are no longer produced
         here — they come from the consolidated ``filesystem`` package via
         ``create_filesystem_tools`` (see ``cuga_lite_graph``).
         """
-        self._copy_skills_to_workspace(thread_id)
+        self._copy_skills_to_workspace(thread_id, cuga_folder=cuga_folder, skills_enabled=skills_enabled)
         return [
             StructuredTool.from_function(
                 coroutine=self.create_run_command_tool(thread_id),
                 name="run_command",
                 description=(
-                    "Run a shell command directly on the host and return its output. "
+                    "Run a shell command directly on the host and return stdout as a plain string "
+                    "(appends `\\n[stderr]\\n...` on failure) — not a dict. "
                     "The working directory is the sandbox workspace — use relative paths for all files "
-                    "(e.g. `node ./script.js`, `uv run ./script.py`). "
-                    "A per-thread `.venv` is on PATH; `UV_NO_CONFIG=1` ensures `uv pip install` targets "
-                    "that venv and not the Cuga project. "
-                    "Use uv only for Python packages (`uv pip install ...`); never `python -m ...` — use `uv run python -m ...`. "
+                    "(e.g. `node ./script.js`, `python ./script.py`, or `uv run --no-project ./script.py`). "
+                    "Per-thread `.venv` is on PATH with `UV_NO_CONFIG=1`. "
+                    "Install with `uv pip install ...`. Verify with `python -c \"import pkg; print('ok')\"` "
+                    "or `uv pip show pkg` — not `python -m pip` or `pip show`. "
+                    "Run with `python ./script.py` first; retry with `uv run --no-project ...` if that fails. "
+                    "Write scripts with write_file before running them. "
+                    "For uploaded/session files use `./uploads/...` in shell commands (or `/workspace/...` — "
+                    "rewritten automatically); `read_file` accepts both. "
                     "Node commands: plain `node ...`; npm commands: plain `npm ...`. "
                     "Never use `uv npm`, `uv run node`, or `uv run npm`. "
                     "Skills are available at `./skills/<skill_name>/`."

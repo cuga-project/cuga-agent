@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import collections
 import functools
+import hashlib
 import ipaddress
 from loguru import logger as loguru_logger
 import re
@@ -30,13 +31,86 @@ from langchain_core.indexing import InMemoryRecordManager
 from langchain_docling import DoclingLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 
-from cuga.backend.knowledge.config import KnowledgeConfig, knowledge_vector_backend_for_settings
+from cuga.backend.knowledge.config import (
+    KnowledgeConfig,
+    client_adaptation_hash as _client_adapt_hash,
+    client_glossary_hash as _client_glossary_hash,
+    knowledge_vector_backend_for_settings,
+)
 from cuga.backend.knowledge.interprocess_lock import acquire_exclusive_nonblocking, release_exclusive
 from cuga.backend.knowledge.metadata import create_knowledge_metadata
 from cuga.backend.storage.facade import get_storage_connection_params
 from cuga.backend.knowledge.vector_store_base import VectorStoreAdapter
 
 logger = loguru_logger
+
+
+# Docling's plugin factory emits a WARNING every time it scans for plugins:
+#   "The plugin langchain_docling will not be loaded because Docling is being
+#    executed with allow_external_plugins=false."
+# This fires 4-8x per ingest. It's COMPLETELY BENIGN — Docling's plugin
+# security policy is working as designed; we don't use external plugins.
+# Filter the message out of stdlib logging so it doesn't pollute every log.
+def _install_docling_plugin_log_filter() -> None:
+    import logging as _stdlib_logging
+
+    class _DropDoclingPluginNotice(_stdlib_logging.Filter):
+        def filter(self, record: _stdlib_logging.LogRecord) -> bool:  # type: ignore[override]
+            msg = record.getMessage()
+            return "will not be loaded because Docling is being executed" not in msg
+
+    target = _stdlib_logging.getLogger("docling.models.factories.base_factory")
+    # Guard against double-install (engine instantiation can happen multiple
+    # times in tests / SDK use).
+    if not any(isinstance(f, _DropDoclingPluginNotice) for f in target.filters):
+        target.addFilter(_DropDoclingPluginNotice())
+
+
+_install_docling_plugin_log_filter()
+
+
+# Docling's inference engines emit a single line on init confirming the
+# device the model was actually moved to (e.g. "Transformers engine ready
+# (device=mps, ...)"). It goes to Python's stdlib logger, which cuga's
+# loguru setup doesn't capture by default — so users can't verify GPU
+# engagement from the cuga log. Bridge only the two engine loggers we
+# need; broader interception would pollute the log with Docling's
+# per-page progress chatter.
+def _bridge_docling_engine_logs_to_loguru() -> None:
+    import logging as _stdlib_logging
+
+    class _LoguruBridge(_stdlib_logging.Handler):
+        def emit(self, record: _stdlib_logging.LogRecord) -> None:
+            try:
+                level = logger.level(record.levelname).name
+            except (ValueError, AttributeError):
+                level = "INFO"
+            try:
+                msg = record.getMessage()
+            except Exception:  # pragma: no cover - defensive
+                msg = str(record.msg)
+            logger.opt(depth=2).log(level, "[docling] {}", msg)
+
+    targets = (
+        "docling.models.inference_engines.object_detection.transformers_engine",
+        "docling.models.inference_engines.object_detection.onnxruntime_engine",
+    )
+    for name in targets:
+        lg = _stdlib_logging.getLogger(name)
+        if any(isinstance(h, _LoguruBridge) for h in lg.handlers):
+            continue
+        lg.addHandler(_LoguruBridge())
+        # Show device confirmation (INFO) and the "Loading model to device X"
+        # debug line so we have ground truth on both the requested device and
+        # the device the model actually landed on.
+        if lg.level == _stdlib_logging.NOTSET or lg.level > _stdlib_logging.DEBUG:
+            lg.setLevel(_stdlib_logging.DEBUG)
+        # Don't double-emit through the root logger.
+        lg.propagate = False
+
+
+_bridge_docling_engine_logs_to_loguru()
+
 
 BLOCKED_HOSTNAMES = {"localhost", "metadata.google.internal", "169.254.169.254"}
 ALLOWED_PORTS = {80, 443, 8080, 8443}
@@ -76,10 +150,519 @@ def _translate_document_load_error(file_path: Path, exc: BaseException) -> Excep
             return ValueError(
                 f"PDF is password-protected and cannot be indexed without a password: {file_path.name}"
             )
+        # Tesseract traineddata not installed — surfaces during OCR. Tell the user
+        # which pack is missing and how to install it.
+        if "traineddata" in lowered or "tessdata" in lowered:
+            return ValueError(
+                f"Tesseract is missing a language pack required to OCR {file_path.name}.\n"
+                "Install the matching pack:\n"
+                "  macOS: brew install tesseract-lang\n"
+                "  Linux: apt install tesseract-ocr-all"
+            )
 
     if isinstance(exc, Exception):
         return exc
     return RuntimeError(str(exc))
+
+
+# Docling chunk item labels that represent pure page chrome (gutters,
+# running headers, footers, line-number columns from academic PDFs).
+# Chunks composed *entirely* of these are noise — the academic-paper
+# `'1998\n1999\n...2074'` chunk that polluted the live trace is exactly
+# this case: a run of page numbers Docling correctly labelled, that we
+# nevertheless indexed and surfaced to the LLM as "data".
+_DOCLING_PAGE_CHROME_LABELS: frozenset[str] = frozenset(
+    {
+        "page_footer",
+        "page_header",
+    }
+)
+
+
+def _chunk_is_pure_page_chrome(dl_meta: Any) -> bool:
+    """Return True when EVERY contributing Docling item is page chrome.
+
+    Conservative on purpose:
+      - mixed chunk (body + footer) → False (keep — body content matters)
+      - empty / missing labels → False (don't drop unknown things)
+      - non-Docling docs (markdown, txt) without ``dl_meta`` → False
+    The "all items must be chrome" rule ensures we never lose a real
+    paragraph just because Docling stapled a footer label onto it.
+    """
+    if not isinstance(dl_meta, dict):
+        return False
+    doc_items = dl_meta.get("doc_items")
+    if not isinstance(doc_items, list) or not doc_items:
+        return False
+    labels: list[str] = []
+    for item in doc_items:
+        if isinstance(item, dict):
+            lab = item.get("label")
+            if isinstance(lab, str):
+                labels.append(lab)
+    if not labels:
+        return False
+    return all(lab in _DOCLING_PAGE_CHROME_LABELS for lab in labels)
+
+
+# Code/markup file extensions whose chunks legitimately have low alphabetic
+# ratios (lots of punctuation, brackets, identifiers, numbers). Skip the
+# alpha-ratio rule for these so a Python file or JSON config doesn't get
+# nuked as "noise."
+_CODE_FILE_EXTENSIONS: frozenset[str] = frozenset(
+    {
+        ".py",
+        ".md",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".cfg",
+        ".ini",
+        ".conf",
+        ".sh",
+        ".bash",
+        ".zsh",
+        ".rs",
+        ".go",
+        ".ts",
+        ".tsx",
+        ".js",
+        ".jsx",
+        ".java",
+        ".kt",
+        ".swift",
+        ".rb",
+        ".php",
+        ".css",
+        ".html",
+        ".xml",
+        ".sql",
+        ".c",
+        ".cpp",
+        ".h",
+        ".hpp",
+        ".cs",
+    }
+)
+
+
+import re as _stdlib_re  # noqa: E402
+import string as _stdlib_string  # noqa: E402 — placed near consumer for cohesion
+
+# Module-level frozenset for the digit + whitespace + ASCII-punct check
+# in ``_classify_junk_chunk``. Built once at import time so the hot path
+# does ONE membership test per char instead of rebuilding the set per
+# call. Unicode letters (Hebrew, CJK, accented Latin) are deliberately
+# NOT in here — the digit/punct rule is ASCII-only by design so it
+# doesn't false-positive on non-Latin content.
+_DIGIT_PUNCT_WS_CHARS: frozenset[str] = frozenset(
+    _stdlib_string.digits + _stdlib_string.punctuation + " \t\n\r\v\f"
+)
+
+# CID-glyph token detector. Scanned PDFs whose text layer is the font's
+# CID index (not actual letters) deliver text like
+# ``/CE3/CE5/CE1/CEB/CEC /CF8/CE1`` — slashes concatenate glyphs WITHIN
+# a token; whitespace separates tokens. The other noise rules MISS
+# these because the A–F hex digits count as alphabetic (``isalpha()``
+# returns True), pushing the alpha ratio past the 25% floor. A token-
+# shape detector catches them at the tokenisation level: ONE or more
+# repetitions of ``/?C`` + 2–4 hex chars, with no other content. A live
+# production trace had 3/14 results from a single non-OCR'd Hebrew scan
+# in exactly this shape.
+_CID_GLYPH_TOKEN_RE: _stdlib_re.Pattern[str] = _stdlib_re.compile(r"^(/?C[0-9A-Fa-f]{2,4}){1,}$")
+# Threshold: fraction of tokens that must be CID-shaped before we flag
+# the chunk. 30% catches the production trace's chunks (≥60% CID by
+# count) with comfortable margin against mixed prose-plus-glyph chunks
+# where a stray ``/C2E`` reference shouldn't trigger.
+_CID_GLYPH_RATIO_THRESHOLD: float = 0.3
+# Minimum length of a consecutive run of CID-shape tokens before we flag
+# the chunk via the run rule. 3 is the smallest run that has zero false
+# positives on legitimate path fragments (a single ``/usr/local/bin`` is
+# fine; three back-to-back ``/Cxx`` tokens is OCR garbage in every
+# production sample). Independent of the ratio threshold so mixed-content
+# chunks with a glyph cluster get caught even when the prose floods the
+# token count.
+_CID_GLYPH_RUN_MIN: int = 3
+
+
+def _classify_junk_chunk(text: str, filename: str) -> str | None:
+    """Heuristic noise detector. Returns the first matching reason or ``None``.
+
+    Rules — kept few and explicable so an SRE reading a log line can
+    instantly diagnose a false positive:
+      - ``"too_short"`` : ``len(text.strip()) < 30`` — orphan caption fragments.
+      - ``"cid_glyph_run"``: a consecutive run of ≥3 CID-shape tokens.
+        Catches mixed-content chunks where a glyph fragment is intermixed
+        with prose (the ratio rule below misses these because the prose
+        floods the token count). Production trace: a Hebrew insurance
+        PDF emitted ``"- /C2E/CEF/CEB /C2D /C4C... <Hebrew sentence>"`` —
+        12 tokens of CID garbage drowned out by trailing prose pushed
+        ``cid_hits / len(tokens)`` under the ratio threshold.
+      - ``"cid_glyph_ratio"``: ≥30% of whitespace-split tokens match the
+        ``/?C[0-9A-Fa-f]{2,4}`` CID-glyph shape. Catches scanned PDFs
+        whose Docling text layer is the font CID index (not letters).
+        These bypass ``low_alpha_ratio`` because the hex chars A-F count
+        as letters under ``isalpha()``.
+      - ``"digit_punct_ratio"``: 65%+ of chars are digit/whitespace/ASCII-punct
+        — the academic line-number runs like ``'1998\\n1999\\n...'``.
+        SKIPPED for code/markup files (their punctuation density is normal).
+      - ``"low_alpha_ratio"``: <25% alphabetic (Unicode-aware, so Hebrew /
+        CJK still count). Catches mojibake. SKIPPED for code/markup files.
+
+    Hot path: single pass over the stripped string, two counters, no
+    per-call set construction. ``isalpha()`` covers Unicode letters
+    natively. Returns ``None`` when nothing matches → caller keeps the chunk.
+    """
+    stripped = text.strip()
+    total = len(stripped)
+    if total < 30:
+        return "too_short"
+
+    # CID-glyph rules run BEFORE the code-file whitelist because no
+    # legitimate ``.py`` / ``.json`` source contains long runs of
+    # ``/Cxx`` tokens. The RUN rule is checked first — it's a more
+    # specific signal than the ratio rule and catches mixed-content
+    # fragments the ratio rule misses (Hebrew prose + glyph cluster).
+    tokens = stripped.split()
+    # RUN rule: scan for a consecutive run of 3+ CID-shape tokens.
+    # 3 is the smallest run length that's vanishingly unlikely to occur
+    # naturally (a token shape like ``/Cxx`` matches both isalnum-ish
+    # text AND legitimate path fragments — but three IN A ROW is OCR
+    # garbage in every production trace we've seen).
+    _run = 0
+    for t in tokens:
+        if _CID_GLYPH_TOKEN_RE.match(t):
+            _run += 1
+            if _run >= _CID_GLYPH_RUN_MIN:
+                return "cid_glyph_run"
+        else:
+            _run = 0
+    # RATIO rule: catches pure-CID chunks where the run rule might
+    # not trigger (e.g. CID tokens scattered with single non-CID tokens
+    # between them — each run is 1-2, but the overall ratio is high).
+    if len(tokens) >= 5:
+        cid_hits = sum(1 for t in tokens if _CID_GLYPH_TOKEN_RE.match(t))
+        if cid_hits / len(tokens) >= _CID_GLYPH_RATIO_THRESHOLD:
+            return "cid_glyph_ratio"
+
+    # Filename whitelist for code/markup. The two ratio rules are disabled
+    # for these — Python/JSON/YAML chunks legitimately have punctuation
+    # densities far above the prose threshold.
+    suffix = ""
+    if "." in filename:
+        suffix = "." + filename.rsplit(".", 1)[1].lower()
+    is_code = suffix in _CODE_FILE_EXTENSIONS
+    if is_code:
+        return None
+
+    # One pass: count digit/punct/ws and alpha simultaneously. Saves a
+    # second iteration of the string in the common case.
+    np = 0
+    alpha = 0
+    for ch in stripped:
+        if ch in _DIGIT_PUNCT_WS_CHARS:
+            np += 1
+        elif ch.isalpha():
+            alpha += 1
+
+    if np / total > 0.65:
+        return "digit_punct_ratio"
+    if alpha / total < 0.25:
+        return "low_alpha_ratio"
+    return None
+
+
+@dataclass
+class _MultiSearchStats:
+    """Aggregated stats from a multi-scope (``scope='all'``) search.
+
+    ``search_multi`` returns this in place of the old single-scope
+    ``_JunkFilterStats`` so the route can build the per-scope
+    ``retrieval`` block without re-aggregating server-side.
+
+    Fields:
+      - ``by_scope``: scope_name → per-scope ``_JunkFilterStats`` (the
+        same shape the single-scope ``search_with_stats`` returns,
+        kept side-by-side instead of summed so the wire can surface
+        per-scope detail).
+      - ``failed_scopes``: scopes whose per-scope search raised. Empty
+        list when all scopes succeeded.
+      - ``partial``: True iff ``len(failed_scopes) > 0``. Redundant with
+        ``failed_scopes`` but the boolean is the LLM-readable signal
+        the contract teaches.
+      - ``top_score_by_scope``: scope_name → top result score. Used by
+        the observability layer to compute the ``recommendation``
+        field (e.g. ``prefer_session`` when session top ≥ 1.5× agent
+        top AND ≥ 0.5 absolute floor).
+    """
+
+    by_scope: dict[str, "_JunkFilterStats"] = None  # type: ignore[assignment]
+    failed_scopes: list[str] = None  # type: ignore[assignment]
+    partial: bool = False
+    top_score_by_scope: dict[str, float] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.by_scope is None:
+            self.by_scope = {}
+        if self.failed_scopes is None:
+            self.failed_scopes = []
+        if self.top_score_by_scope is None:
+            self.top_score_by_scope = {}
+
+
+@dataclass
+class _JunkFilterStats:
+    """Per-search filter accounting surfaced on the wire as
+    ``retrieval.by_scope.<scope>``. Invariant per scope:
+        candidates == returned + filtered_count + below_threshold + drain_drops + dedup_collapses
+
+    Fields:
+      - ``candidates``: raw retriever output count BEFORE any score
+        threshold or junk filter.
+      - ``filtered_count``: chunks the junk filter rejected. In
+        ``dry_run`` mode chunks are counted here but kept in results;
+        in ``enforce`` mode they're dropped.
+      - ``below_threshold``: dense retriever returned the chunk but its
+        cosine score was below ``score_threshold``. Counted across both
+        dense and lexical legs (the lexical leg pre-fusion does not
+        apply the cosine cutoff — see ``_materialize``).
+      - ``drain_drops``: chunks dropped by the over-fetch drain pass
+        (rare; only fires when ``filter_mode='enforce'`` and a pathological
+        page wedges below the limit on the first pass).
+      - ``dedup_collapses``: chunks that were collapsed during cross-scope
+        dedup (search_multi). Attributed to the LOSER's scope so the
+        operator-facing summary reads "your X scope had a duplicate that
+        was eclipsed by a higher-scoring copy in Y".
+      - ``reasons``: classifier reason → count map, surfaced on the wire
+        as ``retrieval.by_scope.<scope>.reasons`` so the LLM can write a
+        thoughtful follow-up ("low-quality OCR fragments were dropped").
+        Cost: one dict-level deeper than the original "single int" shape,
+        bounded by ~5 reasons.
+    """
+
+    candidates: int = 0
+    filtered_count: int = 0
+    below_threshold: int = 0
+    drain_drops: int = 0
+    dedup_collapses: int = 0
+    reasons: dict[str, int] = None  # type: ignore[assignment]
+
+    def __post_init__(self) -> None:
+        if self.reasons is None:
+            self.reasons = {}
+
+
+def _rrf_fuse(
+    dense: list["SearchResult"],
+    lexical: list["SearchResult"],
+    k_rrf: int = 60,
+) -> list["SearchResult"]:
+    """Reciprocal Rank Fusion of dense + lexical result lists.
+
+    Cormack et al. (2009). For each document ``d``:
+        score(d) = sum over ranked lists where d appears of: 1 / (k_rrf + rank)
+
+    Properties that matter for hybrid retrieval:
+      - Rank-based, NOT score-based — defends against score-distribution
+        drift between the two legs. Lexical BM25 and dense cosine live
+        in different scales; comparing raw values would be unsound.
+      - Both legs contribute additively; a chunk that ranks moderately
+        in BOTH legs is preferred over a chunk that ranks #1 in only
+        one leg. This is exactly the "robust to either leg being wrong"
+        property hybrid retrieval is supposed to give us.
+      - ``k_rrf=60`` is the literature default (Cormack 2009 + every
+        production RAG using RRF since). Smaller k boosts top ranks
+        more aggressively; larger k flattens. 60 is well-calibrated for
+        top-K ~= 10-50.
+
+    Documents are identified by ``(filename, page, text)`` — the same
+    key search_multi uses for cross-scope dedup. A doc that appears in
+    both legs is fused; one-leg-only docs still get included (rank=None
+    on the other side contributes 0 to the sum).
+
+    Returns a new list with the SAME SearchResult objects (no copy,
+    same identity) reordered by fused score. The SearchResult.score
+    field keeps its dense value so ``score_threshold`` semantics elsewhere
+    in the code stay unchanged.
+    """
+    if not lexical:
+        return dense  # No lexical signal → identity (cheap, common path).
+    if not dense:
+        return lexical
+
+    def _key(r: SearchResult) -> tuple[str, int | None, str]:
+        return (r.filename, r.page, r.text)
+
+    # ``items[key] = (search_result, dense_rank | None, lexical_rank | None)``.
+    # Iterating dense first lets us prefer the dense-side SearchResult
+    # object (which carries the dense score field) when the chunk
+    # appears in both.
+    items: dict[tuple[str, int | None, str], list] = {}
+    for rank, r in enumerate(dense, start=1):
+        items.setdefault(_key(r), [r, rank, None])
+    for rank, r in enumerate(lexical, start=1):
+        k = _key(r)
+        if k in items:
+            items[k][2] = rank
+        else:
+            items[k] = [r, None, rank]
+
+    def _rrf_score(dense_rank: int | None, lexical_rank: int | None) -> float:
+        s = 0.0
+        if dense_rank is not None:
+            s += 1.0 / (k_rrf + dense_rank)
+        if lexical_rank is not None:
+            s += 1.0 / (k_rrf + lexical_rank)
+        return s
+
+    # Stamp per-leg observability onto the SearchResult so the route +
+    # SDK can surface "why this chunk ranked where it did" without
+    # re-running RRF. Mutates the kept SearchResult in place — safe
+    # because RRF is the last step before junk-filter + cap, and the
+    # result objects don't escape the engine before this point.
+    for _r, _d, _l in items.values():
+        _r.dense_rank = _d
+        _r.lexical_rank = _l
+        _r.rrf_score = round(_rrf_score(_d, _l), 6)
+
+    # Deterministic ordering: primary key is fused score (desc); ties
+    # break on (filename, page) so identical queries produce identical
+    # orderings across runs.
+    fused = sorted(
+        items.values(),
+        key=lambda v: (
+            -v[0].rrf_score if v[0].rrf_score is not None else 0.0,
+            v[0].filename,
+            v[0].page if v[0].page is not None else -1,
+        ),
+    )
+    return [v[0] for v in fused]
+
+
+def _rrf_fuse_lists(result_lists: list[list["SearchResult"]], k_rrf: int = 60) -> list["SearchResult"]:
+    """Reciprocal Rank Fusion over N ranked lists (same math as ``_rrf_fuse``, any
+    number of legs). Used by the query-transform path, where each query variant ×
+    leg is an independent RRF "expert". Keeps the FIRST list's SearchResult object
+    for a shared chunk (callers pass the base hybrid result first, so it carries
+    the dense score field ``score_threshold`` relies on). Empty/single inputs are
+    returned as-is."""
+    lists = [lst for lst in result_lists if lst]
+    if not lists:
+        return []
+    if len(lists) == 1:
+        return lists[0]
+
+    def _key(r: SearchResult) -> tuple[str, int | None, str]:
+        return (r.filename, r.page, r.text)
+
+    items: dict[tuple[str, int | None, str], list] = {}
+    for lst in lists:
+        for rank, r in enumerate(lst, start=1):
+            k = _key(r)
+            if k in items:
+                items[k][1] += 1.0 / (k_rrf + rank)
+            else:
+                items[k] = [r, 1.0 / (k_rrf + rank)]
+    for r, s in items.values():
+        r.rrf_score = round(s, 6)
+    fused = sorted(
+        items.values(),
+        key=lambda v: (-v[1], v[0].filename, v[0].page if v[0].page is not None else -1),
+    )
+    return [v[0] for v in fused]
+
+
+def _apply_junk_filter(
+    results: list["SearchResult"], mode: str
+) -> tuple[list["SearchResult"], _JunkFilterStats]:
+    """Apply the junk filter according to ``mode``.
+
+    Returns ``(maybe_filtered_results, stats)``:
+      - ``"off"``: results unchanged, stats zeroed.
+      - ``"dry_run"``: results NOT removed by default; **exception** — if
+        the chunk is also far below the top score (``< 0.5 * top_score``)
+        AND the top is itself non-trivial (``top_score >= 0.3``), drop
+        it anyway. The reason gets a ``_low_relative_score`` suffix so
+        SREs see the dual-trigger in logs.
+      - ``"enforce"``: filtered chunks removed, stats reflect actual drops.
+    """
+    stats = _JunkFilterStats(candidates=len(results))
+    if mode == "off" or not results:
+        return results, stats
+
+    # Relative-score gap reference: only consider dropping flagged
+    # chunks under dry_run when the top result is comfortably above the
+    # "low-confidence cluster" floor. Two guards combined:
+    #   - ``top >= 0.3``  → skip on a tightly-clustered low-score batch
+    #     (everything is junk-grade; the "0.5 * top" cutoff becomes
+    #     arbitrary noise and may drop the only relevant chunk).
+    #   - ``r.score < 0.5 * top`` → only candidates the model itself
+    #     said were a lot worse than #1.
+    top_score = results[0].score if results else 0.0
+    _gap_active = top_score >= 0.3
+
+    # B6 hardening: the classifier runs over potentially-malformed data
+    # (text may be None from a buggy adapter, filename may be missing).
+    # A raised exception here would 500 the entire search; catch +
+    # log + degrade to "keep" semantics for the offending chunk so a
+    # single bad row can't take down retrieval for the whole query.
+    #
+    # We intentionally narrow the catch to data-shape exceptions
+    # (AttributeError / TypeError / ValueError). Catching bare Exception
+    # masks future bugs introduced inside the classifier (a typo'd
+    # regex, an unimported symbol) — those should fail loudly so a
+    # silent quality regression is impossible.
+    kept: list[SearchResult] = []
+    for r in results:
+        try:
+            text = r.text if isinstance(r.text, str) else ""
+            filename = r.filename if isinstance(r.filename, str) else ""
+            reason = _classify_junk_chunk(text, filename)
+        except (AttributeError, TypeError, ValueError) as exc:
+            logger.warning(
+                "junk filter classify failed for filename=%r (kept): %s",
+                getattr(r, "filename", "?"),
+                exc,
+            )
+            reason = None
+        if reason is None:
+            kept.append(r)
+            continue
+        # Relative-score gap rule: drop under dry_run too when the
+        # chunk is BOTH classifier-flagged AND far below the top.
+        # This catches the "1 high-quality hit + 15 noise" failure
+        # mode without flipping the global dry_run knob.
+        _drop_via_gap = mode == "dry_run" and _gap_active and r.score < 0.5 * top_score
+        if _drop_via_gap:
+            # Decorate the reason so a grep'd log line shows the
+            # dual-trigger (classifier said junk AND score said junk).
+            reason = f"{reason}+low_relative_score"
+        stats.filtered_count += 1
+        stats.reasons[reason] = stats.reasons.get(reason, 0) + 1
+        if mode == "dry_run" and not _drop_via_gap:
+            # Count but don't drop — gives operators a low-risk window to
+            # observe before flipping the config flag to "enforce".
+            kept.append(r)
+    return kept, stats
+
+
+def _extract_section_path(dl_meta: Any) -> str:
+    """Collapse Docling's ``headings`` array into a flat ``A › B › C`` string.
+
+    Stored as a single field instead of nested structure — sidesteps the
+    "schema conflicts across formats" pain that previously caused us to
+    drop heading metadata entirely. The character `›` (U+203A) is what
+    Docling Core uses in its own breadcrumb rendering; matches user
+    intuition and stays out of regex special-char territory.
+    """
+    if not isinstance(dl_meta, dict):
+        return ""
+    headings = dl_meta.get("headings")
+    if not isinstance(headings, list):
+        return ""
+    parts = [h.strip() for h in headings if isinstance(h, str) and h.strip()]
+    return " › ".join(parts)
 
 
 def _page_from_docling_dl_meta(dl_meta: Any) -> int | None:
@@ -121,6 +704,35 @@ class SearchResult:
     filename: str
     page: int | None
     score: float
+    # Which knowledge collection this chunk came from. "agent" = persistent
+    # agent-level KB; "session" = current conversation's KB; "" = caller
+    # didn't tag (legacy / tests that construct mock results directly).
+    # Only meaningful when results from multiple scopes are combined.
+    scope: str = ""
+    # Section breadcrumb (Docling ``headings`` collapsed via " › ") so the
+    # LLM can contextualize otherwise-orphan chunks — e.g. a caption-only
+    # `'Table 27: ...'` reads as "[Section: D.2 Full performance metrics]
+    # Table 27: ..." instead of floating without context. Empty for
+    # non-Docling formats (txt, plain markdown) or when the doc lacks
+    # heading structure.
+    section_path: str = ""
+    # Per-leg ranks for debugging "why X > Y" reports. Populated by
+    # ``_rrf_fuse`` when hybrid mode produced both legs; ``None`` on the
+    # leg where the chunk didn't appear. ``rrf_score`` is the fused
+    # signal (sum of 1/(k_rrf+rank) per leg). All three are ``None`` for
+    # pure-dense responses so SDK consumers can tell hybrid was off.
+    # Wire-shape: only surfaced in the route response when non-None, so
+    # single-leg / pre-upgrade responses stay terse.
+    dense_rank: int | None = None
+    lexical_rank: int | None = None
+    rrf_score: float | None = None
+    # Cross-scope RRF score, populated by ``search_multi`` when more
+    # than one scope contributed to the fused ranking. Distinct from
+    # ``rrf_score`` (which is the in-scope dense+lexical fusion); this
+    # lets observability surface BOTH ("why this chunk ranked here in
+    # its scope" AND "why this chunk beat the other scope's #1").
+    # ``None`` for single-scope responses so wire shape stays terse.
+    cross_scope_rrf_score: float | None = None
 
 
 @dataclass
@@ -143,10 +755,32 @@ class ReindexBusyError(Exception):
         super().__init__(f"Cannot reindex: {pending_count} upload(s) in progress")
 
 
+class EmbeddingModelLoadError(Exception):
+    """Raised when a config change selects an embedding model that fails to load
+    (e.g. a large model still downloading, a bad model name, or unresolved API
+    key). Carries the provider/model so callers can return an actionable message
+    instead of a 500."""
+
+    def __init__(self, provider: str, model: str, cause: Exception):
+        self.provider = provider
+        self.model = model
+        self.cause = cause
+        super().__init__(f"Failed to load embedding model {model!r} (provider {provider!r}): {cause}")
+
+
 class ReindexInProgressError(Exception):
     """Raised when upload is attempted during reindex."""
 
     pass
+
+
+class ReindexSupersededError(Exception):
+    """Stale ingest worker: ``_apply_generation`` moved past the captured value."""
+
+    def __init__(self, worker_gen: int, current_gen: int):
+        self.worker_gen = worker_gen
+        self.current_gen = current_gen
+        super().__init__(f"Reindex superseded: gen {worker_gen} -> {current_gen}")
 
 
 # --- Prepared update result ---
@@ -165,13 +799,57 @@ class PreparedKnowledgeUpdate:
     new_embedding_dim: int | None
 
 
+# --- Accelerator detection ---
+
+
+def _detect_accelerator(use_gpu: bool) -> tuple[str, list[str]]:
+    """Detect available local accelerator. Returns (device_label, onnx_providers).
+
+    device_label is one of "cuda", "mps", "cpu" — usable for PyTorch/HuggingFace.
+    onnx_providers is the priority list to pass to onnxruntime-backed models
+    (fastembed, Docling layout). Unsupported providers are skipped by ORT.
+    """
+    if not use_gpu:
+        return "cpu", ["CPUExecutionProvider"]
+    providers: list[str] = []
+    device = "cpu"
+    try:
+        import onnxruntime as _ort
+
+        avail = set(_ort.get_available_providers())
+    except Exception:
+        avail = set()
+    if "CUDAExecutionProvider" in avail:
+        providers.append("CUDAExecutionProvider")
+        device = "cuda"
+    if "CoreMLExecutionProvider" in avail and device == "cpu":
+        providers.append("CoreMLExecutionProvider")
+        # Best PyTorch analogue on Apple Silicon is MPS — used by HF embeddings.
+        try:
+            import torch
+
+            if torch.backends.mps.is_available():
+                device = "mps"
+        except Exception:
+            pass
+    providers.append("CPUExecutionProvider")
+    return device, providers
+
+
 # --- Embedding factory ---
 
 
 class _FastEmbedEmbeddings(Embeddings):
-    """LangChain Embeddings adapter around fastembed.TextEmbedding."""
+    """LangChain Embeddings adapter around fastembed.TextEmbedding.
 
-    def __init__(self, model_name: str):
+    Includes E5-family prefix injection: intfloat/e5-* and intfloat/multilingual-e5-*
+    require `"query: "` / `"passage: "` prefixes on inputs to hit their
+    published MTEB recall numbers — without them, MRR drops 3-5 points
+    on multilingual benchmarks. Detected from the model name; no-op for
+    non-E5 models.
+    """
+
+    def __init__(self, model_name: str, providers: list[str] | None = None):
         from fastembed import TextEmbedding
         import os
 
@@ -181,13 +859,263 @@ class _FastEmbedEmbeddings(Embeddings):
         # before ever reaching the local_files_only check.
         cache_dir = os.environ.get("FASTEMBED_CACHE_PATH")
         local_files_only = os.environ.get("HF_HUB_OFFLINE", "0") == "1"
-        self._model = TextEmbedding(model_name, cache_dir=cache_dir, local_files_only=local_files_only)
+        kwargs: dict[str, Any] = {"cache_dir": cache_dir, "local_files_only": local_files_only}
+        if providers:
+            kwargs["providers"] = providers
+        self._model = TextEmbedding(model_name, **kwargs)
+        # Record what onnxruntime actually loaded so the engine can log honestly.
+        self._active_providers = self._detect_active_providers()
+        # GPU-aware embed kwargs:
+        # On a CUDA host the per-call launch + PCIe H2D overhead is ~30-50 µs;
+        # bge-small at fastembed's default ``parallel=None`` (worker-per-core)
+        # spawns N workers ALL sharing the one GPU → CUDA-context thrash and
+        # only ~2-3× CPU. Forcing ``parallel=1`` (single worker, large batch)
+        # restores the 10-30× headroom. ``batch_size=256`` matches fastembed's
+        # documented CPU default but is also the empirical GPU saturation
+        # batch for 384-1024d encoders on H100. We DON'T touch CPU defaults
+        # here — fastembed picks 256/None and that's fine for the multi-core
+        # CPU case.
+        self._is_cuda = bool(self._active_providers) and ("CUDAExecutionProvider" in self._active_providers)
+        self._embed_kwargs: dict[str, Any] = {"batch_size": 256, "parallel": 1} if self._is_cuda else {}
+        # E5-family prefix: required for any intfloat/e5-* model to reach
+        # published recall numbers. Detected from model name. Non-E5 models
+        # see a no-op (empty prefixes).
+        m = (model_name or "").lower()
+        is_e5 = "e5" in m and ("intfloat" in m or "multilingual" in m or m.startswith("e5"))
+        self._query_prefix = "query: " if is_e5 else ""
+        self._passage_prefix = "passage: " if is_e5 else ""
+
+    def _detect_active_providers(self) -> list[str]:
+        # fastembed nests the ORT session under model.model.model — versions vary.
+        # Best-effort: walk a few likely attribute paths.
+        candidate_attrs = ("model", "_model", "session", "_session", "ort_session")
+        cur = self._model
+        for _ in range(4):
+            sess = None
+            for a in candidate_attrs:
+                obj = getattr(cur, a, None)
+                if obj is None:
+                    continue
+                if hasattr(obj, "get_providers"):
+                    sess = obj
+                    break
+                cur = obj
+                break
+            if sess is not None:
+                try:
+                    return list(sess.get_providers())
+                except Exception:
+                    return []
+            if cur is self._model:
+                break
+        return []
 
     def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        return [v.tolist() for v in self._model.embed(texts)]
+        if self._passage_prefix:
+            texts = [self._passage_prefix + t for t in texts]
+        return [v.tolist() for v in self._model.embed(texts, **self._embed_kwargs)]
 
     def embed_query(self, text: str) -> list[float]:
+        if self._query_prefix:
+            text = self._query_prefix + text
+        # Cold-CUDA latency cliff: single-query embed on a cold CUDA
+        # context is ~80-250 ms vs ~3-5 ms on CPU. The warm session
+        # path here is fine, but a freshly-forked worker pays the cold-start
+        # cost on its first query. A CUDA-Graphs + warm-worker bridge is
+        # left as a follow-up; the practical mitigation today is to keep the
+        # worker pool warm (engine.start_background_tasks does this).
         return next(self._model.embed([text])).tolist()
+
+
+class _PyTorchEmbeddings(Embeddings):
+    """Dep-free PyTorch embeddings — uses transformers + torch only.
+
+    Both ``transformers`` and ``torch`` are already pulled in by Docling, so
+    this provider adds **zero** new packages. Does what sentence-transformers
+    does for sentence embeddings: tokenize -> forward -> mean-pool over
+    attention mask -> L2 normalize.
+
+    The whole reason this exists is GPU acceleration on Apple Silicon (MPS)
+    and NVIDIA (CUDA) for local embedding inference, since fastembed's ONNX
+    backend doesn't have working CoreML support for bge-small-class models.
+
+    Verified on Mac M-series: same BAAI/bge-small-en-v1.5 model is ~8x faster
+    on MPS than fastembed CPU.
+    """
+
+    def __init__(self, model_name: str, device: str = "cpu"):
+        try:
+            import torch  # noqa: F401
+            from transformers import AutoModel, AutoTokenizer
+        except ImportError as e:  # pragma: no cover - transformers always present via docling
+            raise ImportError(
+                f"_PyTorchEmbeddings requires transformers and torch (already CUGA deps). "
+                f"Underlying error: {e}"
+            )
+
+        self._device = device or "cpu"
+        # Models load with float32 — float16 trades precision for speed but
+        # is fiddly on CPU. We default to float32; a user wanting fp16 can
+        # set torch_dtype via the engine if we expose it later.
+        self._tokenizer = AutoTokenizer.from_pretrained(model_name)
+        self._model = AutoModel.from_pretrained(model_name).to(self._device)
+        self._model.eval()
+        self._max_seq_len = getattr(self._tokenizer, "model_max_length", 512) or 512
+        # Some tokenizers report a sentinel like 1e30 for "no limit"; cap to 512.
+        if self._max_seq_len > 8192:
+            self._max_seq_len = 512
+
+    @staticmethod
+    def _mean_pool(last_hidden_state, attention_mask):
+        """Mean-pool token embeddings over the attention mask."""
+        import torch
+
+        mask = attention_mask.unsqueeze(-1).expand(last_hidden_state.size()).float()
+        summed = torch.sum(last_hidden_state * mask, dim=1)
+        counts = torch.clamp(mask.sum(dim=1), min=1e-9)
+        return summed / counts
+
+    def _embed_batch(self, texts: list[str]) -> list[list[float]]:
+        import torch
+
+        enc = self._tokenizer(
+            texts,
+            padding=True,
+            truncation=True,
+            max_length=self._max_seq_len,
+            return_tensors="pt",
+        ).to(self._device)
+        with torch.no_grad():
+            out = self._model(**enc)
+        pooled = self._mean_pool(out.last_hidden_state, enc["attention_mask"])
+        pooled = torch.nn.functional.normalize(pooled, p=2, dim=1)
+        # Move back to CPU before .tolist() — MPS tensors need explicit transfer.
+        return pooled.detach().to("cpu").tolist()
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        # Smaller internal batch keeps MPS memory bounded; outer batching is
+        # done by the adapter for progress granularity.
+        BATCH = 32
+        out: list[list[float]] = []
+        for i in range(0, len(texts), BATCH):
+            out.extend(self._embed_batch(texts[i : i + BATCH]))
+        return out
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed_batch([text])[0]
+
+
+def _is_local_http_host(hostname: str | None) -> bool:
+    if not hostname:
+        return False
+    host = hostname.strip().lower()
+    if host in {"localhost", "localhost.localdomain"} or host.endswith(".localhost"):
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _bool_extra(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return False
+
+
+class _LiteLLMEmbeddings(Embeddings):
+    """LangChain Embeddings adapter around litellm.embedding.
+
+    LiteLLM gives a unified embedding interface across providers: model names
+    carry the provider prefix (``openai/text-embedding-3-small``,
+    ``cohere/embed-english-v3.0``, ``azure/my-deployment``, ...) and LiteLLM
+    routes to the right backend. We surface this as a first-class CUGA
+    embedding provider so users don't have to know the OpenAI-compatible
+    proxy convention.
+    """
+
+    def __init__(
+        self,
+        model: str,
+        api_key: str = "",
+        base_url: str = "",
+        extra_params: dict[str, Any] | None = None,
+    ):
+        # Imported here so the module load doesn't pay litellm's import cost
+        # for users who don't pick this provider.
+        try:
+            import litellm  # noqa: F401
+        except ImportError as e:
+            raise ImportError(
+                "LiteLLM embedding provider requires the 'litellm' package "
+                "(already a CUGA dependency). Original error: " + str(e)
+            )
+        if not (model or "").strip():
+            raise ValueError(
+                "litellm embedding provider requires an explicit model name "
+                "with the provider prefix, e.g. 'openai/text-embedding-3-small'."
+            )
+        self._model = model.strip()
+        self._api_key = (api_key or "").strip() or None
+        base_url_clean = (base_url or "").strip()
+        allow_insecure_transport = _bool_extra((extra_params or {}).get("allow_insecure_transport"))
+        if base_url_clean:
+            parsed = urlparse(base_url_clean)
+            if parsed.scheme not in {"http", "https"}:
+                raise ValueError("LiteLLM embedding_base_url must start with https:// or http://localhost")
+            if (
+                parsed.scheme == "http"
+                and not allow_insecure_transport
+                and not _is_local_http_host(parsed.hostname)
+            ):
+                raise ValueError(
+                    "LiteLLM embedding_base_url must use https:// for remote hosts. "
+                    "Use embedding_extra_params.allow_insecure_transport=true only for trusted internal networks."
+                )
+        self._base_url = base_url_clean or None
+        # Provider-specific extras (Azure api_version, Bedrock region, ...).
+        # Reserved kwargs that we set ourselves are filtered out to avoid
+        # surprising override of api_base/api_key/model/input.
+        _reserved = {"model", "input", "api_key", "api_base", "allow_insecure_transport"}
+        self._extra_params: dict[str, Any] = {
+            k: v for k, v in (extra_params or {}).items() if k not in _reserved
+        }
+
+    def _embed(self, texts: list[str]) -> list[list[float]]:
+        from litellm import embedding as litellm_embedding
+
+        kwargs: dict[str, Any] = {"model": self._model, "input": texts}
+        if self._api_key:
+            kwargs["api_key"] = self._api_key
+        if self._base_url:
+            kwargs["api_base"] = self._base_url
+        if self._extra_params:
+            kwargs.update(self._extra_params)
+        resp = litellm_embedding(**kwargs)
+        # LiteLLM normalises to an OpenAI-shaped response object.
+        # ``resp.data`` is a list of {"embedding": [...], "index": ...}.
+        data = list(resp.data) if hasattr(resp, "data") else resp["data"]
+        # LiteLLM does NOT guarantee returned order matches input order — sort by index.
+        ordered = sorted(
+            data, key=lambda d: int(d.get("index", 0) if isinstance(d, dict) else getattr(d, "index", 0))
+        )
+        out: list[list[float]] = []
+        for item in ordered:
+            vec = item["embedding"] if isinstance(item, dict) else item.embedding
+            out.append(list(vec))
+        if len(out) != len(texts):
+            raise RuntimeError(
+                f"litellm returned {len(out)} vectors for {len(texts)} inputs (model={self._model!r})"
+            )
+        return out
+
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        return self._embed(texts)
+
+    def embed_query(self, text: str) -> list[float]:
+        return self._embed([text])[0]
 
 
 def _fastembed_docling_seq_limit(model_name: str) -> int:
@@ -196,6 +1124,67 @@ def _fastembed_docling_seq_limit(model_name: str) -> int:
     if "m-long" in m or "embed-m-long" in m:
         return 2048
     return 512
+
+
+@functools.lru_cache(maxsize=1)
+def _tiktoken_docling_tokenizer_cls():
+    """HybridChunker tokenizer backed by tiktoken — for OpenAI-family providers.
+
+    Why: Docling's default HybridChunker downloads ``sentence-transformers/
+    all-MiniLM-L6-v2`` (~90 MB) from HuggingFace just to count tokens. For
+    users on openai / openrouter / litellm (i.e. OpenAI-compatible cloud
+    embeddings), the EMBEDDING model uses tiktoken's cl100k_base BPE, NOT
+    MiniLM's word-piece. So:
+
+      1. We avoid the 90 MB download (tiktoken's encodings ship in the wheel)
+      2. Chunk boundaries fall at the SAME token positions the embedder will
+         count, so ``max_tokens`` is honest (chunks neither overflow nor
+         under-fill the embedder's context).
+
+    For non-OpenAI models behind these providers (Cohere, Mistral via
+    OpenRouter / LiteLLM), cl100k_base is a reasonable BPE approximation —
+    still much closer than MiniLM's word-piece.
+    """
+    from docling_core.transforms.chunker.tokenizer.base import BaseTokenizer
+
+    class _TiktokenDoclingTokenizer(BaseTokenizer):
+        model_config = ConfigDict(arbitrary_types_allowed=True)
+
+        encoding: Any
+        max_tokens: int
+
+        def count_tokens(self, text: str) -> int:
+            return len(self.encoding.encode(text, disallowed_special=()))
+
+        def get_max_tokens(self) -> int:
+            return self.max_tokens
+
+        def get_tokenizer(self) -> Any:
+            return self.encoding
+
+    return _TiktokenDoclingTokenizer
+
+
+def _resolve_tiktoken_encoding(model_name: str):
+    """Pick the right tiktoken encoding for the embedding model.
+
+    Falls back to ``cl100k_base`` (OpenAI's standard for embedding / GPT-4 era
+    models) when the model isn't in tiktoken's registry — which is the right
+    default for Azure-via-proxy and OpenRouter-routed models.
+    """
+    import tiktoken
+
+    name = (model_name or "").strip().lower()
+    # Strip common provider prefixes that LiteLLM / OpenRouter use so
+    # ``encoding_for_model`` can find the actual OpenAI model name.
+    for prefix in ("openai/", "azure/", "openrouter/", "litellm/"):
+        if name.startswith(prefix):
+            name = name[len(prefix) :]
+            break
+    try:
+        return tiktoken.encoding_for_model(name)
+    except KeyError:
+        return tiktoken.get_encoding("cl100k_base")
 
 
 @functools.lru_cache(maxsize=1)
@@ -228,46 +1217,85 @@ def _fastembed_docling_tokenizer_cls():
     return _FastEmbedDoclingTokenizer
 
 
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+
+
 def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
     """Create an Embeddings instance for the configured provider.
 
     Providers:
         fastembed   — lightweight local embeddings (default, installed with cuga)
         huggingface — HuggingFace sentence-transformers (optional: pip install sentence-transformers)
-        openai      — OpenAI API (requires api_key)
+        openai      — OpenAI API (requires api_key); also covers OpenAI-compatible
+                      endpoints when ``embedding_base_url`` is set (Together, Fireworks, ...)
         ollama      — local Ollama server
+        openrouter  — OpenRouter (https://openrouter.ai). Single key for many
+                      embedding models from openrouter.ai/models?output_modalities=embeddings.
+                      Requires both ``embedding_api_key`` and an explicit
+                      ``embedding_model`` (e.g. "openai/text-embedding-3-small").
+                      Base URL auto-set to https://openrouter.ai/api/v1 unless
+                      the user overrides ``embedding_base_url``.
     """
     import os
 
     provider = config.embedding_provider
     model = config.embedding_model
 
+    device, onnx_providers = _detect_accelerator(config.use_gpu)
+
     if provider == "fastembed":
-        return _FastEmbedEmbeddings(model or "BAAI/bge-small-en-v1.5")
+        return _FastEmbedEmbeddings(
+            model or "BAAI/bge-small-en-v1.5",
+            providers=onnx_providers,
+        )
 
     if provider == "huggingface":
-        model = model or "BAAI/bge-small-en-v1.5"
-        try:
-            from langchain_huggingface import HuggingFaceEmbeddings
-        except ImportError:
-            raise ImportError(
-                "HuggingFace embedding provider requires sentence-transformers. "
-                "Install with: pip install sentence-transformers langchain-huggingface"
-            )
-        return HuggingFaceEmbeddings(model_name=model)
+        # Dep-free PyTorch path. Uses transformers + torch (both already
+        # CUGA deps via docling) — no sentence-transformers needed.
+        # Honors detected device: 'mps' on Apple Silicon, 'cuda' on NVIDIA,
+        # 'cpu' otherwise. Verified ~8x faster on Mac MPS vs fastembed CPU.
+        return _PyTorchEmbeddings(
+            model_name=(model or "BAAI/bge-small-en-v1.5"),
+            device=device,
+        )
 
     if provider == "openai":
         from langchain_openai import OpenAIEmbeddings
 
-        api_key = config.embedding_api_key or os.environ.get("OPENAI_API_KEY")
+        # Strip whitespace: copy-paste from a docs page or terminal often leaves
+        # a trailing newline / space, which then silently fails auth.
+        # Empty key at construction time is allowed so an imported published
+        # snapshot (secrets stripped) can apply on a machine where
+        # OPENAI_API_KEY is set in the env at embed time. Actual auth failure
+        # surfaces at first embed call, not at config-apply time.
+        api_key = (config.embedding_api_key or os.environ.get("OPENAI_API_KEY") or "").strip()
         if not api_key:
-            raise ValueError(
-                "OpenAI embedding provider requires an API key. "
-                "Set knowledge.embeddings.api_key in settings or OPENAI_API_KEY env var."
+            logger.warning(
+                "OpenAI embedding provider has no API key in config or OPENAI_API_KEY env. "
+                "Embeddings will fail at first call unless the env var is set before then."
             )
-        kwargs: dict[str, Any] = {"model": model or "text-embedding-3-small", "api_key": api_key}
-        if config.embedding_base_url:
-            kwargs["base_url"] = config.embedding_base_url
+        model_clean = (model or "text-embedding-3-small").strip()
+        # langchain-openai accepts empty string at init (only fails at first HTTP call).
+        # Pass a placeholder when truly empty so SecretStr validation doesn't trip.
+        kwargs: dict[str, Any] = {"model": model_clean, "api_key": api_key or "MISSING"}
+        base_url_clean = (config.embedding_base_url or "").strip()
+        if base_url_clean:
+            kwargs["base_url"] = base_url_clean
+            # When pointed at a non-OpenAI OpenAI-compatible endpoint (Together,
+            # Fireworks, custom proxy, ...), tiktoken tokenization is unsafe:
+            # those providers often only accept raw strings, not the integer
+            # arrays tiktoken produces. langchain-openai's default sends ints
+            # for OpenAI model names; flipping both flags here forces raw text.
+            kwargs["tiktoken_enabled"] = False
+            kwargs["check_embedding_ctx_length"] = False
+        # Provider-specific extras (e.g. Azure: api_version, deployment, organization).
+        # langchain-openai's OpenAIEmbeddings accepts these as kwargs.
+        if config.embedding_extra_params:
+            _reserved = {"model", "api_key", "base_url"}
+            for k, v in config.embedding_extra_params.items():
+                if k in _reserved:
+                    continue
+                kwargs[k] = v
         return OpenAIEmbeddings(**kwargs)
 
     if provider == "ollama":
@@ -276,8 +1304,86 @@ def create_embeddings(config: "KnowledgeConfig") -> Embeddings:
         base_url = config.embedding_base_url or "http://localhost:11434"
         return OllamaEmbeddings(model=model or "nomic-embed-text", base_url=base_url)
 
+    if provider == "openrouter":
+        # OpenRouter is OpenAI-compatible — reuse langchain-openai's client.
+        # Both api_key and model are REQUIRED (no defaults): the user picks
+        # an embeddings model from openrouter.ai/models?output_modalities=embeddings
+        # and pastes their key. embedding_base_url is auto-set but honored if
+        # the user overrides it (escape hatch if OpenRouter ever changes URL).
+        from langchain_openai import OpenAIEmbeddings
+
+        # Strip whitespace to defend against copy-paste with a trailing
+        # newline/space — silently fails auth otherwise.
+        # Empty key allowed at construction time — see openai branch comment;
+        # actual auth failure surfaces at first embed call.
+        api_key = (config.embedding_api_key or os.environ.get("OPENROUTER_API_KEY") or "").strip()
+        if not api_key:
+            logger.warning(
+                "OpenRouter embedding provider has no API key in config or OPENROUTER_API_KEY env. "
+                "Embeddings will fail at first call unless the env var is set before then."
+            )
+        model_clean = (model or "").strip()
+        if not model_clean:
+            raise ValueError(
+                "OpenRouter embedding provider requires an explicit model name. "
+                "Pick one from https://openrouter.ai/models?output_modalities=embeddings "
+                "(e.g. 'openai/text-embedding-3-small') and set "
+                "knowledge.embeddings.model accordingly."
+            )
+        # Defense in depth: an `embedding_base_url` left over from a previous
+        # provider (e.g. a corporate LiteLLM proxy URL) would otherwise send
+        # the user's OpenRouter key to the wrong host. Only honor a custom
+        # base_url here if it actually looks like OpenRouter; otherwise fall
+        # back to the canonical OpenRouter URL and warn.
+        user_base = (config.embedding_base_url or "").strip()
+        if user_base and "openrouter" not in user_base.lower():
+            logger.warning(
+                "OpenRouter provider ignoring non-OpenRouter base_url={!r}; "
+                "falling back to {}. Clear embedding_base_url to silence this.",
+                user_base,
+                OPENROUTER_BASE_URL,
+            )
+            user_base = ""
+        base_url = (user_base or OPENROUTER_BASE_URL).strip()
+        # OpenRouter routes many non-OpenAI models (BAAI, Mistral, Qwen,
+        # Nvidia, ...). Most of those reject the tiktoken-encoded integer
+        # arrays langchain-openai sends by default ("Input should be a
+        # valid string", HTTP 422). Force raw-string mode so EVERY model
+        # in OpenRouter's catalog works, including the OpenAI-prefixed
+        # ones (which accept both shapes).
+        return OpenAIEmbeddings(
+            model=model_clean,
+            # Placeholder when key is missing — see openai branch comment.
+            api_key=api_key or "MISSING",
+            base_url=base_url,
+            tiktoken_enabled=False,
+            check_embedding_ctx_length=False,
+        )
+
+    if provider == "litellm":
+        # LiteLLM gives a single embedding interface across providers — the
+        # user picks a model with a provider prefix
+        # (``openai/text-embedding-3-small``, ``cohere/embed-english-v3.0``,
+        # ``azure/<deployment>``, ``bedrock/cohere.embed-english-v3``, ...)
+        # and LiteLLM routes accordingly. API key lookup order:
+        #   1. config.embedding_api_key (explicit)
+        #   2. provider-specific env var (e.g. OPENAI_API_KEY) — LiteLLM handles this
+        # base_url is honored if set (useful for self-hosted LiteLLM proxies).
+        api_key = (config.embedding_api_key or "").strip()
+        # When the model is OpenAI-prefixed, fall back to OPENAI_API_KEY so
+        # users get the same UX as the openai provider without re-pasting.
+        if not api_key and (model or "").strip().lower().startswith("openai/"):
+            api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+        return _LiteLLMEmbeddings(
+            model=(model or "").strip(),
+            api_key=api_key,
+            base_url=(config.embedding_base_url or "").strip(),
+            extra_params=dict(config.embedding_extra_params or {}),
+        )
+
     raise ValueError(
-        f"Unknown embedding provider: {provider}. Supported: fastembed, huggingface, openai, ollama"
+        f"Unknown embedding provider: {provider}. "
+        "Supported: fastembed, huggingface, openai, ollama, openrouter, litellm"
     )
 
 
@@ -293,9 +1399,14 @@ def _get_embedding_dim(embeddings: Embeddings) -> int:
 class KnowledgeEngine:
     """In-process knowledge engine (chunking, embeddings, pluggable vector backends)."""
 
-    def __init__(self, config: KnowledgeConfig):
+    def __init__(self, config: KnowledgeConfig, chat_generator: Any = None):
         config.validate()
         self._config = config
+        # Optional, host-injected chat model for query transformation (multi_query
+        # / HyDE). Duck-typed to the query_transform.ChatGenerator Protocol so the
+        # knowledge package stays standalone (no host import). None → transforms
+        # are inert and search runs on the plain query.
+        self._chat_generator = chat_generator
         self._files_dir = config.persist_dir / "files"
         _smode, _, _pghost = get_storage_connection_params()
         self._metadata = create_knowledge_metadata(config.persist_dir, mode=_smode, postgres_url=_pghost)
@@ -323,12 +1434,26 @@ class KnowledgeEngine:
         self._record_managers: dict[str, InMemoryRecordManager] = {}
 
         # Docling converter (lazy, reused across all document loads)
-        self._docling_converter = None
+        # Docling converters are cached per-mode (fast / balanced / accurate)
+        # so flipping ``docling_pdf_mode`` in settings does not require a
+        # process restart. Keyed by the mode string.
+        self._docling_converters: dict[str, Any] = {}
 
         self._vector_store_lock = threading.Lock()
 
         # Per-collection async ingest locks
         self._collection_locks: dict[str, asyncio.Lock] = {}
+
+        # Bumped by ``commit_knowledge_update`` on embedder/chunking/metric
+        # change. Workers capture at start, recheck per batch, raise
+        # ``ReindexSupersededError`` if it moved past them.
+        self._apply_generation: int = 0
+
+        # Bounds concurrent Docling parses process-wide (the heavy, GPU/CPU-bound
+        # step). Inserts still serialize per-collection via the lock above.
+        # ponytail: one global semaphore; per-collection parse limits if a single
+        # collection ever needs to starve others.
+        self._ingest_sem = asyncio.Semaphore(config.max_ingest_workers)
 
         # Active tasks for cancellation
         self._active_tasks: dict[str, asyncio.Event] = {}
@@ -348,14 +1473,101 @@ class KnowledgeEngine:
 
         _vb = knowledge_vector_backend_for_settings(_settings)
         _sm = getattr(getattr(_settings, "storage", None), "mode", "local")
+        _device, _providers = _detect_accelerator(config.use_gpu)
         logger.info(
             f"Knowledge engine started: "
             f"storage.mode={_sm} vector_backend={_vb}, "
             f"embedding={config.embedding_provider}/{config.embedding_model or 'auto'}, "
-            f"use_gpu={config.use_gpu}, "
+            f"accelerator={_device} (use_gpu={config.use_gpu}, onnx_providers={_providers}), "
             f"metric={config.metric_type}, "
             f"persist_dir={config.persist_dir}"
         )
+        # GPU-transparency check: a single-line warning conflated three
+        # very different failure modes — operators read it and pick the
+        # wrong remediation. This now distinguishes:
+        #
+        #   (a) GPU image, no device visible  — user forgot ``--gpus all``
+        #       or the K8s pod lacks ``nvidia.com/gpu`` request. Fix is to
+        #       pass the device into the container, NOT to rebuild.
+        #
+        #   (b) CPU image, GPU requested      — user requested the GPU
+        #       runtime but only the CPU build is shipped today. GPU
+        #       image is deferred to a follow-up release.
+        #
+        #   (c) Partial GPU                   — torch sees CUDA but ORT is
+        #       CPU-only. Embed runs on CPU even though reranker / Docling-
+        #       transformers will use CUDA. Fix is the GPU image (which
+        #       ships fastembed-gpu).
+        #
+        # ``gpu_required=True`` (or env CUGA_GPU_REQUIRED=1) converts these
+        # warnings into a fatal RuntimeError — the vLLM/TGI-style fail-fast
+        # posture for operators who never want silent CPU regressions.
+        if config.use_gpu:
+            import os as _os
+
+            only_cpu_onnx = _providers == ["CPUExecutionProvider"]
+            try:
+                import torch  # noqa: F401
+
+                _torch_cuda = torch.cuda.is_available()
+            except Exception:
+                _torch_cuda = False
+            _gpu_build = _os.environ.get("CUGA_GPU_BUILD") == "1"
+            _gpu_required = bool(getattr(config, "gpu_required", False)) or (
+                _os.environ.get("CUGA_GPU_REQUIRED") == "1"
+            )
+
+            msg: str | None = None
+            if only_cpu_onnx and not _torch_cuda:
+                if _gpu_build:
+                    # Case (a): GPU image but no GPU visible to the container.
+                    msg = (
+                        "use_gpu=True and CUGA_GPU_BUILD=1 (this is the GPU image), "
+                        "but no GPU device is visible to the container — embed, "
+                        "reranker, and Docling will all run on CPU. Fix: pass "
+                        "`--gpus all` to `docker run` (local) or add `resources.limits."
+                        "nvidia.com/gpu: 1` to the pod spec (K8s). Also confirm the "
+                        "host has NVIDIA Container Toolkit installed and the node "
+                        "has nvidia-device-plugin."
+                    )
+                else:
+                    # Case (b): CPU image, GPU requested.
+                    msg = (
+                        "use_gpu=True but onnxruntime is CPU-only — embed, reranker, "
+                        "and Docling will all run on CPU. Run the GPU image "
+                        "(Dockerfile.gpu) or, on a CUDA host, `uv sync --extra gpu "
+                        "--no-install-package onnxruntime`. Or set use_gpu=False to "
+                        "silence this warning."
+                    )
+            elif only_cpu_onnx and _torch_cuda:
+                # Case (c): partial GPU.
+                msg = (
+                    "use_gpu=True: torch sees CUDA but onnxruntime is CPU-only — "
+                    "reranker + Docling-transformers will use CUDA, but fastembed "
+                    "(embedder) + Docling-onnx layout will run on CPU. Add the GPU "
+                    "runtime: `uv sync --extra gpu --no-install-package onnxruntime` "
+                    "(or run Dockerfile.gpu)."
+                )
+
+            if msg:
+                if _gpu_required:
+                    raise RuntimeError("[cuga] gpu_required=True but GPU runtime is not loaded. " + msg)
+                logger.warning(msg)
+            elif _torch_cuda and config.max_ingest_workers <= 2:
+                # GPU is fully wired but ingest concurrency is sized for a
+                # laptop. Expert D (2026-06-09 Docling deep-dive): a single
+                # H100 fits 10-14 workers (4-6 GB VRAM each); leaving the
+                # default at 2 leaves ~80% of the GPU idle on ingest-heavy
+                # workloads. Worth a one-line nudge — not an error because
+                # the operator may have set it deliberately for a small
+                # GPU (T4 / MIG slice / shared device).
+                logger.warning(
+                    "use_gpu=True with CUDA engaged but max_ingest_workers=%d. "
+                    "An H100/A100 fits ~8-14 Docling workers; raise "
+                    "knowledge.engine.max_ingest_workers (or set ``CUGA_MAX_INGEST_WORKERS`` "
+                    "env) to amortize GPU. Keep at 2-4 on T4 / MIG / shared GPUs.",
+                    config.max_ingest_workers,
+                )
 
     def start_background_tasks(self, loop: asyncio.AbstractEventLoop | None = None) -> None:
         """Start background maintenance tasks. Call after event loop is running."""
@@ -396,10 +1608,34 @@ class KnowledgeEngine:
             self._metadata_ready = True
 
     async def aclose(self) -> None:
+        """Close all engine-held async resources.
+
+        Required at the end of any event loop that called engine methods
+        which acquired a pool — otherwise the next loop's first call
+        would re-use a pool bound to the closed loop and raise
+        ``RuntimeError: ... attached to a different loop``. Production
+        runs on a single long-lived loop and rarely hits this; tests
+        and short-lived script harnesses MUST call aclose() before the
+        loop exits.
+        """
         try:
             await self._metadata.close()
         except Exception as e:
             logger.debug(f"Knowledge metadata close: {e}")
+        # Close every cached vector store's underlying connection pool.
+        # Without this, the asyncpg pool inside ProdEmbeddingStore stays
+        # bound to whatever loop first called ``_get_pool()`` — fine in
+        # production (one process, one loop) but a foot-gun for tests
+        # that use ``asyncio.run`` per call.
+        for collection, adapter in list(self._vector_stores.items()):
+            close = getattr(adapter, "close_pool", None)
+            if close is None:
+                continue
+            try:
+                await close()
+            except Exception as e:
+                logger.debug(f"close_pool failed for {collection}: {e}")
+        self._vector_stores.clear()
 
     def shutdown(self) -> None:
         """Release resources."""
@@ -420,21 +1656,163 @@ class KnowledgeEngine:
         if self._default_embeddings is None:
             self._default_embeddings = create_embeddings(self._config)
             self._default_embedding_dim = _get_embedding_dim(self._default_embeddings)
+            active = getattr(self._default_embeddings, "_active_providers", None)
+            extra = f", onnx_active={active}" if active else ""
             logger.info(
                 f"Embeddings initialized: provider={self._config.embedding_provider}, "
                 f"model={self._config.embedding_model or '(default)'}, "
-                f"dim={self._default_embedding_dim}"
+                f"dim={self._default_embedding_dim}{extra}"
             )
 
     async def warmup(self) -> dict[str, Any]:
-        """Preload heavyweight resources so callers can gate on readiness."""
+        """Preload heavyweight resources so callers can gate on readiness.
+
+        Three preloads, all in worker threads so we don't block the event loop:
+          1. metadata DB (sqlite/pg schema bootstrap)
+          2. embeddings (fastembed ONNX model load: ~100-300 MB)
+          3. Docling layout model (~22 s on first call; 770-weight load)
+
+        Doing these at startup means the user's FIRST ingest doesn't pay the
+        cold-start tax — important because the first ingest is also when the
+        user is most impatient.
+        """
+        import time as _time
+
         await self._ensure_metadata_ready()
+        # Step 2: embeddings — same call existing code paths use.
         await asyncio.to_thread(self._ensure_embeddings)
+
+        # Step 3: Docling. Only build the converter for the *configured* mode
+        # — if the user later switches to a different mode it'll rebuild then.
+        # Loading the layout model is the single biggest cold-start cost on
+        # the parse stage, so this is where the user-visible win comes from.
+        docling_t0 = _time.monotonic()
+        docling_loaded = False
+        docling_error: str | None = None
+        try:
+            # Step A: build the converter (cheap — just registers options).
+            converter = await asyncio.to_thread(self._get_docling_converter)
+            # Step B: FORCE the pipeline + models to load right now. Without
+            # this, Docling lazy-loads the layout-model weights (~22s) on the
+            # first convert() call, defeating the whole point of prewarm.
+            try:
+                from docling.datamodel.base_models import InputFormat
+
+                await asyncio.to_thread(converter.initialize_pipeline, InputFormat.PDF)
+            except Exception as init_err:  # pragma: no cover - defensive
+                logger.warning(
+                    "Docling pipeline init during prewarm raised; weights will "
+                    "still lazy-load on first ingest: {}",
+                    init_err,
+                )
+            docling_loaded = True
+        except Exception as e:  # pragma: no cover - environmental
+            docling_error = str(e)
+            logger.warning("Docling prewarm failed (will lazy-load on first ingest): {}", e)
+        docling_dt = _time.monotonic() - docling_t0
+        if docling_loaded:
+            logger.info(
+                "Knowledge prewarm complete: embeddings + Docling (mode={!r}) loaded in {:.2f}s",
+                self._config.docling_pdf_mode,
+                docling_dt,
+            )
+
+        # Step 4: reranker — only when a profile has it enabled. Load the
+        # cross-encoder now so the first search doesn't pay the model load
+        # (~1-3s). Best-effort: on failure search degrades to fusion ranking.
+        reranker_prewarmed = False
+        if getattr(self._config, "rerank_enabled", False):
+            try:
+                from cuga.backend.knowledge.reranker import prewarm as _rerank_prewarm
+
+                await asyncio.to_thread(
+                    _rerank_prewarm, str(getattr(self._config, "rerank_model", "BAAI/bge-reranker-base"))
+                )
+                reranker_prewarmed = True
+            except Exception as e:  # pragma: no cover - environmental
+                logger.warning("Reranker prewarm failed (will background-load on first search): {}", e)
+
         return {
             "embedding_provider": self._config.embedding_provider,
             "embedding_model": self._config.embedding_model or "auto",
             "embeddings_initialized": self._default_embeddings is not None,
+            "docling_prewarmed": docling_loaded,
+            "docling_prewarm_seconds": round(docling_dt, 2),
+            "docling_prewarm_error": docling_error,
+            "reranker_prewarmed": reranker_prewarmed,
         }
+
+    def accelerator_status(self) -> dict[str, Any]:
+        """Return what hardware acceleration is requested + actually engaged.
+
+        Surfaces this so the UI can show users the truth next to the
+        ``use_gpu`` toggle (e.g. "GPU requested but CPU is loaded").
+        """
+        device, requested = _detect_accelerator(self._config.use_gpu)
+        provider = (self._config.embedding_provider or "").lower()
+        cloud_providers = {"openai", "openrouter", "ollama"}
+        emb_relevant = provider not in cloud_providers
+        active: list[str] = []
+        if emb_relevant and self._default_embeddings is not None:
+            active = list(getattr(self._default_embeddings, "_active_providers", []) or [])
+        # Map ONNX EP -> friendly label for the UI.
+        if not emb_relevant:
+            label = "N/A — cloud embedding provider"
+        elif not self._config.use_gpu:
+            label = "CPU (forced via use_gpu=False)"
+        elif device == "cuda":
+            label = "NVIDIA CUDA"
+        elif device == "mps":
+            label = "Apple GPU (CoreML/MPS)"
+        else:
+            label = "CPU (no GPU detected)"
+        # Honest mismatch flag: requested non-CPU but only CPU loaded.
+        mismatch = bool(
+            emb_relevant
+            and self._config.use_gpu
+            and device != "cpu"
+            and active
+            and not any(p != "CPUExecutionProvider" for p in active)
+        )
+        # Where the API key actually came from — config UI ("ui"), one of the
+        # provider-specific env vars ("env:OPENAI_API_KEY"), or "missing".
+        key_source = self._resolve_key_source()
+        return {
+            "use_gpu": self._config.use_gpu,
+            "embedding_provider": self._config.embedding_provider,
+            "embedding_model": self._config.embedding_model or "",
+            "embedding_relevant": emb_relevant,
+            "device_label": label,
+            "device": device,
+            "providers_requested": requested,
+            "providers_active": active,
+            "fallback_to_cpu": mismatch,
+            "key_source": key_source,
+        }
+
+    def _resolve_key_source(self) -> dict[str, Any]:
+        """Where is the key being used coming from? UI / env / missing."""
+        import os as _os
+
+        provider = (self._config.embedding_provider or "").lower()
+        # Providers that don't need a key
+        if provider in ("fastembed", "huggingface", "ollama"):
+            return {"required": False, "source": "n/a"}
+        if (self._config.embedding_api_key or "").strip():
+            return {"required": True, "source": "ui"}
+        # Env-var fallback paths must match what create_embeddings actually uses.
+        if provider == "openai" and _os.environ.get("OPENAI_API_KEY"):
+            return {"required": True, "source": "env:OPENAI_API_KEY"}
+        if provider == "openrouter" and _os.environ.get("OPENROUTER_API_KEY"):
+            return {"required": True, "source": "env:OPENROUTER_API_KEY"}
+        if provider == "litellm":
+            model = (self._config.embedding_model or "").lower()
+            if model.startswith("openai/") and _os.environ.get("OPENAI_API_KEY"):
+                return {"required": True, "source": "env:OPENAI_API_KEY"}
+            # Other LiteLLM providers (cohere/azure/bedrock) have their own env vars
+            # — we don't enumerate them here; LiteLLM reads them at call time.
+            return {"required": True, "source": "env:provider-specific (LiteLLM)"}
+        return {"required": True, "source": "missing"}
 
     def _knowledge_vector_backend(self) -> str:
         from cuga.config import settings
@@ -472,6 +1850,21 @@ class KnowledgeEngine:
     def _create_vector_adapter(self, collection: str, embeddings: Embeddings):
         from cuga.backend.knowledge.vector_store import create_vector_store
 
+        # C4 (issue #183 step 4): network embedders benefit from concurrent
+        # sub-batches; local ones (fastembed/huggingface) do not because their
+        # runtimes already use internal threads. The engine knows the provider
+        # so it makes the dispatch decision once, here, rather than at every
+        # embed call.
+        # ``litellm`` proxies to network providers (OpenAI / Azure / OpenRouter
+        # via its prefix scheme) so it belongs in the network bucket — without
+        # it, the adapter would serialise embed against a cloud endpoint and
+        # hit provider rate-limit WAF responses on large ingests.
+        embedder_is_network = self._config.embedding_provider in (
+            "openai",
+            "ollama",
+            "openrouter",
+            "litellm",
+        )
         return create_vector_store(
             backend=self._knowledge_vector_backend(),
             collection=collection,
@@ -479,6 +1872,10 @@ class KnowledgeEngine:
             persist_dir=self._config.persist_dir,
             metric_type=self._config.metric_type,
             pgvector_connection_string=self._config.pgvector_connection_string,
+            embedding_batch_size=self._config.embedding_batch_size,
+            embedding_concurrency=self._config.embedding_concurrency,
+            embedder_is_network=embedder_is_network,
+            vector_insert_batch_size=self._config.vector_insert_batch_size,
         )
 
     def _vector_cache_put(self, collection: str, adapter: VectorStoreAdapter) -> None:
@@ -536,6 +1933,20 @@ class KnowledgeEngine:
         if len(pending) >= self._config.max_pending_tasks:
             raise IngestionQueueFullError(self._config.max_pending_tasks)
 
+        # Fast-fail check (advisory): reject a concurrent ingest of the SAME
+        # file in the SAME collection, regardless of replace_duplicates. Two
+        # parallel uploads (browser double-click, React StrictMode, retry
+        # on a network blip) would otherwise both pass validation and both
+        # insert their chunks, leaving the collection with duplicate content.
+        # The atomic guarantee lives in ``_create_task_entry_internal``; this
+        # check just surfaces a clear 409 earlier in the request flow.
+        for t in pending:
+            if filename in (t.get("file_tasks") or {}):
+                raise DocumentExistsError(
+                    f"{filename} (an ingest for this file is already {t.get('status', 'pending')}; "
+                    f"task_id={t.get('task_id')})"
+                )
+
         if not replace_duplicates and await self._metadata.document_exists(collection, filename):
             raise DocumentExistsError(filename)
 
@@ -558,9 +1969,26 @@ class KnowledgeEngine:
         return await self._create_task_entry_internal(_sanitize_collection(collection), filename)
 
     async def _create_task_entry_internal(self, collection: str, filename: str) -> dict[str, Any]:
-        task_id = f"task_{uuid.uuid4().hex[:12]}"
-        file_tasks = {filename: {"filename": filename, "status": "pending"}}
-        return await self._metadata.create_task(task_id, collection, 1, file_tasks)
+        # Hold the collection lock for the (final dedup check + task insert)
+        # window. Without this lock, two requests that both passed
+        # ``_sanitize_and_validate`` can each insert a task — exactly the
+        # double-ingest race that fills the DB with duplicate chunks.
+        async with self._get_collection_lock(collection):
+            existing = None
+            for t in await self._metadata.list_tasks(collection):
+                if t.get("status") not in ("pending", "running"):
+                    continue
+                if filename in (t.get("file_tasks") or {}):
+                    existing = t
+                    break
+            if existing is not None:
+                raise DocumentExistsError(
+                    f"{filename} (an ingest for this file is already "
+                    f"{existing.get('status', 'pending')}; task_id={existing.get('task_id')})"
+                )
+            task_id = f"task_{uuid.uuid4().hex[:12]}"
+            file_tasks = {filename: {"filename": filename, "status": "pending"}}
+            return await self._metadata.create_task(task_id, collection, 1, file_tasks)
 
     async def _run_ingest(
         self,
@@ -573,8 +2001,10 @@ class KnowledgeEngine:
     ) -> None:
         """Run ingestion for a single file in a background thread.
 
-        Serialized per-collection via asyncio.Lock. Docling parsing still runs in a
-        thread to avoid blocking the event loop.
+        Parsing runs concurrently, bounded by ``_ingest_sem`` (max_ingest_workers).
+        Only the vector-store insert is serialized per-collection (lock taken
+        inside ``_ingest_inner``). Docling parsing runs in a thread to avoid
+        blocking the event loop.
         """
         cancel_event = asyncio.Event()
         self._active_tasks[task_id] = cancel_event
@@ -582,9 +2012,9 @@ class KnowledgeEngine:
         coll = _sanitize_collection(collection)
         await self._ensure_metadata_ready()
 
-        async with self._get_collection_lock(coll):
-            await self._ensure_collection_config(coll)
-            await self._ensure_vector_store_cached(coll)
+        # Parse runs concurrently (bounded by the semaphore); the per-collection
+        # lock is taken inside _ingest_inner around just the vector-store insert.
+        async with self._ingest_sem:
             await self._ingest_inner(
                 coll,
                 file_path,
@@ -623,6 +2053,17 @@ class KnowledgeEngine:
         skip_file_copy: bool = False,
     ) -> None:
         start = time.monotonic()
+        # Step 0 (issue #183): per-stage timings collected in-place. Values are
+        # seconds, rounded at emit time, populated by the engine and (via
+        # _insert_documents_async) by the adapter.
+        stage_timings: dict[str, Any] = {}
+        worker_apply_gen = self._apply_generation
+
+        def _check_supersede() -> None:
+            current = self._apply_generation
+            if current != worker_apply_gen:
+                raise ReindexSupersededError(worker_apply_gen, current)
+
         try:
             await self._metadata.update_task(task_id, status="running")
             await self._metadata.update_task(
@@ -639,17 +2080,111 @@ class KnowledgeEngine:
                 )
                 return
 
+            _check_supersede()
+
+            t_parse = time.monotonic()
             docs = await asyncio.to_thread(self._load_document, file_path)
+            stage_timings["parse_s"] = round(time.monotonic() - t_parse, 3)
             if not docs:
                 raise ValueError(f"No content extracted from {filename}")
+            _check_supersede()
+
+            # C5 (issue #183 step 6): emit "parsed" stage so callers polling
+            # get_ingestion_status see progress as soon as Docling finishes
+            # rather than waiting for the whole ingest. Status field is
+            # deliberately omitted from progress emits so a stray write that
+            # races with the completion update at the bottom cannot un-flip
+            # status="completed" back to "processing".
+            await self._metadata.update_task(
+                task_id,
+                file_tasks={
+                    filename: {
+                        "filename": filename,
+                        "stage": "parsed",
+                        "progress": {"done": len(docs), "total": len(docs)},
+                    }
+                },
+            )
+
+            # The adapter's progress_cb is called from the worker thread (via
+            # asyncio.to_thread(_vector_mutation)). To get those updates back
+            # into the metadata store, we capture the outer event loop here
+            # and ferry each emit via run_coroutine_threadsafe. Futures are
+            # tracked and drained before the completion update so the final
+            # status="completed" write cannot be overwritten by a late
+            # progress emit.
+            import concurrent.futures as _cf
+
+            outer_loop = asyncio.get_running_loop()
+            progress_futures: list[_cf.Future] = []
+
+            async def _emit_progress(stage: str, done: int, total: int) -> None:
+                await self._metadata.update_task(
+                    task_id,
+                    file_tasks={
+                        filename: {
+                            "filename": filename,
+                            "stage": stage,
+                            "progress": {"done": done, "total": total},
+                        }
+                    },
+                )
+
+            def progress_cb(stage: str, done: int, total: int) -> None:
+                fut = asyncio.run_coroutine_threadsafe(_emit_progress(stage, done, total), outer_loop)
+                progress_futures.append(fut)
+
+            # D3 — drop chunks that are entirely page chrome (page-footer /
+            # page-header items, like the academic-paper line-number runs
+            # that polluted the live trace). We do this at INGEST so the
+            # noise never enters the vector index — far cheaper than
+            # filtering it out on every query forever. Three modes (same
+            # pattern as ``search_junk_filter`` for operator muscle-memory):
+            #   "off"      — never drop
+            #   "dry_run"  — count + log what would be dropped, keep all
+            #   "enforce"  — drop (default; the live trace's headline fix)
+            _chrome_mode = getattr(self._config, "docling_drop_page_chrome", "enforce")
+            if _chrome_mode != "off":
+                # Single pass over docs, single classifier call per doc.
+                # Previous two-pass version was an inefficiency caught in
+                # code review (2× the classifier work per ingest).
+                kept_docs: list[Any] = []
+                flagged_pages: list[int | None] = []
+                for d in docs:
+                    if _chunk_is_pure_page_chrome(d.metadata.get("dl_meta")):
+                        # Capture the page for the log — operators triaging
+                        # "D3 wrongly dropped my doc" need to know which
+                        # page got nuked, not just the count.
+                        _pg = d.metadata.get("page")
+                        if _pg is None:
+                            _pg = _page_from_docling_dl_meta(d.metadata.get("dl_meta"))
+                        flagged_pages.append(_pg)
+                    else:
+                        kept_docs.append(d)
+                if flagged_pages:
+                    logger.info(
+                        "docling_drop_page_chrome mode=%s collection=%s task_id=%s "
+                        "file=%s would_drop=%d sample_pages=%s",
+                        _chrome_mode,
+                        collection,
+                        task_id,
+                        filename,
+                        len(flagged_pages),
+                        flagged_pages[:5],
+                    )
+                if _chrome_mode == "enforce":
+                    docs = kept_docs
 
             # Enforce chunk limit
             if len(docs) > self._config.max_chunks_per_document:
                 docs = docs[: self._config.max_chunks_per_document]
                 logger.warning(f"Truncated {filename} to {self._config.max_chunks_per_document} chunks")
 
-            # Normalize metadata — keep only fields we need, strip Docling extras
-            # (dl_meta, headings, bounding_box etc. cause schema conflicts across formats)
+            # Normalize metadata — keep only fields we need + the Docling
+            # extras that actually improve retrieval (section_path collapses
+            # the headings array into one flat string so the LLM can attribute
+            # otherwise-orphan chunks like caption-only "Table 27: ..."
+            # to their parent section).
             source_id = f"{collection}/{filename}"
             for doc in docs:
                 page = doc.metadata.get("page")
@@ -663,6 +2198,7 @@ class KnowledgeEngine:
                         page = int(page)
                     except (TypeError, ValueError):
                         page = None
+                section_path = _extract_section_path(dl_meta)
                 meta = {
                     "source": source_id,
                     "filename": filename,
@@ -670,6 +2206,12 @@ class KnowledgeEngine:
                 # Only include page when set — keeps chunk metadata JSON-friendly
                 if page is not None:
                     meta["page"] = page
+                # D1 — flat string so it doesn't trip the cross-format schema
+                # conflicts that motivated stripping ``headings`` before. Empty
+                # string is also acceptable but we omit the key to keep the
+                # metadata payload terse for non-Docling formats.
+                if section_path:
+                    meta["section_path"] = section_path
                 doc.metadata = meta
                 # Coerce exotic types for vector backends
                 for key, val in doc.metadata.items():
@@ -680,13 +2222,45 @@ class KnowledgeEngine:
             if docs:
                 logger.debug(f"Sample metadata for {filename}: {docs[0].metadata}")
 
+            _check_supersede()
+
             logger.info(
                 f"Inserting {len(docs)} chunks into {self._knowledge_vector_backend()} "
                 f"collection {collection} for {filename}"
             )
-            result = await self._insert_documents_async(
-                collection, docs, source_id, filename, replace_duplicates
-            )
+            t_insert_total = time.monotonic()
+            # Per-collection critical section: ensure config/vector-store exist
+            # and insert. Dedup correctness depends on this being serialized;
+            # the parse above is not.
+            async with self._get_collection_lock(collection):
+                await self._ensure_collection_config(collection)
+                await self._ensure_vector_store_cached(collection)
+                result = await self._insert_documents_async(
+                    collection,
+                    docs,
+                    source_id,
+                    filename,
+                    replace_duplicates,
+                    stage_timings=stage_timings,
+                    progress_cb=progress_cb,
+                )
+            stage_timings["insert_total_s"] = round(time.monotonic() - t_insert_total, 3)
+
+            # Drain any in-flight progress emits before the completion
+            # update so a late write cannot overwrite ``status="completed"``
+            # back to ``"processing"``. Per-future timeout caps total wait;
+            # progress is best-effort, never block on it.
+            #
+            # Use ``asyncio.wait_for`` over a wrapped concurrent Future so
+            # the drain stays on the event loop — ``fut.result(timeout=...)``
+            # is a blocking call that would stall the asyncio thread for
+            # up to ``len(progress_futures) * timeout`` (~20s for 10 emits).
+            # Per Sami's review (Dec 2026) — actual production block.
+            for fut in progress_futures:
+                try:
+                    await asyncio.wait_for(asyncio.wrap_future(fut), timeout=2.0)
+                except (asyncio.TimeoutError, Exception):
+                    pass
             logger.info(
                 f"{self._knowledge_vector_backend()} insert complete for {filename}: "
                 f"added={result.get('num_added', 0)}, skipped={result.get('num_skipped', 0)}"
@@ -694,6 +2268,7 @@ class KnowledgeEngine:
 
             duration = time.monotonic() - start
             chunk_count = result.get("num_added", 0) + result.get("num_updated", 0)
+            stage_timings["chunk_count"] = len(docs)
             # Build a short preview from the first chunk(s) for knowledge awareness
             _PREVIEW_MAX_CHARS = 500
             preview_parts: list[str] = []
@@ -710,6 +2285,7 @@ class KnowledgeEngine:
             preview = " ".join(preview_parts).replace("\n", " ").strip()
             if len(preview) > _PREVIEW_MAX_CHARS:
                 preview = preview[:_PREVIEW_MAX_CHARS].rsplit(" ", 1)[0] + "..."
+            t_finalize = time.monotonic()
             await self._metadata.add_document(collection, filename, chunk_count or len(docs), preview=preview)
 
             if not skip_file_copy:
@@ -726,6 +2302,8 @@ class KnowledgeEngine:
                             except OSError:
                                 pass
                         raise
+            stage_timings["finalize_s"] = round(time.monotonic() - t_finalize, 3)
+            stage_timings["total_s"] = round(time.monotonic() - start, 3)
 
             await self._metadata.update_task(
                 task_id,
@@ -737,6 +2315,7 @@ class KnowledgeEngine:
                         "filename": filename,
                         "status": "indexed",
                         "duration_seconds": round(duration, 2),
+                        "timings": dict(stage_timings),
                     }
                 },
             )
@@ -744,7 +2323,64 @@ class KnowledgeEngine:
                 f"Ingested {filename} -> {len(docs)} chunks in {collection} "
                 f"(added={result.get('num_added', 0)}, skipped={result.get('num_skipped', 0)})"
             )
+            # End-to-end timing breakdown so users can see WHERE time went
+            # and validate config changes (fast mode, layout_engine, ...) at a
+            # glance. Also includes the active config so the line is
+            # self-describing if shared in a bug report.
+            # Per-stage device honesty:
+            #   - layout: depends on the resolved engine (transformers → MPS/CUDA;
+            #     ONNX is CPU-only regardless of device_label).
+            #   - embed: the local accelerator backing fastembed/huggingface,
+            #     or "N/A — cloud" for openai/openrouter/ollama.
+            # We surface both so a single timing line is enough to diagnose.
+            _device_label, _ = _detect_accelerator(self._config.use_gpu)
+            _eff_layout_engine, _layout_device = self._resolve_layout(
+                self._config.docling_layout_engine or "auto", _device_label
+            )
+            _accel = self.accelerator_status()
+            _embed_device = _accel.get("device_label", "?")
+            if _accel.get("fallback_to_cpu"):
+                _embed_device += " (⚠ GPU requested but CPU loaded)"
+            logger.info(
+                "Ingest timings ({filename}): total={total}s | parse={parse}s "
+                "(docling: pdf_mode={pdf_mode}, layout={layout_engine}/{layout_device}) | "
+                "embed={embed}s + insert={insert}s = insert_total={insert_total}s "
+                "(provider={provider}, model={model}, embed_device={embed_device}) | "
+                "finalize={finalize}s | chunks={chunks}",
+                filename=filename,
+                total=stage_timings.get("total_s", "?"),
+                parse=stage_timings.get("parse_s", "?"),
+                pdf_mode=self._config.docling_pdf_mode,
+                layout_engine=_eff_layout_engine,
+                layout_device=_layout_device,
+                embed=stage_timings.get("embed_s", "?"),
+                insert=stage_timings.get("insert_s", "?"),
+                insert_total=stage_timings.get("insert_total_s", "?"),
+                provider=self._config.embedding_provider,
+                model=(self._config.embedding_model or "default"),
+                embed_device=_embed_device,
+                finalize=stage_timings.get("finalize_s", "?"),
+                chunks=len(docs),
+            )
 
+        except ReindexSupersededError as e:
+            # SQL status "cancelled" (CHECK admits no new value); supersede
+            # audit lives in file_tasks[filename].
+            duration = time.monotonic() - start
+            logger.info(f"Task {task_id} superseded for {filename} after {duration:.1f}s ({e})")
+            await self._metadata.update_task(
+                task_id,
+                status="cancelled",
+                processed_files=1,
+                file_tasks={
+                    filename: {
+                        "filename": filename,
+                        "status": "superseded",
+                        "reason": f"config changed mid-ingest (gen {e.worker_gen} -> {e.current_gen})",
+                        "duration_seconds": round(duration, 2),
+                    }
+                },
+            )
         except Exception as e:
             duration = time.monotonic() - start
             logger.error(f"Failed to ingest {filename}: {e}")
@@ -773,6 +2409,8 @@ class KnowledgeEngine:
         filename: str,
         replace_duplicates: bool,
         retry: bool = True,
+        stage_timings: dict[str, Any] | None = None,
+        progress_cb: Any = None,
     ) -> dict:
         try:
             doc_exists = await self._metadata.document_exists(collection, filename)
@@ -780,6 +2418,11 @@ class KnowledgeEngine:
             def _vector_mutation() -> dict:
                 with self._vector_store_lock:
                     adapter = self._vector_stores[collection]
+                    common_kwargs: dict[str, Any] = {}
+                    if stage_timings is not None:
+                        common_kwargs["stage_timings"] = stage_timings
+                    if progress_cb is not None:
+                        common_kwargs["progress_cb"] = progress_cb
                     if replace_duplicates and doc_exists:
                         try:
                             adapter.delete_by_source(source_id)
@@ -791,14 +2434,11 @@ class KnowledgeEngine:
                                 rm.delete_keys([source_id])
                             except Exception:
                                 pass
-                        _BATCH = 50
-                        total_added = 0
-                        for i in range(0, len(docs), _BATCH):
-                            result = adapter.add_documents(docs[i : i + _BATCH])
-                            total_added += result.get("num_added", 0)
-                        return {"num_added": total_added, "num_skipped": 0}
+                        # C2 (issue #183 step 5): single adapter call now that
+                        # bulk insert is done inside the adapter via add_many.
+                        return adapter.add_documents(docs, **common_kwargs)
                     if not doc_exists:
-                        return adapter.add_documents(docs)
+                        return adapter.add_documents(docs, **common_kwargs)
                     return {"num_added": 0, "num_skipped": len(docs)}
 
             return await asyncio.to_thread(_vector_mutation)
@@ -823,7 +2463,14 @@ class KnowledgeEngine:
                 await self._metadata.delete_collection_metadata(collection)
                 await self._ensure_vector_store_cached(collection)
                 return await self._insert_documents_async(
-                    collection, docs, source_id, filename, replace_duplicates, retry=False
+                    collection,
+                    docs,
+                    source_id,
+                    filename,
+                    replace_duplicates,
+                    retry=False,
+                    stage_timings=stage_timings,
+                    progress_cb=progress_cb,
                 )
             raise
 
@@ -966,9 +2613,52 @@ class KnowledgeEngine:
     # --- Search ---
 
     async def search(
-        self, collection: str, query: str, limit: int = 10, score_threshold: float = 0.0
+        self,
+        collection: str,
+        query: str,
+        limit: int = 10,
+        score_threshold: float = 0.0,
+        scope: str = "",
     ) -> list[SearchResult]:
-        """Search documents in a collection."""
+        """Search documents in a collection — returns just the result list.
+
+        Thin back-compat wrapper around :meth:`search_with_stats`. Most
+        callers don't need the filter accounting; the route and
+        ``search_multi`` use the stat-aware variant directly.
+        """
+        results, _stats = await self.search_with_stats(
+            collection=collection,
+            query=query,
+            limit=limit,
+            score_threshold=score_threshold,
+            scope=scope,
+        )
+        return results
+
+    async def search_with_stats(
+        self,
+        collection: str,
+        query: str,
+        limit: int = 10,
+        score_threshold: float = 0.0,
+        scope: str = "",
+    ) -> tuple[list[SearchResult], _JunkFilterStats]:
+        """Search a collection AND return per-call junk-filter accounting.
+
+        Same retrieval logic as :meth:`search`; surfaces the filter stats
+        so multi-scope callers can aggregate ``filtered_count`` across
+        scopes for the LLM-facing response.
+
+        ``scope`` is a tag attached to every result so downstream callers
+        and the LLM can attribute chunks correctly. The engine doesn't
+        interpret it.
+
+        If a client-adaptation glossary is configured, the query is first
+        expanded with synonymous anchors so cross-language / abbreviated /
+        domain-specific aliases lift recall (see ``query_expansion``).
+        Expansion is opt-in via config and silent (no-op) when the
+        glossary is empty.
+        """
         await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
         limit = max(1, min(limit, 100))
@@ -976,42 +2666,601 @@ class KnowledgeEngine:
 
         await self._ensure_vector_store_cached(collection)
 
-        def _search_sync():
+        # C3 — drain loop for high-junk pages. ``limit*2`` covers the
+        # common case (a few junk chunks in the top-K); a drain loop
+        # bounded to 2 iterations covers pathological pages (80%+ junk —
+        # the academic line-number gutters that motivated D3). On clean
+        # data we exit after one iteration with the same cost as before.
+        _filter_mode = getattr(self._config, "search_junk_filter", "dry_run")
+        # Step 5 (BM25 hybrid) — when ``auto`` we run dense + lexical in
+        # parallel and RRF-fuse. ``off`` skips the lexical leg entirely
+        # (zero extra cost on machines / collections where hybrid is
+        # explicitly disabled).
+        _hybrid_mode = getattr(self._config, "search_hybrid_mode", "auto")
+        _hybrid_on = _hybrid_mode == "auto"
+
+        # Cross-encoder reranker overfetch — when reranker is on, pull the
+        # top ``rerank_top_k_in`` candidates from the adapter so the encoder
+        # has a wide enough window to find the gold chunk. Without overfetch
+        # the encoder can only re-order an already-narrow result set.
+        rerank_on = bool(getattr(self._config, "rerank_enabled", False))
+        # candidate_k vs return_k: when reranking, keep a WIDE candidate window
+        # (overfetch) so the cross-encoder has room to surface the gold chunk,
+        # then trim to ``limit`` (return_k) in the rerank step. When rerank is
+        # off this collapses to ``limit`` — no behavior change. (Previously the
+        # overfetch value was computed and discarded, so reranking only ever
+        # re-ordered the top ``limit`` — defeating the point of reranking.)
+        _overfetch_k = max(limit, int(getattr(self._config, "rerank_top_k_in", 20))) if rerank_on else limit
+
+        # Glossary-driven query expansion (client-adaptation). The expanded
+        # query hits the embedder + lexical index; the ORIGINAL is preserved
+        # for (a) the empty-guard retry below if expansion drove embedding
+        # away from useful regions, and (b) the cross-encoder rerank step
+        # which scores on the user's actual intent, not alias-padded text.
+        original_query = query
+        glossary = getattr(self._config, "client_adaptation_glossary", None)
+        if glossary:
+            from cuga.backend.knowledge.query_expansion import expand_query_with_glossary
+
+            query, match_log = expand_query_with_glossary(original_query, glossary)
+            if match_log:
+                logger.info(
+                    "cuga.knowledge.glossary_expanded",
+                    extra={
+                        "cuga_knowledge_glossary_matches": len(match_log),
+                        "cuga_knowledge_query_orig_len": len(original_query),
+                        "cuga_knowledge_query_expanded_len": len(query),
+                    },
+                )
+                logger.debug(
+                    f"Glossary expanded query: {original_query!r} -> {query!r} (matches: {match_log})"
+                )
+
+        # ``q`` defaults to the (glossary-expanded) query; the query-transform
+        # fan-out and the empty-guard retry pass an explicit query string.
+        def _do_dense_search(k: int, q: str = query):
+            # Hold the lock only long enough to fetch the adapter reference.
+            # Adapters are safe to call concurrently for reads (sqlite-vec
+            # uses per-call connections; pgvector wraps an asyncpg pool).
+            # Holding the global lock across ``adapter.search`` would
+            # serialize the parallel fan-out in ``search_multi`` and double
+            # p50 latency on multi-scope queries.
             with self._vector_store_lock:
                 adapter = self._vector_stores[collection]
-                scored = adapter.search(query, k=limit)
-                if scored:
-                    logger.debug(
-                        f"Search '{query[:30]}' on {collection}: "
-                        f"top_score={scored[0][1]:.4f}, count={len(scored)}, "
-                        f"backend={self._knowledge_vector_backend()}"
-                    )
-                return scored
+            return adapter.search(q, k=k)
 
-        scored_results = await asyncio.to_thread(_search_sync)
+        def _do_lexical_search(k: int, q: str = query):
+            with self._vector_store_lock:
+                adapter = self._vector_stores[collection]
+            # Adapters without a lexical index inherit the base class's
+            # ``[]`` so this never raises — the engine degrades cleanly
+            # to pure-dense when (a) the adapter is pgvector, (b) the
+            # FTS table hasn't been created yet for a pre-upgrade
+            # collection, or (c) the query has no usable tokens after
+            # FTS5 sanitization.
+            return adapter.search_lexical(q, k=k)
 
-        results = []
-        seen_texts: set[str] = set()
-        for doc, score in scored_results:
-            if score >= score_threshold:
+        # ``below_threshold_counter`` is a one-element list so the closure
+        # can mutate it (avoid `nonlocal` since this function is itself a
+        # closure of ``search_with_stats``). Counts dense+lexical chunks
+        # whose dense cosine was below ``score_threshold``. The lexical
+        # leg pre-fusion does not apply this cutoff (BM25 ranks aren't
+        # comparable to cosine), so its ``apply_score_threshold=False``
+        # path is intentionally counted as 0 here.
+        below_threshold_counter = [0]
+
+        def _materialize(scored, seen_texts: set[str], *, apply_score_threshold: bool) -> list[SearchResult]:
+            out: list[SearchResult] = []
+            for doc, score in scored:
+                if apply_score_threshold and score < score_threshold:
+                    below_threshold_counter[0] += 1
+                    continue
                 text = doc.page_content
                 if text in seen_texts:
                     continue
                 seen_texts.add(text)
-                results.append(
+                out.append(
                     SearchResult(
                         text=text,
                         filename=doc.metadata.get("filename", "unknown"),
                         page=doc.metadata.get("page", None),
                         score=round(score, 4),
+                        scope=scope,
+                        section_path=doc.metadata.get("section_path", "") or "",
                     )
                 )
+            return out
+
+        # Pass 1: limit*2 (or just limit when filter is off), but never below the
+        # reranker's candidate window — otherwise overfetch would request more
+        # than we fetched and the rerank step would see a narrow set.
+        _base_k = (limit * 2) if _filter_mode != "off" else limit
+        first_k = min(200, max(_base_k, _overfetch_k))
+
+        # Query transformation (multi_query / HyDE), opt-in via
+        # search_query_transform. Kick the LLM generation NOW so it overlaps the
+        # base dense/lexical retrieval below; we await it only when fanning out the
+        # variant legs (after the base fuse). Inert when the knob is off or no chat
+        # model was injected — search then runs exactly the plain-query path. The
+        # transform sees the ORIGINAL query (cleaner intent than alias-padded text).
+        _qt_mode = getattr(self._config, "search_query_transform", "off")
+        _qt_task = None
+        if _qt_mode != "off" and self._chat_generator is not None:
+            from cuga.backend.knowledge.query_transform import expand_query as _expand_query
+
+            _qt_task = asyncio.ensure_future(
+                _expand_query(
+                    _qt_mode,
+                    original_query,
+                    self._chat_generator,
+                    n=int(getattr(self._config, "search_query_transform_n", 3)),
+                )
+            )
+
+        # Run dense + lexical in parallel when hybrid is on. ``gather``
+        # over ``to_thread`` means wall-clock ≈ max(dense, lexical)
+        # instead of dense + lexical. Lexical against an FTS5 index is
+        # usually faster than dense (no embedding round-trip), so the
+        # added latency is bounded by the dense call.
+        if _hybrid_on:
+            dense_task = asyncio.to_thread(_do_dense_search, first_k)
+            lexical_task = asyncio.to_thread(_do_lexical_search, first_k)
+            dense_scored, lexical_scored = await asyncio.gather(dense_task, lexical_task)
+        else:
+            dense_scored = await asyncio.to_thread(_do_dense_search, first_k)
+            lexical_scored = []
+
+        # Empty-guard retry: if glossary expansion drove the dense embedding
+        # away from useful regions (rare, but observed when aliases conflict
+        # with the original term semantics), retry the dense leg once with
+        # the unexpanded query. Lexical leg is left as-is — if expansion
+        # found nothing in BM25 either, the un-expanded query likely won't
+        # rescue lexical either.
+        if not dense_scored and query != original_query:
+            logger.info(
+                "cuga.knowledge.empty_retry",
+                extra={
+                    "cuga_knowledge_collection": collection,
+                    "cuga_knowledge_reason": "glossary_expansion_returned_empty",
+                },
+            )
+
+            dense_scored = await asyncio.to_thread(_do_dense_search, first_k, original_query)
+
+        if dense_scored:
+            logger.debug(
+                f"Search '{query[:30]}' on {collection}: "
+                f"top_score={dense_scored[0][1]:.4f}, count={len(dense_scored)}, "
+                f"lexical_count={len(lexical_scored)}, "
+                f"backend={self._knowledge_vector_backend()}"
+            )
+
+        # Materialize each leg with its own dedup set so a chunk that
+        # appears in both can contribute to BOTH ranks (which is
+        # exactly what RRF needs to score it higher). The score_threshold
+        # is dense-leg-only — the lexical leg uses BM25 ranks, not
+        # comparable to a cosine cutoff.
+        seen_dense: set[str] = set()
+        dense_results = _materialize(dense_scored, seen_dense, apply_score_threshold=True)
+        seen_lex: set[str] = set()
+        lexical_results = _materialize(lexical_scored, seen_lex, apply_score_threshold=False)
+
+        # Track the raw candidate count BEFORE any threshold / dedup
+        # collapse, for the wire ``candidates`` field. ``candidates``
+        # on the wire is intentionally pre-cutoff so the user/LLM see
+        # what the retriever actually returned (the invariant
+        # ``candidates = returned + filtered + below_threshold +
+        # drain_drops`` requires this).
+        _raw_candidate_count = len(dense_scored) + len(lexical_scored)
+
+        # RRF fusion (no-op when ``lexical_results`` is empty, so the
+        # pure-dense path keeps its original ordering for back-compat).
+        results = _rrf_fuse(dense_results, lexical_results)
+
+        # Query-transform fan-out (opt-in). Retrieve each EXTRA variant leg and
+        # RRF-fuse it with the base hybrid result. The base (original query,
+        # dense+lexical) always participates and is passed FIRST, so a bad HyDE
+        # passage or off-target rewrite can only ADD candidates to the pool — it
+        # never replaces the user's query. Variant legs skip the dense
+        # score_threshold (RRF + the reranker decide quality) so they don't perturb
+        # the base below_threshold stat. Whole block is best-effort: any failure
+        # leaves ``results`` as the plain-query fusion.
+        if _qt_task is not None:
+            try:
+                _variants = await _qt_task
+            except Exception:
+                _variants = None
+            if _variants is not None and _variants.active:
+                _legs = [asyncio.to_thread(_do_dense_search, first_k, qv) for qv in _variants.dense_extra]
+                if _hybrid_on:
+                    _legs += [
+                        asyncio.to_thread(_do_lexical_search, first_k, qv) for qv in _variants.lexical_extra
+                    ]
+                _scored_legs = await asyncio.gather(*_legs, return_exceptions=True)
+                _variant_lists = [
+                    _materialize(sc, set(), apply_score_threshold=False)
+                    for sc in _scored_legs
+                    if isinstance(sc, list)
+                ]
+                _variant_lists = [vl for vl in _variant_lists if vl]
+                if _variant_lists:
+                    _raw_candidate_count += sum(len(vl) for vl in _variant_lists)
+                    results = _rrf_fuse_lists([results, *_variant_lists])
+                    # loguru: format inline (extra={} is silently dropped by loguru),
+                    # so this line is actually visible/grep-able in the console.
+                    logger.info(
+                        "cuga.knowledge.query_transform_applied mode={} dense_legs={} "
+                        "lexical_legs={} fused={} query={!r}",
+                        _qt_mode,
+                        len(_variants.dense_extra),
+                        len(_variants.lexical_extra) if _hybrid_on else 0,
+                        len(results),
+                        original_query[:60],
+                    )
+
+        # Junk filter applies to the unified post-fusion list.
+        results, _stats = _apply_junk_filter(results, _filter_mode)
+        # Overwrite the ``candidates`` count with the raw pre-cutoff
+        # value so the invariant holds on the wire. ``_apply_junk_filter``
+        # initialized it to ``len(results)`` (post-fusion, post-cutoff)
+        # which would understate.
+        _stats.candidates = _raw_candidate_count
+        _stats.below_threshold = below_threshold_counter[0]
+
+        # Pass 2 (drain): only when (a) the filter is actually enforcing
+        # AND (b) we returned less than asked AND (c) the dense adapter
+        # produced a full page (otherwise there's nothing more to refill
+        # from). Hybrid already over-fetches via two legs, so the drain
+        # is only needed for pure-dense pathological pages.
+        if _filter_mode == "enforce" and len(results) < limit and len(dense_scored) >= first_k:
+            second_k = min(200, max(limit * 2, first_k + limit))
+            scored2 = await asyncio.to_thread(_do_dense_search, second_k)
+            seen_drain = set(r.text for r in results)
+            # Snapshot the threshold counter so we can split drain-pass
+            # rejects from the original pass for the wire ``drain_drops``
+            # field.
+            _bt_before_drain = below_threshold_counter[0]
+            new_results = _materialize(
+                scored2[first_k:],
+                seen_drain,
+                apply_score_threshold=True,
+            )
+            if new_results:
+                new_results, new_stats = _apply_junk_filter(new_results, _filter_mode)
+                results.extend(new_results)
+                _stats.candidates += new_stats.candidates
+                _stats.filtered_count += new_stats.filtered_count
+                # Drain-pass threshold rejects count toward drain_drops,
+                # not below_threshold. Different operator action: drain
+                # tuning vs. raise/lower the cutoff.
+                _stats.drain_drops += below_threshold_counter[0] - _bt_before_drain
+                for k, v in new_stats.reasons.items():
+                    _stats.reasons[k] = _stats.reasons.get(k, 0) + v
+
+        # Cap at the candidate window AFTER the optional drain. When rerank is
+        # off ``_overfetch_k == limit`` so this is the caller's budget; when on,
+        # we keep the wider window and the rerank step below trims to ``limit``.
+        results = results[:_overfetch_k]
+        if _stats.filtered_count:
+            logger.info(
+                "search_filter mode=%s collection=%s candidates=%d filtered=%d reasons=%s scope=%s query=%r",
+                _filter_mode,
+                collection,
+                _stats.candidates,
+                _stats.filtered_count,
+                _stats.reasons,
+                scope or "-",
+                (query or "")[:60],
+            )
+
+        # Cross-encoder rerank step — opt-in, post-cap on adapter results.
+        # We rescore the overfetched candidates jointly with the (original,
+        # unexpanded) query — glossary expansion already helped retrieval
+        # find the candidates; for rescoring we want the user's actual intent,
+        # not the alias-padded version. On any reranker failure (model not
+        # available, OOM, etc.) we fall back to the fusion ranking and log
+        # a warning so search degrades gracefully.
+        if rerank_on and len(results) > 1:
+            # A user query MUST NEVER block on a model download. When the
+            # reranker model isn't loaded yet (e.g. just switched to a profile
+            # that enables it — bge-reranker-base is ~1.1GB), kick a background
+            # load and serve fusion-ranked results NOW; subsequent queries
+            # rerank automatically once it's ready. Any failure (import, load,
+            # rerank) degrades to fusion ranking, never crashes the request.
+            _rerank_model = str(getattr(self._config, "rerank_model", "BAAI/bge-reranker-base"))
+            try:
+                from cuga.backend.knowledge import reranker as _rr
+
+                if not _rr.is_ready(_rerank_model):
+                    _rr.ensure_loading(_rerank_model)  # non-blocking background download
+                    logger.info(
+                        "cuga.knowledge.rerank_warming",
+                        extra={"cuga_knowledge_rerank_model": _rerank_model},
+                    )
+                    results = results[:limit]  # fusion ranking until the model is ready
+                else:
+                    # Tag each candidate with its index into ``results`` so the
+                    # reorder after rerank preserves the ORIGINAL SearchResult
+                    # (scope, section_path, dense_rank, lexical_rank, rrf_score).
+                    # Without this, rebuilding fresh SearchResults at the end
+                    # silently zeroes scope → "" — and the envelope's by_source
+                    # bucket lumps every chunk under that phantom empty scope
+                    # when scope="all" + rerank_enabled. Sami C1 review.
+                    candidates = [
+                        _rr.RerankedCandidate(
+                            text=r.text,
+                            score=r.score,
+                            metadata={"filename": r.filename, "page": r.page, "_orig_idx": i},
+                            original_score=r.score,
+                        )
+                        for i, r in enumerate(results)
+                    ]
+                    reranked = await asyncio.to_thread(
+                        _rr.rerank, original_query, candidates, limit, _rerank_model
+                    )
+                    logger.info(
+                        "cuga.knowledge.rerank_applied",
+                        extra={
+                            "cuga_knowledge_rerank_in": len(candidates),
+                            "cuga_knowledge_rerank_out": len(reranked),
+                            "cuga_knowledge_rerank_top_score_orig": (
+                                candidates[0].original_score if candidates else 0
+                            ),
+                            "cuga_knowledge_rerank_top_score_new": (reranked[0].score if reranked else 0),
+                        },
+                    )
+                    # Reorder original results by the reranker's verdict. All
+                    # provenance fields (scope, section_path, dense_rank,
+                    # lexical_rank, rrf_score) ride through unchanged. The
+                    # displayed score stays the fusion score for unit
+                    # consistency (cross-encoder logits are unbounded and
+                    # would confuse the score_threshold gate downstream).
+                    # Defensive ``isinstance`` guard: a misbehaved reranker
+                    # that drops the index key shouldn't crash search.
+                    reordered: list["SearchResult"] = []
+                    for c in reranked:
+                        idx = c.metadata.get("_orig_idx") if isinstance(c.metadata, dict) else None
+                        if isinstance(idx, int) and 0 <= idx < len(results):
+                            reordered.append(results[idx])
+                    results = reordered or results[:limit]
+            except Exception as e:
+                logger.warning(f"Reranker unavailable/failed ({e}); using fusion ranking.")
+                results = results[:limit]
+        else:
+            # No reranker → still respect the requested limit (we may have
+            # overfetched to feed the reranker; if it's off, trim now).
+            results = results[:limit]
 
         if results:
             logger.debug(
                 f"Search '{query[:30]}' on {collection}: top_score={results[0].score}, count={len(results)}"
             )
-        return results
+        return results, _stats
+
+    async def search_multi(
+        self,
+        scoped_collections: list[tuple[str, str]],
+        query: str,
+        limit: int = 10,
+        score_threshold: float = 0.0,
+        per_scope_limit: bool = True,
+    ) -> tuple[list[SearchResult], "_MultiSearchStats"]:
+        """Fan out a query across multiple scoped collections.
+
+        Two budget modes (``per_scope_limit`` toggles between them):
+
+          - **per_scope_limit=True (default — Option B)**: every scope
+            contributes up to ``limit`` chunks; total cap is
+            ``min(100, limit × n_scopes)``. Use when the caller chose
+            ``scope="all"`` deliberately: "I genuinely need both
+            sources, show me each one's best."
+
+          - **per_scope_limit=False (Option F — fixed total)**: classic
+            quota allocation. Each non-empty scope reserves
+            ``min(N_s, ceil(limit / num_non_empty_scopes))`` slots;
+            spare capacity from undersized scopes redistributes; sum
+            hard-clamped to ``limit``. Use when the caller did NOT ask
+            for breadth — the auto-fallback path
+            (``scope="session"`` → 0 hits → retry as "all") sets this
+            so the LLM's response-size expectation is preserved.
+
+        Both modes share the same retrieval + RRF + dedup pipeline:
+
+          1. Fan out: one ``search_with_stats`` per (scope, collection)
+             in parallel via ``asyncio.gather`` (wall-clock ≈ slowest
+             single search).
+          2. **Cross-scope RRF**: per-scope rank fused with cross-scope
+             rank via ``1/(k_rrf + rank)``. Stored on
+             ``cross_scope_rrf_score`` for observability.
+          3. **Dedup** by ``(filename, page, sha1(text)[:16])`` keeping
+             the higher cross-scope RRF score. Collapses attributed to
+             the loser's scope (``dedup_collapses``).
+          4. **Budget application**: per the mode above.
+
+        Returns ``(results, stats)`` where ``stats`` is a per-scope
+        ``_MultiSearchStats``. We do NOT raise on partial failure: a
+        degraded answer beats no answer when one collection is down.
+        """
+        if not scoped_collections:
+            return [], _MultiSearchStats()
+
+        limit = max(1, min(limit, 100))
+
+        async def _scoped_search(
+            scope_name: str, collection: str
+        ) -> tuple[list[SearchResult], _JunkFilterStats]:
+            return await self.search_with_stats(
+                collection=collection,
+                query=query,
+                limit=limit,
+                score_threshold=score_threshold,
+                scope=scope_name,
+            )
+
+        outcomes = await asyncio.gather(
+            *(_scoped_search(s, c) for s, c in scoped_collections),
+            return_exceptions=True,
+        )
+
+        # Track per-scope results & stats. Per-scope is the load-bearing
+        # change vs. the old "single aggregate" return shape — quota and
+        # observability both need per-scope buckets.
+        # Pre-seed ``by_scope`` with every searched scope (with empty
+        # stats) so the wire envelope can distinguish "searched but no
+        # hits" from "scope wasn't searched". Failed scopes are recorded
+        # separately in ``failed_scopes`` and do NOT appear in by_scope.
+        by_scope_results: dict[str, list[SearchResult]] = {}
+        stats = _MultiSearchStats()
+        for (scope_name, collection), outcome in zip(scoped_collections, outcomes):
+            if isinstance(outcome, BaseException):
+                stats.failed_scopes.append(scope_name)
+                stats.partial = True
+                logger.warning(
+                    "search_multi: scope=%s collection=%s failed (%s); continuing with remaining scopes",
+                    scope_name,
+                    collection,
+                    outcome,
+                )
+                continue
+            scoped_results, scoped_stats = outcome
+            by_scope_results[scope_name] = scoped_results
+            stats.by_scope[scope_name] = scoped_stats
+            if scoped_results:
+                stats.top_score_by_scope[scope_name] = scoped_results[0].score
+
+        # Stamp cross-scope RRF rank on every chunk. Each scope contributes
+        # its in-scope ranked list; chunks are fused across scopes via
+        # the standard RRF formula ``1 / (k_rrf + rank)``. ``k_rrf = 60``
+        # matches the in-scope fusion default and the literature default
+        # (Cormack 2009).
+        _k_rrf = 60
+        for scope_name, scoped_results in by_scope_results.items():
+            for rank, r in enumerate(scoped_results, start=1):
+                r.cross_scope_rrf_score = round(1.0 / (_k_rrf + rank), 6)
+
+        # Dedup across scopes BEFORE quota so dedup_collapses are
+        # attributed before slots are reserved. Key: (filename, page,
+        # text_sha1[:16]). Winner: higher cross-scope RRF (matches the
+        # fusion the caller will see). Loser's scope accrues a
+        # ``dedup_collapses`` count for observability ("your X scope
+        # had a duplicate eclipsed by Y").
+        best_by_key: dict[tuple[str, int | None, str], SearchResult] = {}
+        loser_scopes_by_key: dict[tuple[str, int | None, str], str] = {}
+        for scope_name, scoped_results in by_scope_results.items():
+            for r in scoped_results:
+                text_hash = hashlib.sha1(r.text.encode("utf-8", errors="replace")).hexdigest()[:16]
+                key = (r.filename, r.page, text_hash)
+                existing = best_by_key.get(key)
+                if existing is None:
+                    best_by_key[key] = r
+                    continue
+                # Tiebreak: higher cross_scope_rrf_score wins. Raw score
+                # is a secondary tiebreak (stable on collections that
+                # produce identical fused ranks).
+                e_rrf = existing.cross_scope_rrf_score or 0.0
+                r_rrf = r.cross_scope_rrf_score or 0.0
+                if r_rrf > e_rrf or (r_rrf == e_rrf and r.score > existing.score):
+                    # ``existing`` loses → its scope accrues a collapse.
+                    loser_scope = existing.scope or "?"
+                    if loser_scope in stats.by_scope:
+                        stats.by_scope[loser_scope].dedup_collapses += 1
+                    loser_scopes_by_key[key] = loser_scope
+                    best_by_key[key] = r
+                else:
+                    # ``r`` loses.
+                    if scope_name in stats.by_scope:
+                        stats.by_scope[scope_name].dedup_collapses += 1
+                    loser_scopes_by_key[key] = scope_name
+
+        # Rebucket post-dedup by scope so the quota step sees the
+        # surviving lists in rank order.
+        post_dedup_by_scope: dict[str, list[SearchResult]] = {}
+        for r in best_by_key.values():
+            post_dedup_by_scope.setdefault(r.scope or "?", []).append(r)
+        # Preserve in-scope ranking (drop = preserve insertion order from
+        # the per-scope search; cross_scope_rrf_score equals the original
+        # rank-derived value so sorting by it descending = rank order).
+        for scope_name in post_dedup_by_scope:
+            post_dedup_by_scope[scope_name].sort(
+                key=lambda r: (
+                    -(r.cross_scope_rrf_score or 0.0),
+                    r.filename,
+                    r.page if r.page is not None else -1,
+                ),
+            )
+
+        non_empty_scopes = [s for s, lst in post_dedup_by_scope.items() if lst]
+        n_scopes = len(non_empty_scopes)
+        if n_scopes == 0:
+            return [], stats
+
+        # Option B: per-source cap. Each non-empty scope contributes up
+        # to ``limit`` chunks; total cap is ``min(100, limit × n_scopes)``.
+        # Final ordering is cross-scope RRF descending (same key as the
+        # quota path below) so the LLM sees the most strongly-fused
+        # chunks first regardless of which scope they came from.
+        if per_scope_limit:
+            total_cap = min(100, limit * n_scopes)
+            merged: list[SearchResult] = []
+            for s in non_empty_scopes:
+                merged.extend(post_dedup_by_scope[s][:limit])
+            merged.sort(
+                key=lambda r: (
+                    -(r.cross_scope_rrf_score or 0.0),
+                    r.filename,
+                    r.page if r.page is not None else -1,
+                ),
+            )
+            return merged[:total_cap], stats
+
+        # Per-scope quota allocation (Option F — fixed total).
+        # Step 1: each non-empty scope reserves min(N_s, ceil(limit/num)).
+        # Step 2: redistribute leftover (capped scopes returning fewer
+        # than their quota) to other non-empty scopes in scope order
+        # until either limit is filled or no scope wants more.
+        # Step 3: hard clamp sum(quota) <= limit (defends limit=1 with
+        # two non-empty scopes where ceil(1/2)=1 each = 2 slots).
+        import math as _math
+
+        base_quota = _math.ceil(limit / n_scopes)
+        quota: dict[str, int] = {s: min(len(post_dedup_by_scope[s]), base_quota) for s in non_empty_scopes}
+        # Redistribute leftover capacity.
+        spare = limit - sum(quota.values())
+        while spare > 0:
+            grew = False
+            for s in non_empty_scopes:
+                if quota[s] < len(post_dedup_by_scope[s]):
+                    quota[s] += 1
+                    spare -= 1
+                    grew = True
+                    if spare == 0:
+                        break
+            if not grew:
+                break
+        # Hard clamp (in case of off-by-one with small limits).
+        while sum(quota.values()) > limit:
+            # Trim from the largest quota first to preserve thin-scope
+            # representation when limit is tight.
+            biggest = max(non_empty_scopes, key=lambda s: quota[s])
+            quota[biggest] -= 1
+            if quota[biggest] == 0:
+                non_empty_scopes = [s for s in non_empty_scopes if s != biggest]
+
+        # Take top-N per scope per quota. Then sort the unified result
+        # set by cross-scope RRF for the final returned ordering — quota
+        # guarantees representation; the cross-scope rank gives
+        # deterministic interleaving.
+        merged: list[SearchResult] = []
+        for s in non_empty_scopes:
+            merged.extend(post_dedup_by_scope[s][: quota[s]])
+        merged.sort(
+            key=lambda r: (
+                -(r.cross_scope_rrf_score or 0.0),
+                r.filename,
+                r.page if r.page is not None else -1,
+            ),
+        )
+        return merged[:limit], stats
 
     # --- List ---
 
@@ -1094,7 +3343,7 @@ class KnowledgeEngine:
                 expanded = {k: v for k, v in expanded.items() if v is not None}
                 knowledge_cfg = {**expanded, **knowledge_cfg}
             except FileNotFoundError:
-                logger.warning("Profile %s not found, ignoring", profile_name)
+                logger.warning(f"Profile {profile_name} not found, ignoring")
 
         validated = KnowledgeConfig.coerce_and_validate(knowledge_cfg, base=self._config)
 
@@ -1112,8 +3361,34 @@ class KnowledgeEngine:
         new_embeddings = None
         new_dim = None
         if embedding_changed:
-            new_embeddings = create_embeddings(validated)
-            new_dim = _get_embedding_dim(new_embeddings)
+            # Local providers (fastembed/huggingface) load the model eagerly here,
+            # so a large model still downloading (e.g. multilingual-e5-large is
+            # ~2.2GB with external ONNX weights), a bad model name, or an
+            # unresolved key fails RIGHT HERE. Surface a typed, actionable error
+            # instead of letting an opaque ONNX/HTTP error 500 the publish.
+            try:
+                new_embeddings = create_embeddings(validated)
+            except Exception as e:
+                raise EmbeddingModelLoadError(
+                    validated.embedding_provider, validated.embedding_model or "(default)", e
+                ) from e
+            # Probe the new dim only when we have an existing dim to compare
+            # against (reindex decision). On a fresh engine with no ingested
+            # data we'd be calling a remote API for nothing — and worse, that
+            # call would fail at config-apply time when the key is missing
+            # (e.g. importing a published openai snapshot whose key was
+            # stripped, with OPENAI_API_KEY not yet set on this machine).
+            if self._default_embedding_dim is not None:
+                try:
+                    new_dim = _get_embedding_dim(new_embeddings)
+                except Exception as e:  # noqa: BLE001 — keep config-apply tolerant
+                    logger.warning(
+                        "Could not probe embedding dim for new provider {!r}/{!r}: {}. "
+                        "Skipping reindex check; first ingest will surface any real auth/connectivity issue.",
+                        validated.embedding_provider,
+                        validated.embedding_model,
+                        e,
+                    )
 
         return PreparedKnowledgeUpdate(
             validated=validated,
@@ -1128,27 +3403,107 @@ class KnowledgeEngine:
     def commit_knowledge_update(self, prepared: PreparedKnowledgeUpdate) -> dict[str, Any]:
         """Commit a prepared update. Pure in-memory mutation, no external calls."""
         old_use_gpu = self._config.use_gpu
+        old_dim = self._default_embedding_dim
+        old_pdf_mode = self._config.docling_pdf_mode
+        old_layout_engine = self._config.docling_layout_engine
+        old_qt = getattr(self._config, "search_query_transform", "off")
 
         for f in dc_fields(KnowledgeConfig):
             if f.name != "persist_dir":
                 setattr(self._config, f.name, getattr(prepared.validated, f.name))
 
+        # Confirm a query-transform toggle at SWITCH time (it otherwise only logs
+        # per knowledge search). Search-only change — no model load, no reindex.
+        new_qt = getattr(self._config, "search_query_transform", "off")
+        if new_qt != old_qt:
+            if new_qt == "off":
+                logger.info("cuga.knowledge.query_transform disabled (was {})", old_qt)
+            else:
+                logger.info(
+                    "cuga.knowledge.query_transform enabled mode={} (fires per knowledge search; "
+                    "needs an injected chat model; rerank={})",
+                    new_qt,
+                    getattr(self._config, "rerank_enabled", False),
+                )
+
+        dim_changed = False
         if prepared.new_embeddings:
+            new_dim = prepared.new_embedding_dim
+            # Dim changed only if old was set AND differs from new. None → new is a
+            # first-time init, not a dim change — no reindex needed.
+            dim_changed = old_dim is not None and new_dim is not None and old_dim != new_dim
             self._default_embeddings = prepared.new_embeddings
-            self._default_embedding_dim = prepared.new_embedding_dim
+            self._default_embedding_dim = new_dim
             with self._vector_store_lock:
                 self._vector_stores.clear()
                 self._record_managers.clear()
-        elif old_use_gpu != self._config.use_gpu and self._config.embedding_provider == "fastembed":
-            # GPU preference changed — fastembed manages acceleration internally,
-            # but recreate to pick up any config change
+        elif old_use_gpu != self._config.use_gpu and self._config.embedding_provider in (
+            "fastembed",
+            "huggingface",
+        ):
+            # Same model, new device. ORT/PyTorch sessions are immutable so we
+            # rebind the inference backend — but stored vectors are still valid
+            # (same weights) and no reindex is needed. _vector_stores stays.
             self._default_embeddings = create_embeddings(self._config)
-            logger.info("Embeddings recreated after config change")
+            logger.info(
+                "Embedding inference backend rebound (use_gpu={} → {}); model unchanged, "
+                "existing vectors remain valid",
+                old_use_gpu,
+                self._config.use_gpu,
+            )
+
+        # Invalidate any cached Docling converters whose shape depended on the
+        # changed knobs. Without this, switching layout_engine at runtime would
+        # silently return the stale converter built against the old setting.
+        # use_gpu is included because layout_engine="auto" resolves to ONNX
+        # (CPU) or transformers (GPU) based on the detected device — toggling
+        # use_gpu must re-resolve, not return a stale GPU/CPU converter.
+        docling_changed = (
+            old_pdf_mode != self._config.docling_pdf_mode
+            or old_layout_engine != self._config.docling_layout_engine
+            or old_use_gpu != self._config.use_gpu
+        )
+        if docling_changed:
+            self._docling_converters.clear()
+            logger.info(
+                "Docling converter cache cleared (pdf_mode {!r}->{!r}, "
+                "layout_engine {!r}->{!r}, use_gpu {}->{})",
+                old_pdf_mode,
+                self._config.docling_pdf_mode,
+                old_layout_engine,
+                self._config.docling_layout_engine,
+                old_use_gpu,
+                self._config.use_gpu,
+            )
+
+        # Reranker: if this update has it enabled, start the model download in
+        # the background NOW (non-blocking) so the user's first search after
+        # switching to balanced/max_quality doesn't pay the ~1.1GB fetch. No-op
+        # if already loaded/loading. Searches serve fusion ranking until ready.
+        if getattr(self._config, "rerank_enabled", False):
+            try:
+                from cuga.backend.knowledge.reranker import ensure_loading as _rerank_ensure_loading
+
+                _rerank_ensure_loading(str(self._config.rerank_model))
+            except Exception as e:  # pragma: no cover - defensive
+                logger.warning("Could not start reranker background load: {}", e)
+
+        if prepared.embedding_changed or prepared.chunking_changed or prepared.metric_changed:
+            self._apply_generation += 1
+            logger.info(
+                f"apply_generation -> {self._apply_generation} "
+                f"(e={prepared.embedding_changed} c={prepared.chunking_changed} m={prepared.metric_changed})"
+            )
 
         return {
             "embedding_changed": prepared.embedding_changed,
             "chunking_changed": prepared.chunking_changed,
+            "metric_changed": prepared.metric_changed,
             "reindex_recommended": prepared.reindex_recommended,
+            "dim_changed": dim_changed,
+            "previous_dim": old_dim,
+            "new_dim": prepared.new_embedding_dim if prepared.new_embeddings else old_dim,
+            "docling_changed": docling_changed,
         }
 
     def apply_knowledge_config(self, knowledge_cfg: dict) -> dict[str, Any]:
@@ -1172,22 +3527,86 @@ class KnowledgeEngine:
                 "rag_profile": self._config.rag_profile,
                 "embedding_provider": self._config.embedding_provider,
                 "embedding_model": self._config.embedding_model,
+                # New fields wrapped in getattr for mock / older-snapshot
+                # compatibility — test fixtures use SimpleNamespace stubs
+                # that don't always set every field.
+                "embedding_base_url": getattr(self._config, "embedding_base_url", ""),
+                # Secret field — never leak the actual key; only its
+                # presence so the UI can show "configured" vs "missing".
+                "embedding_api_key_set": bool(getattr(self._config, "embedding_api_key", "")),
+                "embedding_batch_size": getattr(self._config, "embedding_batch_size", 64),
+                "embedding_concurrency": getattr(self._config, "embedding_concurrency", 4),
                 "use_gpu": self._config.use_gpu,
+                "gpu_required": getattr(self._config, "gpu_required", False),
                 "chunk_size": self._config.chunk_size,
                 "chunk_overlap": self._config.chunk_overlap,
                 "metric_type": self._config.metric_type,
+                "default_limit": getattr(self._config, "default_limit", 10),
+                "default_score_threshold": getattr(self._config, "default_score_threshold", 0.0),
+                "max_search_attempts": getattr(self._config, "max_search_attempts", 3),
+                "max_ingest_workers": getattr(self._config, "max_ingest_workers", 2),
                 "max_pending_tasks": self._config.max_pending_tasks,
+                "vector_insert_batch_size": getattr(self._config, "vector_insert_batch_size", 200),
                 "max_upload_size_mb": self._config.max_upload_size_mb,
                 "max_url_download_size_mb": self._config.max_url_download_size_mb,
                 "max_files_per_request": self._config.max_files_per_request,
                 "max_chunks_per_document": self._config.max_chunks_per_document,
+                # Docling parse knobs — operators need these visible after a
+                # live PATCH to confirm pdf_mode / layout_engine took effect
+                # without tailing the engine logs (Sami's review, Dec 2026).
+                "docling_pdf_mode": getattr(self._config, "docling_pdf_mode", "accurate"),
+                "docling_layout_engine": getattr(self._config, "docling_layout_engine", "auto"),
+                "docling_drop_page_chrome": self._config.docling_drop_page_chrome,
+                # Reranker knobs — same observability story; toggling rerank
+                # on/off via PATCH should be confirmable from a settings dump.
+                "rerank_enabled": getattr(self._config, "rerank_enabled", False),
+                "rerank_top_k_in": getattr(self._config, "rerank_top_k_in", 20),
+                "rerank_model": getattr(self._config, "rerank_model", "BAAI/bge-reranker-base"),
+                # Noise-filter knobs — readable from UI / SDK / CLI so
+                # operators can confirm a TOML edit took effect without
+                # tailing logs. Both default to safe modes.
+                "search_junk_filter": self._config.search_junk_filter,
+                "search_hybrid_mode": self._config.search_hybrid_mode,
+                # Client adaptation — text/glossary surfaced for the UI and
+                # CLI to show the live state. Audit/observability hashes let
+                # SREs correlate complaints to a specific adaptation version
+                # without ever exposing the text content itself. Use getattr
+                # for resilience against mocks / older snapshot shapes that
+                # predate these fields.
+                "client_adaptation_text": getattr(self._config, "client_adaptation_text", ""),
+                "client_adaptation_glossary": list(
+                    getattr(self._config, "client_adaptation_glossary", []) or []
+                ),
+                "client_adaptation_hash": _client_adapt_hash(
+                    getattr(self._config, "client_adaptation_text", "")
+                ),
+                "client_adaptation_len": len(getattr(self._config, "client_adaptation_text", "")),
+                "client_adaptation_glossary_hash": _client_glossary_hash(
+                    getattr(self._config, "client_adaptation_glossary", []) or []
+                ),
+                "client_adaptation_glossary_count": len(
+                    getattr(self._config, "client_adaptation_glossary", []) or []
+                ),
             },
             "rag_profiles": {
+                # Expose every section the UI needs to fully populate the
+                # config when the user picks a profile. Previously only
+                # name/description/search/chunking were exposed; the UI
+                # therefore couldn't write back embedding_model /
+                # docling_pdf_mode / rerank_* on profile-click and the
+                # autosave POST re-sent stale values that overrode the
+                # profile loader on the backend side. Closes the
+                # "switched to max_quality but engine still using
+                # bge-small" bug.
                 name: {
                     "name": data.get("profile", {}).get("name", name),
                     "description": data.get("profile", {}).get("description", ""),
                     "search": data.get("search", {}),
                     "chunking": data.get("chunking", {}),
+                    "embeddings": data.get("embeddings", {}),
+                    "docling": data.get("docling", {}),
+                    "rerank": data.get("rerank", {}),
+                    "engine": data.get("engine", {}),
                 }
                 for name, data in list_profiles().items()
             },
@@ -1292,7 +3711,7 @@ class KnowledgeEngine:
             if f.is_file():
                 shutil.copy2(str(f), str(dst_dir / f.name))
                 count += 1
-        logger.info("Copied %d source files from %s to %s", count, source_collection, target_collection)
+        logger.info(f"Copied {count} source files from {source_collection} to {target_collection}")
         return count
 
     async def reindex(self, collection: str) -> dict[str, Any]:
@@ -1330,18 +3749,22 @@ class KnowledgeEngine:
                 task_info = await self._create_reindex_task_entry(collection, file_path.name)
                 task_ids.append(task_info["task_id"])
 
-            # Phase 3: Sequential background worker. Clears flags on completion.
+            # Background worker. Files re-ingest concurrently — _run_ingest is
+            # bounded by _ingest_sem (max_ingest_workers), so this amortizes the
+            # GPU/CPU across files instead of one-at-a-time. return_exceptions
+            # keeps one bad file from aborting the rest (_ingest_inner already
+            # marks its own task failed).
             async def _reindex_worker():
                 try:
-                    for fp, tid in zip(file_list, task_ids):
-                        await self._run_ingest(
-                            collection,
-                            fp,
-                            fp.name,
-                            tid,
-                            replace_duplicates=True,
-                            skip_file_copy=True,
-                        )
+                    await asyncio.gather(
+                        *(
+                            self._run_ingest(
+                                collection, fp, fp.name, tid, replace_duplicates=True, skip_file_copy=True
+                            )
+                            for fp, tid in zip(file_list, task_ids)
+                        ),
+                        return_exceptions=True,
+                    )
                 finally:
                     self._reindex_in_progress.discard(collection)
                     self._reindex_deferred.discard(collection)
@@ -1428,11 +3851,59 @@ class KnowledgeEngine:
                     "got {}; using Docling default (HuggingFace MiniLM tokenizer)",
                     type(emb).__name__,
                 )
-            else:
+            # HuggingFace provider: the embedding wrapper already loaded the
+            # model's own tokenizer — reuse it. Perfect match, zero extra cost.
+            if self._config.embedding_provider == "huggingface":
+                try:
+                    self._ensure_embeddings()
+                    emb = self._default_embeddings
+                    if hasattr(emb, "_tokenizer") and emb._tokenizer is not None:
+                        from docling_core.transforms.chunker.tokenizer.huggingface import (
+                            HuggingFaceTokenizer,
+                        )
+
+                        tok = HuggingFaceTokenizer(
+                            tokenizer=emb._tokenizer,
+                            max_tokens=chunk_size,
+                        )
+                        logger.debug(
+                            "HybridChunker tokenizer: HuggingFace (model's own — already loaded by "
+                            "_PyTorchEmbeddings; embedding_provider='huggingface', model={!r})",
+                            self._config.embedding_model or "default",
+                        )
+                        return HybridChunker(tokenizer=tok)
+                except Exception as hf_err:  # pragma: no cover - defensive
+                    logger.warning(
+                        "HuggingFace chunker tokenizer reuse failed ({}); falling back to tiktoken.",
+                        hf_err,
+                    )
+
+            # All other providers (openai / openrouter / litellm / ollama /
+            # auto / unknown): use tiktoken. Reasons:
+            #   - openai/openrouter/litellm: perfect match (cl100k_base BPE)
+            #   - ollama / other: free BPE approximation; better than the
+            #     90 MB HF MiniLM weights Docling would otherwise download
+            #   - tiktoken's encodings ship inside the wheel — ZERO extra
+            #     disk or download regardless of provider
+            try:
+                encoding = _resolve_tiktoken_encoding(self._config.embedding_model or "")
+                tok = _tiktoken_docling_tokenizer_cls()(
+                    encoding=encoding,
+                    max_tokens=chunk_size,
+                )
                 logger.debug(
-                    "HybridChunker tokenizer: Docling default HuggingFace "
-                    "(sentence-transformers/all-MiniLM-L6-v2); embedding_provider={!r}",
+                    "HybridChunker tokenizer: tiktoken (encoding={!r}, "
+                    "embedding_provider={!r}, model={!r}); zero-download fallback",
+                    getattr(encoding, "name", "?"),
                     self._config.embedding_provider,
+                    self._config.embedding_model or "default",
+                )
+                return HybridChunker(tokenizer=tok)
+            except Exception as tok_err:  # pragma: no cover - defensive
+                logger.warning(
+                    "tiktoken chunker tokenizer failed ({}), Docling will fall back "
+                    "to its default (may trigger MiniLM download).",
+                    tok_err,
                 )
 
             return HybridChunker(max_tokens=chunk_size)
@@ -1440,24 +3911,289 @@ class KnowledgeEngine:
             logger.warning(f"HybridChunker init failed, falling back to default: {e}")
             return None
 
+    @staticmethod
+    def _resolve_layout(layout_engine_choice: str, device_label: str) -> tuple[str, str]:
+        """Return (effective_layout_engine, layout_device) for the given choice + device.
+
+        Resolves "auto" based on the detected device and computes the device
+        the layout stage will actually run on. The ONNX engine is CPU-only
+        regardless of `device_label`; only the PyTorch ("transformers")
+        engine honors MPS/CUDA. Kept as a static helper so both the converter
+        builder and the per-ingest timing log can produce the same answer
+        without duplicating the resolution rule.
+
+          auto + mps/cuda → transformers (engage the GPU)
+          auto + cpu      → onnx        (lean CPU path)
+          explicit onnx   → onnx        (escape hatch)
+          explicit transformers → transformers (escape hatch)
+        """
+        choice = (layout_engine_choice or "auto").lower()
+        if choice == "auto":
+            effective = "transformers" if device_label in ("mps", "cuda") else "onnx"
+        else:
+            effective = choice
+        layout_device = device_label if effective == "transformers" else "cpu"
+        return effective, layout_device
+
     def _get_docling_converter(self):
-        """Get or create a reusable Docling DocumentConverter (loads weights once)."""
-        if self._docling_converter is None:
-            import os
-            from docling.document_converter import DocumentConverter, PdfFormatOption
-            from docling.datamodel.base_models import InputFormat
-            from docling.datamodel.pipeline_options import PdfPipelineOptions
+        """Get or create a reusable Docling DocumentConverter.
 
-            from pathlib import Path
+        Caches per ``(pdf_mode, layout_engine)`` so toggling either between
+        ingests doesn't reload model weights every time, but still picks up
+        the change without a process restart. The PdfPipelineOptions
+        mapping for each mode:
 
-            artifacts_path_str = os.environ.get("DOCLING_ARTIFACTS_PATH")
-            artifacts_path = Path(artifacts_path_str) if artifacts_path_str else None
-            pipeline_options = PdfPipelineOptions(artifacts_path=artifacts_path)
-            self._docling_converter = DocumentConverter(
-                format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+          fast:     OCR off, tables off — digital PDFs only, fastest.
+          balanced: OCR off, tables on  — digital PDFs with table extraction.
+          accurate: OCR on,  tables on  — Tesseract with ``lang=["auto"]``
+                    so Docling does per-page script detection (osd.traineddata)
+                    and OCRs with the matching language model. Covers Latin,
+                    Hebrew, Arabic, Cyrillic, CJK, etc. in one path. Requires
+                    the ``tesseract`` system binary + matching ``*.traineddata``
+                    packs (cuga's Docker images bundle a curated set; macOS
+                    devs: ``brew install tesseract tesseract-lang``).
+        """
+        import os
+        from pathlib import Path
+
+        from docling.datamodel.base_models import InputFormat
+        from docling.datamodel.pipeline_options import PdfPipelineOptions
+        from docling.datamodel.accelerator_options import AcceleratorOptions, AcceleratorDevice
+        from docling.document_converter import DocumentConverter, PdfFormatOption
+
+        mode = (self._config.docling_pdf_mode or "accurate").lower()
+        if mode not in ("fast", "balanced", "accurate"):
+            logger.warning("Unknown docling_pdf_mode={!r}; falling back to 'accurate'", mode)
+            mode = "accurate"
+
+        layout_engine_choice = (self._config.docling_layout_engine or "auto").lower()
+        device_label, _ = _detect_accelerator(self._config.use_gpu)
+        effective_layout_engine, _ = self._resolve_layout(layout_engine_choice, device_label)
+
+        # Cache by EFFECTIVE engine so explicit "transformers" and "auto"
+        # on a GPU host share one cached converter. Toggling use_gpu at
+        # runtime invalidates the cache in commit_knowledge_update, so
+        # auto re-resolves with the new device.
+        cache_key = f"{mode}|{effective_layout_engine}"
+        cached = self._docling_converters.get(cache_key)
+        if cached is not None:
+            return cached
+
+        artifacts_path_str = os.environ.get("DOCLING_ARTIFACTS_PATH")
+        artifacts_path = Path(artifacts_path_str) if artifacts_path_str else None
+
+        pipeline_options = PdfPipelineOptions(artifacts_path=artifacts_path)
+        # Pass the detected device to Docling. The transformers engine reads
+        # it directly; the ONNX engine ignores the device field (its provider
+        # list is what matters for ONNX, and that stays CPU).
+        try:
+            device_enum = {
+                "cuda": AcceleratorDevice.CUDA,
+                "mps": AcceleratorDevice.MPS,
+                "cpu": AcceleratorDevice.CPU,
+            }.get(device_label, AcceleratorDevice.AUTO)
+            pipeline_options.accelerator_options = AcceleratorOptions(device=device_enum)
+        except Exception as e:  # pragma: no cover - defensive against API drift
+            logger.debug("Docling AcceleratorOptions unavailable: {}", e)
+
+        # Skip page/picture image rendering in FAST mode only. Saves ~30 ms/
+        # page of PNG encoding + RAM (Expert D, 2026-06-09: ~17 s on a 556-
+        # page PDF). Balanced and accurate modes keep the default behavior
+        # because users on those profiles may have downstream consumers
+        # (UI previews, page-image exports, third-party extensions) that
+        # rely on the rendered PNGs. ``fast`` is explicitly opinionated
+        # toward speed — opting users out of that artifact there is
+        # consistent with the profile's contract.
+        # Best-effort setattr — Docling's PdfPipelineOptions surface has
+        # drifted across releases.
+        if mode == "fast":
+            for _img_attr in ("generate_page_images", "generate_picture_images"):
+                try:
+                    setattr(pipeline_options, _img_attr, False)
+                except (AttributeError, TypeError):
+                    pass
+
+        # Wire the layout engine. effective_layout_engine is always
+        # "onnx" or "transformers" at this point (auto already resolved).
+        try:
+            from docling.datamodel.pipeline_options import LayoutObjectDetectionOptions
+            from docling.datamodel.object_detection_engine_options import (
+                OnnxRuntimeObjectDetectionEngineOptions,
+                TransformersObjectDetectionEngineOptions,
             )
-            logger.info("Docling DocumentConverter initialized (weights loaded)")
-        return self._docling_converter
+
+            if effective_layout_engine == "transformers":
+                # Disable torch.compile on MPS — PyTorch 2.11's Inductor MPS
+                # codegen has a bug ("variable declared with deduced type
+                # 'auto' cannot appear in its own initializer") that crashes
+                # shader compilation on layout models. The PyTorch model
+                # itself still runs on MPS via device_map; we only skip the
+                # JIT optimization pass. Remove this when PyTorch fixes it.
+                engine_opts = TransformersObjectDetectionEngineOptions(
+                    compile_model=device_label != "mps",
+                )
+            else:
+                engine_opts = OnnxRuntimeObjectDetectionEngineOptions()
+            # ``create_orphan_clusters=True`` is LOAD-BEARING. Docling's
+            # default ``LayoutOptions`` ships with this on; the alternative
+            # ``LayoutObjectDetectionOptions`` we use here defaults it to
+            # OFF (and the upstream docstring explicitly warns:
+            # "Orphan cluster creation is disabled by default — enable
+            # if unassigned elements must be preserved").
+            #
+            # Without it, layout boxes that the object-detection model
+            # didn't classify into a structure get DROPPED — observed on
+            # a Hebrew population-registry form where the field-label
+            # column and the actual ID number (``מספר הזהות`` /
+            # ``2 4585791 7``) lived in "orphan" text elements. Reproducer:
+            # /tmp/diag_layout.py — without this flag the chunk text
+            # collapses from 574 chars to 320 chars and the ID is gone.
+            pipeline_options.layout_options = LayoutObjectDetectionOptions(
+                engine_options=engine_opts,
+                create_orphan_clusters=True,
+            )
+        except Exception as e:  # pragma: no cover - defensive against API drift
+            logger.warning(
+                "Failed to apply layout engine={!r}, falling back to Docling default: {}",
+                effective_layout_engine,
+                e,
+            )
+        # OCR engine — three-tier fallback so `pip install cuga` works without
+        # any system install steps:
+        #   1. Tesseract on PATH      → TesseractCliOcrOptions(lang=["auto"]).
+        #      Best quality + full multilingual via osd.traineddata. Production
+        #      Docker images bundle this (see Dockerfile).
+        #   2. EasyOCR importable     → EasyOcrOptions(). Already a cuga pip
+        #      dep, so no extra install. Latin-script default langs; non-Latin
+        #      docs may need Tesseract for full coverage. EasyOCR's own
+        #      `use_gpu=None` lets it auto-engage MPS/CUDA when available.
+        #   3. Neither available      → degrade to `balanced` (no OCR, digital
+        #      text layer only). Last-resort; never crashes ingest.
+        # Reference: https://docling-project.github.io/docling/examples/tesseract_lang_detection/
+        import shutil as _shutil
+
+        effective_mode = mode
+        selected_ocr_engine = "docling-default"
+        # ``force_full_page_ocr=True`` (accurate mode only) re-OCRs the
+        # page image even when the PDF advertises a text layer. Why this
+        # is the safe default:
+        #   - Docling's default (force_full_page_ocr=False) skips OCR
+        #     for pages with ANY text layer present.
+        #   - Some PDFs (Hebrew government forms, IBM Box exports, scan
+        #     PDFs with embedded "OCR underlay") carry a text layer that
+        #     is actually just font CID glyph IDs without Unicode mapping
+        #     — Docling extracts ``/CE3/CE5/CE1/...`` mojibake verbatim.
+        #     The cid_glyph_run junk filter (see `_classify_junk_chunk`)
+        #     catches these AT RETRIEVAL but the chunks are still indexed
+        #     and waste storage.
+        #   - Forcing OCR on accurate adds ~5-15s/page for clean PDFs but
+        #     eliminates the silent-corruption mode. ``accurate`` already
+        #     means "quality over speed"; balanced/fast paths skip OCR
+        #     entirely so they're unaffected.
+        #   - Reproducer: ``/tmp/diag_insurance.py`` on a CID-encoded PDF.
+        if mode == "accurate":
+            if _shutil.which("tesseract"):
+                from docling.datamodel.pipeline_options import TesseractCliOcrOptions
+
+                pipeline_options.ocr_options = TesseractCliOcrOptions(
+                    lang=["auto"],
+                    force_full_page_ocr=True,
+                )
+                selected_ocr_engine = "tesseract-cli"
+            else:
+                try:
+                    from docling.datamodel.pipeline_options import EasyOcrOptions
+                    import easyocr  # noqa: F401 — guard the actual lib too
+
+                    # Honor the user's GPU intent. EasyOCR's `use_gpu=None`
+                    # auto-detects MPS/CUDA; setting False forces CPU when
+                    # the user has explicitly opted out.
+                    # ``force_full_page_ocr=True`` symmetric with the
+                    # Tesseract path — see the comment block above for
+                    # why this is the right default in accurate mode.
+                    _easy_use_gpu = None if self._config.use_gpu else False
+                    pipeline_options.ocr_options = EasyOcrOptions(
+                        use_gpu=_easy_use_gpu,
+                        force_full_page_ocr=True,
+                    )
+                    selected_ocr_engine = "easyocr"
+                    logger.info(
+                        "Tesseract not on PATH — using EasyOCR (bundled with cuga). "
+                        "For best multilingual quality (Hebrew/Arabic/CJK via lang=auto), "
+                        "install Tesseract:\n"
+                        "  macOS: brew install tesseract tesseract-lang\n"
+                        "  Linux: apt install tesseract-ocr tesseract-ocr-all"
+                    )
+                except ImportError:
+                    logger.warning(
+                        "Neither Tesseract (system binary) nor EasyOCR (pip dep) "
+                        "available — degrading 'accurate' to 'balanced' (no OCR; "
+                        "digital text layer only). Install one:\n"
+                        "  macOS: brew install tesseract tesseract-lang\n"
+                        "  Linux: apt install tesseract-ocr tesseract-ocr-all\n"
+                        "  Any:   pip install easyocr"
+                    )
+                    effective_mode = "balanced"
+
+        # Docling enrichments — DISABLED by default (off in every mode).
+        # WHY: do_code_enrichment + do_formula_enrichment are backed by an
+        # autoregressive vision-language model (docling.models.inference_engines.vlm).
+        # Measured cost on Apple Silicon MPS for a typical 38-page paper:
+        #   ~35-220 seconds PER BATCH of 5 images
+        #   total: ~20+ minutes added to ingest
+        # That's a 30× regression over a no-enrichment ingest of the same paper.
+        # On CUDA the VLM is also expensive (single-digit seconds per image but
+        # still adds 2-5 minutes to a 50-page paper). Until an opt-in config
+        # surface exists, leaving them off everywhere is the only safe default.
+        # The cost of skipping them: code blocks may flatten to prose and math
+        # may garble — acceptable trade-off for default operation.
+
+        # Apply per-mode overrides. Docling defaults today are
+        # do_ocr=True, do_table_structure=True; we only override fields we
+        # explicitly want to flip, so future Docling additions inherit
+        # sensible defaults.
+        if effective_mode == "fast":
+            try:
+                pipeline_options.do_ocr = False
+            except (AttributeError, TypeError):  # pragma: no cover - defensive
+                pass
+            try:
+                pipeline_options.do_table_structure = False
+            except (AttributeError, TypeError):  # pragma: no cover
+                pass
+        elif effective_mode == "balanced":
+            try:
+                pipeline_options.do_ocr = False
+            except (AttributeError, TypeError):  # pragma: no cover
+                pass
+            # do_table_structure stays at Docling default (True today).
+        # "accurate" → leave all defaults as-is.
+
+        converter = DocumentConverter(
+            format_options={InputFormat.PDF: PdfFormatOption(pipeline_options=pipeline_options)}
+        )
+        self._docling_converters[cache_key] = converter
+        # Layout actually runs on `device_label` only via the transformers
+        # engine; the ONNX engine is CPU-only regardless of device_label.
+        layout_device = device_label if effective_layout_engine == "transformers" else "cpu"
+        logger.info(
+            "Docling DocumentConverter initialized "
+            "(mode={!r} effective={!r}, do_ocr={}, do_table_structure={}, "
+            "do_code_enrichment={}, do_formula_enrichment={}, "
+            "ocr_engine={!r}, ocr_langs={}, "
+            "layout_engine={!r}, layout_device={!r})",
+            mode,
+            effective_mode,
+            getattr(pipeline_options, "do_ocr", "<default>"),
+            getattr(pipeline_options, "do_table_structure", "<default>"),
+            getattr(pipeline_options, "do_code_enrichment", "<missing>"),
+            getattr(pipeline_options, "do_formula_enrichment", "<missing>"),
+            selected_ocr_engine if effective_mode == "accurate" else "n/a",
+            (getattr(pipeline_options.ocr_options, "lang", "n/a") if effective_mode == "accurate" else "n/a"),
+            effective_layout_engine,
+            layout_device,
+        )
+        return converter
 
     def _load_document(self, file_path: Path) -> list[Document]:
         """Load a document using Docling for supported formats, fallback for plain text."""

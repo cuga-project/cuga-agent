@@ -5,6 +5,7 @@ Configures Windows event loop policy for better asyncio performance.
 
 import asyncio
 import platform
+
 import pytest
 
 

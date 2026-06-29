@@ -166,6 +166,7 @@ class TestEvalWithToolsAsyncE2B:
                 mock_settings.advanced_features.e2b_sandbox = True
                 mock_settings.advanced_features.code_executor_keep_last_n = -1
                 mock_settings.advanced_features.execution_output_max_length = 10000
+                mock_settings.advanced_features.sandbox_execution_timeout = 30  # sentinel — any positive number works; value is unused since the test code runs in microseconds
 
                 mock_executor = MagicMock()
                 mock_executor.execute_for_cuga_lite = AsyncMock(return_value=("42", {'result': 42}))
@@ -204,6 +205,7 @@ class TestEvalWithToolsAsyncE2B:
             mock_settings.advanced_features.e2b_sandbox = False
             mock_settings.advanced_features.code_executor_keep_last_n = -1
             mock_settings.advanced_features.execution_output_max_length = 10000
+            mock_settings.advanced_features.sandbox_execution_timeout = 30  # sentinel — any positive number works; value is unused since the test code runs in microseconds
             # Skills off so `_internal_re` isn't injected — keeps `context_locals`
             # empty for this test's bare `y = 20` code, letting the
             # validate_context_usage short-circuit trigger.
@@ -320,6 +322,7 @@ print("Done")  # Prevent auto-print of last line
                 mock_settings.advanced_features.e2b_sandbox = True
                 mock_settings.advanced_features.code_executor_keep_last_n = -1
                 mock_settings.advanced_features.execution_output_max_length = 10000
+                mock_settings.advanced_features.sandbox_execution_timeout = 30  # sentinel — any positive number works; value is unused since the test code runs in microseconds
 
                 # Mock E2B executor
                 mock_executor = MagicMock()

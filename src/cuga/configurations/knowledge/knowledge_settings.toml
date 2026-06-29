@@ -7,10 +7,48 @@ persist_dir = ""  # empty = default <cwd>/.cuga/knowledge/
 # Uploaded source files always remain under persist_dir/files/ (filesystem).
 
 [knowledge.embeddings]
-provider = "fastembed"  # fastembed | huggingface (requires: pip install sentence-transformers langchain-huggingface) | openai | ollama
-model = ""         # empty = auto-detect per provider (fastembed/huggingface: all-MiniLM-L6-v2, openai: text-embedding-3-small, ollama: nomic-embed-text)
-api_key = ""       # required for openai provider (or set OPENAI_API_KEY env var)
-base_url = ""      # custom endpoint for openai-compatible or ollama (default: localhost:11434)
+provider = "fastembed"  # fastembed | huggingface (requires: pip install sentence-transformers langchain-huggingface) | openai | ollama | openrouter | litellm
+# Model:
+#   fastembed/huggingface: empty -> BAAI/bge-small-en-v1.5
+#   openai:                empty -> text-embedding-3-small
+#   ollama:                empty -> nomic-embed-text
+#   openrouter:            REQUIRED — explicit model name, e.g. "openai/text-embedding-3-small"
+#                          (full catalog: https://openrouter.ai/models?output_modalities=embeddings)
+#   litellm:               REQUIRED — model with provider prefix, e.g.
+#                          "openai/text-embedding-3-small", "cohere/embed-english-v3.0",
+#                          "azure/<deployment>", "bedrock/cohere.embed-english-v3"
+#                          (full catalog: https://docs.litellm.ai/docs/embedding/supported_embedding)
+model = ""
+# API key:
+#   openai:     required (or set OPENAI_API_KEY env var)
+#   openrouter: REQUIRED (or set OPENROUTER_API_KEY env var)
+#   others:     ignored
+api_key = ""
+# Base URL:
+#   openai:     optional override (use for OpenAI-compatible endpoints — Together, Fireworks, ...)
+#   ollama:     optional override (default http://localhost:11434)
+#   openrouter: auto-set to https://openrouter.ai/api/v1; override only as an escape hatch
+#   others:     ignored
+base_url = ""
+# Adapter batching (issue #183 steps 4-7). Smaller batch = finer progress
+# granularity; larger = lower per-call overhead. Concurrency only applies to
+# network providers (openai/ollama); local providers stay sequential.
+batch_size = 64
+concurrency = 4
+# Provider-specific extra kwargs passed through to the embedder. Useful for
+# Azure (api_version, azure_deployment) and Bedrock (aws_region_name). Keep
+# values primitive (str/int/bool/float) — nested objects are rejected for
+# snapshot-safety. Reserved keys (model, api_key, base_url, api_base) are
+# filtered out by the adapter to prevent override of the dedicated fields.
+extra_params = {}
+# Autodetect available GPU and engage it for local inference (fastembed ONNX /
+# huggingface PyTorch). MPS/CoreML on Apple Silicon works out of the box; CUDA
+# needs the GPU ONNX runtime, which the default CPU install omits — run the GPU
+# image (Dockerfile.gpu) or `uv sync --extra gpu --no-install-package onnxruntime`.
+# Set false to force CPU. No effect on cloud providers (openai/openrouter/ollama).
+# The detected device is surfaced via GET /api/manage/knowledge/accelerator and
+# the UI shows it next to this toggle.
+use_gpu = true
 
 [knowledge.chunking]
 chunk_size = 1000
@@ -22,6 +60,18 @@ default_limit = 10
 default_score_threshold = 0.0
 metric_type = "COSINE"
 max_search_attempts = 3  # max knowledge searches per user question (multi-hop)
+# NOTE: junk_filter is now owned by the active rag_profile TOML
+# (configurations/knowledge/knowledge_profiles/<profile>.toml). Setting
+# it here would be silently overridden by the profile and the file
+# would lie about the effective value. To change the noise-filter
+# posture, edit the relevant profile or pick a different rag_profile
+# above. (Sami's re-review 2026-06-10: file/runtime drift fix.)
+# Hybrid retrieval (BM25 lexical + dense semantic, Reciprocal Rank Fusion).
+#   "auto" — run both legs in parallel and RRF-fuse (default; the lexical
+#            leg gracefully returns [] for pre-FTS-table collections so
+#            there's no migration cost)
+#   "off"  — dense only (saves one DB roundtrip when you don't want hybrid)
+hybrid_mode = "auto"
 
 [knowledge.mcp]
 transport = "http"  # http | stdio
@@ -30,9 +80,45 @@ port = 8113         # port for HTTP mode
 [knowledge.engine]
 max_ingest_workers = 2
 max_pending_tasks = 10
+# Bulk insert batch size: caps each ``add_many`` transaction so a large
+# document doesn't blow past pgvector's command_timeout or hold the HNSW
+# write lock for too long. Locally (sqlite-vec) the value is harmless.
+vector_insert_batch_size = 200
+
+[knowledge.docling]
+# PDF parsing level. Trades parse speed against extraction fidelity.
+#   "fast":     OCR off, tables off — digital PDFs only, fastest.
+#   "balanced": OCR off, tables on  — digital PDFs with table extraction.
+#   "accurate": OCR on,  tables on  — Docling defaults; scanned PDFs ok.
+# Default stays "accurate" so existing users do not regress on scanned docs.
+pdf_mode = "accurate"
+# Layout-detection backend. Independent of pdf_mode — pdf_mode picks WHICH stages
+# run, this picks WHICH BACKEND the layout stage uses.
+#   "auto"         — Docling default (ONNX engine; CPU on Mac, CUDA on NVIDIA)
+#   "onnx"         — explicit ONNX (same as auto today; pinned)
+#   "transformers" — PyTorch backend; respects use_gpu → MPS (Apple Silicon)
+#                    or CUDA (NVIDIA) via HF device_map. The ONLY path to
+#                    engage Apple GPU for layout. ~500MB more RAM than ONNX
+#                    because the model loads in full PyTorch.
+layout_engine = "auto"
+# NOTE: drop_page_chrome is now owned by the active rag_profile TOML
+# (configurations/knowledge/knowledge_profiles/<profile>.toml). Setting
+# it here would be silently overridden by the profile and the file
+# would lie about the effective value. To change the page-chrome posture,
+# edit the relevant profile or pick a different rag_profile in
+# [knowledge.search]. (Sami's re-review 2026-06-10: file/runtime drift fix.)
 
 [knowledge.limits]
 max_upload_size_mb = 100
 max_url_download_size_mb = 50
 max_files_per_request = 10
 max_chunks_per_document = 10000
+
+[knowledge.client_adaptation]
+# Operator-supplied markdown appended to the knowledge-agent system prompt.
+# Use it to carry domain glossary, verbatim-preservation rules, or anti-hedging
+# rules that don't belong in cuga's generic contract. Max 3000 chars
+# (mirrored in CLIENT_ADAPTATION_MAX_CHARS — server is authoritative).
+# Empty string (default) disables. Author externally and load via:
+#   cuga knowledge adaptation-set path/to/adaptation.md
+text = ""

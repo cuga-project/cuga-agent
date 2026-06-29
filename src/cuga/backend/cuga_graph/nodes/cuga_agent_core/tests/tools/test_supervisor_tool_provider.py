@@ -95,6 +95,17 @@ def test_create_cuga_supervisor_graph_accepts_tool_provider_instance():
     assert graph is not None
 
 
+def test_create_cuga_supervisor_graph_accepts_callbacks():
+    """callbacks parameter must not raise at graph construction time."""
+    from cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph import (
+        create_cuga_supervisor_graph,
+    )
+
+    model = MagicMock()
+    graph = create_cuga_supervisor_graph(model, {}, callbacks=[MagicMock()])
+    assert graph is not None
+
+
 # ── mechanism: make_tool_awaitable wraps provider tools ───────────────────
 
 

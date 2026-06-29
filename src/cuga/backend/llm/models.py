@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatResult
 from loguru import logger
 
+from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
 from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
 
@@ -274,6 +275,7 @@ class LLMManager:
             d['resolved_model_name'] = self._get_model_name(model_settings, platform)
             d['resolved_api_version'] = self._get_api_version(model_settings, platform)
             d['resolved_base_url'] = self._get_base_url(model_settings, platform)
+            d['resolved_http_timeout'] = self._get_http_timeout(model_settings)
 
         settings_str = json.dumps(d, sort_keys=True)
         return hashlib.md5(settings_str.encode()).hexdigest()
@@ -590,6 +592,9 @@ class LLMManager:
 
     def _get_http_timeout(self, model_settings: Dict[str, Any]) -> float:
         """Return HTTP timeout (seconds) for OpenAI, Azure, and OpenRouter clients.
+
+        Other platforms (groq, watsonx, rits, google-genai, litellm) ignore this
+        setting until wired separately.
 
         Priority:
         1. timeout in model_settings (per-agent TOML)
@@ -930,6 +935,13 @@ class LLMManager:
 
         max_tokens = model_settings.get('max_tokens')
         assert max_tokens is not None, "max_tokens must be specified in model_settings"
+
+        if is_mock_llm_enabled():
+            mock = clone_load_test_mock_chat_model()
+            return self._update_model_parameters(
+                mock, temperature=0.1, max_tokens=max_tokens, max_completion_tokens=max_tokens
+            )
+
         # Check if pre-instantiated model is available
         if self._pre_instantiated_model is not None:
             logger.debug(f"Using pre-instantiated model: {type(self._pre_instantiated_model).__name__}")
@@ -988,6 +1000,13 @@ def create_llm_from_config(llm_cfg: dict) -> BaseChatModel:
         max_tokens = 16000
     if not isinstance(max_tokens, int):
         max_tokens = 16000
+
+    if is_mock_llm_enabled():
+        mock = clone_load_test_mock_chat_model()
+        return mgr._update_model_parameters(
+            mock, temperature=0.1, max_tokens=max_tokens, max_completion_tokens=max_tokens
+        )
+
     api_key = llm_cfg.get("api_key") or None
     _secrets = getattr(settings, "secrets", None)
     use_env = _secrets and (

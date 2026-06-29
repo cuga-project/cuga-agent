@@ -184,6 +184,7 @@ validators = [
     Validator("auth.iam_proxy_ca_bundle", default=""),
     Validator("auth.role_token_source", default="auto"),
     Validator("skills.enabled", default=False),
+    Validator("skills.root", default="cuga", is_in=["cuga", "agents", "global_agents", "global_cuga"]),
     # Phase 6: explicit execution axes — override advanced_features when set.
     # None (default) means "read from advanced_features" (full backward-compat).
     Validator("execution.python_backend", default=None),
@@ -211,6 +212,12 @@ validators = [
     Validator("agent_spawn.inherit_parent_tools", default=False),
     Validator("agent_spawn.max_spawn_depth", default=2),
     Validator("agent_spawn.forward_sync_subagent_events", default=True),
+    Validator(
+        "advanced_features.sandbox_execution_timeout",
+        default=30,
+        is_type_of=int,
+        gt=0,
+    ),
 ]
 
 EVAL_CONFIG_TOML_PATH = _find_config_file("eval_config.toml", "EVAL_CONFIG_TOML_PATH")
