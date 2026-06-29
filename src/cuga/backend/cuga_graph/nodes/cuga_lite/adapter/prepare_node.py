@@ -449,25 +449,64 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         )
         # ── end analyze_image ──────────────────────────────────────────────────────
 
-        # ── pdf_to_images: always-on PDF→JPEG conversion tool ─────────────────────
+        # ── pdf_to_images / pptx_to_images: always-on conversion tools ────────────
+        # Both tools run in the backend server process, so relative paths and
+        # virtual /workspace/ paths must be resolved to the real host filesystem
+        # root for this thread before the tool sees them.
+        from cuga.backend.server.workspace_sandbox import _host_workspace_root
         from cuga.backend.tools.pdf_to_images import create_pdf_to_images_tool
+        from cuga.backend.tools.pptx_to_images import create_pptx_to_images_tool
+
+        _img_thread_id = _runtime_thread_id_for_fs
+
+        def _resolve_to_host(path: str) -> str:
+            """Translate a virtual /workspace/ path or bare filename to a real host path."""
+            if not path:
+                return path
+            from pathlib import Path as _Path  # noqa: PLC0415
+            p = path.strip()
+            workspace_root = _host_workspace_root(_img_thread_id)
+            # /workspace/foo  or  workspace/foo
+            for prefix in ("/workspace/", "workspace/"):
+                if p.startswith(prefix):
+                    return str(workspace_root / p[len(prefix):])
+            if p in ("/workspace", "workspace"):
+                return str(workspace_root)
+            # bare filename or relative path — probe workspace root first
+            candidate = workspace_root / p
+            if candidate.exists():
+                return str(candidate)
+            return p
+
+        def _wrap_with_workspace(fn):
+            import functools  # noqa: PLC0415
+
+            @functools.wraps(fn)
+            def _wrapped(*args, **kwargs):
+                # First positional arg is the file path for both tools
+                if args:
+                    args = (_resolve_to_host(args[0]),) + args[1:]
+                for key in ("pdf", "pptx"):
+                    if key in kwargs:
+                        kwargs[key] = _resolve_to_host(kwargs[key])
+                return fn(*args, **kwargs)
+
+            return _wrapped
 
         _pdf_to_images_tool = create_pdf_to_images_tool()
         tools_for_prompt.append(_pdf_to_images_tool)
-        _pdf_to_images_fn = _pdf_to_images_tool.func
-        adapter._tools_context["pdf_to_images"] = make_tool_awaitable(_pdf_to_images_fn)
+        adapter._tools_context["pdf_to_images"] = make_tool_awaitable(
+            _wrap_with_workspace(_pdf_to_images_tool.func)
+        )
         logger.info("pdf_to_images: PDF-to-JPEG conversion tool injected (PyMuPDF with pdftoppm fallback)")
-        # ── end pdf_to_images ──────────────────────────────────────────────────────
-
-        # ── pptx_to_images: always-on PPTX→JPEG conversion tool ───────────────────
-        from cuga.backend.tools.pptx_to_images import create_pptx_to_images_tool
 
         _pptx_to_images_tool = create_pptx_to_images_tool()
         tools_for_prompt.append(_pptx_to_images_tool)
-        _pptx_to_images_fn = _pptx_to_images_tool.func
-        adapter._tools_context["pptx_to_images"] = make_tool_awaitable(_pptx_to_images_fn)
-        logger.info("pptx_to_images: PPTX-to-JPEG conversion tool injected (LibreOffice + PyMuPDF)")
-        # ── end pptx_to_images ─────────────────────────────────────────────────────
+        adapter._tools_context["pptx_to_images"] = make_tool_awaitable(
+            _wrap_with_workspace(_pptx_to_images_tool.func)
+        )
+        logger.info("pptx_to_images: PPTX-to-JPEG conversion tool injected (LibreOffice + python-pptx fallback)")
+        # ── end pdf_to_images / pptx_to_images ────────────────────────────────────
 
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
