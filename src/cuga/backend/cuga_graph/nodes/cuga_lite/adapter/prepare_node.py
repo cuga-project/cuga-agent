@@ -323,7 +323,8 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
         from cuga.backend.agent_spawn.runtime import _spawn_depth as _agent_spawn_depth
 
         _is_subagent = _agent_spawn_depth.get() > 0
-        if _is_subagent:
+        _inherit_parent_tools = getattr(settings.agent_spawn, "inherit_parent_tools", False)
+        if _is_subagent and not _inherit_parent_tools:
             skills_cfg_on = False
         _skill_callable_tools: list = []
         if skills_cfg_on:
@@ -447,6 +448,26 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             "analyze_image: vision system tool injected (primary model + IMAGE_ANALYSIS_MODEL fallback)"
         )
         # ── end analyze_image ──────────────────────────────────────────────────────
+
+        # ── pdf_to_images: always-on PDF→JPEG conversion tool ─────────────────────
+        from cuga.backend.tools.pdf_to_images import create_pdf_to_images_tool
+
+        _pdf_to_images_tool = create_pdf_to_images_tool()
+        tools_for_prompt.append(_pdf_to_images_tool)
+        _pdf_to_images_fn = _pdf_to_images_tool.func
+        adapter._tools_context["pdf_to_images"] = make_tool_awaitable(_pdf_to_images_fn)
+        logger.info("pdf_to_images: PDF-to-JPEG conversion tool injected (PyMuPDF with pdftoppm fallback)")
+        # ── end pdf_to_images ──────────────────────────────────────────────────────
+
+        # ── pptx_to_images: always-on PPTX→JPEG conversion tool ───────────────────
+        from cuga.backend.tools.pptx_to_images import create_pptx_to_images_tool
+
+        _pptx_to_images_tool = create_pptx_to_images_tool()
+        tools_for_prompt.append(_pptx_to_images_tool)
+        _pptx_to_images_fn = _pptx_to_images_tool.func
+        adapter._tools_context["pptx_to_images"] = make_tool_awaitable(_pptx_to_images_fn)
+        logger.info("pptx_to_images: PPTX-to-JPEG conversion tool injected (LibreOffice + PyMuPDF)")
+        # ── end pptx_to_images ─────────────────────────────────────────────────────
 
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
 
