@@ -20,7 +20,7 @@ import time
 import uuid
 from dataclasses import dataclass, fields as dc_fields
 from pathlib import Path
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urljoin, urlparse
 
 from pydantic import ConfigDict
@@ -1165,6 +1165,103 @@ def _tiktoken_docling_tokenizer_cls():
     return _TiktokenDoclingTokenizer
 
 
+# Route prefixes LiteLLM / OpenRouter / watsonx use to address embedders.
+# Stripped once before checking tiktoken / HF Hub naming. Single-strip only —
+# ``litellm/openai/text-embedding-3-small`` -> ``openai/text-embedding-3-small``.
+_LITELLM_ROUTE_PREFIXES = (
+    "openai/",
+    "azure/",
+    "openrouter/",
+    "litellm/",
+    "watsonx/",
+    "ibm/",
+    "huggingface/",
+    "hf/",
+)
+
+
+# Curated HF-org allow-list: embedders routed via litellm/openrouter whose REAL
+# tokenizer is on the HF Hub (sentencepiece / WordPiece — NOT OpenAI BPE). For
+# these, ``_resolve_tiktoken_encoding`` would silently fall back to cl100k_base
+# and the chunker would size chunks in cl100k tokens — which, for multilingual
+# content fed to e5/bge models, can be 1.5–3x the model's real XLM-RoBERTa /
+# BERT token count and overflow max_seq_length=512, causing silent truncation
+# at embed time. Match here to load the model's own tokenizer instead.
+#
+# Intentionally narrow — extending is a one-line PR. An AutoConfig probe is
+# rejected (network call on hot path) and an "any-slash" heuristic is rejected
+# (would wrongly catch ``openai/text-embedding-3-small`` that tiktoken handles
+# natively). See issue #387 for the bug repro.
+_HF_CHUNK_TOKENIZER_PREFIXES = (
+    "intfloat/",
+    "baai/bge",
+    "sentence-transformers/",
+    "jinaai/jina-embeddings-v2",
+    "thenlper/",
+    "nomic-ai/nomic-embed-",
+    "mixedbread-ai/mxbai-embed-",
+    "ibm-granite/",
+    "alibaba-nlp/gte-",
+)
+
+
+def _strip_litellm_route_prefix(name: str) -> str:
+    """Strip ONE matching route prefix (case-insensitive). Single-strip so
+    ``litellm/openai/x`` becomes ``openai/x``, not ``x``."""
+    n = (name or "").strip()
+    lo = n.lower()
+    for p in _LITELLM_ROUTE_PREFIXES:
+        if lo.startswith(p):
+            return n[len(p) :]
+    return n
+
+
+def _hf_repo_id_for_chunk_sizing(model_name: str) -> Optional[str]:
+    """Return the HF repo id to load a tokenizer from when ``model_name`` is
+    a litellm/openrouter-routed HF-style embedder. ``None`` if the model
+    doesn't look HF-style (fall through to tiktoken). Case-preserving on the
+    output so ``BAAI/bge-base-en-v1.5`` survives the round-trip."""
+    stripped = _strip_litellm_route_prefix(model_name)
+    if "/" not in stripped:
+        return None
+    if stripped.lower().startswith(_HF_CHUNK_TOKENIZER_PREFIXES):
+        return stripped
+    return None
+
+
+@functools.lru_cache(maxsize=8)
+def _load_hf_tokenizer_for_chunking(repo_id: str):
+    """Load an HF tokenizer for chunk sizing. Memoizes the None failure path
+    too so a one-time corp-proxy outage / hub timeout at process start does
+    not re-fire the hub call on every doc ingested in the session. lazy
+    ``transformers`` import keeps cuga startup cost unchanged for users who
+    never ingest with a litellm-routed HF embedder."""
+    try:
+        from transformers import AutoTokenizer
+
+        return AutoTokenizer.from_pretrained(repo_id)
+    except ImportError:
+        logger.debug("transformers missing; HF tokenizer skipped for chunk sizing.")
+        return None
+    except Exception as e:
+        logger.warning(
+            f"HF tokenizer load failed for chunk sizing (repo={repo_id!r}, err={e!r}); "
+            f"falling back to tiktoken cl100k_base. Pre-cache via HF_HOME to silence."
+        )
+        return None
+
+
+def _hf_tokenizer_seq_limit(tok) -> int:
+    """Read the model's max input length from a HF tokenizer. transformers
+    uses a VERY_LARGE_INTEGER sentinel (1e30) to mean 'unset' — sanitize to
+    512, the universal default across BERT / XLM-RoBERTa / DistilBERT.
+    Defensive against non-numeric values (test mocks, custom tokenizers)."""
+    mml = getattr(tok, "model_max_length", None)
+    if not isinstance(mml, (int, float)) or not (0 < mml < 1_000_000):
+        return 512
+    return int(mml)
+
+
 def _resolve_tiktoken_encoding(model_name: str):
     """Pick the right tiktoken encoding for the embedding model.
 
@@ -1174,13 +1271,7 @@ def _resolve_tiktoken_encoding(model_name: str):
     """
     import tiktoken
 
-    name = (model_name or "").strip().lower()
-    # Strip common provider prefixes that LiteLLM / OpenRouter use so
-    # ``encoding_for_model`` can find the actual OpenAI model name.
-    for prefix in ("openai/", "azure/", "openrouter/", "litellm/"):
-        if name.startswith(prefix):
-            name = name[len(prefix) :]
-            break
+    name = _strip_litellm_route_prefix(model_name).lower()
     try:
         return tiktoken.encoding_for_model(name)
     except KeyError:
@@ -3875,27 +3966,75 @@ class KnowledgeEngine:
                             HuggingFaceTokenizer,
                         )
 
+                        # Cap at the model's real max_seq_length so an
+                        # 800-token chunk_size doesn't overrun e.g. e5-large's
+                        # 512-token limit and force the embedder to truncate.
+                        # Same latent bug as the litellm-routed branch below.
+                        seq = _hf_tokenizer_seq_limit(emb._tokenizer)
+                        cap = min(chunk_size, seq)
                         tok = HuggingFaceTokenizer(
                             tokenizer=emb._tokenizer,
-                            max_tokens=chunk_size,
+                            max_tokens=cap,
                         )
                         logger.debug(
-                            "HybridChunker tokenizer: HuggingFace (model's own — already loaded by "
-                            "_PyTorchEmbeddings; embedding_provider='huggingface', model={!r})",
-                            self._config.embedding_model or "default",
+                            f"HybridChunker tokenizer: HuggingFace (model's own — already loaded by "
+                            f"_PyTorchEmbeddings; embedding_provider='huggingface', "
+                            f"model={self._config.embedding_model or 'default'!r}, "
+                            f"chunk_token_limit={cap}, model_seq_limit={seq})"
                         )
                         return HybridChunker(tokenizer=tok)
                 except Exception as hf_err:  # pragma: no cover - defensive
                     logger.warning(
-                        "HuggingFace chunker tokenizer reuse failed ({}); falling back to tiktoken.",
-                        hf_err,
+                        f"HuggingFace chunker tokenizer reuse failed ({hf_err}); falling back to tiktoken."
                     )
 
-            # All other providers (openai / openrouter / litellm / ollama /
-            # auto / unknown): use tiktoken. Reasons:
-            #   - openai/openrouter/litellm: perfect match (cl100k_base BPE)
-            #   - ollama / other: free BPE approximation; better than the
-            #     90 MB HF MiniLM weights Docling would otherwise download
+            # NEW (issue #387): litellm/openrouter-routed HF-style embedders
+            # (intfloat/, BAAI/bge*, sentence-transformers/, ...) use their
+            # OWN tokenizer for chunk sizing — NOT cl100k_base. The route
+            # prefix (watsonx/, litellm/, openai/, ...) is stripped, and we
+            # match against ``_HF_CHUNK_TOKENIZER_PREFIXES``. Models outside
+            # the allow-list (openai/text-embedding-3-*, cohere/*, voyage-*,
+            # gemini-*, watsonx/ibm/slate-*) fall through to tiktoken — for
+            # those, cl100k_base is either correct (OpenAI) or the best
+            # approximation we have without vendor SDKs.
+            if self._config.embedding_provider in ("litellm", "openrouter", "openai"):
+                repo_id = _hf_repo_id_for_chunk_sizing(self._config.embedding_model or "")
+                if repo_id:
+                    auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
+                    if auto_tok is not None:
+                        try:
+                            from docling_core.transforms.chunker.tokenizer.huggingface import (
+                                HuggingFaceTokenizer,
+                            )
+
+                            seq = _hf_tokenizer_seq_limit(auto_tok)
+                            cap = min(chunk_size, seq)
+                            if cap < chunk_size:
+                                logger.info(
+                                    f"Capping chunk_size {chunk_size} -> {cap} for embedder "
+                                    f"{repo_id} (model_max_length={seq}). Chunks at the original "
+                                    f"size would have been truncated at embed time."
+                                )
+                            tok = HuggingFaceTokenizer(tokenizer=auto_tok, max_tokens=cap)
+                            logger.debug(
+                                f"HybridChunker tokenizer: HF AutoTokenizer "
+                                f"(litellm-routed; repo={repo_id!r}, chunk_token_limit={cap}, "
+                                f"model_seq_limit={seq}, provider={self._config.embedding_provider!r})"
+                            )
+                            return HybridChunker(tokenizer=tok)
+                        except Exception as wrap_err:
+                            logger.warning(
+                                f"HuggingFaceTokenizer wrap failed for {repo_id!r} ({wrap_err}); "
+                                f"falling back to tiktoken."
+                            )
+                    # else: load returned None — already warned; fall through.
+
+            # All other providers (openai / openrouter / litellm without an
+            # HF-routed model / ollama / auto / unknown): use tiktoken.
+            #   - openai text-embedding-*: cl100k_base BPE matches exactly
+            #   - ollama / vendor (cohere/voyage/gemini): cl100k_base is a
+            #     free BPE approximation; better than downloading 90 MB of
+            #     MiniLM weights Docling would otherwise pull
             #   - tiktoken's encodings ship inside the wheel — ZERO extra
             #     disk or download regardless of provider
             try:
