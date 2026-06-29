@@ -1337,6 +1337,31 @@ export function ManagePage() {
             // 422 without a JSON body — leave the prior error in place.
             setDraftSaveStatus({ kind: "failed", error: "Save rejected by server" });
           }
+        } else if (res.status === 409) {
+          // Layer 1/2 (issue #396): server refuses vector-affecting PATCHes
+          // while a reindex is in flight. Without this branch the user sees
+          // a generic "Save failed (409)" pill and might assume their UI
+          // selection is now applied — it isn't. Surface specifically.
+          if (ac.signal.aborted) return;
+          let detail: { error?: string; message?: string } | null = null;
+          try {
+            const body = await res.json();
+            detail = (body && (body.detail ?? body)) as { error?: string; message?: string } | null;
+          } catch {
+            // 409 without a JSON body — fall through to the generic message.
+          }
+          if (ac.signal.aborted) return;
+          const msg =
+            detail?.error === "reindex_in_progress"
+              ? detail?.message ||
+                "Re-index is running. Wait for it to finish, then try again."
+              : "Save conflicts with current server state. Try again.";
+          setDraftSaveStatus({ kind: "failed", error: msg });
+          addToast(
+            "warning",
+            "Can't change settings yet",
+            "A Re-index is running. Wait for it to finish, then this change will save.",
+          );
         } else {
           // 4xx / 5xx without a 422 body. Surface as failed so the pill
           // doesn't stay stuck on "Saving…". Log to console too — when

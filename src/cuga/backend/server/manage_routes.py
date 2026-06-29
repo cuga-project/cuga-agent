@@ -409,11 +409,111 @@ async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict
         return await _save_draft_section_unlocked(agent_id, section, value)
 
 
+async def _deferred_reindex_complete_and_flip(
+    agent_id: str,
+    live_engine: Any,
+    live_state: Any,
+    target: str,
+    target_hash: str,
+    task_ids: list[str],
+) -> None:
+    """Background task spawned by ``_migrate_and_reindex_for_agent`` after
+    ``engine.reindex`` returns ``status=started``. Waits for every per-file
+    ingest worker to reach a terminal state, then promotes
+    ``app_state.knowledge_config_hash`` to ``target_hash`` ONLY IF at least
+    one task completed successfully AND the engine's current config still
+    hashes to ``target_hash`` (i.e., the user didn't change embedders
+    behind our back via the SDK / a Layer 1 / Layer 2 bypass).
+
+    The flip happens INSIDE ``_agent_draft_lock`` so a concurrent PATCH
+    can't interleave between the engine-config check and the pointer write.
+
+    Bounded by a 30-minute wall clock so a hung worker / engine crash
+    can't leak this coroutine forever.
+    """
+    import asyncio as _asyncio
+
+    deadline = _asyncio.get_event_loop().time() + 30 * 60  # 30 min hard cap
+
+    # Poll until the engine clears its busy flag for our target. The flag
+    # is the canonical "workers done" signal: engine.reindex sets it in
+    # the lock prologue and clears it from the worker's finally-block.
+    while target in live_engine._reindex_in_progress:
+        if _asyncio.get_event_loop().time() > deadline:
+            logger.warning(
+                f"Deferred flip for {target}: workers didn't terminate in 30min; "
+                f"NOT promoting knowledge_config_hash."
+            )
+            return
+        await _asyncio.sleep(0.5)
+
+    # Snapshot terminal task statuses.
+    try:
+        all_tasks = await live_engine._metadata.list_tasks(target)
+    except Exception as e:
+        logger.warning(f"Deferred flip for {target}: failed to read task statuses ({e}); skipping flip.")
+        return
+
+    task_id_set = set(task_ids)
+    relevant = [t for t in all_tasks if t["task_id"] in task_id_set]
+    n_completed = sum(1 for t in relevant if t["status"] == "completed")
+    n_terminal = sum(1 for t in relevant if t["status"] in ("completed", "failed", "cancelled"))
+
+    if n_terminal != len(relevant):
+        logger.warning(
+            f"Deferred flip for {target}: {n_terminal}/{len(relevant)} tasks at terminal "
+            f"state; refusing partial flip."
+        )
+        return
+
+    if n_completed == 0:
+        logger.warning(
+            f"Deferred flip for {target}: 0/{len(relevant)} tasks succeeded "
+            f"(all failed or superseded); NOT promoting knowledge_config_hash. "
+            f"The collection's vectors are empty or stale — user must Re-index again."
+        )
+        return
+
+    # Acquire the per-agent lock so the engine-config check and the
+    # pointer write are atomic against any concurrent PATCH.
+    async with _agent_draft_lock(agent_id):
+        try:
+            current_engine_hash = live_engine._config.vector_config_hash()
+        except Exception as e:
+            logger.warning(f"Deferred flip for {target}: vector_config_hash failed ({e}); skipping.")
+            return
+        if current_engine_hash != target_hash:
+            # Engine moved on between when the reindex started and when it
+            # finished — likely via an SDK bypass of Layer 1+2. Flipping
+            # to ``target_hash`` now would point queries at a collection
+            # whose content doesn't match the engine's current embedder.
+            logger.info(
+                f"Deferred flip for {target}: engine moved to {current_engine_hash!r} during "
+                f"reindex (was {target_hash!r}); skipping flip. User must trigger a fresh Re-index."
+            )
+            return
+
+        try:
+            live_state.knowledge_config_hash = target_hash
+            logger.info(
+                f"Deferred flip for {target}: {n_completed}/{len(relevant)} tasks succeeded; "
+                f"promoted knowledge_config_hash to {target_hash}."
+            )
+        except Exception as e:
+            logger.warning(f"Deferred flip for {target}: failed to set knowledge_config_hash ({e}).")
+
+
 async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_state: Any) -> dict[str, Any]:
     """Re-embed the active snapshot (kb_agent_<id>_<active_hash>) into the
     target (kb_agent_<id>_<current_hash>). Single source — historicals
-    untouched. Pointer flips only on a non-empty reindex success.
+    untouched. Pointer flips DEFERRED to a background task that waits for
+    worker terminal state (see ``_deferred_reindex_complete_and_flip``).
+    The HTTP response returns with task_ids so the UI can show progress
+    immediately, while the integrity-critical pointer flip happens behind
+    the scenes only after workers finish AND the engine config still
+    matches.
     Returns {triggered, target, collections, error?}."""
+    import asyncio as _asyncio
     import re as _re
 
     sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
@@ -467,12 +567,17 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
     if not ok:
         return {"triggered": False, "target": target, "collections": triggered, "error": "reindex_failed"}
 
-    # Pointer flips only on success; failure leaves the prior active live.
-    if target_hash and live_state is not None:
-        try:
-            live_state.knowledge_config_hash = target_hash
-        except Exception as herr:
-            logger.warning(f"Failed to update knowledge_config_hash: {herr}")
+    # Spawn the deferred pointer-flip. The HTTP response returns NOW with
+    # task_ids so the UI shows progress immediately; the pointer flips
+    # behind the scenes once workers terminate AND the engine config
+    # still matches target_hash. See ``_deferred_reindex_complete_and_flip``.
+    task_ids = (r or {}).get("task_ids") or []
+    if target_hash and live_state is not None and task_ids:
+        _asyncio.create_task(
+            _deferred_reindex_complete_and_flip(
+                agent_id, live_engine, live_state, target, target_hash, task_ids
+            )
+        )
 
     return {"triggered": True, "target": target, "collections": triggered}
 
@@ -1426,9 +1531,48 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         if not isinstance(knowledge, dict):
             raise HTTPException(status_code=400, detail="knowledge must be a dict")
 
+        # LAYER 1 GUARD (issue #396): reject the PATCH if a reindex is in
+        # flight for THIS agent's collections. The engine also enforces
+        # this in apply_knowledge_config (Layer 2) for SDK callers; this
+        # check returns a fast, well-typed 409 before we do any DB work
+        # so the FE can show a clean "wait for reindex" toast instead of
+        # surfacing a generic 400 from the engine raise.
+        #
+        # User-visible bug this prevents: clicking Use on Watsonx WHILE
+        # the previous Re-index is still running causes the in-flight
+        # workers to write watsonx-shaped (1024-dim) vectors into a
+        # collection NAMED for the fastembed hash — and silently drops
+        # the two files that were mid-ingest when the apply_generation
+        # bumped. The name-vs-content lie + missing docs both stem from
+        # the same root: PATCH not blocked during reindex.
+        import re as _re_guard
+
+        live_state_pre = getattr(request.app.state, "app_state", None)
+        live_engine_pre = getattr(live_state_pre, "knowledge_engine", None) if live_state_pre else None
+        if live_engine_pre is not None:
+            _sanitized_pre = _re_guard.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
+            _prefix_pre = f"kb_agent_{_sanitized_pre}"
+            in_flight = sorted(
+                c
+                for c in live_engine_pre._reindex_in_progress
+                if c == _prefix_pre or c.startswith(f"{_prefix_pre}_")
+            )
+            if in_flight:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "reindex_in_progress",
+                        "collections": in_flight,
+                        "message": (
+                            "Re-index is running. Wait for it to finish before changing knowledge settings."
+                        ),
+                    },
+                )
+
         # Imports needed inside the lock.
         from cuga.backend.server.config_store import load_draft
         from cuga.backend.knowledge.config import KnowledgeConfig
+        from cuga.backend.knowledge.engine import ReindexInProgressError
         from dataclasses import fields as _dc_fields
         from cuga.backend.knowledge.config import (
             ClientAdaptationError,
@@ -1494,6 +1638,22 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     )
                 except (ValueError, TypeError) as ve:
                     raise HTTPException(status_code=400, detail=f"Engine validation failed: {ve}")
+                except ReindexInProgressError as rip_err:
+                    # Layer 2: engine refused a vector-affecting change while a
+                    # reindex was in flight. Layer 1's 409 should have caught
+                    # this earlier; reach this branch only if (a) the reindex
+                    # started in the small window AFTER our pre-check, or (b)
+                    # an SDK consumer reached apply_knowledge_config directly.
+                    # Map to the same shape the FE handles for Layer 1.
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "reindex_in_progress",
+                            "collections": sorted(live_engine._reindex_in_progress),
+                            "message": str(rip_err)
+                            or "Re-index is running. Wait for it to finish before changing knowledge settings.",
+                        },
+                    )
                 except Exception as live_err:
                     # Preflight network/auth errors land here (e.g. embedding API rejected).
                     # IMPORTANT: distinguish two cases:
@@ -1703,6 +1863,29 @@ async def reindex_for_config_change(request: Request, agent_id: Optional[str] = 
     live_engine = getattr(live_state, "knowledge_engine", None) if live_state else None
     if live_engine is None:
         raise HTTPException(status_code=503, detail="Knowledge engine not ready")
+
+    # Reject if a reindex is already in flight for this agent. Without this,
+    # a rapid double-click on Re-index hits engine.reindex's own busy check
+    # and the migration helper maps it to a generic ``reindex_failed`` toast
+    # — confusing for what is really a "please wait" condition. Same shape
+    # as patch_draft_knowledge's Layer 1 guard so the FE can reuse handling.
+    import re as _re_guard
+
+    _sanitized_pre = _re_guard.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
+    _prefix_pre = f"kb_agent_{_sanitized_pre}"
+    in_flight = sorted(
+        c for c in live_engine._reindex_in_progress if c == _prefix_pre or c.startswith(f"{_prefix_pre}_")
+    )
+    if in_flight:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reindex_in_progress",
+                "collections": in_flight,
+                "message": "Re-index is already running for this agent. Wait for it to finish.",
+            },
+        )
+
     try:
         result = await _migrate_and_reindex_for_agent(agent_id, live_engine, live_state)
         return JSONResponse(result)

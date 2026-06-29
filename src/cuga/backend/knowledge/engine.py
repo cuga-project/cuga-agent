@@ -3600,8 +3600,25 @@ class KnowledgeEngine:
         }
 
     def apply_knowledge_config(self, knowledge_cfg: dict) -> dict[str, Any]:
-        """Convenience: prepare + commit in one call. Used by update_settings() compat."""
+        """Convenience: prepare + commit in one call. Used by update_settings() compat.
+
+        Refuses vector-affecting changes (embedding / chunking / metric) while
+        any reindex is in flight — committing a new embedder mid-reindex
+        causes the in-flight workers to write the WRONG-dim vectors into
+        the collection named for the OLD config's hash, producing a
+        name-vs-content lie that breaks future resolve_collection lookups.
+        Non-vector-affecting updates (rerank, search settings, rag_profile
+        knobs that don't change chunking) are still allowed mid-reindex
+        because they don't perturb the worker contract.
+        """
         prepared = self.prepare_knowledge_update(knowledge_cfg)
+        vector_affecting = prepared.embedding_changed or prepared.chunking_changed or prepared.metric_changed
+        if vector_affecting and self._reindex_in_progress:
+            raise ReindexInProgressError(
+                f"Reindex in progress for {sorted(self._reindex_in_progress)}; "
+                f"vector-affecting changes (embedding/chunking/metric) are rejected "
+                f"until all worker tasks terminate."
+            )
         return self.commit_knowledge_update(prepared)
 
     # --- Settings ---
