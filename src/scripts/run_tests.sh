@@ -75,8 +75,24 @@ run_pytest_with_e2b() {
 # transient live-LLM nondeterminism. See issue #412.
 run_pytest_isolated() {
     echo "Running $* with process-per-test isolation + retry (issue #412)..."
-    local nodes
-    nodes=$(uv run pytest "$@" --collect-only -q -p no:cacheprovider 2>/dev/null | grep '::')
+    local nodes collect_output collect_ec
+    if collect_output=$(uv run pytest "$@" --collect-only -q -p no:cacheprovider 2>&1); then
+        collect_ec=0
+    else
+        collect_ec=$?
+    fi
+    # pytest exit code 5 = no tests collected (not a failure); any other non-zero is a
+    # collection/import error and must NOT be silently treated as "no tests".
+    if [ "$collect_ec" -eq 5 ]; then
+        echo "No tests collected for $* (treating as success)"
+        return 0
+    fi
+    if [ "$collect_ec" -ne 0 ]; then
+        echo "$collect_output"
+        echo "❌ Test collection failed for $* (exit $collect_ec)! Exiting..."
+        exit 1
+    fi
+    nodes=$(printf '%s\n' "$collect_output" | grep '::' || true)
     if [ -z "$nodes" ]; then
         echo "No tests collected for $* (treating as success)"
         return 0
