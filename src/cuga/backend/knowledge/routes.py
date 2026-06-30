@@ -232,6 +232,11 @@ async def health(request: Request):
         "details": subsystem.get("details", {}),
         "settings": h["settings"],
         "embeddings_initialized": h.get("embeddings_initialized", False),
+        # Live availability of the ACTIVE embedder. When false, the collection's
+        # vectors can't be searched (query embedding fails) — the UI warns.
+        "embedder_available": h.get("embedder_available"),
+        "embedder_error": h.get("embedder_error"),
+        "embedder_model": h.get("embedder_model"),
     }
     if collection:
         result["stale"] = h.get("stale", False)

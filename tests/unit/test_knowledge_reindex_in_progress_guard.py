@@ -483,6 +483,48 @@ class TestHttpReindexGuard:
 # ---------------------------------------------------------------------------
 
 
+class TestEmbedderAvailabilityProbe:
+    """The active-embedder availability probe surfaced in health() so the UI can
+    warn when a collection's vectors are stranded behind an unreachable embedder."""
+
+    def test_unavailable_on_embed_failure(self, monkeypatch):
+        eng = _make_engine()
+        eng._config.enabled = True
+        monkeypatch.setattr(eng, "_ensure_embeddings", lambda: None)
+
+        class _BadEmb:
+            def embed_query(self, _t):
+                raise RuntimeError("401 Unauthorized")
+
+        eng._default_embeddings = _BadEmb()
+        r = asyncio.run(eng.probe_active_embedder())
+        assert r["available"] is False
+        assert "401" in (r["error"] or "")
+
+    def test_available_and_cached(self, monkeypatch):
+        eng = _make_engine()
+        eng._config.enabled = True
+        calls = {"n": 0}
+
+        class _OkEmb:
+            def embed_query(self, _t):
+                calls["n"] += 1
+                return [0.1, 0.2, 0.3]
+
+        monkeypatch.setattr(eng, "_ensure_embeddings", lambda: None)
+        eng._default_embeddings = _OkEmb()
+        r1 = asyncio.run(eng.probe_active_embedder())
+        r2 = asyncio.run(eng.probe_active_embedder())
+        assert r1["available"] is True and r2["available"] is True
+        assert calls["n"] == 1, "second probe within TTL must use the cache, not re-embed"
+
+    def test_none_when_disabled(self):
+        eng = _make_engine()
+        eng._config.enabled = False
+        r = asyncio.run(eng.probe_active_embedder())
+        assert r["available"] is None
+
+
 class TestPublishUnifiedPromotion:
     def test_publish_defers_flip_on_async_reindex(self):
         import inspect

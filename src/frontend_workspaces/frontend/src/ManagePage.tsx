@@ -481,6 +481,10 @@ export function ManagePage() {
   // Cleared on the next successful save.
   const [adaptationServerError, setAdaptationServerError] = useState<AdaptationServerErrorShape | null>(null);
   const [knowledgeStale, setKnowledgeStale] = useState(false);
+  // Live availability of the active embedder (from /health). null = unknown
+  // (don't alarm); false = unreachable → the indexed docs can't be searched.
+  const [knowledgeEmbedderAvailable, setKnowledgeEmbedderAvailable] = useState<boolean | null>(null);
+  const [knowledgeEmbedderModel, setKnowledgeEmbedderModel] = useState<string>("");
   const [knowledgeReindexDeferred, setKnowledgeReindexDeferred] = useState(false);
   const [ragProfiles, setRagProfiles] = useState<Record<string, any>>({});
   const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<{
@@ -966,6 +970,10 @@ export function ManagePage() {
       setKnowledgeHealthStatus(data.status ?? (data.healthy ? "ready" : "unknown"));
       setKnowledgeStale(data.stale ?? false);
       setKnowledgeReindexDeferred(data.reindex_deferred ?? false);
+      setKnowledgeEmbedderAvailable(
+        typeof data.embedder_available === "boolean" ? data.embedder_available : null,
+      );
+      setKnowledgeEmbedderModel(data.embedder_model ?? "");
       return data;
     } catch {
       setKnowledgeHealthy(false);
@@ -1349,8 +1357,9 @@ export function ManagePage() {
             // doc count immediately, instead of only after the panel mounts.
             const _lc = body?.live_changes;
             if (_lc?.adopted_existing_collection) {
+              // Advancing the snapshot drives the diff effect to clear the
+              // reindex banner; just set the count for the badge.
               setKnowledgeSavedSnapshot({ ...knowledgeConfig });
-              setKnowledgeReindexNeeded(false);
               if (typeof _lc.active_document_count === "number") {
                 setKnowledgeDocCount(_lc.active_document_count);
               }
@@ -1522,37 +1531,11 @@ export function ManagePage() {
     if (importStatus !== "ok") return;
     let cancelled = false;
     (async () => {
-      // Persist the imported config to the backend first.
+      // Persist the imported config to the backend, then refresh health.
+      // The doc count + reindex banner are handled by the autosave PATCH's
+      // adopt signal (live_changes.adopted_existing_collection) — the call
+      // that actually adopts the imported collection — so no fetch race here.
       await performDraftSave();
-      if (cancelled) return;
-      // Then refresh the "Connected · N documents indexed" badge. The doc
-      // count (knowledgeDocCount) is otherwise fetched ONLY on agent-load
-      // (the effect above) and via the Knowledge panel's own loadDocuments —
-      // import changes neither, so the badge kept its stale count until the
-      // user opened "Configure Knowledge Base". Mirror the on-agent-load
-      // fetch; one delayed retry covers the brief window where the engine is
-      // still reconnecting to the imported collection's on-disk documents.
-      const fetchCount = async (): Promise<number | null> => {
-        try {
-          const r = await api.listKnowledgeDocuments();
-          if (!r.ok) return null;
-          const d = await r.json();
-          return d.documents?.length ?? 0;
-        } catch {
-          return null;
-        }
-      };
-      let n = await fetchCount();
-      if (!cancelled && (n === null || n === 0)) {
-        await new Promise((res) => setTimeout(res, 1200));
-        if (cancelled) return;
-        const retry = await fetchCount();
-        if (retry !== null) n = retry;
-      }
-      if (!cancelled && n !== null) {
-        setKnowledgeDocCount(n);
-        setKnowledgeDocsVersion((v) => v + 1);
-      }
       if (!cancelled) void refreshKnowledgeHealth();
     })();
     return () => {
@@ -2468,6 +2451,26 @@ export function ManagePage() {
                           : "Disconnected"}
                       </span>
                     </div>
+                    {/* Embedder-unavailable alert. Distinct from the removed
+                        "re-index recommended" NAG below: this is a real error —
+                        the documents exist but their embedder can't embed
+                        queries (missing/invalid key, provider down), so search
+                        returns nothing. Surfaced on the agent card (not just in
+                        the modal) because it makes knowledge silently useless. */}
+                    {knowledgeEmbedderAvailable === false && knowledgeDocCount > 0 && (
+                      <InlineNotification
+                        kind="error"
+                        lowContrast
+                        hideCloseButton
+                        title="Embedder unavailable"
+                        subtitle={
+                          `Your ${knowledgeDocCount} indexed document${knowledgeDocCount !== 1 ? "s" : ""} can't be searched — ` +
+                          `the active embedder${knowledgeEmbedderModel ? ` (${knowledgeEmbedderModel})` : ""} isn't reachable. ` +
+                          `Open Configure knowledge base to check its API key / connection and run Test connection.`
+                        }
+                        style={{ maxInlineSize: "100%" }}
+                      />
+                    )}
                     {/* The "Re-index recommended" InlineNotification used to
                         live here as a call-to-action to open the modal. It's
                         gone now because (a) the Live pill above already

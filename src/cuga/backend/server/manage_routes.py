@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 from loguru import logger
 
+from cuga.backend.knowledge.auth import resolve_agent_collection
 from cuga.backend.server.auth import require_manage_access
 
 router = APIRouter(
@@ -1833,10 +1834,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     _adopt_hash = live_engine._config.vector_config_hash()
                     _cur_hash = getattr(live_state, "knowledge_config_hash", None)
                     if _adopt_hash and _adopt_hash != _cur_hash:
-                        import re as _re_adopt
-
-                        _san_adopt = _re_adopt.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
-                        _adopt_coll = f"kb_agent_{_san_adopt}_{_adopt_hash}"
+                        _adopt_coll = f"{resolve_agent_collection(str(agent_id), None)}_{_adopt_hash}"
                         _existing_docs = await live_engine.list_documents(_adopt_coll)
                         if _existing_docs:
                             live_state.knowledge_config_hash = _adopt_hash
@@ -2081,10 +2079,7 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     _pub_engine = getattr(app_state, "knowledge_engine", None)
     _pub_in_flight = getattr(_pub_engine, "_reindex_in_progress", None)
     if _pub_in_flight:
-        import re as _re_pub_guard
-
-        _san_pub = _re_pub_guard.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
-        _pfx_pub = f"kb_agent_{_san_pub}"
+        _pfx_pub = resolve_agent_collection(str(agent_id), None)
         _busy_pub = sorted(c for c in _pub_in_flight if c == _pfx_pub or c.startswith(f"{_pfx_pub}_"))
         if _busy_pub:
             raise HTTPException(

@@ -1714,6 +1714,13 @@ class KnowledgeEngine:
         self._reindex_in_progress: set[str] = set()
         self._reindex_deferred: set[str] = set()
 
+        # Cached live-availability probe of the active embedder, surfaced in
+        # health() so the UI can warn when a collection's vectors are stranded
+        # behind an unreachable embedder. (vector_config_hash, available, error,
+        # monotonic_ts); invalidated on config apply. ponytail: a single cached
+        # tuple, not a probe-scheduler.
+        self._embedder_probe_cache: tuple[str, bool, str | None, float] | None = None
+
         # Background tasks
         self._shutdown_event = asyncio.Event()
         self._background_tasks: list[asyncio.Task] = []
@@ -3676,6 +3683,9 @@ class KnowledgeEngine:
 
     def commit_knowledge_update(self, prepared: PreparedKnowledgeUpdate) -> dict[str, Any]:
         """Commit a prepared update. Pure in-memory mutation, no external calls."""
+        # Any config apply (incl. a key/base-url fix that doesn't change the
+        # vector hash) should force a fresh embedder probe on the next health.
+        self._embedder_probe_cache = None
         old_use_gpu = self._config.use_gpu
         old_dim = self._default_embedding_dim
         old_pdf_mode = self._config.docling_pdf_mode
@@ -3909,12 +3919,55 @@ class KnowledgeEngine:
         self.apply_knowledge_config(kwargs)
         return self.get_settings()
 
+    async def probe_active_embedder(self) -> dict[str, Any]:
+        """Cached live availability probe of the ACTIVE embedder.
+
+        A collection's vectors are useless if its embedder can't embed queries
+        (missing/invalid key, provider down, model unresolvable) — search would
+        fail or return nothing. We round-trip a tiny ``embed_query`` to detect
+        that, cached per vector-config-hash with a 60s TTL so the polled health
+        endpoint doesn't hit the provider on every call. Cache is invalidated on
+        config apply (see ``commit_knowledge_update``) so fixing a key re-probes.
+
+        Returns ``{available, error, model}``; ``available`` is None when
+        knowledge is disabled (nothing to probe).
+        """
+        import time as _t
+
+        model = f"{self._config.embedding_provider or ''}/{self._config.embedding_model or ''}".strip("/")
+        if not self._config.enabled:
+            return {"available": None, "error": None, "model": model}
+        try:
+            cfg_hash = self._config.vector_config_hash()
+        except Exception:
+            cfg_hash = ""
+        now = _t.monotonic()
+        cache = self._embedder_probe_cache
+        if cache and cache[0] == cfg_hash and (now - cache[3]) < 60:
+            return {"available": cache[1], "error": cache[2], "model": model}
+
+        available, error = True, None
+        try:
+            self._ensure_embeddings()
+            await asyncio.to_thread(self._default_embeddings.embed_query, "ping")
+        except Exception as e:  # noqa: BLE001 — any failure means "unavailable"
+            available = False
+            error = (str(e)[:300] or e.__class__.__name__)
+        self._embedder_probe_cache = (cfg_hash, available, error, now)
+        if not available:
+            logger.warning(f"Active embedder probe failed ({model}): {error}")
+        return {"available": available, "error": error, "model": model}
+
     async def health(self, collection: str | None = None) -> dict[str, Any]:
+        _emb = await self.probe_active_embedder()
         h: dict[str, Any] = {
             "status": "healthy",
             "engine": f"knowledge-{self._knowledge_vector_backend()}",
             "settings": self.get_settings()["knowledge"],
             "embeddings_initialized": self._default_embeddings is not None,
+            "embedder_available": _emb["available"],
+            "embedder_error": _emb["error"],
+            "embedder_model": _emb["model"],
             "reindex_in_progress": list(self._reindex_in_progress),
             "stale": False,
             "reindex_deferred": False,
