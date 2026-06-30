@@ -1505,10 +1505,46 @@ export function ManagePage() {
   }, [knowledgeConfig, effectiveAgentId, knowledgeReindexing, knowledgeSaveRetryNonce]);
 
   useEffect(() => {
-    if (importStatus === "ok") {
-      performDraftSave();
-    }
-  }, [importStatus, performDraftSave]);
+    if (importStatus !== "ok") return;
+    let cancelled = false;
+    (async () => {
+      // Persist the imported config to the backend first.
+      await performDraftSave();
+      if (cancelled) return;
+      // Then refresh the "Connected · N documents indexed" badge. The doc
+      // count (knowledgeDocCount) is otherwise fetched ONLY on agent-load
+      // (the effect above) and via the Knowledge panel's own loadDocuments —
+      // import changes neither, so the badge kept its stale count until the
+      // user opened "Configure Knowledge Base". Mirror the on-agent-load
+      // fetch; one delayed retry covers the brief window where the engine is
+      // still reconnecting to the imported collection's on-disk documents.
+      const fetchCount = async (): Promise<number | null> => {
+        try {
+          const r = await api.listKnowledgeDocuments();
+          if (!r.ok) return null;
+          const d = await r.json();
+          return d.documents?.length ?? 0;
+        } catch {
+          return null;
+        }
+      };
+      let n = await fetchCount();
+      if (!cancelled && (n === null || n === 0)) {
+        await new Promise((res) => setTimeout(res, 1200));
+        if (cancelled) return;
+        const retry = await fetchCount();
+        if (retry !== null) n = retry;
+      }
+      if (!cancelled && n !== null) {
+        setKnowledgeDocCount(n);
+        setKnowledgeDocsVersion((v) => v + 1);
+      }
+      if (!cancelled) void refreshKnowledgeHealth();
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [importStatus, performDraftSave, refreshKnowledgeHealth]);
 
   const loadVersion = async (version: number) => {
     try {
