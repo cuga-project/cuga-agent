@@ -1371,9 +1371,7 @@ export function ManagePage() {
           }
         } else if (res.status === 409) {
           // Layer 1/2 (issue #396): server refuses vector-affecting PATCHes
-          // while a reindex is in flight. Without this branch the user sees
-          // a generic "Save failed (409)" pill and might assume their UI
-          // selection is now applied — it isn't. Surface specifically.
+          // while a reindex is in flight.
           if (ac.signal.aborted) return;
           let detail: { error?: string; message?: string } | null = null;
           try {
@@ -1383,16 +1381,48 @@ export function ManagePage() {
             // 409 without a JSON body — fall through to the generic message.
           }
           if (ac.signal.aborted) return;
-          const msg =
-            detail?.error === "reindex_in_progress"
-              ? detail?.message ||
-                "Re-index is running. Wait for it to finish, then try again."
-              : "Save conflicts with current server state. Try again.";
-          setDraftSaveStatus({ kind: "failed", error: msg });
+
+          if (detail?.error === "reindex_in_progress") {
+            // #398 follow-up v2 (workflow w5i1mbchd / startup-race):
+            // the reindex_in_progress 409 means "the server is in the
+            // middle of applying THIS exact change via the reindex
+            // path; your PATCH is redundant". Don't flip the chip to
+            // ``failed`` — that surfaces as "Couldn't save — Retry"
+            // which is misleading: the change IS being applied. Keep
+            // the chip as "saving" so the user knows persistence is
+            // pending, then let the parent flip ``knowledgeReindexing``
+            // via ``onReindexFinished`` to release the autosave hold.
+            //
+            // The autosave effect's early-return on knowledgeReindexing
+            // covers the FE-triggered case (user clicked Save & Reindex
+            // and we know about it). This branch covers the engine-
+            // triggered case (config-drift detection on startup, or
+            // server-side auto_reindex from a different client) where
+            // the FE doesn't know a reindex started until the 409 lands.
+            // eslint-disable-next-line no-console
+            console.debug(
+              "[#398-followup-v2] startup-race: PATCH 409 reindex_in_progress",
+              { collections: (detail as { collections?: string[] })?.collections ?? [] },
+            );
+            setDraftSaveStatus({ kind: "saving" });
+            // Mark the FE as observing a reindex so future autosave
+            // debounces in this window also short-circuit. The child
+            // panel's polling (or the next /tasks GET that flips done)
+            // will eventually fire onReindexFinished, releasing this.
+            setKnowledgeReindexing(true);
+            return;
+          }
+
+          // Non-reindex-in-progress 409 (other version conflict).
+          // Generic message + surface to the user.
+          setDraftSaveStatus({
+            kind: "failed",
+            error: "Save conflicts with current server state. Try again.",
+          });
           addToast(
             "warning",
             "Can't change settings yet",
-            "A Re-index is running. Wait for it to finish, then this change will save.",
+            "A re-index or other config update was in progress. Your change will save on the next attempt.",
           );
         } else {
           // 4xx / 5xx without a 422 body. Surface as failed so the pill
@@ -2670,9 +2700,17 @@ export function ManagePage() {
                 : await api.triggerKnowledgeReindex();
               if (res.ok) {
                 const data = await res.json();
-                setKnowledgeReindexing(false);
+                // #398 follow-up v2: do NOT clear ``knowledgeReindexing`` here.
+                // The POST returns in <100ms with task_ids, but the actual
+                // ingest workers run for 10-15s afterward — that's exactly
+                // when the autosave-debounce PATCH lands and hits Layer 1's
+                // 409. We clear ``knowledgeReindexing`` only when the child
+                // panel reports its polling reached terminal state (via
+                // ``onReindexFinished`` below). Failure branches clear it
+                // explicitly per case.
                 // triggered:false ⇒ structural failure (status 2xx, ``error`` field set).
                 if (data?.triggered === false) {
+                  setKnowledgeReindexing(false);
                   const ERR: Record<string, { title: string; kind: "warning" | "error"; msg: string }> = {
                     active_snapshot_missing: {
                       title: "Re-index didn't run",
@@ -2729,14 +2767,25 @@ export function ManagePage() {
                 return { count: data.count ?? 0, task_ids: data.task_ids ?? [] };
               } else if (res.status === 409) {
                 addToast("warning", "Cannot re-index", "Uploads in progress. Try again later.");
+                setKnowledgeReindexing(false);
               } else {
                 addToast("error", "Re-index failed", `Error ${res.status}`);
+                setKnowledgeReindexing(false);
               }
             } catch {
               addToast("error", "Re-index failed", "Network error");
+              setKnowledgeReindexing(false);
             }
-            setKnowledgeReindexing(false);
             return null;
+          }}
+          onReindexFinished={() => {
+            // #398 follow-up v2: child panel reports its task polling
+            // reached terminal state (success OR partial failure — both
+            // signal "workers stopped, autosave PATCHes are safe again").
+            // Pair with the early-return in the autosave effect that
+            // checks ``knowledgeReindexing`` — the suppression window now
+            // covers the full ingest duration, not just the POST RTT.
+            setKnowledgeReindexing(false);
           }}
         />
       )}

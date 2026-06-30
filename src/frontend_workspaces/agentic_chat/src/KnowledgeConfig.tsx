@@ -399,6 +399,18 @@ interface KnowledgePanelProps {
   // without this, the snapshot only updates on Publish, and the banner
   // persists indefinitely after a successful auto-reindex.
   onAutoReindexComplete?: () => void;
+  // Fired when polling reaches terminal state — regardless of success
+  // OR partial failure. Distinct from ``onAutoReindexComplete``:
+  //   - onAutoReindexComplete fires ONLY on full success (5/5 done, 0 failed)
+  //     → ManagePage refreshes snapshot
+  //   - onReindexFinished fires on ANY terminal state (done=true)
+  //     → ManagePage clears ``knowledgeReindexing`` so autosave can resume
+  // The split exists because the snapshot-refresh side-effect is unsafe
+  // on partial-failure (snapshot would claim success that didn't happen),
+  // but the autosave-unblock side-effect is safe either way (workers are
+  // demonstrably no longer running).
+  // Workflow w5i1mbchd / #398 follow-up v2.
+  onReindexFinished?: () => void;
   // Which tab to open the modal on. Uncontrolled-with-initial-value: the
   // parent seeds the initial index via this prop, but the user owns tab
   // navigation from frame 1. Defaults to "documents" (back-compat with
@@ -454,6 +466,7 @@ export default function KnowledgePanel({
   autoReindexTrigger,
   onAutoReindexConsumed,
   onAutoReindexComplete,
+  onReindexFinished,
   initialTab,
   adaptationServerError: adaptationServerErrorProp,
   onAdaptationServerError,
@@ -1082,6 +1095,16 @@ export default function KnowledgePanel({
           // Refresh document list after reindex completes
           loadDocuments();
           checkHealth();
+          // #398 follow-up v2 (workflow w5i1mbchd): fire onReindexFinished
+          // ALWAYS at terminal state — both success AND partial-failure
+          // mean "workers stopped, parent can resume autosave PATCHes".
+          // Distinct from onAutoReindexComplete which is success-only.
+          // eslint-disable-next-line no-console
+          console.debug(
+            "[#398-followup] reindex-finished",
+            { completed, failed, taskCount: taskIds.length },
+          );
+          onReindexFinished?.();
           if (failed === 0) {
             onToast?.("success", "Re-index complete", `${completed} document(s) re-indexed successfully.`);
             // Tell the parent to refresh its saved-config snapshot so the
