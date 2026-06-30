@@ -1,8 +1,9 @@
 import asyncio
 import contextlib
+import difflib
 import io
 import traceback
-from typing import Any
+from typing import Any, Optional
 
 from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
@@ -86,11 +87,17 @@ class LocalExecutor(BaseExecutor):
 
         return result
 
-    def format_error(self, error: Exception) -> str:
+    def format_error(self, error: Exception, available_tools: Optional[list[str]] = None) -> str:
         """Format an error for display.
 
         Args:
             error: The exception to format
+            available_tools: Names of tools/functions actually present in the
+                execution namespace. When given and the error is a ``NameError``
+                for a tool-shaped name, the raw traceback is augmented with a
+                correction listing the closest real tool names. This turns a
+                silent retry-loop (the agent re-inventing the same bogus name
+                until the step limit) into a single-step recovery.
 
         Returns:
             Formatted error string
@@ -103,4 +110,41 @@ class LocalExecutor(BaseExecutor):
 
         error_msg = f"Error during execution: {repr(error)}"
         error_msg += f"\n{traceback.format_exc()}"
+
+        correction = self._unknown_tool_correction(error, available_tools)
+        if correction:
+            error_msg += correction
         return error_msg
+
+    @staticmethod
+    def _unknown_tool_correction(error: Exception, available_tools: Optional[list[str]]) -> str:
+        """Build a correction hint when the agent calls a non-existent tool.
+
+        The agent (notably gpt-oss) tends to fabricate generic tool names from
+        its REST-API priors (e.g. ``get_countries_countries_get``) instead of
+        using the exact name ``find_tools`` returned. The bare ``NameError`` is
+        treated as an ordinary retryable error, so the agent re-fabricates until
+        the step/token limit. Surfacing the real names breaks that loop.
+        """
+        if not isinstance(error, NameError) or not available_tools:
+            return ""
+
+        missing = getattr(error, "name", None)
+        if not missing:
+            return ""
+
+        close = difflib.get_close_matches(missing, available_tools, n=5, cutoff=0.4)
+        hint = (
+            f"\n\n[tool-name correction] '{missing}' is NOT an available tool — tool names "
+            "cannot be guessed or constructed. Call tools by the EXACT name returned by "
+            "find_tools."
+        )
+        if close:
+            hint += "\nDid you mean one of: " + ", ".join(close) + "?"
+        else:
+            hint += (
+                "\nNo close match is loaded. Call find_tools again with a different query to "
+                "discover the correct tool name."
+            )
+        hint += "\nDo not retry the same invented name."
+        return hint
