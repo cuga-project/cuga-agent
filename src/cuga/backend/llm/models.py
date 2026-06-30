@@ -625,9 +625,18 @@ class LLMManager:
         api_version = self._get_api_version(model_settings, platform)
         base_url = self._get_base_url(model_settings, platform)
         http_timeout = self._get_http_timeout(model_settings)
+        # Compute effective sampling values *after* reasoning-model suppression and
+        # platform-specific overrides, so the INFO log reflects what is actually sent.
+        is_reasoning = self._is_reasoning_model(model_name)
+        effective_temperature = None if is_reasoning else temperature
+        effective_top_p = (
+            None
+            if is_reasoning
+            else (0.95 if platform == "rits-restricted" else model_settings.get('top_p', 1.0))
+        )
         logger.info(
             f"Sampling config for {platform}/{model_name}: "
-            f"temperature={temperature}, top_p={model_settings.get('top_p', 1.0)}, "
+            f"temperature={effective_temperature}, top_p={effective_top_p}, "
             f"max_tokens={max_tokens}"
         )
         if platform == "azure":
@@ -744,15 +753,17 @@ class LLMManager:
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
             if not api_key and apikey_name:
                 api_key = os.environ.get(apikey_name)
-            llm = ChatOpenAI(
-                api_key=api_key,
-                base_url=model_settings.get('url'),
-                max_tokens=max_tokens,
-                model=model_name,
-                temperature=temperature,
-                top_p=model_settings.get('top_p', 1.0),
-                seed=42,
-            )
+            rits_params: Dict[str, Any] = {
+                "api_key": api_key,
+                "base_url": model_settings.get('url'),
+                "max_tokens": max_tokens,
+                "model": model_name,
+                "seed": 42,
+            }
+            if not is_reasoning:
+                rits_params["temperature"] = temperature
+                rits_params["top_p"] = model_settings.get('top_p', 1.0)
+            llm = ChatOpenAI(**rits_params)
         elif platform == "rits-restricted":
             api_key = _normalize_secret(resolve_secret("RITS_API_KEY_RESTRICT")) or os.environ.get(
                 "RITS_API_KEY_RESTRICT"
