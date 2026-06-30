@@ -620,8 +620,12 @@ Provide:
             logger.debug(f"    User prompt length: {len(user_prompt)} chars")
             logger.debug(f"    Number of policies in prompt: {len(policies_with_nl_triggers)}")
 
-            # Use structured output for reliable JSON parsing
-            structured_llm = self.llm.with_structured_output(PolicyConflictResolution)
+            # Use structured output for reliable JSON parsing.
+            # method="json_schema" (matching OutputFormatter in enactment.py) is enforced
+            # server-side by IBM Watsonx. The default (function_calling) returns None on
+            # gpt-oss-120b when it emits no tool call, which raised AttributeError below and
+            # silently dropped the policy match.
+            structured_llm = self.llm.with_structured_output(PolicyConflictResolution, method="json_schema")
             result: PolicyConflictResolution = await structured_llm.ainvoke(messages)
 
             logger.debug("  - Received structured LLM response:")
