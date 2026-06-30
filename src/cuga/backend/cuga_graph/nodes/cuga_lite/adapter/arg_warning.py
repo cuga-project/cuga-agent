@@ -24,6 +24,7 @@ corpus regresses, without silently altering any call.
 
 from __future__ import annotations
 
+import inspect
 import typing
 from typing import Any, Callable, Dict, Optional
 
@@ -105,10 +106,15 @@ def make_arg_warning_callable(
     *,
     enable: bool,
 ) -> Callable[..., Any]:
-    """Wrap an async tool coroutine so keyword arguments are *inspected* against
+    """Wrap a tool callable so keyword arguments are *inspected* against
     ``input_model`` and any suspect shapes are logged before the call. Arguments
     are forwarded unchanged. Returns ``tool_func`` untouched when disabled or
-    when the tool has no input schema."""
+    when the tool has no input schema.
+
+    ``prepare_tools_and_apps`` routes both async coroutines (``tool.coroutine``)
+    and sync callables (``tool.func`` / ``tool._run``) through here, so the
+    wrapper must handle either: it calls ``tool_func`` and awaits the result
+    only when it is awaitable."""
     if not enable or input_model is None:
         return tool_func
 
@@ -122,6 +128,9 @@ def make_arg_warning_callable(
         # calls are left alone to avoid mis-reading bound arguments.
         if kwargs and not args:
             warn_suspect_kwargs(kwargs, field_types, model_name=model_name)
-        return await tool_func(*args, **kwargs)
+        result = tool_func(*args, **kwargs)
+        if inspect.isawaitable(result):
+            return await result
+        return result
 
     return wrapper

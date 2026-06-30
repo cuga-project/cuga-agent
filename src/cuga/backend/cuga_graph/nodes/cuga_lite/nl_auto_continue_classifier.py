@@ -59,7 +59,7 @@ _PLANNING_INTENT_RE = re.compile(
 # A negation usually marks a result or refusal ("I could not find …"), not a
 # forward-looking plan — let those fall through to the LLM classifier / finalize.
 _NEGATION_RE = re.compile(
-    r"\b(?:not|never|unable|cannot|no)\b|\w+n['’]t\b",
+    r"\b(?:not|never|unable|cannot|no)\b|\w+n['\u2019]t\b",
     re.IGNORECASE,
 )
 

@@ -118,6 +118,31 @@ def _recorder():
     return tool_func, received
 
 
+def _sync_recorder():
+    """A *synchronous* tool callable — mirrors StructuredTool.func/_run, which
+    prepare_tools_and_apps also routes through make_arg_warning_callable."""
+    received = {}
+
+    def tool_func(*args, **kwargs):
+        received["args"] = args
+        received["kwargs"] = kwargs
+        return {"ok": True}
+
+    return tool_func, received
+
+
+@pytest.mark.asyncio
+async def test_wrapper_handles_sync_tool_func():
+    """Regression: the wrapper must not unconditionally ``await`` — a sync
+    ``.func``/``._run`` callable returns a plain value, and the warning path
+    must forward it (and its kwargs) unchanged without raising."""
+    tf, rec = _sync_recorder()
+    wrapped = make_arg_warning_callable(tf, DirectorModel, enable=True)
+    result = await wrapped(director={"director": "X"})
+    assert result == {"ok": True}
+    assert rec["kwargs"] == {"director": {"director": "X"}}  # NOT coerced
+
+
 @pytest.mark.asyncio
 async def test_wrapper_disabled_is_identity():
     tf, _ = _recorder()

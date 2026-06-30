@@ -89,3 +89,15 @@ async def test_non_planning_falls_through_to_llm():
     result = await classify_nl_auto_continue(llm, "The count is 96.", None)
     assert result is False
     llm.ainvoke.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_disabled_flag_finalizes_planning_text(monkeypatch):
+    """With the feature flag off, even planning text must finalize (return False)
+    and never consult the LLM classifier — the whole fast-path is gated off."""
+    monkeypatch.setattr(mod.settings.advanced_features, "cuga_lite_nl_auto_continue", False, raising=False)
+    llm = MagicMock()
+    llm.ainvoke = AsyncMock()
+    result = await classify_nl_auto_continue(llm, "We need to search student_loan app.", None)
+    assert result is False
+    llm.ainvoke.assert_not_called()
