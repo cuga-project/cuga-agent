@@ -215,7 +215,7 @@ class StorageBackedKnowledgeVectorStore(VectorStoreAdapter):
             conn.execute("PRAGMA busy_timeout = 5000")
             conn.execute("PRAGMA synchronous = NORMAL")
         except Exception as exc:  # noqa: BLE001 — never block ingest/search on a PRAGMA failure
-            logger.debug("PRAGMA application failed (continuing with defaults): %s", exc)
+            logger.debug(f"PRAGMA application failed (continuing with defaults): {exc}")
         return conn
 
     @staticmethod

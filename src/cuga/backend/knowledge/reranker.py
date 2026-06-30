@@ -131,7 +131,7 @@ def ensure_loading(model_name: str = DEFAULT_RERANK_MODEL) -> None:
     def _worker() -> None:
         try:
             prewarm(model_name)
-            logger.info("cuga.knowledge.reranker_loaded model=%s", model_name)
+            logger.info(f"cuga.knowledge.reranker_loaded model={model_name}")
         except Exception as e:
             logger.warning(
                 "Reranker background load failed for %s (search keeps using fusion "

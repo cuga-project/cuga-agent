@@ -18,7 +18,7 @@ jobs:
   unit-tests:
     name: Unit Tests
     # Fork PRs have no secrets on pull_request; see external-fork-tests.yml.
-    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     env:
       OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

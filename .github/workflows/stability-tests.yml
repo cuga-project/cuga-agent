@@ -10,7 +10,7 @@ on:
 jobs:
   stability-tests:
     name: Stability Tests (Python ${{ matrix.python-version }})
-    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -89,7 +89,7 @@ jobs:
 
   stability-tests-windows:
     name: Stability Tests Windows (Python 3.12)
-    if: github.event_name != 'pull_request' || !github.event.pull_request.head.repo.fork
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-latest
     timeout-minutes: 60
     strategy:

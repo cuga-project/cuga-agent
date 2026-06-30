@@ -1,0 +1,5 @@
+/* Green styling for generated tool guard button */
+.guard-generated svg {
+  fill: var(--cds-support-success) !important;
+}
+

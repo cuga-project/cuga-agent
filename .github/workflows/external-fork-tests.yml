@@ -27,7 +27,7 @@ permissions:
 jobs:
   unit-tests:
     name: Unit Tests (fork, external-testing)
-    if: github.event.pull_request.head.repo.fork
+    if: github.event.pull_request.head.repo.full_name != github.repository
     runs-on: ubuntu-latest
     environment: external-testing
     env:
@@ -60,3 +60,111 @@ jobs:
 
       - name: Run unit tests
         run: bash src/scripts/run_tests.sh --skip-stability
+
+  smoke-pip-isolated:
+    name: Wheel install + demo_crm OpenAPI (fork, external-testing)
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    environment: external-testing
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+
+    steps:
+      - name: Checkout fork head
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: "3.12"
+
+      - name: Isolated wheel smoke (demo_crm → OpenAPI)
+        run: bash scripts/smoke_pip_install_isolated.sh
+
+  stability-tests:
+    name: Stability Tests (Python 3.12, fork, external-testing)
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    environment: external-testing
+    env:
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      MODEL_NAME: ${{ secrets.MODEL_NAME }}
+      GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+      OPENAI_BASE_URL: ${{ secrets.WATSONX_API_KEY }}
+      AGENT_SETTING_CONFIG: ${{ secrets.AGENT_SETTING_CONFIG }}
+      TEST_RESULTS_FILE: test_results_python_3.12.json
+      PYTHONIOENCODING: utf-8
+      CUGA_THREAD_WORKSPACE_SEED: crm
+
+    steps:
+      - name: Checkout fork head
+        uses: actions/checkout@93cb6efe18208431cddfb8368fd83d5badbf9bfd # v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+
+      - name: Install uv and set the Python version
+        uses: astral-sh/setup-uv@d0cc045d04ccac9d8b7881df0226f9e82c39688e # v6.8.0
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Copy huggingface examples
+        run: |
+          mkdir -p ./cuga_workspace
+          cp -r src/cuga/demo_tools/huggingface/* ./cuga_workspace/
+
+      - name: Run stability tests
+        continue-on-error: true
+        id: test-run
+        run: uv run run_stability_tests.py --method local
+
+      - name: Check pass rate
+        if: always()
+        run: |
+          results_file="test_results_python_3.12.json"
+          if [ ! -f "$results_file" ]; then
+            echo "❌ Test results file not found. Tests may have failed before completion."
+            exit 1
+          fi
+          python3 << EOF
+          import json
+          import sys
+          with open('$results_file', 'r') as f:
+              data = json.load(f)
+          pass_rate = data.get('pass_rate', 0)
+          if pass_rate < 88:
+              print(f"❌ Pass rate is {pass_rate}%, which is below the required 88%. Failing the job.")
+              sys.exit(1)
+          print(f"✅ Pass rate is {pass_rate}%, which meets the required 88% threshold.")
+          EOF
+
+      - name: Upload test logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-logs-python-3.12-fork
+          path: src/system_tests/e2e/logs/
+          retention-days: 7
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-python-3.12-fork
+          path: test_results_python_3.12.json
+          retention-days: 7

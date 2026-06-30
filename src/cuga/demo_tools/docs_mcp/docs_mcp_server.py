@@ -82,7 +82,7 @@ async def _summarize_large_content(content: str) -> str | None:
         resp = await llm.ainvoke([msg])
         return resp.content if hasattr(resp, "content") else str(resp)
     except Exception as e:
-        logger.warning("LLM summarization failed: %s", e)
+        logger.warning(f"LLM summarization failed: {e}")
         return None
 
 
@@ -102,7 +102,7 @@ async def search_doc(search_url: str) -> str:
         return f"Only http/https URLs are allowed. Rejected: {search_url}"
     try:
         content = await _fetch_single_page(search_url)
-        logger.info("search_doc: %s | %d chars", search_url, len(content))
+        logger.info(f"search_doc: {search_url} | {len(content)} chars")
         return content
     except Exception as e:
         return f"[Error loading search page: {e}]"
@@ -131,9 +131,9 @@ async def fetch_doc_page(url: str) -> str:
         if char_count > LARGE_PAGE_CHARS:
             summary = await _summarize_large_content(full_content)
             if summary:
-                logger.info("fetch_doc_page (summarized): %s | %d chars", url, char_count)
+                logger.info(f"fetch_doc_page (summarized): {url} | {char_count} chars")
                 return f"# {url.split('/')[-1].split('?')[0] or 'Documentation'}\n**Source:** {url}\n\n> *Page was large ({char_count:,} chars) — LLM summary below.*\n\n{summary}"
-        logger.info("fetch_doc_page: %s | %d chars", url, char_count)
+        logger.info(f"fetch_doc_page: {url} | {char_count} chars")
         return full_content
     except Exception as e:
         return f"[Error fetching page: {e}]"

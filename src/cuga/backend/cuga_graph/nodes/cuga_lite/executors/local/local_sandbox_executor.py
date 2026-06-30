@@ -113,7 +113,7 @@ class LocalSandboxExecutor:
             )
             await proc2.communicate()
             if proc2.returncode != 0:
-                logger.error("[LocalSandbox] python -m venv failed for %s", venv)
+                logger.error(f"[LocalSandbox] python -m venv failed for {venv}")
         return venv
 
     def _command_env(self, workspace_root: Path, venv: Path) -> dict[str, str]:

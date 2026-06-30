@@ -141,7 +141,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
             # Cap/shortlist failures surface intentionally — do not silently fall back.
             raise
         except Exception as exc:
-            logger.warning("AgentGraphAdapter.resolve_bind_tools failed: %s", exc)
+            logger.warning(f"AgentGraphAdapter.resolve_bind_tools failed: {exc}")
         return None
 
     def normalize_response(self, response: Any) -> Tuple[str, Optional[str]]:
@@ -164,7 +164,7 @@ class AgentGraphAdapter(CoreGraphAdapter):
             else:
                 self._tracker.collect_step(step=Step(name="Assistant_nl", data=content))
         except Exception as exc:
-            logger.debug("AgentGraphAdapter.on_response_processed tracker error: %s", exc)
+            logger.debug(f"AgentGraphAdapter.on_response_processed tracker error: {exc}")
 
     def build_metadata_update(self, state: Any, *, playbook_fired: bool) -> dict:
         meta = clean_empty_response_retry_meta(self.get_metadata(state))
