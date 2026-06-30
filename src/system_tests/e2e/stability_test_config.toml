@@ -35,3 +35,11 @@ cases = [
     "TestCRMHF_Examples::test_what_is_cuga",
     "TestCRMHF_Examples::test_playbook_execution"
 ]
+
+# Single smoke test for Windows CI: exercises subprocess servers, port allocation,
+# UTF-8 encoding, and agent streaming without running the full ~30 min suite.
+[[stability.windows_smoke]]
+file = "src/system_tests/e2e/fast_test.py"
+cases = [
+    "TestServerStreamFast::test_list_my_accounts_fast"
+]
