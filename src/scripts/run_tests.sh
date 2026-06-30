@@ -67,6 +67,39 @@ run_pytest_with_e2b() {
     fi
 }
 
+# Helper: run each collected test in its OWN pytest subprocess (process-per-test isolation),
+# retrying a failure once. Live async e2e tests (e.g. policy/tests) cache LLM/HTTP clients bound
+# to the event loop active at creation; pytest's function-scoped loops mean a cached client gets
+# reused on a later test's loop -> "RuntimeError: Event loop is closed" (nondeterministic, passes
+# in isolation). A fresh interpreter per test avoids the cross-loop reuse; the single retry absorbs
+# transient live-LLM nondeterminism. See issue #412.
+run_pytest_isolated() {
+    echo "Running $* with process-per-test isolation + retry (issue #412)..."
+    local nodes
+    nodes=$(uv run pytest "$@" --collect-only -q -p no:cacheprovider 2>/dev/null | grep '::')
+    if [ -z "$nodes" ]; then
+        echo "No tests collected for $* (treating as success)"
+        return 0
+    fi
+    local fails=0 total=0
+    while IFS= read -r t; do
+        [ -z "$t" ] && continue
+        total=$((total + 1))
+        if ! uv run pytest "$t" -p no:cacheprovider -q; then
+            echo "⚠️  isolated test failed once, retrying: $t"
+            if ! uv run pytest "$t" -p no:cacheprovider -q; then
+                echo "❌ isolated test failed twice: $t"
+                fails=$((fails + 1))
+            fi
+        fi
+    done <<< "$nodes"
+    echo "Isolated run of $*: $((total - fails))/$total passed"
+    if [ $fails -ne 0 ]; then
+        echo "❌ $fails isolated test(s) failed after retry! Exiting..."
+        exit 1
+    fi
+}
+
 echo "Running unit tests (registry + variables manager + local sandbox + E2B lite)..."
 run_pytest ./src/cuga/backend/tools_env/registry/tests/
 run_pytest ./src/cuga/backend/tools_env/registry/mcp_manager/tests/
@@ -106,7 +139,7 @@ if [ "$1" = "unit_tests" ]; then
     exit 0
 else
     echo "Running policy integration tests..."
-    run_pytest ./src/cuga/backend/cuga_graph/policy/tests
+    run_pytest_isolated ./src/cuga/backend/cuga_graph/policy/tests
     echo "Running SDK integration tests..."
     run_pytest ./src/cuga/sdk_core/tests/
     echo "Running manager API integration tests..."
