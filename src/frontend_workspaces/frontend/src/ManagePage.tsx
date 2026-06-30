@@ -1254,6 +1254,28 @@ export function ManagePage() {
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
 
+    // #398 follow-up: when the user clicked Save & Reindex, the
+    // explicit reindex flow is ALREADY applying their config change
+    // end-to-end (drop vectors → reindex with new config → deferred
+    // pointer flip). A simultaneous autosave PATCH for the same
+    // change races into Layer 1's reindex_in_progress 409 and shows
+    // a misleading "Couldn't save — Retry" chip for a save that's
+    // actually being applied via the OTHER path. Skip the PATCH
+    // while ``knowledgeReindexing`` is true; the effect deps array
+    // re-runs this hook when reindex completes, catching any
+    // non-vector edits the user made during the reindex window.
+    if (knowledgeReindexing) {
+      // eslint-disable-next-line no-console
+      console.debug(
+        "[#398-followup] skip-autosave-during-reindex",
+        { reason: "knowledgeReindexing=true; reindex flow persists this change" },
+      );
+      // Cancel any in-flight PATCH so a half-fired one doesn't land
+      // mid-reindex and get rejected after the user already moved on.
+      knowledgeAbortRef.current?.abort();
+      return;
+    }
+
     // Cancel any prior in-flight PATCH for this family. We do this
     // OUTSIDE the setTimeout so the abort fires immediately on the
     // user's next pick — not after another 800 ms wait. Helps the
@@ -1414,7 +1436,10 @@ export function ManagePage() {
       // The next effect run's ``knowledgeAbortRef.current?.abort()``
       // at the top is the correct cancellation point.
     };
-  }, [knowledgeConfig, effectiveAgentId]);
+    // knowledgeReindexing is a dep so the hook re-runs when reindex
+    // completes — catches any non-vector edits the user made during
+    // the reindex window (issue #398 follow-up).
+  }, [knowledgeConfig, effectiveAgentId, knowledgeReindexing]);
 
   useEffect(() => {
     if (importStatus === "ok") {
