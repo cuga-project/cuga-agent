@@ -24,11 +24,10 @@ from unittest.mock import patch
 import pytest
 
 from cuga.backend.knowledge.engine import (
-    _hf_repo_id_for_chunk_sizing,
+    _hf_repo_id_candidate,
     _hf_tokenizer_seq_limit,
     _load_hf_tokenizer_for_chunking,
     _strip_litellm_route_prefix,
-    _warn_unlisted_embedder_once,
 )
 
 
@@ -65,50 +64,55 @@ class TestStripLitellmRoutePrefix:
         assert _strip_litellm_route_prefix(None) == ""  # type: ignore[arg-type]
 
 
-class TestHfRepoIdForChunkSizing:
+class TestHfRepoIdCandidate:
+    """``_hf_repo_id_candidate`` is the post-PR-A simplification:
+    returns the stripped name when it looks HF-style (has '/'), None
+    otherwise. The Hub is the source of truth — the LOADER decides
+    whether a candidate actually exists via try/except on
+    ``AutoTokenizer.from_pretrained``."""
+
     @pytest.mark.parametrize(
         "model_id,expected",
         [
-            # The actual bug repro:
+            # Real HF-style routes — return the stripped repo id.
             ("watsonx/intfloat/multilingual-e5-large", "intfloat/multilingual-e5-large"),
-            # Other real-world litellm routes that hit allow-listed orgs:
             ("litellm/BAAI/bge-large-en-v1.5", "BAAI/bge-large-en-v1.5"),
             ("openrouter/sentence-transformers/all-mpnet-base-v2", "sentence-transformers/all-mpnet-base-v2"),
             (
                 "watsonx/ibm-granite/granite-embedding-30m-english",
                 "ibm-granite/granite-embedding-30m-english",
             ),
-            # Already-stripped HF id (someone wired the right one directly):
             ("intfloat/multilingual-e5-base", "intfloat/multilingual-e5-base"),
+            # Closed-vendor routes also return candidate — the LOADER's
+            # 404 + lru_cached None handles the "no HF tokenizer for
+            # this repo" case. Previously the allow-list short-circuited
+            # these to None; now we let the Hub be the source of truth.
+            # First lookup costs one Hub HEAD, subsequent are cached.
+            ("cohere/embed-english-v3.0", "cohere/embed-english-v3.0"),
+            ("voyage/voyage-3", "voyage/voyage-3"),
+            ("watsonx/ibm/slate-30m-english-rtrvr", "ibm/slate-30m-english-rtrvr"),
         ],
     )
     def test_positive_matches(self, model_id, expected):
-        assert _hf_repo_id_for_chunk_sizing(model_id) == expected
+        assert _hf_repo_id_candidate(model_id) == expected
 
     @pytest.mark.parametrize(
         "model_id",
         [
-            # OpenAI text-embedding-* — tiktoken handles these correctly; must
-            # NOT be misrouted to AutoTokenizer.
+            # After ``_strip_litellm_route_prefix``, no '/' → not
+            # HF-style → caller routes to tiktoken (openai/azure) or
+            # approximate (anything else).
             "openai/text-embedding-3-small",
             "openai/text-embedding-3-large",
             "openai/text-embedding-ada-002",
-            # Proprietary closed models — no HF tokenizer exists.
-            "cohere/embed-english-v3.0",
-            "voyage/voyage-3",
-            "gemini/text-embedding-004",
-            # IBM proprietary slate model — no public HF mirror.
-            "watsonx/ibm/slate-30m-english-rtrvr",
-            # Local fastembed model — never goes through litellm.
+            "azure/my-deployment",
             "fastembed",
-            # Empty / malformed.
             "",
-            "/",
             "no-slash-here",
         ],
     )
     def test_negative_matches_fall_through(self, model_id):
-        assert _hf_repo_id_for_chunk_sizing(model_id) is None
+        assert _hf_repo_id_candidate(model_id) is None
 
 
 class TestHfTokenizerSeqLimit:
@@ -213,68 +217,11 @@ class TestLoadHfTokenizerCachesFailure:
             assert result is None
 
 
-class TestWarnUnlistedEmbedderObservability:
-    """Operator canary for the silent-degradation failure mode that the HF
-    allow-list doesn't cover. The WARNING converts an invisible bug (chunks
-    silently sized in cl100k against a 512-token e5 window) into a single
-    log line operators can grep for. Deduped per (provider, model, encoding)
-    via lru_cache so it never spams per-document."""
-
-    def setup_method(self):
-        _warn_unlisted_embedder_once.cache_clear()
-
-    def test_warns_once_per_unique_tuple(self, monkeypatch):
-        # Three calls with the same args -> exactly ONE log line.
-        # Loguru's logger doesn't integrate with caplog, so monkeypatch it.
-        from cuga.backend.knowledge import engine as eng
-
-        calls: list[str] = []
-        monkeypatch.setattr(eng.logger, "warning", lambda msg, *a, **k: calls.append(msg))
-        _warn_unlisted_embedder_once("litellm", "mistralai/mistral-embed-x", "cl100k_base")
-        _warn_unlisted_embedder_once("litellm", "mistralai/mistral-embed-x", "cl100k_base")
-        _warn_unlisted_embedder_once("litellm", "mistralai/mistral-embed-x", "cl100k_base")
-        msgs = [m for m in calls if "allow-list" in m]
-        assert len(msgs) == 1, f"expected 1 warning, got {len(msgs)}: {msgs}"
-        assert "mistralai/mistral-embed-x" in msgs[0]
-        assert "litellm" in msgs[0]
-
-    def test_warns_separately_for_distinct_models(self, monkeypatch):
-        # Different models from the same provider each get their own warning.
-        from cuga.backend.knowledge import engine as eng
-
-        calls: list[str] = []
-        monkeypatch.setattr(eng.logger, "warning", lambda msg, *a, **k: calls.append(msg))
-        _warn_unlisted_embedder_once("litellm", "orgA/embedder-x", "cl100k_base")
-        _warn_unlisted_embedder_once("litellm", "orgB/embedder-y", "cl100k_base")
-        msgs = [m for m in calls if "allow-list" in m]
-        assert len(msgs) == 2
-        assert any("orgA/embedder-x" in m for m in msgs)
-        assert any("orgB/embedder-y" in m for m in msgs)
-
-
-class TestCanaryExemptionForOpenAINativeRoutes:
-    """Regression guard for the audit-flagged false positive: a litellm route
-    that ends up at ``openai/text-embedding-3-*`` actually USES cl100k_base
-    correctly. Warning on it would pollute every cuga deployment that routes
-    OpenAI via LiteLLM — the most common deployment pattern."""
-
-    def setup_method(self):
-        _warn_unlisted_embedder_once.cache_clear()
-
-    def test_canary_predicate_exempts_openai_under_litellm(self):
-        # The gate is the same expression used in _build_docling_chunker.
-        # We test the predicate directly to keep the test cheap and to pin
-        # the exemption rule even if the call site moves.
-        stripped_lo = "openai/text-embedding-3-small"
-        # NOT on the HF allow-list, slash-containing, cl100k_base — would
-        # otherwise warn. Exemption: stripped name starts with "openai/".
-        would_warn = stripped_lo.startswith(("openai/", "azure/"))
-        assert would_warn  # exemption applies => DO NOT warn
-
-    def test_canary_predicate_exempts_azure_under_litellm(self):
-        stripped_lo = "azure/my-azure-deployment"
-        assert stripped_lo.startswith(("openai/", "azure/"))
-
-    def test_canary_predicate_still_warns_for_unlisted_hf_org(self):
-        stripped_lo = "mistralai/mistral-embed-x"
-        assert not stripped_lo.startswith(("openai/", "azure/"))
+# NOTE: The earlier ``TestWarnUnlistedEmbedderObservability`` +
+# ``TestCanaryExemptionForOpenAINativeRoutes`` classes were deleted in
+# PR-A (workflow w9y9xtyse synth). The custom canary
+# ``_warn_unlisted_embedder_once`` is gone — the existing
+# ``logger.warning`` inside ``_load_hf_tokenizer_for_chunking`` is now
+# the sole signal, fired once per unknown repo via
+# ``functools.lru_cache``. Tests for that behavior live in
+# ``TestLoadHfTokenizerCachesFailure`` (above).

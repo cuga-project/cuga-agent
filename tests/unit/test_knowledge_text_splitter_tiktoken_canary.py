@@ -20,10 +20,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from cuga.backend.knowledge.config import KnowledgeConfig
-from cuga.backend.knowledge.engine import (
-    KnowledgeEngine,
-    _warn_unlisted_embedder_once,
-)
+from cuga.backend.knowledge.engine import KnowledgeEngine
 
 
 def _make_engine(provider: str, model: str) -> KnowledgeEngine:
@@ -119,92 +116,10 @@ class TestTiktokenBranch:
         assert isinstance(splitter, RecursiveCharacterTextSplitter)
 
 
-class TestCanaryLogParity:
-    """Splitter's char-fallback fires the same one-shot WARNING the
-    chunker fires, so an unlisted-HF-style model on litellm/openrouter
-    is observable via operator logs even when documents flow through
-    plain-text or emergency-resplit paths instead of HybridChunker."""
-
-    def setup_method(self):
-        _warn_unlisted_embedder_once.cache_clear()
-
-    def _capture_warns(self, monkeypatch):
-        from cuga.backend.knowledge import engine as eng
-
-        calls: list[str] = []
-        monkeypatch.setattr(eng.logger, "warning", lambda msg, *a, **k: calls.append(msg))
-        return calls
-
-    def test_canary_fires_for_unlisted_litellm_slash_model(self, monkeypatch):
-        eng = _make_engine(provider="litellm", model="mistralai/mistral-embed-x")
-        calls = self._capture_warns(monkeypatch)
-        eng._build_text_splitter(chunk_size=800, chunk_overlap=100)
-        canary_msgs = [c for c in calls if "allow-list" in c]
-        assert len(canary_msgs) == 1, f"expected 1 canary, got {canary_msgs}"
-        assert "mistralai/mistral-embed-x" in canary_msgs[0]
-
-    def test_canary_does_not_fire_for_openai_via_litellm(self, monkeypatch):
-        # The tiktoken branch handles this correctly — no canary noise.
-        eng = _make_engine(provider="litellm", model="openai/text-embedding-3-small")
-        calls = self._capture_warns(monkeypatch)
-        eng._build_text_splitter(chunk_size=800, chunk_overlap=100)
-        canary_msgs = [c for c in calls if "allow-list" in c]
-        assert len(canary_msgs) == 0
-
-    def test_canary_does_not_fire_for_azure_via_litellm(self, monkeypatch):
-        eng = _make_engine(provider="litellm", model="azure/my-deployment")
-        calls = self._capture_warns(monkeypatch)
-        eng._build_text_splitter(chunk_size=800, chunk_overlap=100)
-        canary_msgs = [c for c in calls if "allow-list" in c]
-        assert len(canary_msgs) == 0
-
-    def test_canary_does_not_fire_for_hf_listed(self, monkeypatch):
-        # HF allow-list took the splitter via from_huggingface_tokenizer.
-        eng = _make_engine(provider="litellm", model="watsonx/intfloat/multilingual-e5-large")
-        calls = self._capture_warns(monkeypatch)
-        from types import SimpleNamespace
-
-        with patch(
-            "transformers.AutoTokenizer.from_pretrained",
-            return_value=SimpleNamespace(model_max_length=512),
-        ):
-            eng._build_text_splitter(chunk_size=800, chunk_overlap=100)
-        canary_msgs = [c for c in calls if "allow-list" in c]
-        assert len(canary_msgs) == 0
-
-    def test_canary_does_not_fire_for_fastembed(self, monkeypatch):
-        # fastembed is a local provider — char-based fallback is fine,
-        # no operator action required.
-        eng = _make_engine(provider="fastembed", model="BAAI/bge-small-en-v1.5")
-        calls = self._capture_warns(monkeypatch)
-        eng._build_text_splitter(chunk_size=800, chunk_overlap=100)
-        canary_msgs = [c for c in calls if "allow-list" in c]
-        assert len(canary_msgs) == 0
-
-    def test_canary_dedup_across_repeated_splitter_builds(self, monkeypatch):
-        # Multiple _load_document calls under the same unlisted embedder
-        # must produce ONE canary, not one-per-document.
-        eng = _make_engine(provider="litellm", model="snowflake/arctic-embed-l")
-        calls = self._capture_warns(monkeypatch)
-        for _ in range(5):
-            eng._build_text_splitter(chunk_size=800, chunk_overlap=100)
-        canary_msgs = [c for c in calls if "allow-list" in c]
-        assert len(canary_msgs) == 1, f"expected dedup to 1, got {len(canary_msgs)}"
-
-    def test_canary_separates_chunker_and_splitter_origins(self, monkeypatch):
-        # Same (provider, model) but different encoding-name keys: chunker
-        # fires once with "cl100k_base", splitter fires once with
-        # "char_based_split". Both ONCE.
-        from cuga.backend.knowledge.engine import _warn_unlisted_embedder_once
-
-        _warn_unlisted_embedder_once.cache_clear()
-        calls = self._capture_warns(monkeypatch)
-        _warn_unlisted_embedder_once("litellm", "orgX/embedder", "cl100k_base")
-        _warn_unlisted_embedder_once("litellm", "orgX/embedder", "char_based_split")
-        # Second call to either sentinel: deduped.
-        _warn_unlisted_embedder_once("litellm", "orgX/embedder", "cl100k_base")
-        _warn_unlisted_embedder_once("litellm", "orgX/embedder", "char_based_split")
-        canary_msgs = [c for c in calls if "allow-list" in c]
-        assert len(canary_msgs) == 2, (
-            f"chunker + splitter should each fire ONCE per process; got {canary_msgs}"
-        )
+# NOTE: ``TestCanaryLogParity`` was deleted in PR-A (workflow w9y9xtyse
+# synth). The custom canary ``_warn_unlisted_embedder_once`` is gone —
+# the existing ``logger.warning`` inside
+# ``_load_hf_tokenizer_for_chunking`` (engine.py) is now the sole
+# unknown-model signal, fired once per process per repo via
+# ``functools.lru_cache(maxsize=8)``. Coverage for that lives in
+# ``test_knowledge_chunker_hf_tokenizer.py::TestLoadHfTokenizerCachesFailure``.

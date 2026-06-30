@@ -1180,23 +1180,6 @@ _LITELLM_ROUTE_PREFIXES = (
 )
 
 
-# HF orgs whose embedders ship via litellm/openrouter and need their real
-# tokenizer for chunk sizing instead of cl100k_base. Extending is a one-line
-# PR; unlisted models fall through to tiktoken (canary warns operators).
-# See #387.
-_HF_CHUNK_TOKENIZER_PREFIXES = (
-    "intfloat/",
-    "baai/bge",
-    "sentence-transformers/",
-    "jinaai/jina-embeddings-v2",
-    "thenlper/",
-    "nomic-ai/nomic-embed-",
-    "mixedbread-ai/mxbai-embed-",
-    "ibm-granite/",
-    "alibaba-nlp/gte-",
-)
-
-
 def _strip_litellm_route_prefix(name: str) -> str:
     """Strip ONE matching route prefix (case-insensitive). Single-strip so
     ``litellm/openai/x`` becomes ``openai/x``, not ``x``."""
@@ -1208,17 +1191,21 @@ def _strip_litellm_route_prefix(name: str) -> str:
     return n
 
 
-def _hf_repo_id_for_chunk_sizing(model_name: str) -> Optional[str]:
-    """Return the HF repo id to load a tokenizer from when ``model_name`` is
-    a litellm/openrouter-routed HF-style embedder. ``None`` if the model
-    doesn't look HF-style (fall through to tiktoken). Case-preserving on the
-    output so ``BAAI/bge-base-en-v1.5`` survives the round-trip."""
+def _hf_repo_id_candidate(model_name: str) -> Optional[str]:
+    """Return the stripped model name as a CANDIDATE HF repo id (e.g.
+    ``intfloat/multilingual-e5-large``) when ``model_name`` looks
+    HF-style (contains a slash after route-prefix stripping).
+    The loader (``_load_hf_tokenizer_for_chunking``) does the
+    actual ``AutoTokenizer.from_pretrained`` and decides via try/except
+    whether the repo exists on the Hub. We let HF Hub be the source of
+    truth instead of maintaining a curated allow-list (deleted in PR-A,
+    cf. workflow ``w9y9xtyse`` synth) — failed lookups log + lru_cache
+    the None so each unknown model costs at most one Hub HEAD per
+    process."""
     stripped = _strip_litellm_route_prefix(model_name)
     if "/" not in stripped:
         return None
-    if stripped.lower().startswith(_HF_CHUNK_TOKENIZER_PREFIXES):
-        return stripped
-    return None
+    return stripped
 
 
 @functools.lru_cache(maxsize=8)
@@ -1324,20 +1311,6 @@ class ChunkingTokenizer:
 # 8192 covers any current embedder's context and lets the user's
 # chunk_size knob act as the effective limit via ``min(chunk_size, cap)``.
 _DEFAULT_APPROXIMATE_CAP = 8192
-
-
-@functools.lru_cache(maxsize=64)
-def _warn_unlisted_embedder_once(provider: str, model: str, encoding_name: str) -> None:
-    """Operator canary: warn once per (provider, model, encoding) when chunker
-    falls back to cl100k_base for a litellm/openrouter HF-style model not on
-    the allow-list. See #387, gating criterion in #395."""
-    logger.warning(
-        f"HybridChunker: embedder {model!r} (provider={provider!r}) is not in the "
-        f"HF-tokenizer allow-list; chunk sizing uses tiktoken {encoding_name} as an "
-        f"approximation. If retrieval quality is low on non-English / long-form "
-        f"content, extend _HF_CHUNK_TOKENIZER_PREFIXES in "
-        f"src/cuga/backend/knowledge/engine.py or open an issue with the repo id."
-    )
 
 
 @functools.lru_cache(maxsize=1)
@@ -4043,22 +4016,12 @@ class KnowledgeEngine:
             except Exception:
                 pass
 
-        # 3. litellm/openrouter/openai with an HF-listed model id.
+        # 3. litellm/openrouter/openai routes.
         if provider in ("litellm", "openrouter", "openai"):
-            repo_id = _hf_repo_id_for_chunk_sizing(model_raw)
-            if repo_id:
-                auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
-                if auto_tok is not None:
-                    return ChunkingTokenizer(
-                        kind="hf",
-                        encoder=auto_tok,
-                        name=repo_id,
-                        safe_max_tokens=_hf_tokenizer_seq_limit(auto_tok),
-                    )
-
-            # 4. tiktoken for openai-native + azure routes. Strip only the
-            # outer routing prefix (litellm/ or openrouter/) so we can
-            # still see the inner openai/ or azure/ marker.
+            # 3a. tiktoken FIRST for openai-native + azure routes (no HTTP
+            # cost). Strip only the outer routing prefix (litellm/ or
+            # openrouter/) so we can still see the inner openai/ or
+            # azure/ marker.
             outer = model_raw.lower()
             for outer_prefix in ("litellm/", "openrouter/"):
                 if outer.startswith(outer_prefix):
@@ -4076,6 +4039,22 @@ class KnowledgeEngine:
                     )
                 except Exception:
                     pass
+
+            # 3b. Try HF Hub as the source of truth (PR-A, workflow
+            # w9y9xtyse synth): no curated allow-list, no canary —
+            # ``_load_hf_tokenizer_for_chunking`` already logs failures
+            # and lru_caches the None so each unknown model costs at
+            # most one Hub HEAD per process.
+            repo_id = _hf_repo_id_candidate(model_raw)
+            if repo_id:
+                auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
+                if auto_tok is not None:
+                    return ChunkingTokenizer(
+                        kind="hf",
+                        encoder=auto_tok,
+                        name=repo_id,
+                        safe_max_tokens=_hf_tokenizer_seq_limit(auto_tok),
+                    )
 
         # 5. everything else — no precise tokenizer available.
         # Caller fires the operator canary (so the encoding-sentinel
@@ -4120,22 +4099,11 @@ class KnowledgeEngine:
                 logger.warning(f"from_tiktoken_encoder failed ({e}); char fallback.")
 
         # ``approximate`` (cohere/voyage/gemini/etc.) and ``fastembed``
-        # plain-text path: char-based fallback. Fire the operator canary
-        # for unlisted slash-model litellm/openrouter routes — this is
-        # the splitter-side mirror of the chunker's canary; both dedup
-        # by (provider, model, encoding-name) so each fires ONCE per
-        # process.
-        provider = (self._config.embedding_provider or "").lower()
-        if tok.kind == "approximate" and provider in ("litellm", "openrouter"):
-            model_raw = self._config.embedding_model or ""
-            stripped = _strip_litellm_route_prefix(model_raw) or model_raw
-            if (
-                "/" in stripped
-                and _hf_repo_id_for_chunk_sizing(model_raw) is None
-                and not stripped.lower().startswith(("openai/", "azure/"))
-            ):
-                _warn_unlisted_embedder_once(provider, stripped, "char_based_split")
-
+        # plain-text path: char-based fallback. The operator canary that
+        # used to fire here (PR #400 b3af0800) was deleted in PR-A — the
+        # ``_load_hf_tokenizer_for_chunking`` lru_cached warning already
+        # surfaces unknown-model lookups, and the curated allow-list it
+        # consulted to dedup vs that warning is gone.
         return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
 
     def _build_docling_chunker(self, chunk_size: int):
@@ -4214,15 +4182,6 @@ class KnowledgeEngine:
 
                 encoding = tiktoken.get_encoding("cl100k_base")
                 tok = _tiktoken_docling_tokenizer_cls()(encoding=encoding, max_tokens=chunk_size)
-                model_raw = self._config.embedding_model or ""
-                stripped = _strip_litellm_route_prefix(model_raw) or model_raw
-                if (
-                    provider in {"litellm", "openrouter"}
-                    and "/" in stripped
-                    and _hf_repo_id_for_chunk_sizing(model_raw) is None
-                    and not stripped.lower().startswith(("openai/", "azure/"))
-                ):
-                    _warn_unlisted_embedder_once(provider, stripped, "cl100k_base")
                 logger.debug(
                     f"HybridChunker tokenizer: cl100k_base (approximate; "
                     f"provider={provider!r}, model={model_str!r})"
