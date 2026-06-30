@@ -693,6 +693,11 @@ export function ManagePage() {
   const loadLatest = useCallback(async () => {
     try {
       skipDraftSaveRef.current = true;
+      // #397: every fresh load (initial mount or agent-switch via prop
+      // change) starts with a clean draft-save chip. Without this, a
+      // previous agent's "failed: …" or stale "saved" can survive into
+      // the next agent's view because draftSaveStatus is local state.
+      setDraftSaveStatus({ kind: "idle" });
       const [draftRes, toolsListRes] = await Promise.all([
         api.getManageConfig(true, effectiveAgentId),
         api.getToolsList(true),
@@ -1571,6 +1576,12 @@ export function ManagePage() {
         setKnowledgeSavedSnapshot({ ...knowledgeConfig });
         // Refresh health/stale flags so warnings clear after publish + reindex.
         refreshKnowledgeHealth();
+        // #397: clear the draft-save chip after a successful publish.
+        // Otherwise the chip can still read "saved 2m ago" (or even
+        // "failed: <last autosave error>") for the just-flushed draft
+        // that's now LIVE — confusing UX. Idle from here until the next
+        // autosave kicks in.
+        setDraftSaveStatus({ kind: "idle" });
         if (!hasPartialErrors && (!data.partial_errors || data.partial_errors.length === 0)) {
           addToast("success", "Configuration saved", "Your configuration has been saved successfully");
         }
@@ -2629,16 +2640,38 @@ export function ManagePage() {
                 setKnowledgeReindexing(false);
                 // triggered:false ⇒ structural failure (status 2xx, ``error`` field set).
                 if (data?.triggered === false) {
-                  const ERR: Record<string, string> = {
-                    active_snapshot_missing:
-                      "Your active document set isn't on disk. If you restored an older version, re-upload or migrate via CLI.",
-                    copy_failed:
-                      "Couldn't copy your documents to the new collection. Check disk space / permissions and retry.",
-                    reindex_failed:
-                      "Re-index ran but didn't embed anything. Check server logs and retry.",
+                  const ERR: Record<string, { title: string; kind: "warning" | "error"; msg: string }> = {
+                    active_snapshot_missing: {
+                      title: "Re-index didn't run",
+                      kind: "error",
+                      msg: "Your active document set isn't on disk. If you restored an older version, re-upload or migrate via CLI.",
+                    },
+                    copy_failed: {
+                      title: "Re-index didn't run",
+                      kind: "error",
+                      msg: "Couldn't copy your documents to the new collection. Check disk space / permissions and retry.",
+                    },
+                    reindex_failed: {
+                      title: "Re-index didn't run",
+                      kind: "error",
+                      msg: "Re-index ran but didn't embed anything. Check server logs and retry.",
+                    },
+                    // #398: distinguish "wait, uploads in progress" from
+                    // a generic failure. Warning (not error) because it's
+                    // recoverable just by retrying once uploads settle.
+                    reindex_busy: {
+                      title: "Re-index couldn't start",
+                      kind: "warning",
+                      msg: "Uploads or another re-index are still running. Wait a moment, then try again.",
+                    },
                   };
                   const code = typeof data.error === "string" ? data.error : "unknown";
-                  addToast("error", "Re-index didn't run", ERR[code] || `Re-index couldn't run (${code}).`);
+                  const spec = ERR[code];
+                  if (spec) {
+                    addToast(spec.kind, spec.title, spec.msg);
+                  } else {
+                    addToast("error", "Re-index didn't run", `Re-index couldn't run (${code}).`);
+                  }
                   return null;
                 }
                 // Settings applied — clear the "reindex needed" warning.

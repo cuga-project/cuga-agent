@@ -968,26 +968,41 @@ export default function KnowledgePanel({
   // subscribe). Extracted from the POST flow so a profile-switch migration
   // gets identical progress UI without the user having to click Reindex
   // a second time.
+  // #402: merge backend tasks by task_id over the placeholder list so a
+  // partial poll (some tasks not yet visible in metadata) doesn't drop
+  // placeholder rows — the tile keeps showing all N rows from the moment
+  // Re-index fires, enriched with filename + status as they arrive.
+  const mergeTasksById = useCallback(
+    (taskIds: string[], placeholders: ReindexTask[], backendTasks: ReindexTask[]): ReindexTask[] => {
+      const byId = new Map<string, ReindexTask>(placeholders.map((t) => [t.task_id, t]));
+      for (const t of backendTasks) {
+        const enriched = { ...t, filename: getReindexTaskFilename(t) };
+        const prev = byId.get(t.task_id);
+        byId.set(t.task_id, prev ? { ...prev, ...enriched } : enriched);
+      }
+      return taskIds.map(
+        (id) => byId.get(id) ?? { task_id: id, status: "pending" as const },
+      );
+    },
+    [],
+  );
+
   const armReindexFromTaskIds = useCallback(async (taskIds: string[], total: number) => {
     if (!taskIds.length) return;
-    let initialTasks: ReindexTask[] = taskIds.map((id) => ({ task_id: id, status: "pending" as const }));
+    const placeholders: ReindexTask[] = taskIds.map(
+      (id) => ({ task_id: id, status: "pending" as const }),
+    );
+    let initialTasks: ReindexTask[] = placeholders;
     try {
       const res = await api.getKnowledgeTasks();
       if (res.ok) {
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
-        const relevantTasks = allTasks
-          .filter((t: ReindexTask) => taskIds.includes(t.task_id))
-          .map((task) => ({
-            ...task,
-            filename: getReindexTaskFilename(task),
-          }));
-        if (relevantTasks.length > 0) {
-          initialTasks = relevantTasks;
-        }
+        const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
+        initialTasks = mergeTasksById(taskIds, placeholders, relevantTasks);
       }
     } catch {
-      // Fall back to task IDs until polling resolves filenames.
+      // Fall back to placeholders; polling will enrich as filenames load.
     }
     setReindexProgress({
       taskIds,
@@ -1007,13 +1022,7 @@ export default function KnowledgePanel({
         if (!res.ok) return;
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
-        // Filter to only our reindex tasks
-        const relevantTasks = allTasks
-          .filter((t: ReindexTask) => taskIds.includes(t.task_id))
-          .map((task) => ({
-            ...task,
-            filename: getReindexTaskFilename(task),
-          }));
+        const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
         const completed = relevantTasks.filter((t: ReindexTask) => t.status === "completed").length;
         const failed = relevantTasks.filter((t: ReindexTask) => t.status === "failed").length;
         const done = completed + failed >= taskIds.length;
@@ -1023,11 +1032,11 @@ export default function KnowledgePanel({
           total: taskIds.length,
           completed,
           failed,
-          tasks: relevantTasks,
+          // Merge by id so transient polls that don't see every task
+          // (e.g. backend just created task N+1 between our HTTP call
+          // and its insert) don't shrink the tile to fewer rows.
+          tasks: mergeTasksById(taskIds, prev?.tasks ?? placeholders, relevantTasks),
           done,
-          // Preserve the wall-clock start stamp set when the operation kicked
-          // off; ``_reindexStartedAt`` only exists in the outer scope of the
-          // ``handleReindex`` invocation and would be undefined here.
           startedAt: prev?.startedAt ?? Date.now(),
         }));
 

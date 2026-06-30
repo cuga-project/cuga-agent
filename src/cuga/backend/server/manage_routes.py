@@ -555,10 +555,20 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
             live_engine._reindex_in_progress.discard(source)
             live_engine._reindex_deferred.discard(source)
 
+    from cuga.backend.knowledge.engine import ReindexBusyError
+
     try:
         r = await live_engine.reindex(target)
         triggered.append({"collection": target, "result": r})
         ok = bool(r and r.get("status") not in (None, "no_documents"))
+    except ReindexBusyError as berr:
+        # Distinguish "uploads in progress; wait" from the generic
+        # ``reindex_failed`` toast (#398). Same JSON shape as the
+        # Layer 1 / Layer 2 reindex_in_progress guard so the FE
+        # toast handler can share the path.
+        logger.warning(f"Reindex of {target} skipped: busy ({berr})")
+        triggered.append({"collection": target, "error": f"busy: {berr}"})
+        return {"triggered": False, "target": target, "collections": triggered, "error": "reindex_busy"}
     except Exception as rerr:
         logger.warning(f"Reindex of {target} failed: {rerr}")
         triggered.append({"collection": target, "error": str(rerr)})
