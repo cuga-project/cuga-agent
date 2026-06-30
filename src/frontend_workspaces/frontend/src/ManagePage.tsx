@@ -2753,18 +2753,32 @@ export function ManagePage() {
                 }
                 // Settings applied — clear the "reindex needed" warning.
                 setKnowledgeSavedSnapshot({ ...knowledgeConfig });
-                // /reindex_for_config returns {collections: [{result: {task_ids, count}}]};
-                // /reindex returns {task_ids, count} flat. Normalize.
+                // /reindex_for_config returns {collections: [{result: {task_ids, count, tasks}}]};
+                // /reindex returns {task_ids, count, tasks} flat. Normalize.
+                // ``tasks`` is a new field (#402 production sweep) carrying
+                // [{task_id, filename}] so the FE can render the tile with
+                // real filenames from the first render — no ``task_xxx``
+                // flicker waiting for the first /tasks GET to complete.
                 if (Array.isArray(data?.collections)) {
                   const allTaskIds: string[] = data.collections
                     .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? []);
+                  const allTasks: { task_id: string; filename: string }[] = data.collections
+                    .flatMap((c: { result?: { tasks?: { task_id: string; filename: string }[] } }) => c?.result?.tasks ?? []);
                   const total = data.collections.reduce(
                     (sum: number, c: { result?: { count?: number } }) => sum + (c?.result?.count ?? 0),
                     0,
                   );
-                  return { count: total || allTaskIds.length, task_ids: allTaskIds };
+                  return {
+                    count: total || allTaskIds.length,
+                    task_ids: allTaskIds,
+                    tasks: allTasks,
+                  };
                 }
-                return { count: data.count ?? 0, task_ids: data.task_ids ?? [] };
+                return {
+                  count: data.count ?? 0,
+                  task_ids: data.task_ids ?? [],
+                  tasks: data.tasks ?? [],
+                };
               } else if (res.status === 409) {
                 addToast("warning", "Cannot re-index", "Uploads in progress. Try again later.");
                 setKnowledgeReindexing(false);

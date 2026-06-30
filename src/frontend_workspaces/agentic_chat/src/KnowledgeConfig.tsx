@@ -381,7 +381,16 @@ interface KnowledgePanelProps {
   knowledgeReindexNeeded?: boolean;
   knowledgeStale?: boolean;
   knowledgeReindexDeferred?: boolean;
-  onReindex?: () => Promise<{ count: number; task_ids: string[] } | null>;
+  // ``tasks`` is the new field carrying [{task_id, filename}] pairs so
+  // the tile can render real filenames from millisecond 0 — no
+  // task_xxx flicker waiting for the first /tasks GET to complete.
+  // Backwards-compatible: missing/undefined falls back to placeholder
+  // rows that get enriched by polling, same as before.
+  onReindex?: () => Promise<{
+    count: number;
+    task_ids: string[];
+    tasks?: { task_id: string; filename: string }[];
+  } | null>;
   knowledgeReindexing?: boolean;
   ragProfiles?: Record<string, RagProfileMeta>;
   // Auto-reindex bubbled down from ManagePage: when a draft PATCH
@@ -1000,10 +1009,28 @@ export default function KnowledgePanel({
     [],
   );
 
-  const armReindexFromTaskIds = useCallback(async (taskIds: string[], total: number) => {
+  const armReindexFromTaskIds = useCallback(
+    async (
+      taskIds: string[],
+      total: number,
+      seedTasks?: { task_id: string; filename: string }[],
+    ) => {
     if (!taskIds.length) return;
+    // Seed placeholders with filenames if the POST response carried
+    // them (#402 production sweep). The previous code rendered N rows
+    // of ``task_xxx`` for up to one full polling interval (~2s) before
+    // the first /tasks GET landed and supplied the filenames; with
+    // the seed, the tile shows real names from frame 0.
+    const seedById = new Map<string, string>(
+      (seedTasks ?? []).map((t) => [t.task_id, t.filename]),
+    );
     const placeholders: ReindexTask[] = taskIds.map(
-      (id) => ({ task_id: id, status: "pending" as const }),
+      (id): ReindexTask => {
+        const seedFilename = seedById.get(id);
+        return seedFilename
+          ? { task_id: id, status: "pending" as const, filename: seedFilename }
+          : { task_id: id, status: "pending" as const };
+      },
     );
     let initialTasks: ReindexTask[] = placeholders;
     let firstPollHits = 0;
@@ -1114,7 +1141,29 @@ export default function KnowledgePanel({
             // confusing because the engine HAS already re-embedded.
             onAutoReindexComplete?.();
           } else {
-            onToast?.("warning", "Re-index finished", `${completed} succeeded, ${failed} failed.`);
+            // Partial-failure toast: be loud about the data-integrity story.
+            // Production sweep (workflow w5i1mbchd): the deferred flip is
+            // now STRICT (refuses promotion unless ALL tasks succeeded), so
+            // partial failure means the user's previous embedder is STILL
+            // active. Search keeps working on the old vectors. The user
+            // must fix the failing files and Re-index again, or revert.
+            // Crucially: DO NOT call onAutoReindexComplete — that would
+            // refresh the saved-config snapshot to the NEW (unapplied)
+            // config and clear the "Re-index needed" banner, both of
+            // which would lie about the engine's actual state.
+            const failedNames = relevantTasks
+              .filter((t) => t.status === "failed")
+              .map((t) => t.filename || t.task_id)
+              .slice(0, 3)
+              .join(", ");
+            const more = failed > 3 ? ` (+${failed - 3} more)` : "";
+            onToast?.(
+              "error",
+              "Re-index didn't complete",
+              `${completed}/${taskIds.length} succeeded; ${failed} failed: ${failedNames}${more}. ` +
+                `Your previous embedder configuration is still active. ` +
+                `Fix the failing file(s) and Re-index again, or revert your config.`,
+            );
           }
         }
       } catch {
@@ -1124,11 +1173,14 @@ export default function KnowledgePanel({
   }, [loadDocuments, checkHealth, onToast]);
 
   // Manual Reindex button path: POST first to get task IDs, then arm.
+  // Thread ``result.tasks`` (POST response carries [{task_id, filename}]
+  // pairs after the #402 production sweep) so the tile renders real
+  // filenames from frame 0 — no task_xxx placeholder window.
   const startReindexWithProgress = useCallback(async () => {
     if (!onReindex) return;
     const result = await onReindex();
     if (!result || !result.task_ids?.length) return;
-    await armReindexFromTaskIds(result.task_ids, result.count);
+    await armReindexFromTaskIds(result.task_ids, result.count, result.tasks);
   }, [onReindex, armReindexFromTaskIds]);
 
   // Server-side auto-reindex path: ManagePage extracts task IDs from a

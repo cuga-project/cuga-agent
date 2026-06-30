@@ -457,7 +457,8 @@ async def _deferred_reindex_complete_and_flip(
     task_id_set = set(task_ids)
     relevant = [t for t in all_tasks if t["task_id"] in task_id_set]
     n_completed = sum(1 for t in relevant if t["status"] == "completed")
-    n_terminal = sum(1 for t in relevant if t["status"] in ("completed", "failed", "cancelled"))
+    n_failed = sum(1 for t in relevant if t["status"] in ("failed", "cancelled"))
+    n_terminal = n_completed + n_failed
 
     if n_terminal != len(relevant):
         logger.warning(
@@ -466,11 +467,33 @@ async def _deferred_reindex_complete_and_flip(
         )
         return
 
+    # STRICT mode: refuse promotion unless every task succeeded. Workflow
+    # w5i1mbchd / production-readiness sweep: PERMISSIVE mode (the previous
+    # behavior, "promote on any success") silently loses data. Concrete
+    # manual-QA repro: switching from fastembed to watsonx/e5, LevyI hit
+    # 518>512, 4/5 succeeded, pointer flipped — search for LevyI content
+    # returned nothing because LevyI's vectors never made it into the new
+    # collection while the FE banner said the embedder switch succeeded.
+    #
+    # The strict choice: stay on the old collection (where ALL files have
+    # working vectors), surface the failure visibly via task status, let
+    # the user retry or revert. The user has the old collection intact
+    # for retrieval the whole time; correctness is preserved while they
+    # fix the failing file or pick a different embedder.
+    if n_failed > 0:
+        logger.warning(
+            f"Deferred flip for {target}: {n_completed}/{len(relevant)} succeeded, "
+            f"{n_failed} failed/cancelled; NOT promoting knowledge_config_hash. "
+            f"The old collection stays active so retrieval keeps working. "
+            f"User must fix failing files and Re-index, or revert config."
+        )
+        return
+
     if n_completed == 0:
         logger.warning(
-            f"Deferred flip for {target}: 0/{len(relevant)} tasks succeeded "
-            f"(all failed or superseded); NOT promoting knowledge_config_hash. "
-            f"The collection's vectors are empty or stale — user must Re-index again."
+            f"Deferred flip for {target}: 0/{len(relevant)} tasks succeeded; "
+            f"NOT promoting knowledge_config_hash. The collection's vectors "
+            f"are empty — user must Re-index again."
         )
         return
 

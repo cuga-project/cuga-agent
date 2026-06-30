@@ -4014,6 +4014,12 @@ class KnowledgeEngine:
             return {"status": "no_documents", "count": 0}
 
         task_ids: list[str] = []
+        # Parallel list of {task_id, filename} pairs so the route can return
+        # filenames in the POST response and the FE can render the reindex
+        # tile with real names from millisecond 0 — instead of flashing
+        # ``task_xxx`` placeholders until the next /tasks poll arrives
+        # (#402 follow-up: production sweep).
+        task_entries: list[dict[str, str]] = []
         try:
             lock = self._get_collection_lock(collection)
             async with lock:
@@ -4030,6 +4036,7 @@ class KnowledgeEngine:
             for file_path in file_list:
                 task_info = await self._create_reindex_task_entry(collection, file_path.name)
                 task_ids.append(task_info["task_id"])
+                task_entries.append({"task_id": task_info["task_id"], "filename": file_path.name})
 
             # Background worker. Files re-ingest concurrently — _run_ingest is
             # bounded by _ingest_sem (max_ingest_workers), so this amortizes the
@@ -4063,7 +4070,12 @@ class KnowledgeEngine:
                     pass
             raise
 
-        return {"status": "started", "count": len(file_list), "task_ids": task_ids}
+        return {
+            "status": "started",
+            "count": len(file_list),
+            "task_ids": task_ids,
+            "tasks": task_entries,
+        }
 
     # --- Document loading ---
 
