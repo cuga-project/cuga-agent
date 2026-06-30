@@ -44,7 +44,7 @@ import "./ConfigModal.css";
 interface ReindexTask {
   task_id: string;
   filename?: string;
-  status: "pending" | "running" | "completed" | "failed";
+  status: "pending" | "running" | "completed" | "failed" | "cancelled";
   file_tasks?: Record<
     string,
     {
@@ -1080,7 +1080,15 @@ export default function KnowledgePanel({
         const allTasks: ReindexTask[] = data.tasks ?? [];
         const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
         const completed = relevantTasks.filter((t: ReindexTask) => t.status === "completed").length;
-        const failed = relevantTasks.filter((t: ReindexTask) => t.status === "failed").length;
+        // Count "cancelled" as terminal/failed (#4). A superseded worker writes
+        // status="cancelled" (engine ReindexSupersededError); if the tile only
+        // counted "failed", completed+failed could never reach taskIds.length,
+        // the poll would never reach done, onReindexFinished would never fire,
+        // and the tile would spin forever with knowledgeReindexing stuck true.
+        // The backend deferred flip already treats cancelled as failed.
+        const failed = relevantTasks.filter(
+          (t: ReindexTask) => t.status === "failed" || t.status === "cancelled",
+        ).length;
         const done = completed + failed >= taskIds.length;
 
         setReindexProgress((prev) => {
@@ -1152,7 +1160,7 @@ export default function KnowledgePanel({
             // config and clear the "Re-index needed" banner, both of
             // which would lie about the engine's actual state.
             const failedNames = relevantTasks
-              .filter((t) => t.status === "failed")
+              .filter((t) => t.status === "failed" || t.status === "cancelled")
               .map((t) => t.filename || t.task_id)
               .slice(0, 3)
               .join(", ");

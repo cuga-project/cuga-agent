@@ -741,6 +741,18 @@ async def delete_document(
         return {"status": "ok"}
     except DocumentNotFoundError:
         raise HTTPException(status_code=404, detail="document not found")
+    except ReindexInProgressError:
+        # Delete is rejected while this collection is being reindexed —
+        # otherwise the doc would be re-embedded into the in-flight target and
+        # resurrect after the pointer flips. 409 mirrors the upload guard shape.
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reindex_in_progress",
+                "collections": [collection],
+                "message": "A re-index is running. Wait for it to finish before deleting documents.",
+            },
+        )
 
 
 @knowledge_router.delete("/session")
@@ -814,9 +826,7 @@ async def list_tasks(
         # the prefix into the store query (collection = base OR LIKE base_%).
         all_tasks = await engine.get_tasks(None)
         tasks = [
-            t
-            for t in all_tasks
-            if (c := str(t.get("collection", ""))) == base or c.startswith(f"{base}_")
+            t for t in all_tasks if (c := str(t.get("collection", ""))) == base or c.startswith(f"{base}_")
         ]
     else:
         tasks = await engine.get_tasks(collection)

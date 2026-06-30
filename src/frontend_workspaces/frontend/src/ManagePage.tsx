@@ -2787,8 +2787,15 @@ export function ManagePage() {
                   }
                   return null;
                 }
-                // Settings applied — clear the "reindex needed" warning.
-                setKnowledgeSavedSnapshot({ ...knowledgeConfig });
+                // #3: do NOT advance the saved-config snapshot here. The POST
+                // only STARTS the reindex (returns task_ids in <100ms); workers
+                // run for 10-15s afterward and the strict deferred flip may
+                // REFUSE promotion on partial failure — in which case the OLD
+                // embedder stays active. Advancing the snapshot now would clear
+                // the "Re-index needed" banner permanently and present the new
+                // config as active even after a strict-refuse. The snapshot is
+                // advanced ONLY on full success, via onAutoReindexComplete
+                // (fired from the child poll when failed===0).
                 // /reindex_for_config returns {collections: [{result: {task_ids, count, tasks}}]};
                 // /reindex returns {task_ids, count, tasks} flat. Normalize.
                 // ``tasks`` is a new field (#402 production sweep) carrying

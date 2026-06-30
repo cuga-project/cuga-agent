@@ -2485,6 +2485,14 @@ class KnowledgeEngine:
             # and insert. Dedup correctness depends on this being serialized;
             # the parse above is not.
             async with self._get_collection_lock(collection):
+                # Re-check supersede INSIDE the lock, immediately before the
+                # collection config is pinned + vectors inserted. The check at
+                # 2477 is outside the lock, so a concurrent commit_knowledge_update
+                # could bump _apply_generation between there and here; without
+                # this a stale worker would pin _ensure_collection_config to the
+                # NEW provider/dim and write old-embedder vectors under it — a
+                # name-vs-content mismatch within the target collection.
+                _check_supersede()
                 await self._ensure_collection_config(collection)
                 await self._ensure_vector_store_cached(collection)
                 result = await self._insert_documents_async(
@@ -2793,6 +2801,20 @@ class KnowledgeEngine:
         await self._ensure_metadata_ready()
         collection = _sanitize_collection(collection)
         filename = _sanitize_filename(filename)
+
+        # Reject deletes while THIS collection is being reindexed (mirrors the
+        # upload guard in _sanitize_and_validate / _create_task_entry). During a
+        # config-change reindex the source files were already mirrored into the
+        # in-flight target and its file_list snapshotted; deleting from the
+        # active (source) collection now would let the worker re-embed the
+        # deleted doc into the target, RESURRECTING it after the pointer flips.
+        # The source collection stays in _reindex_in_progress for the whole
+        # migration lifetime (see _migrate_and_reindex_for_agent), so this
+        # exact-collection check covers the active-collection delete.
+        if collection in self._reindex_in_progress:
+            raise ReindexInProgressError(
+                f"Reindex in progress for {collection}; deletes are rejected until it completes."
+            )
 
         if not await self._metadata.mark_deleting(collection, filename):
             raise DocumentNotFoundError(filename)

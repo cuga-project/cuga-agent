@@ -111,6 +111,33 @@ class TestLayer2EngineApplyGuard:
         result = eng.apply_knowledge_config({"chunk_size": 600})
         assert result.get("chunking_changed") is True
 
+    def test_delete_document_rejected_during_reindex(self):
+        # #6: deleting from a collection being reindexed would let the worker
+        # re-embed the deleted doc into the in-flight target and RESURRECT it
+        # after the flip. delete_document must raise ReindexInProgressError
+        # (the route maps it to 409). The source collection stays flagged for
+        # the whole Path A so this exact-collection check covers the active
+        # (source) collection a DELETE resolves to.
+        eng = _make_engine()
+        coll = "kb_agent_cuga_default_abc"
+        eng._reindex_in_progress.add(coll)
+        try:
+            with pytest.raises(ReindexInProgressError):
+                asyncio.run(eng.delete_document(coll, "doc.pdf"))
+        finally:
+            eng._reindex_in_progress.discard(coll)
+
+    def test_delete_document_allowed_when_idle(self):
+        # Sanity: with no reindex in flight, the guard doesn't block — a
+        # missing doc surfaces the normal DocumentNotFoundError, NOT the
+        # reindex guard.
+        from cuga.backend.knowledge.engine import DocumentNotFoundError
+
+        eng = _make_engine()
+        assert not eng._reindex_in_progress
+        with pytest.raises(DocumentNotFoundError):
+            asyncio.run(eng.delete_document("kb_agent_cuga_default_abc", "missing.pdf"))
+
 
 # ---------------------------------------------------------------------------
 # Layer 3 — deferred pointer flip
@@ -369,3 +396,58 @@ class TestHttpReindexGuard:
         detail = resp.json().get("detail") or resp.json()
         assert detail.get("error") == "reindex_in_progress"
         assert "kb_agent_cuga_default_active" in detail.get("collections", [])
+
+    def test_publish_rejected_during_reindex(self, app_with_engine):
+        """#2: POST /config (publish) must 409 while a reindex is in flight for
+        the agent. Publish calls prepare/commit_knowledge_update directly, NOT
+        apply_knowledge_config, so this route-level guard is the ONLY thing that
+        stops a publish from bumping _apply_generation (superseding in-flight
+        workers) and racing a second write of the active pointer."""
+        client, engine = app_with_engine
+        engine._reindex_in_progress.add("kb_agent_cuga_default_active")
+        try:
+            resp = client.post(
+                "/api/manage/config?agent_id=cuga-default",
+                json={"config": {"agent": {"name": "x"}, "knowledge": {"enabled": True}}},
+            )
+        finally:
+            engine._reindex_in_progress.discard("kb_agent_cuga_default_active")
+
+        assert resp.status_code == 409, resp.text
+        detail = resp.json().get("detail") or resp.json()
+        assert detail.get("error") == "reindex_in_progress"
+        assert "kb_agent_cuga_default_active" in detail.get("collections", [])
+
+
+# ---------------------------------------------------------------------------
+# Publish-path unification (#1) + durable flip (#5) — source-level pins
+# (a full publish-migration run needs docs on disk + a live reindex).
+# ---------------------------------------------------------------------------
+
+
+class TestPublishUnifiedPromotion:
+    def test_publish_defers_flip_on_async_reindex(self):
+        import inspect
+
+        from cuga.backend.server import manage_routes as mr
+
+        src = inspect.getsource(mr.save_manage_config_publish)
+        # On reindex 'started' (async), publish must NOT eagerly flip — it must
+        # route through the SAME strict deferred flip as the Re-index path.
+        assert '_reindex_status == "started"' in src, "publish lost the async-reindex branch"
+        assert "_deferred_reindex_complete_and_flip(" in src, "publish doesn't defer to the strict flip"
+        # The immediate flip must survive ONLY for the safe (non-async) branch.
+        assert "app_state.knowledge_config_hash = _vec_hash" in src
+
+    def test_deferred_flip_persists_durably(self):
+        import inspect
+
+        from cuga.backend.server import manage_routes as mr
+
+        flip_src = inspect.getsource(mr._deferred_reindex_complete_and_flip)
+        assert "_persist_active_vector_config(" in flip_src, "successful flip no longer persists durably (#5)"
+        persist_src = inspect.getsource(mr._persist_active_vector_config)
+        # Persists the embedder fields + hash TOGETHER to draft AND published so
+        # the restart-reloaded config stays self-consistent.
+        assert "save_draft" in persist_src and "update_published_config_at_version" in persist_src
+        assert "_vector_config_hash" in persist_src and "embedding_model" in persist_src

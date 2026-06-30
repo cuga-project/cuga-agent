@@ -409,6 +409,56 @@ async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict
         return await _save_draft_section_unlocked(agent_id, section, value)
 
 
+async def _persist_active_vector_config(agent_id: str, live_engine: Any, target_hash: str) -> None:
+    """Durably persist the active collection's vector-affecting config + hash
+    after a successful flip. Startup reloads ``knowledge_config_hash`` from the
+    PUBLISHED config's ``_vector_config_hash`` (main.py) and re-applies the
+    published knowledge config, so an in-memory-only flip reverts on restart and
+    orphans the migrated vectors. We write the engine's CURRENT vector-affecting
+    fields (embedder/chunk/metric) AND the hash together so the persisted config
+    stays self-consistent (the hash matches the embedder that built the
+    collection). Best-effort: the in-memory flip already happened; a persistence
+    failure only means the change reverts on the next restart."""
+    try:
+        from cuga.backend.server.config_store import (
+            load_config,
+            load_draft,
+            save_draft,
+            update_published_config_at_version,
+        )
+
+        cfg = live_engine._config
+        vec = {
+            "embedding_provider": getattr(cfg, "embedding_provider", None),
+            "embedding_model": getattr(cfg, "embedding_model", None),
+            "chunk_size": getattr(cfg, "chunk_size", None),
+            "chunk_overlap": getattr(cfg, "chunk_overlap", None),
+            "metric_type": getattr(cfg, "metric_type", None),
+            "_vector_config_hash": target_hash,
+        }
+        vec = {k: v for k, v in vec.items() if v is not None}
+
+        draft = await load_draft(agent_id) or {}
+        if not isinstance(draft.get("knowledge"), dict):
+            draft["knowledge"] = {}
+        draft["knowledge"].update(vec)
+        await save_draft(draft, agent_id)
+
+        pub_cfg, ver = await load_config(version=None, agent_id=agent_id)
+        if pub_cfg and ver and isinstance(pub_cfg.get("knowledge"), dict):
+            pub_cfg["knowledge"].update(vec)
+            await update_published_config_at_version(pub_cfg, agent_id, ver)
+        logger.info(
+            f"Deferred flip: persisted active vector config (hash={target_hash}) to draft"
+            f"{(' + published v' + str(ver)) if (pub_cfg and ver) else ''} — survives restart."
+        )
+    except Exception as e:
+        logger.warning(
+            f"Deferred flip: promoted in-memory but failed to persist vector config durably "
+            f"({e!r}); the active collection will revert on restart until re-indexed or published."
+        )
+
+
 async def _deferred_reindex_complete_and_flip(
     agent_id: str,
     live_engine: Any,
@@ -524,6 +574,11 @@ async def _deferred_reindex_complete_and_flip(
             )
         except Exception as e:
             logger.warning(f"Deferred flip for {target}: failed to set knowledge_config_hash ({e}).")
+            return
+
+        # Durability (#5): make the successful flip survive a restart. Inside
+        # the same lock so the persisted hash can't race a concurrent publish.
+        await _persist_active_vector_config(agent_id, live_engine, target_hash)
 
 
 async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_state: Any) -> dict[str, Any]:
@@ -560,7 +615,13 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
         return {"triggered": False, "target": target, "error": "active_snapshot_missing"}
 
     if do_copy:
-        # Busy flag on source so concurrent uploads hit ReindexBusyError;
+        # Flag SOURCE for the WHOLE Path A lifetime — NOT just the copy window.
+        # The active pointer still resolves to SOURCE until the deferred flip,
+        # so concurrent uploads/deletes to the active collection must be rejected
+        # until then; releasing the flag after copy (the old behavior) left a
+        # window where an upload lands in SOURCE only and is lost on flip (#7),
+        # and where a second Re-index slips the 409 guard (#9). Released in the
+        # flip wrapper's finally below (or here on copy failure / no-flip).
         # per-collection locks serialize simultaneous Re-index clicks.
         live_engine._reindex_in_progress.add(source)
         try:
@@ -568,17 +629,22 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
                 live_engine._get_collection_lock(source),
                 live_engine._get_collection_lock(target),
             ):
-                try:
-                    n = await live_engine.copy_source_files(source, target)
-                    triggered.append({"copied_from": source, "to": target, "files": n})
-                except Exception as cerr:
-                    logger.warning(f"copy {source} -> {target} failed: {cerr}")
-                    return {"triggered": False, "target": target, "error": "copy_failed"}
-        finally:
+                n = await live_engine.copy_source_files(source, target)
+                triggered.append({"copied_from": source, "to": target, "files": n})
+        except Exception as cerr:
+            logger.warning(f"copy {source} -> {target} failed: {cerr}")
             live_engine._reindex_in_progress.discard(source)
             live_engine._reindex_deferred.discard(source)
+            return {"triggered": False, "target": target, "error": "copy_failed"}
 
     from cuga.backend.knowledge.engine import ReindexBusyError
+
+    def _release_source() -> None:
+        # Release the SOURCE busy flag held across Path A (no-op when source
+        # wasn't flagged, i.e. the in-place source==target case).
+        if do_copy:
+            live_engine._reindex_in_progress.discard(source)
+            live_engine._reindex_deferred.discard(source)
 
     try:
         r = await live_engine.reindex(target)
@@ -594,6 +660,7 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
             f"branch hit, returning error=reindex_busy — {berr}"
         )
         triggered.append({"collection": target, "error": f"busy: {berr}"})
+        _release_source()
         return {"triggered": False, "target": target, "collections": triggered, "error": "reindex_busy"}
     except Exception as rerr:
         logger.warning(f"Reindex of {target} failed: {rerr}")
@@ -601,19 +668,29 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
         ok = False
 
     if not ok:
+        _release_source()
         return {"triggered": False, "target": target, "collections": triggered, "error": "reindex_failed"}
 
     # Spawn the deferred pointer-flip. The HTTP response returns NOW with
     # task_ids so the UI shows progress immediately; the pointer flips
     # behind the scenes once workers terminate AND the engine config
-    # still matches target_hash. See ``_deferred_reindex_complete_and_flip``.
+    # still matches target_hash. SOURCE stays flagged until the flip
+    # finishes; the wrapper's finally releases it so it can never leak.
     task_ids = (r or {}).get("task_ids") or []
     if target_hash and live_state is not None and task_ids:
-        _asyncio.create_task(
-            _deferred_reindex_complete_and_flip(
-                agent_id, live_engine, live_state, target, target_hash, task_ids
-            )
-        )
+
+        async def _flip_then_release_source():
+            try:
+                await _deferred_reindex_complete_and_flip(
+                    agent_id, live_engine, live_state, target, target_hash, task_ids
+                )
+            finally:
+                _release_source()
+
+        _asyncio.create_task(_flip_then_release_source())
+    else:
+        # No flip will run (no task_ids / no hash) — release SOURCE now.
+        _release_source()
 
     return {"triggered": True, "target": target, "collections": triggered}
 
@@ -1942,6 +2019,32 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     if app_state is None:
         raise HTTPException(status_code=500, detail="App state not available")
 
+    # Reject a publish while a reindex is in flight for this agent (#2). Publish
+    # calls prepare/commit_knowledge_update DIRECTLY (not apply_knowledge_config),
+    # so the engine's mid-reindex guard (which lives only in apply_knowledge_config)
+    # never runs here. Without this, a vector-affecting publish during an in-flight
+    # Re-index bumps _apply_generation — superseding (cancelling) every in-flight
+    # worker so that reindex is wasted — and races a second write of the active
+    # pointer. Same 409 shape the FE already handles; reindexes are short, so
+    # "wait then publish" is the correct, safe contract.
+    _pub_engine = getattr(app_state, "knowledge_engine", None)
+    _pub_in_flight = getattr(_pub_engine, "_reindex_in_progress", None)
+    if _pub_in_flight:
+        import re as _re_pub_guard
+
+        _san_pub = _re_pub_guard.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
+        _pfx_pub = f"kb_agent_{_san_pub}"
+        _busy_pub = sorted(c for c in _pub_in_flight if c == _pfx_pub or c.startswith(f"{_pfx_pub}_"))
+        if _busy_pub:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "reindex_in_progress",
+                    "collections": _busy_pub,
+                    "message": "A re-index is running for this agent. Wait for it to finish before publishing.",
+                },
+            )
+
     data = await request.json()
     config = data.get("config", data) or {}
     agent_meta = config.get("agent")
@@ -2049,7 +2152,21 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             pass
 
         try:
-            _kb_obj = _KC.coerce_and_validate(knowledge_cfg)
+            # Coerce against the LIVE engine config (same base commit_knowledge_update
+            # uses via prepare_knowledge_update) so _vec_hash equals what
+            # engine._config will hash to AFTER commit — regardless of which of
+            # the six vector fields a (partial) payload omits. Without the base, an
+            # omitted field falls to the dataclass DEFAULT here but to the LIVE
+            # value in the engine, so a partial publish (SDK / import / raw API;
+            # the UI always sends all six) would make the deferred flip's
+            # current_engine_hash != target_hash check fail forever — reindex fills
+            # the new collection but the pointer never promotes.
+            _base_cfg = getattr(engine, "_config", None) if engine else None
+            _kb_obj = (
+                _KC.coerce_and_validate(knowledge_cfg, base=_base_cfg)
+                if _base_cfg is not None
+                else _KC.coerce_and_validate(knowledge_cfg)
+            )
             _vec_hash = _kb_obj.vector_config_hash()
         except Exception:
             _vec_hash = ""
@@ -2283,7 +2400,12 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 
         if _defer_vector_hash_promotion and ver:
             _promote_failed = reindex_info and reindex_info.get("status") == "failed"
-            if not _promote_failed and reindex_info is not None:
+            # Do NOT eagerly persist the new hash when an ASYNC reindex was just
+            # started — the deferred strict flip persists it only after workers
+            # succeed (n_failed==0). Eager persist here would make a restart
+            # mid-reindex point at an empty/partial collection (#1).
+            _reindex_started_persist = reindex_info and reindex_info.get("status") == "started"
+            if not _promote_failed and reindex_info is not None and not _reindex_started_persist:
                 try:
                     pub_cfg, _ = await load_config(version=ver, agent_id=agent_id)
                     if pub_cfg and isinstance(pub_cfg.get("knowledge"), dict):
@@ -2321,14 +2443,47 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 logger.warning(f"Failed to check docs for reindex: {e}")
 
         if _vec_hash:
-            if reindex_info and reindex_info.get("status") == "failed":
+            _reindex_status = reindex_info.get("status") if reindex_info else None
+            if _reindex_status == "failed":
                 logger.error(
                     "Keeping knowledge_config_hash=%r after vector-config migration/reindex failure "
                     "(would have switched to %s)",
                     getattr(app_state, "knowledge_config_hash", None),
                     _vec_hash,
                 )
+            elif _reindex_status == "started":
+                # CRITICAL (#1): engine.reindex returns 'started' immediately with
+                # workers in the background. Promoting the pointer now would
+                # activate an empty/still-filling collection and skip the strict
+                # n_failed==0 check — the exact silent-data-loss the Re-index path
+                # was hardened against. DEFER to the SAME strict flip: it promotes
+                # the in-memory pointer AND persists _vector_config_hash durably
+                # ONLY after all workers terminate successfully and the engine
+                # still hashes to _vec_hash. The OLD collection stays active until
+                # then. Publish thus shares ONE promotion path with Re-index.
+                _pub_task_ids = (reindex_info or {}).get("task_ids") or []
+                if _pub_task_ids:
+                    import asyncio as _asyncio_pub
+
+                    _asyncio_pub.create_task(
+                        _deferred_reindex_complete_and_flip(
+                            agent_id, engine, app_state, _new_collection, _vec_hash, _pub_task_ids
+                        )
+                    )
+                    logger.info(
+                        "Publish: reindex started for %s; deferring strict pointer flip "
+                        "(workers terminal + n_failed==0). Old collection stays active meanwhile.",
+                        _new_collection,
+                    )
+                else:
+                    logger.warning(
+                        "Publish: reindex of %s returned 'started' without task_ids; "
+                        "NOT flipping pointer (would risk an empty active collection).",
+                        _new_collection,
+                    )
             else:
+                # No async reindex in flight (target already populated, no docs,
+                # or migration skipped) — safe to promote immediately.
                 app_state.knowledge_config_hash = _vec_hash
 
         if reindex_info:
