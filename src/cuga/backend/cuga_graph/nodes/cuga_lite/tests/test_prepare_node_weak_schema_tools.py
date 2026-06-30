@@ -57,7 +57,9 @@ async def test_weak_schema_tool_names_populated_when_shortlisting_inactive():
     )
 
     weak_tool = _make_fake_tool("file_readfile", {})
-    placeholder_tool = _make_fake_tool("get_browser_state", {"success": {"type": "string"}})
+    placeholder_tool = _make_fake_tool(
+        "get_browser_state", {"success": {"type": "string"}, "_synthetic_placeholder": True}
+    )
     known_tool = _make_fake_tool("get_weather", {"success": {"type": "object"}})
     adapter = _build_mock_adapter([weak_tool, placeholder_tool, known_tool])
     state = _make_state()
@@ -86,7 +88,9 @@ async def test_weak_schema_tool_names_populated_when_find_tools_shortlisting_act
     )
 
     weak_tool = _make_fake_tool("file_readfile", {})
-    placeholder_tool = _make_fake_tool("get_browser_state", {"success": {"type": "string"}})
+    placeholder_tool = _make_fake_tool(
+        "get_browser_state", {"success": {"type": "string"}, "_synthetic_placeholder": True}
+    )
     known_tool = _make_fake_tool("get_weather", {"success": {"type": "object"}})
     adapter = _build_mock_adapter([weak_tool, placeholder_tool, known_tool])
     state = _make_state()

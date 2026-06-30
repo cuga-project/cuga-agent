@@ -23,11 +23,14 @@ BACKTICK_PATTERN = r"```python(.*?)```"
 def extract_and_combine_codeblocks(text: str, tools_needing_probing: frozenset[str] = frozenset()) -> str:
     """Extract all ```python codeblocks from text and combine them.
 
-    When ``tools_needing_probing`` is non-empty, fenced blocks are scanned in
-    order and only kept up to and including the first block whose code calls
-    one of those tool names — the rest are dropped. This forces a fresh model
-    turn (with the real tool result visible) before any later block runs,
-    instead of running a blind guess in the same execution.
+    When ``tools_needing_probing`` is non-empty, the code is isolated at the
+    first probing-tool call so a probe can never run in the same turn as later
+    dependent code: well-formed fenced blocks are kept up to and including the
+    first block that calls one of those tools, and the recovery paths (unclosed
+    fence, raw ``print(...)``) — which collapse what should be separate blocks
+    into one blob — are cut at the line of the first probing call. Either way a
+    fresh model turn (with the real tool result visible) runs before anything
+    that depends on the probe.
     """
     code_blocks = re.findall(BACKTICK_PATTERN, text, re.DOTALL)
 
@@ -39,7 +42,7 @@ def extract_and_combine_codeblocks(text: str, tools_needing_probing: frozenset[s
 
     recovered = _recover_non_closing_python_fence(text)
     if recovered:
-        return recovered
+        return _truncate_after_first_probing_line(recovered, tools_needing_probing)
 
     stripped_text = text.strip()
 
@@ -48,19 +51,38 @@ def extract_and_combine_codeblocks(text: str, tools_needing_probing: frozenset[s
 
     try:
         compile(stripped_text.replace("await ", ""), "<string>", "exec")
-        return stripped_text
+        return _truncate_after_first_probing_line(stripped_text, tools_needing_probing)
     except SyntaxError:
         return ""
+
+
+def _probing_call_pattern(tools_needing_probing: frozenset[str]) -> "re.Pattern[str]":
+    return re.compile(r"\b(" + "|".join(re.escape(name) for name in tools_needing_probing) + r")\s*\(")
 
 
 def _truncate_after_first_probing_block(
     blocks: list[str], tools_needing_probing: frozenset[str]
 ) -> list[str]:
-    pattern = re.compile(r"\b(" + "|".join(re.escape(name) for name in tools_needing_probing) + r")\s*\(")
+    pattern = _probing_call_pattern(tools_needing_probing)
     for i, block in enumerate(blocks):
         if pattern.search(block):
             return blocks[: i + 1]
     return blocks
+
+
+def _truncate_after_first_probing_line(code: str, tools_needing_probing: frozenset[str]) -> str:
+    """Cut a single recovered code blob after the line of the first probing
+    call. Recovery paths produce one contiguous block (no fence boundaries to
+    split on), so block-level truncation is a no-op here — fall back to line
+    granularity to keep the probe from running with later dependent code."""
+    if not tools_needing_probing:
+        return code
+    pattern = _probing_call_pattern(tools_needing_probing)
+    lines = code.split("\n")
+    for i, line in enumerate(lines):
+        if pattern.search(line):
+            return "\n".join(lines[: i + 1])
+    return code
 
 
 def extract_code_from_model_response(
