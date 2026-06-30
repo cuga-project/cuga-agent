@@ -1812,6 +1812,43 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
             # accepted; the draft serves crash recovery + publish snapshot.
             full_draft = await _save_draft_section_unlocked(agent_id, "knowledge", filtered)
 
+            # ADOPT-EXISTING-COLLECTION: keep the ACTIVE pointer consistent with
+            # the embedder we just applied. /documents and retrieval resolve via
+            # app_state.knowledge_config_hash; if that stays on the OLD collection
+            # after applying a config whose embedder maps to an ALREADY-BUILT
+            # collection, the user sees the wrong (or zero) documents — exactly
+            # the "imported config-v4, no documents" report. When the applied
+            # embedder's collection already exists AND is populated on disk, make
+            # it active immediately: no reindex needed, the vectors are already
+            # there with the matching embedder. A NEW embedder (no collection
+            # yet) leaves the pointer alone — the reindex + deferred flip builds
+            # and flips it. Never flip while a reindex is in flight (the strict
+            # flip owns the pointer then). Persist so it survives restart.
+            try:
+                if (
+                    live_state is not None
+                    and live_engine is not None
+                    and not live_engine._reindex_in_progress
+                ):
+                    _adopt_hash = live_engine._config.vector_config_hash()
+                    _cur_hash = getattr(live_state, "knowledge_config_hash", None)
+                    if _adopt_hash and _adopt_hash != _cur_hash:
+                        import re as _re_adopt
+
+                        _san_adopt = _re_adopt.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
+                        _adopt_coll = f"kb_agent_{_san_adopt}_{_adopt_hash}"
+                        _existing_docs = await live_engine.list_documents(_adopt_coll)
+                        if _existing_docs:
+                            live_state.knowledge_config_hash = _adopt_hash
+                            logger.info(
+                                f"Adopted existing collection {_adopt_coll} ({len(_existing_docs)} docs) "
+                                f"as active after config apply (hash {_cur_hash} -> {_adopt_hash}); "
+                                f"no reindex needed."
+                            )
+                            await _persist_active_vector_config(agent_id, live_engine, _adopt_hash)
+            except Exception as _adopt_err:  # noqa: BLE001 — never break the PATCH
+                logger.warning(f"Adopt-existing-collection check failed (non-fatal): {_adopt_err}")
+
         # Audit log: diff old vs new adaptation hash (NEVER the text itself —
         # PII + prompt-IP). Lets SREs answer "when did the adaptation change"
         # without snapshot-by-snapshot diffing.

@@ -397,6 +397,64 @@ class TestHttpReindexGuard:
         assert detail.get("error") == "reindex_in_progress"
         assert "kb_agent_cuga_default_active" in detail.get("collections", [])
 
+    def test_patch_adopts_existing_collection_as_active_pointer(self, app_with_engine, monkeypatch):
+        """Regression for 'imported config-v4, no documents'. Applying a config
+        whose embedder maps to an ALREADY-BUILT collection must flip the active
+        pointer (app_state.knowledge_config_hash) to it immediately — no reindex
+        — so /documents + retrieval resolve to that collection's docs. Before
+        the fix the pointer stayed on the old collection and the user saw the
+        wrong/zero documents."""
+        from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
+        client, engine = app_with_engine
+        # Engine config hashes to "newhash"; that collection exists w/ docs.
+        monkeypatch.setattr(_KC, "vector_config_hash", lambda self: "newhash")
+
+        async def _fake_list_docs(coll):
+            return [{"filename": "a.pdf"}] if coll == "kb_agent_cuga_default_newhash" else []
+
+        monkeypatch.setattr(engine, "list_documents", _fake_list_docs)
+
+        # Don't touch the real config DB from the durability persist.
+        async def _noop_persist(*_a, **_k):
+            return None
+
+        monkeypatch.setattr(
+            "cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist
+        )
+
+        # Active pointer starts on a DIFFERENT collection.
+        client.app.state.app_state.knowledge_config_hash = "oldhash"
+        resp = client.patch(
+            "/api/manage/config/draft/knowledge?agent_id=cuga-default",
+            json={"knowledge": {"rerank_top_k_in": 25}},  # non-vector; apply succeeds
+        )
+        assert resp.status_code == 200, resp.text
+        # Pointer adopted the engine's (existing, populated) collection.
+        assert client.app.state.app_state.knowledge_config_hash == "newhash"
+
+    def test_patch_does_not_adopt_when_collection_absent(self, app_with_engine, monkeypatch):
+        """A NEW embedder (no collection built yet) must NOT flip the pointer —
+        the reindex/deferred-flip owns that. Guards against activating an empty
+        collection."""
+        from cuga.backend.knowledge.config import KnowledgeConfig as _KC
+
+        client, engine = app_with_engine
+        monkeypatch.setattr(_KC, "vector_config_hash", lambda self: "freshhash")
+
+        async def _empty_list_docs(_coll):
+            return []  # collection doesn't exist / has no docs
+
+        monkeypatch.setattr(engine, "list_documents", _empty_list_docs)
+        client.app.state.app_state.knowledge_config_hash = "oldhash"
+        resp = client.patch(
+            "/api/manage/config/draft/knowledge?agent_id=cuga-default",
+            json={"knowledge": {"rerank_top_k_in": 25}},
+        )
+        assert resp.status_code == 200, resp.text
+        # Pointer unchanged — no empty-collection activation.
+        assert client.app.state.app_state.knowledge_config_hash == "oldhash"
+
     def test_publish_rejected_during_reindex(self, app_with_engine):
         """#2: POST /config (publish) must 409 while a reindex is in flight for
         the agent. Publish calls prepare/commit_knowledge_update directly, NOT
