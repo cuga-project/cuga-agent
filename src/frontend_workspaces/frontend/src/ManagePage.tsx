@@ -450,6 +450,17 @@ export function ManagePage() {
   const [knowledgeSavedSnapshot, setKnowledgeSavedSnapshot] = useState<AgentConfig["knowledge"] | null>(null);
   const [knowledgeReindexNeeded, setKnowledgeReindexNeeded] = useState(false);
   const [knowledgeReindexing, setKnowledgeReindexing] = useState(false);
+  // Self-healing autosave retry for the reindex_in_progress 409. When a
+  // vector-affecting PATCH lands while a reindex the FE never armed is in
+  // flight (engine-triggered boot/config-drift reindex, or another client's),
+  // we can't rely on the child panel's onReindexFinished to release a
+  // suppression flag — that callback only fires for reindexes the FE armed,
+  // so a flag-based hold would wedge "saving" until a hard refresh. Instead
+  // we re-attempt the PATCH on a bounded timer; it succeeds the instant the
+  // reindex clears (Layer 2 stops raising). Nonce drives the effect re-run.
+  const knowledgeSaveRetryRef = useRef(0);
+  const knowledgeSaveRetryTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [knowledgeSaveRetryNonce, setKnowledgeSaveRetryNonce] = useState(0);
   // When a knowledge draft PATCH triggers an auto-reindex on the server
   // (e.g. user picks a new profile and the embedding-dim changes), the
   // response carries task_ids in ``auto_reindex.collections[*].result``.
@@ -525,6 +536,9 @@ export function ManagePage() {
       llmAbortRef.current?.abort();
       agentAbortRef.current?.abort();
       specialInstructionsAbortRef.current?.abort();
+      // Clear any pending reindex_in_progress save-retry timer so it can't
+      // bump the nonce (setState) after the component has unmounted.
+      if (knowledgeSaveRetryTimerRef.current) clearTimeout(knowledgeSaveRetryTimerRef.current);
     };
   }, []);
 
@@ -1312,6 +1326,9 @@ export function ManagePage() {
         if (res.ok) {
           setCurrentVersion("draft");
           setAdaptationServerError(null);
+          // Save landed — reset the reindex_in_progress retry budget so a
+          // later, unrelated reindex race starts fresh.
+          knowledgeSaveRetryRef.current = 0;
           // Forward any server-triggered auto-reindex into the panel so the
           // reindex tile arms automatically. Without this the user only
           // sees progress if they click the Reindex button explicitly —
@@ -1383,33 +1400,47 @@ export function ManagePage() {
           if (ac.signal.aborted) return;
 
           if (detail?.error === "reindex_in_progress") {
-            // #398 follow-up v2 (workflow w5i1mbchd / startup-race):
-            // the reindex_in_progress 409 means "the server is in the
-            // middle of applying THIS exact change via the reindex
-            // path; your PATCH is redundant". Don't flip the chip to
-            // ``failed`` — that surfaces as "Couldn't save — Retry"
-            // which is misleading: the change IS being applied. Keep
-            // the chip as "saving" so the user knows persistence is
-            // pending, then let the parent flip ``knowledgeReindexing``
-            // via ``onReindexFinished`` to release the autosave hold.
+            // Layer 2 refused a vector-affecting PATCH because a reindex
+            // is in flight. This is NOT a save failure — the change is
+            // valid and WILL apply the moment the reindex clears. So:
+            // (a) keep the chip at "saving" (never "Couldn't save —
+            // Retry", which the user reasonably read as a hard error),
+            // and (b) re-attempt the PATCH on a bounded timer until it
+            // succeeds.
             //
-            // The autosave effect's early-return on knowledgeReindexing
-            // covers the FE-triggered case (user clicked Save & Reindex
-            // and we know about it). This branch covers the engine-
-            // triggered case (config-drift detection on startup, or
-            // server-side auto_reindex from a different client) where
-            // the FE doesn't know a reindex started until the 409 lands.
+            // We deliberately do NOT set ``knowledgeReindexing`` here.
+            // That flag is released only by the child panel's
+            // ``onReindexFinished``, which fires ONLY for reindexes the
+            // FE itself armed. For an engine-triggered reindex (boot
+            // config-drift, or another client's reindex) the FE never
+            // armed a poll, so the flag would wedge "saving" until a
+            // hard refresh — the exact bug the user reported. The
+            // self-healing retry below needs no cross-component signal.
             // eslint-disable-next-line no-console
             console.debug(
-              "[#398-followup-v2] startup-race: PATCH 409 reindex_in_progress",
-              { collections: (detail as { collections?: string[] })?.collections ?? [] },
+              "[#398-followup-v3] reindex_in_progress: keep saving, bounded retry",
+              {
+                collections: (detail as { collections?: string[] })?.collections ?? [],
+                attempt: knowledgeSaveRetryRef.current + 1,
+              },
             );
             setDraftSaveStatus({ kind: "saving" });
-            // Mark the FE as observing a reindex so future autosave
-            // debounces in this window also short-circuit. The child
-            // panel's polling (or the next /tasks GET that flips done)
-            // will eventually fire onReindexFinished, releasing this.
-            setKnowledgeReindexing(true);
+            const MAX_REINDEX_SAVE_RETRIES = 20; // ~60s at 3s spacing
+            if (knowledgeSaveRetryRef.current < MAX_REINDEX_SAVE_RETRIES) {
+              knowledgeSaveRetryRef.current += 1;
+              if (knowledgeSaveRetryTimerRef.current) clearTimeout(knowledgeSaveRetryTimerRef.current);
+              knowledgeSaveRetryTimerRef.current = setTimeout(
+                () => setKnowledgeSaveRetryNonce((n) => n + 1),
+                3000,
+              );
+            } else {
+              // Reindex is taking abnormally long (>60s). Hand control
+              // back to the user with a clear, non-alarming message.
+              setDraftSaveStatus({
+                kind: "failed",
+                error: "Re-index still running — click Retry once it finishes.",
+              });
+            }
             return;
           }
 
@@ -1466,10 +1497,12 @@ export function ManagePage() {
       // The next effect run's ``knowledgeAbortRef.current?.abort()``
       // at the top is the correct cancellation point.
     };
-    // knowledgeReindexing is a dep so the hook re-runs when reindex
-    // completes — catches any non-vector edits the user made during
-    // the reindex window (issue #398 follow-up).
-  }, [knowledgeConfig, effectiveAgentId, knowledgeReindexing]);
+    // knowledgeReindexing is a dep so the hook re-runs when an FE-armed
+    // reindex completes — catches any non-vector edits the user made
+    // during the reindex window (issue #398 follow-up).
+    // knowledgeSaveRetryNonce is a dep so the bounded reindex_in_progress
+    // retry above re-fires this effect (issue #398 follow-up v3).
+  }, [knowledgeConfig, effectiveAgentId, knowledgeReindexing, knowledgeSaveRetryNonce]);
 
   useEffect(() => {
     if (importStatus === "ok") {
@@ -2660,6 +2693,9 @@ export function ManagePage() {
             // Retry: bump the same field with its current value to retrigger
             // the autosave useEffect. Cheap and reuses the existing PATCH
             // pipeline rather than maintaining a parallel retry path.
+            // Reset the reindex_in_progress retry budget too, so a manual
+            // Retry after the "still running" timeout re-arms the auto-retry.
+            knowledgeSaveRetryRef.current = 0;
             setKnowledgeConfig((prev) => ({ ...prev }));
           }}
           onPresetApplied={() => {

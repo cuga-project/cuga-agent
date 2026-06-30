@@ -10,19 +10,26 @@ garbage or a dim-mismatch crash.
 
 The fix is layered:
 
-  1. Layer 1 — patch_draft_knowledge returns 409 (`reindex_in_progress`)
-     when the agent's collections are in ``_reindex_in_progress``. Fast UX.
-  2. Layer 2 — engine.apply_knowledge_config raises ReindexInProgressError
-     on a vector-affecting change while reindex is running. SDK guard.
-  3. Layer 3 — pointer flip deferred to a background task that waits for
-     all per-file workers to reach terminal state, then re-checks the
-     engine config under ``_agent_draft_lock`` and refuses to flip if
-     the engine has moved on.
+  1. Engine guard — engine.apply_knowledge_config raises
+     ReindexInProgressError on a VECTOR-AFFECTING change (embedding /
+     chunking / metric) while a reindex is running, comparing the
+     incoming config against the live ``_config`` so it's
+     timing-independent. patch_draft_knowledge maps that to a 409
+     (``reindex_in_progress``) for the FE. A redundant no-op / non-vector
+     PATCH (the debounced autosave that races a Save & Reindex click)
+     genuinely changes nothing vector-affecting, so it passes through to
+     200 instead of a spurious "Couldn't save". An over-broad route-level
+     pre-check used to live here too but rejected on in-flight ALONE —
+     deleted; this single precise check owns it now.
+  2. Pointer flip — deferred to a background task that waits for all
+     per-file workers to reach terminal state, then re-checks the engine
+     config under ``_agent_draft_lock`` and refuses to flip if the engine
+     has moved on (and refuses to flip on partial failure).
 
-These tests pin each layer independently, plus a few edge cases the audit
-flagged (non-vector-affecting PATCH should still work during reindex,
-cross-agent reindex must NOT block this agent's PATCH, deferred flip
-respects the engine-config re-check).
+These tests pin each layer, plus edge cases the audit flagged
+(non-vector-affecting PATCH must still work during reindex, cross-agent
+reindex must still block a vector change because engine config is global,
+deferred flip respects the engine-config re-check).
 """
 
 from __future__ import annotations
@@ -271,11 +278,14 @@ def app_with_engine(monkeypatch):
     return TestClient(app), eng
 
 
-class TestLayer1HttpGuard:
-    """The HTTP 409 fast-path. Returns the structured error shape the FE
-    expects so the user gets a clean toast instead of a generic save-failed."""
+class TestHttpReindexGuard:
+    """The HTTP route's reindex guard, owned by the engine (Layer 2) and
+    surfaced as a 409 with the structured shape the FE expects. A
+    VECTOR-affecting change during reindex 409s; a no-op / non-vector
+    change passes through to 200 (no spurious "Couldn't save")."""
 
-    def test_returns_409_when_agent_collection_in_progress(self, app_with_engine):
+    def test_returns_409_when_vector_change_during_reindex(self, app_with_engine):
+        # chunk_size is vector-affecting → rejected while a reindex runs.
         client, engine = app_with_engine
         engine._reindex_in_progress.add("kb_agent_cuga_default_oldhash")
         try:
@@ -291,20 +301,34 @@ class TestLayer1HttpGuard:
         detail = body.get("detail") or body
         assert detail.get("error") == "reindex_in_progress"
         assert "kb_agent_cuga_default_oldhash" in detail.get("collections", [])
-        assert "Re-index" in detail.get("message", "")
+        # Message comes from the engine's ReindexInProgressError now.
+        assert "reindex in progress" in detail.get("message", "").lower()
 
-    def test_other_agent_passes_layer1_but_layer2_still_holds(self, app_with_engine, monkeypatch):
-        """Layer 1 is per-agent (fast-rejection for the common case).
-        Layer 2 (engine.apply_knowledge_config) is engine-global because
-        engine config is global — a different agent's reindex IS still
-        reading from the engine config, so we can't safely mutate
-        embedder/chunking while ANY collection is reindexing.
+    def test_noop_nonvector_patch_during_reindex_succeeds(self, app_with_engine):
+        """THE regression test for the user-reported 409. A redundant
+        autosave that races a Save & Reindex carries the SAME (or only
+        search-side) config — it changes nothing vector-affecting, so it
+        must return 200 even while a reindex is in flight. The old
+        over-broad route pre-check 409'd this, surfacing as a misleading
+        "Couldn't save — Retry"."""
+        client, engine = app_with_engine
+        engine._reindex_in_progress.add("kb_agent_cuga_default_oldhash")
+        try:
+            resp = client.patch(
+                "/api/manage/config/draft/knowledge?agent_id=cuga-default",
+                json={"knowledge": {"rerank_top_k_in": 30, "search_query_transform": "multi_query"}},
+            )
+        finally:
+            engine._reindex_in_progress.discard("kb_agent_cuga_default_oldhash")
 
-        This test pins both behaviors: Layer 1 SKIPS the 409 (the other
-        agent's prefix doesn't match ours), then Layer 2 catches and
-        re-raises a 409 with the same shape. Defense in depth — and a
-        warning to future devs that "Layer 1 only is per-agent."
-        """
+        assert resp.status_code == 200, resp.text
+
+    def test_other_agent_reindex_still_blocks_vector_change(self, app_with_engine, monkeypatch):
+        """Engine config is GLOBAL, so a different agent's reindex is still
+        reading the live config — we can't safely mutate embedder/chunking
+        while ANY collection is reindexing. A foreign-agent reindex must
+        therefore still 409 a vector change here (the precise engine guard
+        is engine-global, not per-agent)."""
         client, engine = app_with_engine
         # Foreign-agent collection in flight.
         engine._reindex_in_progress.add("kb_agent_other_agent_xyz")
@@ -316,7 +340,6 @@ class TestLayer1HttpGuard:
         finally:
             engine._reindex_in_progress.discard("kb_agent_other_agent_xyz")
 
-        # Layer 2 catches it. Same JSON shape as Layer 1.
         assert resp.status_code == 409, resp.text
         detail = resp.json().get("detail") or resp.json()
         assert detail.get("error") == "reindex_in_progress"

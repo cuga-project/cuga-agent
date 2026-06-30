@@ -4279,8 +4279,14 @@ class KnowledgeEngine:
 
         if tok.kind == "tiktoken":
             try:
+                # cap (not raw chunk_size) — same bound the hf branch uses.
+                # The Fix-4 post-chunk guard delegates its re-split here; if
+                # this passed the raw chunk_size, an over-limit tiktoken chunk
+                # (chunk_size > safe_max for an openai embedder) would be
+                # re-split at the raw value and STILL exceed 8191 → the exact
+                # silent-truncation the guard exists to prevent.
                 return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-                    encoding_name=tok.name, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                    encoding_name=tok.name, chunk_size=cap, chunk_overlap=overlap
                 )
             except Exception as e:
                 logger.warning(f"from_tiktoken_encoder failed ({e}); char fallback.")
@@ -4292,6 +4298,18 @@ class KnowledgeEngine:
         # surfaces unknown-model lookups, and the curated allow-list it
         # consulted to dedup vs that warning is gone.
         return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+
+    @staticmethod
+    def _exact_chunk_tokens(text: str, tok: "ChunkingTokenizer") -> int:
+        """Exact token count for a finished chunk in the embedder's OWN
+        tokenizer. Defined only for the kinds with a cheap local counter
+        and a HARD context limit (``hf`` e.g. e5=512, ``tiktoken`` e.g.
+        openai=8191) — the post-chunk boundary guard restricts itself to
+        those. ``tok.encoder`` is the HF AutoTokenizer (``hf``) or the
+        tiktoken Encoding (``tiktoken``)."""
+        if tok.kind == "hf":
+            return len(tok.encoder.tokenize(text))
+        return len(tok.encoder.encode(text))
 
     def _build_docling_chunker(self, chunk_size: int):
         """Build a HybridChunker that respects our chunk_size config.
@@ -4335,6 +4353,20 @@ class KnowledgeEngine:
                             f"{tok_info.name} (safe_max_tokens={tok_info.safe_max_tokens}). "
                             f"Chunks at the original size would have been truncated at embed time."
                         )
+                    # Mute transformers' benign "Token indices sequence length is
+                    # longer than the specified maximum (N > model_max)" warning.
+                    # HybridChunker MEASURES candidate windows that transiently
+                    # exceed model_max (via tokenizer.tokenize) before backing off
+                    # to emit chunks <= max_tokens=cap — see _split_using_plain_text
+                    # (reserves heading room) + the merge step's <= max_tokens guard.
+                    # The warning fires from that measurement, NOT from an emitted
+                    # or embedded chunk, but operators read "550 > 512" as a failure.
+                    # Pre-set transformers' own fire-once flag rather than raising
+                    # model_max_length (which would corrupt safe_max_tokens on the
+                    # next dispatch for long-context HF embedders).
+                    _dw = getattr(tok_info.encoder, "deprecation_warnings", None)
+                    if isinstance(_dw, dict):
+                        _dw["sequence-length-is-longer-than-the-specified-maximum"] = True
                     tok = HuggingFaceTokenizer(tokenizer=tok_info.encoder, max_tokens=cap)
                     logger.debug(
                         f"HybridChunker tokenizer: HF AutoTokenizer "
@@ -4350,7 +4382,7 @@ class KnowledgeEngine:
 
             if tok_info.kind == "tiktoken":
                 try:
-                    tok = _tiktoken_docling_tokenizer_cls()(encoding=tok_info.encoder, max_tokens=chunk_size)
+                    tok = _tiktoken_docling_tokenizer_cls()(encoding=tok_info.encoder, max_tokens=cap)
                     logger.debug(
                         f"HybridChunker tokenizer: tiktoken (encoding={tok_info.name!r}, "
                         f"provider={provider!r}, model={model_str!r}); zero-download"
@@ -4369,7 +4401,7 @@ class KnowledgeEngine:
                 import tiktoken
 
                 encoding = tiktoken.get_encoding("cl100k_base")
-                tok = _tiktoken_docling_tokenizer_cls()(encoding=encoding, max_tokens=chunk_size)
+                tok = _tiktoken_docling_tokenizer_cls()(encoding=encoding, max_tokens=cap)
                 logger.debug(
                     f"HybridChunker tokenizer: cl100k_base (approximate; "
                     f"provider={provider!r}, model={model_str!r})"
@@ -4759,6 +4791,42 @@ class KnowledgeEngine:
         # normal HybridChunker output. Anything HybridChunker produces
         # with a configured tokenizer is already token-bounded; this
         # split would only WEAKEN that guarantee.
+        # STRICT chunk->embedder boundary guard (issue #387). HybridChunker
+        # already bounds chunks to max_tokens=cap, but for providers with a
+        # HARD context limit we VERIFY in the embedder's own tokenizer and
+        # re-split anything that slipped through (a single indivisible doc
+        # item, or a docling-core regression). This converts a SILENT
+        # embedder-side truncation — degraded retrieval, near-impossible to
+        # debug — into a clean token-aware re-split plus one visible WARNING.
+        # Only ``hf``/``tiktoken`` have a cheap exact local counter; fastembed
+        # is docling-bounded (<=512 always) and the char-based ``approximate``
+        # path has no exact counter here, so both fall to the coarse net below.
+        if docs:
+            tok_info = self.get_chunking_tokenizer()
+            if tok_info.kind in ("hf", "tiktoken"):
+                try:
+                    over = sum(
+                        1
+                        for d in docs
+                        if self._exact_chunk_tokens(d.page_content, tok_info) > tok_info.safe_max_tokens
+                    )
+                except Exception as e:  # noqa: BLE001 — never let the guard break ingest
+                    logger.debug(f"post-chunk token check skipped for {file_path.name}: {e!r}")
+                    over = 0
+                if over:
+                    splitter = self._build_text_splitter(chunk_size, chunk_overlap)
+                    n_before = len(docs)
+                    docs = splitter.split_documents(docs)
+                    logger.warning(
+                        f"Token-bound re-split for {file_path.name}: {over}/{n_before} chunk(s) "
+                        f"exceeded safe_max_tokens={tok_info.safe_max_tokens} for "
+                        f"{tok_info.name!r}; token-aware split -> {len(docs)} chunks. "
+                        f"HybridChunker emitted an over-limit chunk — investigate if recurrent."
+                    )
+
+        # Coarse net for the paths WITHOUT an exact token counter above
+        # (fastembed / char-based ``approximate``) and any pathological
+        # mega-chunk Docling returns for a file with no natural breaks.
         _EMERGENCY_CHAR_THRESHOLD = 100_000  # ~25k tokens — past any embedder context
         if docs and any(len(d.page_content) > _EMERGENCY_CHAR_THRESHOLD for d in docs):
             # Use the token-aware splitter — guarantees the safety-split

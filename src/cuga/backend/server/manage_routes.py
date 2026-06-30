@@ -1567,43 +1567,24 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         if not isinstance(knowledge, dict):
             raise HTTPException(status_code=400, detail="knowledge must be a dict")
 
-        # LAYER 1 GUARD (issue #396): reject the PATCH if a reindex is in
-        # flight for THIS agent's collections. The engine also enforces
-        # this in apply_knowledge_config (Layer 2) for SDK callers; this
-        # check returns a fast, well-typed 409 before we do any DB work
-        # so the FE can show a clean "wait for reindex" toast instead of
-        # surfacing a generic 400 from the engine raise.
+        # Reindex-in-progress is guarded by ONE check, in the engine:
+        # ``apply_knowledge_config`` (Layer 2 below) raises
+        # ``ReindexInProgressError`` iff the incoming config GENUINELY
+        # changes a vector-affecting field (embedding/chunking/metric)
+        # AND a reindex is in flight — it compares incoming vs the live
+        # ``_config``, so it's timing-independent. The ``except
+        # ReindexInProgressError`` handler maps that to the same 409 the
+        # FE renders.
         #
-        # User-visible bug this prevents: clicking Use on Watsonx WHILE
-        # the previous Re-index is still running causes the in-flight
-        # workers to write watsonx-shaped (1024-dim) vectors into a
-        # collection NAMED for the fastembed hash — and silently drops
-        # the two files that were mid-ingest when the apply_generation
-        # bumped. The name-vs-content lie + missing docs both stem from
-        # the same root: PATCH not blocked during reindex.
-        import re as _re_guard
-
-        live_state_pre = getattr(request.app.state, "app_state", None)
-        live_engine_pre = getattr(live_state_pre, "knowledge_engine", None) if live_state_pre else None
-        if live_engine_pre is not None:
-            _sanitized_pre = _re_guard.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
-            _prefix_pre = f"kb_agent_{_sanitized_pre}"
-            in_flight = sorted(
-                c
-                for c in live_engine_pre._reindex_in_progress
-                if c == _prefix_pre or c.startswith(f"{_prefix_pre}_")
-            )
-            if in_flight:
-                raise HTTPException(
-                    status_code=409,
-                    detail={
-                        "error": "reindex_in_progress",
-                        "collections": in_flight,
-                        "message": (
-                            "Re-index is running. Wait for it to finish before changing knowledge settings."
-                        ),
-                    },
-                )
+        # A route-level pre-check used to live here too (issue #396), but
+        # it rejected on in-flight ALONE — so a redundant autosave PATCH
+        # carrying the SAME config the reindex is already running (the
+        # debounced save that races a "Save & Reindex" click) 409'd and
+        # surfaced as a spurious "Couldn't save — Retry". Deleted: the
+        # genuine corruption case (a DIFFERENT embedder PATCH landing
+        # mid-reindex → wrong-dim vectors in a mis-named collection) is
+        # still caught by Layer 2's vector-change check; a no-op save now
+        # passes through to 200 instead of a misleading failure.
 
         # Imports needed inside the lock.
         from cuga.backend.server.config_store import load_draft

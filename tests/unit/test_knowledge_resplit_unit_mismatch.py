@@ -35,6 +35,7 @@ from unittest.mock import patch
 
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.engine import (
+    ChunkingTokenizer,
     KnowledgeEngine,
     _load_hf_tokenizer_for_chunking,
 )
@@ -106,6 +107,26 @@ class TestBuildTextSplitterTokenAware:
 
         assert splitter == "hf_splitter"
         assert m_from_hf.call_args.kwargs["chunk_size"] == 512 - _HF_TOKEN_SAFETY_MARGIN
+
+    def test_tiktoken_splitter_capped_at_safe_max(self):
+        # Adversarial finding (Fix 4 dependency): the tiktoken re-split must
+        # cap at safe_max_tokens (8175), NOT the raw chunk_size — else a
+        # guard-triggered re-split for an openai embedder with chunk_size
+        # > 8175 re-emits an over-8191 chunk and the OpenAI API rejects /
+        # truncates it. Mirrors the hf branch's cap behavior.
+        from cuga.backend.knowledge.engine import _TIKTOKEN_SAFE_MAX
+
+        eng = _make_engine(provider="openai", model="text-embedding-3-large")
+        with patch(
+            "langchain_text_splitters.RecursiveCharacterTextSplitter.from_tiktoken_encoder"
+        ) as m_from_tt:
+            m_from_tt.return_value = "tt_splitter"
+            splitter = eng._build_text_splitter(chunk_size=10000, chunk_overlap=500)
+
+        assert splitter == "tt_splitter"
+        assert m_from_tt.call_args.kwargs["chunk_size"] == _TIKTOKEN_SAFE_MAX, (
+            f"tiktoken re-split not capped at safe_max={_TIKTOKEN_SAFE_MAX}: {m_from_tt.call_args}"
+        )
 
     def test_openai_text_embedding_falls_back_to_chars(self):
         # OpenAI's text-embedding-3-* is NOT on the HF allow-list (cl100k
@@ -195,3 +216,75 @@ class TestResplitTriggerThreshold:
         src = inspect.getsource(eng.KnowledgeEngine._load_document)
         # The block uses _build_text_splitter for the emergency case.
         assert "self._build_text_splitter(chunk_size, chunk_overlap)" in src
+
+
+class TestStrictTokenBoundGuard:
+    """Fix 4 (production sweep): the chunk->embedder boundary guard counts
+    each finished chunk in the embedder's OWN tokenizer and re-splits any
+    that exceed safe_max_tokens — converting a silent embedder truncation
+    into a clean re-split + one visible WARNING. Scoped to hf/tiktoken,
+    the kinds with a cheap exact local counter and a HARD context limit."""
+
+    def test_exact_chunk_tokens_hf_uses_tokenize(self):
+        # hf kind counts via tokenizer.tokenize (raw tokens, no BOS/EOS) —
+        # matches docling's count_tokens so the comparison is apples-to-apples.
+        enc = SimpleNamespace(tokenize=lambda text: text.split())
+        tok = ChunkingTokenizer(
+            kind="hf", encoder=enc, name="e5", safe_max_tokens=496, recommended_chunk_tokens=496
+        )
+        assert KnowledgeEngine._exact_chunk_tokens("a b c d e", tok) == 5
+
+    def test_exact_chunk_tokens_tiktoken_uses_encode(self):
+        enc = SimpleNamespace(encode=lambda text: list(range(len(text))))
+        tok = ChunkingTokenizer(
+            kind="tiktoken",
+            encoder=enc,
+            name="cl100k_base",
+            safe_max_tokens=8175,
+            recommended_chunk_tokens=512,
+        )
+        assert KnowledgeEngine._exact_chunk_tokens("abcd", tok) == 4
+
+    def test_guard_present_and_scoped_to_hf_tiktoken(self):
+        # Source-level pins (a full _load_document run needs Docling + a file).
+        import inspect
+
+        from cuga.backend.knowledge import engine as eng
+
+        src = inspect.getsource(eng.KnowledgeEngine._load_document)
+        assert 'tok_info.kind in ("hf", "tiktoken")' in src, "token guard lost its kind scoping"
+        assert "_exact_chunk_tokens" in src, "token guard no longer measures exact tokens"
+        assert "safe_max_tokens" in src and "Token-bound re-split" in src
+
+    def test_guard_compares_against_safe_max_not_raw_limit(self):
+        # The guard threshold must be safe_max_tokens (raw - margin), not the
+        # raw model limit — else a chunk at 500 tokens passes the guard but
+        # the embedder (512 - "passage:" prefix) still truncates it.
+        import inspect
+
+        from cuga.backend.knowledge import engine as eng
+
+        src = inspect.getsource(eng.KnowledgeEngine._load_document)
+        assert "> tok_info.safe_max_tokens" in src
+
+
+class TestBenignTransformersWarningSilenced:
+    """Fix 3 (production sweep): HybridChunker MEASURES candidate windows
+    that transiently exceed model_max before backing off to emit chunks
+    <= cap. transformers logs a scary 'N > 512' from that measurement.
+    We pre-set transformers' own fire-once flag on the tokenizer handed to
+    docling so the benign warning is muted WITHOUT touching model_max_length
+    (which would corrupt safe_max on the next dispatch)."""
+
+    def test_docling_chunker_presets_transformers_fireonce_flag(self):
+        import inspect
+
+        from cuga.backend.knowledge import engine as eng
+
+        src = inspect.getsource(eng.KnowledgeEngine._build_docling_chunker)
+        assert "deprecation_warnings" in src
+        assert "sequence-length-is-longer-than-the-specified-maximum" in src
+        # Must NOT silence by mutating model_max_length (the rejected approach).
+        assert "model_max_length =" not in src, (
+            "Fix 3 must not mutate model_max_length — it corrupts safe_max on re-dispatch."
+        )
