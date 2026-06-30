@@ -375,6 +375,19 @@ class LLMManager:
                 default_model = "gpt-4o"
                 logger.info(f"No model_name specified for LiteLLM, using default: {default_model}")
                 return default_model
+        elif platform == "rits":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for RITS: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML for RITS: {toml_model_name}")
+                return toml_model_name
+            else:
+                raise ValueError(
+                    "model_name must be specified for platform rits "
+                    "(set MODEL_NAME env var or model_name in the TOML)"
+                )
         else:
             # For other platforms, use TOML or default
             if toml_model_name:
@@ -476,6 +489,19 @@ class LLMManager:
         """
         # Groq SDK manages its own endpoint; any URL in config is ignored
         if platform == "groq":
+            return None
+
+        # RITS: let RITS_BASE_URL env override the TOML so model/endpoint can be
+        # swapped from .env without editing every per-role TOML block.
+        if platform == "rits":
+            env_base_url = os.environ.get('RITS_BASE_URL')
+            if env_base_url:
+                logger.info(f"Using RITS_BASE_URL from environment: {env_base_url}")
+                return env_base_url
+            toml_url = model_settings.get("base_url") or model_settings.get("url")
+            if toml_url and str(toml_url).strip():
+                logger.debug(f"Using url from TOML for RITS: {toml_url}")
+                return str(toml_url).strip()
             return None
 
         config_url = model_settings.get("base_url") or model_settings.get("url")
@@ -755,7 +781,7 @@ class LLMManager:
                 api_key = os.environ.get(apikey_name)
             rits_params: Dict[str, Any] = {
                 "api_key": api_key,
-                "base_url": model_settings.get('url'),
+                "base_url": base_url,
                 "max_tokens": max_tokens,
                 "model": model_name,
                 "seed": 42,
