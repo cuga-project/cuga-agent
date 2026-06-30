@@ -2836,7 +2836,15 @@ async def generate_tool_guard_for_policy(
 
         updated_policy = await policy_system.storage.get_policy(policy_id)
         if updated_policy is not None:
-            result["tool_guards"] = updated_policy.tool_guards or {}
+            # Serialize ToolGuard Pydantic objects to plain dicts for JSON response
+            result["tool_guards"] = (
+                {
+                    k: v.model_dump() if hasattr(v, "model_dump") else v
+                    for k, v in updated_policy.tool_guards.items()
+                }
+                if updated_policy.tool_guards
+                else {}
+            )
 
         agent_id = "cuga-default"  # TODO: get from request if multi-agent support needed
         try:
