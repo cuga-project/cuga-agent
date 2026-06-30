@@ -60,6 +60,8 @@ def normalize_assistant_text(content: Any) -> str:
                 t = block.get("text")
                 if isinstance(t, str):
                     parts.append(t)
+                elif isinstance(block.get("content"), str):
+                    parts.append(block["content"])
                 elif t is not None:
                     parts.append(normalize_assistant_text(t))
             else:

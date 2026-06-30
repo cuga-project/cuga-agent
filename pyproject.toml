@@ -31,7 +31,6 @@ dependencies = [
     "fastmcp>=3.2.0",
     "langchain-mcp-adapters",
     "pyyaml>=6.0.3",
-    "pymilvus[milvus-lite]>=2.6.4",
     "langchain-groq>=0.3.8",
     "langchain-litellm",
     # 1.84.0+ fixes GHSA-4xpc-pv4p-pm3w (Host header auth bypass); 1.83.14 was prior floor for fastmcp compat.
@@ -42,8 +41,8 @@ dependencies = [
     "sqlite-vec>=0.1.6", # GHSA-vrcx-gx3g-j3h8 affects <0.1.3 only; 0.1.6 is safe
     "pgvector>=0.4.2",
     "asyncpg>=0.30",
-    "PyJWT[crypto]>=2.12.0",
-    "cryptography>=46.0.7",
+    "PyJWT[crypto]>=2.13.0",  # GHSA-xgmm-8j9v-c9wx: JWK accepted as HMAC secret (<=2.12.x)
+    "cryptography>=48.0.1",  # GHSA-537c-gmf6-5ccf: vulnerable OpenSSL in wheels (<=48.0.0)
     "hvac>=2.0.0",
     "boto3>=1.34.0",
     # Knowledge engine (replaces OpenRAG)
@@ -69,7 +68,6 @@ dependencies = [
 [project.optional-dependencies]
 evaluation = ["rapidfuzz"]
 e2b = ["e2b-code-interpreter>=2.4.1"]
-memory = ["mem0ai[extras]"]
 knowledge = []  # knowledge is now built-in, no extra dependencies needed
 health = ["cuga-oak-health; python_version>='3.12'"]  # kept for backward compat, now also in core deps
 opensandbox = ["opensandbox", "opensandbox-code-interpreter"]
@@ -86,24 +84,9 @@ Repository = "https://github.com/cuga-project/cuga-agent"
 package = true
 constraint-dependencies = [
     "pillow>=12.2.0",  # CVE-2026-25990 (PSD), FITS decompression bomb (10.3.0-12.1.x)
-    "urllib3>=2.6.3",  # CVE-2025-66418, CVE-2025-66471, CVE-2025-50181, CVE-2025-50182, CVE-2026-21441
+    "urllib3>=2.7.0",  # GHSA-qccp-gfcp-xxvc, GHSA-mf9v-mfxr-j63j (<=2.6.x); prior CVEs fixed in 2.6.3+
     "h11>=0.16.0",     # CVE-2025-43859: HTTP request smuggling via chunked encoding
-    # setuptools: Multiple vulnerabilities require >=78.1.1, but constrained to <70 due to milvus-lite
-    # RISK ACCEPTED: Constrained to <70 due to milvus-lite 2.5.1 dependency on pkg_resources
-    # VULNERABILITIES:
-    # - GHSA-cx63-2mw6-8hw5 (<70.0.0): Command injection via package URL
-    # - Path traversal in PackageIndex (<78.1.1): Arbitrary file write leading to potential RCE
-    # JUSTIFICATION:
-    # - milvus-lite 2.5.1 (latest) uses pkg_resources for version detection only
-    # - pkg_resources removed in setuptools 70+, causing ImportError
-    # - Vulnerabilities require attacker control of package URLs or malicious package index
-    # - setuptools primarily used at build-time; runtime exposure minimal
-    # - easy_install and package_index (vulnerable components) are deprecated
-    # MITIGATION:
-    # - Monitor for milvus-lite updates that migrate to importlib.metadata
-    # - Consider implementing pkg_resources shim if setuptools upgrade becomes critical
-    # - Avoid using easy_install or untrusted package indexes
-    "setuptools<70",
+    "setuptools>=78.1.1",  # GHSA-cx63-2mw6-8hw5, GHSA-5rjg-fvgr-3xxf (path traversal / command injection in <78.1.1)
     # Security updates for transitive dependencies
     "authlib>=1.6.9",      # GHSA-wvwj-cvrp-7pv5, GHSA-m344-f55w-2m6j, GHSA-7wc2-qxgw-g8gg, GHSA-7432-952r-cw78
     "orjson>=3.11.6",      # GHSA-hx9q-6w63-j58v
@@ -112,7 +95,10 @@ constraint-dependencies = [
     "strawberry-graphql>=0.312.3",  # CVE: Auth bypass + DoS via unlimited WebSocket subscriptions (<=0.312.2)
     "arize-phoenix>=14.3.1",  # Upgrade to use strawberry-graphql>=0.312.3 (fixes auth bypass vulnerability)
     "starlette>=1.3.1",       # GHSA-82w8-qh3p-5jfq (form DoS), GHSA-wqp7-x3pw-xc5r (UNC SSRF on Windows)
-    "python-multipart>=0.0.27",  # GHSA-pp6c-gr5w-3c5g (multipart header DoS)
+    "python-multipart>=0.0.30",  # GHSA-5rvq-cxj2-64vf (querystring DoS); GHSA-pp6c-gr5w-3c5g fixed in 0.0.27+
+    "langsmith>=0.8.18",  # GHSA-f4xh-w4cj-qxq8: TracingMiddleware arbitrary file read (<=0.8.17)
+    "langchain-classic>=1.0.7",  # GHSA-3644-q5cj-c5c7: untrusted prompt manifest deserialization (<=1.0.6)
+    "docling>=2.94.0",  # GHSA-q29v-xc37-wh5m: unsafe URI/path handling in HTML backend (<=2.93.x)
     "mako>=1.3.12",           # GHSA-v92g-xgxw-vvmm (// path traversal, <=1.3.10), GHSA-2h4p-vjrc-8xpq (Windows \\ traversal, <=1.3.11)
 ]
 # litellm 1.83.4 pins python-dotenv==1.0.1; fastmcp needs >=1.1.0 — allow newer for sync/lock only.
@@ -134,7 +120,7 @@ explicit = true
 # - graphql-core is mature; alpha is for new features, not instability
 # - Monitor for graphql-core 3.3.0 stable release to remove pre-release dependency
 
-# NLTK WordNet Browser DoS vulnerability (<=3.9.3): NO PATCH AVAILABLE
+# NLTK vulnerabilities: NO PATCH AVAILABLE for GHSA-p4gq-832x-fm9v (path traversal in nltk.data.load)
 # RISK ACCEPTED: nltk is dev-only dependency; vulnerable wordnet_app HTTP server is not used in codebase
 # - Vulnerability: Unauthenticated remote shutdown via GET /SHUTDOWN%20THE%20SERVER
 # - Impact: DoS only, affects nltk.app.wordnet_app when exposed on network

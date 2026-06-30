@@ -72,31 +72,3 @@ model_name = "gpt-4o"
 api_version ="2024-08-06"
 temperature = 0.1
 max_tokens = 7000
-
-[memory.mem0.model]
-platform = "azure"
-model_name = "gpt-4o"
-api_version ="2024-08-06"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.milvus.step_processing.model]
-platform = "azure"
-model_name = "gpt-4o"
-api_version ="2024-08-06"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.milvus.fact_extraction.model]
-platform = "azure"
-model_name = "gpt-4o"
-api_version ="2024-08-06"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.tips_extractor.model]
-platform = "azure"
-model_name = "gpt-4o"
-api_version ="2024-08-06"
-temperature = 0.1
-max_tokens = 5000

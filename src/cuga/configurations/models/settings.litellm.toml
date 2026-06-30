@@ -47,23 +47,3 @@ max_tokens = 16000
 platform = "litellm"
 temperature = 0.1
 max_tokens = 400
-
-[memory.mem0.model]
-platform = "litellm"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.milvus.step_processing.model]
-platform = "litellm"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.milvus.fact_extraction.model]
-platform = "litellm"
-temperature = 0.1
-max_tokens = 1000
-
-[memory.tips_extractor.model]
-platform = "litellm"
-temperature = 0.1
-max_tokens = 5000
