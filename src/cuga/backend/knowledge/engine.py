@@ -1215,13 +1215,21 @@ def _load_hf_tokenizer_for_chunking(repo_id: str):
     try:
         from transformers import AutoTokenizer
 
-        return AutoTokenizer.from_pretrained(repo_id)
+        tok = AutoTokenizer.from_pretrained(repo_id)
+        # [#400] First success per process (lru_cache makes this fire
+        # at most once per repo_id). Lets you grep ``[#400] hub-hit``
+        # across the log to count distinct Hub HEADs PR-A actually
+        # did — the only cost of the allow-list deletion.
+        logger.debug(
+            f"[#400] hub-hit repo={repo_id!r} model_max_length={getattr(tok, 'model_max_length', '?')}"
+        )
+        return tok
     except ImportError:
         logger.debug("transformers missing; HF tokenizer skipped for chunk sizing.")
         return None
     except Exception as e:
         logger.warning(
-            f"HF tokenizer load failed (repo={repo_id!r}, err={e!r}); "
+            f"[#400] hub-miss repo={repo_id!r} err={e!r}; "
             f"falling back to tiktoken. Pre-cache via HF_HOME to silence."
         )
         return None
@@ -3975,15 +3983,28 @@ class KnowledgeEngine:
         Dispatch (first match wins):
           1. fastembed -> Rust ONNX tokenizer (exact match w/ embedder)
           2. huggingface -> the embedder's own ``_tokenizer`` attr
-          3. litellm/openrouter/openai + HF-allow-listed model -> AutoTokenizer
-          4. openai-native OR litellm/openrouter routed to openai/azure -> tiktoken cl100k_base
-          5. everything else -> 'approximate' kind (cohere/voyage/gemini/etc.)
-
-        ``approximate`` is intentionally explicit so callers can keep one
-        switch + log a canary in the same place.
+          3a. litellm/openrouter/openai routed to openai/azure -> tiktoken
+              cl100k_base (no Hub HEAD; correct encoding for these models)
+          3b. litellm/openrouter/openai with any other slash-containing
+              model -> AutoTokenizer.from_pretrained via HF Hub (PR-A
+              made the Hub the source of truth; no curated allow-list)
+          4. everything else -> 'approximate' kind (cohere/voyage/gemini
+              when their HF lookup 404s, plain-named local models, etc.)
         """
         provider = (self._config.embedding_provider or "").lower()
         model_raw = self._config.embedding_model or ""
+
+        def _log_chosen(t: ChunkingTokenizer) -> ChunkingTokenizer:
+            # [#400] One log per get_chunking_tokenizer call announcing
+            # which dispatch branch won. Pair with the embed-time log
+            # in ``_build_docling_chunker`` to assert the chunker token
+            # contract matches the embedder. Greppable as ``\[#400\]``.
+            logger.debug(
+                f"[#400] tokenizer-dispatch provider={provider!r} "
+                f"model={model_raw!r} -> kind={t.kind} name={t.name!r} "
+                f"safe_max_tokens={t.safe_max_tokens}"
+            )
+            return t
 
         # 1. fastembed — exact match via the embedder's own ONNX tokenizer.
         if provider == "fastembed":
@@ -3992,11 +4013,13 @@ class KnowledgeEngine:
                 emb = self._default_embeddings
                 if isinstance(emb, _FastEmbedEmbeddings):
                     seq = _fastembed_docling_seq_limit(self._config.embedding_model or "")
-                    return ChunkingTokenizer(
-                        kind="fastembed",
-                        encoder=emb._model,
-                        name=f"fastembed:{self._config.embedding_model or 'default'}",
-                        safe_max_tokens=seq,
+                    return _log_chosen(
+                        ChunkingTokenizer(
+                            kind="fastembed",
+                            encoder=emb._model,
+                            name=f"fastembed:{self._config.embedding_model or 'default'}",
+                            safe_max_tokens=seq,
+                        )
                     )
             except Exception:
                 pass  # fall through to approximate
@@ -4007,11 +4030,13 @@ class KnowledgeEngine:
                 self._ensure_embeddings()
                 emb = self._default_embeddings
                 if getattr(emb, "_tokenizer", None) is not None:
-                    return ChunkingTokenizer(
-                        kind="hf",
-                        encoder=emb._tokenizer,
-                        name=self._config.embedding_model or "huggingface",
-                        safe_max_tokens=_hf_tokenizer_seq_limit(emb._tokenizer),
+                    return _log_chosen(
+                        ChunkingTokenizer(
+                            kind="hf",
+                            encoder=emb._tokenizer,
+                            name=self._config.embedding_model or "huggingface",
+                            safe_max_tokens=_hf_tokenizer_seq_limit(emb._tokenizer),
+                        )
                     )
             except Exception:
                 pass
@@ -4031,11 +4056,13 @@ class KnowledgeEngine:
                 try:
                     import tiktoken
 
-                    return ChunkingTokenizer(
-                        kind="tiktoken",
-                        encoder=tiktoken.get_encoding("cl100k_base"),
-                        name="cl100k_base",
-                        safe_max_tokens=_DEFAULT_APPROXIMATE_CAP,
+                    return _log_chosen(
+                        ChunkingTokenizer(
+                            kind="tiktoken",
+                            encoder=tiktoken.get_encoding("cl100k_base"),
+                            name="cl100k_base",
+                            safe_max_tokens=_DEFAULT_APPROXIMATE_CAP,
+                        )
                     )
                 except Exception:
                     pass
@@ -4049,21 +4076,25 @@ class KnowledgeEngine:
             if repo_id:
                 auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
                 if auto_tok is not None:
-                    return ChunkingTokenizer(
-                        kind="hf",
-                        encoder=auto_tok,
-                        name=repo_id,
-                        safe_max_tokens=_hf_tokenizer_seq_limit(auto_tok),
+                    return _log_chosen(
+                        ChunkingTokenizer(
+                            kind="hf",
+                            encoder=auto_tok,
+                            name=repo_id,
+                            safe_max_tokens=_hf_tokenizer_seq_limit(auto_tok),
+                        )
                     )
 
-        # 5. everything else — no precise tokenizer available.
-        # Caller fires the operator canary (so the encoding-sentinel
-        # distinguishes chunker vs splitter origin).
-        return ChunkingTokenizer(
-            kind="approximate",
-            encoder=None,
-            name="char-based",
-            safe_max_tokens=_DEFAULT_APPROXIMATE_CAP,
+        # 4. everything else — no precise tokenizer available. Caller
+        # decides how to react (chunker uses a HybridChunker default;
+        # text-splitter falls back to char-based recursive split).
+        return _log_chosen(
+            ChunkingTokenizer(
+                kind="approximate",
+                encoder=None,
+                name="char-based",
+                safe_max_tokens=_DEFAULT_APPROXIMATE_CAP,
+            )
         )
 
     def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
