@@ -698,6 +698,11 @@ export function ManagePage() {
       // previous agent's "failed: …" or stale "saved" can survive into
       // the next agent's view because draftSaveStatus is local state.
       setDraftSaveStatus({ kind: "idle" });
+      // [#397] Reset checkpoint — fires on mount AND on every agentId
+      // prop change. If the chip ever shows a stale state for a fresh
+      // agent, check this log is firing on the switch.
+      // eslint-disable-next-line no-console
+      console.debug("[#397] loadLatest reset draftSaveStatus → idle", { agent: effectiveAgentId });
       const [draftRes, toolsListRes] = await Promise.all([
         api.getManageConfig(true, effectiveAgentId),
         api.getToolsList(true),
@@ -1582,6 +1587,9 @@ export function ManagePage() {
         // that's now LIVE — confusing UX. Idle from here until the next
         // autosave kicks in.
         setDraftSaveStatus({ kind: "idle" });
+        // [#397] Reset checkpoint — fires once per successful publish.
+        // eslint-disable-next-line no-console
+        console.debug("[#397] publish-success reset draftSaveStatus → idle");
         if (!hasPartialErrors && (!data.partial_errors || data.partial_errors.length === 0)) {
           addToast("success", "Configuration saved", "Your configuration has been saved successfully");
         }
@@ -2667,6 +2675,12 @@ export function ManagePage() {
                   };
                   const code = typeof data.error === "string" ? data.error : "unknown";
                   const spec = ERR[code];
+                  // [#398] Asserts the FE branched into the busy-toast path
+                  // (kind=warning) vs the failure path (kind=error). Pair
+                  // with the backend's "[#398] reindex_busy" log: the two
+                  // should fire together within one HTTP round-trip.
+                  // eslint-disable-next-line no-console
+                  console.debug("[#398] reindex_blocked", { code, toastKind: spec?.kind ?? "error" });
                   if (spec) {
                     addToast(spec.kind, spec.title, spec.msg);
                   } else {

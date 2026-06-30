@@ -993,17 +993,33 @@ export default function KnowledgePanel({
       (id) => ({ task_id: id, status: "pending" as const }),
     );
     let initialTasks: ReindexTask[] = placeholders;
+    let firstPollHits = 0;
     try {
       const res = await api.getKnowledgeTasks();
       if (res.ok) {
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
         const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
+        firstPollHits = relevantTasks.length;
         initialTasks = mergeTasksById(taskIds, placeholders, relevantTasks);
       }
     } catch {
       // Fall back to placeholders; polling will enrich as filenames load.
     }
+    // [#402] At-arm signal: assert the tile starts with N placeholder rows
+    // and how many of them were enriched by the first synchronous poll.
+    // ``rowsWithFilename < taskIds.length`` here is EXPECTED — the rest
+    // will fill in within the first 2s poll cycle.
+    // eslint-disable-next-line no-console
+    console.debug(
+      "[#402] tile-arm",
+      {
+        taskIds: taskIds.length,
+        placeholders: placeholders.length,
+        firstPollBackendHits: firstPollHits,
+        rowsWithFilename: initialTasks.filter((t) => !!t.filename).length,
+      },
+    );
     setReindexProgress({
       taskIds,
       total: total || taskIds.length,
@@ -1027,18 +1043,38 @@ export default function KnowledgePanel({
         const failed = relevantTasks.filter((t: ReindexTask) => t.status === "failed").length;
         const done = completed + failed >= taskIds.length;
 
-        setReindexProgress((prev) => ({
-          taskIds,
-          total: taskIds.length,
-          completed,
-          failed,
-          // Merge by id so transient polls that don't see every task
-          // (e.g. backend just created task N+1 between our HTTP call
-          // and its insert) don't shrink the tile to fewer rows.
-          tasks: mergeTasksById(taskIds, prev?.tasks ?? placeholders, relevantTasks),
-          done,
-          startedAt: prev?.startedAt ?? Date.now(),
-        }));
+        setReindexProgress((prev) => {
+          const mergedTasks = mergeTasksById(taskIds, prev?.tasks ?? placeholders, relevantTasks);
+          // [#402] Per-poll proof of life. If ``rowsRendered`` ever drops
+          // below ``taskIds`` length, the merge regressed. If
+          // ``rowsWithFilename`` stays below taskIds.length past ~1s
+          // after tile-arm, the backend isn't populating ``file_tasks``
+          // — different bug.
+          // eslint-disable-next-line no-console
+          console.debug(
+            "[#402] poll",
+            {
+              backendHits: relevantTasks.length,
+              rowsRendered: mergedTasks.length,
+              rowsWithFilename: mergedTasks.filter((t) => !!t.filename).length,
+              completed,
+              failed,
+              done,
+            },
+          );
+          return {
+            taskIds,
+            total: taskIds.length,
+            completed,
+            failed,
+            // Merge by id so transient polls that don't see every task
+            // (e.g. backend just created task N+1 between our HTTP call
+            // and its insert) don't shrink the tile to fewer rows.
+            tasks: mergedTasks,
+            done,
+            startedAt: prev?.startedAt ?? Date.now(),
+          };
+        });
 
         if (done) {
           if (reindexPollRef.current) clearInterval(reindexPollRef.current);
