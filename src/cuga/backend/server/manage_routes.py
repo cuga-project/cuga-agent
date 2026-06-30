@@ -1846,6 +1846,15 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                                 f"no reindex needed."
                             )
                             await _persist_active_vector_config(agent_id, live_engine, _adopt_hash)
+                            # The active collection now matches the applied config
+                            # and is already built — so NO reindex is needed, and
+                            # its documents are live now. Tell the UI so it clears
+                            # the "reindex recommended" banner and shows the count
+                            # immediately (no panel mount / no race).
+                            if isinstance(live_apply_result, dict):
+                                live_apply_result["reindex_recommended"] = False
+                                live_apply_result["adopted_existing_collection"] = True
+                                live_apply_result["active_document_count"] = len(_existing_docs)
             except Exception as _adopt_err:  # noqa: BLE001 — never break the PATCH
                 logger.warning(f"Adopt-existing-collection check failed (non-fatal): {_adopt_err}")
 
@@ -1939,6 +1948,11 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     "dim_changed",
                     "previous_dim",
                     "new_dim",
+                    # Set when the applied config's collection was already built
+                    # and adopted as active (no reindex needed). The UI uses
+                    # these to clear the reindex banner + show the doc count.
+                    "adopted_existing_collection",
+                    "active_document_count",
                 )
             }
             # If the engine soft-failed (e.g. bad env-var key on provider

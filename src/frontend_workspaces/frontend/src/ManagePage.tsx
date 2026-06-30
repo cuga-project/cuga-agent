@@ -1341,6 +1341,20 @@ export function ManagePage() {
             // Guard 2: body read is async too; recheck after the await.
             if (ac.signal.aborted) return;
             setDraftSaveStatus({ kind: "saved" });
+            // Adopt-existing-collection (backend): the applied config's embedder
+            // maps to an already-built collection that's now active — so it IS
+            // the saved/active baseline. Advance the snapshot (clears the
+            // spurious "Re-index to apply your changes" banner — no reindex is
+            // needed, the vectors already exist with this embedder) and show its
+            // doc count immediately, instead of only after the panel mounts.
+            const _lc = body?.live_changes;
+            if (_lc?.adopted_existing_collection) {
+              setKnowledgeSavedSnapshot({ ...knowledgeConfig });
+              setKnowledgeReindexNeeded(false);
+              if (typeof _lc.active_document_count === "number") {
+                setKnowledgeDocCount(_lc.active_document_count);
+              }
+            }
             const collections = body?.auto_reindex?.collections ?? [];
             const taskIds: string[] = collections
               .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
