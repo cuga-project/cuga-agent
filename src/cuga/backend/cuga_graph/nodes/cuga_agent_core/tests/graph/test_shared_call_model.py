@@ -69,8 +69,9 @@ def _make_state(
 # ── Mock helpers ───────────────────────────────────────────────────────────
 
 
-def _mock_response(content: str):
-    return SimpleNamespace(content=content, additional_kwargs={})
+def _mock_response(content: str, reasoning: str | None = None):
+    additional_kwargs = {"reasoning_content": reasoning} if reasoning else {}
+    return SimpleNamespace(content=content, additional_kwargs=additional_kwargs)
 
 
 def _mock_model(content: str):
@@ -300,3 +301,55 @@ async def test_configurable_llm_overrides_base_model(mock_summarize):
     override_model.ainvoke.assert_called_once()
     base_model.ainvoke.assert_not_called()
     assert result.update["final_answer"] == "The answer is 7."
+
+
+# ── 8. Empty visible content falls back to reasoning / execution output ─────
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_empty_content_falls_back_to_reasoning_for_final_answer(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state()
+    model = _mock_model("")
+    model.ainvoke = AsyncMock(
+        return_value=_mock_response("", reasoning="Average spending is 200, total is 600.")
+    )
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "Average spending is 200, total is 600."
+    assert result.update["chat_messages"][-1].content == "Average spending is 200, total is 600."
+
+
+@pytest.mark.asyncio
+@patch(
+    "cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.shared_nodes.apply_context_summarization",
+    new_callable=AsyncMock,
+)
+async def test_empty_content_falls_back_to_execution_output(mock_summarize):
+    mock_summarize.side_effect = lambda messages, *args, **kwargs: messages
+
+    adapter = _TestAdapter()
+    state = _make_state(
+        messages=[
+            HumanMessage(content="analyze spendings"),
+            HumanMessage(content="Execution output:\navg=200\ntotal=600"),
+        ]
+    )
+    model = _mock_model("")
+    settings = _mock_settings()
+
+    node = _get_factory()(adapter, model, settings)
+    result = await node(state, config=None)
+
+    assert result.goto == END
+    assert result.update["final_answer"] == "avg=200\ntotal=600"
