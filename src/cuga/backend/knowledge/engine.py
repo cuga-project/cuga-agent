@@ -1296,6 +1296,36 @@ def _resolve_tiktoken_encoding(model_name: str):
         return tiktoken.get_encoding("cl100k_base")
 
 
+@dataclass(frozen=True)
+class ChunkingTokenizer:
+    """Single-dispatch contract: given a provider+model, what tokenizer
+    sizes the chunks?
+
+    Replaces the per-callsite branching that existed in both
+    ``_build_docling_chunker`` and ``_build_text_splitter`` (each ~60 LOC
+    of provider dispatch repeating the same logic). After this refactor,
+    each builder switches on ``kind`` once and hands off to the
+    appropriate primitive.
+
+    Always present — never ``None``. The ``approximate`` kind covers the
+    no-precise-tokenizer case (cohere / voyage / gemini / mistral-embed
+    via litellm) so callers can keep a single switch. ``safe_max_tokens``
+    is already margined via ``_hf_tokenizer_seq_limit`` for HF kinds, or
+    a sensible default for the others.
+    """
+
+    kind: str  # Literal["hf", "tiktoken", "fastembed", "approximate"]
+    encoder: Any  # HF tokenizer | tiktoken Encoding | fastembed model | None
+    name: str  # repo id / "cl100k_base" / "fastembed:<model>" / "char-based"
+    safe_max_tokens: int  # already margined for HF; sensible default for others
+
+
+# Sensible default cap for the ``approximate`` and ``fastembed`` kinds —
+# 8192 covers any current embedder's context and lets the user's
+# chunk_size knob act as the effective limit via ``min(chunk_size, cap)``.
+_DEFAULT_APPROXIMATE_CAP = 8192
+
+
 @functools.lru_cache(maxsize=64)
 def _warn_unlisted_embedder_once(provider: str, model: str, encoding_name: str) -> None:
     """Operator canary: warn once per (provider, model, encoding) when chunker
@@ -3963,53 +3993,72 @@ class KnowledgeEngine:
         """Get chunk_size and chunk_overlap from _config (source of truth after publish)."""
         return self._config.chunk_size, self._config.chunk_overlap
 
-    def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
-        """Token-aware splitter when a tokenizer is known for the active
-        embedder; char-based fallback otherwise. See #387 follow-up.
+    def get_chunking_tokenizer(self) -> ChunkingTokenizer:
+        """Resolve the tokenizer + safe max for the active embedder.
+        SINGLE dispatcher. Both ``_build_docling_chunker`` and
+        ``_build_text_splitter`` consume this; before the refactor each
+        had its own copy of the provider branching.
 
-        Dispatch order (first match wins):
-          1. HF tokenizer for litellm/openrouter HF-listed orgs (intfloat/,
-             BAAI/bge, sentence-transformers/, …) — exact unit.
-          2. tiktoken cl100k_base for openai-native + azure routes
-             (including litellm/openai/* and litellm/azure/*) — also exact.
-          3. HuggingFace-provider model's own tokenizer — exact.
-          4. Char-based fallback (cohere/voyage/gemini/ollama/fastembed
-             plain-text and any unlisted slash-model). Operator canary log
-             fires for the unlisted-HF-style case so we can collect
-             telemetry on which orgs to add to the allow-list (mirrors
-             the canary already firing in ``_build_docling_chunker``).
+        Dispatch (first match wins):
+          1. fastembed -> Rust ONNX tokenizer (exact match w/ embedder)
+          2. huggingface -> the embedder's own ``_tokenizer`` attr
+          3. litellm/openrouter/openai + HF-allow-listed model -> AutoTokenizer
+          4. openai-native OR litellm/openrouter routed to openai/azure -> tiktoken cl100k_base
+          5. everything else -> 'approximate' kind (cohere/voyage/gemini/etc.)
+
+        ``approximate`` is intentionally explicit so callers can keep one
+        switch + log a canary in the same place.
         """
-
-        def _hf_splitter(tok):
-            # ``from_huggingface_tokenizer`` overcounts BOS/EOS by ~2 tokens
-            # for e5/BGE (langchain#30184) — harmless under-fill, not the
-            # truncation we're fixing.
-            cap = min(chunk_size, _hf_tokenizer_seq_limit(tok))
-            return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
-                tok, chunk_size=cap, chunk_overlap=min(chunk_overlap, cap // 4)
-            )
-
         provider = (self._config.embedding_provider or "").lower()
         model_raw = self._config.embedding_model or ""
 
-        # 1. HF allow-list (litellm/openrouter HF-style routes).
+        # 1. fastembed — exact match via the embedder's own ONNX tokenizer.
+        if provider == "fastembed":
+            try:
+                self._ensure_embeddings()
+                emb = self._default_embeddings
+                if isinstance(emb, _FastEmbedEmbeddings):
+                    seq = _fastembed_docling_seq_limit(self._config.embedding_model or "")
+                    return ChunkingTokenizer(
+                        kind="fastembed",
+                        encoder=emb._model,
+                        name=f"fastembed:{self._config.embedding_model or 'default'}",
+                        safe_max_tokens=seq,
+                    )
+            except Exception:
+                pass  # fall through to approximate
+
+        # 2. HuggingFace provider — embedder loaded its own tokenizer.
+        if provider == "huggingface":
+            try:
+                self._ensure_embeddings()
+                emb = self._default_embeddings
+                if getattr(emb, "_tokenizer", None) is not None:
+                    return ChunkingTokenizer(
+                        kind="hf",
+                        encoder=emb._tokenizer,
+                        name=self._config.embedding_model or "huggingface",
+                        safe_max_tokens=_hf_tokenizer_seq_limit(emb._tokenizer),
+                    )
+            except Exception:
+                pass
+
+        # 3. litellm/openrouter/openai with an HF-listed model id.
         if provider in ("litellm", "openrouter", "openai"):
             repo_id = _hf_repo_id_for_chunk_sizing(model_raw)
             if repo_id:
                 auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
                 if auto_tok is not None:
-                    try:
-                        return _hf_splitter(auto_tok)
-                    except Exception as e:
-                        logger.warning(f"from_huggingface_tokenizer failed ({e}); char fallback.")
+                    return ChunkingTokenizer(
+                        kind="hf",
+                        encoder=auto_tok,
+                        name=repo_id,
+                        safe_max_tokens=_hf_tokenizer_seq_limit(auto_tok),
+                    )
 
-            # 2. tiktoken for openai-native / azure routes. cl100k_base is
-            # exactly what text-embedding-3-* and ada-002 use; for azure
-            # it's a near-perfect approximation. Strip ONLY the outer
-            # routing prefix (litellm/ or openrouter/) — don't use
-            # ``_strip_litellm_route_prefix`` because that also strips
-            # ``openai/`` and ``azure/``, which would erase the marker
-            # we're trying to detect.
+            # 4. tiktoken for openai-native + azure routes. Strip only the
+            # outer routing prefix (litellm/ or openrouter/) so we can
+            # still see the inner openai/ or azure/ marker.
             outer = model_raw.lower()
             for outer_prefix in ("litellm/", "openrouter/"):
                 if outer.startswith(outer_prefix):
@@ -4017,39 +4066,73 @@ class KnowledgeEngine:
                     break
             if provider == "openai" or outer.startswith(("openai/", "azure/")):
                 try:
-                    return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
-                        encoding_name="cl100k_base",
-                        chunk_size=chunk_size,
-                        chunk_overlap=chunk_overlap,
+                    import tiktoken
+
+                    return ChunkingTokenizer(
+                        kind="tiktoken",
+                        encoder=tiktoken.get_encoding("cl100k_base"),
+                        name="cl100k_base",
+                        safe_max_tokens=_DEFAULT_APPROXIMATE_CAP,
                     )
-                except Exception as e:
-                    logger.warning(f"from_tiktoken_encoder failed ({e}); char fallback.")
+                except Exception:
+                    pass
 
-        # 3. HF-provider — reuse the embedder's own tokenizer.
-        elif provider == "huggingface":
+        # 5. everything else — no precise tokenizer available.
+        # Caller fires the operator canary (so the encoding-sentinel
+        # distinguishes chunker vs splitter origin).
+        return ChunkingTokenizer(
+            kind="approximate",
+            encoder=None,
+            name="char-based",
+            safe_max_tokens=_DEFAULT_APPROXIMATE_CAP,
+        )
+
+    def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
+        """Token-aware splitter via the unified ``get_chunking_tokenizer``
+        dispatch. See #387 follow-up — both this and ``_build_docling_chunker``
+        used to carry their own provider-branch copy; now they share the
+        accessor and just switch on ``tok.kind``.
+
+        ``tok.safe_max_tokens`` already accounts for the embedder-wrapping
+        margin for HF kinds (see ``_hf_tokenizer_seq_limit`` /
+        ``_HF_TOKEN_SAFETY_MARGIN``)."""
+        tok = self.get_chunking_tokenizer()
+        cap = min(chunk_size, tok.safe_max_tokens)
+        overlap = min(chunk_overlap, max(cap // 4, 1))
+
+        if tok.kind == "hf":
             try:
-                self._ensure_embeddings()
-                emb = self._default_embeddings
-                if getattr(emb, "_tokenizer", None) is not None:
-                    return _hf_splitter(emb._tokenizer)
+                # ``from_huggingface_tokenizer`` overcounts BOS/EOS by ~2
+                # tokens (langchain#30184) — harmless under-fill, not the
+                # 518>512 truncation that the safety margin handles.
+                return RecursiveCharacterTextSplitter.from_huggingface_tokenizer(
+                    tok.encoder, chunk_size=cap, chunk_overlap=overlap
+                )
             except Exception as e:
-                logger.warning(f"HF-provider tokenizer reuse failed ({e}); char fallback.")
+                logger.warning(f"from_huggingface_tokenizer failed ({e}); char fallback.")
 
-        # 4. Char-based fallback. For unlisted HF-style slash-models on
-        # litellm/openrouter routes, fire the same canary the chunker
-        # path fires — this is the splitter-side mirror of #387's
-        # silent-degradation signal. ``_warn_unlisted_embedder_once``
-        # dedups by (provider, model, encoding_name), so the chunker and
-        # splitter sides each fire ONCE per process per unlisted model.
-        # The "char_based_split" sentinel distinguishes the splitter
-        # origin from the chunker's "cl100k_base" key.
-        if provider in ("litellm", "openrouter"):
+        if tok.kind == "tiktoken":
+            try:
+                return RecursiveCharacterTextSplitter.from_tiktoken_encoder(
+                    encoding_name=tok.name, chunk_size=chunk_size, chunk_overlap=chunk_overlap
+                )
+            except Exception as e:
+                logger.warning(f"from_tiktoken_encoder failed ({e}); char fallback.")
+
+        # ``approximate`` (cohere/voyage/gemini/etc.) and ``fastembed``
+        # plain-text path: char-based fallback. Fire the operator canary
+        # for unlisted slash-model litellm/openrouter routes — this is
+        # the splitter-side mirror of the chunker's canary; both dedup
+        # by (provider, model, encoding-name) so each fires ONCE per
+        # process.
+        provider = (self._config.embedding_provider or "").lower()
+        if tok.kind == "approximate" and provider in ("litellm", "openrouter"):
+            model_raw = self._config.embedding_model or ""
             stripped = _strip_litellm_route_prefix(model_raw) or model_raw
-            stripped_lo = stripped.lower()
             if (
                 "/" in stripped
                 and _hf_repo_id_for_chunk_sizing(model_raw) is None
-                and not stripped_lo.startswith(("openai/", "azure/"))
+                and not stripped.lower().startswith(("openai/", "azure/"))
             ):
                 _warn_unlisted_embedder_once(provider, stripped, "char_based_split")
 
@@ -4071,148 +4154,82 @@ class KnowledgeEngine:
         try:
             from docling_core.transforms.chunker import HybridChunker
 
-            if self._config.embedding_provider == "fastembed":
-                self._ensure_embeddings()
-                emb = self._default_embeddings
-                if isinstance(emb, _FastEmbedEmbeddings):
-                    seq = _fastembed_docling_seq_limit(self._config.embedding_model or "")
-                    cap = min(chunk_size, seq)
-                    fe = emb._model
-                    tok = _fastembed_docling_tokenizer_cls()(
-                        text_embedding=fe,
-                        max_tokens=cap,
+            tok_info = self.get_chunking_tokenizer()
+            cap = min(chunk_size, tok_info.safe_max_tokens)
+            provider = (self._config.embedding_provider or "").lower()
+            model_str = self._config.embedding_model or "default"
+
+            if tok_info.kind == "fastembed":
+                tok = _fastembed_docling_tokenizer_cls()(text_embedding=tok_info.encoder, max_tokens=cap)
+                logger.debug(
+                    f"HybridChunker tokenizer: fastembed ONNX (model={tok_info.name!r}, "
+                    f"chunk_token_limit={cap}, model_seq_limit={tok_info.safe_max_tokens})"
+                )
+                return HybridChunker(tokenizer=tok)
+
+            if tok_info.kind == "hf":
+                try:
+                    from docling_core.transforms.chunker.tokenizer.huggingface import (
+                        HuggingFaceTokenizer,
                     )
-                    mn = getattr(fe, "model_name", None)
+
+                    if cap < chunk_size:
+                        logger.info(
+                            f"Capping chunk_size {chunk_size} -> {cap} for embedder "
+                            f"{tok_info.name} (safe_max_tokens={tok_info.safe_max_tokens}). "
+                            f"Chunks at the original size would have been truncated at embed time."
+                        )
+                    tok = HuggingFaceTokenizer(tokenizer=tok_info.encoder, max_tokens=cap)
                     logger.debug(
-                        "HybridChunker tokenizer: fastembed ONNX (same model as embeddings) "
-                        "(model_name={!r}, chunk_token_limit={}, model_seq_limit={})",
-                        mn,
-                        cap,
-                        seq,
+                        f"HybridChunker tokenizer: HF AutoTokenizer "
+                        f"(repo={tok_info.name!r}, chunk_token_limit={cap}, "
+                        f"safe_max_tokens={tok_info.safe_max_tokens}, provider={provider!r})"
                     )
                     return HybridChunker(tokenizer=tok)
-                logger.debug(
-                    "HybridChunker tokenizer: expected _FastEmbedEmbeddings for provider=fastembed, "
-                    "got {}; using Docling default (HuggingFace MiniLM tokenizer)",
-                    type(emb).__name__,
-                )
-            # HuggingFace provider: the embedding wrapper already loaded the
-            # model's own tokenizer — reuse it. Perfect match, zero extra cost.
-            if self._config.embedding_provider == "huggingface":
-                try:
-                    self._ensure_embeddings()
-                    emb = self._default_embeddings
-                    if hasattr(emb, "_tokenizer") and emb._tokenizer is not None:
-                        from docling_core.transforms.chunker.tokenizer.huggingface import (
-                            HuggingFaceTokenizer,
-                        )
-
-                        # Cap at the model's real max_seq_length so an
-                        # 800-token chunk_size doesn't overrun e.g. e5-large's
-                        # 512-token limit and force the embedder to truncate.
-                        # Same latent bug as the litellm-routed branch below.
-                        seq = _hf_tokenizer_seq_limit(emb._tokenizer)
-                        cap = min(chunk_size, seq)
-                        tok = HuggingFaceTokenizer(
-                            tokenizer=emb._tokenizer,
-                            max_tokens=cap,
-                        )
-                        logger.debug(
-                            f"HybridChunker tokenizer: HuggingFace (model's own — already loaded by "
-                            f"_PyTorchEmbeddings; embedding_provider='huggingface', "
-                            f"model={self._config.embedding_model or 'default'!r}, "
-                            f"chunk_token_limit={cap}, model_seq_limit={seq})"
-                        )
-                        return HybridChunker(tokenizer=tok)
-                except Exception as hf_err:  # pragma: no cover - defensive
+                except Exception as wrap_err:
                     logger.warning(
-                        f"HuggingFace chunker tokenizer reuse failed ({hf_err}); falling back to tiktoken."
+                        f"HuggingFaceTokenizer wrap failed for {tok_info.name!r} ({wrap_err}); "
+                        f"falling back to tiktoken."
                     )
 
-            # litellm/openrouter-routed HF-style embedders use their own
-            # tokenizer for chunk sizing (issue #387). Unlisted models fall
-            # through to tiktoken — same behavior as before this branch.
-            if self._config.embedding_provider in ("litellm", "openrouter", "openai"):
-                repo_id = _hf_repo_id_for_chunk_sizing(self._config.embedding_model or "")
-                if repo_id:
-                    auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
-                    if auto_tok is not None:
-                        try:
-                            from docling_core.transforms.chunker.tokenizer.huggingface import (
-                                HuggingFaceTokenizer,
-                            )
+            if tok_info.kind == "tiktoken":
+                try:
+                    tok = _tiktoken_docling_tokenizer_cls()(encoding=tok_info.encoder, max_tokens=chunk_size)
+                    logger.debug(
+                        f"HybridChunker tokenizer: tiktoken (encoding={tok_info.name!r}, "
+                        f"provider={provider!r}, model={model_str!r}); zero-download"
+                    )
+                    return HybridChunker(tokenizer=tok)
+                except Exception as tok_err:  # pragma: no cover - defensive
+                    logger.warning(f"tiktoken chunker tokenizer failed ({tok_err}); Docling default.")
 
-                            seq = _hf_tokenizer_seq_limit(auto_tok)
-                            cap = min(chunk_size, seq)
-                            if cap < chunk_size:
-                                logger.info(
-                                    f"Capping chunk_size {chunk_size} -> {cap} for embedder "
-                                    f"{repo_id} (model_max_length={seq}). Chunks at the original "
-                                    f"size would have been truncated at embed time."
-                                )
-                            tok = HuggingFaceTokenizer(tokenizer=auto_tok, max_tokens=cap)
-                            logger.debug(
-                                f"HybridChunker tokenizer: HF AutoTokenizer "
-                                f"(litellm-routed; repo={repo_id!r}, chunk_token_limit={cap}, "
-                                f"model_seq_limit={seq}, provider={self._config.embedding_provider!r})"
-                            )
-                            return HybridChunker(tokenizer=tok)
-                        except Exception as wrap_err:
-                            logger.warning(
-                                f"HuggingFaceTokenizer wrap failed for {repo_id!r} ({wrap_err}); "
-                                f"falling back to tiktoken."
-                            )
-                    # else: load returned None — already warned; fall through.
-
-            # All other providers (openai / openrouter / litellm without an
-            # HF-routed model / ollama / auto / unknown): use tiktoken.
-            #   - openai text-embedding-*: cl100k_base BPE matches exactly
-            #   - ollama / vendor (cohere/voyage/gemini): cl100k_base is a
-            #     free BPE approximation; better than downloading 90 MB of
-            #     MiniLM weights Docling would otherwise pull
-            #   - tiktoken's encodings ship inside the wheel — ZERO extra
-            #     disk or download regardless of provider
+            # ``approximate`` kind — last-resort tiktoken cl100k_base + canary.
+            # Same path the pre-refactor "everything else" branch took, just
+            # consolidated. Operator canary fires for unlisted slash-models
+            # on litellm/openrouter routes (the splitter mirrors this with
+            # "char_based_split" key so chunker vs splitter origin is
+            # distinguishable in operator logs).
             try:
-                encoding = _resolve_tiktoken_encoding(self._config.embedding_model or "")
-                tok = _tiktoken_docling_tokenizer_cls()(
-                    encoding=encoding,
-                    max_tokens=chunk_size,
-                )
-                # Canary: warn once when a litellm/openrouter route hit
-                # cl100k_base for a slash-containing model not on the HF
-                # allow-list. See _warn_unlisted_embedder_once.
-                #
-                # Stripped names that begin with ``openai/`` or ``azure/``
-                # are EXEMPTED — for those, cl100k_base IS the correct
-                # tokenizer (e.g. ``litellm/openai/text-embedding-3-small``
-                # resolves to text-embedding-3-small under cl100k by
-                # design, not as a silent fallback).
-                provider = (self._config.embedding_provider or "").lower()
+                import tiktoken
+
+                encoding = tiktoken.get_encoding("cl100k_base")
+                tok = _tiktoken_docling_tokenizer_cls()(encoding=encoding, max_tokens=chunk_size)
                 model_raw = self._config.embedding_model or ""
                 stripped = _strip_litellm_route_prefix(model_raw) or model_raw
-                stripped_lo = stripped.lower()
-                enc_name = getattr(encoding, "name", "")
                 if (
                     provider in {"litellm", "openrouter"}
                     and "/" in stripped
-                    and enc_name == "cl100k_base"
                     and _hf_repo_id_for_chunk_sizing(model_raw) is None
-                    and not stripped_lo.startswith(("openai/", "azure/"))
+                    and not stripped.lower().startswith(("openai/", "azure/"))
                 ):
-                    _warn_unlisted_embedder_once(provider, stripped, enc_name)
+                    _warn_unlisted_embedder_once(provider, stripped, "cl100k_base")
                 logger.debug(
-                    f"HybridChunker tokenizer: tiktoken (encoding={enc_name!r}, "
-                    f"embedding_provider={self._config.embedding_provider!r}, "
-                    f"model={self._config.embedding_model or 'default'!r}); "
-                    f"zero-download fallback"
+                    f"HybridChunker tokenizer: cl100k_base (approximate; "
+                    f"provider={provider!r}, model={model_str!r})"
                 )
                 return HybridChunker(tokenizer=tok)
             except Exception as tok_err:  # pragma: no cover - defensive
-                logger.warning(
-                    "tiktoken chunker tokenizer failed ({}), Docling will fall back "
-                    "to its default (may trigger MiniLM download).",
-                    tok_err,
-                )
+                logger.warning(f"tiktoken approximate path failed ({tok_err}); Docling default.")
 
             return HybridChunker(max_tokens=chunk_size)
         except Exception as e:
