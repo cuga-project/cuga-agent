@@ -759,6 +759,7 @@ class LLMManager:
                 "max_tokens": max_tokens,
                 "model": model_name,
                 "seed": 42,
+                "default_headers": {"RITS_API_KEY": api_key} if api_key else None,
             }
             if not is_reasoning:
                 rits_params["temperature"] = temperature
