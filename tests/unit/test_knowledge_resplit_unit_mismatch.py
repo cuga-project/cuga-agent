@@ -74,11 +74,16 @@ class TestBuildTextSplitterTokenAware:
                 m_from_hf.return_value = "hf_splitter"
                 splitter = eng._build_text_splitter(chunk_size=800, chunk_overlap=100)
 
+        from cuga.backend.knowledge.engine import _HF_TOKEN_SAFETY_MARGIN
+
         assert splitter == "hf_splitter"
-        # Called with the model's REAL max (512), NOT the user's raw 800.
+        # Called with model's max minus the safety margin (covers
+        # provider-side wrapping that the local tokenizer doesn't see —
+        # see the 518>512 regression).
         call_args = m_from_hf.call_args
-        assert call_args.kwargs["chunk_size"] == 512, (
-            f"splitter not capped at model_max_length=512: {call_args}"
+        expected_cap = 512 - _HF_TOKEN_SAFETY_MARGIN
+        assert call_args.kwargs["chunk_size"] == expected_cap, (
+            f"splitter not capped at model_max_length-margin={expected_cap}: {call_args}"
         )
         # Tokenizer passed is the one we loaded (matches embedder).
         assert call_args.args[0] is fake_tok
@@ -97,8 +102,10 @@ class TestBuildTextSplitterTokenAware:
                 m_from_hf.return_value = "hf_splitter"
                 splitter = eng._build_text_splitter(chunk_size=800, chunk_overlap=100)
 
+        from cuga.backend.knowledge.engine import _HF_TOKEN_SAFETY_MARGIN
+
         assert splitter == "hf_splitter"
-        assert m_from_hf.call_args.kwargs["chunk_size"] == 512
+        assert m_from_hf.call_args.kwargs["chunk_size"] == 512 - _HF_TOKEN_SAFETY_MARGIN
 
     def test_openai_text_embedding_falls_back_to_chars(self):
         # OpenAI's text-embedding-3-* is NOT on the HF allow-list (cl100k
