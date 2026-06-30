@@ -18,6 +18,7 @@ from cuga.backend.knowledge.auth import (
     ensure_agent_scope_manage_if_needed,
     require_internal_or_auth,
     require_knowledge_agent_manage_identity,
+    resolve_agent_collection,
     resolve_collection,
 )
 from cuga.backend.knowledge.engine import (
@@ -794,8 +795,31 @@ async def list_tasks(
     identity: KnowledgeIdentity = Depends(require_internal_or_auth),
 ):
     engine = _get_engine(request)
+    # Enforce scope-enabled + ownership (raises 403/400); also the exact
+    # collection for the session branch.
     collection = resolve_collection(identity, scope, request)
-    tasks = await engine.get_tasks(collection)
+    if scope == "agent":
+        # Return tasks across ALL of this agent's collections (active +
+        # in-flight), not just the active one. A config-change reindex
+        # (reindex_for_config) ingests into a NEW collection and DEFERS the
+        # pointer flip, so the in-flight collection is not the active one
+        # until promotion. Polling only the active collection leaves the
+        # reindex tile frozen at "Pending" for the whole run, then jumps to
+        # done at flip — no live per-document progress. The base prefix (no
+        # hash) matches every collection this agent owns, and the FE filters
+        # to its own task_ids; other agents'/sessions' tasks are excluded.
+        base = resolve_agent_collection(identity.agent_id, None)
+        # ponytail: full task scan + Python prefix filter. The task table is
+        # small (ingestion jobs, not user traffic). If it ever grows, push
+        # the prefix into the store query (collection = base OR LIKE base_%).
+        all_tasks = await engine.get_tasks(None)
+        tasks = [
+            t
+            for t in all_tasks
+            if (c := str(t.get("collection", ""))) == base or c.startswith(f"{base}_")
+        ]
+    else:
+        tasks = await engine.get_tasks(collection)
     return {"tasks": tasks}
 
 
