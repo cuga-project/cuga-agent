@@ -184,31 +184,58 @@ class TestHfTokenizerSeqLimit:
         assert cap >= 1
 
 
-class TestLoadHfTokenizerCachesFailure:
-    """Critical: a transient corp-proxy outage at process start must NOT
-    re-fire the hub call on every doc ingested in the session."""
+class TestLoadHfTokenizerCachesSuccessButRetriesOnFailure:
+    """Workflow w5i1mbchd synth fix #4 changed the cache contract:
+    successes are still lru_cached (one Hub HEAD per repo per process),
+    but failures are NO LONGER cached. Reason: a transient corp-proxy
+    503 used to permanently lock the model into char-based fallback
+    for the whole process; now a retry on the next ingest can recover.
+    """
 
     def setup_method(self):
         # Each test starts with a clean cache so test order doesn't matter.
         _load_hf_tokenizer_for_chunking.cache_clear()
 
-    def test_success_path_returns_tokenizer(self):
+    def test_success_path_returns_tokenizer_and_caches(self):
         with patch("transformers.AutoTokenizer.from_pretrained") as m:
             fake_tok = SimpleNamespace(model_max_length=512)
             m.return_value = fake_tok
-            result = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
-            assert result is fake_tok
+            r1 = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
+            r2 = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
+            assert r1 is fake_tok
+            assert r2 is fake_tok
+            # Cached: two lookups, ONE underlying call.
             m.assert_called_once_with("intfloat/multilingual-e5-large")
 
-    def test_failure_caches_none_and_does_not_retry(self):
+    def test_failure_does_not_cache_and_retries_next_call(self):
+        """Counter-test to the pre-fix-#4 behavior. The old contract
+        cached None and locked the model out for the process. The new
+        contract logs once but lets the next call retry — so a 30s
+        transient hub outage doesn't degrade the rest of the session."""
         with patch("transformers.AutoTokenizer.from_pretrained") as m:
             m.side_effect = OSError("offline / no network")
             r1 = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
             r2 = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
             r3 = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
             assert r1 is None and r2 is None and r3 is None
-            # The whole point: ONE call across three lookups.
-            assert m.call_count == 1
+            # Each call re-attempts: three lookups, THREE underlying calls.
+            assert m.call_count == 3, (
+                f"Failures should NOT be cached after PR-A fix #4 — got "
+                f"{m.call_count} calls (expected 3 = one per lookup)."
+            )
+
+    def test_failure_then_success_recovers(self):
+        """Direct repro of the operational bug fix #4 closes: hub flakes
+        on first call, succeeds on second. Old contract: model stuck at
+        char-based forever. New contract: second call gets the tokenizer."""
+        fake_tok = SimpleNamespace(model_max_length=512)
+        side_effects = [OSError("transient 503"), fake_tok]
+        with patch("transformers.AutoTokenizer.from_pretrained", side_effect=side_effects) as m:
+            r1 = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
+            r2 = _load_hf_tokenizer_for_chunking("intfloat/multilingual-e5-large")
+            assert r1 is None, "first call must surface the OSError as None"
+            assert r2 is fake_tok, "second call must succeed (failure NOT cached)"
+            assert m.call_count == 2
 
     def test_import_error_returns_none(self):
         # Simulate a slim install where transformers is not present at all.

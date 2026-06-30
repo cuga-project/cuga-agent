@@ -142,7 +142,13 @@ class TestChunkingTokenizerDataclass:
     that prevent future regressions to a mutable dict-shaped contract."""
 
     def test_is_frozen(self):
-        tok = ChunkingTokenizer(kind="tiktoken", encoder=None, name="cl100k_base", safe_max_tokens=8192)
+        tok = ChunkingTokenizer(
+            kind="tiktoken",
+            encoder=None,
+            name="cl100k_base",
+            safe_max_tokens=8175,
+            recommended_chunk_tokens=512,
+        )
         import dataclasses
 
         try:
@@ -160,5 +166,11 @@ class TestChunkingTokenizerDataclass:
         # frozen dataclasses with hashable fields are hashable — lets
         # callers cache by (provider, model) → ChunkingTokenizer if
         # they want.
-        tok = ChunkingTokenizer(kind="approximate", encoder=None, name="char-based", safe_max_tokens=8192)
+        tok = ChunkingTokenizer(
+            kind="approximate",
+            encoder=None,
+            name="char-based",
+            safe_max_tokens=8192,
+            recommended_chunk_tokens=512,
+        )
         assert hash(tok) is not None

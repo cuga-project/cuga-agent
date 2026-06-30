@@ -1191,6 +1191,32 @@ def _strip_litellm_route_prefix(name: str) -> str:
     return n
 
 
+# Aliases for litellm/openrouter model names that DON'T match a public HF
+# repo path directly. Saves one Hub HEAD miss per process per unknown
+# repo (cf. workflow w5i1mbchd synth, R1+R3 fix #3). Conservative:
+# only entries where the public HF mirror's existence is well-known.
+# Add via PR, not at runtime — the value of the map is that it's
+# auditable, not exhaustive.
+#
+# Note: cohere/voyage embeddings DON'T have public HF tokenizer
+# mirrors (Cohere and Voyage publish models but not their tokenizers
+# as standalone HF repos). They fall through to the approximate kind
+# via char-based RecursiveCharacterTextSplitter, which is the correct
+# behavior for closed-vendor embedders.
+_HF_REPO_ALIASES: dict[str, str] = {
+    # Jina embeddings — litellm exposes ``jina_ai/jina-embeddings-v3``,
+    # ``jina-embeddings-v3`` and similar shorter forms; the canonical
+    # HF path is ``jinaai/`` (no underscore).
+    "jina-embeddings-v3": "jinaai/jina-embeddings-v3",
+    "jina-embeddings-v2-base-en": "jinaai/jina-embeddings-v2-base-en",
+    "jina_ai/jina-embeddings-v3": "jinaai/jina-embeddings-v3",
+    # Nomic embeddings — the ``nomic-ai/`` org prefix isn't always set
+    # explicitly by users; map the bare name.
+    "nomic-embed-text-v1.5": "nomic-ai/nomic-embed-text-v1.5",
+    "nomic-embed-text-v1": "nomic-ai/nomic-embed-text-v1",
+}
+
+
 def _hf_repo_id_candidate(model_name: str) -> Optional[str]:
     """Return the stripped model name as a CANDIDATE HF repo id (e.g.
     ``intfloat/multilingual-e5-large``) when ``model_name`` looks
@@ -1201,25 +1227,45 @@ def _hf_repo_id_candidate(model_name: str) -> Optional[str]:
     truth instead of maintaining a curated allow-list (deleted in PR-A,
     cf. workflow ``w9y9xtyse`` synth) — failed lookups log + lru_cache
     the None so each unknown model costs at most one Hub HEAD per
-    process."""
+    process.
+
+    Aliases (``_HF_REPO_ALIASES``) are consulted FIRST so litellm
+    model names like ``jina-embeddings-v3`` resolve to the canonical
+    HF repo ``jinaai/jina-embeddings-v3`` without a wasted 404 HEAD."""
     stripped = _strip_litellm_route_prefix(model_name)
+    alias = _HF_REPO_ALIASES.get(stripped.lower())
+    if alias is not None:
+        return alias
     if "/" not in stripped:
         return None
     return stripped
 
 
 @functools.lru_cache(maxsize=8)
-def _load_hf_tokenizer_for_chunking(repo_id: str):
-    """Load HF tokenizer; memoizes None so a one-time hub timeout doesn't
-    re-fire per ingest. Lazy transformers import."""
-    try:
-        from transformers import AutoTokenizer
+def _load_hf_tokenizer_cached(repo_id: str):
+    """Inner cache for ``_load_hf_tokenizer_for_chunking``. Only caches
+    SUCCESSFUL loads — failures propagate to the outer wrapper, which
+    logs them but does NOT cache. Reason: a transient Hub 503 used to
+    permanently downgrade a model to char-based until process restart
+    (workflow w5i1mbchd synth, R2's operational quirk). The cost of
+    a retry on permanent 404 is one Hub HEAD per ingest (~50ms);
+    cheaper than the operational pager-call on a transient 503."""
+    from transformers import AutoTokenizer
 
-        tok = AutoTokenizer.from_pretrained(repo_id)
-        # [#400] First success per process (lru_cache makes this fire
-        # at most once per repo_id). Lets you grep ``[#400] hub-hit``
-        # across the log to count distinct Hub HEADs PR-A actually
-        # did — the only cost of the allow-list deletion.
+    return AutoTokenizer.from_pretrained(repo_id)
+
+
+def _load_hf_tokenizer_for_chunking(repo_id: str):
+    """Load HF tokenizer with retry-on-transient-failure semantics.
+    Successes are lru_cached via ``_load_hf_tokenizer_cached``; failures
+    are logged and dropped (NOT cached) so a flaky Hub doesn't lock the
+    model out of HF-tokenizer-mode for the rest of the process."""
+    try:
+        tok = _load_hf_tokenizer_cached(repo_id)
+        # [#400] Fires once per (process, repo_id) — lru_cache on the
+        # inner function makes the second call a hit. Grep ``[#400]
+        # hub-hit`` to count distinct HF HEADs the deleted allow-list
+        # now causes us to perform.
         logger.debug(
             f"[#400] hub-hit repo={repo_id!r} model_max_length={getattr(tok, 'model_max_length', '?')}"
         )
@@ -1233,6 +1279,14 @@ def _load_hf_tokenizer_for_chunking(repo_id: str):
             f"falling back to tiktoken. Pre-cache via HF_HOME to silence."
         )
         return None
+
+
+# Backwards-compat shim. The lru_cache moved to ``_load_hf_tokenizer_cached``
+# (workflow w5i1mbchd synth fix #4: only successes are cached, failures
+# retry on transient Hub 503s). Existing tests call
+# ``_load_hf_tokenizer_for_chunking.cache_clear()`` — forward to the
+# inner cache so they don't need to know about the split.
+_load_hf_tokenizer_for_chunking.cache_clear = _load_hf_tokenizer_cached.cache_clear  # type: ignore[attr-defined]
 
 
 # Safety margin subtracted from the HF tokenizer's raw model_max_length
@@ -1304,21 +1358,85 @@ class ChunkingTokenizer:
 
     Always present — never ``None``. The ``approximate`` kind covers the
     no-precise-tokenizer case (cohere / voyage / gemini / mistral-embed
-    via litellm) so callers can keep a single switch. ``safe_max_tokens``
-    is already margined via ``_hf_tokenizer_seq_limit`` for HF kinds, or
-    a sensible default for the others.
-    """
+    via litellm) so callers can keep a single switch.
+
+    Two distinct caps (workflow w5i1mbchd synth, fix #2):
+
+      * ``safe_max_tokens`` is the HARD CEILING — chunks above this will
+        be truncated by the embedder (silent retrieval-quality loss).
+        Already margined via ``_hf_tokenizer_seq_limit`` for HF kinds.
+      * ``recommended_chunk_tokens`` is the RETRIEVAL-QUALITY DEFAULT.
+        For ≥2K-ctx embedders, capped at 512 to match published
+        evidence (LongEmbed EMNLP 2024, BAAI bge-m3 maintainer at HF
+        discussion #59, voyage-context-3's own 512 default on its 32K
+        model). Letting a chunk grow to 8K just because the embedder
+        allows it makes retrieval WORSE — pooled embeddings dilute the
+        signal across more concepts.
+
+    Callers use ``min(chunk_size, safe_max_tokens)`` as today; the
+    chunker builders also warn when ``chunk_size > recommended_chunk_tokens``
+    so users with long-context embedders don't crank chunk_size
+    thinking 'more context = better'."""
 
     kind: str  # Literal["hf", "tiktoken", "fastembed", "approximate"]
     encoder: Any  # HF tokenizer | tiktoken Encoding | fastembed model | None
     name: str  # repo id / "cl100k_base" / "fastembed:<model>" / "char-based"
     safe_max_tokens: int  # already margined for HF; sensible default for others
+    recommended_chunk_tokens: int  # retrieval-quality default (≤512 for long-ctx)
 
 
-# Sensible default cap for the ``approximate`` and ``fastembed`` kinds —
-# 8192 covers any current embedder's context and lets the user's
-# chunk_size knob act as the effective limit via ``min(chunk_size, cap)``.
+# OpenAI text-embedding-3-* hard limit. The API rejects at >8191 tokens
+# with InvalidRequestError. Subtracting the same safety margin used for
+# HF embedders so the tiktoken branch is internally consistent (workflow
+# w5i1mbchd synth, fix #1: previously this branch used 8192 with zero
+# margin, an off-by-one + missing-margin both flagged by R1 and R2).
+_OPENAI_TIKTOKEN_HARD_CAP = 8191
+_TIKTOKEN_SAFE_MAX = _OPENAI_TIKTOKEN_HARD_CAP - _HF_TOKEN_SAFETY_MARGIN  # 8175
+
+# Sensible char-based fallback cap when no precise tokenizer is
+# available. 8192 lets the user's chunk_size knob remain the effective
+# limit; the char-based splitter doesn't risk an embedder-side
+# context-window-exceeded error because it splits by chars, not tokens.
 _DEFAULT_APPROXIMATE_CAP = 8192
+
+
+@functools.lru_cache(maxsize=32)
+def _warn_chunk_oversized_for_retrieval(
+    model_name: str, chunk_size: int, recommended: int, safe_max: int
+) -> None:
+    """Dedup'd one-shot warning when a user's chunk_size is within the
+    hard ceiling but above the retrieval-quality recommendation. The
+    lru_cache key makes this fire at most once per (model, chunk_size,
+    recommended) tuple per process — chunker rebuilds on every file
+    ingest don't spam the log. Workflow w5i1mbchd synth fix #2."""
+    logger.warning(
+        f"[#400] chunk_size={chunk_size} exceeds retrieval-quality "
+        f"recommendation {recommended} for embedder {model_name!r} "
+        f"(hard ceiling {safe_max}). Published evidence (LongEmbed "
+        f"EMNLP 2024 +24% MRR, voyage-context-3 default, BAAI bge-m3 "
+        f"maintainer) shows 256-512 token chunks retrieve BETTER than "
+        f"larger chunks regardless of embedder context. Consider "
+        f"chunk_size={recommended} in config unless you have a "
+        f"specific reason to chunk larger."
+    )
+
+
+def _recommended_chunk_tokens(safe_max: int) -> int:
+    """Retrieval-quality default. For ≥2K-ctx embedders, cap at 512
+    regardless of the hard ceiling. For <2K-ctx (bge-small at 496,
+    e5-large at 496) just use the full safe_max — there's no quality
+    reason to chunk smaller than the embedder's own window.
+
+    Evidence (workflow w5i1mbchd synth):
+      - LongEmbed (EMNLP 2024): 512-chunking outperforms 1024+ by
+        +24% MRR on long-context retrieval benchmarks.
+      - BAAI maintainer (bge-m3 HF discussion #59): 'despite 8192 ctx,
+        512-token chunks remain recommended default'.
+      - Voyage AI: voyage-context-3 ships with chunk_size=512 default
+        on its OWN 32K-context model.
+      - Cohere: recommends 300 of their 512-token window.
+      - Jina: recommends 128-512 of jina-v3's 8192."""
+    return min(safe_max, 512) if safe_max >= 2048 else safe_max
 
 
 @functools.lru_cache(maxsize=1)
@@ -3994,15 +4112,27 @@ class KnowledgeEngine:
         provider = (self._config.embedding_provider or "").lower()
         model_raw = self._config.embedding_model or ""
 
-        def _log_chosen(t: ChunkingTokenizer) -> ChunkingTokenizer:
-            # [#400] One log per get_chunking_tokenizer call announcing
-            # which dispatch branch won. Pair with the embed-time log
-            # in ``_build_docling_chunker`` to assert the chunker token
-            # contract matches the embedder. Greppable as ``\[#400\]``.
-            logger.debug(
+        def _make(kind: str, encoder: Any, name: str, safe_max: int) -> ChunkingTokenizer:
+            """Construct + log a ChunkingTokenizer in one place. Computes
+            ``recommended_chunk_tokens`` from ``safe_max`` via the global
+            policy (≤2K-ctx → safe_max; ≥2K-ctx → 512). Workflow
+            w5i1mbchd synth fix #2 + #6."""
+            t = ChunkingTokenizer(
+                kind=kind,
+                encoder=encoder,
+                name=name,
+                safe_max_tokens=safe_max,
+                recommended_chunk_tokens=_recommended_chunk_tokens(safe_max),
+            )
+            # [#400] INFO (not DEBUG) — operators need this visible by
+            # default. When a customer reports a context-window error,
+            # the first question is which dispatch branch ran (workflow
+            # w5i1mbchd synth fix #6, R1's explicit ask).
+            logger.info(
                 f"[#400] tokenizer-dispatch provider={provider!r} "
                 f"model={model_raw!r} -> kind={t.kind} name={t.name!r} "
-                f"safe_max_tokens={t.safe_max_tokens}"
+                f"safe_max_tokens={t.safe_max_tokens} "
+                f"recommended_chunk_tokens={t.recommended_chunk_tokens}"
             )
             return t
 
@@ -4013,13 +4143,11 @@ class KnowledgeEngine:
                 emb = self._default_embeddings
                 if isinstance(emb, _FastEmbedEmbeddings):
                     seq = _fastembed_docling_seq_limit(self._config.embedding_model or "")
-                    return _log_chosen(
-                        ChunkingTokenizer(
-                            kind="fastembed",
-                            encoder=emb._model,
-                            name=f"fastembed:{self._config.embedding_model or 'default'}",
-                            safe_max_tokens=seq,
-                        )
+                    return _make(
+                        "fastembed",
+                        emb._model,
+                        f"fastembed:{self._config.embedding_model or 'default'}",
+                        seq,
                     )
             except Exception:
                 pass  # fall through to approximate
@@ -4030,13 +4158,11 @@ class KnowledgeEngine:
                 self._ensure_embeddings()
                 emb = self._default_embeddings
                 if getattr(emb, "_tokenizer", None) is not None:
-                    return _log_chosen(
-                        ChunkingTokenizer(
-                            kind="hf",
-                            encoder=emb._tokenizer,
-                            name=self._config.embedding_model or "huggingface",
-                            safe_max_tokens=_hf_tokenizer_seq_limit(emb._tokenizer),
-                        )
+                    return _make(
+                        "hf",
+                        emb._tokenizer,
+                        self._config.embedding_model or "huggingface",
+                        _hf_tokenizer_seq_limit(emb._tokenizer),
                     )
             except Exception:
                 pass
@@ -4056,45 +4182,62 @@ class KnowledgeEngine:
                 try:
                     import tiktoken
 
-                    return _log_chosen(
-                        ChunkingTokenizer(
-                            kind="tiktoken",
-                            encoder=tiktoken.get_encoding("cl100k_base"),
-                            name="cl100k_base",
-                            safe_max_tokens=_DEFAULT_APPROXIMATE_CAP,
-                        )
+                    # _TIKTOKEN_SAFE_MAX = 8191 - 16 = 8175. The OpenAI API
+                    # rejects at >8191; matching the HF branch's margin
+                    # keeps the dispatcher internally consistent
+                    # (workflow w5i1mbchd synth fix #1).
+                    return _make(
+                        "tiktoken",
+                        tiktoken.get_encoding("cl100k_base"),
+                        "cl100k_base",
+                        _TIKTOKEN_SAFE_MAX,
                     )
                 except Exception:
                     pass
 
             # 3b. Try HF Hub as the source of truth (PR-A, workflow
-            # w9y9xtyse synth): no curated allow-list, no canary —
-            # ``_load_hf_tokenizer_for_chunking`` already logs failures
-            # and lru_caches the None so each unknown model costs at
-            # most one Hub HEAD per process.
+            # w9y9xtyse synth). Static aliases in ``_HF_REPO_ALIASES``
+            # short-circuit known-good redirects (jina, nomic) to skip
+            # a guaranteed Hub HEAD miss.
             repo_id = _hf_repo_id_candidate(model_raw)
             if repo_id:
                 auto_tok = _load_hf_tokenizer_for_chunking(repo_id)
                 if auto_tok is not None:
-                    return _log_chosen(
-                        ChunkingTokenizer(
-                            kind="hf",
-                            encoder=auto_tok,
-                            name=repo_id,
-                            safe_max_tokens=_hf_tokenizer_seq_limit(auto_tok),
-                        )
+                    return _make(
+                        "hf",
+                        auto_tok,
+                        repo_id,
+                        _hf_tokenizer_seq_limit(auto_tok),
                     )
 
         # 4. everything else — no precise tokenizer available. Caller
         # decides how to react (chunker uses a HybridChunker default;
         # text-splitter falls back to char-based recursive split).
-        return _log_chosen(
-            ChunkingTokenizer(
-                kind="approximate",
-                encoder=None,
-                name="char-based",
-                safe_max_tokens=_DEFAULT_APPROXIMATE_CAP,
-            )
+        return _make("approximate", None, "char-based", _DEFAULT_APPROXIMATE_CAP)
+
+    def _warn_chunk_size_above_retrieval_recommended(self, chunk_size: int, tok: ChunkingTokenizer) -> None:
+        """Advisory log when ``chunk_size`` is within the hard ceiling
+        but exceeds the retrieval-quality recommendation. Fires at most
+        once per (model, chunk_size, recommended) tuple per process so
+        per-file chunker rebuilds don't spam the log.
+
+        Workflow w5i1mbchd synth fix #2: published evidence (LongEmbed
+        EMNLP 2024 +24% MRR for 512 vs 1024, voyage-context-3 default,
+        BAAI bge-m3 maintainer) shows retrieval quality peaks at
+        256-512 tokens regardless of embedder context length. Letting
+        a chunk grow to 8K just because the embedder allows it tends
+        to hurt retrieval (pooled embeddings dilute the signal). This
+        warning surfaces the recommendation without changing the
+        behavior — users who explicitly want larger chunks can ignore
+        it; users who left chunk_size at 800 on a 32K embedder know
+        they're potentially sub-optimal."""
+        if chunk_size <= tok.recommended_chunk_tokens:
+            return
+        # Same-tuple dedup. The lru_cache is a single-call no-op that
+        # ensures the wrapped logger.info fires at most once for any
+        # (model, chunk_size, recommended) tuple this process sees.
+        _warn_chunk_oversized_for_retrieval(
+            tok.name, chunk_size, tok.recommended_chunk_tokens, tok.safe_max_tokens
         )
 
     def _build_text_splitter(self, chunk_size: int, chunk_overlap: int):
@@ -4107,6 +4250,7 @@ class KnowledgeEngine:
         margin for HF kinds (see ``_hf_tokenizer_seq_limit`` /
         ``_HF_TOKEN_SAFETY_MARGIN``)."""
         tok = self.get_chunking_tokenizer()
+        self._warn_chunk_size_above_retrieval_recommended(chunk_size, tok)
         cap = min(chunk_size, tok.safe_max_tokens)
         overlap = min(chunk_overlap, max(cap // 4, 1))
 
@@ -4154,6 +4298,7 @@ class KnowledgeEngine:
             from docling_core.transforms.chunker import HybridChunker
 
             tok_info = self.get_chunking_tokenizer()
+            self._warn_chunk_size_above_retrieval_recommended(chunk_size, tok_info)
             cap = min(chunk_size, tok_info.safe_max_tokens)
             provider = (self._config.embedding_provider or "").lower()
             model_str = self._config.embedding_model or "default"
