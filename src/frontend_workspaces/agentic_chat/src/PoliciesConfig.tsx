@@ -1,6 +1,5 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef } from "react";
-import { marked } from "marked";
 import * as api from "../../frontend/src/api";
 import "./PoliciesConfig.css";
 import {
@@ -1045,17 +1044,15 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           >
                             Policy Code
                           </h5>
-                          <div
+                          <pre
                             className="policy-code-block"
-                            // eslint-disable-next-line react/no-danger
-                            dangerouslySetInnerHTML={{
-                              __html: marked(`\`\`\`python\n${guard.policy_code ?? ""}\n\`\`\``) as string,
-                            }}
                             style={{
                               borderRadius: "4px",
                               overflowX: "auto",
                             }}
-                          />
+                          >
+                            <code>{guard.policy_code ?? ""}</code>
+                          </pre>
                         </Stack>
                       </Stack>
                     </TabPanel>
@@ -1631,10 +1628,12 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                               }
                             }}
                             disabled={
-                              generatingToolGuardPolicyId !== null ||
-                              !config.enablePolicies ||
-                              !policy.enabled ||
-                              !hasConcreteTargetTools(policy)
+                              allTargetToolsHaveGuard(policy)
+                                ? false
+                                : generatingToolGuardPolicyId !== null ||
+                                  !config.enablePolicies ||
+                                  !policy.enabled ||
+                                  !hasConcreteTargetTools(policy)
                             }
                             className={
                               allTargetToolsHaveGuard(policy) && policy.guards_enabled === false

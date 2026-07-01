@@ -8,8 +8,8 @@
   fill: var(--cds-support-error) !important;
 }
 
-/* Policy code block rendered via marked */
-.policy-code-block pre {
+/* Policy code block */
+.policy-code-block {
   margin: 0;
   padding: 1rem;
   overflow-x: auto;
@@ -19,8 +19,8 @@
   border-radius: 4px;
 }
 
-.policy-code-block pre code {
-  font-family: "IBM Plex Mono", "Consolas", monospace;
+.policy-code-block code {
+  font-family: "IBM Plex Mono", Consolas, monospace;
   font-size: 0.8rem;
   color: #f4f4f4;
 }
