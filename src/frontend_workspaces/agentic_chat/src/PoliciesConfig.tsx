@@ -94,6 +94,7 @@ interface ToolGuidePolicy {
   prepend: boolean;
   priority: number;
   tool_guards?: Record<string, ToolGuardData> | null;
+  guards_enabled?: boolean;
 }
 
 interface ToolApprovalPolicy {
@@ -938,6 +939,17 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
             buttonOnClick={() => setViewingGuardPolicy(null)}
           />
           <ModalBody hasScrollingContent>
+            <div style={{ paddingBottom: "1rem", borderBottom: "1px solid var(--cds-border-subtle)", marginBottom: "1rem" }}>
+              <Toggle
+                id={`guards-enabled-${viewingGuardPolicy.id}`}
+                labelText="Guard enforcement"
+                labelA="Disabled"
+                labelB="Enabled"
+                toggled={viewingGuardPolicy.guards_enabled !== false}
+                onToggle={(checked: boolean) => updatePolicy(viewingGuardPolicy.id, { guards_enabled: checked })}
+                disabled={!config.enablePolicies}
+              />
+            </div>
             <Tabs>
               <TabList aria-label="Tool guards">
                 {viewingGuardPolicy.target_tools.map((tool) => (
@@ -1575,7 +1587,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                             hasIconOnly
                             renderIcon={Security}
                             iconDescription={
-                              allTargetToolsHaveGuard(policy)
+                              allTargetToolsHaveGuard(policy) && policy.guards_enabled === false
+                                ? "Guards generated but are disabled"
+                                : allTargetToolsHaveGuard(policy)
                                 ? "View tool guards"
                                 : !policy.enabled
                                 ? "Policy is disabled"
@@ -1599,7 +1613,13 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                               !policy.enabled ||
                               !hasConcreteTargetTools(policy)
                             }
-                            className={allTargetToolsHaveGuard(policy) ? "guard-generated" : ""}
+                            className={
+                              allTargetToolsHaveGuard(policy) && policy.guards_enabled === false
+                                ? "guard-disabled"
+                                : allTargetToolsHaveGuard(policy)
+                                ? "guard-generated"
+                                : ""
+                            }
                           />
                         )}
                       <Stack orientation="horizontal" gap={2}>
@@ -1632,7 +1652,9 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                         {allTargetToolsHaveGuard(policy) && (
                           <span
                             style={{
-                              backgroundColor: "var(--cds-support-success)",
+                              backgroundColor: policy.guards_enabled === false
+                                ? "var(--cds-support-error)"
+                                : "var(--cds-support-success)",
                               color: "var(--cds-text-on-color)",
                               padding: "0.125rem 0.5rem",
                               borderRadius: "0.25rem",
@@ -1640,7 +1662,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                               fontWeight: 600,
                             }}
                           >
-                            Guarded
+                            {policy.guards_enabled === false ? "Guards disabled" : "Guarded"}
                           </span>
                         )}
                       </Stack>

@@ -3,3 +3,7 @@
   fill: var(--cds-support-success) !important;
 }
 
+/* Red styling for disabled tool guard button */
+.guard-disabled svg {
+  fill: var(--cds-support-error) !important;
+}
