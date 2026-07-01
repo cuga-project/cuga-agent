@@ -241,6 +241,7 @@ async def apply_policies_data_to_storage(
                     guide_content=policy_data.get("guide_content", ""),
                     tool_guards=tool_guards,
                     prepend=policy_data.get("prepend", False),
+                    guards_enabled=policy_data.get("guards_enabled", True),
                     priority=policy_data.get("priority", 50),
                     enabled=policy_data.get("enabled", True),
                 )
