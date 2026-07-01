@@ -437,75 +437,87 @@ def create_prepare_tools_and_apps_node(adapter: Any, lc_bind_tools_meta: dict) -
             logger.info("agent_spawn: injected spawn_agent + get_agent_result (ad-hoc SubCuga spawning)")
         # ── end agent_spawn ────────────────────────────────────────────────────────
 
-        # ── analyze_image: always-on vision system tool ────────────────────────────
-        from cuga.backend.tools.image_analysis import create_analyze_image_tool
+        _multimodal_enabled = getattr(settings.multimodal, "enabled", True)
 
-        _analyze_image_tool = create_analyze_image_tool()
-        tools_for_prompt.append(_analyze_image_tool)
-        _analyze_image_fn = _analyze_image_tool.coroutine
-        adapter._tools_context["analyze_image"] = make_tool_awaitable(_analyze_image_fn)
-        logger.info(
-            "analyze_image: vision system tool injected (primary model + IMAGE_ANALYSIS_MODEL fallback)"
-        )
+        # ── analyze_image: vision system tool (gated by multimodal.enabled) ────────
+        if _multimodal_enabled:
+            from cuga.backend.tools.image_analysis import create_analyze_image_tool
+
+            _analyze_image_tool = create_analyze_image_tool()
+            tools_for_prompt.append(_analyze_image_tool)
+            _analyze_image_fn = _analyze_image_tool.coroutine
+            adapter._tools_context["analyze_image"] = make_tool_awaitable(_analyze_image_fn)
+            logger.info(
+                "analyze_image: vision system tool injected (primary model + IMAGE_ANALYSIS_MODEL fallback)"
+            )
+        else:
+            logger.debug("analyze_image: skipped (multimodal.enabled = false)")
         # ── end analyze_image ──────────────────────────────────────────────────────
 
-        # ── pdf_to_images / pptx_to_images: always-on conversion tools ────────────
-        # Both tools run in the backend server process, so relative paths and
-        # virtual /workspace/ paths must be resolved to the real host filesystem
-        # root for this thread before the tool sees them.
-        from cuga.backend.server.workspace_sandbox import _host_workspace_root
-        from cuga.backend.tools.pdf_to_images import create_pdf_to_images_tool
-        from cuga.backend.tools.pptx_to_images import create_pptx_to_images_tool
+        # ── pdf_to_images / pptx_to_images: conversion tools ──────────────────────
+        # Gated by multimodal.enabled AND skills.enabled — these tools are only
+        # useful in a skill-driven workflow that can produce and then inspect files.
+        # Both tools run in the backend server process, so virtual /workspace/ paths
+        # must be resolved to the real host filesystem root for this thread.
+        if _multimodal_enabled and skills_cfg_on:
+            from cuga.backend.server.workspace_sandbox import _host_workspace_root
+            from cuga.backend.tools.pdf_to_images import create_pdf_to_images_tool
+            from cuga.backend.tools.pptx_to_images import create_pptx_to_images_tool
 
-        _img_thread_id = _runtime_thread_id_for_fs
+            _img_thread_id = _runtime_thread_id_for_fs
 
-        def _resolve_to_host(path: str) -> str:
-            """Translate a virtual /workspace/ path or bare filename to a real host path."""
-            if not path:
-                return path
-            from pathlib import Path as _Path  # noqa: PLC0415
-            p = path.strip()
-            workspace_root = _host_workspace_root(_img_thread_id)
-            # /workspace/foo  or  workspace/foo
-            for prefix in ("/workspace/", "workspace/"):
-                if p.startswith(prefix):
-                    return str(workspace_root / p[len(prefix):])
-            if p in ("/workspace", "workspace"):
-                return str(workspace_root)
-            # bare filename or relative path — probe workspace root first
-            candidate = workspace_root / p
-            if candidate.exists():
-                return str(candidate)
-            return p
+            def _resolve_to_host(path: str) -> str:
+                """Translate a virtual /workspace/ path or bare filename to a real host path."""
+                if not path:
+                    return path
+                from pathlib import Path as _Path  # noqa: PLC0415
+                p = path.strip()
+                workspace_root = _host_workspace_root(_img_thread_id)
+                # /workspace/foo  or  workspace/foo
+                for prefix in ("/workspace/", "workspace/"):
+                    if p.startswith(prefix):
+                        return str(workspace_root / p[len(prefix):])
+                if p in ("/workspace", "workspace"):
+                    return str(workspace_root)
+                # bare filename or relative path — probe workspace root first
+                candidate = workspace_root / p
+                if candidate.exists():
+                    return str(candidate)
+                return p
 
-        def _wrap_with_workspace(fn):
-            import functools  # noqa: PLC0415
+            def _wrap_with_workspace(fn):
+                import functools  # noqa: PLC0415
 
-            @functools.wraps(fn)
-            def _wrapped(*args, **kwargs):
-                # First positional arg is the file path for both tools
-                if args:
-                    args = (_resolve_to_host(args[0]),) + args[1:]
-                for key in ("pdf", "pptx"):
-                    if key in kwargs:
-                        kwargs[key] = _resolve_to_host(kwargs[key])
-                return fn(*args, **kwargs)
+                @functools.wraps(fn)
+                def _wrapped(*args, **kwargs):
+                    # First positional arg is the file path for both tools
+                    if args:
+                        args = (_resolve_to_host(args[0]),) + args[1:]
+                    for key in ("pdf", "pptx"):
+                        if key in kwargs:
+                            kwargs[key] = _resolve_to_host(kwargs[key])
+                    return fn(*args, **kwargs)
 
-            return _wrapped
+                return _wrapped
 
-        _pdf_to_images_tool = create_pdf_to_images_tool()
-        tools_for_prompt.append(_pdf_to_images_tool)
-        adapter._tools_context["pdf_to_images"] = make_tool_awaitable(
-            _wrap_with_workspace(_pdf_to_images_tool.func)
-        )
-        logger.info("pdf_to_images: PDF-to-JPEG conversion tool injected (PyMuPDF with pdftoppm fallback)")
+            _pdf_to_images_tool = create_pdf_to_images_tool()
+            tools_for_prompt.append(_pdf_to_images_tool)
+            adapter._tools_context["pdf_to_images"] = make_tool_awaitable(
+                _wrap_with_workspace(_pdf_to_images_tool.func)
+            )
+            logger.info("pdf_to_images: PDF-to-JPEG conversion tool injected (PyMuPDF with pdftoppm fallback)")
 
-        _pptx_to_images_tool = create_pptx_to_images_tool()
-        tools_for_prompt.append(_pptx_to_images_tool)
-        adapter._tools_context["pptx_to_images"] = make_tool_awaitable(
-            _wrap_with_workspace(_pptx_to_images_tool.func)
-        )
-        logger.info("pptx_to_images: PPTX-to-JPEG conversion tool injected (LibreOffice + python-pptx fallback)")
+            _pptx_to_images_tool = create_pptx_to_images_tool()
+            tools_for_prompt.append(_pptx_to_images_tool)
+            adapter._tools_context["pptx_to_images"] = make_tool_awaitable(
+                _wrap_with_workspace(_pptx_to_images_tool.func)
+            )
+            logger.info("pptx_to_images: PPTX-to-JPEG conversion tool injected (LibreOffice + python-pptx fallback)")
+        else:
+            logger.debug(
+                "pdf_to_images/pptx_to_images: skipped "
+                f"(multimodal.enabled={_multimodal_enabled}, skills.enabled={skills_cfg_on})"
+            )
         # ── end pdf_to_images / pptx_to_images ────────────────────────────────────
 
         from cuga.backend.evolve.memory import build_evolve_special_instructions_extension
