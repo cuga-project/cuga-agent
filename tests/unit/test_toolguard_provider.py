@@ -443,7 +443,9 @@ def test_merge_tool_guards_preserves_omitted_tools_and_fields() -> None:
 async def test_guards_disabled_skips_registration():
     """When guards_enabled=False, no guards are registered for that policy's tools."""
     from cuga.backend.cuga_graph.policy.models import (
-        AlwaysTrigger, ToolGuard, ToolGuide,
+        AlwaysTrigger,
+        ToolGuard,
+        ToolGuide,
     )
     from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
 
