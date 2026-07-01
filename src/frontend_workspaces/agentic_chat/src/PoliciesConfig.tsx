@@ -946,7 +946,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
               </TabList>
               <TabPanels>
                 {viewingGuardPolicy.target_tools.map((tool) => {
-                  const guard = viewingGuardPolicy.tool_guards![tool];
+                  const guard = viewingGuardPolicy.tool_guards?.[tool] ?? {};
                   return (
                     <TabPanel key={tool}>
                       <Stack gap={5} style={{ paddingTop: "1rem" }}>
@@ -965,7 +965,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           </h5>
                           <Stack orientation="horizontal" gap={2} style={{ flexWrap: "wrap" }}>
                             {(guard.violating_examples ?? []).map((example, i) => (
-                              <Tag key={i} type="red">
+                              <Tag key={`${i}-${example}`} type="red">
                                 {example}
                               </Tag>
                             ))}
@@ -987,7 +987,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           </h5>
                           <Stack orientation="horizontal" gap={2} style={{ flexWrap: "wrap" }}>
                             {(guard.compliance_examples ?? []).map((example, i) => (
-                              <Tag key={i} type="green">
+                              <Tag key={`${i}-${example}`} type="green">
                                 {example}
                               </Tag>
                             ))}
