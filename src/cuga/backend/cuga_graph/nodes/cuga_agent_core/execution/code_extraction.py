@@ -71,17 +71,32 @@ def _truncate_after_first_probing_block(
 
 
 def _truncate_after_first_probing_line(code: str, tools_needing_probing: frozenset[str]) -> str:
-    """Cut a single recovered code blob after the line of the first probing
-    call. Recovery paths produce one contiguous block (no fence boundaries to
-    split on), so block-level truncation is a no-op here — fall back to line
-    granularity to keep the probe from running with later dependent code."""
+    """Cut a single recovered code blob after the first probing *statement*.
+    Recovery paths produce one contiguous block (no fence boundaries to split
+    on), so block-level truncation is a no-op here — fall back to statement
+    granularity to keep the probe from running with later dependent code.
+
+    The cut extends past the matching line to the end of the statement it
+    belongs to: a multiline call such as ``res = await file_readfile(\\n "x"\\n)``
+    must be kept whole, otherwise truncating at the first line alone yields
+    invalid Python (an unclosed paren) and the probe never runs."""
     if not tools_needing_probing:
         return code
     pattern = _probing_call_pattern(tools_needing_probing)
     lines = code.split("\n")
     for i, line in enumerate(lines):
         if pattern.search(line):
-            return "\n".join(lines[: i + 1])
+            # Grow the cut until everything up to `end` parses, so a multiline
+            # probing statement is kept intact. `code` compiled as a whole
+            # upstream, so a complete boundary is guaranteed to exist.
+            for end in range(i + 1, len(lines) + 1):
+                candidate = "\n".join(lines[:end])
+                try:
+                    compile(candidate.replace("await ", ""), "<string>", "exec")
+                except SyntaxError:
+                    continue
+                return candidate
+            return code
     return code
 
 

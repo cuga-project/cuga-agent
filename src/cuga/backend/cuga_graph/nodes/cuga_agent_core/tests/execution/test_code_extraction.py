@@ -160,6 +160,24 @@ def test_raw_python_truncates_at_first_probing_line():
     assert code == "res = await file_readfile('x')"
 
 
+def test_raw_python_keeps_full_multiline_probing_statement():
+    """A probing call spanning multiple lines must be kept whole — cutting at
+    the first matching line alone would return invalid Python (unclosed paren)
+    and the probe would never execute."""
+    text = 'res = await file_readfile(\n    "x"\n)\nres_2 = res[0]\nprint(res_2)'
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == 'res = await file_readfile(\n    "x"\n)'
+    # The kept code must be valid Python (parseable), unlike a bare line cut.
+    compile(code.replace("await ", ""), "<string>", "exec")
+
+
+def test_unclosed_fence_keeps_full_multiline_probing_statement():
+    text = '```python\nres = await file_readfile(\n    "x",\n)\nres_2 = res[0]\nprint(res_2)'
+    code = extract_and_combine_codeblocks(text, tools_needing_probing=frozenset({"file_readfile"}))
+    assert code == 'res = await file_readfile(\n    "x",\n)'
+    compile(code.replace("await ", ""), "<string>", "exec")
+
+
 def test_recovery_paths_unchanged_without_probing_tools():
     """Regression: with no probing tools the recovery paths keep the full blob."""
     unclosed = "```python\nres = await file_readfile('x')\nprint(res)"
