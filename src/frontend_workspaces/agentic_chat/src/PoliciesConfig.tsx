@@ -932,33 +932,37 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
       )}
 
       {/* Tool Guard Viewer Modal */}
-      {viewingGuardPolicy && (
+      {(() => {
+        const liveViewingPolicy = viewingGuardPolicy
+          ? (config.policies.find((p) => p.id === viewingGuardPolicy.id) as ToolGuidePolicy | undefined) ?? viewingGuardPolicy
+          : null;
+        return liveViewingPolicy && (
         <ComposedModal open onClose={() => setViewingGuardPolicy(null)} size="lg">
           <ModalHeader
-            title={`Tool Guards — ${viewingGuardPolicy.name}`}
+            title={`Tool Guards — ${liveViewingPolicy!.name}`}
             buttonOnClick={() => setViewingGuardPolicy(null)}
           />
           <ModalBody hasScrollingContent>
             <div style={{ paddingBottom: "1rem", borderBottom: "1px solid var(--cds-border-subtle)", marginBottom: "1rem" }}>
               <Toggle
-                id={`guards-enabled-${viewingGuardPolicy.id}`}
+                id={`guards-enabled-${liveViewingPolicy!.id}`}
                 labelText="Guard enforcement"
                 labelA="Disabled"
                 labelB="Enabled"
-                toggled={viewingGuardPolicy.guards_enabled !== false}
-                onToggle={(checked: boolean) => updatePolicy(viewingGuardPolicy.id, { guards_enabled: checked })}
+                toggled={liveViewingPolicy!.guards_enabled !== false}
+                onToggle={(checked: boolean) => updatePolicy(liveViewingPolicy!.id, { guards_enabled: checked })}
                 disabled={!config.enablePolicies}
               />
             </div>
             <Tabs>
               <TabList aria-label="Tool guards">
-                {viewingGuardPolicy.target_tools.map((tool) => (
+                {liveViewingPolicy!.target_tools.map((tool) => (
                   <Tab key={tool}>{tool}</Tab>
                 ))}
               </TabList>
               <TabPanels>
-                {viewingGuardPolicy.target_tools.map((tool) => {
-                  const guard = viewingGuardPolicy.tool_guards?.[tool] ?? {};
+                {liveViewingPolicy!.target_tools.map((tool) => {
+                  const guard = liveViewingPolicy!.tool_guards?.[tool] ?? {};
                   return (
                     <TabPanel key={tool}>
                       <Stack gap={5} style={{ paddingTop: "1rem" }}>
@@ -1047,7 +1051,8 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
             </Button>
           </ModalFooter>
         </ComposedModal>
-      )}
+        );
+      })()}
     </>
   );
 
