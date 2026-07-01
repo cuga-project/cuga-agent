@@ -979,13 +979,15 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           >
                             Violating Examples
                           </h5>
-                          <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+                          <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                             {(guard.violating_examples ?? []).map((example, i) => (
                               <li
                                 key={`${i}-${example}`}
                                 style={{
                                   borderLeft: "3px solid var(--cds-support-error)",
-                                  paddingLeft: "0.75rem",
+                                  background: "rgba(250, 77, 86, 0.08)",
+                                  padding: "0.5rem 0.75rem",
+                                  borderRadius: "0 4px 4px 0",
                                   fontSize: "0.875rem",
                                   lineHeight: 1.5,
                                   color: "var(--cds-text-primary)",
@@ -1010,13 +1012,15 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           >
                             Compliance Examples
                           </h5>
-                          <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.375rem" }}>
+                          <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.25rem" }}>
                             {(guard.compliance_examples ?? []).map((example, i) => (
                               <li
                                 key={`${i}-${example}`}
                                 style={{
                                   borderLeft: "3px solid var(--cds-support-success)",
-                                  paddingLeft: "0.75rem",
+                                  background: "rgba(36, 161, 72, 0.08)",
+                                  padding: "0.5rem 0.75rem",
+                                  borderRadius: "0 4px 4px 0",
                                   fontSize: "0.875rem",
                                   lineHeight: 1.5,
                                   color: "var(--cds-text-primary)",
@@ -1048,7 +1052,6 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                               __html: marked(`\`\`\`python\n${guard.policy_code ?? ""}\n\`\`\``) as string,
                             }}
                             style={{
-                              background: "var(--cds-layer-02)",
                               borderRadius: "4px",
                               overflowX: "auto",
                             }}
