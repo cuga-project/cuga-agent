@@ -245,6 +245,7 @@ class ToolGuide(BaseModel):
         description="Optional guard configurations per tool (key: tool_name, value: ToolGuard)",
     )
     prepend: bool = Field(False, description="Whether to prepend content instead of appending")
+    guards_enabled: bool = Field(True, description="Whether tool guard execution is active for this policy")
     metadata: Dict[str, Any] = Field(default_factory=dict, description="Additional metadata")
     priority: int = Field(0, description="Priority when multiple guides match (higher = more important)")
     enabled: bool = Field(True, description="Whether this guide is active")
