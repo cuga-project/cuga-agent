@@ -237,6 +237,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
   const [toastMessage, setToastMessage] = useState<{ kind: "success" | "error" | "warning"; title: string; subtitle: string } | null>(null);
   const [savedToolGuideSnapshots, setSavedToolGuideSnapshots] = useState<Record<string, string>>({});
   const [generatingToolGuardPolicyId, setGeneratingToolGuardPolicyId] = useState<string | null>(null);
+  const [viewingGuardPolicy, setViewingGuardPolicy] = useState<ToolGuidePolicy | null>(null);
 
   useEffect(() => {
     loadConfig();
@@ -928,6 +929,113 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
           />
         </div>
       )}
+
+      {/* Tool Guard Viewer Modal */}
+      {viewingGuardPolicy && (
+        <ComposedModal open onClose={() => setViewingGuardPolicy(null)} size="lg">
+          <ModalHeader
+            title={`Tool Guards — ${viewingGuardPolicy.name}`}
+            buttonOnClick={() => setViewingGuardPolicy(null)}
+          />
+          <ModalBody hasScrollingContent>
+            <Tabs>
+              <TabList aria-label="Tool guards">
+                {viewingGuardPolicy.target_tools.map((tool) => (
+                  <Tab key={tool}>{tool}</Tab>
+                ))}
+              </TabList>
+              <TabPanels>
+                {viewingGuardPolicy.target_tools.map((tool) => {
+                  const guard = viewingGuardPolicy.tool_guards![tool];
+                  return (
+                    <TabPanel key={tool}>
+                      <Stack gap={5} style={{ paddingTop: "1rem" }}>
+                        <Stack gap={3}>
+                          <h5
+                            style={{
+                              color: "var(--cds-text-secondary)",
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              margin: 0,
+                            }}
+                          >
+                            Violating Examples
+                          </h5>
+                          <Stack orientation="horizontal" gap={2} style={{ flexWrap: "wrap" }}>
+                            {(guard.violating_examples ?? []).map((example, i) => (
+                              <Tag key={i} type="red">
+                                {example}
+                              </Tag>
+                            ))}
+                          </Stack>
+                        </Stack>
+
+                        <Stack gap={3}>
+                          <h5
+                            style={{
+                              color: "var(--cds-text-secondary)",
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              margin: 0,
+                            }}
+                          >
+                            Compliance Examples
+                          </h5>
+                          <Stack orientation="horizontal" gap={2} style={{ flexWrap: "wrap" }}>
+                            {(guard.compliance_examples ?? []).map((example, i) => (
+                              <Tag key={i} type="green">
+                                {example}
+                              </Tag>
+                            ))}
+                          </Stack>
+                        </Stack>
+
+                        <Stack gap={3}>
+                          <h5
+                            style={{
+                              color: "var(--cds-text-secondary)",
+                              fontSize: "0.75rem",
+                              fontWeight: 600,
+                              textTransform: "uppercase",
+                              letterSpacing: "0.05em",
+                              margin: 0,
+                            }}
+                          >
+                            Policy Code
+                          </h5>
+                          <pre
+                            style={{
+                              background: "var(--cds-layer-02)",
+                              padding: "1rem",
+                              borderRadius: "4px",
+                              fontFamily: "monospace",
+                              fontSize: "0.8rem",
+                              overflowX: "auto",
+                              whiteSpace: "pre",
+                              margin: 0,
+                            }}
+                          >
+                            <code>{guard.policy_code ?? ""}</code>
+                          </pre>
+                        </Stack>
+                      </Stack>
+                    </TabPanel>
+                  );
+                })}
+              </TabPanels>
+            </Tabs>
+          </ModalBody>
+          <ModalFooter>
+            <Button kind="secondary" onClick={() => setViewingGuardPolicy(null)}>
+              Close
+            </Button>
+          </ModalFooter>
+        </ComposedModal>
+      )}
     </>
   );
 
@@ -1468,7 +1576,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                             renderIcon={Security}
                             iconDescription={
                               allTargetToolsHaveGuard(policy)
-                                ? "All target tools already have guards"
+                                ? "View tool guards"
                                 : !policy.enabled
                                 ? "Policy is disabled"
                                 : !config.enablePolicies
@@ -1480,11 +1588,7 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                             tooltipPosition="bottom"
                             onClick={() => {
                               if (allTargetToolsHaveGuard(policy)) {
-                                setToastMessage({
-                                  kind: "success",
-                                  title: "Tool guards already generated",
-                                  subtitle: "All target tools already have guards.",
-                                });
+                                setViewingGuardPolicy(policy);
                               } else {
                                 generateToolGuard(policy.id);
                               }
@@ -1493,7 +1597,6 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                               generatingToolGuardPolicyId !== null ||
                               !config.enablePolicies ||
                               !policy.enabled ||
-                              allTargetToolsHaveGuard(policy) ||
                               !hasConcreteTargetTools(policy)
                             }
                             className={allTargetToolsHaveGuard(policy) ? "guard-generated" : ""}
