@@ -10,6 +10,7 @@ unchanged.
 
 from __future__ import annotations
 
+import inspect
 from typing import Optional
 
 import pytest
@@ -131,13 +132,25 @@ def _sync_recorder():
     return tool_func, received
 
 
-@pytest.mark.asyncio
-async def test_wrapper_handles_sync_tool_func():
-    """Regression: the wrapper must not unconditionally ``await`` — a sync
-    ``.func``/``._run`` callable returns a plain value, and the warning path
-    must forward it (and its kwargs) unchanged without raising."""
+def test_sync_tool_func_yields_sync_wrapper():
+    """A sync ``.func``/``._run`` callable must stay sync through the wrapper, so
+    downstream ``make_tool_awaitable`` dispatches it to a worker thread via
+    ``run_in_executor`` instead of awaiting it inline on the event loop (which
+    a blocking sync tool could otherwise stall). Contract: sync in -> sync out."""
     tf, rec = _sync_recorder()
     wrapped = make_arg_warning_callable(tf, DirectorModel, enable=True)
+    assert not inspect.iscoroutinefunction(wrapped)
+    result = wrapped(director={"director": "X"})
+    assert result == {"ok": True}
+    assert rec["kwargs"] == {"director": {"director": "X"}}  # NOT coerced
+
+
+@pytest.mark.asyncio
+async def test_async_tool_func_yields_async_wrapper():
+    """An async ``.coroutine`` callable keeps an awaitable wrapper."""
+    tf, rec = _recorder()
+    wrapped = make_arg_warning_callable(tf, DirectorModel, enable=True)
+    assert inspect.iscoroutinefunction(wrapped)
     result = await wrapped(director={"director": "X"})
     assert result == {"ok": True}
     assert rec["kwargs"] == {"director": {"director": "X"}}  # NOT coerced

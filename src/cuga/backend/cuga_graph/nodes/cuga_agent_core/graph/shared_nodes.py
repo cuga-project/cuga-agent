@@ -211,20 +211,25 @@ def create_call_model_node(
                 return approval_command
 
         # ── Metadata update ────────────────────────────────────────────────
-        meta_value = adapter.build_metadata_update(state, playbook_fired=playbook_fired)
+        # Copy: the `code_exec_count` bump below must update only our return
+        # payload, not the live graph-state metadata dict that this may alias.
+        meta_value = dict(adapter.build_metadata_update(state, playbook_fired=playbook_fired))
         meta_update = {adapter.metadata_key: meta_value}
 
         # ── Require-tool-call-before-final guard (default-off; gated) ──────
-        # Tracks whether any tool/code block has executed this task, carried
-        # inside the adapter metadata dict so no graph state schema change is
-        # needed (works for lite / supervisor / core).
+        # Counts code blocks the model has sent to the executor this task,
+        # carried inside the adapter metadata dict so no graph state schema
+        # change is needed (works for lite / supervisor / core). NOTE: this
+        # counts *emitted/executed code blocks*, not confirmed successful tool
+        # calls — a block like `x = 1`, or one that errors, still counts. It is
+        # a lightweight grounding proxy, not a guarantee that a tool ran.
         require_tool_call = bool(getattr(settings.advanced_features, "require_tool_call_before_final", False))
         code_exec_count = int((adapter.get_metadata(state) or {}).get("code_exec_count", 0) or 0)
 
         # ── Route: code → execute node; text → END or auto-continue ────────
         if code:
             if require_tool_call:
-                # Record that at least one tool/code block has run this task.
+                # Record that the model sent at least one code block to the executor.
                 meta_value["code_exec_count"] = code_exec_count + 1
             return Command(
                 goto=adapter.execute_node_name,
@@ -256,8 +261,8 @@ def create_call_model_node(
         # directive and continue instead. Bounded by the step limit.
         if require_tool_call and code_exec_count == 0:
             logger.warning(
-                "%s: require_tool_call_before_final — final answer with 0 tool calls; injecting directive and continuing",
-                adapter.sender_name,
+                f"{adapter.sender_name}: require_tool_call_before_final — "
+                "final answer with 0 code blocks executed; injecting directive and continuing"
             )
             directive = (
                 "You have not called any tool yet, so this answer is not grounded in retrieved data. "

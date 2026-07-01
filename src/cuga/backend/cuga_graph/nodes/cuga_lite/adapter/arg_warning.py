@@ -112,9 +112,13 @@ def make_arg_warning_callable(
     when the tool has no input schema.
 
     ``prepare_tools_and_apps`` routes both async coroutines (``tool.coroutine``)
-    and sync callables (``tool.func`` / ``tool._run``) through here, so the
-    wrapper must handle either: it calls ``tool_func`` and awaits the result
-    only when it is awaitable."""
+    and sync callables (``tool.func`` / ``tool._run``) through here. The wrapper
+    preserves the sync/async nature of ``tool_func``: an async tool gets an
+    async wrapper, a sync tool a sync wrapper. This matters because the result
+    is handed to ``make_tool_awaitable`` — wrapping a *sync* callable in an
+    ``async def`` would make it await inline on the event loop instead of being
+    dispatched to a worker thread via ``run_in_executor``, so a blocking sync
+    tool could stall the loop (a silent, default-on behavior change)."""
     if not enable or input_model is None:
         return tool_func
 
@@ -123,14 +127,20 @@ def make_arg_warning_callable(
     }
     model_name = getattr(input_model, "__name__", "tool")
 
-    async def wrapper(*args: Any, **kwargs: Any) -> Any:
-        # Only the kwargs path carries the dict-as-string shapes; positional
-        # calls are left alone to avoid mis-reading bound arguments.
+    # Only the kwargs path carries the dict-as-string shapes; positional calls
+    # are left alone to avoid mis-reading bound arguments.
+    if inspect.iscoroutinefunction(tool_func):
+
+        async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            if kwargs and not args:
+                warn_suspect_kwargs(kwargs, field_types, model_name=model_name)
+            return await tool_func(*args, **kwargs)
+
+        return async_wrapper
+
+    def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
         if kwargs and not args:
             warn_suspect_kwargs(kwargs, field_types, model_name=model_name)
-        result = tool_func(*args, **kwargs)
-        if inspect.isawaitable(result):
-            return await result
-        return result
+        return tool_func(*args, **kwargs)
 
-    return wrapper
+    return sync_wrapper
