@@ -7,3 +7,17 @@
 .guard-disabled svg {
   fill: var(--cds-support-error) !important;
 }
+
+/* Policy code block rendered via marked */
+.policy-code-block pre {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.6;
+}
+
+.policy-code-block pre code {
+  font-family: "IBM Plex Mono", "Consolas", monospace;
+  font-size: 0.8rem;
+}

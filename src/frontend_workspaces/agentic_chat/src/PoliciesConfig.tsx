@@ -1,5 +1,6 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React, { useState, useEffect, useRef } from "react";
+import { marked } from "marked";
 import * as api from "../../frontend/src/api";
 import "./PoliciesConfig.css";
 import {
@@ -978,13 +979,22 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           >
                             Violating Examples
                           </h5>
-                          <Stack orientation="horizontal" gap={2} style={{ flexWrap: "wrap" }}>
+                          <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.375rem" }}>
                             {(guard.violating_examples ?? []).map((example, i) => (
-                              <Tag key={`${i}-${example}`} type="red">
+                              <li
+                                key={`${i}-${example}`}
+                                style={{
+                                  borderLeft: "3px solid var(--cds-support-error)",
+                                  paddingLeft: "0.75rem",
+                                  fontSize: "0.875rem",
+                                  lineHeight: 1.5,
+                                  color: "var(--cds-text-primary)",
+                                }}
+                              >
                                 {example}
-                              </Tag>
+                              </li>
                             ))}
-                          </Stack>
+                          </ol>
                         </Stack>
 
                         <Stack gap={3}>
@@ -1000,13 +1010,22 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           >
                             Compliance Examples
                           </h5>
-                          <Stack orientation="horizontal" gap={2} style={{ flexWrap: "wrap" }}>
+                          <ol style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: "0.375rem" }}>
                             {(guard.compliance_examples ?? []).map((example, i) => (
-                              <Tag key={`${i}-${example}`} type="green">
+                              <li
+                                key={`${i}-${example}`}
+                                style={{
+                                  borderLeft: "3px solid var(--cds-support-success)",
+                                  paddingLeft: "0.75rem",
+                                  fontSize: "0.875rem",
+                                  lineHeight: 1.5,
+                                  color: "var(--cds-text-primary)",
+                                }}
+                              >
                                 {example}
-                              </Tag>
+                              </li>
                             ))}
-                          </Stack>
+                          </ol>
                         </Stack>
 
                         <Stack gap={3}>
@@ -1022,20 +1041,18 @@ export default function PoliciesConfig({ onClose, draftMode = false, onSave }: P
                           >
                             Policy Code
                           </h5>
-                          <pre
+                          <div
+                            className="policy-code-block"
+                            // eslint-disable-next-line react/no-danger
+                            dangerouslySetInnerHTML={{
+                              __html: marked(`\`\`\`python\n${guard.policy_code ?? ""}\n\`\`\``) as string,
+                            }}
                             style={{
                               background: "var(--cds-layer-02)",
-                              padding: "1rem",
                               borderRadius: "4px",
-                              fontFamily: "monospace",
-                              fontSize: "0.8rem",
                               overflowX: "auto",
-                              whiteSpace: "pre",
-                              margin: 0,
                             }}
-                          >
-                            <code>{guard.policy_code ?? ""}</code>
-                          </pre>
+                          />
                         </Stack>
                       </Stack>
                     </TabPanel>
