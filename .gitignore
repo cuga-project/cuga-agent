@@ -10,6 +10,7 @@ cuga_workspace/
 node_modules
 .pnpm-store/
 .agents
+src/cuga/backend/skills/number_theory_tools/
 *.log
 .claude/settings.json
 .claude/settings.local.json
