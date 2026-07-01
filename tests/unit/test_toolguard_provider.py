@@ -437,3 +437,38 @@ def test_merge_tool_guards_preserves_omitted_tools_and_fields() -> None:
     assert merged["book_flight"].compliance_examples == ["old compliance"]
     assert merged["book_flight"].policy_code == "old policy code"
     assert merged["cancel_flight"] == existing["cancel_flight"]
+
+
+@pytest.mark.asyncio
+async def test_guards_disabled_skips_registration():
+    """When guards_enabled=False, no guards are registered for that policy's tools."""
+    from cuga.backend.cuga_graph.policy.models import (
+        AlwaysTrigger, ToolGuard, ToolGuide,
+    )
+    from cuga.backend.cuga_graph.policy.tool_guard.tool_guard_runtime import ToolGuardRuntime
+
+    policy = ToolGuide(
+        id="p1",
+        name="Test Policy",
+        description="desc",
+        triggers=[AlwaysTrigger()],
+        enabled=True,
+        guards_enabled=False,
+        priority=1,
+        target_tools=["book_flight"],
+        guide_content="guide",
+        tool_guards={
+            "book_flight": ToolGuard(
+                violating_examples=["bad"],
+                compliance_examples=["good"],
+                policy_code="async def guard_book_flight(api, args): pass",
+            )
+        },
+    )
+
+    runtime = ToolGuardRuntime.__new__(ToolGuardRuntime)
+    runtime.tool_to_guards = {}
+    runtime.invalid_tool_guards = {}
+    runtime._register_policy_guards(policy)
+
+    assert "book_flight" not in runtime.tool_to_guards
