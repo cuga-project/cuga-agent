@@ -57,27 +57,3 @@ platform = "google-genai"
 temperature = 0.1
 max_tokens = 400
 apikey_name = "GOOGLE_API_kEY"
-
-[memory.mem0.model]
-platform = "google-genai"
-temperature = 0.1
-max_tokens = 1000
-apikey_name = "GOOGLE_API_kEY"
-
-[memory.milvus.step_processing.model]
-platform = "google-genai"
-temperature = 0.1
-max_tokens = 1000
-apikey_name = "GOOGLE_API_kEY"
-
-[memory.milvus.fact_extraction.model]
-platform = "google-genai"
-temperature = 0.1
-max_tokens = 1000
-apikey_name = "GOOGLE_API_kEY"
-
-[memory.tips_extractor.model]
-platform = "google-genai"
-temperature = 0.1
-max_tokens = 5000
-apikey_name = "GOOGLE_API_kEY"

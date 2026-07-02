@@ -1154,6 +1154,9 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
             )
             try:
                 from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
+                    invalidate_toolguard_provider,
+                )
 
                 await apply_policies_data_to_storage(
                     state.policy_system.storage,
@@ -1162,6 +1165,14 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
                     filesystem_sync=state.policy_filesystem_sync,
                 )
                 await state.policy_system.initialize()
+
+                # Invalidate the ToolGuard runtime cache so the next tool call
+                # re-initialises with the updated policy (e.g. guards_enabled toggle).
+                draft_agent = getattr(state, "agent", None)
+                if draft_agent:
+                    tp = getattr(draft_agent, "tool_provider", None)
+                    if tp is not None:
+                        invalidate_toolguard_provider(tp)
             except Exception as policy_err:
                 logger.warning(f"Failed to apply policies from PATCH: {policy_err}")
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})

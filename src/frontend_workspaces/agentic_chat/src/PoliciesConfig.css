@@ -3,3 +3,24 @@
   fill: var(--cds-support-success) !important;
 }
 
+/* Red styling for disabled tool guard button */
+.guard-disabled svg {
+  fill: var(--cds-support-error) !important;
+}
+
+/* Policy code block */
+.policy-code-block {
+  margin: 0;
+  padding: 1rem;
+  overflow-x: auto;
+  white-space: pre;
+  line-height: 1.6;
+  background: #161616;
+  border-radius: 4px;
+}
+
+.policy-code-block code {
+  font-family: "IBM Plex Mono", Consolas, monospace;
+  font-size: 0.8rem;
+  color: #f4f4f4;
+}

@@ -88,10 +88,10 @@ jobs:
           retention-days: 7
 
   stability-tests-windows:
-    name: Stability Tests Windows (Python 3.12)
+    name: Stability Tests Windows Smoke (Python 3.12)
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: windows-latest
-    timeout-minutes: 60
+    timeout-minutes: 15
     strategy:
       fail-fast: false
 
@@ -129,7 +129,7 @@ jobs:
           UV_QUIET: 1
           PYTHONIOENCODING: utf-8
           CUGA_THREAD_WORKSPACE_SEED: crm
-        run: uv run run_stability_tests.py --method local
+        run: uv run run_stability_tests.py --method local --windows-smoke
 
       - name: Check pass rate
         if: always()

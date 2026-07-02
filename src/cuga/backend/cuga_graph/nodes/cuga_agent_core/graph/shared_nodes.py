@@ -241,12 +241,29 @@ def create_call_model_node(
                 },
             )
 
+        # ponytail: reasoning-only models may finalize with empty visible content
+        final_answer = content
+        if not (final_answer or "").strip() and reasoning:
+            final_answer = (reasoning or "").strip()
+        if not (final_answer or "").strip():
+            exec_prefix = "Execution output:\n"
+            for msg in reversed(modified_messages):
+                if isinstance(msg, HumanMessage):
+                    text = msg.content or ""
+                    if text.startswith(exec_prefix):
+                        body = text[len(exec_prefix) :].strip()
+                        if body:
+                            final_answer = body
+                            break
+        if not (content or "").strip() and final_answer:
+            final_messages = modified_messages + [AIMessage(content=final_answer)]
+
         return Command(
             goto=END,
             update={
                 adapter.messages_key: final_messages,
                 "script": None,
-                "final_answer": content,
+                "final_answer": final_answer,
                 "execution_complete": True,
                 "step_count": new_step_count,
                 **meta_update,

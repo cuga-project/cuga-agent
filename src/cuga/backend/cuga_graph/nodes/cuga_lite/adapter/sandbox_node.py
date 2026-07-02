@@ -227,6 +227,7 @@ def create_sandbox_node(adapter: Any, base_thread_id: Any, base_apps_list: Any) 
             return {
                 "chat_messages": updated_messages,
                 "error": error_msg,
+                "final_answer": error_msg,
                 "execution_complete": True,
                 "step_count": state.step_count + 1,
                 "tool_calls": accumulated_tool_calls,
