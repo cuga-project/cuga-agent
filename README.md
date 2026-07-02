@@ -367,7 +367,9 @@ CUGA supports LiteLLM through the OpenAI configuration by overriding the base UR
    RITS_API_KEY=your-rits-api-key
    AGENT_SETTING_CONFIG="settings.rits.toml"
 
-   # Optional overrides (swap model/endpoint without editing 14 TOML blocks)
+   # Optional overrides — update MODEL_NAME and RITS_BASE_URL together for
+   # direct RITS setups, since each model has a model-specific URL path.
+   # Setting MODEL_NAME alone will leave you pointed at the previous model's URL.
    MODEL_NAME=google/gemma-4-31B-it
    RITS_BASE_URL="https://inference-3scale-apicast-production.apps.rits.fmaas.res.ibm.com/google-gemma-4-31b-it/v1"
    ```
