@@ -76,6 +76,9 @@ class DynamicAgentGraph:
         enable_filesystem_tools: Optional[bool] = None,
         llm_config: Optional[dict] = None,
         special_instructions: Optional[str] = None,
+        supervisor_agents: Optional[dict] = None,
+        supervisor_enabled: Optional[bool] = None,
+        supervisor_plan_approval: bool = False,
     ):
         self.task_decomposition_agent = TaskDecompositionNode(TaskDecompositionAgent.create())
         self.plan_controller_agent = PlanControllerNode(PlanControllerAgent.create())
@@ -111,7 +114,26 @@ class DynamicAgentGraph:
         self.enable_filesystem_tools = enable_filesystem_tools
         self.llm_config: Optional[dict] = llm_config
         self.special_instructions: Optional[str] = special_instructions
+        # Per-agent supervisor override (manage-UI registry, issue #101): when set, these
+        # take precedence over the global settings.supervisor.* YAML config so a supervisor
+        # built for a specific agent_id gets its own sub-agents instead of the process-wide
+        # default. None ⇒ fall back to settings.supervisor.enabled (unchanged behavior).
+        self.supervisor_agents: Optional[dict] = supervisor_agents
+        self.supervisor_enabled: Optional[bool] = supervisor_enabled
+        self.supervisor_plan_approval: bool = supervisor_plan_approval
         self.graph = None
+
+    def _supervisor_is_enabled(self) -> bool:
+        """Effective supervisor toggle: per-agent override (issue #101) or the global setting.
+
+        Shared by add_nodes (which node/subgraph to build) and add_edges (whether to wire the
+        supervisor subgraph->callback edge) so the two never disagree and leave a dangling node.
+        """
+        return (
+            self.supervisor_enabled
+            if self.supervisor_enabled is not None
+            else getattr(settings.supervisor, 'enabled', False)
+        )
 
     async def build_graph(self):
         graph = StateGraph(AgentState)
@@ -237,7 +259,10 @@ class DynamicAgentGraph:
                     if k in self.llm_config and self.llm_config[k] is not None:
                         model_config[k] = self.llm_config[k]
                 model_config.setdefault("max_tokens", 16000)
-                if getattr(settings.supervisor, "enabled", False):
+                # Needed for the supervisor branch below (supervisor_model = llm_manager.get_model).
+                # Gate on the per-agent effective flag, not just the global setting, or a per-agent
+                # supervisor with its own llm config hits UnboundLocalError (issue #101).
+                if self._supervisor_is_enabled():
                     llm_manager = LLMManager()
                 logger.info(
                     "build_graph: using LLM from config — provider=%s model=%s",
@@ -276,7 +301,10 @@ class DynamicAgentGraph:
 
         # Add CugaSupervisor node so conditional edges from TaskAnalyzer validate.
         # When supervisor is disabled, use a stub that routes to CugaLite (never taken at runtime).
-        if getattr(settings.supervisor, 'enabled', False):
+        # A per-agent supervisor_agents override (manage-UI registry) takes precedence over
+        # the global settings.supervisor.enabled YAML toggle.
+        supervisor_is_enabled = self._supervisor_is_enabled()
+        if supervisor_is_enabled:
             graph.add_node(self.cuga_supervisor.name, self.cuga_supervisor.node)
 
             # Load supervisor config from YAML if specified
@@ -284,7 +312,10 @@ class DynamicAgentGraph:
             agents = {}
             supervisor_config = None  # Store loaded config for later use
 
-            if supervisor_config_path:
+            if self.supervisor_agents is not None:
+                agents = self.supervisor_agents
+                logger.info(f"Using {len(agents)} agent(s) from per-agent supervisor override")
+            elif supervisor_config_path:
                 # Load from YAML file
                 import os
                 from cuga.supervisor_utils.supervisor_config import load_supervisor_config
@@ -380,15 +411,19 @@ class DynamicAgentGraph:
             supervisor_model = llm_manager.get_model(supervisor_model_config)
 
             # Create supervisor subgraph
-            # Pass special_instructions from YAML config if available
+            # Pass special_instructions from YAML config if available, else the per-agent
+            # override (manage-UI supervisor's own special_instructions/description).
             supervisor_special_instructions = None
             if supervisor_config is not None:
                 supervisor_special_instructions = supervisor_config.supervisor.get("special_instructions")
+            elif self.supervisor_agents is not None:
+                supervisor_special_instructions = self.special_instructions
 
             supervisor_subgraph = create_cuga_supervisor_graph(
                 supervisor_model=supervisor_model,
                 agents=agents,
                 special_instructions=supervisor_special_instructions,
+                plan_approval=self.supervisor_plan_approval,
             )
 
             # Compile and add as subgraph node
@@ -422,5 +457,5 @@ class DynamicAgentGraph:
         graph.add_edge("CugaLiteSubgraph", "CugaLiteCallback")
 
         # CugaSupervisor subgraph flow: CugaSupervisorSubgraph -> CugaSupervisorCallback
-        if getattr(settings.supervisor, 'enabled', False):
+        if self._supervisor_is_enabled():
             graph.add_edge("CugaSupervisorSubgraph", "CugaSupervisorCallback")

@@ -37,6 +37,32 @@ class CugaSupervisorNode(BaseNode):
             state.sender = self.name
             return Command(update=state.model_dump(), goto="FinalAnswerAgent")
 
+        # Resume from a plan-approval interrupt: WaitForResponse's Command(goto=prev_sender)
+        # lands here (node "CugaSupervisor"), not in callback_node, since prev_sender was set
+        # to self.name before routing to SuggestHumanActions. Consume the response here so the
+        # re-invoked subgraph below sees plan_approved=True and execute_agent_tool's gate lets
+        # the (re-planned) delegation through instead of asking again.
+        from cuga.backend.cuga_graph.utils.nodes_names import ActionIds
+
+        if (
+            state.sender == "WaitForResponse"
+            and state.hitl_response is not None
+            and state.hitl_response.action_id == ActionIds.AGENT_APPROVAL
+        ):
+            confirmed = state.hitl_response.confirmed
+            state.hitl_response = None
+            state.hitl_action = None
+            if confirmed:
+                logger.info("User approved supervisor delegation plan - resuming")
+                state.supervisor_metadata = {**(state.supervisor_metadata or {}), "plan_approved": True}
+                state.final_answer = ""
+                state.sender = self.name
+            else:
+                logger.warning("User denied supervisor delegation plan")
+                state.final_answer = "Agent execution was cancelled by user."
+                state.sender = self.name
+                return Command(update=state.model_dump(), goto="FinalAnswerAgent")
+
         logger.info("Routing to CugaSupervisor subgraph")
         logger.info(
             f"  - Current state.supervisor_chat_messages: {len(state.supervisor_chat_messages) if state.supervisor_chat_messages else 0} messages"

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { useParams, useNavigate } from "react-router-dom";
 import * as api from "./api";
 import { ConfigHeader } from "./ConfigHeader";
 import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
@@ -21,6 +22,8 @@ import {
   Tile,
   Layer,
   Stack,
+  Select,
+  SelectItem,
 } from "@carbon/react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import {
@@ -335,11 +338,32 @@ const panelHeader: React.CSSProperties = {
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
-const HEADER_HEIGHT = 48; // Carbon shell header default
+const CARBON_HEADER_HEIGHT = 48; // Carbon shell header default
+const AGENT_SWITCHER_HEIGHT = 40; // Agent-switcher bar rendered directly below it
+const HEADER_HEIGHT = CARBON_HEADER_HEIGHT + AGENT_SWITCHER_HEIGHT;
 const LEFT_W = "22rem";
 const RIGHT_W = "26rem";
 
 export function ChatLanding() {
+  // Route-scoped agent (issue #101): /chat/:agentId chats against that agent (single or
+  // supervisor); /chat with no param keeps the original cuga-default behavior. Set the
+  // module-level agent id synchronously (before any effect below fires) so postStream and
+  // every conversation-* call already carry the right X-Agent-ID / agent_id from the start.
+  const { agentId: routeAgentId } = useParams<{ agentId?: string }>();
+  const effectiveChatAgentId = routeAgentId || "cuga-default";
+  api.setKnowledgeAgentId(effectiveChatAgentId);
+  const navigate = useNavigate();
+  const [availableAgents, setAvailableAgents] = useState<Array<{ id: string; name?: string }>>([]);
+
+  useEffect(() => {
+    api.getAgents()
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.agents) setAvailableAgents(data.agents);
+      })
+      .catch(() => {});
+  }, []);
+
   const [draftThread, setDraftThread] = useState<DraftThreadState>(() => loadDraftThreadState() ?? createDraftThreadState());
   const [windowW, setWindowW] = useState(window.innerWidth);
   const [leftOpen, setLeftOpen] = useState(true);
@@ -542,23 +566,27 @@ export function ChatLanding() {
   useEffect(() => {
     (async () => {
       try {
-        const agentId = "cuga-default";
+        const agentId = effectiveChatAgentId;
         const isDraft = false; // Use published config for chat landing
-        
+
         const [contextRes, toolsListRes, manageRes] = await Promise.all([
           api.getAgentContext(),
           api.getToolsList(isDraft),
-          api.getManageConfig(),
+          api.getManageConfig(false, agentId),
         ]);
 
         let agentName = "CUGA Default Agent";
         let agentDescription = "A general-purpose assistant with configured tools and workspace access.";
         let configVersion: number | string | null = null;
-        let agentIdFallback = "cuga-default";
+        // Only the default agent context comes from /api/agent/context (the single global
+        // published agent). A route-scoped agentId always wins over that fallback.
+        let agentIdFallback = agentId;
 
         if (contextRes.ok) {
           const contextData = await contextRes.json();
-          agentIdFallback = contextData.agent_id ?? agentIdFallback;
+          if (!routeAgentId) {
+            agentIdFallback = contextData.agent_id ?? agentIdFallback;
+          }
           configVersion = contextData.config_version ?? null;
           const kEnabled = contextData.knowledge_enabled ?? false;
           const agentKEnabled = contextData.agent_level_knowledge_enabled ?? false;
@@ -1022,7 +1050,50 @@ export function ChatLanding() {
         <ConfigHeader
           onToggleLeftSidebar={handleToggleLeft}
           onToggleWorkspace={handleToggleWorkspace}
+          agentId={routeAgentId}
         />
+
+        <div
+          style={{
+            position: "fixed",
+            top: CARBON_HEADER_HEIGHT,
+            left: 0,
+            right: 0,
+            height: AGENT_SWITCHER_HEIGHT,
+            display: "flex",
+            alignItems: "center",
+            gap: "0.5rem",
+            padding: "0 1rem",
+            background: "var(--cds-layer)",
+            borderBottom: "1px solid var(--cds-border-subtle-00)",
+            zIndex: 10,
+          }}
+        >
+          <Chat size={16} style={{ color: "var(--cds-text-secondary)", flexShrink: 0 }} />
+          <Select
+            id="chat-agent-switcher"
+            labelText=""
+            hideLabel
+            size="sm"
+            inline
+            value={effectiveChatAgentId}
+            onChange={(e) => {
+              const nextId = e.target.value;
+              if (nextId && nextId !== effectiveChatAgentId) {
+                navigate(nextId === "cuga-default" ? "/chat" : `/chat/${encodeURIComponent(nextId)}`);
+              }
+            }}
+            style={{ maxWidth: "16rem" }}
+          >
+            {availableAgents.length === 0 ? (
+              <SelectItem value={effectiveChatAgentId} text={effectiveChatAgentId} />
+            ) : (
+              availableAgents.map((a) => (
+                <SelectItem key={a.id} value={a.id} text={a.name?.trim() || a.id} />
+              ))
+            )}
+          </Select>
+        </div>
 
       {/* ── Full-width chat — panels float on top ─────────────────────────── */}
       <div className="chat-content-area" style={{ position: "relative", height: `calc(100vh - ${HEADER_HEIGHT}px)` }}>

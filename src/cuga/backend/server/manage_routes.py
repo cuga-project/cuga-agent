@@ -342,6 +342,25 @@ async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict
     return existing
 
 
+def _invalidate_agent_graph_cache(request: Request, agent_id: str, *, draft: bool, published: bool) -> None:
+    """Drop cached built graphs for agent_id (see main.py's _resolve_stream_agent).
+
+    Called on draft-save/publish so the next /stream request for a supervisor agent rebuilds
+    from the new config instead of serving a stale cached graph. A no-op for cuga-default,
+    which never uses this cache.
+    """
+    if agent_id == "cuga-default":
+        return
+    app_state = _app_state(request)
+    cache = getattr(app_state, "agent_graphs_cache", None)
+    if not cache:
+        return
+    if draft:
+        cache.pop((agent_id, True), None)
+    if published:
+        cache.pop((agent_id, False), None)
+
+
 @router.get("/config")
 async def get_manage_config(
     request: Request,
@@ -746,6 +765,8 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 
         logger.info(f"[DEBUG] Returning JSONResponse with agent_id={agent_id}, type={type(agent_id)}")
 
+        _invalidate_agent_graph_cache(request, str(agent_id), draft=True, published=False)
+
         # Return response with tool and policy errors if any
         has_errors = bool(tool_errors or policy_errors)
         response_data = {
@@ -887,6 +908,7 @@ async def patch_draft_agent(request: Request, agent_id: Optional[str] = None):
             if not name or not str(name).strip():
                 raise HTTPException(status_code=400, detail="Agent name is required")
             await _load_and_patch_draft(agent_id, "agent", agent_meta)
+            _invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to patch draft agent: {e}")
@@ -936,6 +958,26 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to patch draft policies: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.patch("/config/draft/supervisor")
+async def patch_draft_supervisor(request: Request, agent_id: Optional[str] = None):
+    """Update only the supervisor (subAgents, planApproval) section of the draft."""
+    if agent_id is None:
+        agent_id = "cuga-default"
+    try:
+        data = await request.json()
+        supervisor = data.get("supervisor", data)
+        if not isinstance(supervisor, dict):
+            raise HTTPException(status_code=400, detail="supervisor must be a dict")
+        await _load_and_patch_draft(agent_id, "supervisor", supervisor)
+        _invalidate_agent_graph_cache(request, agent_id, draft=True, published=False)
+        return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to patch draft supervisor: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -1971,6 +2013,8 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 
         if reindex_info:
             response_data["reindex"] = reindex_info
+
+        _invalidate_agent_graph_cache(request, agent_id, draft=True, published=True)
 
         return JSONResponse(response_data)
     except HTTPException:

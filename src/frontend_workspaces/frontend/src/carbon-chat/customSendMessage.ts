@@ -365,6 +365,21 @@ export async function customSendMessage(
                   text: `**Policy:** ${toolData.policy_name}`,
                 });
               }
+
+              // Supervisor plan-approval (issue #101): agent_names/task_descriptions come
+              // from create_agent_approval_action's additional_data.tool.
+              if (toolData.agent_names && toolData.agent_names.length > 0) {
+                cardBody.push({
+                  response_type: MessageResponseTypes.TEXT,
+                  text: `**Agents to be executed:** ${toolData.agent_names.join(', ')}`,
+                });
+              }
+              if (toolData.task_descriptions) {
+                cardBody.push({
+                  response_type: MessageResponseTypes.TEXT,
+                  text: `**Tasks:**\n${toolData.task_descriptions}`,
+                });
+              }
             }
             
             let buttonKind: string = BUTTON_KIND.PRIMARY;

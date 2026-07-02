@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import re
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
@@ -29,6 +30,19 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
 )
 from cuga.config import settings
 from cuga.configurations.instructions_manager import get_all_instructions_formatted
+
+
+def _delegate_tool_name(agent_name: str) -> str:
+    """Build a VALID PYTHON IDENTIFIER delegate tool name for ``agent_name``.
+
+    Agent ids from the manage UI are slugified with hyphens (e.g. ``crm-agent``), but the
+    supervisor invokes delegate tools as Python function calls in generated code —
+    ``delegate_to_crm-agent(...)`` parses as subtraction and matches nothing in the execution
+    context, so the code executor rejects it ("Code must use at least one variable or tool from
+    context"). Sanitize non-identifier chars to ``_`` for the callable name; the real
+    ``agent_name`` is still used for the delegation lookup.
+    """
+    return "delegate_to_" + re.sub(r"\W", "_", agent_name)
 
 
 def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
@@ -129,7 +143,7 @@ def create_prepare_agents_and_prompt_node(adapter: Any) -> Callable:
                 agent_entry["agent_card"] = format_agent_card_for_prompt(agent_card)
             agent_list.append(agent_entry)
 
-            tool_name = f"delegate_to_{agent_name}"
+            tool_name = _delegate_tool_name(agent_name)
             tool_func = create_agent_delegation_func(
                 adapter, agent_name, agent_or_config, agent_card=agent_card
             )

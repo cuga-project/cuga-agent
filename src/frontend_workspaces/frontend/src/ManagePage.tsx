@@ -31,6 +31,8 @@ import {
   RadioButtonGroup,
   RadioButton,
   TextArea,
+  Toggle,
+  IconButton,
 } from "@carbon/react";
 import { CugaHeader } from "./CugaHeader";
 import {
@@ -45,6 +47,8 @@ import {
   Tools,
   SkillLevel as SkillIcon,
   Package as PackageIcon,
+  Add,
+  TrashCan,
 } from "@carbon/icons-react";
 import Markdown from "@carbon/ai-chat-components/es/react/markdown.js";
 import CarbonChat from "./carbon-chat/CarbonChat";
@@ -54,6 +58,7 @@ import VariablesSidebar from "agentic_chat/VariablesSidebar";
 import { ToolsConfig, type ConnectedApp, type ConnectedTool } from "./ToolsConfig";
 import { SecretsManager } from "./SecretsManager";
 import type { ToolEntry } from "./types/tools";
+import type { AgentItem } from "./ManageDashboard";
 import type { KnowledgeAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
 import "./ManagePage.css";
 
@@ -88,8 +93,19 @@ export interface HomescreenConfig {
   starters?: string[];
 }
 
+export type SubAgentRef =
+  | { kind: "internal"; ref: string }
+  | {
+      kind: "a2a";
+      name: string;
+      endpoint: string;
+      auth?: { type: "bearer"; tokenEnvVar?: string };
+      timeout?: number;
+    };
+
 export interface AgentConfig {
-  agent?: { name?: string; description?: string };
+  agent?: { name?: string; description?: string; kind?: "single" | "supervisor" };
+  supervisor?: { subAgents?: SubAgentRef[]; planApproval?: boolean };
   llm?: {
     provider?: "groq" | "openai" | "litellm";
     api_key?: string;
@@ -295,6 +311,81 @@ function maskSecrets(obj: unknown): unknown {
   return obj;
 }
 
+function AddA2AAgentModal({
+  onClose,
+  onAdd,
+}: {
+  onClose: () => void;
+  onAdd: (entry: Extract<SubAgentRef, { kind: "a2a" }>) => void;
+}) {
+  const [name, setName] = useState("");
+  const [endpoint, setEndpoint] = useState("");
+  const [tokenEnvVar, setTokenEnvVar] = useState("");
+  const [timeout, setTimeoutVal] = useState(30);
+
+  const canAdd = name.trim() !== "" && endpoint.trim() !== "";
+
+  return (
+    <ComposedModal open onClose={onClose} size="sm">
+      <ModalHeader title="Add A2A agent" />
+      <ModalBody hasForm>
+        <VStack gap={5}>
+          <TextInput
+            id="a2a-name"
+            labelText="Name"
+            helperText="Identifier for the A2A agent"
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="e.g. research-agent"
+          />
+          <TextInput
+            id="a2a-endpoint"
+            labelText="Endpoint URL"
+            value={endpoint}
+            onChange={(e) => setEndpoint(e.target.value)}
+            placeholder="e.g. http://localhost:8080"
+          />
+          <TextInput
+            id="a2a-token-env-var"
+            labelText="Auth token env var (optional)"
+            helperText="Name of an environment variable holding a bearer token — not the token itself"
+            value={tokenEnvVar}
+            onChange={(e) => setTokenEnvVar(e.target.value)}
+            placeholder="e.g. RESEARCH_AGENT_TOKEN"
+          />
+          <NumberInput
+            id="a2a-timeout"
+            label="Timeout (seconds)"
+            value={timeout}
+            min={1}
+            onChange={(_e: unknown, { value }: { value: number | string }) => setTimeoutVal(Number(value) || 30)}
+          />
+        </VStack>
+      </ModalBody>
+      <ModalFooter>
+        <Button kind="secondary" onClick={onClose}>
+          Cancel
+        </Button>
+        <Button
+          kind="primary"
+          disabled={!canAdd}
+          onClick={() =>
+            onAdd({
+              kind: "a2a",
+              name: name.trim(),
+              endpoint: endpoint.trim(),
+              auth: tokenEnvVar.trim() ? { type: "bearer", tokenEnvVar: tokenEnvVar.trim() } : undefined,
+              timeout,
+            })
+          }
+        >
+          Add
+        </Button>
+      </ModalFooter>
+    </ComposedModal>
+  );
+}
+
 export function ManagePage() {
   const { agentId } = useParams<{ agentId: string }>();
   const effectiveAgentId = agentId ?? "cuga-default";
@@ -333,6 +424,11 @@ export function ManagePage() {
   } | null>(null);
   const [agentName, setAgentName] = useState("");
   const [agentDescription, setAgentDescription] = useState("");
+  const [agentKind, setAgentKind] = useState<"single" | "supervisor">("single");
+  const [subAgents, setSubAgents] = useState<SubAgentRef[]>([]);
+  const [planApproval, setPlanApproval] = useState(false);
+  const [availableAgents, setAvailableAgents] = useState<AgentItem[]>([]);
+  const [showAddA2AModal, setShowAddA2AModal] = useState(false);
   const [specialInstructions, setSpecialInstructions] = useState("");
   const [secretsModalOpen, setSecretsModalOpen] = useState(false);
   const [skills, setSkills] = useState<Array<{ name: string; description: string; requirements: string[]; source: string }>>([]);
@@ -701,6 +797,9 @@ export function ManagePage() {
       setHomescreen(out.homescreen ?? DEFAULT_HOMESCREEN);
       setSpecialInstructions(out.special_instructions ?? "");
       setPolicies(out.policies ?? { enablePolicies: true, policies: [] });
+      setAgentKind(out.agent?.kind === "supervisor" ? "supervisor" : "single");
+      setSubAgents(Array.isArray(out.supervisor?.subAgents) ? out.supervisor!.subAgents! : []);
+      setPlanApproval(out.supervisor?.planApproval ?? false);
       if (out.knowledge) {
         setKnowledgeConfig({ ...DEFAULT_KNOWLEDGE_CONFIG, ...out.knowledge });
         setKnowledgeSavedSnapshot(out.knowledge);
@@ -881,8 +980,12 @@ export function ManagePage() {
   const assembleConfig = useCallback(
     (overrides?: Partial<AgentConfig>): AgentConfig => {
       const c: AgentConfig = {
-        agent: { name: agentName, description: agentDescription || undefined },
-        llm: llmConfig,
+        agent: { name: agentName, description: agentDescription || undefined, kind: agentKind },
+        supervisor: agentKind === "supervisor" ? { subAgents, planApproval } : undefined,
+        // Supervisors have no LLM section in this UI (they use the environment's default
+        // model) — omit it so a stale DEFAULT_CONFIG.llm placeholder never gets saved and
+        // mistakenly overrides that default (see main.py's _resolve_stream_agent guard).
+        llm: agentKind === "supervisor" ? undefined : llmConfig,
         tools: tools,
         feature_flags: featureFlags,
         homescreen,
@@ -892,7 +995,7 @@ export function ManagePage() {
       };
       return overrides ? { ...c, ...overrides } : c;
     },
-    [agentName, agentDescription, llmConfig, tools, featureFlags, homescreen, specialInstructions, policies, knowledgeConfig]
+    [agentName, agentDescription, agentKind, subAgents, planApproval, llmConfig, tools, featureFlags, homescreen, specialInstructions, policies, knowledgeConfig]
   );
 
   const performDraftSave = useCallback(
@@ -1018,7 +1121,7 @@ export function ManagePage() {
     agentAbortRef.current = ac;
     try {
       const res = await api.patchManageConfigDraftAgent(
-        { name: agentName.trim(), description: agentDescription.trim() || undefined },
+        { name: agentName.trim(), description: agentDescription.trim() || undefined, kind: agentKind },
         effectiveAgentId,
         ac.signal,
       );
@@ -1035,7 +1138,72 @@ export function ManagePage() {
       setDraftSaving(false);
       addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
     }
-  }, [agentName, agentDescription, addToast, effectiveAgentId]);
+  }, [agentName, agentDescription, agentKind, addToast, effectiveAgentId]);
+
+  const saveSupervisorDraft = useCallback(
+    async (next: { subAgents: SubAgentRef[]; planApproval: boolean }) => {
+      setDraftSaving(true);
+      try {
+        const res = await api.patchManageConfigDraftSupervisor(next, effectiveAgentId);
+        setDraftSaving(false);
+        if (res.ok) {
+          setCurrentVersion("draft");
+        } else {
+          addToast("error", "Draft Save Failed", `Failed to save sub-agents (${res.status} ${res.statusText})`);
+        }
+      } catch (error) {
+        setDraftSaving(false);
+        addToast("error", "Draft Save Failed", error instanceof Error ? error.message : "Network error");
+      }
+    },
+    [addToast, effectiveAgentId]
+  );
+
+  const addInternalSubAgent = useCallback(
+    (ref: string) => {
+      if (!ref || subAgents.some((s) => s.kind === "internal" && s.ref === ref)) return;
+      const next = [...subAgents, { kind: "internal" as const, ref }];
+      setSubAgents(next);
+      saveSupervisorDraft({ subAgents: next, planApproval });
+    },
+    [subAgents, planApproval, saveSupervisorDraft]
+  );
+
+  const addA2ASubAgent = useCallback(
+    (entry: Extract<SubAgentRef, { kind: "a2a" }>) => {
+      const next = [...subAgents, entry];
+      setSubAgents(next);
+      saveSupervisorDraft({ subAgents: next, planApproval });
+    },
+    [subAgents, planApproval, saveSupervisorDraft]
+  );
+
+  const removeSubAgent = useCallback(
+    (index: number) => {
+      const next = subAgents.filter((_, i) => i !== index);
+      setSubAgents(next);
+      saveSupervisorDraft({ subAgents: next, planApproval });
+    },
+    [subAgents, planApproval, saveSupervisorDraft]
+  );
+
+  const updatePlanApproval = useCallback(
+    (checked: boolean) => {
+      setPlanApproval(checked);
+      saveSupervisorDraft({ subAgents, planApproval: checked });
+    },
+    [subAgents, saveSupervisorDraft]
+  );
+
+  useEffect(() => {
+    if (agentKind !== "supervisor") return;
+    api.getAgents()
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (data?.agents) setAvailableAgents(data.agents);
+      })
+      .catch(() => {});
+  }, [agentKind]);
 
   useEffect(() => {
     if (skipDraftSaveRef.current) return;
@@ -1523,7 +1691,7 @@ export function ManagePage() {
         agentContext={agentContext ?? undefined}
         navItems={[
           { label: "Agents", to: `/manage${search}` },
-          { label: "Chat", to: search ? `/${search}` : "/chat" },
+          { label: "Chat", to: `/chat/${encodeURIComponent(effectiveAgentId)}` },
         ]}
         linkComponent={Link}
         onOpenSecrets={() => setSecretsModalOpen(true)}
@@ -1591,6 +1759,92 @@ export function ManagePage() {
                   </div>
                 </VStack>
               </AccordionItem>
+
+              {agentKind === "supervisor" && (
+                <AccordionItem title="Sub-agents" open>
+                  <VStack gap={5}>
+                    <p style={{ fontSize: "0.875rem", color: "var(--cds-text-secondary)" }}>
+                      A supervisor doesn&apos;t use its own tools or LLM section — it delegates to the
+                      agents listed below, each an existing agent or an external A2A endpoint.
+                    </p>
+
+                    <FormGroup legendText="Add an existing agent">
+                      <Select
+                        id="add-internal-subagent"
+                        labelText=""
+                        hideLabel
+                        value=""
+                        onChange={(e) => {
+                          if (e.target.value) addInternalSubAgent(e.target.value);
+                        }}
+                      >
+                        <SelectItem value="" text="Select an agent to add…" />
+                        {availableAgents
+                          .filter(
+                            (a) =>
+                              a.id !== effectiveAgentId &&
+                              a.kind !== "supervisor" &&
+                              !subAgents.some((s) => s.kind === "internal" && s.ref === a.id)
+                          )
+                          .map((a) => (
+                            <SelectItem key={a.id} value={a.id} text={a.name?.trim() || a.id} />
+                          ))}
+                      </Select>
+                    </FormGroup>
+
+                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                      <Button kind="tertiary" size="sm" renderIcon={Add} onClick={() => setShowAddA2AModal(true)}>
+                        Add A2A agent
+                      </Button>
+                    </div>
+
+                    {subAgents.length === 0 ? (
+                      <p style={{ fontSize: "0.8125rem", color: "var(--cds-text-secondary)" }}>
+                        No sub-agents yet. Add an existing agent or an A2A agent above.
+                      </p>
+                    ) : (
+                      <VStack gap={3}>
+                        {subAgents.map((s, i) => (
+                          <div
+                            key={i}
+                            style={{
+                              display: "flex",
+                              alignItems: "center",
+                              justifyContent: "space-between",
+                              padding: "0.75rem 1rem",
+                              border: "1px solid var(--cds-border-subtle-00)",
+                            }}
+                          >
+                            <div style={{ display: "flex", gap: "0.5rem", alignItems: "center" }}>
+                              <Tag type={s.kind === "internal" ? "blue" : "purple"} size="sm">
+                                {s.kind === "internal" ? "Agent" : "A2A"}
+                              </Tag>
+                              <span>{s.kind === "internal" ? s.ref : `${s.name} (${s.endpoint})`}</span>
+                            </div>
+                            <IconButton label="Remove sub-agent" kind="ghost" size="sm" onClick={() => removeSubAgent(i)}>
+                              <TrashCan />
+                            </IconButton>
+                          </div>
+                        ))}
+                      </VStack>
+                    )}
+
+                    <Toggle
+                      id="plan-approval-toggle"
+                      labelText="Plan approval"
+                      labelA="Off"
+                      labelB="On"
+                      toggled={planApproval}
+                      onToggle={updatePlanApproval}
+                    />
+                    <p style={{ fontSize: "0.8125rem", color: "var(--cds-text-secondary)" }}>
+                      When on, the supervisor pauses for approval before delegating to sub-agents.
+                    </p>
+                  </VStack>
+                </AccordionItem>
+              )}
+
+              {agentKind !== "supervisor" && (
               <AccordionItem title="LLM Configuration" open>
                   {llmSecretsMode === "local" && llmForceEnv ? (
                     <InlineNotification
@@ -1851,7 +2105,9 @@ export function ManagePage() {
                   </VStack>
                   )}
               </AccordionItem>
+              )}
 
+              {agentKind !== "supervisor" && (
               <AccordionItem title="Tools" open>
                   <ToolsConfig
                     tools={tools}
@@ -1864,6 +2120,7 @@ export function ManagePage() {
                     onOpenSecrets={() => setSecretsModalOpen(true)}
                   />
               </AccordionItem>
+              )}
 
               {agentContext?.skills_enabled ? (
               <AccordionItem title="Skills">
@@ -2293,6 +2550,16 @@ export function ManagePage() {
       )}
 
       <SecretsManager open={secretsModalOpen} onClose={() => { setSecretsModalOpen(false); refreshSecrets(); }} agentId={effectiveAgentId} />
+
+      {showAddA2AModal && (
+        <AddA2AAgentModal
+          onClose={() => setShowAddA2AModal(false)}
+          onAdd={(entry) => {
+            addA2ASubAgent(entry);
+            setShowAddA2AModal(false);
+          }}
+        />
+      )}
 
       {showPoliciesModal && (
         <PoliciesConfig

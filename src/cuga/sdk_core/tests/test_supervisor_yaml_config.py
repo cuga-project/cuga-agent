@@ -9,7 +9,10 @@ import os
 import tempfile
 
 from cuga import CugaSupervisor
-from cuga.supervisor_utils.supervisor_config import load_supervisor_config
+from cuga.supervisor_utils.supervisor_config import (
+    build_agents_from_stored_subagents,
+    load_supervisor_config,
+)
 
 
 @pytest.fixture(scope="function", autouse=True)
@@ -278,3 +281,70 @@ agents:
                 await load_supervisor_config(temp_path)
         finally:
             os.unlink(temp_path)
+
+
+class TestBuildAgentsFromStoredSubAgents:
+    """build_agents_from_stored_subagents — the manage-UI store-sourced loader (issue #101)."""
+
+    @pytest.mark.asyncio
+    async def test_a2a_entry_resolves_to_external_config(self, monkeypatch):
+        monkeypatch.setenv("TEST_A2A_TOKEN", "secret-token")
+
+        agents = await build_agents_from_stored_subagents(
+            [
+                {
+                    "kind": "a2a",
+                    "name": "hotel_agent",
+                    "endpoint": "http://localhost:9000",
+                    "auth": {"type": "bearer", "tokenEnvVar": "TEST_A2A_TOKEN"},
+                    "timeout": 15,
+                }
+            ]
+        )
+
+        assert list(agents.keys()) == ["hotel_agent"]
+        entry = agents["hotel_agent"]
+        assert entry["type"] == "external"
+        a2a_cfg = entry["config"]["a2a_protocol"]
+        assert a2a_cfg["endpoint"] == "http://localhost:9000"
+        assert a2a_cfg["timeout"] == 15
+        assert a2a_cfg["auth"] == {"type": "bearer", "token": "secret-token"}
+
+    @pytest.mark.asyncio
+    async def test_a2a_entry_without_token_env_var_has_no_auth(self):
+        agents = await build_agents_from_stored_subagents(
+            [{"kind": "a2a", "name": "public_agent", "endpoint": "http://localhost:9001"}]
+        )
+
+        assert agents["public_agent"]["config"]["a2a_protocol"]["auth"] is None
+
+    @pytest.mark.asyncio
+    async def test_internal_ref_resolves_to_cuga_agent(self, monkeypatch):
+        monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+
+        from cuga.backend.server.config_store import reset_config_db, save_config
+        from cuga.sdk import CugaAgent
+
+        reset_config_db()
+        await save_config(
+            {
+                "agent": {"name": "Flight Booker", "description": "Books flights"},
+                "tools": [{"name": "flights_app", "type": "openapi"}],
+            },
+            agent_id="flight-booker",
+        )
+
+        agents = await build_agents_from_stored_subagents([{"kind": "internal", "ref": "flight-booker"}])
+
+        assert list(agents.keys()) == ["flight-booker"]
+        assert isinstance(agents["flight-booker"], CugaAgent)
+
+    @pytest.mark.asyncio
+    async def test_internal_ref_missing_config_is_skipped(self):
+        from cuga.backend.server.config_store import reset_config_db
+
+        reset_config_db()
+
+        agents = await build_agents_from_stored_subagents([{"kind": "internal", "ref": "does-not-exist"}])
+
+        assert agents == {}

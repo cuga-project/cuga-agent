@@ -915,6 +915,11 @@ def start(
         "--oak-health",
         help="Enable healthcare insurance OpenAPI (cuga-oak-health; port from settings server_ports.oak_health_api)",
     ),
+    seed_supervisor_demo: bool = typer.Option(
+        False,
+        "--seed-supervisor-demo",
+        help="For manager: preload 3 sub-agents + 1 supervisor (draft + published) so the multi-agent flow is immediately testable in the UI",
+    ),
     reset: bool = typer.Option(
         False,
         "--reset",
@@ -1241,6 +1246,14 @@ def start(
     app_crm, app_email, app_digital_sales, app_docs, app_filesystem, app_oak_health = _resolve_apps(
         service, crm, email, digital_sales, docs, filesystem, no_email, oak_health
     )
+    # The supervisor demo's sub-agents are CRM / email / filesystem specialists, so force those
+    # services on and enable runtime filesystem tools — otherwise delegation lands on agents
+    # whose tools were never provisioned (issue #101).
+    if seed_supervisor_demo and service == "manager":
+        app_crm = True
+        app_email = True
+        app_filesystem = True
+        os.environ["DYNACONF_ADVANCED_FEATURES__ENABLE_FILESYSTEM_TOOLS"] = "true"
     resolved_tools = build_tools_from_apps(
         crm=app_crm,
         email=app_email,
@@ -1259,6 +1272,10 @@ def start(
             _apply_local_demo_workspace_env()
             logger.info(f"Manager mode: policy filesystem sync disabled, MCP_SERVERS_FILE={managed_path}")
             setup_demo_manage_config("manager", tools=resolved_tools, filesystem=app_filesystem)
+            if seed_supervisor_demo:
+                from cuga.backend.server.demo_manage_setup import seed_supervisor_demo_config
+
+                seed_supervisor_demo_config()
 
             app_mgr = _make_app_manager()
             workspace_path = cuga_workspace or os.path.join(os.getcwd(), "cuga_workspace")

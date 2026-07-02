@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from typing import Any, Callable, Optional
+import re
+from typing import Any, Callable, Dict, Optional, Set
 
-from langchain_core.messages import HumanMessage
+from langchain_core.messages import AIMessage, HumanMessage
 from langchain_core.runnables import RunnableConfig
+from langgraph.graph import END
+from langgraph.types import Command
 from loguru import logger
 
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.execution.todos import extract_task_todos_from_new_vars
@@ -22,7 +25,41 @@ from cuga.backend.cuga_graph.nodes.cuga_supervisor.execution_context import (
     SUPERVISOR_EXEC_KEY,
     SupervisorExecutionContext,
 )
+from cuga.backend.cuga_graph.nodes.cuga_supervisor.nodes.prepare_agents_and_prompt import (
+    _delegate_tool_name,
+)
+from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import create_agent_approval_action
 from cuga.config import settings
+
+_DELEGATE_CALL_RE = re.compile(r"delegate_to_(\w+)\s*\(([^)]*)\)")
+_TASK_KWARG_RE = re.compile(r"task\s*=\s*(\"(?:[^\"\\]|\\.)*\"|'(?:[^'\\]|\\.)*')")
+
+
+def _extract_pending_delegations(script: Optional[str], known_agents: Set[str]) -> Dict[str, str]:
+    """Best-effort scan of generated delegation code for ``delegate_to_<agent>(task=...)`` calls.
+
+    The supervisor is code-generating (like cuga_lite), so "the plan" is Python source, not a
+    structured tool-call list — this mirrors the same regex-based extraction shape without
+    needing a full AST walk for a two-line approval message.
+
+    Matches against ``_delegate_tool_name(agent)`` rather than raw agent ids: agent ids from the
+    manage UI are slugified with hyphens (e.g. ``crm-agent``), but the delegate tool is actually
+    named ``delegate_to_crm_agent`` — matching hyphenated ids directly would never recognize the
+    call, silently disabling the approval gate for any UI-created agent.
+    """
+    if not script:
+        return {}
+    tool_name_to_agent = {_delegate_tool_name(name): name for name in known_agents}
+    tasks: Dict[str, str] = {}
+    for match in _DELEGATE_CALL_RE.finditer(script):
+        full_call_name = f"delegate_to_{match.group(1)}"
+        call_args = match.group(2)
+        agent_name = tool_name_to_agent.get(full_call_name)
+        if agent_name is None or agent_name in tasks:
+            continue
+        task_match = _TASK_KWARG_RE.search(call_args)
+        tasks[agent_name] = task_match.group(1)[1:-1] if task_match else "(see generated plan)"
+    return tasks
 
 
 def _delegation_state_update(state: CugaSupervisorState) -> dict:
@@ -47,6 +84,44 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
     def create_error(updated_messages, error_message, step_count, additional_updates=None):
         return core_create_error(adapter, updated_messages, error_message, step_count, additional_updates)
 
+    def _maybe_create_plan_approval_command(state: CugaSupervisorState) -> Optional[Command]:
+        """Gate delegation behind human approval when the supervisor's planApproval is on.
+
+        Mirrors ToolApprovalHandler._create_approval_interrupt's Command shape (goto=END,
+        hitl_action + sender set) so it flows through the same, already-wired
+        SuggestHumanActions -> WaitForResponse -> interrupt() path and the existing
+        AGENT_APPROVAL handling in CugaSupervisorNode.callback_node.
+        """
+        if not getattr(adapter, "_plan_approval", False):
+            return None
+        metadata = adapter.get_metadata(state) or {}
+        if metadata.get("plan_approved"):
+            return None
+        pending = _extract_pending_delegations(state.script, set(adapter._agents.keys()))
+        if not pending:
+            return None
+
+        hitl_action = create_agent_approval_action(
+            agent_names=list(pending.keys()),
+            tasks=pending,
+        )
+        approval_metadata = {**metadata, "approval_required": True, "plan_approved": False}
+        updated_messages, error_message = append(state, [AIMessage(content=hitl_action.description)])
+        if error_message:
+            return create_error(updated_messages, error_message, state.step_count)
+
+        return Command(
+            goto=END,
+            update={
+                adapter.messages_key: updated_messages,
+                "final_answer": hitl_action.description,
+                adapter.metadata_key: approval_metadata,
+                "hitl_action": hitl_action,
+                "sender": adapter.sender_name,
+                "step_count": state.step_count + 1,
+            },
+        )
+
     async def execute_agent_tool(state: CugaSupervisorState, config: Optional[RunnableConfig] = None):
         logger.info("Supervisor conversational: executing agent delegation code")
 
@@ -54,6 +129,18 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
             denial_command = ToolApprovalHandler.handle_denial(adapter, state)
             if denial_command:
                 return denial_command
+
+        approval_command = _maybe_create_plan_approval_command(state)
+        if approval_command:
+            return approval_command
+        # One-shot: a prior turn's approval clears itself here so the *next* delegation
+        # (next turn) is gated again rather than staying approved for the whole thread.
+        plan_approval_consumed = False
+        if getattr(adapter, "_plan_approval", False):
+            meta = adapter.get_metadata(state)
+            if meta.get("plan_approved"):
+                adapter.set_metadata(state, {**meta, "plan_approved": False})
+                plan_approval_consumed = True
 
         existing_vars = {}
         var_manager = adapter.get_variable_manager(state)
@@ -117,6 +204,8 @@ def create_execute_agent_tool_node(adapter: Any) -> Callable:
                 "step_count": state.step_count + 1,
                 **delegation_updates,
             }
+            if plan_approval_consumed:
+                base_update[adapter.metadata_key] = adapter.get_metadata(state)
             # The create_update_todos tool writes onto the run-local state via the execution
             # context, so prefer that; fall back to scanning execution outputs for older flows.
             if state.task_todos is not None:

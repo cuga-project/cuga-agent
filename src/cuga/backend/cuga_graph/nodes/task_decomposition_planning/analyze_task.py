@@ -194,8 +194,13 @@ class TaskAnalyzer(BaseNode):
         Returns:
             True if supervisor mode should be used
         """
-        # Check if supervisor mode is enabled in settings
-        supervisor_mode = getattr(settings.supervisor, 'enabled', False)
+        # Per-request state override (issue #101 per-agent supervisor) wins over the global
+        # settings.supervisor.enabled toggle, mirroring how lite_mode overrides fast mode.
+        supervisor_mode = (
+            state.supervisor_mode
+            if getattr(state, "supervisor_mode", None) is not None
+            else getattr(settings.supervisor, 'enabled', False)
+        )
 
         if supervisor_mode:
             logger.info("Supervisor mode enabled - routing to CugaSupervisor")

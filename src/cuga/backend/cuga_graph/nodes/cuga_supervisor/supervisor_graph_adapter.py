@@ -44,12 +44,14 @@ class SupervisorGraphAdapter(CoreGraphAdapter):
         tool_provider: Optional[Any] = None,
         base_callbacks: Optional[List[Any]] = None,
         static_prompt: Optional[str] = None,
+        plan_approval: bool = False,
     ) -> None:
         self._agents = agents
         self._special_instructions = special_instructions
         self._tool_provider = tool_provider
         self._base_callbacks = base_callbacks or []
         self._static_prompt = static_prompt
+        self._plan_approval = plan_approval
         self._agent_tools_context: Dict[str, Any] = {}
 
     def get_messages(self, state: Any) -> List[BaseMessage]:

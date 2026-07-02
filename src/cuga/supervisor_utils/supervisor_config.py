@@ -22,23 +22,19 @@ class SupervisorConfig(BaseModel):
     a2a: Dict[str, Any] = {}
 
 
-async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
+async def build_agents_from_list(agents_list: List[Dict[str, Any]]) -> Dict[str, Any]:
     """
-    Load and parse supervisor YAML configuration.
-    Creates internal CugaAgent instances from YAML config.
+    Build a ``{agent_name: CugaAgent | external-config-dict}`` map from a list of
+    agent config dicts (the ``agents:`` section of a supervisor YAML file).
 
-    Args:
-        yaml_path: Path to YAML configuration file
-
-    Returns:
-        SupervisorConfig with loaded configuration
+    Shared by the YAML loader (:func:`load_supervisor_config`) and the manage-UI
+    store-sourced loader (:func:`build_agents_from_stored_subagents`), so both paths
+    feed :func:`cuga.backend.cuga_graph.nodes.cuga_supervisor.cuga_supervisor_graph.create_cuga_supervisor_graph`
+    the exact same agent shapes.
     """
-    with open(yaml_path, "r") as f:
-        config = yaml.safe_load(f)
-
     agents = {}
 
-    for agent_config in config.get("agents", []):
+    for agent_config in agents_list:
         agent_name = agent_config["name"]
 
         # Check if this is an external agent (has a2a_protocol)
@@ -120,11 +116,100 @@ async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
             agents[agent_name] = agent
             logger.info(f"Created internal CugaAgent: {agent_name}")
 
+    return agents
+
+
+async def load_supervisor_config(yaml_path: str) -> SupervisorConfig:
+    """
+    Load and parse supervisor YAML configuration.
+    Creates internal CugaAgent instances from YAML config.
+
+    Args:
+        yaml_path: Path to YAML configuration file
+
+    Returns:
+        SupervisorConfig with loaded configuration
+    """
+    with open(yaml_path, "r") as f:
+        config = yaml.safe_load(f)
+
+    agents = await build_agents_from_list(config.get("agents", []))
+
     return SupervisorConfig(
         supervisor=config.get("supervisor", {}),
         agents=agents,
         a2a=config.get("a2a", {}),
     )
+
+
+async def build_agents_from_stored_subagents(sub_agents: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Build a ``{agent_name: CugaAgent | external-config-dict}`` map from the manage-UI's
+    stored ``supervisor.subAgents`` list (see ``agents_routes.py`` / ``ManagePage.tsx``).
+
+    Each entry is either:
+      - ``{"kind": "internal", "ref": "<agent_id>"}`` — resolved to a CugaAgent built
+        from that agent's own *published* config (tools/apps/model/special_instructions).
+      - ``{"kind": "a2a", "name", "endpoint", "auth": {"type": "bearer", "tokenEnvVar"}, "timeout"}``
+        — resolved to the same external-agent dict shape :func:`build_agents_from_list`
+        produces from a YAML ``a2a_protocol`` block, so delegation.py drives both identically.
+    """
+    import os
+
+    from cuga.backend.server.config_store import load_config
+
+    agent_configs: List[Dict[str, Any]] = []
+
+    for entry in sub_agents:
+        kind = entry.get("kind")
+        if kind == "internal":
+            ref = entry.get("ref")
+            if not ref:
+                continue
+            ref_config, _ = await load_config(None, ref)
+            if not ref_config:
+                logger.warning(f"Supervisor sub-agent '{ref}': no published config found, skipping")
+                continue
+            agent_meta = ref_config.get("agent") or {}
+            # ref_config["tools"] holds registry-app entries (name + include filter), not
+            # loadable langchain tool defs — pass app names through `apps` and skip the
+            # `tools` key so `_load_tools_from_config` (a langchain-only stub) doesn't warn.
+            # LLM config translation is intentionally skipped: ref_config["llm"] uses
+            # {provider, model, ...} while `_get_model_from_config` expects {provider,
+            # model_name, ...} from the YAML/SDK path — sub-agents fall back to the
+            # process default model rather than silently mistranslating a chosen model.
+            agent_configs.append(
+                {
+                    "name": ref,
+                    "apps": [t["name"] for t in (ref_config.get("tools") or []) if t.get("name")],
+                    "special_instructions": ref_config.get("special_instructions")
+                    or agent_meta.get("description"),
+                }
+            )
+        elif kind == "a2a":
+            auth_cfg = entry.get("auth") or {}
+            resolved_auth = None
+            if auth_cfg.get("type") == "bearer":
+                token_env_var = auth_cfg.get("tokenEnvVar")
+                token = os.environ.get(token_env_var) if token_env_var else None
+                if token:
+                    resolved_auth = {"type": "bearer", "token": token}
+            agent_configs.append(
+                {
+                    "name": entry.get("name"),
+                    "a2a_protocol": {
+                        "enabled": True,
+                        "endpoint": entry.get("endpoint"),
+                        "transport": "http",
+                        "auth": resolved_auth,
+                        "timeout": entry.get("timeout", 30),
+                    },
+                }
+            )
+        else:
+            logger.warning(f"Unknown supervisor sub-agent kind: {kind!r}")
+
+    return await build_agents_from_list(agent_configs)
 
 
 async def _load_tools_from_config(tools_config: List[Dict[str, Any]]) -> List[Any]:
