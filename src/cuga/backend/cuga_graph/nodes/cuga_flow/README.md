@@ -16,7 +16,7 @@ Within that structure, three layers of policy-aware reasoning operate:
 - **DecisionAgent** reasons about gateway routing: given the condition evaluation result, the process state, and the gateway's policy, it selects which branch to follow.
 - **TaskAgent** fulfils individual tasks: it executes the task logic in accordance with the task's policy and writes results back into the shared process variable namespace.
 
-**MCP as the integration bridge.** The FlowAgent harness does not execute the BPMN process graph itself at runtime — a `WorkflowEngine` does. The two are decoupled by `MCPFlowBridge`, a FastMCP server that mediates all communication between them. The FlowAgent exposes reasoning tools (`execute_task`, `route_gateway`, `evaluate_hook`, `get_static_config`) over MCP; the engine calls those tools at every control point. This makes the execution engine replaceable — the included LangGraph engine is the demo/current backend; enterprise-grade engines connect to the same MCP interface in production.
+**MCP as the integration bridge.** The FlowAgent harness does not execute the BPMN process graph itself at runtime — a `WorkflowEngine` does. The two are decoupled by `MCPFlowBridge`, a FastMCP server that mediates all communication between them. The FlowAgent exposes reasoning tools (`execute_task`, `route_gateway`, `evaluate_hook`) over MCP; the ProcessRegistry exposes process metadata tools (`register_flow`, `get_bpmn_process`, `get_flow_annotations`); and the WorkflowEngine exposes `run_process`. All invocations — including the initial workflow trigger from FlowAgent — go through MCP tool calls, enabling future remote or cross-process transport. This makes the execution engine replaceable — the included LangGraph engine is the demo/current backend; enterprise-grade engines connect to the same MCP interface in production.
 
 This makes CUGA FLO suited for regulated, repeatable, or auditable processes — loan approvals, compliance workflows, onboarding pipelines — where the sequence of steps is structurally enforced but each step and permitted intervention is still governed by policy.
 
@@ -30,7 +30,7 @@ The meta-agent and single entry point for the process harness. At initialisation
 
 1. Parses the BPMN 2.0 XML into a `BPMNProcess` (elements + sequence flows)
 2. Compiles each task, gateway, and hook definition into the corresponding agent/policy structure
-3. Registers its reasoning capabilities (`execute_task`, `route_gateway`, `evaluate_hook`, `get_static_config`) on the shared `MCPFlowBridge`
+3. Registers its reasoning capabilities (`execute_task`, `route_gateway`, `evaluate_hook`) on the shared `MCPFlowBridge`
 
 At runtime, the `WorkflowEngine` drives execution. The FlowAgent responds only at MCP-mediated control points, each call carrying a `ControlPointContext` that embeds the full process state, execution history, model summary, and task instruction. The FlowAgent manages the shared **process variable** namespace, evaluates hook policies to decide whether and how to adapt the flow, and builds the final completion message from task results.
 
@@ -38,12 +38,9 @@ A `FlowAgent` can be registered as a sub-agent inside a `CugaSupervisor`, where 
 
 ```python
 flow_agent = FlowAgent(
-    bpmn_file="process.bpmn",
-    task_agents={"Activity_id": task_agent_instance},
-    task_policies={"Activity_id": policy_markdown},
-    gateway_agents={"Gateway_id": DecisionAgent(gateway_id, policy)},
-    flow_conditions={"Flow_id": "${variable} > threshold"},
-    hooks=[Hook(id=..., hook_type=HookType.PRE_EDGE, location="Flow_id", policy=md)],
+    process_key="loan_approval",
+    bridge=bridge,                # MCPFlowBridge; created automatically if None
+    hooks=[Hook(id="h1", hook_type=HookType.EDGE, location="Flow_id", policy=md)],
     process_variables={"amount": 0, "approved": False},
 )
 ```
@@ -116,7 +113,7 @@ Each hook carries:
 | Field | Purpose |
 |---|---|
 | `location` | BPMN flow ID to intercept — exactly one hook per edge |
-| `hook_type` | `PRE_EDGE`, `POST_NODE`, `PRE_GATEWAY`, `POST_GATEWAY` |
+| `hook_type` | `EDGE` (the only type — hooks annotate sequence flow edges) |
 | `condition` | Optional guard — hook is skipped if it returns false |
 | `policy` | Markdown policy; when present, FlowAgent reasons with its LLM against it |
 
@@ -155,7 +152,14 @@ Per-process `action_permissions` (declared in the YAML config) explicitly list w
 | `execute_task` | A BPMN task node is reached |
 | `route_gateway` | A gateway node needs a routing decision |
 | `evaluate_hook` | A hook intercept point fires |
-| `get_static_config` | Engine fetches process metadata at startup |
+
+**ProcessRegistry side** — registers process metadata tools:
+
+| MCP Tool | Purpose |
+|---|---|
+| `register_flow` | Parse YAML + BPMN and cache the process definition |
+| `get_bpmn_process` | Fetch the serialised `BPMNProcess` by key |
+| `get_flow_annotations` | Fetch engine-consumable config (task IDs, hooks, conditions, permissions) |
 
 **WorkflowEngine side** — registers:
 
@@ -169,10 +173,11 @@ Every MCP call carries a `ControlPointContext` — a dataclass embedding the ful
 from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
 
 bridge = MCPFlowBridge()
-bridge.register_flow_agent(flow_agent)
-bridge.register_engine(engine, registry)
+bridge.register_registry(registry)       # exposes register_flow, get_bpmn_process, get_flow_annotations
+bridge.register_flow_agent(flow_agent)   # exposes execute_task, route_gateway, evaluate_hook
+bridge.register_engine(engine)           # exposes run_process
 
-# Engine obtains an in-process MCP client; can be swapped for HTTP/SSE transport
+# FlowAgent calls run_process via an in-process MCP client; swappable for HTTP/SSE transport
 client = bridge.get_client()
 ```
 
@@ -198,7 +203,7 @@ async def _run_via_mcp(
 
 A demo engine is included with CUGA FLO. At each control point it calls the corresponding FlowAgent MCP tool with a `ControlPointContext`. Enterprise-grade workflow engines (with their own persistence, audit trails, and compliance guarantees) connect to the same `WorkflowEngine` interface and MCP bridge in production — no changes to the FlowAgent harness are required.
 
-> **LangGraph note:** The included demo engine is `LangGraphWorkflowEngine` (`langgraph_engine.py`). It fetches static process config from the FlowAgent via `get_static_config`, builds a `_ControlOverlay` of MCP-backed handlers, and compiles the BPMN topology into a `StateGraph` using `_build_graph` and `_add_edges_with_hooks`.
+> **LangGraph note:** The included demo engine is `LangGraphWorkflowEngine` (`langgraph_engine.py`). It fetches the `BPMNProcess` via `get_bpmn_process` and engine-consumable config via `get_flow_annotations`, builds a `_ControlOverlay` of MCP-backed handlers, and compiles the BPMN topology into a `StateGraph` using `_build_graph` and `_add_edges_with_hooks`.
 
 ---
 
