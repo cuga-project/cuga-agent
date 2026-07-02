@@ -5,7 +5,7 @@ import { CustomChat } from "./CustomChat";
 import { ConfigHeader } from "./ConfigHeader";
 import { LeftSidebar } from "./LeftSidebar";
 import { StatusBar } from "./StatusBar";
-import { WorkspacePanel } from "./WorkspacePanel";
+import { AgenticWorkspaceSidePanel } from "../../frontend/src/workspace";
 import { KnowledgeSidePanel } from "./KnowledgeSidePanel";
 import { FileAutocomplete } from "./FileAutocomplete";
 import { GuidedTour, TourStep } from "./GuidedTour";
@@ -16,7 +16,6 @@ import * as api from "../../frontend/src/api";
 import { randomUUID } from "./uuid";
 import "./AppLayout.css";
 import "./mockApi";
-import "./workspaceThrottle"; // Enforce 3-second minimum interval between workspace API calls
 
 // Error Boundary Component
 class ErrorBoundary extends Component<
@@ -278,7 +277,7 @@ export function App() {
           </div>
           {hasStartedChat && (
             <>
-              <WorkspacePanel
+              <AgenticWorkspaceSidePanel
                 isOpen={workspacePanelOpen}
                 onToggle={() => setWorkspacePanelOpen(!workspacePanelOpen)}
                 highlightedFile={highlightedFile}

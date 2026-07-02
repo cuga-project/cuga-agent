@@ -228,7 +228,7 @@ export function CustomChat({ onVariablesUpdate, onFileAutocompleteOpen, onFileHo
   useEffect(() => {
     const loadFiles = async () => {
       try {
-        const { workspaceService } = await import('./workspaceService');
+        const { workspaceService } = await import("../../frontend/src/workspace");
         const tid = (threadIdRef.current || threadId || "").trim() || undefined;
         const data = await workspaceService.getWorkspaceTree(false, tid);
         const files = extractFiles(data.tree || []);

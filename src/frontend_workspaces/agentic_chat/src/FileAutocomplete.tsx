@@ -380,7 +380,7 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
 
   const loadWorkspaceFiles = async () => {
     try {
-      const { workspaceService } = await import('./workspaceService');
+      const { workspaceService } = await import("../../frontend/src/workspace");
       const tid = threadId?.trim() || undefined;
       const data = await workspaceService.getWorkspaceTree(false, tid);
       const files = extractFiles(data.tree || []);
