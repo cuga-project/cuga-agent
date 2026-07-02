@@ -461,22 +461,26 @@ async def resume_graph_with_response(
         Final state snapshot after resuming
     """
     config = graph.get_config_with_policy({"configurable": {"thread_id": thread_id}})
+    resume_payload: Any = Command(resume=response.model_dump())
 
-    async for event in graph.graph.astream(
-        Command(resume=response.model_dump()),
-        config,
-        stream_mode="updates",
-    ):
-        if isinstance(event, tuple):
-            namespace, state_dict = event
-            if "__interrupt__" in state_dict or state_dict.get("__interrupt__"):
-                break
-        elif "__interrupt__" in event:
-            break
+    while True:
+        async for _event in graph.graph.astream(
+            resume_payload,
+            config,
+            stream_mode="updates",
+        ):
+            pass
 
-    # Get the final state
-    state_snapshot = graph.graph.get_state(config)
-    return state_snapshot
+        state_snapshot = graph.graph.get_state(config)
+        if not state_snapshot.next:
+            return state_snapshot
+
+        # After first approval, follow-up codegen (e.g. structure probes) can
+        # re-trigger tool approval; auto-resume with the same confirmation.
+        if not response.confirmed:
+            return state_snapshot
+
+        resume_payload = Command(resume=response.model_dump())
 
 
 async def run_full_graph_to_completion(
