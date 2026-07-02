@@ -101,6 +101,9 @@ class LocalExecutor(BaseExecutor):
                 + traceback.format_exc()
             )
 
+        if isinstance(error, ValueError) and "Python syntax error" in str(error):
+            return f"Error during execution: {error}"
+
         error_msg = f"Error during execution: {repr(error)}"
         error_msg += f"\n{traceback.format_exc()}"
         return error_msg
