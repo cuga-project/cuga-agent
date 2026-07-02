@@ -20,6 +20,16 @@ def draft_state(request: Request):
     return getattr(request.app.state, "draft_app_state", None)
 
 
+def policies_list_from_config(raw_policies: Any) -> list:
+    """Accept manage policies as either {policies: [...]} or a bare list."""
+    if isinstance(raw_policies, dict) and "policies" in raw_policies:
+        policies = raw_policies.get("policies", [])
+        return list(policies) if isinstance(policies, list) else []
+    if isinstance(raw_policies, list):
+        return raw_policies
+    return []
+
+
 def extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool | int | None]:
     """Extract enable_todos, reflection_enabled, shortlisting_tool_threshold, cuga_lite_max_steps from config.
 

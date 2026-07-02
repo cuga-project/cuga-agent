@@ -6,7 +6,10 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from cuga.backend.server.manage_routes.helpers import extract_agent_feature_overrides
+from cuga.backend.server.manage_routes.helpers import (
+    extract_agent_feature_overrides,
+    policies_list_from_config,
+)
 
 
 async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None:
@@ -82,11 +85,7 @@ async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None
         agent.special_instructions = special_instructions
 
     raw_policies = (config or {}).get("policies")
-    policies_list = (
-        raw_policies.get("policies", [])
-        if isinstance(raw_policies, dict) and "policies" in raw_policies
-        else []
-    )
+    policies_list = policies_list_from_config(raw_policies)
     if raw_policies is not None and app_state.policy_system and app_state.policy_system.storage:
         try:
             from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage

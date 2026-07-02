@@ -13,6 +13,7 @@ from cuga.backend.server.manage_routes.apply import apply_llm_to_draft_state
 from cuga.backend.server.manage_routes.helpers import (
     extract_agent_feature_overrides,
     load_and_patch_draft,
+    policies_list_from_config,
 )
 
 
@@ -49,8 +50,8 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 
         # This is the /manage/draft endpoint, so always use draft state
         # The endpoint itself indicates draft mode, not the X-Use-Draft header
-        state_to_update = getattr(request.app.state, "draftapp_state", None)
-        logger.info("[DEBUG] Using draftapp_state for /manage/draft endpoint")
+        state_to_update = getattr(request.app.state, "draft_app_state", None)
+        logger.info("[DEBUG] Using draft_app_state for /manage/draft endpoint")
 
         logger.info(f"[DEBUG] state_to_update={state_to_update}, config is dict: {isinstance(config, dict)}")
 
@@ -79,11 +80,7 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
 
             # Apply policies to draft state
             raw_policies = (config or {}).get("policies")
-            policies_list = (
-                raw_policies.get("policies", [])
-                if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else []
-            )
+            policies_list = policies_list_from_config(raw_policies)
             if (
                 raw_policies is not None
                 and state_to_update.policy_system
@@ -238,7 +235,7 @@ async def patch_draft_llm(request: Request, agent_id: Optional[str] = None):
         data = await request.json()
         llm = data.get("llm", data)
         full_draft = await load_and_patch_draft(agent_id, "llm", llm if isinstance(llm, dict) else {})
-        state = getattr(request.app.state, "draftapp_state", None)
+        state = getattr(request.app.state, "draft_app_state", None)
         if state:
             apply_llm_to_draft_state(state, full_draft.get("llm") or {})
             draft_agent = getattr(state, "agent", None)
@@ -263,7 +260,7 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         tools = data.get("tools", data)
         tools_list = tools if isinstance(tools, list) else []
         full_draft = await load_and_patch_draft(agent_id, "tools", tools_list)
-        state = getattr(request.app.state, "draftapp_state", None)
+        state = getattr(request.app.state, "draft_app_state", None)
         if not state:
             return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
 
@@ -358,14 +355,10 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
         data = await request.json()
         policies = data.get("policies", data)
         full_draft = await load_and_patch_draft(agent_id, "policies", policies)
-        state = getattr(request.app.state, "draftapp_state", None)
+        state = getattr(request.app.state, "draft_app_state", None)
         if state and state.policy_system and state.policy_system.storage:
             raw_policies = full_draft.get("policies")
-            policies_list = (
-                raw_policies.get("policies", [])
-                if isinstance(raw_policies, dict) and "policies" in raw_policies
-                else []
-            )
+            policies_list = policies_list_from_config(raw_policies)
             try:
                 from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
                 from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
@@ -404,7 +397,7 @@ async def patch_draft_special_instructions(request: Request, agent_id: Optional[
         body = await request.json()
         value = body.get("special_instructions", "") or ""
         await load_and_patch_draft(agent_id, "special_instructions", value)
-        draft_state = getattr(request.app.state, "draftapp_state", None)
+        draft_state = getattr(request.app.state, "draft_app_state", None)
         draft_agent = getattr(draft_state, "agent", None) if draft_state is not None else None
         if draft_agent is not None:
             draft_agent.special_instructions = value or None

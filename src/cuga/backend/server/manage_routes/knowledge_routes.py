@@ -602,11 +602,11 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
             )
 
         # Store draft knowledge config so Try-It-Out can use it for search behavior.
-        # Per-agent isolation: shared draftapp_state holds a DICT keyed by
+        # Per-agent isolation: shared draft_app_state holds a DICT keyed by
         # base agent_id (stripped of any "--draft" suffix). The legacy
         # singular attribute is kept in sync for back-compat with any reader
         # that still expects it on the same instance.
-        state = getattr(request.app.state, "draftapp_state", None)
+        state = getattr(request.app.state, "draft_app_state", None)
         if state:
             try:
                 base_agent_id_for_key = _parse_agent_id(str(agent_id))
