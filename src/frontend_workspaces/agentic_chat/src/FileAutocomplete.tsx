@@ -12,13 +12,11 @@ interface FileNode {
 
 interface FileAutocompleteProps {
   onFileSelect: (filePath: string) => void;
-  onAutocompleteOpen?: () => void;
-  onFileHover?: (filePath: string | null) => void;
   disabled?: boolean;
   threadId?: string;
 }
 
-export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover, disabled = false, threadId }: FileAutocompleteProps) {
+export function FileAutocomplete({ onFileSelect, disabled = false, threadId }: FileAutocompleteProps) {
   const [allFiles, setAllFiles] = useState<Array<{ name: string; path: string }>>([]);
   const [suggestions, setSuggestions] = useState<Array<{ name: string; path: string }>>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -93,7 +91,6 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
           setSuggestions(filtered);
           setSelectedIndex(0);
           setShowSuggestions(true);
-          onAutocompleteOpen?.();
 
           const inputPos = getInputPosition();
           const dropdownHeight = Math.min(filtered.length * 42 + 60, 450);
@@ -369,18 +366,9 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
     }
   }, [selectedIndex]);
 
-  // Highlight file when selection changes via keyboard navigation
-  useEffect(() => {
-    if (showSuggestions && suggestions.length > 0 && selectedIndex >= 0 && selectedIndex < suggestions.length) {
-      onFileHover?.(suggestions[selectedIndex].path);
-    } else if (!showSuggestions) {
-      onFileHover?.(null);
-    }
-  }, [selectedIndex, showSuggestions, suggestions, onFileHover]);
-
   const loadWorkspaceFiles = async () => {
     try {
-      const { workspaceService } = await import("../../frontend/src/workspace");
+      const { workspaceService } = await import('./workspaceService');
       const tid = threadId?.trim() || undefined;
       const data = await workspaceService.getWorkspaceTree(false, tid);
       const files = extractFiles(data.tree || []);
@@ -450,9 +438,7 @@ export function FileAutocomplete({ onFileSelect, onAutocompleteOpen, onFileHover
                 }}
                 onMouseEnter={() => {
                   setSelectedIndex(index);
-                  onFileHover?.(file.path);
                 }}
-                onMouseLeave={() => onFileHover?.(null)}
               >
                 <FileText size={16} className="file-icon" />
                 <div className="file-info">

@@ -1,14 +1,27 @@
-import { apiFetch } from "../api";
-import type { FileNode, WorkspaceData } from "./types";
+// Shared workspace service with enforced throttling
+// Ensures /api/workspace/tree is NEVER called more frequently than once per 3 seconds
+import { apiFetch } from "../../frontend/src/api";
+
+interface FileNode {
+  name: string;
+  path: string;
+  type: 'file' | 'directory';
+  children?: FileNode[];
+}
+
+interface WorkspaceData {
+  tree: FileNode[];
+  timestamp: number;
+}
 
 class WorkspaceService {
   private static instance: WorkspaceService;
-  private lastFetchTime = 0;
+  private lastFetchTime: number = 0;
   private cachedData: WorkspaceData | null = null;
   private cachedForThreadId: string | undefined = undefined;
   private pendingRequest: Promise<WorkspaceData> | null = null;
-  private readonly MIN_INTERVAL_MS = 3000;
-  private listeners = new Set<(data: WorkspaceData) => void>();
+  private readonly MIN_INTERVAL_MS = 3000; // 3 seconds minimum between requests
+  private listeners: Set<(data: WorkspaceData) => void> = new Set();
 
   private constructor() {}
 
@@ -19,28 +32,40 @@ class WorkspaceService {
     return WorkspaceService.instance;
   }
 
+  /**
+   * Subscribe to workspace updates
+   */
   subscribe(callback: (data: WorkspaceData) => void): () => void {
     this.listeners.add(callback);
+    // Immediately send cached data if available
     if (this.cachedData) {
       callback(this.cachedData);
     }
+    // Return unsubscribe function
     return () => {
       this.listeners.delete(callback);
     };
   }
 
+  /**
+   * Notify all subscribers of new data
+   */
   private notifyListeners(data: WorkspaceData): void {
-    this.listeners.forEach((callback) => {
+    this.listeners.forEach(callback => {
       try {
         callback(data);
       } catch (error) {
-        console.error("Error in workspace listener:", error);
+        console.error('Error in workspace listener:', error);
       }
     });
   }
 
-  async getWorkspaceTree(forceRefresh = false, threadId?: string): Promise<WorkspaceData> {
-    const tidKey = threadId ?? "";
+  /**
+   * Fetch workspace tree with enforced throttling
+   * Returns cached data if called too soon after last fetch
+   */
+  async getWorkspaceTree(forceRefresh: boolean = false, threadId?: string): Promise<WorkspaceData> {
+    const tidKey = threadId ?? '';
     if (this.cachedForThreadId !== tidKey) {
       this.cachedData = null;
       this.cachedForThreadId = tidKey;
@@ -55,17 +80,19 @@ class WorkspaceService {
     const now = Date.now();
     const timeSinceLastFetch = now - this.lastFetchTime;
 
+    // If we have cached data and haven't exceeded the minimum interval, return cache
     if (!forceRefresh && this.cachedData && timeSinceLastFetch < this.MIN_INTERVAL_MS) {
       return this.cachedData;
     }
 
+    // Coalesce concurrent polls; manual refresh always hits the network
     if (this.pendingRequest && !forceRefresh) {
       return this.pendingRequest;
     }
 
     if (!forceRefresh && timeSinceLastFetch < this.MIN_INTERVAL_MS) {
       const waitTime = this.MIN_INTERVAL_MS - timeSinceLastFetch;
-      await new Promise((resolve) => setTimeout(resolve, waitTime));
+      await new Promise(resolve => setTimeout(resolve, waitTime));
     }
 
     this.pendingRequest = this.fetchWorkspaceData(threadId, forceRefresh);
@@ -81,23 +108,26 @@ class WorkspaceService {
     }
   }
 
+  /**
+   * Internal method to actually fetch data from the API
+   */
   private async fetchWorkspaceData(threadId?: string, forceRefresh = false): Promise<WorkspaceData> {
     try {
       const params = new URLSearchParams();
-      if (threadId) params.set("thread_id", threadId);
-      if (forceRefresh) params.set("_", String(Date.now()));
+      if (threadId) params.set('thread_id', threadId);
+      if (forceRefresh) params.set('_', String(Date.now()));
       const q = params.toString();
-      const response = await apiFetch(`/api/workspace/tree${q ? `?${q}` : ""}`);
+      const response = await apiFetch(`/api/workspace/tree${q ? `?${q}` : ''}`);
       if (!response.ok) {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
       const data = await response.json();
       return {
-        tree: (data.tree || []) as FileNode[],
-        timestamp: Date.now(),
+        tree: data.tree || [],
+        timestamp: Date.now()
       };
     } catch (error) {
-      console.error("Error fetching workspace tree:", error);
+      console.error('Error fetching workspace tree:', error);
       if (!forceRefresh && this.cachedData) {
         return this.cachedData;
       }
@@ -105,10 +135,16 @@ class WorkspaceService {
     }
   }
 
+  /**
+   * Get cached data without making a request
+   */
   getCachedData(): WorkspaceData | null {
     return this.cachedData;
   }
 
+  /**
+   * Clear the cache (useful for testing)
+   */
   clearCache(): void {
     this.cachedData = null;
     this.cachedForThreadId = undefined;
@@ -116,4 +152,11 @@ class WorkspaceService {
   }
 }
 
+// Export singleton instance
 export const workspaceService = WorkspaceService.getInstance();
+export type { FileNode, WorkspaceData };
+
+
+
+
+

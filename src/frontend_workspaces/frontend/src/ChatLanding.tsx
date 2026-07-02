@@ -5,6 +5,8 @@ import CarbonChat, { generateUUID } from "./carbon-chat/CarbonChat";
 import {
   IconButton,
   Tag,
+  TreeView,
+  TreeNode,
   ComposedModal,
   ModalHeader,
   ModalBody,
@@ -25,6 +27,7 @@ import {
   Add,
   TrashCan,
   Folder,
+  FolderOpen,
   Settings,
   Application,
   ChevronRight,
@@ -36,10 +39,11 @@ import {
   ChevronDown,
   ChevronUp,
   Download,
+  Upload,
+  Renew,
 } from "@carbon/icons-react";
 import { KnowledgeSidePanel } from "agentic_chat/KnowledgeSidePanel";
 import type { SessionAttachmentSnapshot } from "./knowledge/useSessionKnowledgeAttachments";
-import { TEXT_EXTENSIONS, useWorkspacePanel, WorkspacePanelContent } from "./workspace";
 import "./ChatLanding.css";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -71,6 +75,27 @@ interface WorkspaceFolder {
   label: string;
   readOnly: boolean;
   children?: WorkspaceChild[];
+}
+
+interface FileNode {
+  name: string;
+  path: string;
+  type: "file" | "directory";
+  children?: FileNode[];
+}
+
+function collectDirectoryPaths(nodes: FileNode[]): Set<string> {
+  const out = new Set<string>();
+  const walk = (list: FileNode[]) => {
+    for (const n of list) {
+      if (n.type === "directory") {
+        out.add(n.path);
+        if (n.children?.length) walk(n.children);
+      }
+    }
+  };
+  walk(nodes);
+  return out;
 }
 
 interface AgentConfig {
@@ -228,6 +253,12 @@ const truncateText = (text: string, maxLength: number = 100): string => {
   return text.substring(0, maxLength) + "...";
 };
 
+const TEXT_EXTENSIONS = [".txt", ".md", ".json", ".yaml", ".yml", ".log", ".csv", ".html", ".css", ".js", ".ts", ".py"];
+const JSON_UPLOAD_SUFFIXES = [".json", ".jsonl", ".ndjson"];
+
+const filterJsonUploadFiles = (files: File[]): File[] =>
+  files.filter((file) => JSON_UPLOAD_SUFFIXES.some((suffix) => file.name.toLowerCase().endsWith(suffix)));
+
 const createDraftThreadState = (): DraftThreadState => ({
   threadId: generateUUID(),
   hasSentFirstMessage: false,
@@ -327,10 +358,17 @@ export function ChatLanding() {
   const [homescreenConfig, setHomescreenConfig] = useState<HomescreenConfig | undefined>(undefined);
   const [configLoading, setConfigLoading] = useState(true);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
+  const [workspaceTree, setWorkspaceTree] = useState<FileNode[]>([]);
+  const [workspaceExpandedDirs, setWorkspaceExpandedDirs] = useState<Set<string>>(() => new Set());
+  const workspaceTreeDirPathsPrevRef = useRef<Set<string>>(new Set());
+  const [workspaceTreeLoading, setWorkspaceTreeLoading] = useState(true);
+  const [fileModal, setFileModal] = useState<{ path: string; content: string; name: string } | null>(null);
   const [knowledgePreviewModal, setKnowledgePreviewModal] = useState<KnowledgePreviewModalState | null>(null);
   const [skills, setSkills] = useState<SkillInfo[]>([]);
   const [skillsLoading, setSkillsLoading] = useState(true);
   const [expandedSkills, setExpandedSkills] = useState<Set<string>>(new Set());
+  const [workspaceDragOver, setWorkspaceDragOver] = useState(false);
+  const workspaceFileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     return () => {
@@ -376,12 +414,6 @@ export function ChatLanding() {
   const currentChatThreadId = activeThreadId;
   /** Same resolver as `threadId` on `CarbonChat` — stream, sandbox workspace, and session knowledge must match. */
   const effectiveChatThreadId = selectedThreadId ?? currentChatThreadId;
-
-  const workspacePanel = useWorkspacePanel({
-    threadId: effectiveChatThreadId,
-    enabled: rightOpen && rightSection === "workspace",
-    onNotify: (kind, title, subtitle) => addToast(kind, title, subtitle ?? ""),
-  });
 
   const refreshKnowledgeDocCount = useCallback(
     async (threadId: string) => {
@@ -681,7 +713,160 @@ export function ChatLanding() {
     })();
   }, []);
 
+  const fetchWorkspaceTree = useCallback(async (forceRefresh = false) => {
+    try {
+      if (forceRefresh) setWorkspaceTreeLoading(true);
+      const res = await api.getWorkspaceTree(effectiveChatThreadId || undefined, forceRefresh);
+      if (res.ok) {
+        const data = await res.json();
+        setWorkspaceTree(data.tree || []);
+      } else if (forceRefresh) {
+        addToast("warning", "Workspace refresh failed", `${res.status} ${res.statusText}`);
+      }
+    } catch (err) {
+      console.error("Error fetching workspace tree:", err);
+      if (forceRefresh) {
+        addToast("error", "Workspace refresh failed", err instanceof Error ? err.message : "Unknown error");
+      }
+    } finally {
+      setWorkspaceTreeLoading(false);
+    }
+  }, [addToast, effectiveChatThreadId]);
+
+  useEffect(() => {
+    fetchWorkspaceTree();
+    const interval = setInterval(fetchWorkspaceTree, 2500);
+    return () => clearInterval(interval);
+  }, [fetchWorkspaceTree]);
+
+  useEffect(() => {
+    workspaceTreeDirPathsPrevRef.current = new Set();
+    setWorkspaceExpandedDirs(new Set());
+    setWorkspaceTree([]);
+    setWorkspaceTreeLoading(true);
+  }, [effectiveChatThreadId]);
+
+  useEffect(() => {
+    const valid = collectDirectoryPaths(workspaceTree);
+    const prevValid = workspaceTreeDirPathsPrevRef.current;
+    setWorkspaceExpandedDirs((expanded) => {
+      const next = new Set<string>();
+      for (const p of expanded) {
+        if (valid.has(p)) next.add(p);
+      }
+      for (const p of valid) {
+        if (!prevValid.has(p)) next.add(p);
+      }
+      return next;
+    });
+    workspaceTreeDirPathsPrevRef.current = valid;
+  }, [workspaceTree]);
+
+  const handleWorkspaceDirToggle = useCallback((path: string, ...args: unknown[]) => {
+    const first = args[0];
+    const second = args[1];
+    let nextExpanded: boolean | undefined;
+    if (typeof first === "boolean") {
+      nextExpanded = first;
+    } else if (second && typeof second === "object" && second !== null && "isExpanded" in second) {
+      nextExpanded = Boolean((second as { isExpanded?: boolean }).isExpanded);
+    }
+    if (typeof nextExpanded !== "boolean") return;
+    setWorkspaceExpandedDirs((prev) => {
+      const next = new Set(prev);
+      if (nextExpanded) next.add(path);
+      else next.delete(path);
+      return next;
+    });
+  }, []);
+
   const totalTools = agentConfig.apps.reduce((s, a) => s + a.tools.length, 0);
+
+  const handleFileClick = useCallback(async (node: FileNode) => {
+    if (node.type !== "file") return;
+    const isTextFile = TEXT_EXTENSIONS.some((ext) => node.name.toLowerCase().endsWith(ext));
+    if (!isTextFile) {
+      addToast("info", "Preview not available", "Only text and markdown files can be previewed.");
+      return;
+    }
+    try {
+      const res = await api.getWorkspaceFile(node.path, effectiveChatThreadId || undefined);
+      if (res.ok) {
+        const data = await res.json();
+        setFileModal({ path: node.path, content: data.content, name: node.name });
+      } else {
+        addToast("error", "Failed to load file", res.statusText);
+      }
+    } catch (err) {
+      addToast("error", "Error loading file", err instanceof Error ? err.message : "Unknown error");
+    }
+  }, [addToast, effectiveChatThreadId]);
+
+  const handleWorkspaceFileDownload = useCallback(
+    async (node: FileNode) => {
+      if (node.type !== "file") return;
+      try {
+        const res = await api.getWorkspaceDownload(node.path, effectiveChatThreadId || undefined);
+        if (!res.ok) {
+          addToast("error", "Download failed", res.statusText || `HTTP ${res.status}`);
+          return;
+        }
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = node.name;
+        a.click();
+        URL.revokeObjectURL(url);
+      } catch (err) {
+        addToast("error", "Download failed", err instanceof Error ? err.message : "Unknown error");
+      }
+    },
+    [addToast, effectiveChatThreadId],
+  );
+
+  const handleWorkspaceUpload = useCallback(
+    async (files: File[]) => {
+      const tid = effectiveChatThreadId?.trim();
+      if (!tid) {
+        addToast("warning", "Upload unavailable", "Start a chat before uploading files.");
+        return;
+      }
+      try {
+        await Promise.all(
+          files.map(async (file) => {
+            const res = await api.uploadWorkspaceFile(file, tid);
+            if (!res.ok) {
+              let detail = res.statusText;
+              try {
+                const body = await res.json();
+                detail = body.detail || detail;
+              } catch {
+                // ignore
+              }
+              throw new Error(`${file.name}: ${detail}`);
+            }
+          }),
+        );
+        addToast("success", "Upload complete", `${files.length} file${files.length !== 1 ? "s" : ""} uploaded to workspace/uploads/`);
+        await fetchWorkspaceTree();
+      } catch (err) {
+        addToast("error", "Upload failed", err instanceof Error ? err.message : "Unknown error");
+      }
+    },
+    [addToast, effectiveChatThreadId, fetchWorkspaceTree],
+  );
+
+  const handleWorkspaceFileInputChange = useCallback(
+    (e: React.ChangeEvent<HTMLInputElement>) => {
+      const files = e.target.files ? Array.from(e.target.files) : [];
+      if (files.length > 0) {
+        void handleWorkspaceUpload(files);
+      }
+      e.target.value = "";
+    },
+    [handleWorkspaceUpload],
+  );
 
   const closeKnowledgePreviewModal = useCallback(() => {
     setKnowledgePreviewModal((current) => {
@@ -739,6 +924,68 @@ export function ChatLanding() {
     }
   }, [addToast, effectiveChatThreadId]);
 
+  const renderFileNode = useCallback(
+    (node: FileNode) => {
+      const isDir = node.type === "directory";
+      const dirOpen = isDir && workspaceExpandedDirs.has(node.path);
+      return (
+        <TreeNode
+          key={node.path}
+          id={node.path}
+          label={
+            isDir ? (
+              <span
+                className="chat-landing-workspace-tree-name"
+                style={{
+                  fontSize: "0.8125rem",
+                  color: "var(--cds-text-primary)",
+                }}
+              >
+                {node.name}
+              </span>
+            ) : (
+              <span className="chat-landing-workspace-tree-row">
+                <span
+                  className="chat-landing-workspace-tree-filename"
+                  style={{
+                    cursor: "pointer",
+                    fontSize: "0.8125rem",
+                    color: "var(--cds-text-primary)",
+                  }}
+                  role="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    handleFileClick(node);
+                  }}
+                >
+                  {node.name}
+                </span>
+                <IconButton
+                  className="chat-landing-workspace-tree-download"
+                  label={`Download ${node.name}`}
+                  kind="ghost"
+                  size="sm"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    void handleWorkspaceFileDownload(node);
+                  }}
+                >
+                  <Download size={14} />
+                </IconButton>
+              </span>
+            )
+          }
+          renderIcon={isDir ? (dirOpen ? FolderOpen : Folder) : DocumentBlank}
+          isExpanded={isDir ? dirOpen : false}
+          onToggle={isDir ? (first: unknown, second?: unknown) => handleWorkspaceDirToggle(node.path, first, second) : undefined}
+        >
+          {isDir && node.children?.map((child) => renderFileNode(child))}
+        </TreeNode>
+      );
+    },
+    [handleFileClick, handleWorkspaceDirToggle, handleWorkspaceFileDownload, workspaceExpandedDirs],
+  );
+
   const handleToggleLeft = () => canShowLeft && setLeftOpen((v) => !v);
   const handleToggleWorkspace = () => {
     if (!canShowRight) return;
@@ -763,7 +1010,7 @@ export function ChatLanding() {
   const activeKnowledgeThreadId = effectiveChatThreadId;
   const sectionCounts: Record<RightPanelSection, number> = {
     configuration: totalTools,
-    workspace: workspacePanel.workspaceTree.length,
+    workspace: workspaceTree.length,
     knowledge: knowledgeDocCount,
     skills: skills.length,
   };
@@ -1097,8 +1344,91 @@ export function ChatLanding() {
               )}
 
               {rightSection === "workspace" && (
-                <div style={{ padding: "1rem" }}>
-                  <WorkspacePanelContent panel={workspacePanel} />
+                <div
+                  className={`chat-landing-workspace-panel${workspaceDragOver ? " chat-landing-workspace-panel--drag-over" : ""}`}
+                  style={{ padding: "1rem", position: "relative", minHeight: "12rem" }}
+                  onDragEnter={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    if (e.dataTransfer?.types.includes("Files")) setWorkspaceDragOver(true);
+                  }}
+                  onDragLeave={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    const { clientX: x, clientY: y } = e;
+                    if (x < rect.left || x > rect.right || y < rect.top || y > rect.bottom) {
+                      setWorkspaceDragOver(false);
+                    }
+                  }}
+                  onDragOver={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                  }}
+                  onDrop={(e) => {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    setWorkspaceDragOver(false);
+                    const files = filterJsonUploadFiles(Array.from(e.dataTransfer.files));
+                    if (files.length > 0) void handleWorkspaceUpload(files);
+                  }}
+                >
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: "0.25rem", marginBottom: "0.75rem" }}>
+                  <input
+                    ref={workspaceFileInputRef}
+                    type="file"
+                    accept=".json,.jsonl,.ndjson"
+                    multiple
+                    style={{ display: "none" }}
+                    onChange={handleWorkspaceFileInputChange}
+                  />
+                  <IconButton
+                    label="Upload JSON files"
+                    kind="ghost"
+                    size="sm"
+                    onClick={() => workspaceFileInputRef.current?.click()}
+                  >
+                    <Upload size={16} />
+                  </IconButton>
+                  <IconButton
+                    label="Refresh workspace"
+                    kind="ghost"
+                    size="sm"
+                    onClick={() => void fetchWorkspaceTree(true)}
+                  >
+                    <Renew size={16} />
+                  </IconButton>
+                </div>
+                {workspaceTreeLoading ? (
+                  <div style={{ padding: "1rem" }}>
+                    <SkeletonText paragraph lineCount={5} />
+                  </div>
+                ) : workspaceTree.length === 0 ? (
+                  <div
+                    style={{
+                      padding: "2rem 1rem",
+                      textAlign: "center",
+                      color: "var(--cds-text-secondary)",
+                      fontSize: "0.8125rem",
+                    }}
+                  >
+                    <Folder size={32} style={{ opacity: 0.25, display: "block", margin: "0 auto 0.75rem" }} />
+                    No workspace files.
+                    <br />
+                    <span style={{ fontSize: "0.75rem" }}>
+                      Upload JSON files — they appear under workspace/uploads/
+                    </span>
+                  </div>
+                ) : (
+                  <TreeView label="Workspace" hideLabel className="chat-landing-workspace-tree">
+                    {workspaceTree.map((node) => renderFileNode(node))}
+                  </TreeView>
+                )}
+                {workspaceDragOver && (
+                  <div className="chat-landing-workspace-drag-overlay">
+                    Drop JSON files here to upload
+                  </div>
+                )}
                 </div>
               )}
 
@@ -1322,6 +1652,58 @@ export function ChatLanding() {
           <SidePanelOpen size={16} style={{ transform: "scaleX(-1)" }} />
         </button>
       )}
+
+      <ComposedModal
+        open={!!fileModal}
+        onClose={() => setFileModal(null)}
+        size="lg"
+        isFullWidth
+      >
+        <ModalHeader
+          title={fileModal?.name ?? ""}
+          buttonOnClick={() => setFileModal(null)}
+        />
+        <ModalBody hasScrollingContent className="chat-landing-file-modal-body">
+          {fileModal && (
+            <div className="chat-landing-file-modal-markdown">
+              <Markdown>
+                {fileModal.name.toLowerCase().endsWith(".md")
+                  ? fileModal.content
+                  : `\`\`\`\n${fileModal.content}\n\`\`\``}
+              </Markdown>
+            </div>
+          )}
+        </ModalBody>
+        {fileModal && (
+          <ModalFooter className="chat-landing-file-modal-footer">
+            <Button
+              kind="secondary"
+              renderIcon={Download}
+              onClick={async () => {
+                try {
+                  const res = await api.getWorkspaceDownload(fileModal.path, effectiveChatThreadId || undefined);
+                  if (res.ok) {
+                    const blob = await res.blob();
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement("a");
+                    a.href = url;
+                    a.download = fileModal.name;
+                    a.click();
+                    URL.revokeObjectURL(url);
+                  }
+                } catch (err) {
+                  addToast("error", "Download failed", err instanceof Error ? err.message : "Unknown error");
+                }
+              }}
+            >
+              Download
+            </Button>
+            <Button kind="primary" onClick={() => setFileModal(null)}>
+              Close
+            </Button>
+          </ModalFooter>
+        )}
+      </ComposedModal>
 
       <ComposedModal
         open={!!knowledgePreviewModal}
