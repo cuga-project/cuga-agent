@@ -443,9 +443,7 @@ class TestHttpReindexGuard:
         async def _noop_persist(*_a, **_k):
             return None
 
-        monkeypatch.setattr(
-            "cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist
-        )
+        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
 
         # Active pointer starts on a DIFFERENT collection.
         client.app.state.app_state.knowledge_config_hash = "oldhash"

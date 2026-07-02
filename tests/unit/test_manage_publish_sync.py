@@ -51,7 +51,7 @@ def test_publish_syncs_draft_with_published_knowledge_flags(monkeypatch):
                     "enabled": True,
                     "agent_level_enabled": True,
                     "session_level_enabled": False,
-                }
+                },
             }
         },
     )
@@ -93,7 +93,7 @@ def test_publish_syncs_draft_with_published_agent_level_disabled(monkeypatch):
                     "enabled": True,
                     "agent_level_enabled": False,
                     "session_level_enabled": True,
-                }
+                },
             }
         },
     )
