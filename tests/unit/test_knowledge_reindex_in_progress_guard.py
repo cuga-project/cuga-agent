@@ -138,6 +138,30 @@ class TestLayer2EngineApplyGuard:
         with pytest.raises(DocumentNotFoundError):
             asyncio.run(eng.delete_document("kb_agent_cuga_default_abc", "missing.pdf"))
 
+    def test_vector_change_during_reindex_rejected_before_preflight(self, monkeypatch):
+        # Sami review: the reindex-conflict guard must fire BEFORE the embedding
+        # preflight (create_embeddings / embed_query round-trip), so a change
+        # we'll reject anyway doesn't hit the provider.
+        import cuga.backend.knowledge.engine as eng_mod
+
+        eng = _make_engine()
+        eng._reindex_in_progress.add("kb_agent_x_old")
+
+        def _boom(_cfg):
+            raise AssertionError("create_embeddings must not run for a rejected change")
+
+        monkeypatch.setattr(eng_mod, "create_embeddings", _boom)
+        try:
+            with pytest.raises(ReindexInProgressError):
+                eng.apply_knowledge_config(
+                    {
+                        "embedding_provider": "litellm",
+                        "embedding_model": "watsonx/intfloat/multilingual-e5-large",
+                    }
+                )
+        finally:
+            eng._reindex_in_progress.discard("kb_agent_x_old")
+
 
 # ---------------------------------------------------------------------------
 # Layer 3 — deferred pointer flip

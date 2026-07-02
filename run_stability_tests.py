@@ -532,6 +532,11 @@ def main():
         action="store_true",
         help="E2B mode: use fixed port 8001 for registry, run local without parallel.",
     )
+    parser.add_argument(
+        "--windows-smoke",
+        action="store_true",
+        help="Run only the Windows smoke test subset from stability_test_config.toml.",
+    )
     args = parser.parse_args()
 
     if args.generate_summary:
@@ -570,9 +575,14 @@ def main():
     # Get stability tests
     try:
         stability_config = settings.stability
-        tests = stability_config.tests
+        if args.windows_smoke:
+            tests = stability_config.windows_smoke
+            print("Windows smoke mode: running reduced test subset")
+        else:
+            tests = stability_config.tests
     except AttributeError:
-        print("Error: [stability] section or tests not found in stability_test_config.toml")
+        section = "windows_smoke" if args.windows_smoke else "tests"
+        print(f"Error: [stability].{section} not found in stability_test_config.toml")
         sys.exit(1)
 
     run_timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")

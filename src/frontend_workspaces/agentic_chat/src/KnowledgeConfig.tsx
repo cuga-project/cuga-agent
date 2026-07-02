@@ -450,6 +450,10 @@ interface KnowledgePanelProps {
     | { kind: "saved" }
     | { kind: "failed"; error: string };
   onRetryDraftSave?: () => void;
+  // Dismiss the failure banner WITHOUT retrying (parent resets draftSaveStatus
+  // to idle). The banner's close button uses this; the explicit "Retry" button
+  // uses onRetryDraftSave.
+  onDismissDraftSave?: () => void;
   // Fired on an explicit env-preset "Use" click so the parent can bypass
   // the keystroke-coalesce debounce on the autosave PATCH. No payload —
   // the config change itself goes through onKnowledgeConfigChange.
@@ -481,6 +485,7 @@ export default function KnowledgePanel({
   onAdaptationServerError,
   draftSaveStatus,
   onRetryDraftSave,
+  onDismissDraftSave,
   onPresetApplied,
 }: KnowledgePanelProps) {
   // Uncontrolled-with-initial-value: seed from the prop on first render
@@ -3310,7 +3315,7 @@ export default function KnowledgePanel({
                                     kind="error"
                                     lowContrast
                                     hideCloseButton={false}
-                                    onCloseButtonClick={() => onRetryDraftSave?.()}
+                                    onCloseButtonClick={() => onDismissDraftSave?.()}
                                     title="Couldn't save your changes"
                                     subtitle={draftSaveStatus.error || "No detail returned."}
                                   />

@@ -115,7 +115,7 @@ class TestHfRepoIdCandidate:
         assert _hf_repo_id_candidate(model_id) is None
 
 
-class TestHfTokenizerSeqLimit:
+class TestHfTokenizerSeqLimitMargined:
     """Helper returns the SAFE chunk-token cap (raw max minus a margin
     that covers embedder-side wrapping). Tests assert against the
     margined value because that's the actual contract. Imported here so
@@ -251,4 +251,4 @@ class TestLoadHfTokenizerCachesSuccessButRetriesOnFailure:
 # ``logger.warning`` inside ``_load_hf_tokenizer_for_chunking`` is now
 # the sole signal, fired once per unknown repo via
 # ``functools.lru_cache``. Tests for that behavior live in
-# ``TestLoadHfTokenizerCachesFailure`` (above).
+# ``TestLoadHfTokenizerCachesSuccessButRetriesOnFailure`` (above).

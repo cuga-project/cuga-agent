@@ -3790,6 +3790,26 @@ class KnowledgeEngine:
             "docling_changed": docling_changed,
         }
 
+    def _incoming_changes_vector_config(self, knowledge_cfg: dict) -> bool:
+        """Cheap (no model load / no network) check: does this incoming config
+        plainly change a vector-affecting field vs the live config? Used to
+        reject a reindex conflict BEFORE the expensive embedding preflight.
+        Conservative — ``prepare_knowledge_update`` is the authoritative check.
+        """
+        if not isinstance(knowledge_cfg, dict):
+            return False
+        # A rag_profile switch expands into chunk_size/overlap, so a *changed*
+        # profile is potentially vector-affecting (same profile is not).
+        prof = knowledge_cfg.get("rag_profile")
+        if prof and str(prof) != str(getattr(self._config, "rag_profile", None)):
+            return True
+        for field in ("embedding_provider", "embedding_model", "chunk_size", "chunk_overlap", "metric_type"):
+            if field in knowledge_cfg:
+                incoming = knowledge_cfg.get(field)
+                if incoming is not None and str(incoming) != str(getattr(self._config, field, None)):
+                    return True
+        return False
+
     def apply_knowledge_config(self, knowledge_cfg: dict) -> dict[str, Any]:
         """Convenience: prepare + commit in one call. Used by update_settings() compat.
 
@@ -3802,6 +3822,18 @@ class KnowledgeEngine:
         knobs that don't change chunking) are still allowed mid-reindex
         because they don't perturb the worker contract.
         """
+        # Cheap reindex-conflict guard BEFORE prepare (Sami review): prepare
+        # runs a model load + embedding preflight (a provider round-trip). If a
+        # reindex is in flight and the incoming config plainly changes a
+        # vector-affecting field, reject now rather than paying that cost for a
+        # change we'll refuse anyway. The authoritative post-prepare check below
+        # still backstops profile-expansion / coercion edge cases.
+        if self._reindex_in_progress and self._incoming_changes_vector_config(knowledge_cfg):
+            raise ReindexInProgressError(
+                f"Reindex in progress for {sorted(self._reindex_in_progress)}; "
+                f"vector-affecting changes (embedding/chunking/metric) are rejected "
+                f"until all worker tasks terminate."
+            )
         prepared = self.prepare_knowledge_update(knowledge_cfg)
         vector_affecting = prepared.embedding_changed or prepared.chunking_changed or prepared.metric_changed
         if vector_affecting and self._reindex_in_progress:
@@ -3952,7 +3984,7 @@ class KnowledgeEngine:
             await asyncio.to_thread(self._default_embeddings.embed_query, "ping")
         except Exception as e:  # noqa: BLE001 — any failure means "unavailable"
             available = False
-            error = (str(e)[:300] or e.__class__.__name__)
+            error = str(e)[:300] or e.__class__.__name__
         self._embedder_probe_cache = (cfg_hash, available, error, now)
         if not available:
             logger.warning(f"Active embedder probe failed ({model}): {error}")
@@ -4050,19 +4082,26 @@ class KnowledgeEngine:
         if not src_dir.exists():
             return 0
 
-        dst_dir.mkdir(parents=True, exist_ok=True)
-        src_names = {f.name for f in src_dir.iterdir() if f.is_file()}
-        stale = 0
-        for f in list(dst_dir.iterdir()):
-            if f.is_file() and f.name not in src_names:
-                f.unlink()
-                stale += 1
+        def _mirror() -> tuple[int, int]:
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            src_names = {f.name for f in src_dir.iterdir() if f.is_file()}
+            _stale = 0
+            for f in list(dst_dir.iterdir()):
+                if f.is_file() and f.name not in src_names:
+                    f.unlink()
+                    _stale += 1
+            _count = 0
+            for f in src_dir.iterdir():
+                if f.is_file():
+                    shutil.copy2(str(f), str(dst_dir / f.name))
+                    _count += 1
+            return _stale, _count
 
-        count = 0
-        for f in src_dir.iterdir():
-            if f.is_file():
-                shutil.copy2(str(f), str(dst_dir / f.name))
-                count += 1
+        # Run the synchronous filesystem mirror off the event loop (Sami
+        # review): a large migration (many/large files) would otherwise block
+        # every concurrent request for its whole duration. Same to_thread
+        # pattern used for ingest + delete I/O in this file.
+        stale, count = await asyncio.to_thread(_mirror)
         if stale:
             logger.info(
                 f"Removed {stale} stale file(s) from {target_collection}; copied {count} from {source_collection}"

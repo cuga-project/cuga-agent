@@ -228,10 +228,15 @@ function isIndexConfigEquivalent(
   saved: NonNullable<AgentConfig["knowledge"]>,
 ): boolean {
   if (current.embedding_provider !== saved.embedding_provider) return false;
-  // Empty current model on the same provider == use provider default == match saved.
-  const modelExplicitlyDifferent =
-    !!current.embedding_model && current.embedding_model !== saved.embedding_model;
-  if (modelExplicitlyDifferent) return false;
+  // Empty current model = "use provider default". Treat as a match ONLY when
+  // saved is also empty; if saved pinned a specific model, clearing it IS a
+  // change (review) — the prior rule returned equivalent for empty-vs-anything
+  // and silently hid the re-index banner + Live divergence.
+  if (current.embedding_model) {
+    if (current.embedding_model !== saved.embedding_model) return false;
+  } else if (saved.embedding_model) {
+    return false;
+  }
   if (current.chunk_size !== saved.chunk_size) return false;
   if (current.chunk_overlap !== saved.chunk_overlap) return false;
   if (current.metric_type !== saved.metric_type) return false;
@@ -408,7 +413,16 @@ export function ManagePage() {
   // it, no UI surface answers "what is actually running right now?"
   // without log-reading.
   const [liveKnowledge, setLiveKnowledge] = useState<
-    { provider: string; model: string; version: number | null } | null
+    {
+      provider: string;
+      model: string;
+      version: number | null;
+      // Published chunking/metric — so the Live pill's diverged check compares
+      // draft against the ACTUAL published values, not against itself.
+      chunk_size?: number;
+      chunk_overlap?: number;
+      metric_type?: string;
+    } | null
   >(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
@@ -790,6 +804,9 @@ export function ManagePage() {
               provider: typeof liveKn.embedding_provider === "string" ? liveKn.embedding_provider : "fastembed",
               model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "(default)",
               version: typeof data.version === "number" ? data.version : null,
+              chunk_size: typeof liveKn.chunk_size === "number" ? liveKn.chunk_size : undefined,
+              chunk_overlap: typeof liveKn.chunk_overlap === "number" ? liveKn.chunk_overlap : undefined,
+              metric_type: typeof liveKn.metric_type === "string" ? liveKn.metric_type : undefined,
             });
           }
           if (data.config && Object.keys(data.config).length > 0) {
@@ -1411,7 +1428,9 @@ export function ManagePage() {
           }
         } else if (res.status === 409) {
           // Layer 1/2 (issue #396): server refuses vector-affecting PATCHes
-          // while a reindex is in flight.
+          // while a reindex is in flight. Without this branch the user sees
+          // a generic "Save failed (409)" pill and might assume their UI
+          // selection is now applied — it isn't. Surface specifically.
           if (ac.signal.aborted) return;
           let detail: { error?: string; message?: string } | null = null;
           try {
@@ -1696,6 +1715,9 @@ export function ManagePage() {
             ? knowledgeConfig.embedding_model
             : "(default)",
           version: typeof data.version === "number" ? data.version : null,
+          chunk_size: typeof knowledgeConfig.chunk_size === "number" ? knowledgeConfig.chunk_size : undefined,
+          chunk_overlap: typeof knowledgeConfig.chunk_overlap === "number" ? knowledgeConfig.chunk_overlap : undefined,
+          metric_type: typeof knowledgeConfig.metric_type === "string" ? knowledgeConfig.metric_type : undefined,
         });
         // Snapshot the knowledge config so reindex detection compares against
         // the just-published state, not the initial load.
@@ -2601,9 +2623,13 @@ export function ManagePage() {
                           ...DEFAULT_KNOWLEDGE_CONFIG,
                           embedding_provider: liveKnowledge.provider,
                           embedding_model: liveKnowledge.model,
-                          chunk_size: knowledgeConfig.chunk_size,
-                          chunk_overlap: knowledgeConfig.chunk_overlap,
-                          metric_type: knowledgeConfig.metric_type,
+                          // Compare against the PUBLISHED chunk/metric, not the
+                          // draft's own values (Sami review) — otherwise a
+                          // chunk-only draft edit compares against itself and
+                          // never turns the pill yellow.
+                          chunk_size: liveKnowledge.chunk_size ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_size,
+                          chunk_overlap: liveKnowledge.chunk_overlap ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_overlap,
+                          metric_type: liveKnowledge.metric_type ?? DEFAULT_KNOWLEDGE_CONFIG.metric_type,
                         });
                         const label = (
                           <>
@@ -2750,6 +2776,10 @@ export function ManagePage() {
             // Retry after the "still running" timeout re-arms the auto-retry.
             knowledgeSaveRetryRef.current = 0;
             setKnowledgeConfig((prev) => ({ ...prev }));
+          }}
+          onDismissDraftSave={() => {
+            // Close (X) on the failure banner = dismiss only, no retry.
+            setDraftSaveStatus({ kind: "idle" });
           }}
           onPresetApplied={() => {
             // The user just clicked an explicit "Use" button — bypass the

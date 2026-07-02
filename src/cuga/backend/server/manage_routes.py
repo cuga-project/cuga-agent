@@ -82,13 +82,17 @@ def _redact_secrets_in_config(config: dict[str, Any]) -> None:
     (see patch_draft_knowledge)."""
 
     def _walk(node: Any) -> None:
-        if not isinstance(node, dict):
-            return
-        for k, v in list(node.items()):
-            if _is_secret_field_name(k) and isinstance(v, str) and v:
-                node[k] = ""
-            elif isinstance(v, dict):
-                _walk(v)
+        if isinstance(node, dict):
+            for k, v in list(node.items()):
+                if _is_secret_field_name(k) and isinstance(v, str) and v:
+                    node[k] = ""
+                elif isinstance(v, (dict, list)):
+                    _walk(v)
+        elif isinstance(node, list):
+            # Recurse into list items too (review): a shape like
+            # {"tools": [{"api_key": "..."}]} would otherwise leak the nested secret.
+            for item in node:
+                _walk(item)
 
     _walk(config)
 
@@ -1268,6 +1272,9 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
             )
             try:
                 from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
+                from cuga.backend.cuga_graph.nodes.cuga_lite.providers.toolguard import (
+                    invalidate_toolguard_provider,
+                )
 
                 await apply_policies_data_to_storage(
                     state.policy_system.storage,
@@ -1276,6 +1283,14 @@ async def patch_draft_policies(request: Request, agent_id: Optional[str] = None)
                     filesystem_sync=state.policy_filesystem_sync,
                 )
                 await state.policy_system.initialize()
+
+                # Invalidate the ToolGuard runtime cache so the next tool call
+                # re-initialises with the updated policy (e.g. guards_enabled toggle).
+                draft_agent = getattr(state, "agent", None)
+                if draft_agent:
+                    tp = getattr(draft_agent, "tool_provider", None)
+                    if tp is not None:
+                        invalidate_toolguard_provider(tp)
             except Exception as policy_err:
                 logger.warning(f"Failed to apply policies from PATCH: {policy_err}")
         return JSONResponse({"status": "success", "version": "draft", "agent_id": agent_id})
@@ -1762,8 +1777,14 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                     #       so the UI can show a toast without blocking. The user
                     #       can fix it by entering their own key or running Test
                     #       connection.
-                    _user_supplied_key = bool((knowledge.get("embedding_api_key") or "").strip())
-                    _provider = (knowledge.get("embedding_provider") or "").lower()
+                    # Read from ``filtered`` (the merged config), not the raw
+                    # incoming body (Sami review): a redacted/empty key in the
+                    # PATCH is dropped and the STORED key is preserved in
+                    # ``filtered`` after merge. Reading ``knowledge`` here would
+                    # misclassify a real user key as "no key" and wrongly take
+                    # the env-var soft-fail path on a provider switch.
+                    _user_supplied_key = bool((filtered.get("embedding_api_key") or "").strip())
+                    _provider = (filtered.get("embedding_provider") or "").lower()
                     _is_credentialed = _provider in ("openai", "openrouter", "litellm")
                     _err_str = str(live_err)
                     _looks_like_auth = any(
@@ -1985,8 +2006,14 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         # ``str(e)`` was empty (some libs raise bare Exception() with
         # no args) and left us no breadcrumb to diagnose. Include
         # repr(e) so we at least see the class name when str is empty.
+        # Full detail (incl. embedding-API errors, paths, partial key material)
+        # goes to the LOG only; the client gets a generic message (Sami review /
+        # CodeQL — don't leak internals in the HTTP body).
         logger.exception(f"Failed to patch draft knowledge: {e!r}")
-        raise HTTPException(status_code=500, detail=str(e) or repr(e) or "Unknown server error")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save knowledge settings. Check the server logs for details.",
+        ) from None
 
 
 @router.post("/knowledge/reindex_for_config")
@@ -2033,8 +2060,13 @@ async def reindex_for_config_change(request: Request, agent_id: Optional[str] = 
         result = await _migrate_and_reindex_for_agent(agent_id, live_engine, live_state)
         return JSONResponse(result)
     except Exception as e:
+        # Generic client message; full detail (may include embedding-API
+        # errors / paths) stays in the log only (Sami review / CodeQL).
         logger.exception(f"reindex_for_config_change failed: {e!r}")
-        raise HTTPException(status_code=500, detail=str(e) or repr(e) or "reindex failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Re-index could not be started. Check the server logs for details.",
+        ) from None
 
 
 @router.patch("/config/draft/special_instructions")
