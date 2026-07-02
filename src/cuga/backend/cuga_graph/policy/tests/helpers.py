@@ -3,6 +3,7 @@
 import uuid
 from typing import Dict, List, Any, Optional
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
@@ -451,6 +452,11 @@ async def resume_graph_with_response(
 ) -> Any:
     """Resume the graph with a human response.
 
+    Delivers the response via LangGraph's interrupt/resume protocol
+    (``Command(resume=...)``), matching the SDK path. When the user
+    confirmed approval, may resume more than once: follow-up codegen
+    (e.g. structure probes) can re-trigger tool approval on the same thread.
+
     Args:
         graph: DynamicAgentGraph instance
         thread_id: Thread identifier
@@ -458,26 +464,44 @@ async def resume_graph_with_response(
 
     Returns:
         Final state snapshot after resuming
+
+    Raises:
+        RuntimeError: If the graph keeps interrupting after repeated confirmed resumes.
     """
     config = graph.get_config_with_policy({"configurable": {"thread_id": thread_id}})
+    resume_payload: Any = Command(resume=response.model_dump())
+    max_resume_attempts = 5
 
-    # Update the state with the response
-    current_state = graph.graph.get_state(config)
-    updated_state = AgentState(**current_state.values)
-    updated_state.hitl_response = response
+    for attempt in range(max_resume_attempts):
+        # Drain the stream so LangGraph runs nodes and updates the checkpoint.
+        # We don't inspect individual events; the authoritative state is read
+        # from get_state() after the stream finishes (or hits an interrupt).
+        async for _event in graph.graph.astream(
+            resume_payload,
+            config,
+            stream_mode="updates",
+        ):
+            pass
 
-    # Stream events until completion or next interrupt
-    async for event in graph.graph.astream(None, config, stream_mode="updates"):
-        if isinstance(event, tuple):
-            namespace, state_dict = event
-            if "__interrupt__" in state_dict or state_dict.get("__interrupt__"):
-                break
-        elif "__interrupt__" in event:
-            break
+        state_snapshot = graph.graph.get_state(config)
+        if not state_snapshot.next:
+            return state_snapshot
 
-    # Get the final state
-    state_snapshot = graph.graph.get_state(config)
-    return state_snapshot
+        # Still interrupted. Denials should end the graph above; if not, return
+        # as-is so deny/modification tests can assert on the partial state.
+        if not response.confirmed:
+            return state_snapshot
+
+        # Confirmed approval but another interrupt (e.g. structure-probe codegen
+        # calling the same tool again). Re-send the same approval to continue.
+        if attempt + 1 >= max_resume_attempts:
+            raise RuntimeError(
+                f"Graph still interrupted after {max_resume_attempts} confirmed "
+                "resume attempts; possible approval loop"
+            )
+        resume_payload = Command(resume=response.model_dump())
+
+    raise RuntimeError("unreachable")
 
 
 async def run_full_graph_to_completion(
