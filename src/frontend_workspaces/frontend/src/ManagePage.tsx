@@ -408,7 +408,16 @@ export function ManagePage() {
   // it, no UI surface answers "what is actually running right now?"
   // without log-reading.
   const [liveKnowledge, setLiveKnowledge] = useState<
-    { provider: string; model: string; version: number | null } | null
+    {
+      provider: string;
+      model: string;
+      version: number | null;
+      // Published chunking/metric — so the Live pill's diverged check compares
+      // draft against the ACTUAL published values, not against itself.
+      chunk_size?: number;
+      chunk_overlap?: number;
+      metric_type?: string;
+    } | null
   >(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
@@ -762,6 +771,9 @@ export function ManagePage() {
               provider: typeof liveKn.embedding_provider === "string" ? liveKn.embedding_provider : "fastembed",
               model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "(default)",
               version: typeof data.version === "number" ? data.version : null,
+              chunk_size: typeof liveKn.chunk_size === "number" ? liveKn.chunk_size : undefined,
+              chunk_overlap: typeof liveKn.chunk_overlap === "number" ? liveKn.chunk_overlap : undefined,
+              metric_type: typeof liveKn.metric_type === "string" ? liveKn.metric_type : undefined,
             });
           }
           if (data.config && Object.keys(data.config).length > 0) {
@@ -1565,6 +1577,9 @@ export function ManagePage() {
             ? knowledgeConfig.embedding_model
             : "(default)",
           version: typeof data.version === "number" ? data.version : null,
+          chunk_size: typeof knowledgeConfig.chunk_size === "number" ? knowledgeConfig.chunk_size : undefined,
+          chunk_overlap: typeof knowledgeConfig.chunk_overlap === "number" ? knowledgeConfig.chunk_overlap : undefined,
+          metric_type: typeof knowledgeConfig.metric_type === "string" ? knowledgeConfig.metric_type : undefined,
         });
         // Snapshot the knowledge config so reindex detection compares against
         // the just-published state, not the initial load.
@@ -2441,9 +2456,13 @@ export function ManagePage() {
                           ...DEFAULT_KNOWLEDGE_CONFIG,
                           embedding_provider: liveKnowledge.provider,
                           embedding_model: liveKnowledge.model,
-                          chunk_size: knowledgeConfig.chunk_size,
-                          chunk_overlap: knowledgeConfig.chunk_overlap,
-                          metric_type: knowledgeConfig.metric_type,
+                          // Compare against the PUBLISHED chunk/metric, not the
+                          // draft's own values (Sami review) — otherwise a
+                          // chunk-only draft edit compares against itself and
+                          // never turns the pill yellow.
+                          chunk_size: liveKnowledge.chunk_size ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_size,
+                          chunk_overlap: liveKnowledge.chunk_overlap ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_overlap,
+                          metric_type: liveKnowledge.metric_type ?? DEFAULT_KNOWLEDGE_CONFIG.metric_type,
                         });
                         const label = (
                           <>
@@ -2587,6 +2606,10 @@ export function ManagePage() {
             // the autosave useEffect. Cheap and reuses the existing PATCH
             // pipeline rather than maintaining a parallel retry path.
             setKnowledgeConfig((prev) => ({ ...prev }));
+          }}
+          onDismissDraftSave={() => {
+            // Close (X) on the failure banner = dismiss only, no retry.
+            setDraftSaveStatus({ kind: "idle" });
           }}
           onPresetApplied={() => {
             // The user just clicked an explicit "Use" button — bypass the
