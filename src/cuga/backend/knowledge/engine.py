@@ -44,6 +44,18 @@ from cuga.backend.knowledge.vector_store_base import VectorStoreAdapter
 
 logger = loguru_logger
 
+# Hard ceiling on a background reindex worker. A wedged embedding-provider call
+# (no per-request timeout at the litellm layer) would otherwise hang
+# asyncio.gather forever, leaving the collection pinned in _reindex_in_progress
+# and blocking every future reindex/publish for that agent with no self-heal
+# short of a process restart.
+_REINDEX_WORKER_TIMEOUT_S = 1800  # 30 min; matches the deferred-flip wall-clock cap
+
+# Strong-ref set for fire-and-forget reindex worker tasks — the event loop keeps
+# only WEAK refs to create_task() results, so a GC mid-run would drop the finally
+# that clears the busy flag. done_callback discards on completion.
+_BACKGROUND_REINDEX_TASKS: set[Any] = set()
+
 
 # Docling's plugin factory emits a WARNING every time it scans for plugins:
 #   "The plugin langchain_docling will not be loaded because Docling is being
@@ -3951,6 +3963,19 @@ class KnowledgeEngine:
         self.apply_knowledge_config(kwargs)
         return self.get_settings()
 
+    @staticmethod
+    def _scrub_secret_text(text: str) -> str:
+        """Strip secret-shaped tokens from provider error strings before they
+        reach a log or an HTTP response. Provider/httpx errors can echo a
+        credentialed base_url (https://user:pass@host) or a rejected key."""
+        import re as _re
+
+        text = _re.sub(r"(https?://)[^/@\s]+@", r"\1***@", text)
+        text = _re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{6,}", r"\1***", text)
+        text = _re.sub(r"\b(sk-|xai-|or-v1-|or-)[A-Za-z0-9._\-]{6,}", r"\1***", text)
+        text = _re.sub(r"(?i)(api[_-]?key\"?\s*[:=]\s*\"?)[A-Za-z0-9._\-]{6,}", r"\1***", text)
+        return text
+
     async def probe_active_embedder(self) -> dict[str, Any]:
         """Cached live availability probe of the ACTIVE embedder.
 
@@ -3984,7 +4009,7 @@ class KnowledgeEngine:
             await asyncio.to_thread(self._default_embeddings.embed_query, "ping")
         except Exception as e:  # noqa: BLE001 — any failure means "unavailable"
             available = False
-            error = str(e)[:300] or e.__class__.__name__
+            error = self._scrub_secret_text(str(e)[:300]) or e.__class__.__name__
         self._embedder_probe_cache = (cfg_hash, available, error, now)
         if not available:
             logger.warning(f"Active embedder probe failed ({model}): {error}")
@@ -4159,20 +4184,36 @@ class KnowledgeEngine:
             # marks its own task failed).
             async def _reindex_worker():
                 try:
-                    await asyncio.gather(
-                        *(
-                            self._run_ingest(
-                                collection, fp, fp.name, tid, replace_duplicates=True, skip_file_copy=True
-                            )
-                            for fp, tid in zip(file_list, task_ids)
+                    await asyncio.wait_for(
+                        asyncio.gather(
+                            *(
+                                self._run_ingest(
+                                    collection, fp, fp.name, tid, replace_duplicates=True, skip_file_copy=True
+                                )
+                                for fp, tid in zip(file_list, task_ids)
+                            ),
+                            return_exceptions=True,
                         ),
-                        return_exceptions=True,
+                        timeout=_REINDEX_WORKER_TIMEOUT_S,
+                    )
+                except asyncio.TimeoutError:
+                    # A wedged provider call must not pin the collection forever.
+                    # The finally clears the busy flag so the agent isn't blocked;
+                    # the deferred flip then sees non-terminal tasks and refuses to
+                    # promote (safe — the old collection stays active).
+                    logger.error(
+                        f"Reindex worker for {collection} exceeded "
+                        f"{_REINDEX_WORKER_TIMEOUT_S}s (wedged provider call?); "
+                        f"releasing busy flag so the agent isn't blocked."
                     )
                 finally:
                     self._reindex_in_progress.discard(collection)
                     self._reindex_deferred.discard(collection)
 
-            asyncio.create_task(_reindex_worker())
+            _bg_reindex = asyncio.create_task(_reindex_worker())
+            _BACKGROUND_REINDEX_TASKS.add(_bg_reindex)
+            _bg_reindex.add_done_callback(_BACKGROUND_REINDEX_TASKS.discard)
+            _bg_reindex.add_done_callback(lambda t: t.exception())
         except ReindexBusyError:
             raise  # Don't clear flag (was never set for this collection)
         except Exception:

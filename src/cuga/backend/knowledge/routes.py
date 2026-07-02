@@ -838,6 +838,24 @@ async def list_tasks(
     return {"tasks": tasks}
 
 
+def _caller_owns_task_collection(
+    identity: KnowledgeIdentity, scope: str, collection: str, expected_collection: str
+) -> bool:
+    """Whether the caller owns the task's collection.
+
+    Agent tasks may live on ANY of the agent's collections — including the
+    in-flight TARGET of a deferred-flip reindex, whose hash differs from the
+    active pointer — so match the base prefix (the SAME ownership rule the
+    GET /tasks list endpoint uses). Session tasks require an exact match.
+    An exact-match here would 403 every in-flight reindex task for the whole
+    deferred window, freezing the live-progress tile.
+    """
+    if scope == "agent":
+        base = resolve_agent_collection(identity.agent_id, None)
+        return collection == base or collection.startswith(f"{base}_")
+    return collection == expected_collection
+
+
 @knowledge_router.get("/tasks/{task_id}")
 async def get_task(
     request: Request,
@@ -859,7 +877,7 @@ async def get_task(
             raise
         raise HTTPException(status_code=403, detail="access denied")
 
-    if task["collection"] != expected_collection:
+    if not _caller_owns_task_collection(identity, scope, task["collection"], expected_collection):
         raise HTTPException(status_code=403, detail="access denied")
 
     return _enrich_task(task)
@@ -885,7 +903,7 @@ async def cancel_task(
             raise
         raise HTTPException(status_code=403, detail="access denied")
 
-    if task["collection"] != expected_collection:
+    if not _caller_owns_task_collection(identity, scope, task["collection"], expected_collection):
         raise HTTPException(status_code=403, detail="access denied")
 
     if scope == "agent":

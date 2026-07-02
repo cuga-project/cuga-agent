@@ -1038,33 +1038,17 @@ export default function KnowledgePanel({
       },
     );
     let initialTasks: ReindexTask[] = placeholders;
-    let firstPollHits = 0;
     try {
       const res = await api.getKnowledgeTasks();
       if (res.ok) {
         const data = await res.json();
         const allTasks: ReindexTask[] = data.tasks ?? [];
         const relevantTasks = allTasks.filter((t: ReindexTask) => taskIds.includes(t.task_id));
-        firstPollHits = relevantTasks.length;
         initialTasks = mergeTasksById(taskIds, placeholders, relevantTasks);
       }
     } catch {
       // Fall back to placeholders; polling will enrich as filenames load.
     }
-    // [#402] At-arm signal: assert the tile starts with N placeholder rows
-    // and how many of them were enriched by the first synchronous poll.
-    // ``rowsWithFilename < taskIds.length`` here is EXPECTED — the rest
-    // will fill in within the first 2s poll cycle.
-    // eslint-disable-next-line no-console
-    console.debug(
-      "[#402] tile-arm",
-      {
-        taskIds: taskIds.length,
-        placeholders: placeholders.length,
-        firstPollBackendHits: firstPollHits,
-        rowsWithFilename: initialTasks.filter((t) => !!t.filename).length,
-      },
-    );
     setReindexProgress({
       taskIds,
       total: total || taskIds.length,
@@ -1103,18 +1087,6 @@ export default function KnowledgePanel({
           // ``rowsWithFilename`` stays below taskIds.length past ~1s
           // after tile-arm, the backend isn't populating ``file_tasks``
           // — different bug.
-          // eslint-disable-next-line no-console
-          console.debug(
-            "[#402] poll",
-            {
-              backendHits: relevantTasks.length,
-              rowsRendered: mergedTasks.length,
-              rowsWithFilename: mergedTasks.filter((t) => !!t.filename).length,
-              completed,
-              failed,
-              done,
-            },
-          );
           return {
             taskIds,
             total: taskIds.length,
@@ -1139,11 +1111,6 @@ export default function KnowledgePanel({
           // ALWAYS at terminal state — both success AND partial-failure
           // mean "workers stopped, parent can resume autosave PATCHes".
           // Distinct from onAutoReindexComplete which is success-only.
-          // eslint-disable-next-line no-console
-          console.debug(
-            "[#398-followup] reindex-finished",
-            { completed, failed, taskCount: taskIds.length },
-          );
           onReindexFinished?.();
           if (failed === 0) {
             onToast?.("success", "Re-index complete", `${completed} document(s) re-indexed successfully.`);

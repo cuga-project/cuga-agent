@@ -384,6 +384,18 @@ def _apply_llm_to_draft_state(state: Any, llm_cfg: dict) -> None:
 # hold the lock MUST use the *_unlocked variant of the save helper.
 _AGENT_DRAFT_LOCKS: dict[str, asyncio.Lock] = {}
 
+# Strong-ref set for the fire-and-forget deferred-flip background tasks. The
+# event loop holds only WEAK references to create_task() results, so without
+# this a flip task can be GC'd mid-poll — leaving SOURCE pinned in
+# _reindex_in_progress forever (permanent 409) or the pointer never promoted.
+# Mirrors knowledge/routes.py::_BACKGROUND_INGEST_TASKS; done_callback discards
+# on completion so the set bounds at "currently-running flips".
+_BACKGROUND_FLIP_TASKS: set[Any] = set()
+
+# Wall-clock cap on the deferred pointer-flip's wait for workers to terminate,
+# so a wedged worker / engine crash can't leak the flip coroutine forever.
+_DEFERRED_FLIP_TIMEOUT_S = 30 * 60  # 30 min
+
 
 def _agent_draft_lock(agent_id: str) -> asyncio.Lock:
     """Get-or-create the per-agent draft lock. Creating on demand
@@ -488,13 +500,13 @@ async def _deferred_reindex_complete_and_flip(
     """
     import asyncio as _asyncio
 
-    deadline = _asyncio.get_event_loop().time() + 30 * 60  # 30 min hard cap
+    deadline = _asyncio.get_running_loop().time() + _DEFERRED_FLIP_TIMEOUT_S
 
     # Poll until the engine clears its busy flag for our target. The flag
     # is the canonical "workers done" signal: engine.reindex sets it in
     # the lock prologue and clears it from the worker's finally-block.
     while target in live_engine._reindex_in_progress:
-        if _asyncio.get_event_loop().time() > deadline:
+        if _asyncio.get_running_loop().time() > deadline:
             logger.warning(
                 f"Deferred flip for {target}: workers didn't terminate in 30min; "
                 f"NOT promoting knowledge_config_hash."
@@ -525,9 +537,9 @@ async def _deferred_reindex_complete_and_flip(
     # STRICT mode: refuse promotion unless every task succeeded. Workflow
     # w5i1mbchd / production-readiness sweep: PERMISSIVE mode (the previous
     # behavior, "promote on any success") silently loses data. Concrete
-    # manual-QA repro: switching from fastembed to watsonx/e5, LevyI hit
-    # 518>512, 4/5 succeeded, pointer flipped — search for LevyI content
-    # returned nothing because LevyI's vectors never made it into the new
+    # manual-QA repro: switching from fastembed to watsonx/e5, one file hit
+    # 518>512, 4/5 succeeded, pointer flipped — search for that file's content
+    # returned nothing because its vectors never made it into the new
     # collection while the FE banner said the embedder switch succeeded.
     #
     # The strict choice: stay on the old collection (where ALL files have
@@ -692,7 +704,10 @@ async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_s
             finally:
                 _release_source()
 
-        _asyncio.create_task(_flip_then_release_source())
+        _bg_flip = _asyncio.create_task(_flip_then_release_source())
+        _BACKGROUND_FLIP_TASKS.add(_bg_flip)
+        _bg_flip.add_done_callback(_BACKGROUND_FLIP_TASKS.discard)
+        _bg_flip.add_done_callback(lambda t: t.exception())
     else:
         # No flip will run (no task_ids / no hash) — release SOURCE now.
         _release_source()
@@ -1819,15 +1834,17 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                         # Do NOT raise — fall through to save the draft so the user
                         # can keep editing without the toast-storm.
                     else:
-                        logger.warning(f"Live engine knowledge apply failed: {live_err}")
+                        # Keep provider detail in the log only; don't echo it in
+                        # the HTTP body — a provider error can carry a credentialed
+                        # base_url / request context. Matches the sanitized 500s.
+                        logger.warning(f"Live engine knowledge apply failed: {live_err!r}")
                         raise HTTPException(
                             status_code=400,
                             detail=(
                                 "Live knowledge engine rejected the new config. "
-                                "Check the embedding provider/key/model and try again. "
-                                f"Underlying error: {live_err}"
+                                "Check the embedding provider, key, and model and try again."
                             ),
-                        )
+                        ) from None
 
             # Save to draft (lock-free variant — we already hold the lock).
             # Post-apply ordering means we only persist configs the engine
@@ -2132,6 +2149,15 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             content={"detail": "Agent name is required"},
         )
 
+    # Serialize the whole publish critical section (commit_knowledge_update +
+    # config save + pointer decision) against a concurrent same-agent PATCH.
+    # Both mutate engine._config and bump _apply_generation; PATCH holds this
+    # lock (asyncio.Lock, non-reentrant) across its apply+save, so publish must
+    # too — otherwise a lost-increment race can make an in-flight worker miss a
+    # supersede and persist wrong-embedder vectors. The deferred-flip tasks are
+    # fire-and-forget (create_task) and acquire the lock later, after release.
+    _pub_lock = _agent_draft_lock(str(agent_id))
+    await _pub_lock.acquire()
     try:
         from cuga.backend.server.config_store import (
             load_config,
@@ -2543,11 +2569,14 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 if _pub_task_ids:
                     import asyncio as _asyncio_pub
 
-                    _asyncio_pub.create_task(
+                    _bg_pub_flip = _asyncio_pub.create_task(
                         _deferred_reindex_complete_and_flip(
                             agent_id, engine, app_state, _new_collection, _vec_hash, _pub_task_ids
                         )
                     )
+                    _BACKGROUND_FLIP_TASKS.add(_bg_pub_flip)
+                    _bg_pub_flip.add_done_callback(_BACKGROUND_FLIP_TASKS.discard)
+                    _bg_pub_flip.add_done_callback(lambda t: t.exception())
                     logger.info(
                         "Publish: reindex started for %s; deferring strict pointer flip "
                         "(workers terminal + n_failed==0). Old collection stays active meanwhile.",
@@ -2587,6 +2616,8 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
             )
         logger.error(f"Failed to save manage config: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        _pub_lock.release()
 
 
 @router.get("/config/history")

@@ -56,6 +56,13 @@ def _make_engine() -> KnowledgeEngine:
     return KnowledgeEngine(cfg)
 
 
+async def _noop_persist(*_a, **_k):
+    """No-op stand-in for _persist_active_vector_config so a flip unit test
+    never touches the real config DB. The durable-persist behavior has its own
+    dedicated behavioral test below."""
+    return None
+
+
 class TestLayer2EngineApplyGuard:
     """``apply_knowledge_config`` must reject VECTOR-affecting changes
     while any reindex is in progress; non-vector changes must still work."""
@@ -180,6 +187,7 @@ class TestLayer3DeferredFlip:
         from cuga.backend.server import manage_routes
 
         manage_routes._AGENT_DRAFT_LOCKS.clear()
+        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
         live_state = SimpleNamespace(knowledge_config_hash="old_hash")
 
         # Tasks listed as completed.
@@ -256,12 +264,13 @@ class TestLayer3DeferredFlip:
         # Pointer stays put — user must trigger a fresh reindex to converge.
         assert live_state.knowledge_config_hash == "old_hash"
 
-    def test_flip_waits_for_in_progress_then_flips(self):
+    def test_flip_waits_for_in_progress_then_flips(self, monkeypatch):
         # Simulate the realistic case: engine.reindex returned, _reindex_in_progress
         # is still set, workers finish a moment later, then the flip happens.
         from cuga.backend.server import manage_routes
 
         manage_routes._AGENT_DRAFT_LOCKS.clear()
+        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
         live_state = SimpleNamespace(knowledge_config_hash="old_hash")
 
         async def fake_list_tasks(coll):
@@ -288,6 +297,134 @@ class TestLayer3DeferredFlip:
 
         asyncio.run(run())
         assert live_state.knowledge_config_hash == "new_hash"
+
+    def test_flip_refuses_when_a_task_still_running(self, monkeypatch):
+        # Partial-terminal guard: if any listed task is still non-terminal
+        # (e.g. the reindex-worker timeout cleared the busy flag while a file
+        # was mid-flight), the flip must refuse — promoting would point queries
+        # at a half-built collection.
+        from cuga.backend.server import manage_routes
+
+        manage_routes._AGENT_DRAFT_LOCKS.clear()
+        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
+        live_state = SimpleNamespace(knowledge_config_hash="old_hash")
+
+        async def fake_list_tasks(coll):
+            return [
+                {"task_id": "t1", "status": "completed"},
+                {"task_id": "t2", "status": "running"},  # never reached terminal
+            ]
+
+        engine = SimpleNamespace(
+            _reindex_in_progress=set(),
+            _metadata=SimpleNamespace(list_tasks=fake_list_tasks),
+            _config=SimpleNamespace(vector_config_hash=lambda: "new_hash"),
+        )
+
+        asyncio.run(
+            manage_routes._deferred_reindex_complete_and_flip(
+                "cuga-default", engine, live_state, "kb_agent_x_new", "new_hash", ["t1", "t2"]
+            )
+        )
+        assert live_state.knowledge_config_hash == "old_hash"
+
+    def test_flip_bails_out_after_wall_clock_deadline(self, monkeypatch):
+        # Deadline guard: if the busy flag never clears (a wedged worker), the
+        # flip must give up after the wall-clock cap WITHOUT promoting — it must
+        # neither block forever nor flip onto an unfinished collection.
+        from cuga.backend.server import manage_routes
+
+        manage_routes._AGENT_DRAFT_LOCKS.clear()
+        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
+        # Shrink the 30-min cap so the wait loop times out promptly.
+        monkeypatch.setattr(manage_routes, "_DEFERRED_FLIP_TIMEOUT_S", 0.2)
+        live_state = SimpleNamespace(knowledge_config_hash="old_hash")
+
+        async def fake_list_tasks(coll):  # pragma: no cover — deadline fires first
+            return [{"task_id": "t1", "status": "completed"}]
+
+        engine = SimpleNamespace(
+            _reindex_in_progress={"kb_agent_x_new"},  # never cleared → deadline fires
+            _metadata=SimpleNamespace(list_tasks=fake_list_tasks),
+            _config=SimpleNamespace(vector_config_hash=lambda: "new_hash"),
+        )
+
+        asyncio.run(
+            manage_routes._deferred_reindex_complete_and_flip(
+                "cuga-default", engine, live_state, "kb_agent_x_new", "new_hash", ["t1"]
+            )
+        )
+        assert live_state.knowledge_config_hash == "old_hash"
+
+    def test_flip_persists_hash_and_embedder_fields_behaviorally(self, monkeypatch):
+        # Behavioral counterpart to the source-string durability check (#5): a
+        # successful flip writes the target hash AND the embedder fields
+        # together to BOTH draft and published, so a restart reloads a
+        # self-consistent active pointer rather than an orphaned hash.
+        from cuga.backend.server import manage_routes
+
+        manage_routes._AGENT_DRAFT_LOCKS.clear()
+        live_state = SimpleNamespace(knowledge_config_hash="old_hash")
+
+        async def fake_list_tasks(coll):
+            return [{"task_id": "t1", "status": "completed"}]
+
+        engine = SimpleNamespace(
+            _reindex_in_progress=set(),
+            _metadata=SimpleNamespace(list_tasks=fake_list_tasks),
+            _config=SimpleNamespace(
+                vector_config_hash=lambda: "new_hash",
+                embedding_provider="litellm",
+                embedding_model="watsonx/intfloat/multilingual-e5-large",
+                chunk_size=512,
+                chunk_overlap=64,
+                metric_type="COSINE",
+            ),
+        )
+
+        # In-memory config-store spies — the REAL _persist_active_vector_config
+        # runs against these, so we assert on what it actually wrote.
+        draft_store = {"knowledge": {"embedding_provider": "fastembed"}}
+        published = {"knowledge": {"embedding_provider": "fastembed"}}
+        captured = {}
+
+        async def fake_load_draft(agent_id):
+            return dict(draft_store)
+
+        async def fake_save_draft(cfg, agent_id):
+            draft_store.clear()
+            draft_store.update(cfg)
+
+        async def fake_load_config(version=None, agent_id=None):
+            return dict(published), "7"
+
+        async def fake_update_published(cfg, agent_id, ver):
+            captured["cfg"] = cfg
+            captured["ver"] = ver
+
+        monkeypatch.setattr("cuga.backend.server.config_store.load_draft", fake_load_draft)
+        monkeypatch.setattr("cuga.backend.server.config_store.save_draft", fake_save_draft)
+        monkeypatch.setattr("cuga.backend.server.config_store.load_config", fake_load_config)
+        monkeypatch.setattr(
+            "cuga.backend.server.config_store.update_published_config_at_version",
+            fake_update_published,
+        )
+
+        asyncio.run(
+            manage_routes._deferred_reindex_complete_and_flip(
+                "cuga-default", engine, live_state, "kb_agent_x_new", "new_hash", ["t1"]
+            )
+        )
+
+        assert live_state.knowledge_config_hash == "new_hash"
+        # Draft persisted the hash AND the embedder fields together.
+        assert draft_store["knowledge"]["_vector_config_hash"] == "new_hash"
+        assert draft_store["knowledge"]["embedding_provider"] == "litellm"
+        assert draft_store["knowledge"]["embedding_model"] == "watsonx/intfloat/multilingual-e5-large"
+        # Published config updated at its version with the same self-consistent set.
+        assert captured["ver"] == "7"
+        assert captured["cfg"]["knowledge"]["_vector_config_hash"] == "new_hash"
+        assert captured["cfg"]["knowledge"]["embedding_provider"] == "litellm"
 
 
 # ---------------------------------------------------------------------------

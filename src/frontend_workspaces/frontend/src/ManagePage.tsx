@@ -733,8 +733,6 @@ export function ManagePage() {
       // [#397] Reset checkpoint — fires on mount AND on every agentId
       // prop change. If the chip ever shows a stale state for a fresh
       // agent, check this log is firing on the switch.
-      // eslint-disable-next-line no-console
-      console.debug("[#397] loadLatest reset draftSaveStatus → idle", { agent: effectiveAgentId });
       const [draftRes, toolsListRes] = await Promise.all([
         api.getManageConfig(true, effectiveAgentId),
         api.getToolsList(true),
@@ -1304,11 +1302,6 @@ export function ManagePage() {
     // re-runs this hook when reindex completes, catching any
     // non-vector edits the user made during the reindex window.
     if (knowledgeReindexing) {
-      // eslint-disable-next-line no-console
-      console.debug(
-        "[#398-followup] skip-autosave-during-reindex",
-        { reason: "knowledgeReindexing=true; reindex flow persists this change" },
-      );
       // Cancel any in-flight PATCH so a half-fired one doesn't land
       // mid-reindex and get rejected after the user already moved on.
       knowledgeAbortRef.current?.abort();
@@ -1458,14 +1451,6 @@ export function ManagePage() {
             // armed a poll, so the flag would wedge "saving" until a
             // hard refresh — the exact bug the user reported. The
             // self-healing retry below needs no cross-component signal.
-            // eslint-disable-next-line no-console
-            console.debug(
-              "[#398-followup-v3] reindex_in_progress: keep saving, bounded retry",
-              {
-                collections: (detail as { collections?: string[] })?.collections ?? [],
-                attempt: knowledgeSaveRetryRef.current + 1,
-              },
-            );
             setDraftSaveStatus({ kind: "saving" });
             const MAX_REINDEX_SAVE_RETRIES = 20; // ~60s at 3s spacing
             if (knowledgeSaveRetryRef.current < MAX_REINDEX_SAVE_RETRIES) {
@@ -1730,9 +1715,6 @@ export function ManagePage() {
         // that's now LIVE — confusing UX. Idle from here until the next
         // autosave kicks in.
         setDraftSaveStatus({ kind: "idle" });
-        // [#397] Reset checkpoint — fires once per successful publish.
-        // eslint-disable-next-line no-console
-        console.debug("[#397] publish-success reset draftSaveStatus → idle");
         if (!hasPartialErrors && (!data.partial_errors || data.partial_errors.length === 0)) {
           addToast("success", "Configuration saved", "Your configuration has been saved successfully");
         }
@@ -2861,8 +2843,6 @@ export function ManagePage() {
                   // (kind=warning) vs the failure path (kind=error). Pair
                   // with the backend's "[#398] reindex_busy" log: the two
                   // should fire together within one HTTP round-trip.
-                  // eslint-disable-next-line no-console
-                  console.debug("[#398] reindex_blocked", { code, toastKind: spec?.kind ?? "error" });
                   if (spec) {
                     addToast(spec.kind, spec.title, spec.msg);
                   } else {
