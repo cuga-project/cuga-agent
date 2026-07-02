@@ -1,0 +1,147 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:flowable="http://flowable.org/bpmn" xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI" xmlns:omgdc="http://www.omg.org/spec/DD/20100524/DC" xmlns:omgdi="http://www.omg.org/spec/DD/20100524/DI" typeLanguage="http://www.w3.org/2001/XMLSchema" expressionLanguage="http://www.w3.org/1999/XPath" targetNamespace="http://bpmn.io/schema/bpmn" exporter="Flowable Open Source Modeler" exporterVersion="6.8.0">
+  <process id="Process_1s3q83l" name="Loan-Approval-Process" isExecutable="true">
+    <documentation>Loan approval process</documentation>
+    <startEvent id="StartEvent_0bpt8wp" flowable:formFieldValidation="true"></startEvent>
+    <sequenceFlow id="Flow_1e5ztf6" sourceRef="StartEvent_0bpt8wp" targetRef="Activity_0oydey5"></sequenceFlow>
+    <exclusiveGateway id="Gateway_09ad5fc"></exclusiveGateway>
+    <sequenceFlow id="Flow_1ji6b0i" sourceRef="Activity_0oydey5" targetRef="Gateway_09ad5fc"></sequenceFlow>
+    <exclusiveGateway id="Gateway_15y9k7z"></exclusiveGateway>
+    <sequenceFlow id="Flow_0uwnw59" sourceRef="Activity_1h9ix55" targetRef="Gateway_15y9k7z"></sequenceFlow>
+    <sequenceFlow id="Flow_1ow7aj3" sourceRef="Activity_131ar38" targetRef="Gateway_15y9k7z"></sequenceFlow>
+    <endEvent id="Event_13axbio"></endEvent>
+    <scriptTask id="Activity_0oydey5" name="check credit" scriptFormat="javascript" flowable:autoStoreVariables="false">
+      <script><![CDATA[execution.setVariable("credit_score", Math.random());]]></script>
+    </scriptTask>
+    <sequenceFlow id="Flow_0ybszcv" name="yes" sourceRef="Gateway_09ad5fc" targetRef="Activity_1h9ix55">
+      <conditionExpression xsi:type="tFormalExpression"><![CDATA[${credit_score > 0.6}]]></conditionExpression>
+    </sequenceFlow>
+    <sequenceFlow id="Flow_1jgea85" name="no" sourceRef="Gateway_09ad5fc" targetRef="Activity_131ar38">
+      <conditionExpression xsi:type="tFormalExpression"><![CDATA[${credit_score <= 0.6}]]></conditionExpression>
+    </sequenceFlow>
+    <scriptTask id="Activity_1h9ix55" name="give loan of 1000 USD" scriptFormat="javascript" flowable:autoStoreVariables="false">
+      <script><![CDATA[execution.setVariable("decision", "give loan");]]></script>
+    </scriptTask>
+    <scriptTask id="Activity_131ar38" name="send a rejection letter" scriptFormat="javascript" flowable:autoStoreVariables="false">
+      <script><![CDATA[execution.setVariable("decision", "reject loan");]]></script>
+    </scriptTask>
+    <sequenceFlow id="sid-62C6A667-14CF-41B4-BB3C-3160E5DB9440" sourceRef="Gateway_15y9k7z" targetRef="sid-41B1E1F3-9EAE-4B1D-9C4B-09D98F5E1EF2"></sequenceFlow>
+    <sequenceFlow id="sid-BF2F3894-88B6-4AC4-9AF0-01F34D655B02" sourceRef="sid-41B1E1F3-9EAE-4B1D-9C4B-09D98F5E1EF2" targetRef="Event_13axbio"></sequenceFlow>
+    <serviceTask id="sid-41B1E1F3-9EAE-4B1D-9C4B-09D98F5E1EF2" name="CUGA FLO complete process" flowable:parallelInSameTransaction="false" flowable:type="http">
+      <extensionElements>
+        <flowable:field name="requestMethod">
+          <flowable:string><![CDATA[POST]]></flowable:string>
+        </flowable:field>
+        <flowable:field name="requestUrl">
+          <flowable:string><![CDATA[http://host.docker.internal:8090/mcp]]></flowable:string>
+        </flowable:field>
+        <flowable:field name="requestHeaders">
+          <flowable:string><![CDATA[Content-Type: application/json
+Accept: application/json, text/event-stream]]></flowable:string>
+        </flowable:field>
+        <flowable:field name="requestBody">
+          <flowable:expression><![CDATA[{
+  "jsonrpc": "2.0",
+  "method": "tools/call",
+  "params": {
+    "name": "complete_process",
+    "arguments": {
+      "process_key": "${cugaProcessKey}",
+      "state": {
+        "process_id": "${cugaProcessKey}",
+        "process_name": "Loan Approval",
+        "process_variables": {
+          "credit_score": ${credit_score},
+          "decision": "${decision}"
+        },
+        "messages": [],
+        "is_complete": false,
+        "is_halted": false
+      }
+    }
+  },
+  "id": 1
+}]]></flowable:expression>
+        </flowable:field>
+        <flowable:field name="ignoreException">
+          <flowable:string><![CDATA[true]]></flowable:string>
+        </flowable:field>
+      </extensionElements>
+    </serviceTask>
+    <textAnnotation id="TextAnnotation_0shqxfj">
+      <text>credit score &gt; 0.6</text>
+    </textAnnotation>
+    <association id="Association_1p70sex" sourceRef="Gateway_09ad5fc" targetRef="TextAnnotation_0shqxfj" associationDirection="None"></association>
+  </process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_Process_1s3q83l">
+    <bpmndi:BPMNPlane bpmnElement="Process_1s3q83l" id="BPMNPlane_Process_1s3q83l">
+      <bpmndi:BPMNShape bpmnElement="StartEvent_0bpt8wp" id="BPMNShape_StartEvent_0bpt8wp">
+        <omgdc:Bounds height="30.0" width="30.0" x="74.99999888241292" y="261.9999974668026"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_09ad5fc" id="BPMNShape_Gateway_09ad5fc">
+        <omgdc:Bounds height="40.0" width="40.0" x="312.99998725950746" y="259.99999493360525"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Gateway_15y9k7z" id="BPMNShape_Gateway_15y9k7z">
+        <omgdc:Bounds height="39.99999999999997" width="40.0" x="577.9999988824129" y="254.99999746680263"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Event_13axbio" id="BPMNShape_Event_13axbio">
+        <omgdc:Bounds height="28.0" width="28.0" x="852.9999850243332" y="265.9999948441983"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Activity_0oydey5" id="BPMNShape_Activity_0oydey5">
+        <omgdc:Bounds height="79.99999999999997" width="100.0" x="162.9999988824129" y="239.99999746680263"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Activity_1h9ix55" id="BPMNShape_Activity_1h9ix55">
+        <omgdc:Bounds height="80.0" width="100.0" x="417.99999150633823" y="239.99999523162847"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="Activity_131ar38" id="BPMNShape_Activity_131ar38">
+        <omgdc:Bounds height="80.0" width="100.0" x="422.9999988824129" y="349.9999974668026"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="sid-41B1E1F3-9EAE-4B1D-9C4B-09D98F5E1EF2" id="BPMNShape_sid-41B1E1F3-9EAE-4B1D-9C4B-09D98F5E1EF2">
+        <omgdc:Bounds height="80.00000000000003" width="100.0" x="689.999979436398" y="236.99999393522748"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape bpmnElement="TextAnnotation_0shqxfj" id="BPMNShape_TextAnnotation_0shqxfj">
+        <omgdc:Bounds height="41.0" width="120.0" x="372.9999988824129" y="169.99999746680263"></omgdc:Bounds>
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge bpmnElement="sid-BF2F3894-88B6-4AC4-9AF0-01F34D655B02" id="BPMNEdge_sid-BF2F3894-88B6-4AC4-9AF0-01F34D655B02" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.000000000000014" flowable:targetDockerX="14.0" flowable:targetDockerY="14.0">
+        <omgdi:waypoint x="789.9499794363733" y="276.9999939352275"></omgdi:waypoint>
+        <omgdi:waypoint x="821.4999873712661" y="276.9999939352275"></omgdi:waypoint>
+        <omgdi:waypoint x="821.4999873712661" y="279.9999948441983"></omgdi:waypoint>
+        <omgdi:waypoint x="852.9999850243332" y="279.9999948441983"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1ow7aj3" id="BPMNEdge_Flow_1ow7aj3" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="20.0" flowable:targetDockerY="19.999999999999986">
+        <omgdi:waypoint x="522.949998882413" y="389.6124015527952"></omgdi:waypoint>
+        <omgdi:waypoint x="602.0" y="389.0"></omgdi:waypoint>
+        <omgdi:waypoint x="598.6762702368785" y="294.2349633721783"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_0ybszcv" id="BPMNEdge_Flow_0ybszcv" flowable:sourceDockerX="20.0" flowable:sourceDockerY="20.0" flowable:targetDockerX="50.0" flowable:targetDockerY="40.0">
+        <omgdi:waypoint x="352.94260379604924" y="279.99999497764645"></omgdi:waypoint>
+        <omgdi:waypoint x="417.99999150622307" y="279.9999951212495"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1jgea85" id="BPMNEdge_Flow_1jgea85" flowable:sourceDockerX="20.0" flowable:sourceDockerY="20.0" flowable:targetDockerX="50.0" flowable:targetDockerY="40.0">
+        <omgdi:waypoint x="332.81817138145817" y="299.76863359525106"></omgdi:waypoint>
+        <omgdi:waypoint x="332.0" y="389.0"></omgdi:waypoint>
+        <omgdi:waypoint x="422.9999988824095" y="389.6453884332108"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_0uwnw59" id="BPMNEdge_Flow_0uwnw59" flowable:sourceDockerX="50.0" flowable:sourceDockerY="40.0" flowable:targetDockerX="20.0" flowable:targetDockerY="19.999999999999986">
+        <omgdi:waypoint x="517.9499915063383" y="278.0769192773474"></omgdi:waypoint>
+        <omgdi:waypoint x="578.7407392638088" y="275.73888599724506"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Association_1p70sex" id="BPMNEdge_Association_1p70sex" flowable:sourceDockerX="20.0" flowable:sourceDockerY="20.0" flowable:targetDockerX="60.0" flowable:targetDockerY="41.0">
+        <omgdi:waypoint x="344.8047217244505" y="271.8343151992123"></omgdi:waypoint>
+        <omgdi:waypoint x="432.9999988824129" y="210.99999746680263"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="sid-62C6A667-14CF-41B4-BB3C-3160E5DB9440" id="BPMNEdge_sid-62C6A667-14CF-41B4-BB3C-3160E5DB9440" flowable:sourceDockerX="20.0" flowable:sourceDockerY="19.999999999999986" flowable:targetDockerX="50.0" flowable:targetDockerY="40.000000000000014">
+        <omgdi:waypoint x="617.6661860020075" y="275.2770803550788"></omgdi:waypoint>
+        <omgdi:waypoint x="689.9999794363969" y="276.29576973018806"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1e5ztf6" id="BPMNEdge_Flow_1e5ztf6" flowable:sourceDockerX="15.0" flowable:sourceDockerY="15.0" flowable:targetDockerX="50.0" flowable:targetDockerY="39.999999999999986">
+        <omgdi:waypoint x="104.94549886603008" y="277.3645256710135"></omgdi:waypoint>
+        <omgdi:waypoint x="162.99999888241248" y="278.7804852716807"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge bpmnElement="Flow_1ji6b0i" id="BPMNEdge_Flow_1ji6b0i" flowable:sourceDockerX="50.0" flowable:sourceDockerY="39.999999999999986" flowable:targetDockerX="20.0" flowable:targetDockerY="20.0">
+        <omgdi:waypoint x="262.9499988823353" y="279.9999964113036"></omgdi:waypoint>
+        <omgdi:waypoint x="312.999986952719" y="279.99999535474933"></omgdi:waypoint>
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</definitions>
