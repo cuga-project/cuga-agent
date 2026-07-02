@@ -1,5 +1,6 @@
 """Manage endpoints: draft config (auto-save) and publish (new version)."""
 
+import asyncio
 import os
 from collections.abc import Mapping
 from typing import Any, Optional
@@ -62,6 +63,37 @@ def _extract_agent_feature_overrides(config: dict[str, Any]) -> dict[str, bool |
     )
     out["cuga_lite_max_steps"] = int(max_steps_val) if max_steps_val is not None else None
     return out
+
+
+_SECRET_FIELD_SUBSTRINGS = ("KEY", "TOKEN", "SECRET", "PASSWORD")  # KEY covers APIKEY + API_KEY both
+
+
+def _is_secret_field_name(name: str) -> bool:
+    """One rule for "is this field name a secret?" — used by the env-presets
+    endpoint, the GET-redactor, and the PATCH-preserver so they can't drift
+    when a sixth secret substring gets added."""
+    return any(s in (name or "").upper() for s in _SECRET_FIELD_SUBSTRINGS)
+
+
+def _redact_secrets_in_config(config: dict[str, Any]) -> None:
+    """In-place: replace secret-named non-empty string fields with ''.
+    Walks nested dicts. PATCH preserves stored values on empty incoming
+    (see patch_draft_knowledge)."""
+
+    def _walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for k, v in list(node.items()):
+                if _is_secret_field_name(k) and isinstance(v, str) and v:
+                    node[k] = ""
+                elif isinstance(v, (dict, list)):
+                    _walk(v)
+        elif isinstance(node, list):
+            # Recurse into list items too (review): a shape like
+            # {"tools": [{"api_key": "..."}]} would otherwise leak the nested secret.
+            for item in node:
+                _walk(item)
+
+    _walk(config)
 
 
 def _merge_feature_flags_defaults(config: dict[str, Any]) -> None:
@@ -333,13 +365,225 @@ def _apply_llm_to_draft_state(state: Any, llm_cfg: dict) -> None:
         state.current_llm = None
 
 
-async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict[str, Any]:
+# Per-agent serialization for draft load-modify-write. Without this, two
+# concurrent PATCHes to the SAME agent (e.g. user clicks Use on Watsonx —
+# autosave fires PATCH /draft/knowledge — types in a tools field —
+# autosave fires PATCH /draft/tools) interleave their read-modify-write:
+#
+#   PATCH knowledge: load(draft_v0) → set knowledge=watsonx → save(v0+watsonx)
+#   PATCH tools:     load(draft_v0) → set tools=new        → save(v0+tools) ← knowledge LOST
+#
+# Result: tools updated, knowledge silently reverted. User-visible as
+# "I clicked Use on Watsonx but the draft still shows fastembed".
+#
+# The patch_draft_knowledge handler ALSO acquires this lock for a wider
+# critical section (engine apply + draft save together) so the live
+# engine and the persisted draft can't desync if a PATCH is aborted
+# between them. asyncio.Lock is NON-reentrant — callers that already
+# hold the lock MUST use the *_unlocked variant of the save helper.
+_AGENT_DRAFT_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _agent_draft_lock(agent_id: str) -> asyncio.Lock:
+    """Get-or-create the per-agent draft lock. Creating on demand
+    keeps us out of import-time event-loop dependency issues."""
+    lock = _AGENT_DRAFT_LOCKS.get(agent_id)
+    if lock is None:
+        lock = asyncio.Lock()
+        _AGENT_DRAFT_LOCKS[agent_id] = lock
+    return lock
+
+
+async def _save_draft_section_unlocked(agent_id: str, section: str, value: Any) -> dict[str, Any]:
+    """Lock-free load-modify-write. ONLY use this when the caller already
+    holds ``_agent_draft_lock(agent_id)``. External callers should use
+    ``_load_and_patch_draft`` instead."""
     from cuga.backend.server.config_store import load_draft, save_draft
 
     existing = await load_draft(agent_id) or {}
     existing[section] = value
     await save_draft(existing, agent_id)
     return existing
+
+
+async def _load_and_patch_draft(agent_id: str, section: str, value: Any) -> dict[str, Any]:
+    """Locked load-modify-write. Serializes concurrent PATCHes to the
+    same agent so cross-section writes don't clobber each other."""
+    async with _agent_draft_lock(agent_id):
+        return await _save_draft_section_unlocked(agent_id, section, value)
+
+
+async def _deferred_reindex_complete_and_flip(
+    agent_id: str,
+    live_engine: Any,
+    live_state: Any,
+    target: str,
+    target_hash: str,
+    task_ids: list[str],
+) -> None:
+    """Background task spawned by ``_migrate_and_reindex_for_agent`` after
+    ``engine.reindex`` returns ``status=started``. Waits for every per-file
+    ingest worker to reach a terminal state, then promotes
+    ``app_state.knowledge_config_hash`` to ``target_hash`` ONLY IF at least
+    one task completed successfully AND the engine's current config still
+    hashes to ``target_hash`` (i.e., the user didn't change embedders
+    behind our back via the SDK / a Layer 1 / Layer 2 bypass).
+
+    The flip happens INSIDE ``_agent_draft_lock`` so a concurrent PATCH
+    can't interleave between the engine-config check and the pointer write.
+
+    Bounded by a 30-minute wall clock so a hung worker / engine crash
+    can't leak this coroutine forever.
+    """
+    import asyncio as _asyncio
+
+    deadline = _asyncio.get_event_loop().time() + 30 * 60  # 30 min hard cap
+
+    # Poll until the engine clears its busy flag for our target. The flag
+    # is the canonical "workers done" signal: engine.reindex sets it in
+    # the lock prologue and clears it from the worker's finally-block.
+    while target in live_engine._reindex_in_progress:
+        if _asyncio.get_event_loop().time() > deadline:
+            logger.warning(
+                f"Deferred flip for {target}: workers didn't terminate in 30min; "
+                f"NOT promoting knowledge_config_hash."
+            )
+            return
+        await _asyncio.sleep(0.5)
+
+    # Snapshot terminal task statuses.
+    try:
+        all_tasks = await live_engine._metadata.list_tasks(target)
+    except Exception as e:
+        logger.warning(f"Deferred flip for {target}: failed to read task statuses ({e}); skipping flip.")
+        return
+
+    task_id_set = set(task_ids)
+    relevant = [t for t in all_tasks if t["task_id"] in task_id_set]
+    n_completed = sum(1 for t in relevant if t["status"] == "completed")
+    n_terminal = sum(1 for t in relevant if t["status"] in ("completed", "failed", "cancelled"))
+
+    if n_terminal != len(relevant):
+        logger.warning(
+            f"Deferred flip for {target}: {n_terminal}/{len(relevant)} tasks at terminal "
+            f"state; refusing partial flip."
+        )
+        return
+
+    if n_completed == 0:
+        logger.warning(
+            f"Deferred flip for {target}: 0/{len(relevant)} tasks succeeded "
+            f"(all failed or superseded); NOT promoting knowledge_config_hash. "
+            f"The collection's vectors are empty or stale — user must Re-index again."
+        )
+        return
+
+    # Acquire the per-agent lock so the engine-config check and the
+    # pointer write are atomic against any concurrent PATCH.
+    async with _agent_draft_lock(agent_id):
+        try:
+            current_engine_hash = live_engine._config.vector_config_hash()
+        except Exception as e:
+            logger.warning(f"Deferred flip for {target}: vector_config_hash failed ({e}); skipping.")
+            return
+        if current_engine_hash != target_hash:
+            # Engine moved on between when the reindex started and when it
+            # finished — likely via an SDK bypass of Layer 1+2. Flipping
+            # to ``target_hash`` now would point queries at a collection
+            # whose content doesn't match the engine's current embedder.
+            logger.info(
+                f"Deferred flip for {target}: engine moved to {current_engine_hash!r} during "
+                f"reindex (was {target_hash!r}); skipping flip. User must trigger a fresh Re-index."
+            )
+            return
+
+        try:
+            live_state.knowledge_config_hash = target_hash
+            logger.info(
+                f"Deferred flip for {target}: {n_completed}/{len(relevant)} tasks succeeded; "
+                f"promoted knowledge_config_hash to {target_hash}."
+            )
+        except Exception as e:
+            logger.warning(f"Deferred flip for {target}: failed to set knowledge_config_hash ({e}).")
+
+
+async def _migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_state: Any) -> dict[str, Any]:
+    """Re-embed the active snapshot (kb_agent_<id>_<active_hash>) into the
+    target (kb_agent_<id>_<current_hash>). Single source — historicals
+    untouched. Pointer flips DEFERRED to a background task that waits for
+    worker terminal state (see ``_deferred_reindex_complete_and_flip``).
+    The HTTP response returns with task_ids so the UI can show progress
+    immediately, while the integrity-critical pointer flip happens behind
+    the scenes only after workers finish AND the engine config still
+    matches.
+    Returns {triggered, target, collections, error?}."""
+    import asyncio as _asyncio
+    import re as _re
+
+    sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
+    prefix = f"kb_agent_{sanitized}"
+    try:
+        target_hash = live_engine._config.vector_config_hash()
+    except Exception:
+        target_hash = ""
+    target = f"{prefix}_{target_hash}" if target_hash else prefix
+    active_hash = getattr(live_state, "knowledge_config_hash", "") or ""
+    source = f"{prefix}_{active_hash}" if active_hash else prefix
+
+    files_dir = getattr(live_engine, "_files_dir", None)
+    do_copy = source != target
+    triggered: list[dict[str, Any]] = []
+
+    # Refuse if active dir is missing on disk — would otherwise fabricate
+    # by merging siblings. (Source==target with a missing dir is fine:
+    # the reindex below returns no_documents and we report that cleanly.)
+    if do_copy and files_dir is not None and not (files_dir / source).exists():
+        return {"triggered": False, "target": target, "error": "active_snapshot_missing"}
+
+    if do_copy:
+        # Busy flag on source so concurrent uploads hit ReindexBusyError;
+        # per-collection locks serialize simultaneous Re-index clicks.
+        live_engine._reindex_in_progress.add(source)
+        try:
+            async with (
+                live_engine._get_collection_lock(source),
+                live_engine._get_collection_lock(target),
+            ):
+                try:
+                    n = await live_engine.copy_source_files(source, target)
+                    triggered.append({"copied_from": source, "to": target, "files": n})
+                except Exception as cerr:
+                    logger.warning(f"copy {source} -> {target} failed: {cerr}")
+                    return {"triggered": False, "target": target, "error": "copy_failed"}
+        finally:
+            live_engine._reindex_in_progress.discard(source)
+            live_engine._reindex_deferred.discard(source)
+
+    try:
+        r = await live_engine.reindex(target)
+        triggered.append({"collection": target, "result": r})
+        ok = bool(r and r.get("status") not in (None, "no_documents"))
+    except Exception as rerr:
+        logger.warning(f"Reindex of {target} failed: {rerr}")
+        triggered.append({"collection": target, "error": str(rerr)})
+        ok = False
+
+    if not ok:
+        return {"triggered": False, "target": target, "collections": triggered, "error": "reindex_failed"}
+
+    # Spawn the deferred pointer-flip. The HTTP response returns NOW with
+    # task_ids so the UI shows progress immediately; the pointer flips
+    # behind the scenes once workers terminate AND the engine config
+    # still matches target_hash. See ``_deferred_reindex_complete_and_flip``.
+    task_ids = (r or {}).get("task_ids") or []
+    if target_hash and live_state is not None and task_ids:
+        _asyncio.create_task(
+            _deferred_reindex_complete_and_flip(
+                agent_id, live_engine, live_state, target, target_hash, task_ids
+            )
+        )
+
+    return {"triggered": True, "target": target, "collections": triggered}
 
 
 @router.get("/config")
@@ -365,12 +609,14 @@ async def get_manage_config(
                 return JSONResponse({"config": {}, "version": "draft", "agent_id": agent_id})
             _merge_mcp_yaml_into_config(config)
             _merge_feature_flags_defaults(config)
+            _redact_secrets_in_config(config)
             return JSONResponse({"config": config, "version": "draft", "agent_id": agent_id})
         config, ver = await load_config(version, agent_id)
         if config is None:
             return JSONResponse({"config": {}, "agent_id": agent_id})
         _merge_mcp_yaml_into_config(config)
         _merge_feature_flags_defaults(config)
+        _redact_secrets_in_config(config)
         return JSONResponse({"config": config, "version": ver, "agent_id": agent_id})
     except Exception as e:
         logger.error(f"Failed to load manage config: {e}")
@@ -1056,9 +1302,37 @@ async def get_knowledge_env_presets():
     """
     import os as _os
 
-    # Provider preset catalog. ``required_env`` controls the ready flag;
-    # ``optional_env`` is exposed for completeness so the UI can show
-    # "BASE_URL detected, will override default" hints.
+    # Slot semantics: each entry in ``required_env`` / ``optional_env`` is
+    # a single var name OR a pipe-separated alias group ("A|B"). The slot
+    # is satisfied if ANY alias is set. Lets us collapse the old watsonx
+    # special case (WATSONX_URL OR WATSONX_API_BASE) AND accept the
+    # WATSONX_APIKEY / WATSONX_API_KEY spelling variation LiteLLM itself
+    # accepts upstream.
+    def _aliases(spec: str) -> list[str]:
+        return spec.split("|")
+
+    def _env_set(name: str) -> bool:
+        v = (_os.environ.get(name) or "").strip()
+        if not v:
+            return False
+        # Reject angle-bracket placeholders ("<your-key>") — common in .env
+        # templates and would falsely flag the slot as ready.
+        return not (v.startswith("<") and v.endswith(">"))
+
+    def _slot_set(spec: str) -> bool:
+        return any(_env_set(n) for n in _aliases(spec))
+
+    def _slot_first_value(spec: str) -> str:
+        for n in _aliases(spec):
+            if _env_set(n):
+                return (_os.environ.get(n) or "").strip()
+        return ""
+
+    # Local alias to ``_is_secret_field_name`` (top of file). One rule
+    # across env-presets / GET-redactor / PATCH-preserver — adding a
+    # sixth substring updates all three call sites.
+    _is_secret = _is_secret_field_name
+
     PROVIDER_PRESETS = [
         {
             "id": "openai",
@@ -1079,13 +1353,20 @@ async def get_knowledge_env_presets():
         {
             "id": "watsonx",
             "label": "IBM Watsonx (via LiteLLM)",
-            # LiteLLM accepts WATSONX_URL or WATSONX_API_BASE. We require
-            # at least one of those two — surface both as detected when
-            # either is present.
-            "required_env": ["WATSONX_APIKEY", "WATSONX_PROJECT_ID"],
-            "optional_env": ["WATSONX_URL", "WATSONX_API_BASE"],
+            # Aliases: LiteLLM accepts both APIKEY and API_KEY for Watsonx
+            # creds AND either URL or API_BASE for the endpoint. Slot-level
+            # alias support eliminates the old watsonx special case.
+            "required_env": [
+                "WATSONX_APIKEY|WATSONX_API_KEY",
+                "WATSONX_PROJECT_ID",
+                "WATSONX_URL|WATSONX_API_BASE",
+            ],
+            "optional_env": [],
             "default_provider": "litellm",
-            "default_model": "watsonx/ibm/slate-30m-english-rtrvr",
+            # intfloat/multilingual-e5-large is a stronger general-purpose
+            # default than the prior IBM slate-30m (multilingual coverage,
+            # better OOTB retrieval quality on enterprise corpora).
+            "default_model": "watsonx/intfloat/multilingual-e5-large",
         },
         {
             "id": "azure",
@@ -1103,25 +1384,73 @@ async def get_knowledge_env_presets():
             "default_provider": "litellm",
             "default_model": "cohere/embed-english-v3.0",
         },
+        # Broader provider coverage for "many companies" — each ships
+        # hidden by the UI's row filter (no env vars set → no row).
+        {
+            "id": "gemini",
+            "label": "Google Gemini (via LiteLLM)",
+            "required_env": ["GEMINI_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "gemini/text-embedding-004",
+        },
+        {
+            "id": "voyage",
+            "label": "Voyage AI (via LiteLLM)",
+            "required_env": ["VOYAGE_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "voyage/voyage-3",
+        },
+        {
+            "id": "mistral",
+            "label": "Mistral AI (via LiteLLM)",
+            "required_env": ["MISTRAL_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "mistral/mistral-embed",
+        },
+        {
+            "id": "togetherai",
+            "label": "Together AI (via LiteLLM)",
+            "required_env": ["TOGETHERAI_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "together_ai/BAAI/bge-large-en-v1.5",
+        },
+        {
+            "id": "jina",
+            "label": "Jina AI (via LiteLLM)",
+            "required_env": ["JINA_AI_API_KEY"],
+            "optional_env": [],
+            "default_provider": "litellm",
+            "default_model": "jina_ai/jina-embeddings-v3",
+        },
     ]
 
     presets = []
     for p in PROVIDER_PRESETS:
-        env_vars = {
-            v: bool((_os.environ.get(v) or "").strip()) for v in (p["required_env"] + p["optional_env"])
-        }
-        # Watsonx is the lone provider with a "one-of-two" optional rule
-        # (URL or API_BASE). Special-case the ready check: required keys
-        # AND at least one of the URL aliases.
-        if p["id"] == "watsonx":
-            url_ok = env_vars.get("WATSONX_URL") or env_vars.get("WATSONX_API_BASE")
-            ready = all(env_vars[v] for v in p["required_env"]) and bool(url_ok)
-            missing = [v for v in p["required_env"] if not env_vars[v]]
-            if not url_ok:
-                missing.append("WATSONX_URL")
-        else:
-            ready = all(env_vars[v] for v in p["required_env"])
-            missing = [v for v in p["required_env"] if not env_vars[v]]
+        all_slots = p["required_env"] + p["optional_env"]
+
+        # env_vars: every alias name (including unfilled ones) so the UI
+        # can show which specific spelling was found.
+        env_vars: dict[str, bool] = {}
+        # env_values: ONLY non-secret vars that are actually set. Surfaces
+        # the URL / region / project-id / base path the UI needs to render
+        # "what was detected" alongside the row. Credential material
+        # (KEY / TOKEN / SECRET / PASSWORD / APIKEY) is filtered out.
+        env_values: dict[str, str] = {}
+        for slot in all_slots:
+            for name in _aliases(slot):
+                is_set = _env_set(name)
+                env_vars[name] = is_set
+                if is_set and not _is_secret(name):
+                    env_values[name] = (_os.environ.get(name) or "").strip()
+
+        ready = all(_slot_set(s) for s in p["required_env"])
+        # Surface the canonical (first) name for each unset required slot.
+        missing = [_aliases(s)[0] for s in p["required_env"] if not _slot_set(s)]
+
         presets.append(
             {
                 "id": p["id"],
@@ -1130,6 +1459,7 @@ async def get_knowledge_env_presets():
                 "default_model": p["default_model"],
                 "ready": ready,
                 "env_vars": env_vars,
+                "env_values": env_values,
                 "missing": missing,
             }
         )
@@ -1216,129 +1546,198 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         if not isinstance(knowledge, dict):
             raise HTTPException(status_code=400, detail="knowledge must be a dict")
 
-        # Merge with existing draft knowledge
+        # LAYER 1 GUARD (issue #396): reject the PATCH if a reindex is in
+        # flight for THIS agent's collections. The engine also enforces
+        # this in apply_knowledge_config (Layer 2) for SDK callers; this
+        # check returns a fast, well-typed 409 before we do any DB work
+        # so the FE can show a clean "wait for reindex" toast instead of
+        # surfacing a generic 400 from the engine raise.
+        #
+        # User-visible bug this prevents: clicking Use on Watsonx WHILE
+        # the previous Re-index is still running causes the in-flight
+        # workers to write watsonx-shaped (1024-dim) vectors into a
+        # collection NAMED for the fastembed hash — and silently drops
+        # the two files that were mid-ingest when the apply_generation
+        # bumped. The name-vs-content lie + missing docs both stem from
+        # the same root: PATCH not blocked during reindex.
+        import re as _re_guard
+
+        live_state_pre = getattr(request.app.state, "app_state", None)
+        live_engine_pre = getattr(live_state_pre, "knowledge_engine", None) if live_state_pre else None
+        if live_engine_pre is not None:
+            _sanitized_pre = _re_guard.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
+            _prefix_pre = f"kb_agent_{_sanitized_pre}"
+            in_flight = sorted(
+                c
+                for c in live_engine_pre._reindex_in_progress
+                if c == _prefix_pre or c.startswith(f"{_prefix_pre}_")
+            )
+            if in_flight:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "reindex_in_progress",
+                        "collections": in_flight,
+                        "message": (
+                            "Re-index is running. Wait for it to finish before changing knowledge settings."
+                        ),
+                    },
+                )
+
+        # Imports needed inside the lock.
         from cuga.backend.server.config_store import load_draft
-
-        existing_draft = await load_draft(agent_id) or {}
-        existing_knowledge = existing_draft.get("knowledge", {})
-        merged = {**existing_knowledge, **knowledge}
-
-        # Filter to known KnowledgeConfig fields only
         from cuga.backend.knowledge.config import KnowledgeConfig
+        from cuga.backend.knowledge.engine import ReindexInProgressError
         from dataclasses import fields as _dc_fields
-
-        known_fields = {f.name for f in _dc_fields(KnowledgeConfig)} - {"persist_dir"}
-        filtered = {k: v for k, v in merged.items() if k in known_fields}
-
-        # Capture pre-patch adaptation + glossary hashes for diff-logging
-        # (audit trail). Audit-finding B2: glossary changes used to be
-        # invisible in audit logs — we now diff both hashes independently.
         from cuga.backend.knowledge.config import (
             ClientAdaptationError,
             client_adaptation_hash,
             client_glossary_hash,
         )
 
-        _prev_adapt_hash = client_adaptation_hash(existing_knowledge.get("client_adaptation_text", ""))
-        _prev_gloss_hash = client_glossary_hash(existing_knowledge.get("client_adaptation_glossary", []))
-
-        # Validate via shared helper (same coercion + validation as engine apply).
-        # ClientAdaptationError carries a machine-readable code + detail dict so
-        # the UI can render specific affordances per failure mode (length /
-        # bidi / control / phrase) — return 422 with structured body.
-        try:
-            validated = KnowledgeConfig.coerce_and_validate(filtered)
-        except ClientAdaptationError as cae:
-            raise HTTPException(status_code=422, detail=cae.to_dict())
-        except (ValueError, TypeError) as ve:
-            raise HTTPException(status_code=400, detail=str(ve))
-
-        # Apply to the LIVE engine FIRST. If this fails (e.g. preflight
-        # embed_query rejects a bad key/model), surface the error to the
-        # user without saving a broken draft.
+        # The READ-MERGE-VALIDATE-APPLY-SAVE sequence below MUST run inside
+        # the per-agent lock — otherwise two concurrent same-section PATCHes
+        # both read the pre-PATCH draft, both compute their own ``filtered``
+        # against stale ``existing_knowledge``, and the later writer's save
+        # wipes the earlier's section change (cross-section + same-section
+        # LMW races are both closed by this single critical section).
+        # ``_save_draft_section_unlocked`` is used inside because asyncio.Lock
+        # is non-reentrant.
         live_state = getattr(request.app.state, "app_state", None)
         live_engine = getattr(live_state, "knowledge_engine", None) if live_state else None
         live_apply_result: dict[str, Any] | None = None
-        if live_engine is not None:
-            import asyncio as _asyncio_apply
+        async with _agent_draft_lock(str(agent_id)):
+            existing_draft = await load_draft(agent_id) or {}
+            existing_knowledge = existing_draft.get("knowledge", {})
 
+            # Preserve stored secrets on empty incoming (GET redacts to "";
+            # naive merge would wipe). Explicit non-empty overwrites normally.
+            for _k in list(knowledge.keys()):
+                if _is_secret_field_name(_k) and knowledge[_k] == "":
+                    knowledge.pop(_k, None)
+
+            merged = {**existing_knowledge, **knowledge}
+            known_fields = {f.name for f in _dc_fields(KnowledgeConfig)} - {"persist_dir"}
+            filtered = {k: v for k, v in merged.items() if k in known_fields}
+
+            # Capture pre-patch hashes for audit-log diff (B2 finding —
+            # glossary changes used to be invisible).
+            _prev_adapt_hash = client_adaptation_hash(existing_knowledge.get("client_adaptation_text", ""))
+            _prev_gloss_hash = client_glossary_hash(existing_knowledge.get("client_adaptation_glossary", []))
+
+            # Validate via shared helper (same coercion + validation as engine apply).
+            # ClientAdaptationError carries a machine-readable code + detail dict so
+            # the UI can render specific affordances per failure mode.
             try:
-                # ``apply_knowledge_config`` calls ``prepare_knowledge_update``
-                # which, on embedding-provider/model change, runs a synchronous
-                # ``embed_query("test")`` preflight — a network round-trip to
-                # the embeddings API. Without ``to_thread`` that round-trip
-                # blocks the event loop and stalls every other request for
-                # the duration. Per Sami's review (Dec 2026).
-                live_apply_result = await _asyncio_apply.to_thread(
-                    live_engine.apply_knowledge_config, filtered
-                )
-                logger.info(
-                    "Live engine knowledge config applied: changed=%s, reindex_recommended=%s",
-                    {
-                        k: live_apply_result.get(k)
-                        for k in ("embedding_changed", "chunking_changed", "metric_changed")
-                    },
-                    live_apply_result.get("reindex_recommended"),
-                )
+                validated = KnowledgeConfig.coerce_and_validate(filtered)
+            except ClientAdaptationError as cae:
+                raise HTTPException(status_code=422, detail=cae.to_dict())
             except (ValueError, TypeError) as ve:
-                raise HTTPException(status_code=400, detail=f"Engine validation failed: {ve}")
-            except Exception as live_err:
-                # Preflight network/auth errors land here (e.g. embedding API rejected).
-                # IMPORTANT: distinguish two cases:
-                #   (a) USER-supplied a key that the provider rejected — they
-                #       made an explicit choice and the choice is broken.
-                #       Block save, surface error.
-                #   (b) ENV-VAR fallback failed — the user didn't supply a key
-                #       (just switched provider, or relying on server env). The
-                #       failure is about deployment state, not the user's input.
-                #       Soft-fail: save the config, return 200 with a warning
-                #       so the UI can show a toast without blocking. The user
-                #       can fix it by entering their own key or running Test
-                #       connection.
-                _user_supplied_key = bool((knowledge.get("embedding_api_key") or "").strip())
-                _provider = (knowledge.get("embedding_provider") or "").lower()
-                _is_credentialed = _provider in ("openai", "openrouter", "litellm")
-                _err_str = str(live_err)
-                _looks_like_auth = any(
-                    s in _err_str
-                    for s in ("401", "Unauthorized", "Invalid API", "Incorrect API", "AuthenticationError")
-                )
-                if _is_credentialed and not _user_supplied_key and _looks_like_auth:
-                    logger.warning(
-                        "Live engine preflight failed via env-var fallback (no user key supplied) — "
-                        "soft-failing so the user can continue editing: %s",
-                        live_err,
-                    )
-                    live_apply_result = {
-                        "embedding_changed": False,
-                        "chunking_changed": False,
-                        "metric_changed": False,
-                        "reindex_recommended": False,
-                        "dim_changed": False,
-                        "previous_dim": None,
-                        "new_dim": None,
-                        "_preflight_warning": (
-                            "Environment-variable API key was rejected by the provider. "
-                            "Settings saved, but ingest will fail until you set a valid key "
-                            "or fix the env var. Use Test connection to verify."
-                        ),
-                    }
-                    # Do NOT raise — fall through to save the draft so the user
-                    # can keep editing without the toast-storm.
-                else:
-                    logger.warning(f"Live engine knowledge apply failed: {live_err}")
-                    raise HTTPException(
-                        status_code=400,
-                        detail=(
-                            "Live knowledge engine rejected the new config. "
-                            "Check the embedding provider/key/model and try again. "
-                            f"Underlying error: {live_err}"
-                        ),
-                    )
+                raise HTTPException(status_code=400, detail=str(ve))
 
-        # Now save to draft (post-apply so we only persist configs that the
-        # engine accepted). The draft serves crash recovery + publish snapshot.
-        full_draft = await _load_and_patch_draft(agent_id, "knowledge", filtered)
+            if live_engine is not None:
+                try:
+                    # ``apply_knowledge_config`` calls ``prepare_knowledge_update``
+                    # which, on embedding-provider/model change, runs a synchronous
+                    # ``embed_query("test")`` preflight — a network round-trip to
+                    # the embeddings API. Without ``to_thread`` that round-trip
+                    # blocks the event loop and stalls every other request for
+                    # the duration. Per Sami's review (Dec 2026).
+                    live_apply_result = await asyncio.to_thread(live_engine.apply_knowledge_config, filtered)
+                    logger.info(
+                        f"Live engine knowledge config applied: "
+                        f"embedding_changed={live_apply_result.get('embedding_changed')}, "
+                        f"chunking_changed={live_apply_result.get('chunking_changed')}, "
+                        f"metric_changed={live_apply_result.get('metric_changed')}, "
+                        f"reindex_recommended={live_apply_result.get('reindex_recommended')}"
+                    )
+                except (ValueError, TypeError) as ve:
+                    raise HTTPException(status_code=400, detail=f"Engine validation failed: {ve}")
+                except ReindexInProgressError as rip_err:
+                    # Layer 2: engine refused a vector-affecting change while a
+                    # reindex was in flight. Layer 1's 409 should have caught
+                    # this earlier; reach this branch only if (a) the reindex
+                    # started in the small window AFTER our pre-check, or (b)
+                    # an SDK consumer reached apply_knowledge_config directly.
+                    # Map to the same shape the FE handles for Layer 1.
+                    raise HTTPException(
+                        status_code=409,
+                        detail={
+                            "error": "reindex_in_progress",
+                            "collections": sorted(live_engine._reindex_in_progress),
+                            "message": str(rip_err)
+                            or "Re-index is running. Wait for it to finish before changing knowledge settings.",
+                        },
+                    )
+                except Exception as live_err:
+                    # Preflight network/auth errors land here (e.g. embedding API rejected).
+                    # IMPORTANT: distinguish two cases:
+                    #   (a) USER-supplied a key that the provider rejected — they
+                    #       made an explicit choice and the choice is broken.
+                    #       Block save, surface error.
+                    #   (b) ENV-VAR fallback failed — the user didn't supply a key
+                    #       (just switched provider, or relying on server env). The
+                    #       failure is about deployment state, not the user's input.
+                    #       Soft-fail: save the config, return 200 with a warning
+                    #       so the UI can show a toast without blocking. The user
+                    #       can fix it by entering their own key or running Test
+                    #       connection.
+                    # Read from ``filtered`` (the merged config), not the raw
+                    # incoming body (Sami review): a redacted/empty key in the
+                    # PATCH is dropped and the STORED key is preserved in
+                    # ``filtered`` after merge. Reading ``knowledge`` here would
+                    # misclassify a real user key as "no key" and wrongly take
+                    # the env-var soft-fail path on a provider switch.
+                    _user_supplied_key = bool((filtered.get("embedding_api_key") or "").strip())
+                    _provider = (filtered.get("embedding_provider") or "").lower()
+                    _is_credentialed = _provider in ("openai", "openrouter", "litellm")
+                    _err_str = str(live_err)
+                    _looks_like_auth = any(
+                        s in _err_str
+                        for s in (
+                            "401",
+                            "Unauthorized",
+                            "Invalid API",
+                            "Incorrect API",
+                            "AuthenticationError",
+                        )
+                    )
+                    if _is_credentialed and not _user_supplied_key and _looks_like_auth:
+                        logger.warning(
+                            f"Live engine preflight failed via env-var fallback (no user key "
+                            f"supplied) — soft-failing so the user can continue editing: {live_err}"
+                        )
+                        live_apply_result = {
+                            "embedding_changed": False,
+                            "chunking_changed": False,
+                            "metric_changed": False,
+                            "reindex_recommended": False,
+                            "dim_changed": False,
+                            "previous_dim": None,
+                            "new_dim": None,
+                            "_preflight_warning": (
+                                "Environment-variable API key was rejected by the provider. "
+                                "Settings saved, but ingest will fail until you set a valid key "
+                                "or fix the env var. Use Test connection to verify."
+                            ),
+                        }
+                        # Do NOT raise — fall through to save the draft so the user
+                        # can keep editing without the toast-storm.
+                    else:
+                        logger.warning(f"Live engine knowledge apply failed: {live_err}")
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                "Live knowledge engine rejected the new config. "
+                                "Check the embedding provider/key/model and try again. "
+                                f"Underlying error: {live_err}"
+                            ),
+                        )
+
+            # Save to draft (lock-free variant — we already hold the lock).
+            # Post-apply ordering means we only persist configs the engine
+            # accepted; the draft serves crash recovery + publish snapshot.
+            full_draft = await _save_draft_section_unlocked(agent_id, "knowledge", filtered)
 
         # Audit log: diff old vs new adaptation hash (NEVER the text itself —
         # PII + prompt-IP). Lets SREs answer "when did the adaptation change"
@@ -1438,115 +1837,93 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
             _pf_warn = live_apply_result.get("_preflight_warning")
             if _pf_warn:
                 response["preflight_warning"] = _pf_warn
-            # If the embedding dim actually changed, existing vectors are no
-            # longer compatible — auto-trigger reindex of the requesting
-            # agent's collections only. Scanning every directory under
-            # files_dir would touch collections owned by other agents in
-            # multi-tenant deployments, which is exactly the wrong scope
-            # for a PATCH that targeted a single agent's draft.
+            # When the embedding dim changed, existing vectors are no
+            # longer compatible. We DO NOT auto-trigger reindex anymore —
+            # users typically tweak several settings before they're
+            # ready, and running migration+reindex on every PATCH burns
+            # CPU and makes the UI feel hyperactive. Instead the UI
+            # shows a "Re-index recommended" banner driven by
+            # ``knowledgeReindexNeeded`` (snapshot diff in ManagePage) +
+            # this response's ``auto_reindex.triggered=false`` signal.
+            # The user clicks Re-index when they're done editing — that
+            # call lands on ``POST /api/manage/knowledge/reindex_for_config``
+            # which invokes ``_migrate_and_reindex_for_agent``.
             if live_apply_result.get("dim_changed") and live_engine is not None:
-                triggered_collections: list[dict[str, Any]] = []
-                try:
-                    import re as _re
-
-                    files_dir = getattr(live_engine, "_files_dir", None)
-                    # Agent collections live under ``kb_agent_<sanitized_agent_id>``
-                    # with an optional ``_<config_hash>`` suffix
-                    # (see ``awareness._agent_collection_name``). Filter to
-                    # that prefix so we only reindex what THIS agent owns.
-                    sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
-                    agent_prefix = f"kb_agent_{sanitized}"
-
-                    # Auto-reindex MUST land docs under the new-hash collection
-                    # name, not under the prior hash. Reindexing in place under
-                    # the prior name re-embeds correctly but leaves the docs
-                    # at the OLD collection name; publish then sees the
-                    # new-hash collection empty and triggers a SECOND
-                    # migration reindex (copy_source_files + reindex). This
-                    # block migrates once: pick a non-empty source dir, copy
-                    # its files to the target name, then reindex the target.
-                    # Publish's migration path then short-circuits via the
-                    # "target collection already has docs, skipping migration"
-                    # branch in save_manage_config_publish.
-                    try:
-                        current_hash = live_engine._config.vector_config_hash()
-                    except Exception:
-                        current_hash = ""
-                    target_collection = f"{agent_prefix}_{current_hash}" if current_hash else agent_prefix
-
-                    if files_dir and files_dir.exists():
-                        collections = [
-                            d.name
-                            for d in files_dir.iterdir()
-                            if d.is_dir()
-                            and (d.name == agent_prefix or d.name.startswith(f"{agent_prefix}_"))
-                        ]
-                    else:
-                        collections = []
-
-                    target_done = False
-                    for coll in collections:
-                        try:
-                            if coll == target_collection:
-                                # Already at the target name — reindex in place.
-                                r = await live_engine.reindex(coll)
-                                triggered_collections.append({"collection": coll, "result": r})
-                                target_done = True
-                            elif not target_done:
-                                # Migrate this collection's files to the
-                                # target name then reindex target. Only do
-                                # this once per request — additional stale
-                                # collection dirs become orphans (cleaned up
-                                # via a separate housekeeping pass).
-                                await live_engine.copy_source_files(coll, target_collection)
-                                r = await live_engine.reindex(target_collection)
-                                triggered_collections.append(
-                                    {
-                                        "collection": target_collection,
-                                        "migrated_from": coll,
-                                        "result": r,
-                                    }
-                                )
-                                target_done = True
-                            else:
-                                # Orphan stale collection — leave for cleanup.
-                                triggered_collections.append({"collection": coll, "skipped": "orphan_stale"})
-                        except Exception as rerr:
-                            logger.warning(f"Auto-reindex of {coll} failed: {rerr}")
-                            triggered_collections.append({"collection": coll, "error": str(rerr)})
-
-                    # Track the runtime collection-name hash so
-                    # ``resolve_collection`` (and any caller that builds the
-                    # agent collection name from ``app_state.knowledge_config_hash``)
-                    # routes to the migrated data, not the orphan old-hash dir.
-                    # Without this, search after a draft-only profile switch
-                    # would hit the empty old collection because resolve_collection
-                    # is keyed off this attribute.
-                    if target_done and current_hash and live_state is not None:
-                        try:
-                            live_state.knowledge_config_hash = current_hash
-                        except Exception as _hash_err:
-                            logger.warning(
-                                "Failed to update knowledge_config_hash after migrate: %s",
-                                _hash_err,
-                            )
-
-                    response["auto_reindex"] = {
-                        "triggered": True,
-                        "scope": agent_prefix,
-                        "target": target_collection,
-                        "reason": f"embedding dim changed: {live_apply_result.get('previous_dim')} → {live_apply_result.get('new_dim')}",
-                        "collections": triggered_collections,
-                    }
-                except Exception as auto_err:
-                    logger.warning(f"Auto-reindex discovery failed: {auto_err}")
-                    response["auto_reindex"] = {"triggered": False, "error": str(auto_err)}
+                response["auto_reindex"] = {
+                    "triggered": False,
+                    "reason": "manual_required",
+                    "dim_change": f"{live_apply_result.get('previous_dim')} -> {live_apply_result.get('new_dim')}",
+                }
         return JSONResponse(response)
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Failed to patch draft knowledge: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # ``logger.exception`` captures the full traceback. The prior
+        # ``logger.error(f"...: {e}")`` swallowed everything when
+        # ``str(e)`` was empty (some libs raise bare Exception() with
+        # no args) and left us no breadcrumb to diagnose. Include
+        # repr(e) so we at least see the class name when str is empty.
+        # Full detail (incl. embedding-API errors, paths, partial key material)
+        # goes to the LOG only; the client gets a generic message (Sami review /
+        # CodeQL — don't leak internals in the HTTP body).
+        logger.exception(f"Failed to patch draft knowledge: {e!r}")
+        raise HTTPException(
+            status_code=500,
+            detail="Failed to save knowledge settings. Check the server logs for details.",
+        ) from None
+
+
+@router.post("/knowledge/reindex_for_config")
+async def reindex_for_config_change(request: Request, agent_id: Optional[str] = None):
+    """User-triggered migration + reindex after a config change that requires it.
+
+    Replaces the prior auto-trigger on the PATCH lifecycle: the user clicks
+    "Re-index" in the UI when they're ready, and this endpoint migrates files
+    to the current vector_config_hash dir + re-embeds with the active engine
+    config. Returns the same ``{triggered, target, collections}`` shape the
+    PATCH used to return so the frontend's existing reindex-tile arming code
+    works without changes.
+    """
+    if agent_id is None:
+        agent_id = "cuga-default"
+    live_state = getattr(request.app.state, "app_state", None)
+    live_engine = getattr(live_state, "knowledge_engine", None) if live_state else None
+    if live_engine is None:
+        raise HTTPException(status_code=503, detail="Knowledge engine not ready")
+
+    # Reject if a reindex is already in flight for this agent. Without this,
+    # a rapid double-click on Re-index hits engine.reindex's own busy check
+    # and the migration helper maps it to a generic ``reindex_failed`` toast
+    # — confusing for what is really a "please wait" condition. Same shape
+    # as patch_draft_knowledge's Layer 1 guard so the FE can reuse handling.
+    import re as _re_guard
+
+    _sanitized_pre = _re_guard.sub(r"[^a-zA-Z0-9_]", "_", str(agent_id))
+    _prefix_pre = f"kb_agent_{_sanitized_pre}"
+    in_flight = sorted(
+        c for c in live_engine._reindex_in_progress if c == _prefix_pre or c.startswith(f"{_prefix_pre}_")
+    )
+    if in_flight:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "reindex_in_progress",
+                "collections": in_flight,
+                "message": "Re-index is already running for this agent. Wait for it to finish.",
+            },
+        )
+
+    try:
+        result = await _migrate_and_reindex_for_agent(agent_id, live_engine, live_state)
+        return JSONResponse(result)
+    except Exception as e:
+        # Generic client message; full detail (may include embedding-API
+        # errors / paths) stays in the log only (Sami review / CodeQL).
+        logger.exception(f"reindex_for_config_change failed: {e!r}")
+        raise HTTPException(
+            status_code=500,
+            detail="Re-index could not be started. Check the server logs for details.",
+        ) from None
 
 
 @router.patch("/config/draft/special_instructions")
