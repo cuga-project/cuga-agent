@@ -7,7 +7,6 @@ import * as api from "../../frontend/src/api";
 
 interface ConfigHeaderProps {
   onToggleLeftSidebar: () => void;
-  onToggleWorkspace: () => void;
   onToggleKnowledge: () => void;
   knowledgeDocCount: number;
   // True once the hook has at least one authoritative response (either
@@ -25,7 +24,6 @@ interface AgentContext {
 
 export function ConfigHeader({
   onToggleLeftSidebar,
-  onToggleWorkspace,
   onToggleKnowledge,
   knowledgeDocCount,
   knowledgeDocsLoaded,
@@ -57,7 +55,6 @@ export function ConfigHeader({
         agentContext={agentContext}
         navItems={[
           { label: "Sidebar", onClick: onToggleLeftSidebar },
-          { label: "Workspace", onClick: onToggleWorkspace },
           // Three-way decision so the badge never lies:
           //   - Disabled         → "Knowledge"
           //   - Loaded + N>0     → "Knowledge (N)"

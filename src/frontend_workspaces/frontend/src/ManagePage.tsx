@@ -33,6 +33,7 @@ import {
   TextArea,
   Toggle,
   IconButton,
+  Tooltip,
 } from "@carbon/react";
 import { CugaHeader } from "./CugaHeader";
 import {
@@ -223,6 +224,41 @@ const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   client_adaptation_glossary: [],
 };
 
+// "Effective index equivalence" for the Re-index banner. Two configs are
+// equivalent for the vector index when every field contributing to the
+// engine's ``vector_config_hash`` resolves to the same effective value:
+//
+//   - embedding_provider, embedding_model, chunk_size, chunk_overlap, metric_type
+//
+// Special case: ``embedding_model = ""`` is the Provider Select's reset
+// value, meaning "use this provider's default". On the SAME provider the
+// engine resolves it to the same default the saved snapshot already
+// captured — so empty current model = match. Without this normalisation,
+// reverting via the Select keeps the Re-index banner stuck up forever.
+//
+// Other fields (numeric chunking, enum metric_type) never produce empty
+// values via the UI today; if a future UI surface introduces one, add
+// the same empty-means-default branch here. One place to extend.
+function isIndexConfigEquivalent(
+  current: NonNullable<AgentConfig["knowledge"]>,
+  saved: NonNullable<AgentConfig["knowledge"]>,
+): boolean {
+  if (current.embedding_provider !== saved.embedding_provider) return false;
+  // Empty current model = "use provider default". Treat as a match ONLY when
+  // saved is also empty; if saved pinned a specific model, clearing it IS a
+  // change (review) — the prior rule returned equivalent for empty-vs-anything
+  // and silently hid the re-index banner + Live divergence.
+  if (current.embedding_model) {
+    if (current.embedding_model !== saved.embedding_model) return false;
+  } else if (saved.embedding_model) {
+    return false;
+  }
+  if (current.chunk_size !== saved.chunk_size) return false;
+  if (current.chunk_overlap !== saved.chunk_overlap) return false;
+  if (current.metric_type !== saved.metric_type) return false;
+  return true;
+}
+
 const DEFAULT_HOMESCREEN: HomescreenConfig = {
   isOn: true,
   greeting: "Hello, how can I help you today?",
@@ -398,6 +434,87 @@ export function ManagePage() {
   const [policies, setPolicies] = useState<NonNullable<AgentConfig["policies"]>>(DEFAULT_CONFIG.policies ?? { enablePolicies: true, policies: [] });
   const [history, setHistory] = useState<ConfigVersion[]>([]);
   const [saveStatus, setSaveStatus] = useState<"idle" | "saving" | "success" | "error">("idle");
+  // Knowledge draft autosave status — sourced from the PATCH lifecycle,
+  // NOT from a setTimeout. The prior implementation in KnowledgeConfig.tsx
+  // claimed "Saved" after 1500ms regardless of whether the network call
+  // had returned; the user couldn't distinguish a real save from a silent
+  // network failure. Lifted here so the same machine drives both the
+  // inline pill AND the Live-vs-Draft comparison the synthesis calls for.
+  // ``saved`` and ``failed`` carry the server-echoed vector_config_hash
+  // and apply_generation so the UI has authoritative proof-of-apply.
+  type DraftSaveStatus =
+    | { kind: "idle" }
+    | { kind: "saving" }
+    | { kind: "saving-slow" }
+    | { kind: "saved" }
+    | { kind: "failed"; error: string };
+  const [draftSaveStatus, setDraftSaveStatus] = useState<DraftSaveStatus>({ kind: "idle" });
+  // Slow-network safety net. The PATCH should normally complete in
+  // 1-3s for fastembed and 2-5s for a network embedder preflight.
+  // Beyond ~25s the user starts to wonder if anything's happening;
+  // beyond ~90s it's almost certainly stuck. Two-stage approach
+  // (per the pre-client review — the prior single-flip at 60s lied
+  // to users on slow corporate VPNs where 30-45s saves are normal):
+  //
+  //   1. At 25s, soften copy: "Still saving — your network is slow."
+  //      Keeps the user informed without forcing a fail-state on a
+  //      perfectly-healthy slow save.
+  //   2. At 90s, abort the in-flight controller AND flip to failed.
+  //      Aborting prevents a stale-snapshot overwrite if the response
+  //      arrives later. Without the abort, a 100s-late PATCH could
+  //      land "Saved" state on top of whatever new edits the user
+  //      made in the meantime.
+  // Depend on the saving-family BOOLEAN, not the full status object —
+  // otherwise the 25s slow-state transition (saving → saving-slow) re-runs
+  // this effect, the cleanup CLEARS the 90s fail timer, the new run early-
+  // returns (state is now "saving-slow", not "saving"), and the abort+fail
+  // safety net never fires. Audit caught this — UI hangs forever on a hung
+  // PATCH that crosses the 25s mark.
+  const isSavingFamily =
+    draftSaveStatus.kind === "saving" || draftSaveStatus.kind === "saving-slow";
+  useEffect(() => {
+    if (!isSavingFamily) return;
+    const slow = setTimeout(() => {
+      setDraftSaveStatus((prev) =>
+        prev.kind === "saving" ? { kind: "saving-slow" } : prev,
+      );
+    }, 25_000);
+    const fail = setTimeout(() => {
+      knowledgeAbortRef.current?.abort();
+      setDraftSaveStatus((prev) =>
+        prev.kind === "saving" || prev.kind === "saving-slow"
+          ? {
+              kind: "failed",
+              error: "Save took too long — server may be busy. Try again.",
+            }
+          : prev,
+      );
+    }, 90_000);
+    return () => {
+      clearTimeout(slow);
+      clearTimeout(fail);
+    };
+  }, [isSavingFamily]);
+  // Live-config truth anchor. Sourced from GET /api/manage/config
+  // (published=true) on mount and after every successful Publish — never
+  // from optimistic client state. The pill in the header reads this so
+  // the user ALWAYS knows what's actually serving production traffic,
+  // independent of what the draft has been edited to. The 6-expert
+  // synthesis identified this as the most important addition: without
+  // it, no UI surface answers "what is actually running right now?"
+  // without log-reading.
+  const [liveKnowledge, setLiveKnowledge] = useState<
+    {
+      provider: string;
+      model: string;
+      version: number | null;
+      // Published chunking/metric — so the Live pill's diverged check compares
+      // draft against the ACTUAL published values, not against itself.
+      chunk_size?: number;
+      chunk_overlap?: number;
+      metric_type?: string;
+    } | null
+  >(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [toastNotifications, setToastNotifications] = useState<Array<{ id: string; kind: "error" | "info" | "success" | "warning"; title: string; subtitle: string }>>([]);
   const [showPoliciesModal, setShowPoliciesModal] = useState(false);
@@ -493,6 +610,11 @@ export function ManagePage() {
   // gated on ``signal.aborted`` so they can't poison state we set
   // for the newer config. See CLIENT_CANCELLATION_CONTRACT.md.
   const knowledgeAbortRef = useRef<AbortController | null>(null);
+  // Preset clicks (env-presets "Use" button) bypass the 800ms autosave
+  // debounce — the debounce coalesces keystrokes, but a deliberate
+  // button click should feel instant. Set true in onPresetApplied,
+  // consumed + reset in the autosave effect on next run.
+  const forceImmediateSaveRef = useRef<boolean>(false);
   const toolsAbortRef = useRef<AbortController | null>(null);
   const llmAbortRef = useRef<AbortController | null>(null);
   const agentAbortRef = useRef<AbortController | null>(null);
@@ -740,6 +862,21 @@ export function ManagePage() {
         const publishedRes = await api.getManageConfig(false, effectiveAgentId);
         if (publishedRes.ok) {
           const data = await publishedRes.json();
+          // Stamp the Live truth anchor from the PUBLISHED knowledge config.
+          // Independent of whatever the draft is — this is the pill the
+          // header always reads. Refreshed after every successful Publish
+          // via the same endpoint, never updated optimistically.
+          const liveKn = data?.config?.knowledge;
+          if (liveKn && typeof liveKn === "object") {
+            setLiveKnowledge({
+              provider: typeof liveKn.embedding_provider === "string" ? liveKn.embedding_provider : "fastembed",
+              model: typeof liveKn.embedding_model === "string" ? liveKn.embedding_model : "(default)",
+              version: typeof data.version === "number" ? data.version : null,
+              chunk_size: typeof liveKn.chunk_size === "number" ? liveKn.chunk_size : undefined,
+              chunk_overlap: typeof liveKn.chunk_overlap === "number" ? liveKn.chunk_overlap : undefined,
+              metric_type: typeof liveKn.metric_type === "string" ? liveKn.metric_type : undefined,
+            });
+          }
           if (data.config && Object.keys(data.config).length > 0) {
             Object.assign(out, data.config);
             if (Array.isArray(out.tools)) {
@@ -1250,19 +1387,30 @@ export function ManagePage() {
     };
   }, [tools, effectiveAgentId, addToast]);
 
-  // Knowledge reindex detection — compare current config against the last
-  // saved/published state. Merge snapshot with defaults so missing fields
-  // (e.g. first demo config that only has _vector_config_hash) don't
-  // trigger a false positive.
+  // Knowledge reindex detection — compare current config against the
+  // last saved/published state. The principle: only flag "needs
+  // re-index" when the CURRENT config would produce a different
+  // vector index than the SAVED config. Two configs are equivalent
+  // for the index when every field the engine's vector_config_hash
+  // considers (provider, model, chunk_size, chunk_overlap, metric)
+  // resolves to the same effective value.
+  //
+  // ``embedding_model = ""`` is the Provider Select's reset value
+  // (means "use provider default"). On the SAME provider, an empty
+  // current model is functionally equivalent to whatever specific
+  // model the snapshot holds — the engine picks the same default at
+  // embed time. The general pattern: for every field where the UI
+  // can produce an empty/unset value that the engine resolves to the
+  // saved value, treat empty current as a match.
+  //
+  // Only ``embedding_model`` needs this treatment today (numeric
+  // chunking fields never empty after edits; metric_type comes from
+  // a Select with concrete enum values). Adding more cases is a
+  // one-line change in ``isIndexConfigEquivalent``.
   useEffect(() => {
     if (!knowledgeSavedSnapshot) return;
     const saved = { ...DEFAULT_KNOWLEDGE_CONFIG, ...knowledgeSavedSnapshot };
-    const changed =
-      knowledgeConfig.embedding_provider !== saved.embedding_provider ||
-      knowledgeConfig.embedding_model !== saved.embedding_model ||
-      knowledgeConfig.chunk_size !== saved.chunk_size ||
-      knowledgeConfig.chunk_overlap !== saved.chunk_overlap ||
-      knowledgeConfig.metric_type !== saved.metric_type;
+    const changed = !isIndexConfigEquivalent(knowledgeConfig, saved);
     setKnowledgeReindexNeeded(changed && knowledgeDocCount > 0);
   }, [knowledgeConfig, knowledgeSavedSnapshot, knowledgeDocCount]);
 
@@ -1289,11 +1437,22 @@ export function ManagePage() {
     const ac = new AbortController();
     knowledgeAbortRef.current = ac;
 
+    // Preset clicks set forceImmediateSaveRef so the user sees "Saving…"
+    // on the next microtask instead of waiting for the keystroke-coalesce
+    // window. Read + consume here so the next plain field edit goes back
+    // to the 800ms debounce.
+    const debounceMs = forceImmediateSaveRef.current ? 0 : 800;
+    forceImmediateSaveRef.current = false;
+
     const t = setTimeout(async () => {
       // Defensive: if a NEWER effect run replaced the ref mid-debounce
       // (clearTimeout in cleanup should have caught us, but the timer
       // can race the cleanup in rare microtask interleavings), skip.
       if (knowledgeAbortRef.current !== ac) return;
+      // Transition to "saving" the moment the network call goes out.
+      // Pill in the panel reads this — replaces the prior setTimeout-driven
+      // "saved after 1500ms" lie with a real network-event signal.
+      setDraftSaveStatus({ kind: "saving" });
       try {
         const res = await api.patchManageConfigDraftKnowledge(
           knowledgeConfig,
@@ -1317,6 +1476,7 @@ export function ManagePage() {
             const body = await res.clone().json();
             // Guard 2: body read is async too; recheck after the await.
             if (ac.signal.aborted) return;
+            setDraftSaveStatus({ kind: "saved" });
             const collections = body?.auto_reindex?.collections ?? [];
             const taskIds: string[] = collections
               .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? [])
@@ -1336,6 +1496,8 @@ export function ManagePage() {
           } catch {
             // Body shape mismatch — auto-reindex either didn't fire or
             // wasn't in the response; the manual Reindex path still works.
+            // Still flip to "saved" since the HTTP status was 2xx.
+            setDraftSaveStatus({ kind: "saved" });
           }
         } else if (res.status === 422) {
           // Guard 3: 422 carries an adaptation-server-error blob.
@@ -1349,20 +1511,75 @@ export function ManagePage() {
             if (err && typeof err.error === "string" && typeof err.message === "string") {
               setAdaptationServerError(err as AdaptationServerErrorShape);
             }
+            // 422 is a save failure (server rejected). Pill flips to failed
+            // so the user has a non-silent signal alongside the field-level
+            // inline error rendered next to Provider Select.
+            setDraftSaveStatus({
+              kind: "failed",
+              error: (err && err.message) || "Couldn't apply — see provider error below",
+            });
           } catch {
             // 422 without a JSON body — leave the prior error in place.
+            setDraftSaveStatus({ kind: "failed", error: "Save rejected by server" });
           }
+        } else if (res.status === 409) {
+          // Layer 1/2 (issue #396): server refuses vector-affecting PATCHes
+          // while a reindex is in flight. Without this branch the user sees
+          // a generic "Save failed (409)" pill and might assume their UI
+          // selection is now applied — it isn't. Surface specifically.
+          if (ac.signal.aborted) return;
+          let detail: { error?: string; message?: string } | null = null;
+          try {
+            const body = await res.json();
+            detail = (body && (body.detail ?? body)) as { error?: string; message?: string } | null;
+          } catch {
+            // 409 without a JSON body — fall through to the generic message.
+          }
+          if (ac.signal.aborted) return;
+          const msg =
+            detail?.error === "reindex_in_progress"
+              ? detail?.message ||
+                "Re-index is running. Wait for it to finish, then try again."
+              : "Save conflicts with current server state. Try again.";
+          setDraftSaveStatus({ kind: "failed", error: msg });
+          addToast(
+            "warning",
+            "Can't change settings yet",
+            "A Re-index is running. Wait for it to finish, then this change will save.",
+          );
+        } else {
+          // 4xx / 5xx without a 422 body. Surface as failed so the pill
+          // doesn't stay stuck on "Saving…". Log to console too — when
+          // a user reports "stuck on Saving" we need a breadcrumb in dev
+          // tools to confirm the server response did come back.
+          if (ac.signal.aborted) return;
+          let detail = "";
+          try {
+            const body = await res.clone().text();
+            detail = body ? body.slice(0, 200) : "";
+          } catch {
+            // ignore body read failures — fallback to status code only
+          }
+          console.error(`[ManagePage] knowledge PATCH failed: ${res.status}`, detail);
+          setDraftSaveStatus({
+            kind: "failed",
+            error: detail ? `Save failed (${res.status}): ${detail}` : `Save failed (${res.status})`,
+          });
         }
       } catch (err) {
         // AbortError is expected when a newer autosave superseded us.
         // Stay silent — the next effect run will issue a fresh PATCH.
         if (isAbortError(err)) return;
-        // Network failure (real) — silent (transient flake clears on
-        // the next change). NOT silenced via a blanket catch above
-        // because we want AbortError to be the ONLY no-op; any other
-        // error type would surface here if we wanted to.
+        // Network failure (real). Previously silent — the literal bug
+        // the user just hit. Now flips the pill to "failed" with a Retry
+        // button (consumed by KnowledgeConfig).
+        console.error("[ManagePage] knowledge PATCH threw:", err);
+        setDraftSaveStatus({
+          kind: "failed",
+          error: err instanceof Error ? err.message : "Couldn't save — check your connection",
+        });
       }
-    }, 800);
+    }, debounceMs);
     return () => {
       clearTimeout(t);
       // Do NOT .abort() in cleanup. The cleanup fires before EVERY
@@ -1523,6 +1740,20 @@ export function ManagePage() {
 
         setCurrentVersion(typeof data.version === "number" ? data.version : "draft");
         setSaveStatus("success");
+        // Refresh the Live truth anchor with what we just published. The
+        // header pill now reflects the new live state immediately — no
+        // re-fetch round-trip and no risk of the pill drifting from
+        // reality between Publish and the next page load.
+        setLiveKnowledge({
+          provider: typeof knowledgeConfig.embedding_provider === "string" ? knowledgeConfig.embedding_provider : "fastembed",
+          model: typeof knowledgeConfig.embedding_model === "string" && knowledgeConfig.embedding_model
+            ? knowledgeConfig.embedding_model
+            : "(default)",
+          version: typeof data.version === "number" ? data.version : null,
+          chunk_size: typeof knowledgeConfig.chunk_size === "number" ? knowledgeConfig.chunk_size : undefined,
+          chunk_overlap: typeof knowledgeConfig.chunk_overlap === "number" ? knowledgeConfig.chunk_overlap : undefined,
+          metric_type: typeof knowledgeConfig.metric_type === "string" ? knowledgeConfig.metric_type : undefined,
+        });
         // Snapshot the knowledge config so reindex detection compares against
         // the just-published state, not the initial load.
         setKnowledgeSavedSnapshot({ ...knowledgeConfig });
@@ -2357,15 +2588,14 @@ export function ManagePage() {
                           : "Disconnected"}
                       </span>
                     </div>
-                    {(knowledgeReindexNeeded || knowledgeStale || knowledgeReindexDeferred) && (
-                      <InlineNotification
-                        kind="warning"
-                        title="Re-index recommended"
-                        subtitle="Settings changed. Existing documents may use outdated embeddings."
-                        lowContrast
-                        hideCloseButton
-                      />
-                    )}
+                    {/* The "Re-index recommended" InlineNotification used to
+                        live here as a call-to-action to open the modal. It's
+                        gone now because (a) the Live pill above already
+                        signals divergence via its dot color + tooltip, and
+                        (b) the modal itself shows the actionable "Update
+                        existing documents" notification when the user opens
+                        it. Duplicating the warning on the agent card was the
+                        most-cited noise source in the pre-client review. */}
                     <Button
                       kind="secondary"
                       size="sm"
@@ -2470,6 +2700,68 @@ export function ManagePage() {
                       {!loadError && importStatus === "error" && (
                         <InlineNotification kind="error" title="Import failed" subtitle={importError ?? "Import failed"} lowContrast hideCloseButton />
                       )}
+                      {/* Live truth anchor — what's actually serving production
+                          traffic right now. Sourced from GET /api/manage/config
+                          (published) on mount + after every successful Publish.
+                          Dot color: green when draft matches Live (no pending
+                          changes), yellow when the user has unpublished edits.
+                          The synthesis identified this as the single most
+                          important UX addition — without it, no surface
+                          answers "what is actually running?" without log-reading. */}
+                      {!loadError && liveKnowledge && (() => {
+                        // "Diverged" means a Publish would change what's
+                        // actually serving traffic. Reuses the same equivalence
+                        // helper the Re-index banner uses, so both signals
+                        // agree on what counts as a meaningful change. Avoids
+                        // duplicating the empty-model-as-default rule.
+                        const diverged = !isIndexConfigEquivalent(knowledgeConfig, {
+                          ...DEFAULT_KNOWLEDGE_CONFIG,
+                          embedding_provider: liveKnowledge.provider,
+                          embedding_model: liveKnowledge.model,
+                          // Compare against the PUBLISHED chunk/metric, not the
+                          // draft's own values (Sami review) — otherwise a
+                          // chunk-only draft edit compares against itself and
+                          // never turns the pill yellow.
+                          chunk_size: liveKnowledge.chunk_size ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_size,
+                          chunk_overlap: liveKnowledge.chunk_overlap ?? DEFAULT_KNOWLEDGE_CONFIG.chunk_overlap,
+                          metric_type: liveKnowledge.metric_type ?? DEFAULT_KNOWLEDGE_CONFIG.metric_type,
+                        });
+                        const label = (
+                          <>
+                            Live: {liveKnowledge.provider} · {liveKnowledge.model}
+                            {liveKnowledge.version != null && ` · v${liveKnowledge.version}`}
+                          </>
+                        );
+                        // In-sync: plain Carbon Tag, green. No tooltip — the
+                        // label is self-explanatory. Diverged: warm-gray Tag
+                        // wrapped in Tooltip with the actionable hint. Tooltip
+                        // child must be a single focusable element; a Tag with
+                        // tabIndex satisfies that without inventing a button
+                        // wrapper to mimic plain text.
+                        if (!diverged) {
+                          return (
+                            <Tag type="green" size="sm" className="manage-save-bar-version">
+                              {label}
+                            </Tag>
+                          );
+                        }
+                        return (
+                          <Tooltip
+                            label={`Draft differs from Live (now ${knowledgeConfig.embedding_provider} · ${knowledgeConfig.embedding_model || "(default)"}). Click Publish to apply.`}
+                            align="bottom"
+                          >
+                            <button
+                              type="button"
+                              style={{ background: "none", border: "none", padding: 0, cursor: "help" }}
+                              className="manage-save-bar-version"
+                            >
+                              <Tag type="warm-gray" size="sm">
+                                {label}
+                              </Tag>
+                            </button>
+                          </Tooltip>
+                        );
+                      })()}
                       {!loadError && !draftSaving && currentVersion != null && (
                         <p className="manage-save-bar-version">
                           Version: {currentVersion === "draft" ? "draft" : `v${currentVersion}`}
@@ -2580,6 +2872,22 @@ export function ManagePage() {
           onToast={(kind: "error" | "success" | "warning", title: string, message: string) => addToast(kind, title, message)}
           knowledgeConfig={knowledgeConfig}
           onKnowledgeConfigChange={setKnowledgeConfig}
+          draftSaveStatus={draftSaveStatus}
+          onRetryDraftSave={() => {
+            // Retry: bump the same field with its current value to retrigger
+            // the autosave useEffect. Cheap and reuses the existing PATCH
+            // pipeline rather than maintaining a parallel retry path.
+            setKnowledgeConfig((prev) => ({ ...prev }));
+          }}
+          onDismissDraftSave={() => {
+            // Close (X) on the failure banner = dismiss only, no retry.
+            setDraftSaveStatus({ kind: "idle" });
+          }}
+          onPresetApplied={() => {
+            // The user just clicked an explicit "Use" button — bypass the
+            // keystroke-coalesce debounce so "Saving…" appears immediately.
+            forceImmediateSaveRef.current = true;
+          }}
           knowledgeReindexNeeded={knowledgeReindexNeeded}
           knowledgeStale={knowledgeStale}
           knowledgeReindexDeferred={knowledgeReindexDeferred}
@@ -2602,13 +2910,45 @@ export function ManagePage() {
           onReindex={async () => {
             setKnowledgeReindexing(true);
             try {
-              const res = await api.triggerKnowledgeReindex();
+              // Route to the config-aware migration endpoint when the
+              // user's edits changed vector-config fields (embedder /
+              // chunking / metric). That endpoint handles the cross-
+              // hash file migration in addition to the reindex. Plain
+              // re-index of an already-correct collection still goes
+              // through the original endpoint.
+              const res = knowledgeReindexNeeded
+                ? await api.triggerKnowledgeReindexForConfig(effectiveAgentId)
+                : await api.triggerKnowledgeReindex();
               if (res.ok) {
                 const data = await res.json();
                 setKnowledgeReindexing(false);
-                // Settings have been applied — update snapshot so the
-                // "reindex needed" warning clears.
+                // triggered:false ⇒ structural failure (status 2xx, ``error`` field set).
+                if (data?.triggered === false) {
+                  const ERR: Record<string, string> = {
+                    active_snapshot_missing:
+                      "Your active document set isn't on disk. If you restored an older version, re-upload or migrate via CLI.",
+                    copy_failed:
+                      "Couldn't copy your documents to the new collection. Check disk space / permissions and retry.",
+                    reindex_failed:
+                      "Re-index ran but didn't embed anything. Check server logs and retry.",
+                  };
+                  const code = typeof data.error === "string" ? data.error : "unknown";
+                  addToast("error", "Re-index didn't run", ERR[code] || `Re-index couldn't run (${code}).`);
+                  return null;
+                }
+                // Settings applied — clear the "reindex needed" warning.
                 setKnowledgeSavedSnapshot({ ...knowledgeConfig });
+                // /reindex_for_config returns {collections: [{result: {task_ids, count}}]};
+                // /reindex returns {task_ids, count} flat. Normalize.
+                if (Array.isArray(data?.collections)) {
+                  const allTaskIds: string[] = data.collections
+                    .flatMap((c: { result?: { task_ids?: string[] } }) => c?.result?.task_ids ?? []);
+                  const total = data.collections.reduce(
+                    (sum: number, c: { result?: { count?: number } }) => sum + (c?.result?.count ?? 0),
+                    0,
+                  );
+                  return { count: total || allTaskIds.length, task_ids: allTaskIds };
+                }
                 return { count: data.count ?? 0, task_ids: data.task_ids ?? [] };
               } else if (res.status === 409) {
                 addToast("warning", "Cannot re-index", "Uploads in progress. Try again later.");

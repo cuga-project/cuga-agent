@@ -210,18 +210,20 @@ async def test_tool_approval_approve_flow():
             f"  Final answer length: {len(final_state.final_answer) if final_state.final_answer else 0} chars"
         )
 
-        # The agent should have executed the code and provided a final answer
         assert final_state.final_answer, (
             "Agent should complete execution after approval and provide a final answer"
         )
-
-        # Verify the code was actually executed (not regenerated)
-        if final_state.final_answer:
-            assert "cancelled" not in final_state.final_answer.lower(), (
-                "Final answer should not indicate cancellation"
-            )
-            assert "denied" not in final_state.final_answer.lower(), "Final answer should not indicate denial"
-            print("  ✅ Tool execution completed successfully")
+        assert "✋" not in final_state.final_answer, (
+            "Final answer should not be the approval banner after approval"
+        )
+        assert "Acme Corp" in final_state.final_answer, (
+            "Final answer should include tool output after approved execution"
+        )
+        assert "cancelled" not in final_state.final_answer.lower(), (
+            "Final answer should not indicate cancellation"
+        )
+        assert "denied" not in final_state.final_answer.lower(), "Final answer should not indicate denial"
+        print("  ✅ Tool execution completed successfully")
 
         print("\n✅ Tool Approval Approve Flow Test PASSED")
         print("=" * 80)
@@ -327,17 +329,13 @@ async def test_tool_approval_deny_flow():
         final_state = AgentState(**final_snapshot.values)
         print(f"  Final answer: {final_state.final_answer}")
 
-        # The agent should have stopped execution after denial
-        # Either it provides a cancellation message, or it stops without executing
-        if final_state.final_answer:
-            # If there's a final answer, it should indicate the approval was denied
-            print(f"  Final answer indicates: {final_state.final_answer[:100]}...")
-            # The test passes if we got here (denial was processed)
-            print("  ✅ Tool execution cancelled successfully")
-        else:
-            # If no final answer, that's also fine - execution was stopped
-            print("  ✅ Tool execution cancelled (no final answer provided)")
-            print("  ✅ Tool execution cancelled successfully")
+        assert final_state.final_answer, "Denial should produce a cancellation message"
+        assert "Acme Corp" not in final_state.final_answer, "Tool output should not appear after denial"
+        assert (
+            "cancelled" in final_state.final_answer.lower() or "denied" in final_state.final_answer.lower()
+        ), "Final answer should indicate execution was cancelled or denied"
+        print(f"  Final answer indicates: {final_state.final_answer[:100]}...")
+        print("  ✅ Tool execution cancelled successfully")
 
         print("\n✅ Tool Approval Deny Flow Test PASSED")
         print("=" * 80)
@@ -515,12 +513,16 @@ async def test_tool_approval_modification_flow():
         assert final_state_2.final_answer, (
             "Agent should complete execution after approval and provide a final answer"
         )
-
-        if final_state_2.final_answer:
-            assert "cancelled" not in final_state_2.final_answer.lower(), (
-                "Final answer should not indicate cancellation"
-            )
-            print("  ✅ Modified tool execution completed successfully")
+        assert "✋" not in final_state_2.final_answer, (
+            "Final answer should not be the approval banner after approval"
+        )
+        assert "Acme Corp" in final_state_2.final_answer, (
+            "Final answer should include tool output after approved execution"
+        )
+        assert "cancelled" not in final_state_2.final_answer.lower(), (
+            "Final answer should not indicate cancellation"
+        )
+        print("  ✅ Modified tool execution completed successfully")
 
         print("\n✅ Tool Approval Modification Flow Test PASSED")
         print("=" * 80)

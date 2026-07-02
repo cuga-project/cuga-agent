@@ -297,6 +297,21 @@ export function triggerKnowledgeReindex(): Promise<Response> {
   });
 }
 
+// User-triggered migration + reindex after a vector-config change. Routes
+// to a separate manage-side endpoint that finds the source collection (old
+// hash dir), copies files to the engine's CURRENT vector_config_hash dir,
+// reindexes the target with the new embedder, and updates
+// app_state.knowledge_config_hash so subsequent searches + ingests point
+// at the migrated data. Returns the same shape ``triggerKnowledgeReindex``
+// does so callers can treat them interchangeably.
+export function triggerKnowledgeReindexForConfig(agentId?: string): Promise<Response> {
+  const q = agentId ? `?agent_id=${encodeURIComponent(agentId)}` : "";
+  return apiFetch(`/api/manage/knowledge/reindex_for_config${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+  });
+}
+
 export async function getToolsList(draft?: boolean): Promise<Response> {
   const q = draft ? "?draft=1" : "";
   return apiFetch(`/api/tools/list${q}`);

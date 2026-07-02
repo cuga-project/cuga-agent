@@ -1,0 +1,113 @@
+[agent.task_decomposition.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 1000
+
+[agent.planner.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 7000
+
+[agent.shortlister.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 7000
+
+
+[agent.chat.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 5000
+
+[agent.plan_controller.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 5000
+
+
+[agent.final_answer.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 15000
+
+[agent.code.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 3000
+
+[agent.code_planner.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 3000
+
+[agent.qa.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 4000
+
+[agent.action.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 400
+
+[memory.mem0.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 1000
+
+[memory.milvus.step_processing.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 1000
+
+[memory.milvus.fact_extraction.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 1000
+
+[memory.tips_extractor.model]
+platform = "rits"
+model_name = "rits/openai/gpt-oss-120b"
+url="http://localhost:4000"
+apikey_name = "RITS_API_KEY"
+temperature = 0.1
+max_tokens = 5000
