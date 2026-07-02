@@ -6,7 +6,6 @@ import { ConfigHeader } from "./ConfigHeader";
 import { LeftSidebar } from "./LeftSidebar";
 import { StatusBar } from "./StatusBar";
 import { KnowledgeSidePanel } from "./KnowledgeSidePanel";
-import { FileAutocomplete } from "./FileAutocomplete";
 import { GuidedTour, TourStep } from "./GuidedTour";
 import { useTour } from "./useTour";
 import { AdvancedTourButton } from "./AdvancedTourButton";
@@ -250,11 +249,6 @@ export function App() {
           )}
         </div>
         {hasStartedChat && <StatusBar threadId={threadId} />}
-        <FileAutocomplete
-          onFileSelect={(path) => console.log("File selected:", path)}
-          disabled={false}
-          threadId={threadId}
-        />
 
         {hasStartedChat && <AdvancedTourButton />}
 
