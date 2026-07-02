@@ -137,6 +137,75 @@ async def test_unknown_name_no_close_match_points_to_find_tools(mock_state):
 
 
 @pytest.mark.asyncio
+async def test_undefined_variable_keeps_bare_name_error(mock_state):
+    """A NameError on a plain variable reference must NOT get the tool correction.
+
+    Real trajectory (PR #416 review): the agent printed `formatted_total`
+    before computing it, recovered on the next step by writing the actual
+    computation, and the task passed. Injecting "call find_tools / do not
+    retry" there steers the agent away from the real fix (define the
+    variable), so the correction only fires when the missing name is
+    *called* like a function.
+    """
+
+    async def authors_get_author_details(author_id: int) -> dict:
+        return {}
+
+    code = "ad = authors_get_author_details\nprint(formatted_total)"
+    result, _ = await CodeExecutor.eval_with_tools_async(
+        code=code,
+        _locals={'authors_get_author_details': authors_get_author_details},
+        state=mock_state,
+        mode='local',
+    )
+
+    assert "NameError" in result
+    assert "formatted_total" in result
+    assert "tool-name correction" not in result
+
+
+def test_correction_cutoff_rejects_cross_app_junk():
+    """Weak cross-app matches must not be offered as suggestions.
+
+    With the old cutoff=0.4, a missing `simple_note_list_notes_get` surfaced
+    `spotify_create_playlist_post` (wrong app entirely). At 0.6 such junk is
+    filtered and the agent is told to re-query find_tools instead.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
+
+    hint = LocalExecutor._unknown_tool_correction(
+        NameError("name 'simple_note_list_notes_get' is not defined", name='simple_note_list_notes_get'),
+        available_tools=['spotify_create_playlist_post', 'find_tools'],
+        code="result = await simple_note_list_notes_get()",
+    )
+
+    assert "tool-name correction" in hint
+    assert "spotify_create_playlist_post" not in hint
+    assert "find_tools" in hint
+
+
+def test_correction_warns_about_lookalike_actions():
+    """Suggestions carry a caution: a lookalike name may perform a different action.
+
+    difflib ranks `phone_delete_sms_message_sms_delete` above the intended
+    read tool for a missing `phone_get_sms_messages_sms_get`; the caution
+    keeps the agent from blindly taking the head of the list.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
+
+    hint = LocalExecutor._unknown_tool_correction(
+        NameError(
+            "name 'phone_get_sms_messages_sms_get' is not defined", name='phone_get_sms_messages_sms_get'
+        ),
+        available_tools=['phone_delete_sms_message_sms_delete', 'phone_show_sms_messages_sms_get'],
+        code="result = await phone_get_sms_messages_sms_get()",
+    )
+
+    assert "Did you mean" in hint
+    assert "delete vs get" in hint
+
+
+@pytest.mark.asyncio
 async def test_dangerous_import_blocked(mock_state, monkeypatch):
     """Test that dangerous imports are blocked."""
     monkeypatch.setattr(settings.skills, "enabled", False)

@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import difflib
 import io
+import re
 import traceback
 from typing import Any, Optional
 
@@ -87,7 +88,12 @@ class LocalExecutor(BaseExecutor):
 
         return result
 
-    def format_error(self, error: Exception, available_tools: Optional[list[str]] = None) -> str:
+    def format_error(
+        self,
+        error: Exception,
+        available_tools: Optional[list[str]] = None,
+        code: Optional[str] = None,
+    ) -> str:
         """Format an error for display.
 
         Args:
@@ -98,6 +104,12 @@ class LocalExecutor(BaseExecutor):
                 correction listing the closest real tool names. This turns a
                 silent retry-loop (the agent re-inventing the same bogus name
                 until the step limit) into a single-step recovery.
+            code: The code that raised the error. Used to tell fabricated tool
+                *calls* apart from plain undefined *variables* — the correction
+                only fires when the missing name is invoked like a function, so
+                a NameError on an unset variable keeps its bare traceback (the
+                right fix there is to define the variable, not to re-query
+                find_tools).
 
         Returns:
             Formatted error string
@@ -111,13 +123,17 @@ class LocalExecutor(BaseExecutor):
         error_msg = f"Error during execution: {repr(error)}"
         error_msg += f"\n{traceback.format_exc()}"
 
-        correction = self._unknown_tool_correction(error, available_tools)
+        correction = self._unknown_tool_correction(error, available_tools, code)
         if correction:
             error_msg += correction
         return error_msg
 
     @staticmethod
-    def _unknown_tool_correction(error: Exception, available_tools: Optional[list[str]]) -> str:
+    def _unknown_tool_correction(
+        error: Exception,
+        available_tools: Optional[list[str]],
+        code: Optional[str] = None,
+    ) -> str:
         """Build a correction hint when the agent calls a non-existent tool.
 
         The agent (notably gpt-oss) tends to fabricate generic tool names from
@@ -125,6 +141,11 @@ class LocalExecutor(BaseExecutor):
         using the exact name ``find_tools`` returned. The bare ``NameError`` is
         treated as an ordinary retryable error, so the agent re-fabricates until
         the step/token limit. Surfacing the real names breaks that loop.
+
+        The hint is suppressed when the missing name is not called like a
+        function in ``code`` — a NameError on a plain variable reference means
+        the agent forgot to compute something, and tool guidance there would
+        steer it away from the real fix.
         """
         if not isinstance(error, NameError) or not available_tools:
             return ""
@@ -133,14 +154,21 @@ class LocalExecutor(BaseExecutor):
         if not missing:
             return ""
 
-        close = difflib.get_close_matches(missing, available_tools, n=5, cutoff=0.4)
+        if code is not None and not re.search(rf"\b{re.escape(missing)}\s*\(", code):
+            return ""
+
+        close = difflib.get_close_matches(missing, available_tools, n=5, cutoff=0.6)
         hint = (
             f"\n\n[tool-name correction] '{missing}' is NOT an available tool — tool names "
             "cannot be guessed or constructed. Call tools by the EXACT name returned by "
             "find_tools."
         )
         if close:
-            hint += "\nDid you mean one of: " + ", ".join(close) + "?"
+            hint += (
+                "\nDid you mean one of: " + ", ".join(close) + "?"
+                "\nSimilarly named tools can do very different things (e.g. delete vs get) — "
+                "pick only a suggestion whose action matches your intent."
+            )
         else:
             hint += (
                 "\nNo close match is loaded. Call find_tools again with a different query to "

@@ -234,7 +234,7 @@ class CodeExecutor:
             available_tools = [
                 name for name, value in _locals.items() if callable(value) and not name.startswith('_')
             ]
-            result = executor.format_error(e, available_tools=available_tools)
+            result = executor.format_error(e, available_tools=available_tools, code=code)
 
         # Variables that should always be included even if they existed before.
         # Task todos are not stored here — they are shown in the todos system prompt section.
@@ -352,7 +352,7 @@ async def _async_main():
             available_tools = [
                 name for name, value in context_locals.items() if callable(value) and not name.startswith('_')
             ]
-            return executor.format_error(e, available_tools=available_tools), {}
+            return executor.format_error(e, available_tools=available_tools, code=wrapped_code), {}
 
     @classmethod
     async def eval_for_code_agent(
