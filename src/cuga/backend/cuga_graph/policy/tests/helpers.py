@@ -3,6 +3,7 @@
 import uuid
 from typing import Dict, List, Any, Optional
 from langchain_core.messages import HumanMessage
+from langgraph.types import Command
 
 from cuga.backend.cuga_graph.policy.storage import PolicyStorage
 from cuga.backend.cuga_graph.policy.configurable import PolicyConfigurable
@@ -461,13 +462,11 @@ async def resume_graph_with_response(
     """
     config = graph.get_config_with_policy({"configurable": {"thread_id": thread_id}})
 
-    # Update the state with the response
-    current_state = graph.graph.get_state(config)
-    updated_state = AgentState(**current_state.values)
-    updated_state.hitl_response = response
-
-    # Stream events until completion or next interrupt
-    async for event in graph.graph.astream(None, config, stream_mode="updates"):
+    async for event in graph.graph.astream(
+        Command(resume=response.model_dump()),
+        config,
+        stream_mode="updates",
+    ):
         if isinstance(event, tuple):
             namespace, state_dict = event
             if "__interrupt__" in state_dict or state_dict.get("__interrupt__"):
