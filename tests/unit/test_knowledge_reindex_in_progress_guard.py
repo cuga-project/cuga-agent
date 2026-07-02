@@ -20,9 +20,10 @@ The fix is layered:
      the engine has moved on.
 
 These tests pin each layer independently, plus a few edge cases the audit
-flagged (non-vector-affecting PATCH should still work during reindex,
-cross-agent reindex must NOT block this agent's PATCH, deferred flip
-respects the engine-config re-check).
+flagged (non-vector-affecting PATCH should still work during reindex; a
+cross-agent reindex STILL blocks a vector-affecting PATCH because Layer 2's
+engine-global guard applies regardless of agent; deferred flip respects the
+engine-config re-check).
 """
 
 from __future__ import annotations

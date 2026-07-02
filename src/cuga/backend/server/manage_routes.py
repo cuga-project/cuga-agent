@@ -81,13 +81,17 @@ def _redact_secrets_in_config(config: dict[str, Any]) -> None:
     (see patch_draft_knowledge)."""
 
     def _walk(node: Any) -> None:
-        if not isinstance(node, dict):
-            return
-        for k, v in list(node.items()):
-            if _is_secret_field_name(k) and isinstance(v, str) and v:
-                node[k] = ""
-            elif isinstance(v, dict):
-                _walk(v)
+        if isinstance(node, dict):
+            for k, v in list(node.items()):
+                if _is_secret_field_name(k) and isinstance(v, str) and v:
+                    node[k] = ""
+                elif isinstance(v, (dict, list)):
+                    _walk(v)
+        elif isinstance(node, list):
+            # Recurse into list items too (review): a shape like
+            # {"tools": [{"api_key": "..."}]} would otherwise leak the nested secret.
+            for item in node:
+                _walk(item)
 
     _walk(config)
 
@@ -1866,7 +1870,7 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
         raise HTTPException(
             status_code=500,
             detail="Failed to save knowledge settings. Check the server logs for details.",
-        )
+        ) from None
 
 
 @router.post("/knowledge/reindex_for_config")
@@ -1919,7 +1923,7 @@ async def reindex_for_config_change(request: Request, agent_id: Optional[str] = 
         raise HTTPException(
             status_code=500,
             detail="Re-index could not be started. Check the server logs for details.",
-        )
+        ) from None
 
 
 @router.patch("/config/draft/special_instructions")

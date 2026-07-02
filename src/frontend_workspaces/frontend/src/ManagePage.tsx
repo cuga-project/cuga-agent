@@ -228,10 +228,15 @@ function isIndexConfigEquivalent(
   saved: NonNullable<AgentConfig["knowledge"]>,
 ): boolean {
   if (current.embedding_provider !== saved.embedding_provider) return false;
-  // Empty current model on the same provider == use provider default == match saved.
-  const modelExplicitlyDifferent =
-    !!current.embedding_model && current.embedding_model !== saved.embedding_model;
-  if (modelExplicitlyDifferent) return false;
+  // Empty current model = "use provider default". Treat as a match ONLY when
+  // saved is also empty; if saved pinned a specific model, clearing it IS a
+  // change (review) — the prior rule returned equivalent for empty-vs-anything
+  // and silently hid the re-index banner + Live divergence.
+  if (current.embedding_model) {
+    if (current.embedding_model !== saved.embedding_model) return false;
+  } else if (saved.embedding_model) {
+    return false;
+  }
   if (current.chunk_size !== saved.chunk_size) return false;
   if (current.chunk_overlap !== saved.chunk_overlap) return false;
   if (current.metric_type !== saved.metric_type) return false;
