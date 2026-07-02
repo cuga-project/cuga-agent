@@ -46,6 +46,7 @@ def test_publish_syncs_draft_with_published_knowledge_flags(monkeypatch):
         params={"agent_id": "test-agent"},
         json={
             "config": {
+                "agent": {"name": "test-agent"},
                 "knowledge": {
                     "enabled": True,
                     "agent_level_enabled": True,
@@ -87,6 +88,7 @@ def test_publish_syncs_draft_with_published_agent_level_disabled(monkeypatch):
         params={"agent_id": "test-agent"},
         json={
             "config": {
+                "agent": {"name": "test-agent"},
                 "knowledge": {
                     "enabled": True,
                     "agent_level_enabled": False,
