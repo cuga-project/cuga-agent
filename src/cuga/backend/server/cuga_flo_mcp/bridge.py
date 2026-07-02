@@ -15,6 +15,7 @@ contract explicit via tool schemas and enables future remote/cross-process trans
 by swapping FastMCPTransport for an HTTP or SSE transport.
 """
 
+import asyncio
 from typing import TYPE_CHECKING
 
 from fastmcp import Client, FastMCP
@@ -25,6 +26,7 @@ if TYPE_CHECKING:
     from cuga.backend.cuga_graph.nodes.cuga_flow.flow_agent import FlowAgent
     from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
     from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import ProcessRegistry
+    from cuga.backend.server.flowable.flowable_proxy import FlowableProxy
 
 
 class MCPFlowBridge:
@@ -135,14 +137,88 @@ class MCPFlowBridge:
             result = await fa._handle_hook(hook, ctx_obj)
             return result.to_dict()
 
+        async def complete_process(process_key: str, state: dict, bpmn: "dict | None" = None) -> dict:
+            """Called by engine when process reaches terminal state."""
+            if bpmn is None:
+                bpmn = self._registry.get_bpmn_process(process_key).to_dict()
+            return await fa._handle_complete(process_key, state, bpmn)
+
         for fn, tool_name in [
             (execute_task, "execute_task"),
             (route_gateway, "route_gateway"),
             (evaluate_hook, "evaluate_hook"),
+            (complete_process, "complete_process"),
         ]:
             self._mcp.tool(name=tool_name)(fn)
 
         logger.info(f"MCPFlowBridge: registered FlowAgent tools for process '{fa.process_key}'")
+
+    def register_flowable_engine(
+        self,
+        proxy: "FlowableProxy",
+        deploy: bool = False,
+        process_definition_key: "str | None" = None,
+        callback_port: int = 8090,
+    ) -> None:
+        """
+        Register a FlowableProxy as the run_process MCP tool and expose the MCP
+        server over HTTP so Flowable can call complete_process (and other tools)
+        via a REST callback when the process ends.
+
+        Args:
+            proxy: FlowableProxy client.
+            deploy: If True, deploy the BPMN to Flowable before the first run.
+            process_definition_key: Flowable process definition key to invoke.
+            callback_port: Port on which the MCP HTTP server listens for Flowable callbacks.
+
+        Tool registered:
+          run_process(process_key, initial_inputs) → dict
+        """
+        _deployed: set = set()
+        _http_started = False
+
+        async def run_process(process_key: str, initial_inputs: dict) -> dict:
+            """Start Flowable process; Flowable calls complete_process via MCP HTTP on completion."""
+            nonlocal _http_started
+            if not _http_started:
+                _http_started = True
+                import uvicorn
+                _server = uvicorn.Server(
+                    uvicorn.Config(
+                        self._mcp.http_app(stateless_http=True),
+                        host="0.0.0.0",
+                        port=callback_port,
+                        log_level="warning",
+                    )
+                )
+                asyncio.create_task(_server.serve())
+                while not _server.started:
+                    await asyncio.sleep(0.05)
+                logger.info(f"MCPFlowBridge: MCP HTTP server listening on port {callback_port}")
+
+            bpmn = self._registry.get_bpmn_process(process_key)
+            loop = asyncio.get_running_loop()
+            flowable_key = process_definition_key or bpmn.id
+
+            if deploy and process_key not in _deployed:
+                bpmn_path = self._registry._definitions[process_key].bpmn_path
+                await loop.run_in_executor(None, lambda: proxy.deploy(bpmn_path))
+                _deployed.add(process_key)
+
+            start_vars = {
+                **initial_inputs,
+                "cugaProcessKey": process_key,
+            }
+            await loop.run_in_executor(
+                None, lambda: proxy.start_process(flowable_key, variables=start_vars)
+            )
+            return {}
+
+        self._mcp.tool(name="run_process")(run_process)
+        logger.info(
+            f"MCPFlowBridge: registered FlowableProxy run_process tool "
+            f"(MCP HTTP callback on port {callback_port})"
+        )
 
     def register_engine(self, engine: "LangGraphWorkflowEngine") -> None:
         """
@@ -157,9 +233,9 @@ class MCPFlowBridge:
         _mcp_server = self._mcp  # captured for closure
 
         async def run_process(process_key: str, initial_inputs: dict) -> dict:
-            """Execute a BPMN process via the WorkflowEngine. Returns {state, bpmn}."""
-            state, bpmn = await engine._run_via_mcp(process_key, initial_inputs, _mcp_server)
-            return {"state": state.model_dump(mode="json"), "bpmn": bpmn.to_dict()}
+            """Start process execution; completion signalled via complete_process tool."""
+            asyncio.create_task(engine._run_via_mcp(process_key, initial_inputs, _mcp_server))
+            return {}
 
         self._mcp.tool(name="run_process")(run_process)
         logger.info("MCPFlowBridge: registered WorkflowEngine run_process tool")

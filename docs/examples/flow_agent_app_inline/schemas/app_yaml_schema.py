@@ -5,6 +5,8 @@ from typing import Any, Literal, Optional
 from pydantic import BaseModel, Field
 
 
+WorkflowEngineType = Literal["langgraph", "flowable"]
+
 TaskMode = Literal["task_agent", "native"]
 GatewayMode = Literal["decision_agent", "native"]
 HookType = Literal["edge"]
@@ -18,6 +20,18 @@ HookAction = Literal[
     "remove_node",
     "add_node",
 ]
+
+
+class WorkflowEngineConfig(BaseModel):
+    """Optional `workflow_engine:` block — selects the engine backing MCPFlowBridge."""
+
+    type: WorkflowEngineType = "langgraph"
+    url: Optional[str] = None
+    username: Optional[str] = None
+    password: Optional[str] = None
+    deploy: bool = False
+    process_definition_key: Optional[str] = None
+    callback_port: int = 8090
 
 
 class FlowBlock(BaseModel):
@@ -96,6 +110,7 @@ class AppYaml(BaseModel):
     """Root model for a flow/app YAML file."""
 
     flow: FlowBlock
+    workflow_engine: WorkflowEngineConfig = Field(default_factory=WorkflowEngineConfig)
     llm: Optional[LLMConfig] = None
     variables: dict[str, Any] = Field(default_factory=dict)
     tasks: list[TaskConfig] = Field(default_factory=list)

@@ -489,13 +489,31 @@ class FlowConfig:
 
         from cuga.backend.cuga_graph.nodes.cuga_flow.process_registry import ProcessRegistry
         from cuga.backend.server.cuga_flo_mcp.bridge import MCPFlowBridge
-        from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
 
         bridge = MCPFlowBridge(name="cuga-flo-bridge")
         registry = ProcessRegistry(bridge=bridge)
         process_key = bridge.load_flow(self.config_path)
         flow_agent = FlowAgent(process_key=process_key, bridge=bridge)
-        LangGraphWorkflowEngine(bridge=bridge)
+
+        engine_cfg = self.config.get("workflow_engine", {})
+        engine_type = engine_cfg.get("type", "langgraph") if isinstance(engine_cfg, dict) else "langgraph"
+
+        if engine_type == "flowable":
+            from cuga.backend.server.flowable.flowable_proxy import FlowableProxy
+            proxy = FlowableProxy(
+                base_url=engine_cfg.get("url"),
+                username=engine_cfg.get("username"),
+                password=engine_cfg.get("password"),
+            )
+            bridge.register_flowable_engine(
+                proxy,
+                deploy=engine_cfg.get("deploy", False),
+                process_definition_key=engine_cfg.get("process_definition_key"),
+                callback_port=engine_cfg.get("callback_port", 8090),
+            )
+        else:
+            from cuga.backend.cuga_graph.nodes.cuga_flow.langgraph_engine import LangGraphWorkflowEngine
+            LangGraphWorkflowEngine(bridge=bridge)
 
         return flow_agent
 

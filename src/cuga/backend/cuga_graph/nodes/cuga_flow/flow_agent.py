@@ -97,6 +97,7 @@ class FlowAgent:
         self._prohibited_actions: List[str] = _perms_dict.get("prohibited_actions", [])
 
         self._hook_agent = None  # CugaAgent for hook policy reasoning — created lazily
+        self._pending_completions: Dict[str, Any] = {}  # process_key → asyncio.Future
 
         self.bridge.register_flow_agent(self)
         if _bridge_owned:
@@ -335,6 +336,13 @@ Respond ONLY with a JSON object:
     # Invocation
     # ──────────────────────────────────────────────────────────────
 
+    async def _handle_complete(self, process_key: str, state: dict, bpmn: dict) -> dict:
+        """Called by the engine via the complete_process MCP tool when the process ends."""
+        future = self._pending_completions.get(process_key)
+        if future is not None and not future.done():
+            future.set_result({"state": state, "bpmn": bpmn})
+        return {}
+
     async def invoke(
         self,
         input_data: Union[str, Dict[str, Any]],
@@ -343,8 +351,9 @@ Respond ONLY with a JSON object:
         """
         Execute the BPMN process via the MCP bridge.
 
-        Calls the engine's run_process MCP tool; the engine calls back into FlowAgent
-        via execute_task / route_gateway / evaluate_hook tools on the same bridge.
+        Calls run_process (fire-and-forget); the engine calls back into FlowAgent
+        via execute_task / route_gateway / evaluate_hook during execution, then
+        signals completion by calling the complete_process MCP tool.
 
         Args:
             input_data: User message (str) or key/value dict merged into process_variables.
@@ -353,6 +362,7 @@ Respond ONLY with a JSON object:
         Returns:
             Terminal FlowState after the process completes or halts.
         """
+        import asyncio
         from cuga.backend.cuga_graph.nodes.cuga_flow.bpmn_parser import BPMNProcess
 
         initial_inputs: Dict[str, Any] = dict(self.initial_variables)
@@ -362,17 +372,25 @@ Respond ONLY with a JSON object:
         elif isinstance(input_data, dict):
             initial_inputs.update(input_data)
 
+        loop = asyncio.get_running_loop()
+        completion_future: asyncio.Future = loop.create_future()
+        self._pending_completions[self.process_key] = completion_future
+
         bpmn_process = None
         try:
             async with self.bridge.get_client() as c:
-                call_result = await c.call_tool(
+                await c.call_tool(
                     "run_process",
                     {"process_key": self.process_key, "initial_inputs": initial_inputs},
                 )
-            result = call_result.data
+            result = await completion_future
             bpmn_process = BPMNProcess.from_dict(result["bpmn"])
             logger.info(f"Invoking process '{bpmn_process.name}' via MCPFlowBridge")
             final_state = FlowState.model_validate(result["state"])
+            if not final_state.process_name:
+                final_state.process_name = bpmn_process.name
+            if not final_state.process_id:
+                final_state.process_id = bpmn_process.id
             if not final_state.is_halted:
                 final_state.mark_complete()
             summary = self._build_completion_message(final_state, bpmn_process)
@@ -393,6 +411,8 @@ Respond ONLY with a JSON object:
             error_state.halt(f"Execution error: {str(e)}")
             error_state.messages = [{"role": "assistant", "content": f"Workflow failed: {str(e)}"}]
             return error_state
+        finally:
+            self._pending_completions.pop(self.process_key, None)
 
     # ──────────────────────────────────────────────────────────────
     # Helpers
@@ -413,6 +433,13 @@ Respond ONLY with a JSON object:
                 parts.append(f"\n{task_name}: Failed — {result.get('error', 'unknown error')}")
             elif status == "skipped":
                 parts.append(f"\n{task_name}: Skipped — {result.get('reason', '')}")
+        if not state.task_results:
+            visible = {
+                k: v for k, v in state.process_variables.items()
+                if not k.startswith("_") and k != "cugaProcessKey"
+            }
+            if visible:
+                parts.append(f"\nOutcome: {visible}")
         return "\n".join(parts)
 
     # ──────────────────────────────────────────────────────────────

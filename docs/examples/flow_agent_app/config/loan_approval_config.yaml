@@ -6,6 +6,12 @@ flow:
   version: "1.0"
   bpmn_file: "BPMNdiagram.bpmn"
 
+workflow_engine:
+  type: flowable
+  url: http://localhost:8080/flowable-ui/process-api
+  username: admin
+  password: test
+
 variables:
   applicant_name: ""
   applicant_id: ""
