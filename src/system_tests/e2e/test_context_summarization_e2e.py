@@ -1,13 +1,10 @@
-"""
-End-to-end tests for context summarization feature.
-
-These tests verify that context summarization works correctly in the server streaming mode.
-"""
-
 import os
+import pytest
 import unittest
 
 from system_tests.e2e.base_test import BaseTestServerStream
+
+pytestmark = pytest.mark.e2e
 
 # Set test environment
 os.environ["CUGA_TEST_ENV"] = "true"

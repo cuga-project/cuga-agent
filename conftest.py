@@ -46,6 +46,10 @@ def _seed_cuga_workspace() -> None:
 
 
 def pytest_sessionstart(session):
+    global _stability_outcomes, _non_stability_failure
+    _stability_outcomes = []
+    _non_stability_failure = False
+
     # xdist workers each have workerinput; seed once on the controller only.
     if getattr(session.config, "workerinput", None) is not None:
         return
@@ -54,13 +58,17 @@ def pytest_sessionstart(session):
 
 def pytest_runtest_logreport(report):
     global _non_stability_failure
-    if report.when != "call":
-        return
     keywords = getattr(report, "keywords", {})
-    if "stability" in keywords:
-        _stability_outcomes.append(report.passed)
+    if report.when == "call":
+        if "stability" in keywords:
+            _stability_outcomes.append(report.passed)
+        elif report.failed:
+            _non_stability_failure = True
     elif report.failed:
-        _non_stability_failure = True
+        if "stability" in keywords:
+            _stability_outcomes.append(False)
+        else:
+            _non_stability_failure = True
 
 
 def pytest_sessionfinish(session, exitstatus):

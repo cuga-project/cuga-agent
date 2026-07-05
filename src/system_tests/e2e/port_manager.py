@@ -35,7 +35,7 @@ class PortManager:
         with self._lock:
             while True:
                 with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
-                    sock.bind(("", 0))
+                    sock.bind(("127.0.0.1", 0))
                     sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
                     port = sock.getsockname()[1]
                     if port not in self._reserved_ports:
@@ -44,7 +44,12 @@ class PortManager:
                 time.sleep(0.01)
 
     def allocate_ports(self, *, e2b_mode: bool = False) -> dict[str, str]:
-        allocations = {var_name: str(self.get_free_port()) for var_name in DYNAMIC_PORT_VARS}
+        port_vars = [
+            var_name
+            for var_name in DYNAMIC_PORT_VARS
+            if not (e2b_mode and var_name == "DYNACONF_SERVER_PORTS__REGISTRY")
+        ]
+        allocations = {var_name: str(self.get_free_port()) for var_name in port_vars}
         if e2b_mode:
             allocations["DYNACONF_SERVER_PORTS__REGISTRY"] = "8001"
         return allocations

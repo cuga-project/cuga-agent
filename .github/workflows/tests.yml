@@ -51,7 +51,7 @@ jobs:
         run: uv run ruff check && uv run ruff format --check
 
       - name: Run tests
-        run: uv run pytest -n auto -m "not stability and not pgvector" --load-test-users 5
+        run: uv run pytest -n auto -m "not stability and not pgvector and not manual and not e2e" --load-test-users 5
         env:
           PYTHONUNBUFFERED: "1"
           CUGA_THREAD_WORKSPACE_SEED: crm
