@@ -1,5 +1,7 @@
 """E2E test: Tool approval policy with full agent graph HITL flow."""
 
+import re
+import unicodedata
 import uuid
 from datetime import datetime
 import pytest
@@ -23,6 +25,14 @@ from cuga.backend.cuga_graph.nodes.cuga_lite.providers.base import (
 )
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel, Field
+
+
+def _normalize_final_answer_text(text: str) -> str:
+    """Normalize LLM final answers for stable substring assertions."""
+    text = unicodedata.normalize("NFKC", text)
+    text = re.sub(r"\*+", "", text)
+    text = re.sub(r"[\s\u00a0\u202f\u2009]+", " ", text)
+    return text.strip()
 
 
 def _pending_tool_approval_code(state: AgentState) -> str:
@@ -216,7 +226,8 @@ async def test_tool_approval_approve_flow():
         assert "✋" not in final_state.final_answer, (
             "Final answer should not be the approval banner after approval"
         )
-        assert "Acme Corp" in final_state.final_answer, (
+        normalized_answer = _normalize_final_answer_text(final_state.final_answer)
+        assert "Acme Corp" in normalized_answer, (
             "Final answer should include tool output after approved execution"
         )
         assert "cancelled" not in final_state.final_answer.lower(), (
@@ -330,7 +341,9 @@ async def test_tool_approval_deny_flow():
         print(f"  Final answer: {final_state.final_answer}")
 
         assert final_state.final_answer, "Denial should produce a cancellation message"
-        assert "Acme Corp" not in final_state.final_answer, "Tool output should not appear after denial"
+        assert "Acme Corp" not in _normalize_final_answer_text(final_state.final_answer), (
+            "Tool output should not appear after denial"
+        )
         assert (
             "cancelled" in final_state.final_answer.lower() or "denied" in final_state.final_answer.lower()
         ), "Final answer should indicate execution was cancelled or denied"
@@ -516,7 +529,7 @@ async def test_tool_approval_modification_flow():
         assert "✋" not in final_state_2.final_answer, (
             "Final answer should not be the approval banner after approval"
         )
-        assert "Acme Corp" in final_state_2.final_answer, (
+        assert "Acme Corp" in _normalize_final_answer_text(final_state_2.final_answer), (
             "Final answer should include tool output after approved execution"
         )
         assert "cancelled" not in final_state_2.final_answer.lower(), (
