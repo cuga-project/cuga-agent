@@ -5,7 +5,7 @@ from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.config import settings
 from loguru import logger
 
-from .common import SecurityValidator, CodeWrapper, VariableUtils, CallApiHelper
+from .common import CodeSyntaxError, SecurityValidator, CodeWrapper, VariableUtils, CallApiHelper
 from .common.benchmark_mode import (
     is_benchmark_mode,
     reset_skills_relaxed_execution,
@@ -187,7 +187,11 @@ class CodeExecutor:
 
         # opensandbox: Python runs locally with run_command in context (forwarded to sandbox)
         # Security checks must run for every execution mode, including E2B turns.
-        SecurityValidator.validate_imports(code)
+        try:
+            SecurityValidator.validate_imports(code)
+        except CodeSyntaxError as e:
+            executor = cls._get_local_executor()
+            return executor.format_error(e), {}
 
         tracker = ActivityTracker()
         fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
