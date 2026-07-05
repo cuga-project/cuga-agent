@@ -463,62 +463,54 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
 
         if _vec_hash:
             _reindex_status = reindex_info.get("status") if reindex_info else None
-            if _reindex_status == "failed":
+            _pub_task_ids = (reindex_info or {}).get("task_ids") or []
+            if _reindex_status == "started" and _pub_task_ids:
+                # Async reindex in flight: promoting now would activate an
+                # empty/still-filling collection and skip the strict flip.
+                # Defer to the SAME strict flip as the Re-index path — it
+                # promotes + persists ONLY after all workers succeed and the
+                # engine still hashes to _vec_hash. The OLD collection stays
+                # active AND busy until the flip's finally releases it, so
+                # concurrent uploads/deletes can't be lost meanwhile.
+                async def _pub_flip_then_release():
+                    try:
+                        await deferred_reindex_complete_and_flip(
+                            agent_id, engine, state, _new_collection, _vec_hash, _pub_task_ids
+                        )
+                    finally:
+                        engine._reindex_in_progress.discard(_old_collection)
+                        engine._reindex_deferred.discard(_old_collection)
+
+                _bg = _asyncio.create_task(_pub_flip_then_release())
+                _BACKGROUND_TASKS.add(_bg)
+                _bg.add_done_callback(_BACKGROUND_TASKS.discard)
+                _bg.add_done_callback(lambda t: t.exception())
+                _flip_spawned = True
+                logger.info(
+                    "Publish: reindex started for %s; deferring strict pointer flip "
+                    "(all workers must succeed). Old collection stays active+busy meanwhile.",
+                    _new_collection,
+                )
+            elif _reindex_status == "failed":
                 logger.error(
                     "Keeping knowledge_config_hash=%r after vector-config migration/reindex failure "
                     "(would have switched to %s)",
                     getattr(state, "knowledge_config_hash", None),
                     _vec_hash,
                 )
-                if engine:
-                    engine._reindex_in_progress.discard(_old_collection)
-                    engine._reindex_deferred.discard(_old_collection)
             elif _reindex_status == "started":
-                # Async reindex in flight: promoting now would activate an
-                # empty/still-filling collection and skip the strict flip.
-                # Defer to the SAME strict flip as the Re-index path — it
-                # promotes + persists ONLY after all workers succeed and the
-                # engine still hashes to _vec_hash. The OLD collection stays
-                # active AND busy until the flip finishes (its finally releases
-                # it), so concurrent uploads/deletes can't be lost meanwhile.
-                _pub_task_ids = (reindex_info or {}).get("task_ids") or []
-                if _pub_task_ids:
-
-                    async def _pub_flip_then_release():
-                        try:
-                            await deferred_reindex_complete_and_flip(
-                                agent_id, engine, state, _new_collection, _vec_hash, _pub_task_ids
-                            )
-                        finally:
-                            engine._reindex_in_progress.discard(_old_collection)
-                            engine._reindex_deferred.discard(_old_collection)
-
-                    _bg = _asyncio.create_task(_pub_flip_then_release())
-                    _BACKGROUND_TASKS.add(_bg)
-                    _bg.add_done_callback(_BACKGROUND_TASKS.discard)
-                    _bg.add_done_callback(lambda t: t.exception())
-                    _flip_spawned = True
-                    logger.info(
-                        "Publish: reindex started for %s; deferring strict pointer flip "
-                        "(all workers must succeed). Old collection stays active+busy meanwhile.",
-                        _new_collection,
-                    )
-                else:
-                    logger.warning(
-                        "Publish: reindex of %s returned 'started' without task_ids; "
-                        "NOT flipping pointer (would risk an empty active collection).",
-                        _new_collection,
-                    )
-                    if engine:
-                        engine._reindex_in_progress.discard(_old_collection)
-                        engine._reindex_deferred.discard(_old_collection)
+                logger.warning(
+                    "Publish: reindex of %s returned 'started' without task_ids; "
+                    "NOT flipping pointer (would risk an empty active collection).",
+                    _new_collection,
+                )
             else:
                 # No async reindex in flight (target already populated, no docs,
                 # or migration skipped) — safe to promote immediately.
                 state.knowledge_config_hash = _vec_hash
-                if engine:
-                    engine._reindex_in_progress.discard(_old_collection)
-                    engine._reindex_deferred.discard(_old_collection)
+        # The OLD-collection busy flag set during migration is released once —
+        # in the outer finally for every non-deferred path, or in the flip
+        # wrapper's finally when a deferred flip took ownership.
 
         if reindex_info:
             response_data["reindex"] = reindex_info
