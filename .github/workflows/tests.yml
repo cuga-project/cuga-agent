@@ -46,9 +46,15 @@ jobs:
 
       - name: Install Playwright browsers
         run: uv run playwright install --with-deps chromium
-      
-      - name: Run unit tests
-        run: bash src/scripts/run_tests.sh --skip-stability
+
+      - name: Lint
+        run: uv run ruff check && uv run ruff format --check
+
+      - name: Run tests
+        run: uv run pytest -n auto -m "not stability and not pgvector" --load-test-users 5
+        env:
+          PYTHONUNBUFFERED: "1"
+          CUGA_THREAD_WORKSPACE_SEED: crm
 
   pgvector-integration:
     name: pgvector Integration
@@ -116,7 +122,8 @@ jobs:
 
       - name: Run pgvector integration tests (MVT)
         run: uv run pytest tests/integration/test_knowledge_pgvector_rollback.py
-              -v -m pgvector --maxfail=3 --durations=10
+              -v -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
+              --maxfail=3 --durations=10
         env:
           PYTHONUNBUFFERED: "1"
 

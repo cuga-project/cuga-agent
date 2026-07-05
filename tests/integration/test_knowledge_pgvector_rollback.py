@@ -49,7 +49,7 @@ Requires a running pgvector instance. The fastest local recipe::
         -e POSTGRES_DB=cuga_test -p 5432:5432 \\
         pgvector/pgvector:0.8.0-pg16
     export CUGA_KNOWLEDGE_PGVECTOR_CONNECTION_STRING=\\
-        postgresql://cuga:cuga@localhost:5432/cuga_test
+        postgresql://cuga:cuga@localhost:5432/cuga_test  # pragma: allowlist secret
     uv run pytest tests/integration/test_knowledge_pgvector_rollback.py -v
 """
 
@@ -59,6 +59,8 @@ import asyncio
 import os
 
 import pytest
+
+from .helpers import unique_collection
 
 # Skip the whole file if pgvector deps aren't available — the [gpu] extra
 # is excluded in CI's main Unit Tests job, and pgvector pulls in asyncpg
@@ -202,12 +204,10 @@ def test_partial_insert_rollback_clears_orphans(clean_tenant, monkeypatch):
         FRESH asyncpg connection in its own one-shot ``asyncio.run`` so
         no stale snapshot can mask orphan rows.
     """
-    from tests.integration.conftest import _unique_collection
-
     dsn = _dsn()
     asyncio.run(_setup_extension(dsn))
 
-    collection = _unique_collection("mvt")
+    collection = unique_collection("mvt")
     source = f"{collection}/mvt.pdf"
     adapter = _build_adapter(dsn, clean_tenant, monkeypatch, collection)
     docs = _docs(4, source)
@@ -266,12 +266,10 @@ def test_rollback_respects_tenant_scope_isolation(clean_tenant, monkeypatch):
     """
     import uuid
 
-    from tests.integration.conftest import _unique_collection
-
     dsn = _dsn()
     asyncio.run(_setup_extension(dsn))
 
-    collection = _unique_collection("scope")
+    collection = unique_collection("scope")
     source = f"{collection}/shared-name.pdf"
 
     # First materialize the adapter's table by constructing the adapter

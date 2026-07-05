@@ -183,17 +183,22 @@ uv sync --dev
 
 ### Run tests
 
-Comprehensive test suite including linting, unit tests, and e2e tests:
+Lint and run the pytest suite:
 
 ```bash
-chmod +x ./src/scripts/run_tests.sh
-./src/scripts/run_tests.sh
+uv run ruff check && uv run ruff format --check
+uv run pytest -n auto -m "not stability and not pgvector" --load-test-users 5
 ```
 
-This will run:
-- **Linting checks**: Ruff code quality and formatting validation
-- **Unit tests**: Variables manager, API response handling, registry functionality
-- **E2E tests**: System tests across Fast and Balanced modes for real-world scenarios
+Other subsets:
+
+```bash
+uv run pytest -m "not stability and not slow and not pgvector"   # fast local loop
+uv run pytest -m stability --stability-threshold 88 -n0        # stability only
+uv run pytest -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
+```
+
+The default `uv run pytest` excludes `@pytest.mark.manual` and `@pytest.mark.pgvector` tests via `pyproject.toml` `addopts`.
 
 
 ## AI Agent Commands

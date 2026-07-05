@@ -1097,7 +1097,7 @@ CUGA supports three types of tool integrations. Each approach has its own use ca
 
 ### Test Scenarios - E2E
 
-All tests are available through `./src/scripts/run_tests.sh`:
+All tests run through pytest (configured in `pyproject.toml`):
 
 **Unit Tests**
 - Registry: OpenAPI integration, MCP server functionality, service configurations
@@ -1118,24 +1118,48 @@ All tests are available through `./src/scripts/run_tests.sh`:
 - SDK functionality: Agent invocation, streaming, tool integration
 - Policy management: Policy loading, matching, and execution via SDK
 
-**Stability Tests** (`run_stability_tests.py`)
+**Stability Tests** (`@pytest.mark.stability` in `src/system_tests/e2e/`)
 - Fast Mode: Get top account by revenue, list accounts, find VP sales high-value accounts
 - CRM Workflows: Contacts management, email operations, tool discovery
 - HF Utterances: Account queries, revenue calculations, playbook execution
-- Execution: Supports local and Docker execution, parallel/sequential modes, cross-version testing
+- Execution: Parallel via `pytest-xdist`, 88% pass-rate threshold in CI
 
 ## Running Tests
 
-Run all tests (unit, integration, and stability):
+Lint:
 
 ```bash
-./src/scripts/run_tests.sh
+uv run ruff check && uv run ruff format --check
 ```
 
-Run unit tests only:
+Run the default suite (excludes manual and pgvector; pgvector needs a container):
 
 ```bash
-./src/scripts/run_tests.sh unit_tests
+uv run pytest
+```
+
+Run the CI-equivalent subset (matches the main `tests.yml` job):
+
+```bash
+uv run pytest -n auto -m "not stability and not pgvector"
+```
+
+Run a faster local loop:
+
+```bash
+uv run pytest -m "not stability and not slow and not pgvector"
+```
+
+Run stability tests only (88% pass-rate gate; use `-n0` so threshold aggregation works):
+
+```bash
+uv run pytest -m stability --stability-threshold 88 -n0
+```
+
+Run pgvector tests (requires a running pgvector container):
+
+```bash
+uv run pytest -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
 ```
 
 ## Evaluation

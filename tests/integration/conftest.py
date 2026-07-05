@@ -13,6 +13,8 @@ import uuid
 
 import pytest
 
+from .helpers import unique_collection as _unique_collection
+
 
 # ---------------------------------------------------------------------------
 # pgvector live-DB helpers
@@ -34,12 +36,4 @@ def clean_tenant() -> dict[str, str]:
     }
 
 
-def _unique_collection(prefix: str = "test") -> str:
-    """Generate a unique collection name. Match the adapter's strict
-    regex ``[A-Za-z0-9_]{1,63}`` — uuid hex is safe."""
-    return f"{prefix}_{uuid.uuid4().hex[:12]}"
-
-
-# Expose the helper so tests can ``from tests.integration.conftest import
-# _unique_collection`` without re-importing uuid.
 __all__ = ["_unique_collection"]
