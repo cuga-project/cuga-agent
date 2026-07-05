@@ -11,6 +11,7 @@ from langchain_core.messages import BaseMessage
 from loguru import logger
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
+from cuga.backend.cuga_graph.utils.token_counter import resolve_model_identifier
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
 
 
@@ -50,7 +51,7 @@ async def apply_context_summarization(
     if not messages:
         return messages
 
-    model_name = getattr(model, 'model_name', 'gpt-4')
+    model_name = resolve_model_identifier(model, fallback_name="gpt-4")
 
     # Do not use model.with_config(callbacks=...) here: it wraps the model in
     # RunnableBinding and breaks ContextSummarizer._setup_model_profile (profile field).

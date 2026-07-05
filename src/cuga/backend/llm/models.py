@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatResult
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_profile
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
 from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
@@ -363,6 +364,18 @@ class LLMManager:
                 default_model = "anthropic/claude-3.5-sonnet"
                 logger.info(f"No model_name specified for OpenRouter, using default: {default_model}")
                 return default_model
+        elif platform == "minimax":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for MiniMax: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML: {toml_model_name}")
+                return toml_model_name
+            else:
+                default_model = "MiniMax-M3"
+                logger.info(f"No model_name specified for MiniMax, using default: {default_model}")
+                return default_model
         elif platform == "litellm":
             env_model_name = os.environ.get('MODEL_NAME')
             if env_model_name:
@@ -375,6 +388,19 @@ class LLMManager:
                 default_model = "gpt-4o"
                 logger.info(f"No model_name specified for LiteLLM, using default: {default_model}")
                 return default_model
+        elif platform == "rits":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for RITS: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML for RITS: {toml_model_name}")
+                return toml_model_name
+            else:
+                raise ValueError(
+                    "model_name must be specified for platform rits "
+                    "(set MODEL_NAME env var or model_name in the TOML)"
+                )
         else:
             # For other platforms, use TOML or default
             if toml_model_name:
@@ -478,6 +504,19 @@ class LLMManager:
         if platform == "groq":
             return None
 
+        # RITS: let RITS_BASE_URL env override the TOML so model/endpoint can be
+        # swapped from .env without editing every per-role TOML block.
+        if platform == "rits":
+            env_base_url = os.environ.get('RITS_BASE_URL')
+            if env_base_url:
+                logger.info(f"Using RITS_BASE_URL from environment: {env_base_url}")
+                return env_base_url
+            toml_url = model_settings.get("base_url") or model_settings.get("url")
+            if toml_url and str(toml_url).strip():
+                logger.debug(f"Using url from TOML for RITS: {toml_url}")
+                return str(toml_url).strip()
+            return None
+
         config_url = model_settings.get("base_url") or model_settings.get("url")
         if config_url and str(config_url).strip():
             return str(config_url).strip()
@@ -515,6 +554,21 @@ class LLMManager:
                 f"No base URL specified for OpenRouter, will raise error if not set, falling back to: {default_openrouter}"
             )
             return default_openrouter
+        elif platform == "minimax":
+            env_base_url = os.environ.get('MINIMAX_BASE_URL')
+            if env_base_url:
+                logger.info(f"Using MINIMAX_BASE_URL from environment: {env_base_url}")
+                return env_base_url
+
+            # Check TOML settings
+            toml_url = model_settings.get('url')
+            if toml_url:
+                logger.debug(f"Using url from TOML: {toml_url}")
+                return toml_url
+
+            default_minimax = "https://api.minimax.io/v1"
+            logger.debug(f"No base URL specified for MiniMax, falling back to: {default_minimax}")
+            return default_minimax
         elif platform == "litellm":
             env_base_url = os.environ.get('OPENAI_BASE_URL') or os.environ.get('LITELLM_API_BASE')
             if env_base_url:
@@ -748,17 +802,23 @@ class LLMManager:
                 raise ValueError("WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID to be set.")
 
             llm = ChatWatsonx(**watsonx_params)
+            ensure_model_context_profile(llm, model_name)
         elif platform == "rits":
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
             if not api_key and apikey_name:
                 api_key = os.environ.get(apikey_name)
+            # RITS authenticates via the custom RITS_API_KEY header, not
+            # Authorization: Bearer. Pass a dummy api_key so ChatOpenAI does not
+            # also send the real key on the Authorization header — matches the
+            # `openai` branch's pattern when auth_headers are in play.
             rits_params: Dict[str, Any] = {
-                "api_key": api_key,
-                "base_url": model_settings.get('url'),
+                "api_key": "dummy" if api_key else None,
+                "base_url": base_url,
                 "max_tokens": max_tokens,
                 "model": model_name,
                 "seed": 42,
+                "default_headers": {"RITS_API_KEY": api_key} if api_key else None,
             }
             if not is_reasoning:
                 rits_params["temperature"] = temperature
@@ -828,6 +888,31 @@ class LLMManager:
                 openrouter_params["default_headers"] = default_headers
 
             llm = ReasoningChatOpenAI(**openrouter_params)
+        elif platform == "minimax":
+            logger.debug(f"Creating MiniMax model: {model_name}")
+            is_reasoning = self._is_reasoning_model(model_name)
+
+            api_key = _normalize_secret(resolve_secret("MINIMAX_API_KEY")) or os.environ.get(
+                "MINIMAX_API_KEY"
+            )
+            if not api_key:
+                raise ValueError("MINIMAX_API_KEY environment variable not set")
+
+            minimax_params: Dict[str, Any] = {
+                "model_name": model_name,
+                "max_tokens": max_tokens,
+                "timeout": http_timeout,
+                "openai_api_key": api_key,
+                "openai_api_base": base_url,
+            }
+
+            if not is_reasoning:
+                minimax_params["temperature"] = temperature
+                minimax_params["top_p"] = model_settings.get('top_p', 1.0)
+            else:
+                logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+
+            llm = ReasoningChatOpenAI(**minimax_params)
         elif platform == "litellm" and ReasoningChatLiteLLM is not None:
             logger.debug(f"Creating LiteLLM model: {model_name}")
             ssl_verify = self._get_ssl_verify(model_settings)
