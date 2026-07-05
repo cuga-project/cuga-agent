@@ -45,10 +45,22 @@ def _sync_server_urls(env_ports: dict[str, str]) -> None:
 
 def _needs_dynamic_ports(request) -> bool:
     keywords = request.node.keywords
-    if any(marker in keywords for marker in ("stability", "windows_smoke", "load")):
+    if any(marker in keywords for marker in ("stability", "windows_smoke")):
         return True
     node_path = str(getattr(request.node, "path", "")).replace("\\", "/")
     return "/system_tests/e2e/" in node_path
+
+
+def _sync_settings_ports(env_ports: dict[str, str]) -> None:
+    """Reload dynaconf after monkeypatched port env vars."""
+    from cuga.config import settings
+
+    settings.reload()
+    for env_key, port in env_ports.items():
+        if not env_key.startswith("DYNACONF_SERVER_PORTS__"):
+            continue
+        setting_key = env_key.removeprefix("DYNACONF_").lower()
+        settings.set(setting_key, int(port))
 
 
 @pytest.fixture(scope="session", autouse=True)
@@ -85,6 +97,7 @@ def dynamic_server_ports(request, monkeypatch):
     env_ports = allocate_stability_env(e2b_mode=e2b_mode)
     for key, value in env_ports.items():
         monkeypatch.setenv(key, value)
+    _sync_settings_ports(env_ports)
     _sync_server_urls(env_ports)
     yield
     cleanup_ports(env_ports)

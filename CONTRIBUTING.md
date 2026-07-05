@@ -187,13 +187,14 @@ Lint and run the pytest suite:
 
 ```bash
 uv run ruff check && uv run ruff format --check
-uv run pytest -n auto -m "not stability and not pgvector and not manual and not e2e" --load-test-users 5
+uv run pytest -m "not stability and not pgvector and not manual and not e2e and not load" --load-test-users 5
+uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
 ```
 
 Other subsets:
 
 ```bash
-uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e"   # fast local loop
+uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"   # fast local loop
 uv run pytest -m stability --stability-threshold 88 -n0        # stability only
 uv run pytest -m pgvector -o addopts="-ra --strict-markers --import-mode=importlib"
 ```

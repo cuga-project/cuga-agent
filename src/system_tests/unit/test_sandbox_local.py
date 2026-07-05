@@ -6,7 +6,11 @@ Test for sandbox local execution with simple code
 Tests basic functionality of running code in the local sandbox environment.
 """
 
+import pytest
+
 from cuga.backend.tools_env.code_sandbox.sandbox import run_local, get_premable
+
+pytestmark = pytest.mark.skip(reason="Deprecated: superseded by cuga_lite executor tests")
 
 
 def test_basic_code_execution():

@@ -1141,13 +1141,14 @@ uv run pytest
 Run the CI-equivalent subset (matches the main `tests.yml` job):
 
 ```bash
-uv run pytest -n auto -m "not stability and not pgvector and not manual and not e2e"
+uv run pytest -m "not stability and not pgvector and not manual and not e2e and not load"
+uv run pytest src/system_tests/load/load_test_with_mocked_llm.py -m load --load-test-users 5
 ```
 
 Run a faster local loop:
 
 ```bash
-uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e"
+uv run pytest -m "not stability and not slow and not pgvector and not manual and not e2e and not load"
 ```
 
 Run stability tests only (88% pass-rate gate; use `-n0` so threshold aggregation works):
