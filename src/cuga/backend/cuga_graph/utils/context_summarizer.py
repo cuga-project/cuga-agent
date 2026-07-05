@@ -86,10 +86,7 @@ class ContextSummarizer:
             self.middleware = None
 
     def _setup_model_profile(self):
-        """Setup model profile with context size for fraction-based triggers."""
-        if not (hasattr(self.config, 'trigger_fraction') and self.config.trigger_fraction):
-            return
-
+        """Setup model profile with correct context window for the resolved model."""
         resolved_name = resolve_model_identifier(self.model, fallback_name=self.model_name)
         try:
             context_size = ensure_model_context_profile(self.model, resolved_name)

@@ -285,6 +285,8 @@ MODEL_CONTEXT_SIZES = {
     "xai/grok-beta": 128000,
 }
 
+_SORTED_MODEL_CONTEXT_KEYS = sorted(MODEL_CONTEXT_SIZES.keys(), key=len, reverse=True)
+
 if TYPE_CHECKING:
     pass
 
@@ -324,7 +326,7 @@ def lookup_model_context_size(model_name: Optional[str]) -> Optional[int]:
     if normalized_name in MODEL_CONTEXT_SIZES:
         return MODEL_CONTEXT_SIZES[normalized_name]
 
-    sorted_keys = sorted(MODEL_CONTEXT_SIZES.keys(), key=len, reverse=True)
+    sorted_keys = _SORTED_MODEL_CONTEXT_KEYS
     for key in sorted_keys:
         if normalized_name.startswith(key):
             return MODEL_CONTEXT_SIZES[key]
@@ -334,7 +336,7 @@ def lookup_model_context_size(model_name: Optional[str]) -> Optional[int]:
 
 def ensure_model_context_profile(model: Optional[Any] = None, model_name: Optional[str] = None) -> int:
     """Ensure *model.profile* reflects the known context window for the resolved model name."""
-    resolved_name = resolve_model_identifier(model, fallback_name=model_name or "")
+    resolved_name = (model_name or "").strip() or resolve_model_identifier(model, fallback_name="")
     context_size = lookup_model_context_size(resolved_name)
     if context_size is None:
         context_size = DEFAULT_CONTEXT_SIZE
@@ -343,11 +345,13 @@ def ensure_model_context_profile(model: Optional[Any] = None, model_name: Option
         try:
             existing = getattr(model, "profile", None)
             if not isinstance(existing, Mapping) or existing.get("max_input_tokens") != context_size:
-                model.profile = {"max_input_tokens": context_size}
+                merged = dict(existing) if isinstance(existing, Mapping) else {}
+                merged["max_input_tokens"] = context_size
+                model.profile = merged
                 logger.debug(
                     "Set model profile: max_input_tokens={} for {}",
                     context_size,
-                    resolved_name or model_name or "unknown",
+                    resolved_name or "unknown",
                 )
         except Exception as exc:
             logger.warning(f"Failed to set model.profile: {exc}")

@@ -85,11 +85,11 @@ class TestTokenCounter:
     def test_ensure_model_context_profile_overrides_stale_watsonx_profile(self):
         model = Mock()
         model.model_id = "openai/gpt-oss-120b"
-        model.profile = {"max_input_tokens": 8192}
+        model.profile = {"max_input_tokens": 8192, "tool_calling": True}
 
-        size = ensure_model_context_profile(model)
+        size = ensure_model_context_profile(model, "openai/gpt-oss-120b")
         assert size == 131072
-        assert model.profile == {"max_input_tokens": 131072}
+        assert model.profile == {"max_input_tokens": 131072, "tool_calling": True}
 
     def test_lookup_model_context_size_with_provider_prefix(self):
         assert lookup_model_context_size("openai/gpt-oss-120b") == 131072
