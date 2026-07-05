@@ -115,6 +115,23 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
     _old_collection = None
     _flip_spawned = False
     try:
+        # Re-check the in-flight guard now that we hold the lock. The pre-lock
+        # check above can go stale: a reindex_for_config_change may have acquired
+        # the lock first and started workers between that check and this acquire.
+        _busy2 = sorted(
+            c
+            for c in (getattr(getattr(state, "knowledge_engine", None), "_reindex_in_progress", None) or ())
+            if c == _pfx or c.startswith(f"{_pfx}_")
+        )
+        if _busy2:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "error": "reindex_in_progress",
+                    "collections": _busy2,
+                    "message": "A re-index is running for this agent. Wait for it to finish before publishing.",
+                },
+            )
         from cuga.backend.server.config_store import (
             load_config,
             load_draft,
@@ -349,8 +366,12 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                     if _secret in kb_pub and kb_pub[_secret]:
                         kb_pub[_secret] = ""
                 published_config["knowledge"] = kb_pub
-        except Exception:
-            published_config = config or {}
+        except Exception as strip_err:
+            # Fail CLOSED: never fall back to saving the unredacted config — that
+            # would persist API keys into the published snapshot (which crosses
+            # machines). A 500 is better than leaking a key.
+            logger.error(f"Failed to strip secrets from published config: {strip_err!r}")
+            raise HTTPException(status_code=500, detail="Failed to sanitize published config") from None
         ver = await save_config(published_config, agent_id)
         state.config_version = ver
         state.tools_include_version = int(ver) if ver else 0
@@ -423,8 +444,15 @@ async def save_manage_config_publish(request: Request, agent_id: Optional[str] =
                 logger.warning(f"Failed to check docs for migration: {e}")
 
         if _defer_vector_hash_promotion and ver:
-            _promote_failed = reindex_info and reindex_info.get("status") == "failed"
-            if not _promote_failed and reindex_info is not None:
+            _persist_status = reindex_info.get("status") if reindex_info else None
+            # Persist the new vector hash ONLY for a terminal success. For
+            # "started" (async reindex in flight) the strict deferred flip owns
+            # the promotion + durable persist, AFTER all workers succeed — writing
+            # the hash here would activate the new/incomplete collection on a
+            # restart or a later worker failure, breaking the "old collection
+            # stays active until the flip succeeds" guarantee. failed/busy/None
+            # must not promote either.
+            if _persist_status not in ("failed", "started", "busy", None):
                 try:
                     pub_cfg, _ = await load_config(version=ver, agent_id=agent_id)
                     if pub_cfg and isinstance(pub_cfg.get("knowledge"), dict):

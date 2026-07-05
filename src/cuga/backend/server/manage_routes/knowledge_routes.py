@@ -47,58 +47,65 @@ async def test_embeddings_connection(request: Request):
     from cuga.backend.knowledge.config import KnowledgeConfig
     from cuga.backend.knowledge.engine import create_embeddings
     from pathlib import Path
+    import shutil
     import tempfile
 
-    # Build a throwaway config; reuse the same factory the live engine uses
-    # so the test path matches reality.
+    # Build a throwaway config; reuse the same factory the live engine uses so
+    # the test path matches reality. The temp dir is removed in the outer
+    # finally so a Test Connection call (incl. validation failures / timeouts)
+    # doesn't leak a directory each time.
+    tmp_dir = Path(tempfile.mkdtemp(prefix="cuga-test-emb-"))
     try:
-        cfg = KnowledgeConfig(
-            enabled=True,
-            persist_dir=Path(tempfile.mkdtemp(prefix="cuga-test-emb-")),
-            embedding_provider=provider,
-            embedding_model=model,
-            embedding_api_key=api_key,
-            embedding_base_url=base_url,
-            embedding_extra_params=dict(extra_params),
-        )
-        cfg.validate()
-    except (ValueError, TypeError):
-        logger.exception("Knowledge embedding test config validation failed")
-        return JSONResponse(
-            {
-                "ok": False,
-                "error_class": "InvalidEmbeddingConfiguration",
-                "error": "Invalid knowledge embedding configuration. Check provider, model, base URL, and extra parameters.",
-            }
-        )
-
-    def _do_test() -> dict[str, Any]:
-        t0 = _time.monotonic()
         try:
-            emb = create_embeddings(cfg)
-            vec = emb.embed_query("connection test")
-            dt_ms = int((_time.monotonic() - t0) * 1000)
-            return {"ok": True, "dim": len(vec), "latency_ms": dt_ms}
-        except Exception:
-            logger.exception("Knowledge embedding connection test failed")
-            return {
-                "ok": False,
-                "error_class": "EmbeddingConnectionFailed",
-                "error": "Embedding connection test failed. Check the base URL, model, and credentials.",
-            }
+            cfg = KnowledgeConfig(
+                enabled=True,
+                persist_dir=tmp_dir,
+                embedding_provider=provider,
+                embedding_model=model,
+                embedding_api_key=api_key,
+                embedding_base_url=base_url,
+                embedding_extra_params=dict(extra_params),
+            )
+            cfg.validate()
+        except (ValueError, TypeError):
+            logger.exception("Knowledge embedding test config validation failed")
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_class": "InvalidEmbeddingConfiguration",
+                    "error": "Invalid knowledge embedding configuration. Check provider, model, base URL, and extra parameters.",
+                }
+            )
 
-    try:
-        result = await _asyncio.wait_for(_asyncio.to_thread(_do_test), timeout=10.0)
-        return JSONResponse(result)
-    except _asyncio.TimeoutError:
-        return JSONResponse(
-            {
-                "ok": False,
-                "error_class": "Timeout",
-                "error": "Embedding call did not complete within 10 seconds. "
-                "Check the base URL is reachable and the model is correct.",
-            }
-        )
+        def _do_test() -> dict[str, Any]:
+            t0 = _time.monotonic()
+            try:
+                emb = create_embeddings(cfg)
+                vec = emb.embed_query("connection test")
+                dt_ms = int((_time.monotonic() - t0) * 1000)
+                return {"ok": True, "dim": len(vec), "latency_ms": dt_ms}
+            except Exception:
+                logger.exception("Knowledge embedding connection test failed")
+                return {
+                    "ok": False,
+                    "error_class": "EmbeddingConnectionFailed",
+                    "error": "Embedding connection test failed. Check the base URL, model, and credentials.",
+                }
+
+        try:
+            result = await _asyncio.wait_for(_asyncio.to_thread(_do_test), timeout=10.0)
+            return JSONResponse(result)
+        except _asyncio.TimeoutError:
+            return JSONResponse(
+                {
+                    "ok": False,
+                    "error_class": "Timeout",
+                    "error": "Embedding call did not complete within 10 seconds. "
+                    "Check the base URL is reachable and the model is correct.",
+                }
+            )
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
 
 
 @router.get("/knowledge/defaults")
@@ -636,8 +643,8 @@ async def patch_draft_knowledge(request: Request, agent_id: Optional[str] = None
                 # so any reader still using the singular name sees this agent's
                 # data when it's the only configured agent.
                 state.draft_knowledge_config = validated
-            except Exception:
-                pass
+            except Exception as draft_state_err:
+                logger.warning(f"Failed to update draft knowledge app state: {draft_state_err}")
         if state:
             try:
                 base_agent_id = _parse_agent_id(str(agent_id))
@@ -775,6 +782,23 @@ async def reindex_for_config_change(request: Request, agent_id: Optional[str] = 
         # so it can't interleave with a publish's commit (CR-E). The deferred
         # flip spawned inside is fire-and-forget and takes the lock later.
         async with agent_draft_lock(str(agent_id)):
+            # Re-check now that we're serialized — two Re-index clicks (or a
+            # concurrent publish) can both pass the pre-lock guard above; only
+            # the first to acquire the lock should start a reindex.
+            in_flight = sorted(
+                c
+                for c in live_engine._reindex_in_progress
+                if c == _prefix_pre or c.startswith(f"{_prefix_pre}_")
+            )
+            if in_flight:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "error": "reindex_in_progress",
+                        "collections": in_flight,
+                        "message": "Re-index is already running for this agent. Wait for it to finish.",
+                    },
+                )
             result = await migrate_and_reindex_for_agent(agent_id, live_engine, live_state)
         return JSONResponse(result)
     except Exception as e:

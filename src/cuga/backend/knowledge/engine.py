@@ -3711,6 +3711,9 @@ class KnowledgeEngine:
         old_pdf_mode = self._config.docling_pdf_mode
         old_layout_engine = self._config.docling_layout_engine
         old_qt = getattr(self._config, "search_query_transform", "off")
+        old_api_key = getattr(self._config, "embedding_api_key", "") or ""
+        old_base_url = getattr(self._config, "embedding_base_url", "") or ""
+        old_extra = dict(getattr(self._config, "embedding_extra_params", {}) or {})
 
         for f in dc_fields(KnowledgeConfig):
             if f.name != "persist_dir":
@@ -3755,6 +3758,25 @@ class KnowledgeEngine:
                 old_use_gpu,
                 self._config.use_gpu,
             )
+        elif self._default_embeddings is not None and (
+            old_api_key != (getattr(self._config, "embedding_api_key", "") or "")
+            or old_base_url != (getattr(self._config, "embedding_base_url", "") or "")
+            or old_extra != (getattr(self._config, "embedding_extra_params", {}) or {})
+        ):
+            # Credential / base-url-only fix: provider+model unchanged, so
+            # prepare_knowledge_update produced no new_embeddings — but the OLD
+            # client (rejected key / stale base_url) is still cached. Rebuild it
+            # so the fix takes effect WITHOUT a restart; vectors stay valid (same
+            # model) → no reindex. Construction doesn't hit the network, so a
+            # still-bad key surfaces later on embed, not here.
+            try:
+                self._default_embeddings = create_embeddings(self._config)
+                with self._vector_store_lock:
+                    self._vector_stores.clear()
+                    self._record_managers.clear()
+                logger.info("Embedder client rebuilt after credential/base-url change; vectors unchanged.")
+            except Exception as _rebuild_err:
+                logger.warning(f"Failed to rebuild embedder client after credential change: {_rebuild_err!r}")
 
         # Invalidate any cached Docling converters whose shape depended on the
         # changed knobs. Without this, switching layout_engine at runtime would
@@ -4016,11 +4038,19 @@ class KnowledgeEngine:
 
         available, error = True, None
         try:
-            self._ensure_embeddings()
-            await asyncio.to_thread(self._default_embeddings.embed_query, "ping")
+            # _ensure_embeddings can load a local model / construct a provider
+            # client — run it off the event loop so a cold engine doesn't stall
+            # the polled health endpoint.
+            await asyncio.to_thread(self._ensure_embeddings)
+            embeddings = self._default_embeddings
+            if embeddings is None:
+                raise RuntimeError("embedding initialization produced no client")
+            await asyncio.to_thread(embeddings.embed_query, "ping")
         except Exception as e:  # noqa: BLE001 — any failure means "unavailable"
             available = False
-            error = self._scrub_secret_text(str(e)[:300]) or e.__class__.__name__
+            # Scrub the FULL error THEN truncate — truncating first could cut a
+            # configured key mid-string so the literal replace no longer matches.
+            error = self._scrub_secret_text(str(e))[:300] or e.__class__.__name__
         self._embedder_probe_cache = (cfg_hash, available, error, now)
         if not available:
             logger.warning(f"Active embedder probe failed ({model}): {error}")
@@ -4227,13 +4257,23 @@ class KnowledgeEngine:
                         _rows = {t["task_id"]: t for t in await self._metadata.list_tasks(collection)}
                     except Exception:
                         _rows = {}
-                    for tid in task_ids:
+                    for fp, tid in zip(file_list, task_ids):
                         _row = _rows.get(tid)
                         if _row is None or _row.get("status") in ("pending", "running"):
                             try:
-                                await self._metadata.update_task(tid, status="failed", file_tasks={})
-                            except Exception:
-                                pass
+                                await self._metadata.update_task(
+                                    tid,
+                                    status="failed",
+                                    file_tasks={
+                                        fp.name: {
+                                            "filename": fp.name,
+                                            "status": "failed",
+                                            "error": "reindex timeout",
+                                        }
+                                    },
+                                )
+                            except Exception as _term_err:
+                                logger.warning(f"Failed to terminalize timed-out task {tid}: {_term_err!r}")
                 finally:
                     self._reindex_in_progress.discard(collection)
                     self._reindex_deferred.discard(collection)

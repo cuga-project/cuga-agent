@@ -210,3 +210,9 @@ def test_publish_defers_flip_when_reindex_started(monkeypatch):
     assert _flip_seen.get("target", "").startswith("kb_agent_test_agent_")
     # OLD active collection was busy DURING the deferred window (#c1).
     assert _flip_seen.get("old_busy") is True
+    # The new vector hash must NOT be persisted before the strict flip verifies
+    # success — draft + published stay on the previous (empty) hash until then.
+    draft = asyncio.run(load_draft("test-agent"))
+    published, _ = asyncio.run(load_config(None, "test-agent"))
+    assert (draft.get("knowledge") or {}).get("_vector_config_hash") in (None, "")
+    assert (published.get("knowledge") or {}).get("_vector_config_hash") in (None, "")
