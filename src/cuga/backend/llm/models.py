@@ -364,6 +364,18 @@ class LLMManager:
                 default_model = "anthropic/claude-3.5-sonnet"
                 logger.info(f"No model_name specified for OpenRouter, using default: {default_model}")
                 return default_model
+        elif platform == "minimax":
+            env_model_name = os.environ.get('MODEL_NAME')
+            if env_model_name:
+                logger.info(f"Using MODEL_NAME from environment for MiniMax: {env_model_name}")
+                return env_model_name
+            elif toml_model_name:
+                logger.debug(f"Using model_name from TOML: {toml_model_name}")
+                return toml_model_name
+            else:
+                default_model = "MiniMax-M3"
+                logger.info(f"No model_name specified for MiniMax, using default: {default_model}")
+                return default_model
         elif platform == "litellm":
             env_model_name = os.environ.get('MODEL_NAME')
             if env_model_name:
@@ -542,6 +554,21 @@ class LLMManager:
                 f"No base URL specified for OpenRouter, will raise error if not set, falling back to: {default_openrouter}"
             )
             return default_openrouter
+        elif platform == "minimax":
+            env_base_url = os.environ.get('MINIMAX_BASE_URL')
+            if env_base_url:
+                logger.info(f"Using MINIMAX_BASE_URL from environment: {env_base_url}")
+                return env_base_url
+
+            # Check TOML settings
+            toml_url = model_settings.get('url')
+            if toml_url:
+                logger.debug(f"Using url from TOML: {toml_url}")
+                return toml_url
+
+            default_minimax = "https://api.minimax.io/v1"
+            logger.debug(f"No base URL specified for MiniMax, falling back to: {default_minimax}")
+            return default_minimax
         elif platform == "litellm":
             env_base_url = os.environ.get('OPENAI_BASE_URL') or os.environ.get('LITELLM_API_BASE')
             if env_base_url:
@@ -861,6 +888,31 @@ class LLMManager:
                 openrouter_params["default_headers"] = default_headers
 
             llm = ReasoningChatOpenAI(**openrouter_params)
+        elif platform == "minimax":
+            logger.debug(f"Creating MiniMax model: {model_name}")
+            is_reasoning = self._is_reasoning_model(model_name)
+
+            api_key = _normalize_secret(resolve_secret("MINIMAX_API_KEY")) or os.environ.get(
+                "MINIMAX_API_KEY"
+            )
+            if not api_key:
+                raise ValueError("MINIMAX_API_KEY environment variable not set")
+
+            minimax_params: Dict[str, Any] = {
+                "model_name": model_name,
+                "max_tokens": max_tokens,
+                "timeout": http_timeout,
+                "openai_api_key": api_key,
+                "openai_api_base": base_url,
+            }
+
+            if not is_reasoning:
+                minimax_params["temperature"] = temperature
+                minimax_params["top_p"] = model_settings.get('top_p', 1.0)
+            else:
+                logger.debug(f"Skipping temperature for reasoning model: {model_name}")
+
+            llm = ReasoningChatOpenAI(**minimax_params)
         elif platform == "litellm" and ReasoningChatLiteLLM is not None:
             logger.debug(f"Creating LiteLLM model: {model_name}")
             ssl_verify = self._get_ssl_verify(model_settings)
