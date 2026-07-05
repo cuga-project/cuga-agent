@@ -3,8 +3,14 @@ Unit tests for TokenCounter utility.
 """
 
 import pytest
+from unittest.mock import Mock
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
-from cuga.backend.cuga_graph.utils.token_counter import TokenCounter
+from cuga.backend.cuga_graph.utils.token_counter import (
+    TokenCounter,
+    ensure_model_context_profile,
+    lookup_model_context_size,
+    resolve_model_identifier,
+)
 from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_message_type
 
 
@@ -63,6 +69,37 @@ class TestTokenCounter:
 
         counter_claude_sonnet = TokenCounter(model_name="claude-3-sonnet")
         assert counter_claude_sonnet.get_model_context_size() == 200000
+
+        counter_gpt_oss = TokenCounter(model_name="openai/gpt-oss-120b")
+        assert counter_gpt_oss.get_model_context_size() == 131072
+
+    def test_get_model_context_size_prefers_known_size_over_stale_profile(self):
+        """ChatWatsonx-style stale 8K profiles must not override gpt-oss-120b."""
+        model = Mock()
+        model.model_id = "openai/gpt-oss-120b"
+        model.profile = {"max_input_tokens": 8192}
+
+        counter = TokenCounter(model=model, model_name="gpt-4")
+        assert counter.get_model_context_size(model) == 131072
+
+    def test_ensure_model_context_profile_overrides_stale_watsonx_profile(self):
+        model = Mock()
+        model.model_id = "openai/gpt-oss-120b"
+        model.profile = {"max_input_tokens": 8192, "tool_calling": True}
+
+        size = ensure_model_context_profile(model, "openai/gpt-oss-120b")
+        assert size == 131072
+        assert model.profile == {"max_input_tokens": 131072, "tool_calling": True}
+
+    def test_lookup_model_context_size_with_provider_prefix(self):
+        assert lookup_model_context_size("openai/gpt-oss-120b") == 131072
+
+    def test_resolve_model_identifier_prefers_model_id(self):
+        model = Mock()
+        model.model_id = "openai/gpt-oss-120b"
+        model.model_name = "gpt-4"
+
+        assert resolve_model_identifier(model, fallback_name="gpt-4") == "openai/gpt-oss-120b"
 
     def test_get_model_context_size_unknown_model(self):
         """Test context size retrieval for unknown model (should default to 131K based on gpt-oss-120b)."""
