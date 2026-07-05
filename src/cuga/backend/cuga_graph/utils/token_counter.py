@@ -289,6 +289,72 @@ if TYPE_CHECKING:
     pass
 
 
+def resolve_model_identifier(model: Optional[Any] = None, fallback_name: str = "") -> str:
+    """Return the best-effort model id/name from a LangChain chat model instance."""
+    if model is None:
+        return fallback_name
+
+    try:
+        from langchain_ibm import ChatWatsonx
+
+        if isinstance(model, ChatWatsonx):
+            model_id = getattr(model, "model_id", None)
+            if model_id:
+                return str(model_id)
+    except ImportError:
+        pass
+
+    for attr in ("model_id", "model_name", "model"):
+        value = getattr(model, attr, None)
+        if value:
+            return str(value)
+
+    return fallback_name
+
+
+def lookup_model_context_size(model_name: Optional[str]) -> Optional[int]:
+    """Look up a known context window size for *model_name*, if available."""
+    if not model_name:
+        return None
+
+    normalized_name = model_name.strip()
+    if "/" in normalized_name:
+        normalized_name = normalized_name.split("/", 1)[1]
+
+    if normalized_name in MODEL_CONTEXT_SIZES:
+        return MODEL_CONTEXT_SIZES[normalized_name]
+
+    sorted_keys = sorted(MODEL_CONTEXT_SIZES.keys(), key=len, reverse=True)
+    for key in sorted_keys:
+        if normalized_name.startswith(key):
+            return MODEL_CONTEXT_SIZES[key]
+
+    return None
+
+
+def ensure_model_context_profile(model: Optional[Any] = None, model_name: Optional[str] = None) -> int:
+    """Ensure *model.profile* reflects the known context window for the resolved model name."""
+    resolved_name = resolve_model_identifier(model, fallback_name=model_name or "")
+    context_size = lookup_model_context_size(resolved_name)
+    if context_size is None:
+        context_size = DEFAULT_CONTEXT_SIZE
+
+    if model is not None:
+        try:
+            existing = getattr(model, "profile", None)
+            if not isinstance(existing, Mapping) or existing.get("max_input_tokens") != context_size:
+                model.profile = {"max_input_tokens": context_size}
+                logger.debug(
+                    "Set model profile: max_input_tokens={} for {}",
+                    context_size,
+                    resolved_name or model_name or "unknown",
+                )
+        except Exception as exc:
+            logger.warning(f"Failed to set model.profile: {exc}")
+
+    return context_size
+
+
 class TokenCounter:
     """
     Utility for counting tokens in messages.
@@ -460,7 +526,9 @@ class TokenCounter:
         """
         Get the context window size for a given model.
 
-        First tries to get from model profile, then falls back to hardcoded values.
+        Prefers known model-name mappings over provider-supplied profiles, because
+        some integrations (e.g. ChatWatsonx) ship with generic 8K profiles that
+        do not match large-context models like gpt-oss-120b.
 
         Args:
             model: Optional BaseChatModel instance (uses instance model if not provided)
@@ -468,42 +536,20 @@ class TokenCounter:
         Returns:
             Context window size in tokens
         """
-        # Try to get from model profile first
         model_to_check = model or self.model
+        model_name = resolve_model_identifier(model_to_check, fallback_name=self.model_name)
+
+        known_size = lookup_model_context_size(model_name)
+        if known_size is not None:
+            return known_size
+
         if model_to_check:
             profile_limit = self._get_profile_limits(model_to_check)
             if profile_limit is not None:
                 return profile_limit
 
-        # Fallback to model context sizes constant
-        model_name = self.model_name
-        if model_to_check and hasattr(model_to_check, 'model_name'):
-            model_name = model_to_check.model_name
-
-        # Normalize model name - strip provider prefixes like "Azure/", "OpenAI/", etc.
-        normalized_name = model_name
-        if '/' in model_name:
-            normalized_name = model_name.split('/', 1)[1]
-            logger.debug(f"Normalized model name from '{model_name}' to '{normalized_name}'")
-
-        # Try exact match first
-        if normalized_name in MODEL_CONTEXT_SIZES:
-            return MODEL_CONTEXT_SIZES[normalized_name]
-
-        # Try partial match (e.g., "gpt-4-0613" matches "gpt-4", "gpt-4.1" matches "gpt-4")
-        # Sort keys by length (descending) to match longer prefixes first
-        # This ensures "gpt-4o" matches before "gpt-4"
-        sorted_keys = sorted(MODEL_CONTEXT_SIZES.keys(), key=len, reverse=True)
-        for key in sorted_keys:
-            if normalized_name.startswith(key):
-                logger.debug(
-                    f"Matched '{normalized_name}' to '{key}' with context size {MODEL_CONTEXT_SIZES[key]}"
-                )
-                return MODEL_CONTEXT_SIZES[key]
-
-        # Default to 32K for unknown models
         logger.warning(
-            f"Unknown model '{model_name}', defaulting to 32K context window. "
+            f"Unknown model '{model_name}', defaulting to {DEFAULT_CONTEXT_SIZE} context window. "
             "Consider adding the model to MODEL_CONTEXT_SIZES constant or setting model.profile "
             "with max_input_tokens for accurate tracking."
         )

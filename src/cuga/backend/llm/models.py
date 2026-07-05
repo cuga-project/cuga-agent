@@ -16,6 +16,7 @@ from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatResult
 from loguru import logger
 
+from cuga.backend.cuga_graph.utils.token_counter import ensure_model_context_profile
 from cuga.backend.llm.load_test_mock import clone_load_test_mock_chat_model, is_mock_llm_enabled
 from cuga.backend.secrets import resolve_secret
 from cuga.config import DEFAULT_LLM_HTTP_TIMEOUT, settings
@@ -748,6 +749,7 @@ class LLMManager:
                 raise ValueError("WatsonX requires WATSONX_SPACE_ID or WATSONX_PROJECT_ID to be set.")
 
             llm = ChatWatsonx(**watsonx_params)
+            ensure_model_context_profile(llm, model_name)
         elif platform == "rits":
             apikey_name = model_settings.get("apikey_name")
             api_key = _normalize_secret(resolve_secret(apikey_name)) if apikey_name else None
