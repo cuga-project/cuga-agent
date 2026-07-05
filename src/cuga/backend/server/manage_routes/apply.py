@@ -6,10 +6,8 @@ from typing import Any
 import httpx
 from loguru import logger
 
-from cuga.backend.server.manage_routes.helpers import (
-    extract_agent_feature_overrides,
-    policies_list_from_config,
-)
+from cuga.backend.server.manage_routes.draft_ops import rebuild_agent_from_config
+from cuga.backend.server.manage_routes.helpers import policies_list_from_config
 
 
 async def apply_published_config(app_state: Any, config: dict[str, Any]) -> None:
@@ -191,21 +189,5 @@ async def rebuild_production_agent(app_state: Any, config: dict[str, Any]) -> No
     if not prod_agent:
         logger.warning("No production agent found in state, skipping rebuild")
         return
-    tp = getattr(prod_agent, "tool_provider", None)
-    if tp is not None and hasattr(tp, "reset"):
-        tp.reset()
-    overrides = extract_agent_feature_overrides(config or {})
-    if overrides["enable_todos"] is not None:
-        prod_agent.enable_todos = overrides["enable_todos"]
-    if overrides["reflection_enabled"] is not None:
-        prod_agent.reflection_enabled = overrides["reflection_enabled"]
-    if overrides["shortlisting_tool_threshold"] is not None:
-        prod_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
-    if overrides["cuga_lite_max_steps"] is not None:
-        prod_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
-    if overrides["enable_filesystem_tools"] is not None:
-        prod_agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
-    llm_cfg = (config or {}).get("llm") or {}
-    prod_agent.llm_config = llm_cfg if llm_cfg else None
-    await prod_agent.build_graph()
+    await rebuild_agent_from_config(prod_agent, config)
     logger.info("Production agent graph rebuilt successfully")

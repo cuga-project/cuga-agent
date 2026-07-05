@@ -10,8 +10,9 @@ from loguru import logger
 from cuga.backend.server.manage_routes.router import router
 
 from cuga.backend.server.manage_routes.apply import apply_llm_to_draft_state
+from cuga.backend.server.manage_routes.draft_ops import rebuild_agent_from_config
 from cuga.backend.server.manage_routes.helpers import (
-    extract_agent_feature_overrides,
+    agent_draft_lock,
     load_and_patch_draft,
     policies_list_from_config,
 )
@@ -24,43 +25,20 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
         from cuga.backend.server.config_store import save_draft
         from cuga.backend.tools_env.registry.utils.api_utils import get_registry_base_url
 
-        # Always use cuga-default as the base agent_id
-        logger.info(
-            f"[DEBUG] save_manage_config_draft called with agent_id={agent_id}, type={type(agent_id)}"
-        )
         if agent_id is None:
             agent_id = "cuga-default"
-        logger.info(f"[DEBUG] After default assignment: agent_id={agent_id}, type={type(agent_id)}")
 
         data = await request.json()
-        logger.info(f"[DEBUG] Received data keys: {list(data.keys())}")
         config = data.get("config", data)
-        logger.info(
-            f"[DEBUG] Config type: {type(config)}, has tools: {'tools' in config if isinstance(config, dict) else 'N/A'}"
-        )
-        logger.info(
-            f"[DEBUG] Config has policies: {'policies' in config if isinstance(config, dict) else 'N/A'}"
-        )
-        if isinstance(config, dict) and 'policies' in config:
-            logger.info(f"[DEBUG] Policies in config: {config['policies']}")
 
-        logger.info(f"[DEBUG] Calling save_draft with agent_id={agent_id}, type={type(agent_id)}")
-        await save_draft(config or {}, agent_id)
-        logger.info("[DEBUG] save_draft completed successfully")
+        async with agent_draft_lock(agent_id):
+            await save_draft(config or {}, agent_id)
 
-        # This is the /manage/draft endpoint, so always use draft state
-        # The endpoint itself indicates draft mode, not the X-Use-Draft header
         state_to_update = getattr(request.app.state, "draft_app_state", None)
-        logger.info("[DEBUG] Using draft_app_state for /manage/draft endpoint")
-
-        logger.info(f"[DEBUG] state_to_update={state_to_update}, config is dict: {isinstance(config, dict)}")
-
-        # Initialize error tracking
         policy_errors = {}
 
         if state_to_update and config:
             tools_list = (config or {}).get("tools") or []
-            logger.info(f"[DEBUG] tools_list length: {len(tools_list)}")
 
             state_to_update.tools_include_by_app = {
                 t["name"]: t["include"]
@@ -69,16 +47,10 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
             } or None
 
             current_version = getattr(state_to_update, "tools_include_version", 0)
-            logger.info(
-                f"[DEBUG] current tools_include_version={current_version}, type={type(current_version)}"
-            )
-            # Ensure current_version is an integer before incrementing
             if isinstance(current_version, str):
                 current_version = int(current_version) if current_version.isdigit() else 0
             state_to_update.tools_include_version = current_version + 1
-            logger.info(f"[DEBUG] new tools_include_version={state_to_update.tools_include_version}")
 
-            # Apply policies to draft state
             raw_policies = (config or {}).get("policies")
             policies_list = policies_list_from_config(raw_policies)
             if (
@@ -89,33 +61,15 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                 try:
                     from cuga.backend.cuga_graph.policy.utils import apply_policies_data_to_storage
 
-                    logger.info(f"[DEBUG] Applying {len(policies_list)} policies to draft")
-                    logger.info(f"[DEBUG] First policy data: {policies_list[0] if policies_list else 'None'}")
-
                     result = await apply_policies_data_to_storage(
                         state_to_update.policy_system.storage,
                         policies_list,
                         clear_existing=True,
                         filesystem_sync=state_to_update.policy_filesystem_sync,
                     )
-                    logger.info(f"[DEBUG] apply_policies_data_to_storage returned: {result}")
 
                     await state_to_update.policy_system.initialize()
-                    logger.info("[DEBUG] Policy system initialized")
 
-                    # Verify policies were stored
-                    stored_policies = await state_to_update.policy_system.storage.list_policies(
-                        enabled_only=False
-                    )
-                    logger.info(f"[DEBUG] Total policies in storage after apply: {len(stored_policies)}")
-                    for p in stored_policies:
-                        # Handle different policy types - some may not have triggers attribute
-                        triggers_info = ""
-                        if hasattr(p, 'triggers'):
-                            triggers_info = f", triggers={len(p.triggers)}, trigger_types={[type(t).__name__ for t in p.triggers]}"
-                        logger.info(f"[DEBUG] Stored policy: id={p.id}, type={p.type}{triggers_info}")
-
-                    # Check for policy errors
                     if result.get("errors"):
                         policy_errors = {"policy_errors": result["errors"]}
                         logger.warning(f"Policy application had {len(result['errors'])} errors")
@@ -123,26 +77,16 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                     logger.info(f"Applied {result.get('count', 0)} policies to draft from saved config")
                 except Exception as policy_err:
                     logger.warning(f"Failed to apply policies to draft from config: {policy_err}")
-                    logger.exception("[DEBUG] Full policy error traceback:")
                     policy_errors = {"policy_errors": [str(policy_err)]}
 
-        # Trigger registry reload for the agent FIRST (before rebuilding agent graph)
         tool_errors = {}
         try:
             from cuga.backend.server.config_store import _parse_agent_id
 
-            # Use base agent_id for registry reload (without version suffix)
-            logger.info(f"[DEBUG] Before _parse_agent_id: agent_id={agent_id}, type={type(agent_id)}")
             base_agent_id = _parse_agent_id(str(agent_id))
-            logger.info(f"[DEBUG] After _parse_agent_id: base_agent_id={base_agent_id}")
-
             registry_url = get_registry_base_url()
-            logger.info(f"[DEBUG] registry_url={registry_url}")
-
-            # For draft, use the full draft agent_id including --draft suffix
             draft_agent_id = f"{base_agent_id}--draft"
             reload_url = f"{registry_url}/reload?agent_id={draft_agent_id}"
-            logger.info(f"[DEBUG] reload_url={reload_url}")
 
             async with httpx.AsyncClient() as client:
                 r = await client.post(reload_url, timeout=10.0)
@@ -150,56 +94,26 @@ async def save_manage_config_draft(request: Request, agent_id: Optional[str] = N
                 reload_data = r.json()
                 logger.info(f"Registry reloaded for {draft_agent_id} agent: {reload_data}")
 
-                # Check if there were any tool initialization errors
                 if reload_data.get("status") == "partial" and "errors" in reload_data:
                     tool_errors = reload_data["errors"]
                     logger.warning(f"Tool initialization errors: {tool_errors}")
 
         except Exception as reload_err:
             logger.warning(f"Failed to reload registry for {str(agent_id)}: {reload_err}")
-            logger.exception("[DEBUG] Full traceback:")
 
-        # Apply LLM config to draft state only — never mutate os.environ here so the
-        # published agent's LLM is not affected before an explicit publish action.
         if state_to_update:
             llm_cfg = (config or {}).get("llm") or {}
             apply_llm_to_draft_state(state_to_update, llm_cfg)
 
-        # NOW rebuild the draft agent graph AFTER registry has been reloaded
         try:
-            logger.info("[DEBUG] Rebuilding draft agent graph with new configuration...")
-
             draft_agent = getattr(state_to_update, "agent", None)
             if draft_agent:
-                tp = getattr(draft_agent, "tool_provider", None)
-                if tp is not None and hasattr(tp, "reset"):
-                    tp.reset()
-                overrides = extract_agent_feature_overrides(config or {})
-                if overrides["enable_todos"] is not None:
-                    draft_agent.enable_todos = overrides["enable_todos"]
-                if overrides["reflection_enabled"] is not None:
-                    draft_agent.reflection_enabled = overrides["reflection_enabled"]
-                if overrides["shortlisting_tool_threshold"] is not None:
-                    draft_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
-                if overrides["cuga_lite_max_steps"] is not None:
-                    draft_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
-                if overrides["enable_filesystem_tools"] is not None:
-                    draft_agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
-                llm_cfg = (config or {}).get("llm") or {}
-                draft_agent.llm_config = llm_cfg if llm_cfg else None
-                await draft_agent.build_graph()
-                logger.info("[DEBUG] Draft agent graph rebuilt successfully")
+                await rebuild_agent_from_config(draft_agent, config or {})
             else:
-                logger.warning("[DEBUG] No draft agent found in state, skipping rebuild")
-
+                logger.warning("No draft agent found in state, skipping rebuild")
         except Exception as rebuild_err:
             logger.error(f"Failed to rebuild draft agent graph: {rebuild_err}")
-            logger.exception("[DEBUG] Full traceback:")
-            # Don't fail the request if rebuild fails, just log it
 
-        logger.info(f"[DEBUG] Returning JSONResponse with agent_id={agent_id}, type={type(agent_id)}")
-
-        # Return response with tool and policy errors if any
         has_errors = bool(tool_errors or policy_errors)
         response_data = {
             "status": "partial" if has_errors else "success",
@@ -295,22 +209,7 @@ async def patch_draft_tools(request: Request, agent_id: Optional[str] = None):
         try:
             draft_agent = getattr(state, "agent", None)
             if draft_agent:
-                tp = getattr(draft_agent, "tool_provider", None)
-                if tp is not None and hasattr(tp, "reset"):
-                    tp.reset()
-                overrides = extract_agent_feature_overrides(full_draft)
-                if overrides["enable_todos"] is not None:
-                    draft_agent.enable_todos = overrides["enable_todos"]
-                if overrides["reflection_enabled"] is not None:
-                    draft_agent.reflection_enabled = overrides["reflection_enabled"]
-                if overrides["shortlisting_tool_threshold"] is not None:
-                    draft_agent.shortlisting_tool_threshold = overrides["shortlisting_tool_threshold"]
-                if overrides["cuga_lite_max_steps"] is not None:
-                    draft_agent.cuga_lite_max_steps = overrides["cuga_lite_max_steps"]
-                if overrides["enable_filesystem_tools"] is not None:
-                    draft_agent.enable_filesystem_tools = overrides["enable_filesystem_tools"]
-                draft_agent.llm_config = full_draft.get("llm") or None
-                await draft_agent.build_graph()
+                await rebuild_agent_from_config(draft_agent, full_draft)
         except Exception as rebuild_err:
             logger.error(f"Failed to rebuild draft agent graph after PATCH tools: {rebuild_err}")
 

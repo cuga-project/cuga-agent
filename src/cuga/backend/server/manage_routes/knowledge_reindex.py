@@ -1,10 +1,13 @@
 """Knowledge collection migration and deferred hash promotion."""
 
+import asyncio as _asyncio
 from typing import Any
 
 from loguru import logger
 
 from cuga.backend.server.manage_routes.helpers import agent_draft_lock
+
+_BACKGROUND_TASKS: set[_asyncio.Task] = set()
 
 
 async def deferred_reindex_complete_and_flip(
@@ -29,8 +32,6 @@ async def deferred_reindex_complete_and_flip(
     Bounded by a 30-minute wall clock so a hung worker / engine crash
     can't leak this coroutine forever.
     """
-    import asyncio as _asyncio
-
     deadline = _asyncio.get_event_loop().time() + 30 * 60  # 30 min hard cap
 
     # Poll until the engine clears its busy flag for our target. The flag
@@ -111,7 +112,6 @@ async def migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_st
     the scenes only after workers finish AND the engine config still
     matches.
     Returns {triggered, target, collections, error?}."""
-    import asyncio as _asyncio
     import re as _re
 
     sanitized = _re.sub(r"[^a-zA-Z0-9_]", "_", agent_id)
@@ -171,10 +171,12 @@ async def migrate_and_reindex_for_agent(agent_id: str, live_engine: Any, live_st
     # still matches target_hash. See ``deferred_reindex_complete_and_flip``.
     task_ids = (r or {}).get("task_ids") or []
     if target_hash and live_state is not None and task_ids:
-        _asyncio.create_task(
+        task = _asyncio.create_task(
             deferred_reindex_complete_and_flip(
                 agent_id, live_engine, live_state, target, target_hash, task_ids
             )
         )
+        _BACKGROUND_TASKS.add(task)
+        task.add_done_callback(_BACKGROUND_TASKS.discard)
 
     return {"triggered": True, "target": target, "collections": triggered}
