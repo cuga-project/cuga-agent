@@ -17,6 +17,32 @@ import pytest
 from system_tests.e2e.port_manager import allocate_stability_env, cleanup_ports
 
 
+def _sync_server_urls(env_ports: dict[str, str]) -> None:
+    """Refresh module-level URLs after dynamic port env overrides.
+
+    ``base_test.SERVER_URL`` is computed at import time; monkeypatched env
+    vars update subprocess servers and runtime ``settings`` access, but the
+    cached constants used by ``run_task`` must be updated explicitly.
+    """
+    from system_tests.e2e import base_test
+
+    demo_port = env_ports.get("DYNACONF_SERVER_PORTS__DEMO")
+    if not demo_port:
+        return
+
+    server_url = f"http://localhost:{demo_port}"
+    base_test.SERVER_URL = server_url
+    base_test.STREAM_ENDPOINT = f"{server_url}/stream"
+    base_test.STOP_ENDPOINT = f"{server_url}/stop"
+
+    try:
+        import system_tests.load.load_test_with_mocked_llm as load_mod
+
+        load_mod.STATE_ENDPOINT = f"{server_url}/api/agent/state"
+    except ImportError:
+        pass
+
+
 def _needs_dynamic_ports(request) -> bool:
     keywords = request.node.keywords
     if any(marker in keywords for marker in ("stability", "windows_smoke", "load")):
@@ -59,5 +85,6 @@ def dynamic_server_ports(request, monkeypatch):
     env_ports = allocate_stability_env(e2b_mode=e2b_mode)
     for key, value in env_ports.items():
         monkeypatch.setenv(key, value)
+    _sync_server_urls(env_ports)
     yield
     cleanup_ports(env_ports)
