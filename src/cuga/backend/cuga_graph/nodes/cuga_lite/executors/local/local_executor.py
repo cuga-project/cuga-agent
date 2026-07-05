@@ -6,7 +6,7 @@ from typing import Any
 
 from ..base_executor import BaseExecutor
 from ..common.restricted_environment import RestrictedEnvironment
-from ..common.security import SecurityValidator
+from ..common.security import CodeSyntaxError, SecurityValidator
 from ..common.benchmark_mode import is_relaxed_execution
 
 
@@ -101,7 +101,7 @@ class LocalExecutor(BaseExecutor):
                 + traceback.format_exc()
             )
 
-        if isinstance(error, ValueError) and "Python syntax error" in str(error):
+        if isinstance(error, CodeSyntaxError):
             return f"Error during execution: {error}"
 
         error_msg = f"Error during execution: {repr(error)}"

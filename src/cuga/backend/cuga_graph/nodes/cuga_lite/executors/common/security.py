@@ -5,6 +5,10 @@ from typing import List, Set, Tuple
 from .benchmark_mode import is_relaxed_execution
 
 
+class CodeSyntaxError(ValueError):
+    """Raised when submitted code fails Python syntax validation."""
+
+
 class SecurityValidator:
     """Handles security validation for code execution."""
 
@@ -96,7 +100,7 @@ class SecurityValidator:
     ]
 
     @staticmethod
-    def format_syntax_error(code: str, exc: SyntaxError, *, filename: str = "<code>") -> str:
+    def format_syntax_error(code: str, exc: SyntaxError) -> str:
         line_no = exc.lineno or "?"
         msg = f"Python syntax error at line {line_no}: {exc.msg}"
         lines = code.splitlines()
@@ -124,7 +128,7 @@ class SecurityValidator:
         try:
             compile(code, filename, "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
         except SyntaxError as exc:
-            raise ValueError(SecurityValidator.format_syntax_error(code, exc, filename=filename)) from exc
+            raise CodeSyntaxError(SecurityValidator.format_syntax_error(code, exc)) from exc
 
     @staticmethod
     def validate_imports(code: str) -> None:
@@ -135,7 +139,7 @@ class SecurityValidator:
 
         Raises:
             ImportError: If dangerous or disallowed imports are found
-            ValueError: If code is not valid Python (via validate_syntax)
+            CodeSyntaxError: If code is not valid Python (via validate_syntax)
         """
         if is_relaxed_execution():
             return
