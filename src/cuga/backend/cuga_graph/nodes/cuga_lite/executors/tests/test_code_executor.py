@@ -75,6 +75,39 @@ async def test_async_tool_execution(mock_state):
 
 
 @pytest.mark.asyncio
+async def test_syntax_error_blocked_before_exec(mock_state, monkeypatch):
+    """Invalid Python is rejected before sandbox exec with an actionable hint."""
+    monkeypatch.setattr(settings.skills, "enabled", False)
+    code = 'phase2_md = f"""\n# report\n'
+
+    result, new_vars = await CodeExecutor.eval_with_tools_async(
+        code=code,
+        _locals={},
+        state=mock_state,
+        mode='local',
+    )
+
+    assert "Python syntax error" in result
+    assert "unterminated" in result.lower() or "f-string" in result.lower()
+    assert "write_file" in result
+    assert new_vars == {}
+    assert "Traceback" not in result
+
+
+def test_format_syntax_error_hints_for_unterminated_fstring():
+    code = 'x = f"""\nhello\n'
+    try:
+        compile(code, "<code>", "exec")
+    except SyntaxError as exc:
+        msg = SecurityValidator.format_syntax_error(code, exc)
+    else:
+        raise AssertionError("expected SyntaxError")
+
+    assert "Python syntax error at line" in msg
+    assert "write_file" in msg
+
+
+@pytest.mark.asyncio
 async def test_dangerous_import_blocked(mock_state, monkeypatch):
     """Test that dangerous imports are blocked."""
     monkeypatch.setattr(settings.skills, "enabled", False)

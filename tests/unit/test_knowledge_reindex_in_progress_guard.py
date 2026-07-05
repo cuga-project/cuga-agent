@@ -187,7 +187,10 @@ class TestLayer3DeferredFlip:
         from cuga.backend.server import manage_routes
 
         manage_routes._AGENT_DRAFT_LOCKS.clear()
-        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
+        monkeypatch.setattr(
+            "cuga.backend.server.manage_routes.knowledge_reindex.persist_active_vector_config",
+            _noop_persist,
+        )
         live_state = SimpleNamespace(knowledge_config_hash="old_hash")
 
         # Tasks listed as completed.
@@ -270,7 +273,10 @@ class TestLayer3DeferredFlip:
         from cuga.backend.server import manage_routes
 
         manage_routes._AGENT_DRAFT_LOCKS.clear()
-        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
+        monkeypatch.setattr(
+            "cuga.backend.server.manage_routes.knowledge_reindex.persist_active_vector_config",
+            _noop_persist,
+        )
         live_state = SimpleNamespace(knowledge_config_hash="old_hash")
 
         async def fake_list_tasks(coll):
@@ -306,7 +312,10 @@ class TestLayer3DeferredFlip:
         from cuga.backend.server import manage_routes
 
         manage_routes._AGENT_DRAFT_LOCKS.clear()
-        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
+        monkeypatch.setattr(
+            "cuga.backend.server.manage_routes.knowledge_reindex.persist_active_vector_config",
+            _noop_persist,
+        )
         live_state = SimpleNamespace(knowledge_config_hash="old_hash")
 
         async def fake_list_tasks(coll):
@@ -335,9 +344,14 @@ class TestLayer3DeferredFlip:
         from cuga.backend.server import manage_routes
 
         manage_routes._AGENT_DRAFT_LOCKS.clear()
-        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
+        monkeypatch.setattr(
+            "cuga.backend.server.manage_routes.knowledge_reindex.persist_active_vector_config",
+            _noop_persist,
+        )
         # Shrink the 30-min cap so the wait loop times out promptly.
-        monkeypatch.setattr(manage_routes, "_DEFERRED_FLIP_TIMEOUT_S", 0.2)
+        monkeypatch.setattr(
+            "cuga.backend.server.manage_routes.knowledge_reindex._DEFERRED_FLIP_TIMEOUT_S", 0.2
+        )
         live_state = SimpleNamespace(knowledge_config_hash="old_hash")
 
         async def fake_list_tasks(coll):  # pragma: no cover — deadline fires first
@@ -576,11 +590,18 @@ class TestHttpReindexGuard:
 
         monkeypatch.setattr(engine, "list_documents", _fake_list_docs)
 
-        # Don't touch the real config DB from the durability persist.
-        async def _noop_persist(*_a, **_k):
-            return None
+        # Capture the durability persist so we can assert it ran with the
+        # adopted hash (CR-N1), without touching the real config DB. Patch it on
+        # knowledge_routes, where patch_draft_knowledge imported the name.
+        _persist_calls: list[str] = []
 
-        monkeypatch.setattr("cuga.backend.server.manage_routes._persist_active_vector_config", _noop_persist)
+        async def _capture_persist(_agent_id, _engine, target_hash):
+            _persist_calls.append(target_hash)
+
+        monkeypatch.setattr(
+            "cuga.backend.server.manage_routes.knowledge_routes.persist_active_vector_config",
+            _capture_persist,
+        )
 
         # Active pointer starts on a DIFFERENT collection.
         client.app.state.app_state.knowledge_config_hash = "oldhash"
@@ -591,6 +612,8 @@ class TestHttpReindexGuard:
         assert resp.status_code == 200, resp.text
         # Pointer adopted the engine's (existing, populated) collection.
         assert client.app.state.app_state.knowledge_config_hash == "newhash"
+        # ...and persisted the adopted hash durably (CR-N1).
+        assert _persist_calls == ["newhash"], "adopt must persist the adopted hash"
 
     def test_patch_does_not_adopt_when_collection_absent(self, app_with_engine, monkeypatch):
         """A NEW embedder (no collection built yet) must NOT flip the pointer —
@@ -684,29 +707,10 @@ class TestEmbedderAvailabilityProbe:
         assert r["available"] is None
 
 
-class TestPublishUnifiedPromotion:
-    def test_publish_defers_flip_on_async_reindex(self):
-        import inspect
-
-        from cuga.backend.server import manage_routes as mr
-
-        src = inspect.getsource(mr.save_manage_config_publish)
-        # On reindex 'started' (async), publish must NOT eagerly flip — it must
-        # route through the SAME strict deferred flip as the Re-index path.
-        assert '_reindex_status == "started"' in src, "publish lost the async-reindex branch"
-        assert "_deferred_reindex_complete_and_flip(" in src, "publish doesn't defer to the strict flip"
-        # The immediate flip must survive ONLY for the safe (non-async) branch.
-        assert "app_state.knowledge_config_hash = _vec_hash" in src
-
-    def test_deferred_flip_persists_durably(self):
-        import inspect
-
-        from cuga.backend.server import manage_routes as mr
-
-        flip_src = inspect.getsource(mr._deferred_reindex_complete_and_flip)
-        assert "_persist_active_vector_config(" in flip_src, "successful flip no longer persists durably (#5)"
-        persist_src = inspect.getsource(mr._persist_active_vector_config)
-        # Persists the embedder fields + hash TOGETHER to draft AND published so
-        # the restart-reloaded config stays self-consistent.
-        assert "save_draft" in persist_src and "update_published_config_at_version" in persist_src
-        assert "_vector_config_hash" in persist_src and "embedding_model" in persist_src
+# Publish unified-promotion + durable-persist are covered BEHAVIORALLY (the
+# prior source-string tests were replaced per review — grep asserts can't catch
+# a wrong hash / skipped write / dead code):
+#   - publish deferral on reindex "started":
+#       tests/unit/test_manage_publish_sync.py::test_publish_defers_flip_when_reindex_started
+#   - durable persist of a successful flip:
+#       TestLayer3DeferredFlip::test_flip_persists_hash_and_embedder_fields_behaviorally

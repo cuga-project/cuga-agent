@@ -14,7 +14,11 @@ from langchain.agents.middleware import SummarizationMiddleware
 from loguru import logger
 
 from cuga.config import settings
-from cuga.backend.cuga_graph.utils.token_counter import TokenCounter
+from cuga.backend.cuga_graph.utils.token_counter import (
+    TokenCounter,
+    ensure_model_context_profile,
+    resolve_model_identifier,
+)
 from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_message_type
 
 # Optional imports for middleware invocation (may not be available in all LangChain versions)
@@ -82,23 +86,11 @@ class ContextSummarizer:
             self.middleware = None
 
     def _setup_model_profile(self):
-        """Setup model profile with context size for fraction-based triggers."""
-        if not (hasattr(self.config, 'trigger_fraction') and self.config.trigger_fraction):
-            return
-
-        # Check if profile already exists
-        if hasattr(self.model, 'profile') and self.model.profile:
-            if isinstance(self.model.profile, dict) and 'max_input_tokens' in self.model.profile:
-                logger.debug(f"Model already has profile: {self.model.profile}")
-                return
-
-        # Set profile with context size
+        """Setup model profile with correct context window for the resolved model."""
+        resolved_name = resolve_model_identifier(self.model, fallback_name=self.model_name)
         try:
-            context_size = self.token_counter.get_model_context_size(self.model)
-            self.model.profile = {"max_input_tokens": context_size}
-            logger.info(f"Set model profile: max_input_tokens={context_size} for {self.model_name}")
-
-            # Verify profile was set
+            context_size = ensure_model_context_profile(self.model, resolved_name)
+            logger.info(f"Set model profile: max_input_tokens={context_size} for {resolved_name}")
             if not hasattr(self.model, 'profile'):
                 logger.error("Failed to set model.profile - attribute doesn't exist after assignment")
         except Exception as e:

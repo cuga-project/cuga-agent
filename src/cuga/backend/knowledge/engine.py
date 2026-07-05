@@ -2830,15 +2830,23 @@ class KnowledgeEngine:
         # The source collection stays in _reindex_in_progress for the whole
         # migration lifetime (see _migrate_and_reindex_for_agent), so this
         # exact-collection check covers the active-collection delete.
+        # Fast-path reject (re-checked under the lock below).
         if collection in self._reindex_in_progress:
             raise ReindexInProgressError(
                 f"Reindex in progress for {collection}; deletes are rejected until it completes."
             )
 
-        if not await self._metadata.mark_deleting(collection, filename):
-            raise DocumentNotFoundError(filename)
-
         async with self._get_collection_lock(collection):
+            # Re-check under the lock: reindex() flags the collection AND
+            # snapshots its file_list under this same lock, so a delete that
+            # slipped the fast-path guard above is caught here before it can
+            # race that snapshot and resurrect the doc (CR-D).
+            if collection in self._reindex_in_progress:
+                raise ReindexInProgressError(
+                    f"Reindex in progress for {collection}; deletes are rejected until it completes."
+                )
+            if not await self._metadata.mark_deleting(collection, filename):
+                raise DocumentNotFoundError(filename)
             await self._ensure_vector_store_cached(collection)
             try:
                 await asyncio.to_thread(self._delete_vector_and_file, collection, filename)
@@ -3963,13 +3971,16 @@ class KnowledgeEngine:
         self.apply_knowledge_config(kwargs)
         return self.get_settings()
 
-    @staticmethod
-    def _scrub_secret_text(text: str) -> str:
-        """Strip secret-shaped tokens from provider error strings before they
-        reach a log or an HTTP response. Provider/httpx errors can echo a
-        credentialed base_url (https://user:pass@host) or a rejected key."""
+    def _scrub_secret_text(self, text: str) -> str:
+        """Strip secret material from provider error strings before they reach a
+        log or an HTTP response. Replaces the ACTUAL configured key first (it may
+        not match a known shape — e.g. a watsonx / custom key), then shape-based
+        tokens (credentialed base_url, bearer, sk-*, api_key=...)."""
         import re as _re
 
+        configured_key = (getattr(self._config, "embedding_api_key", "") or "").strip()
+        if len(configured_key) >= 6:
+            text = text.replace(configured_key, "***")
         text = _re.sub(r"(https?://)[^/@\s]+@", r"\1***@", text)
         text = _re.sub(r"(?i)(bearer\s+)[A-Za-z0-9._\-]{6,}", r"\1***", text)
         text = _re.sub(r"\b(sk-|xai-|or-v1-|or-)[A-Za-z0-9._\-]{6,}", r"\1***", text)
@@ -4148,10 +4159,6 @@ class KnowledgeEngine:
         if not files_dir.exists():
             return {"status": "no_documents", "count": 0}
 
-        file_list = [f for f in files_dir.iterdir() if f.is_file()]
-        if not file_list:
-            return {"status": "no_documents", "count": 0}
-
         task_ids: list[str] = []
         # Parallel list of {task_id, filename} pairs so the route can return
         # filenames in the POST response and the FE can render the reindex
@@ -4170,6 +4177,15 @@ class KnowledgeEngine:
                 if pending:
                     raise ReindexBusyError(len(pending))
                 self._reindex_in_progress.add(collection)
+                # Snapshot the file list AFTER flagging, under the same lock, so a
+                # concurrent delete either ran before the flag (and is excluded)
+                # or is rejected by delete_document's in-lock re-check — closing
+                # the delete/reindex TOCTOU that could resurrect a deleted doc
+                # (CR-D).
+                file_list = [f for f in files_dir.iterdir() if f.is_file()]
+                if not file_list:
+                    self._reindex_in_progress.discard(collection)
+                    return {"status": "no_documents", "count": 0}
                 await self.drop_collection_vectors(collection)
 
             for file_path in file_list:
@@ -4198,14 +4214,26 @@ class KnowledgeEngine:
                     )
                 except asyncio.TimeoutError:
                     # A wedged provider call must not pin the collection forever.
-                    # The finally clears the busy flag so the agent isn't blocked;
-                    # the deferred flip then sees non-terminal tasks and refuses to
-                    # promote (safe — the old collection stays active).
                     logger.error(
                         f"Reindex worker for {collection} exceeded "
                         f"{_REINDEX_WORKER_TIMEOUT_S}s (wedged provider call?); "
-                        f"releasing busy flag so the agent isn't blocked."
+                        f"failing unfinished tasks + releasing busy flag."
                     )
+                    # Terminalize any still-pending/running task rows — otherwise
+                    # the next reindex() sees them as active and raises
+                    # ReindexBusyError, so the timeout wouldn't actually self-heal
+                    # (the finally only clears the collection busy flag).
+                    try:
+                        _rows = {t["task_id"]: t for t in await self._metadata.list_tasks(collection)}
+                    except Exception:
+                        _rows = {}
+                    for tid in task_ids:
+                        _row = _rows.get(tid)
+                        if _row is None or _row.get("status") in ("pending", "running"):
+                            try:
+                                await self._metadata.update_task(tid, status="failed", file_tasks={})
+                            except Exception:
+                                pass
                 finally:
                     self._reindex_in_progress.discard(collection)
                     self._reindex_deferred.discard(collection)
@@ -4446,13 +4474,12 @@ class KnowledgeEngine:
             except Exception as e:
                 logger.warning(f"from_tiktoken_encoder failed ({e}); char fallback.")
 
-        # ``approximate`` (cohere/voyage/gemini/etc.) and ``fastembed``
-        # plain-text path: char-based fallback. The operator canary that
-        # used to fire here (PR #400 b3af0800) was deleted in PR-A — the
-        # ``_load_hf_tokenizer_for_chunking`` lru_cached warning already
-        # surfaces unknown-model lookups, and the curated allow-list it
-        # consulted to dedup vs that warning is gone.
-        return RecursiveCharacterTextSplitter(chunk_size=chunk_size, chunk_overlap=chunk_overlap)
+        # ``approximate`` (cohere/voyage/gemini/etc.), ``fastembed`` plain-text
+        # path, AND the hf/tiktoken exception fallbacks above all land here:
+        # char-based fallback. Use the token-aware ``cap``/``overlap`` (NOT the
+        # raw chunk_size) so a failed tokenizer path can't emit a chunk that
+        # exceeds the embedder's boundary (CR — the whole point of the cap).
+        return RecursiveCharacterTextSplitter(chunk_size=cap, chunk_overlap=overlap)
 
     @staticmethod
     def _exact_chunk_tokens(text: str, tok: "ChunkingTokenizer") -> int:

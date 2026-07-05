@@ -1,9 +1,12 @@
 import ast
 import re
 from typing import List, Set, Tuple
-from loguru import logger
 
 from .benchmark_mode import is_relaxed_execution
+
+
+class CodeSyntaxError(ValueError):
+    """Raised when submitted code fails Python syntax validation."""
 
 
 class SecurityValidator:
@@ -97,6 +100,37 @@ class SecurityValidator:
     ]
 
     @staticmethod
+    def format_syntax_error(code: str, exc: SyntaxError) -> str:
+        line_no = exc.lineno or "?"
+        msg = f"Python syntax error at line {line_no}: {exc.msg}"
+        lines = code.splitlines()
+        if isinstance(line_no, int) and 1 <= line_no <= len(lines):
+            msg += f"\n  >>> {lines[line_no - 1].rstrip()}"
+        lower = (exc.msg or "").lower()
+        if "unterminated" in lower and ("string" in lower or "f-string" in lower):
+            msg += (
+                "\nHint: Do not embed large markdown or JSON inside f-strings or triple-quoted strings. "
+                "Build reports with '\\n'.join([...]), json.dumps() for dict sections, or "
+                "await write_file('./output/report.md', content)."
+            )
+        elif "unexpected indent" in lower:
+            msg += (
+                "\nHint: Top-level statements must start at column 0. "
+                "Do not indent code inside triple-quoted string literals."
+            )
+        return msg
+
+    @staticmethod
+    def validate_syntax(code: str, *, filename: str = "<code>") -> None:
+        """Reject invalid Python before sandbox exec so the model can retry cleanly."""
+        if is_relaxed_execution():
+            return
+        try:
+            compile(code, filename, "exec", flags=ast.PyCF_ALLOW_TOP_LEVEL_AWAIT)
+        except SyntaxError as exc:
+            raise CodeSyntaxError(SecurityValidator.format_syntax_error(code, exc)) from exc
+
+    @staticmethod
     def validate_imports(code: str) -> None:
         """Validate that code only imports allowed modules.
 
@@ -105,23 +139,22 @@ class SecurityValidator:
 
         Raises:
             ImportError: If dangerous or disallowed imports are found
+            CodeSyntaxError: If code is not valid Python (via validate_syntax)
         """
         if is_relaxed_execution():
             return
 
-        try:
-            tree = ast.parse(code)
-            for node in ast.walk(tree):
-                if isinstance(node, ast.Import):
-                    for alias in node.names:
-                        module_name = alias.name.split('.')[0]
-                        SecurityValidator._check_module(module_name)
-                elif isinstance(node, ast.ImportFrom):
-                    if node.module:
-                        module_name = node.module.split('.')[0]
-                        SecurityValidator._check_module(module_name)
-        except SyntaxError as e:
-            logger.warning(f"Syntax error in code during pre-validation: {e}. Will attempt execution anyway.")
+        SecurityValidator.validate_syntax(code)
+        tree = ast.parse(code)
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                for alias in node.names:
+                    module_name = alias.name.split('.')[0]
+                    SecurityValidator._check_module(module_name)
+            elif isinstance(node, ast.ImportFrom):
+                if node.module:
+                    module_name = node.module.split('.')[0]
+                    SecurityValidator._check_module(module_name)
 
     @staticmethod
     def _check_module(module_name: str) -> None:
