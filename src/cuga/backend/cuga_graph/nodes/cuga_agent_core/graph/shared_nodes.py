@@ -72,30 +72,7 @@ def create_call_model_node(
         base_prompt: str = getattr(state, "prepared_prompt", "") or ""
         system_content: str = adapter.prepare_system_content(state, configurable, base_prompt)
 
-        # ── Context summarisation ──────────────────────────────────────────
-        effective_messages = await apply_context_summarization(
-            adapter.get_messages(state) or [],
-            active_model,
-            system_prompt=base_prompt,
-            tools=None,
-            tracker=adapter.get_tracker(),
-            variables_storage=adapter.get_variables_storage(state),
-            variable_counter_state=getattr(state, "variable_counter_state", None),
-            variable_creation_order=getattr(state, "variable_creation_order", None),
-            message_list_name=adapter.messages_key,
-        )
-
-        # ── Build messages_for_model: [system] + few-shot + conversation ───
-        messages_for_model: list = [{"role": "system", "content": system_content}]
-
-        for example in adapter.get_few_shot_messages(state):
-            if isinstance(example, dict):
-                role = (example.get("role") or "").strip().lower()
-                ex_content = example.get("content") or ""
-                if role in {"user", "assistant"} and ex_content:
-                    messages_for_model.append({"role": role, "content": ex_content})
-
-        # ── Variables summary ──────────────────────────────────────────────
+        # ── Variables summary (count toward context before summarization) ──
         var_manager = adapter.get_variable_manager(state)
         variables_summary_text: Optional[str] = None
         variables_addendum = ""
@@ -120,6 +97,33 @@ def create_call_model_node(
             playbook_guidance = metadata.get("playbook_guidance")
             if playbook_guidance:
                 logger.info("Will inject playbook guidance into last user message (first time only)")
+
+        summarization_system_prompt = system_content + variables_addendum
+        if playbook_guidance:
+            summarization_system_prompt += f"\n\n## Task Guidance\n{playbook_guidance}"
+
+        # ── Context summarisation ──────────────────────────────────────────
+        effective_messages = await apply_context_summarization(
+            adapter.get_messages(state) or [],
+            active_model,
+            system_prompt=summarization_system_prompt,
+            tools=None,
+            tracker=adapter.get_tracker(),
+            variables_storage=adapter.get_variables_storage(state),
+            variable_counter_state=getattr(state, "variable_counter_state", None),
+            variable_creation_order=getattr(state, "variable_creation_order", None),
+            message_list_name=adapter.messages_key,
+        )
+
+        # ── Build messages_for_model: [system] + few-shot + conversation ───
+        messages_for_model: list = [{"role": "system", "content": system_content}]
+
+        for example in adapter.get_few_shot_messages(state):
+            if isinstance(example, dict):
+                role = (example.get("role") or "").strip().lower()
+                ex_content = example.get("content") or ""
+                if role in {"user", "assistant"} and ex_content:
+                    messages_for_model.append({"role": role, "content": ex_content})
 
         # ── Process messages: inject PI / playbook / variables ─────────────
         pi = adapter.get_pi(state)

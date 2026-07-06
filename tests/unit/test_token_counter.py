@@ -7,6 +7,8 @@ from unittest.mock import Mock
 from langchain_core.messages import HumanMessage, AIMessage, BaseMessage
 from cuga.backend.cuga_graph.utils.token_counter import (
     TokenCounter,
+    clamp_completion_tokens,
+    clamp_watsonx_completion_for_messages,
     ensure_model_context_profile,
     lookup_model_context_size,
     resolve_model_identifier,
@@ -243,6 +245,56 @@ class TestTokenCounterWithMockTracker:
         counter = TokenCounter(model_name="gpt-4", tracker=MockTracker())
         usage = counter.get_cumulative_usage()
         assert usage == 1500
+
+
+def test_clamp_completion_tokens_keeps_requested_when_room():
+    assert clamp_completion_tokens(131072, 70000, 16000) == 16000
+
+
+def test_clamp_completion_tokens_never_returns_negative():
+    assert clamp_completion_tokens(8192, 12764, 16000) == 1
+
+
+def test_clamp_watsonx_completion_for_messages_updates_params():
+    pytest.importorskip("langchain_ibm")
+    from langchain_ibm import ChatWatsonx
+
+    model = ChatWatsonx.model_construct(
+        params={"max_completion_tokens": 16000, "temperature": 0.1},
+        max_completion_tokens=16000,
+        model_id="openai/gpt-oss-120b",
+        profile={"max_input_tokens": 131072},
+    )
+    huge_messages = [{"role": "user", "content": "word " * 200_000}]
+
+    clamp_watsonx_completion_for_messages(model, huge_messages)
+
+    assert model.params["max_completion_tokens"] >= 1
+    assert model.params["max_completion_tokens"] < 16000
+
+    small_messages = [{"role": "user", "content": "hello"}]
+    clamp_watsonx_completion_for_messages(model, small_messages)
+
+    assert model.params["max_completion_tokens"] == 16000
+
+
+def test_update_model_parameters_updates_chat_watsonx_params():
+    pytest.importorskip("langchain_ibm")
+    from langchain_ibm import ChatWatsonx
+
+    from cuga.backend.llm.models import LLMManager
+
+    model = ChatWatsonx.model_construct(
+        params={"max_completion_tokens": 1000, "temperature": 0.5},
+        max_tokens=1000,
+        max_completion_tokens=1000,
+        model_id="openai/gpt-oss-120b",
+    )
+    updated = LLMManager()._update_model_parameters(model, temperature=0.2, max_tokens=8000)
+
+    assert updated.params["max_completion_tokens"] == 8000
+    assert updated.params["temperature"] == 0.2
+    assert updated.max_completion_tokens == 8000
 
 
 if __name__ == "__main__":

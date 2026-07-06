@@ -281,6 +281,7 @@ class CodeExecutor:
     @classmethod
     def _wrap_code_for_code_agent(cls, code: str, fake_datetime: Optional[str] = None) -> str:
         """Wrap code for CodeAgent execution."""
+        SecurityValidator.validate_syntax(code)
         indented_code = '\n'.join('    ' + line for line in code.split('\n'))
 
         datetime_mock = CodeWrapper.create_datetime_mock(fake_datetime)
@@ -397,7 +398,11 @@ async def _async_main():
 
             tracker = ActivityTracker()
             fake_datetime = tracker.current_date if tracker.current_date and is_benchmark_mode() else None
-            wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
+            try:
+                wrapped_code = cls._wrap_code_for_code_agent(code, fake_datetime=fake_datetime)
+            except CodeSyntaxError as e:
+                executor = cls._get_local_executor()
+                return executor.format_error(e), {}
 
             if skills_on:
                 if mode in ('e2b', 'docker'):
