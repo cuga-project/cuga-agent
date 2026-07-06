@@ -185,16 +185,6 @@ _ledgers: OrderedDict[str, SourceLedger] = OrderedDict()
 _registry_lock = threading.Lock()
 _MAX_THREADS = 300
 
-# Optional hook set by the server so a fresh process can rebuild cited
-# entries from persisted conversation events (see main.py wiring).
-_rehydrator: Callable[[str, SourceLedger], None] | None = None
-
-
-def set_rehydrator(fn: Callable[[str, SourceLedger], None] | None) -> None:
-    global _rehydrator
-    _rehydrator = fn
-
-
 def get_ledger(thread_id: str, create: bool = True) -> SourceLedger | None:
     if not thread_id:
         return None
@@ -209,18 +199,11 @@ def get_ledger(thread_id: str, create: bool = True) -> SourceLedger | None:
         if not create:
             return None
         ledger = SourceLedger()
-        # Publish to registry before rehydration so concurrent callers can
-        # locate the ledger.  Accepted tradeoff: a concurrent caller may
-        # briefly see an un-rehydrated ledger, and a failed rehydrator is not
-        # retried.
+        # Publish to registry before rehydration completes. Rehydration happens
+        # at turn start in the server (_rehydrate_citation_ledger in main.py).
         _ledgers[thread_id] = ledger
         while len(_ledgers) > _MAX_THREADS:
             _ledgers.popitem(last=False)
-    if _rehydrator is not None:
-        try:
-            _rehydrator(thread_id, ledger)
-        except Exception:
-            logger.exception("source-ledger rehydration failed for thread %s", thread_id)
     return ledger
 
 

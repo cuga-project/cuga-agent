@@ -200,6 +200,62 @@ def _knowledge_citations_enabled_for_app_state(app_state: "AppState" | None) -> 
     return bool(getattr(config, "citations_enabled", True))
 
 
+def _format_sources_footer(sources: list[dict]) -> str:
+    """Build a plain-text sources footer for WXO-mode answers."""
+    lines = []
+    for s in sources:
+        page = f" p.{s['page']}" if s.get("page") is not None else ""
+        lines.append(f"[{s['n']}] {s['filename']}{page}")
+    return "\n\nSources:\n" + "\n".join(lines)
+
+
+async def _rehydrate_citation_ledger(app_state: "AppState", thread_id: str, user_id: str) -> None:
+    """Rebuild cited ledger entries from persisted Answer events at turn start.
+
+    In-memory ledgers die with the process. This restores cite_ids from the
+    on-disk conversation so they stay collision-free and re-citable after a
+    server restart. Called once per turn when the ledger is absent.
+
+    WXO-mode Answer events are raw text (not JSON) and are intentionally
+    skipped by the ``isinstance(payload, dict)`` guard below.
+
+    Must never break the turn — every failure mode is swallowed.
+    """
+    if not _knowledge_citations_enabled_for_app_state(app_state):
+        return
+    if not thread_id:
+        return
+    try:
+        from cuga.backend.knowledge.sources import get_ledger as _get_ledger
+
+        if _get_ledger(thread_id, create=False) is None:
+            conversation_db = get_conversation_db()
+            stream_history = await conversation_db.get_stream_events(
+                app_state.agent_id, thread_id, user_id
+            )
+            events_list = stream_history.events if stream_history else []
+            if events_list:
+                _ledger = _get_ledger(thread_id)  # create
+                for ev in events_list:
+                    if ev.event_name != "Answer":
+                        continue
+                    try:
+                        payload = json.loads(ev.event_data)
+                        if not isinstance(payload, dict):
+                            # WXO-mode Answer events are raw text — skip intentionally
+                            continue
+                        for snap in payload.get("sources", []) or []:
+                            _ledger.restore(snap)
+                    except Exception:
+                        logger.debug(
+                            "Citation ledger rehydration: skipped event for thread %s",
+                            thread_id,
+                        )
+                        continue
+    except Exception as e:
+        logger.debug("Citation ledger rehydration skipped for thread %s: %s", thread_id, e)
+
+
 def _skills_effective_enabled() -> bool:
     return getattr(settings.skills, "enabled", False) and getattr(
         settings.advanced_features, "enable_shell_tool", False
@@ -1456,36 +1512,8 @@ async def event_stream(
                 "filenames": _session_kb.filenames,
             }
 
-    # Restart rehydration: rebuild cited ledger entries from persisted Answer
-    # events so cite_ids stay collision-free and re-citable after a server
-    # restart (in-memory ledgers die with the process). Answer events are
-    # buffered with the plain payload JSON in event_data, so parse directly.
-    # Must never break the turn — every failure mode is swallowed.
-    if thread_id and getattr(app_state, "knowledge_engine", None) is not None:
-        try:
-            from cuga.backend.knowledge.sources import get_ledger as _get_ledger
-
-            if _get_ledger(thread_id, create=False) is None:
-                conversation_db = get_conversation_db()
-                stream_history = await conversation_db.get_stream_events(
-                    app_state.agent_id, thread_id, user_id
-                )
-                events_list = stream_history.events if stream_history else []
-                if events_list:
-                    _ledger = _get_ledger(thread_id)  # create
-                    for ev in events_list:
-                        if ev.event_name != "Answer":
-                            continue
-                        try:
-                            payload = json.loads(ev.event_data)
-                            if not isinstance(payload, dict):
-                                continue
-                            for snap in payload.get("sources", []) or []:
-                                _ledger.restore(snap)
-                        except Exception:
-                            continue
-        except Exception as e:
-            logger.debug(f"Citation ledger rehydration skipped for thread {thread_id}: {e}")
+    if thread_id:
+        await _rehydrate_citation_ledger(app_state, thread_id, user_id)
 
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
@@ -1618,11 +1646,7 @@ async def event_stream(
                             # both the streamed payload and the persisted Answer
                             # event carry it).
                             if event.answer and event.sources:
-                                source_lines = []
-                                for s in event.sources:
-                                    page = f" p.{s['page']}" if s.get("page") is not None else ""
-                                    source_lines.append(f"[{s['n']}] {s['filename']}{page}")
-                                event.answer = f"{event.answer}\n\nSources:\n" + "\n".join(source_lines)
+                                event.answer = f"{event.answer}{_format_sources_footer(event.sources)}"
                             final_answer_text = event.answer
                         elif event.answer:
                             answer_payload = {
