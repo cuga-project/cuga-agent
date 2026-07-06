@@ -367,6 +367,69 @@ def test_slack_direct_module():
         del os.environ["SLACK_SIGNING_SECRET"]
 
 
+def test_slack_thread_scoping():
+    """Per-thread Slack: the ``#<ts>`` suffix keys conversation memory per-thread, but
+    channel_native_id strips it so identity/delivery stay channel-scoped; send_message threads the
+    reply. Discord is already on this model (channel_id = the thread)."""
+    import asyncio
+    import slack_direct
+    from envelope import Source
+    # native id strips the #<ts> memory suffix; plain ids (Discord/Telegram) untouched
+    assert principal.channel_native_id(Source(name="slack", thread_id="gw:slack:C1#1699.9")) == "C1"
+    assert principal.channel_native_id(Source(name="slack", thread_id="gw:slack:C1")) == "C1"
+    assert principal.channel_native_id(Source(name="discord", thread_id="gw:discord:42")) == "42"
+
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True}
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            sent.clear(); sent.update(json or {}); return _Resp()
+
+    import httpx
+    orig = httpx.AsyncClient
+    httpx.AsyncClient = lambda *a, **k: _C()
+    os.environ["SLACK_BOT_TOKEN"] = "xoxb-test"
+    try:
+        asyncio.run(slack_direct.send_message("C1", "hi", thread_ts="1699.9"))
+        assert sent.get("channel") == "C1" and sent.get("thread_ts") == "1699.9"   # reply in-thread
+        asyncio.run(slack_direct.send_message("C1", "hi"))
+        assert "thread_ts" not in sent                                              # root → no thread
+    finally:
+        httpx.AsyncClient = orig
+        os.environ.pop("SLACK_BOT_TOKEN", None)
+
+
+def test_channel_author_identity():
+    """Per-user identity through a SHARED bot: source.user (the author) drives identity, falling back
+    to the thread-native id. Discord/Slack inbound flows forward the author; Telegram keeps chat.id."""
+    from envelope import Source
+    # channel_user_id prefers the explicit author over the thread-native id
+    assert principal.channel_user_id(Source(name="slack", thread_id="gw:slack:C1", user="U_ALICE")) == "U_ALICE"
+    assert principal.channel_user_id(Source(name="slack", thread_id="gw:slack:C1")) == "C1"   # fallback
+    assert principal.channel_user_id(Source(name="telegram", thread_id="gw:telegram:555")) == "555"
+    # inbound flow templates forward the author: discord author id, slack user; telegram has none
+    assert flows.CHANNELS["discord"]["user_ref"] == "{{trigger.author.id}}"
+    assert flows.CHANNELS["slack"]["user_ref"] == "{{trigger.user}}"
+    assert "user_ref" not in flows.CHANNELS["telegram"]
+    df = flows.build_inbound_flow(channel="discord", agent="concierge")
+    src = df["trigger"]["nextAction"]["settings"]["input"]["body"]["source"]
+    assert src["user"] == "{{trigger.author.id}}" and src["thread_id"] == "gw:discord:{{trigger.channel_id}}"
+    tf = flows.build_inbound_flow(channel="telegram", agent="concierge")
+    assert "user" not in tf["trigger"]["nextAction"]["settings"]["input"]["body"]["source"]
+
+
 def test_slack_channel_wiring():
     """Slack specifics (verified vs slack@0.17.2): APP_WEBHOOK trigger (Events API → instant),
     replies to the message's channel, requires ignoreBots + sendAsBot, channel DROPDOWN → DYNAMIC."""

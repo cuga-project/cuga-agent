@@ -65,17 +65,21 @@ def should_process(event: dict) -> bool:
     return True
 
 
-async def send_message(channel: str, text: str) -> dict:
-    """Post a reply to the channel via chat.postMessage (bot token). Works with the raw bot token —
-    no AP connection needed. For a threaded reply pass ``thread_ts`` in a future revision."""
+async def send_message(channel: str, text: str, thread_ts: str | None = None) -> dict:
+    """Post a reply via chat.postMessage (bot token) — no AP connection needed. When ``thread_ts``
+    is given the reply lands IN THAT THREAD (Slack roots a thread at that ts), so a threaded
+    conversation stays threaded instead of spilling to the channel root."""
     tok = bot_token()
     if not tok:
         return {"ok": False, "error": "no SLACK_BOT_TOKEN"}
+    body = {"channel": channel, "text": text}
+    if thread_ts:
+        body["thread_ts"] = thread_ts
     async with httpx.AsyncClient(timeout=15) as c:
         r = await c.post("https://slack.com/api/chat.postMessage",
                          headers={"Authorization": f"Bearer {tok}",
                                   "content-type": "application/json; charset=utf-8"},
-                         json={"channel": channel, "text": text})
+                         json=body)
         try:
             return r.json()
         except Exception:  # noqa: BLE001

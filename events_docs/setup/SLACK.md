@@ -71,6 +71,15 @@ curl -s -X POST localhost:8100/api/events/slack/events -H "content-type: applica
   -d '{"type":"event_callback","event":{"type":"message","text":"what is the capital of Japan?","channel":"<CHANNEL_ID>","user":"U1"}}'
 ```
 
+## Threads & identity (how context is scoped)
+- **Per-thread memory + reply-in-thread.** A reply carries `thread_ts`; a root message uses its own
+  `ts` to *start* a thread. The bot replies **in that thread**, and conversation memory is keyed
+  `gw:slack:<channel>#<thread_ts>` — so **one Slack thread = one topic**, isolated from other threads.
+- **Per-user identity.** Each event carries the author (`ev.user`), forwarded as `source.user`. Once
+  a user runs `/link <token>` (from `POST /api/events/link/slack`), their Slack id maps to a tenant
+  user, so their **per-user credentials + permissions** apply — even though the bot is shared.
+  Unlinked users fall back to the default principal.
+
 ## Troubleshooting
 - **Request URL won't verify** — the tunnel URL changed (quick-tunnels are ephemeral). Update
   `EVENTS_PUBLIC_URL`, restart, re-arm, re-paste. Confirm `curl <tunnel>/api/events/status` → 200.

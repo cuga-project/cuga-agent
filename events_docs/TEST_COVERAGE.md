@@ -73,8 +73,12 @@ uv run pytest tests/events/test_events_studio_api.py -q    # 9 (Studio endpoints
 ## Gaps / not yet
 - **Channel inbound + delivery — live round-trip verified: Telegram (AP), Discord (AP), Slack
   (direct, default)** (2026-07-06). Slack/Box default to a *direct* backend (no AP); direct-channel
-  delivery closes scheduled-flow delivery to a direct channel (no AP send-step). Remaining: an
-  instant *direct* Discord (gateway bot) is not built (Discord stays AP polling for now).
+  delivery closes scheduled-flow delivery to a direct channel (no AP send-step).
+- **Slack per-thread + author identity** (2026-07-06): reply-in-thread + per-thread memory
+  (`thread_ts`) and per-user author id (`ev.user`, `/link` binds it) — both live-verified. Offline:
+  `test_slack_thread_scoping`, `test_channel_author_identity`. Discord author id wired via the AP
+  flow (`{{trigger.author.id}}`, pending a live field-name check).
+- Remaining: an instant *direct* Discord (gateway bot) — Discord stays AP polling (~5 min) for now.
 - **PUSH triggers** (Box/GitHub/Gmail) — Box **direct poll e2e verified**; `create_push_flow` + the
   Box resume watcher are wired;
   live PUSH e2e **not yet proven** end-to-end.

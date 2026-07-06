@@ -68,6 +68,7 @@
   <div class="meta">Source of truth: <code>src/cuga/backend/events/app.py</code> ·
     <a class="link" style="color:#9cf" href="index.html">◀ Workstream board</a> ·
     <a class="link" style="color:#9cf" href="setup.html">⚙ Setup</a> ·
+    <a class="link" style="color:#9cf" href="unlock.html">✦ What you can unlock</a> ·
     <a class="link" style="color:#9cf" href="examples.html">Examples</a></div>
 </header>
 
@@ -129,7 +130,7 @@
   <span class="k">"thread_id"</span>: <span class="s">"gw:slack:C123"</span>,   <span class="c">// conversation key; gw:&lt;channel&gt;:&lt;native&gt; for channels</span>
   <span class="k">"deliver"</span>: <span class="k">false</span>,             <span class="c">// true → CUGA owns delivery (direct channel or EA_CAPTURE_URL)</span>
   <span class="k">"scope"</span>: <span class="s">"acme/inst/alice"</span>,      <span class="c">// optional tenant scope (set by AP when the flow was armed)</span>
-  <span class="k">"source"</span>: <span class="k">{</span> <span class="k">"type"</span>: <span class="s">"channel"</span>, <span class="k">"name"</span>: <span class="s">"slack"</span>, <span class="k">"thread_id"</span>: <span class="s">"gw:slack:C123"</span> <span class="k">}</span>,
+  <span class="k">"source"</span>: <span class="k">{</span> <span class="k">"type"</span>: <span class="s">"channel"</span>, <span class="k">"name"</span>: <span class="s">"slack"</span>, <span class="k">"thread_id"</span>: <span class="s">"gw:slack:C123#169.9"</span>, <span class="k">"user"</span>: <span class="s">"U_ALICE"</span> <span class="k">}</span>, <span class="c">// user = the AUTHOR → per-user identity; #&lt;ts&gt; = per-thread memory</span>
   <span class="k">"event"</span>:  <span class="k">{</span> <span class="k">"kind"</span>: <span class="s">"message"</span>, <span class="k">"payload"</span>: <span class="k">{}</span> <span class="k">}</span>
 <span class="k">}</span></pre>
       <div class="lbl">Response</div>

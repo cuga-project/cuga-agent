@@ -63,5 +63,11 @@ metadata footer.
 - **No reply** — bot not in the server / channel; Message Content Intent off; wrong channel id in the
   arm call; or AP can't reach CUGA's `/invoke` (`HOST_CALLBACK_URL`).
 - **Old messages re-answered** — you re-armed, which reset the poll baseline. Arm once and leave it.
-- **Want instant Discord?** That's a gateway-bot (persistent websocket) — a future *direct* Discord
-  backend, analogous to direct Slack. Not built yet.
+- **~5 min latency (why it feels slow)** — the AP `new_message` trigger **polls** Discord on a
+  schedule; there is no push. Telegram (webhook) and Slack (Events API) are instant because they
+  *push*. **Instant Discord = a direct gateway backend** (a persistent Discord WebSocket bot,
+  analogous to direct Slack) — not built yet; it would also give the author id for free (below).
+- **Per-user identity** — the inbound flow forwards the message author as `source.user` via
+  `{{trigger.author.id}}`, so a user who `/link`s their Discord id gets per-user creds/permissions.
+  ⚠️ The exact author field name is unverified against the AP piece — confirm on the first live
+  message (if wrong it falls back to the channel, i.e. today's behavior; a one-word descriptor fix).

@@ -53,6 +53,8 @@ CHANNELS = {
     "discord": {"piece": "discord", "trigger": "new_message",
                 "text_ref": "{{trigger.content}}",
                 "native_ref": "{{trigger.channel_id}}",
+                "user_ref": "{{trigger.author.id}}",   # message AUTHOR → per-user identity (VERIFY field
+                                                       # name on first live Discord msg; wrong → falls back)
                 "send_action": "sendMessageWithBot", "target_arg": "channel_id", "text_arg": "message",
                 "trigger_args": ["channel"],    # the channel id to poll (given at arm time)
                 "dynamic_props": ["channel", "channel_id"]},  # DROPDOWNs fed literal/template → DYNAMIC
@@ -63,6 +65,7 @@ CHANNELS = {
     "slack": {"piece": "slack", "trigger": "new-message",
               "text_ref": "{{trigger.text}}",
               "native_ref": "{{trigger.channel}}",
+              "user_ref": "{{trigger.user}}",            # AUTHOR → per-user id (AP path; direct sets ev.user)
               "send_action": "send_channel_message", "target_arg": "channel", "text_arg": "text",
               "const": {"sendAsBot": True},              # send_channel_message REQUIRES sendAsBot
               "trigger_const": {"ignoreBots": True},     # required trigger input (skip bot messages)
@@ -76,8 +79,12 @@ _TOKEN = "{{connections.ea_gateway_token}}"
 # ---- steps ---------------------------------------------------------------
 def invoke_step(agent: str, thread_id: str, prompt: str, *, source_type: str,
                 source_name: str, event_kind: str, payload: dict | None = None,
-                deliver: bool = False, name: str = "step_1") -> dict:
-    """The HTTP step that calls back into CUGA's ``/invoke`` seam."""
+                deliver: bool = False, name: str = "step_1", source_user: str = "") -> dict:
+    """The HTTP step that calls back into CUGA's ``/invoke`` seam. ``source_user`` (a trigger
+    template like discord's ``{{trigger.author.id}}``) forwards the message AUTHOR for per-user id."""
+    src = {"type": source_type, "name": source_name, "thread_id": thread_id}
+    if source_user:
+        src["user"] = source_user
     return {
         "name": name,
         "displayName": "POST /invoke  (CUGA worker)",
@@ -94,7 +101,7 @@ def invoke_step(agent: str, thread_id: str, prompt: str, *, source_type: str,
                     "thread_id": thread_id,
                     "text": prompt,
                     "deliver": deliver,
-                    "source": {"type": source_type, "name": source_name, "thread_id": thread_id},
+                    "source": src,
                     "event": {"kind": event_kind, "payload": payload or {}},
                 },
             },
@@ -226,7 +233,8 @@ def build_inbound_flow(*, channel: str, agent: str = "concierge",
     d = CHANNELS.get(channel, CHANNELS["telegram"])
     native, text = d["native_ref"], d["text_ref"]
     step1 = invoke_step(agent, f"gw:{channel}:{native}", text, source_type="channel",
-                        source_name=channel, event_kind="message", deliver=False)
+                        source_name=channel, event_kind="message", deliver=False,
+                        source_user=d.get("user_ref", ""))
     step1["nextAction"] = send_step(channel, native, "{{step_1.body.answer}}")
     return {"displayName": display or f"{channel}-inbound → {agent}", "valid": True,
             "trigger": _piece_trigger(channel, step1)}

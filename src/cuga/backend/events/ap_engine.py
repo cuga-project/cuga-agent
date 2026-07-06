@@ -350,11 +350,15 @@ class APEngine:
             tinp.update(d.get("trigger_const", {}))     # fixed trigger inputs (e.g. slack ignoreBots)
             await self._post_op(c, flow_id, self._piece_trigger_op(
                 piece, d["trigger"], tinp, tver, dynamic=d.get("dynamic_props", [])), hdrs)
-            # HTTP → /invoke (channel envelope: text + native id ride in the body/thread_id)
+            # HTTP → /invoke (channel envelope: text + native id ride in the body/thread_id).
+            # source.user = the message AUTHOR (a trigger template, e.g. discord {{trigger.author.id}})
+            # → per-user identity through a shared bot. Absent ⇒ falls back to the thread-native id.
+            src = {"type": "channel", "name": channel,
+                   "thread_id": f"gw:{channel}:{d['native_ref']}"}
+            if d.get("user_ref"):
+                src["user"] = d["user_ref"]
             body = {"agent": agent, "text": d["text_ref"], "deliver": False, "scope": scope,
-                    "source": {"type": "channel", "name": channel,
-                               "thread_id": f"gw:{channel}:{d['native_ref']}"},
-                    "event": {"kind": "message", "payload": {}}}
+                    "source": src, "event": {"kind": "message", "payload": {}}}
             await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
             # send the answer back to the channel (auth = the bot connection). native_ref is a
             # trigger template here (reply to the SAME chat the message came from).

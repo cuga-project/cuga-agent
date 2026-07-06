@@ -95,13 +95,25 @@ def resolve(*, tenant_id: str | None = None, instance_id: str | None = None,
 
 def channel_native_id(source) -> str | None:
     """Pull the channel-native id out of an envelope source. Inbound flows use a thread_id of
-    ``gw:<channel>:<native_id>`` (build_inbound_flow); a payload ``from_id`` also works."""
+    ``gw:<channel>:<native_id>`` (build_inbound_flow); a payload ``from_id`` also works.
+
+    A ``#<locus>`` suffix (e.g. ``gw:slack:C123#1699.99`` — a per-thread memory key) is stripped:
+    only the conversation memory is thread-scoped; identity/delivery still key off the channel."""
     tid = getattr(source, "thread_id", "") or ""
     if tid.startswith("gw:"):
         parts = tid.split(":", 2)
         if len(parts) == 3:
-            return parts[2]
+            return parts[2].split("#", 1)[0]
     return None
+
+
+def channel_user_id(source) -> str | None:
+    """The channel-native id of the message AUTHOR — for per-user identity (whose creds/perms/memory).
+    Prefer an explicit ``source.user`` (Slack ``ev.user`` / Discord author id, forwarded by the
+    inbound path); else fall back to the thread-native id (Telegram's chat.id is already the user in
+    a DM). This is what lets a SHARED channel bot tell Alice from Bob."""
+    u = (getattr(source, "user", "") or "").strip()
+    return u or channel_native_id(source)
 
 
 def resolve_channel(channel: str, native_id: str, identity_map, *,

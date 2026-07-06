@@ -22,6 +22,9 @@ class Source:
     type: str = "channel"          # channel | integration | time
     name: str = "web"              # telegram | gmail | box | cron | ...
     thread_id: str = "web:local"   # chat id, or a stable per-subscription id, or a correlation id
+    user: str = ""                 # channel-native AUTHOR id (Slack ev.user / Discord author) →
+                                   # per-user identity (whose creds/perms). Empty → fall back to
+                                   # the thread-native id (Telegram chat.id is already the user).
 
 
 @dataclass
@@ -51,6 +54,7 @@ class Envelope:
                 type=src.get("type", "channel"),
                 name=src.get("name", "web"),
                 thread_id=src.get("thread_id", "web:local"),
+                user=src.get("user", "") or "",
             ),
             event=Event(kind=ev.get("kind", "message"), payload=dict(ev.get("payload") or {})),
             text=d.get("text", "") or "",

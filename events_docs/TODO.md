@@ -106,6 +106,14 @@
       Telegram (AP), Discord (AP), Slack (direct, default)** (2026-07-06). Slack/Box direct backends
       bypass AP; `delivery.channel_backend` picks direct-vs-AP per channel and **direct-channel
       delivery** lets a scheduled flow deliver to a direct channel with no AP send-step.
+- [x] **Slack per-thread memory + reply-in-thread** (`thread_ts` → `gw:slack:<ch>#<ts>`) — verified
+      2026-07-06. One thread = one topic; the reply stays in the thread.
+- [x] **Channel author identity (per-user)** — `source.user` carries the author; `/invoke` resolves
+      identity + `/link` binds it. **Slack (`ev.user`) live-verified**; Discord (`{{trigger.author.id}}`
+      via the AP flow) wired — **confirm the field on the first live Discord msg** (falls back to
+      channel, no regression). Telegram keeps `chat.id`.
+- [ ] **Instant Discord** — a direct **gateway** backend (persistent WebSocket) to replace the ~5-min
+      AP polling; also yields the author id natively (closes the Discord author-field caveat).
 - [x] **Studio UI: Concierge · Channels · Integrations · Flows · Examples** — built into CUGA's
       existing React frontend (dumb; reads `GET /api/events/*`, posts to `/api/concierge`). See
       [STUDIO_UI.md](STUDIO_UI.md). Now also an **Agents** tab (`GET /api/events/agents`). Connect

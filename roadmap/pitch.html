@@ -99,7 +99,7 @@
     <h1>Agents that don't just answer — they watch, schedule, and act.</h1>
     <div class="lead">Talk to them in plain English on any channel. They build the automation for you.</div>
     <div class="foot">Internal pitch · grounded in what we shipped · 2026-07-03 &nbsp;·&nbsp;
-      <a class="nav" href="index.html">Board</a> · <a class="nav" href="setup.html">Setup</a> · <a class="nav" href="examples.html">Examples</a></div>
+      <a class="nav" href="index.html">Board</a> · <a class="nav" href="setup.html">Setup</a> · <a class="nav" href="unlock.html">Unlock</a> · <a class="nav" href="examples.html">Examples</a></div>
     <div class="num">01</div>
   </section>
 
@@ -362,9 +362,10 @@ access   builder · admin</div>
     <div class="ws"><h3><span class="tag" style="background:#24a148">RUN ✓</span> Channels — Discord &amp; Slack (done)</h3>
       <div class="who">Discord (AP polling) &amp; Slack (direct backend) — live round-trip verified 2026-07-06</div>
       <ul>
-        <li>Discord via AP; Slack via a <b>direct</b> backend (Events API → CUGA → chat.postMessage, no AP).</li>
+        <li>Discord via AP (polling ~5 min); Slack via a <b>direct</b> backend (Events API → CUGA → chat.postMessage, no AP).</li>
+        <li>Slack: <b>per-thread memory + reply-in-thread</b> (thread_ts) + <b>per-user author id</b> (ev.user) — verified. Discord author id wired via the AP flow (pending live field check).</li>
         <li>Inbound round-trips verified; direct-channel delivery closes scheduled delivery to Slack.</li>
-        <li>Next channel breadth (WhatsApp, email-as-channel) is Sprint.</li></ul></div>
+        <li>Next: instant Discord (a direct gateway backend); channel breadth (WhatsApp, email-as-channel) is Sprint.</li></ul></div>
 
     <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> PUSH — integration events</h3>
       <div class="who">Owner: — · Box direct poll ✓ done; GitHub/Gmail AP PUSH next</div>
@@ -406,7 +407,7 @@ access   builder · admin</div>
     <div class="ws"><h3><span class="tag" style="background:#24a148">ANYTIME</span> Quality &amp; docs</h3>
       <div class="who">Owner: — · effort: S · good first issues</div>
       <ul>
-        <li>Multi-user isolation test (two real users, per-user creds).</li>
+        <li>Multi-user isolation test (two real users, per-user creds) — author-id now wired (Slack verified); link 2 users → show separate memory/creds.</li>
         <li>Expand the example corpus (<code>catalog.py</code>) as capabilities land.</li>
         <li>Keep the Board &amp; sequence diagrams in sync.</li></ul></div>
 

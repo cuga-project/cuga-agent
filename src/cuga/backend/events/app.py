@@ -53,8 +53,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # 0007); else fall back to headers.
         scope = env.scope
         if not scope and env.source.type == "channel" and identity is not None:
-            from .principal import channel_native_id, resolve_channel
-            nid = channel_native_id(env.source)
+            from .principal import channel_user_id, resolve_channel
+            nid = channel_user_id(env.source)          # the AUTHOR (per-user), not the channel
             cp = resolve_channel(env.source.name, nid, identity) if nid else None
             if cp is not None:
                 scope = cp.scope
@@ -67,11 +67,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # account-linking handshake: a channel message "/start <token>" / "/link <token>" binds
         # the sender's native id → the profile that issued the token (decision 0007).
         if env.source.type == "channel" and identity is not None:
-            from .principal import channel_native_id
+            from .principal import channel_user_id
             txt = (env.text or "").strip()
             for pfx in ("/start ", "/link "):
                 if txt.startswith(pfx):
-                    nid = channel_native_id(env.source)
+                    nid = channel_user_id(env.source)          # bind the AUTHOR's native id
                     uid = identity.redeem_token(txt[len(pfx):].strip(), nid) if nid else None
                     tr("channel.link", channel=env.source.name, native=nid, ok=bool(uid))
                     return {"ok": True, "linked": bool(uid), "trace_id": tr.id,
@@ -314,31 +314,37 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # 3) a real human message → answer it (in the background; ack now)
         ev = body.get("event") or {}
         if slack_direct.should_process(ev):
+            # thread identity: a threaded reply carries thread_ts; a root message uses its own ts so
+            # the bot's reply STARTS a thread. Either way the whole conversation lives in that thread.
+            thread_ts = ev.get("thread_ts") or ev.get("ts")
             asyncio.create_task(_slack_answer(ev.get("text", ""), ev.get("channel", ""),
-                                              ev.get("user", "")))
+                                              ev.get("user", ""), thread_ts))
         return {"ok": True}
 
-    async def _slack_answer(text: str, channel: str, user: str) -> None:
-        """Route a Slack message through /invoke (concierge + metadata footer) and post the reply."""
+    async def _slack_answer(text: str, channel: str, user: str, thread_ts: str | None = None) -> None:
+        """Route a Slack message through /invoke (concierge + metadata footer) and post the reply
+        BACK INTO THE THREAD. The thread_id keys the conversation memory per-thread — one Slack
+        thread = one topic. The native id (for identity/delivery) stays the channel: the ``#<ts>``
+        suffix is stripped by ``channel_native_id``, so only memory is thread-scoped."""
         from . import slack_direct
         import httpx
         tr = Trace(new_trace_id())
         try:
             port = os.environ.get("EVENTS_CUGA_PORT", "8100")
             gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
-            # reuse the whole /invoke path (routing, identity, metadata footer). native id = channel,
-            # so a shared-channel bot replies where the message came from.
+            # gw:slack:<channel>#<thread_ts> → per-thread memory; native id = channel (suffix stripped).
+            # source.user = the Slack author id → per-user identity (whose creds/perms) once linked.
+            tid = f"gw:slack:{channel}#{thread_ts}" if thread_ts else f"gw:slack:{channel}"
             payload = {"text": text, "agent": "concierge", "deliver": False,
-                       "source": {"type": "channel", "name": "slack",
-                                  "thread_id": f"gw:slack:{channel}"},
+                       "source": {"type": "channel", "name": "slack", "thread_id": tid, "user": user},
                        "event": {"kind": "message", "payload": {"slack_user": user}}}
             async with httpx.AsyncClient(timeout=180) as c:
                 r = await c.post(f"http://127.0.0.1:{port}/invoke",
                                  headers={"X-Gateway-Token": gw}, json=payload)
                 answer = (r.json() or {}).get("answer") if r.status_code == 200 else None
             if answer:
-                res = await slack_direct.send_message(channel, answer)
-                tr("slack.reply", channel=channel, ok=res.get("ok"))
+                res = await slack_direct.send_message(channel, answer, thread_ts=thread_ts)
+                tr("slack.reply", channel=channel, thread=thread_ts, ok=res.get("ok"))
             else:
                 tr.error("slack", reason="no answer", status=r.status_code)
         except Exception as e:  # noqa: BLE001
