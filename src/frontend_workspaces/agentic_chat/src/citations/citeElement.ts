@@ -33,7 +33,9 @@ const TEMPLATE = `
     border-radius: 4px; box-shadow: 0 2px 6px rgba(0,0,0,.2);
     font: 400 12px/1.4 "IBM Plex Sans", system-ui, sans-serif;
     color: var(--cds-text-primary, #161616); text-align: start; line-height: 1.4;
+    cursor: pointer;
   }
+  .card:hover .hint { text-decoration: underline; }
   :host(:hover) .card, :host(:focus-within) .card { display: block; }
   .head { display: flex; gap: 8px; justify-content: space-between; align-items: baseline; }
   .file { font-weight: 600; max-width: 180px; overflow: hidden; text-overflow: ellipsis;
@@ -60,7 +62,7 @@ export class CugaCiteElement extends HTMLElement {
     if (!this.shadowRoot) {
       const root = this.attachShadow({ mode: 'open' });
       root.innerHTML = TEMPLATE;
-      root.querySelector('button')!.addEventListener('click', (e) => {
+      const open = (e: Event) => {
         e.stopPropagation();
         this.dispatchEvent(
           new CustomEvent(CITE_CLICK_EVENT, {
@@ -69,7 +71,11 @@ export class CugaCiteElement extends HTMLElement {
             detail: { n: Number(this.getAttribute('n') || 0) },
           }),
         );
-      });
+      };
+      root.querySelector('button')!.addEventListener('click', open);
+      // The hover card advertises "Click to view source" — honor clicks on
+      // the card itself, not just the chip underneath it.
+      root.querySelector('.card')!.addEventListener('click', open);
     }
     this.render();
   }

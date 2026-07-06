@@ -65,7 +65,7 @@ export default function SourcesPanel({
         <button className="cuga-sources-panel__close" onClick={onClose} aria-label="Close sources">
           ✕
         </button>
-        <div>
+        <div className="cuga-sources-panel__title">
           <h3>Sources</h3>
           <span className="cuga-sources-panel__subtitle">
             {items.length} source{items.length === 1 ? '' : 's'} · cited in this answer
@@ -106,12 +106,21 @@ export default function SourcesPanel({
             {s.section_path && <div className="cuga-sources-panel__section">{s.section_path}</div>}
             <blockquote
               className={`cuga-sources-panel__snippet${expanded[s.n] ? ' is-expanded' : ''}`}
-              onClick={() => setExpanded((e) => ({ ...e, [s.n]: true }))}
+              onClick={() => setExpanded((e) => ({ ...e, [s.n]: !e[s.n] }))}
             >
               {highlightSegments(s.snippet, s.query).map((seg, i) =>
                 seg.mark ? <mark key={i}>{seg.text}</mark> : <span key={i}>{seg.text}</span>,
               )}
             </blockquote>
+            {s.snippet.length > 350 && (
+              <button
+                className="cuga-sources-panel__expand"
+                onClick={() => setExpanded((e) => ({ ...e, [s.n]: !e[s.n] }))}
+                aria-expanded={!!expanded[s.n]}
+              >
+                {expanded[s.n] ? 'Show less ↑' : 'Show more ↓'}
+              </button>
+            )}
             <div className="cuga-sources-panel__foot">
               {s.query && <span className="cuga-sources-panel__query">Found for: “{s.query}”</span>}
               {typeof s.score === 'number' && (
