@@ -1,8 +1,8 @@
 # Playwright e2e tests
 
-Browser-driven verification for the slash-command chips
-(`SlashSkillInvoked` collapsed chip and `SlashSuggestions` unknown-command
-chip) and the `ThreadIdChanged` round-trip triggered by `/clear`.
+Browser-driven verification for slash-command skill invocations
+(`SlashSkillInvoked` surfacing in the reasoning panel) and the
+`ThreadIdChanged` round-trip triggered by `/clear`.
 
 `@playwright/test` is in `devDependencies`, so `pnpm install` brings it in.
 The Chromium binary is **not** auto-downloaded — run the install step on
@@ -23,12 +23,10 @@ pnpm run test:e2e                        # runs ./playwright.config.ts -> tests/
     separate chip bubble; the invocation surfaces as a `Skill invoked: /deck`
     step inside the assistant message's reasoning panel (toggle labelled
     "Show details").
-  - **Suggestion chips** — typing `/sumarize` renders clickable suggestion
-    chips (`/summarize`, `/summary-report`); clicking a chip drops `/<name>`
-    into the composer; the redundant plain-text "Unknown command:" fallback
-    is suppressed.
-  - History reload: skill invocations replay into the same reasoning panel,
-    suggestion chips replay as their own bubble.
+  - **Combobox ARIA attributes** — the composer's `aria-expanded` /
+    `aria-controls` / `aria-activedescendant` mirror the dropdown state as it
+    opens, the active option changes, and it closes.
+  - History reload: skill invocations replay into the same reasoning panel.
 
 ## Architecture notes
 
