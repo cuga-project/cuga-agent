@@ -5,7 +5,6 @@
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { AILabel, AILabelContent } from '@carbon/react';
 import { pageLabel, scopeLabel, type MessageSource } from './types';
 import './SourcesPanel.css';
 
@@ -71,15 +70,6 @@ export default function SourcesPanel({
             {items.length} source{items.length === 1 ? '' : 's'} · cited in this answer
           </span>
         </div>
-        <AILabel autoAlign size="mini" aiText="AI" textLabel="Grounded answer">
-          <AILabelContent>
-            <p>
-              These snippets were retrieved from the knowledge base and cited by the agent. Numbers
-              match the [n] markers in the answer; highlights show the search terms that surfaced
-              each snippet.
-            </p>
-          </AILabelContent>
-        </AILabel>
       </header>
       <div className="cuga-sources-panel__list">
         {items.length === 0 && (

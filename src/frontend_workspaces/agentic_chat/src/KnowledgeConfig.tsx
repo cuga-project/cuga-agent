@@ -2547,8 +2547,9 @@ export default function KnowledgePanel({
                                 </div>
                                 <Toggle
                                   id="knowledge-citations-enabled"
-                                  labelA="Off"
-                                  labelB="On"
+                                  aria-label="Citations"
+                                  labelA=""
+                                  labelB=""
                                   toggled={knowledgeConfig.citations_enabled ?? true}
                                   onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, citations_enabled: checked })}
                                   size="sm"
