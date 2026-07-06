@@ -75,6 +75,33 @@ class FinalAnswerNode(BaseNode):
         self.node = node
 
     @staticmethod
+    def apply_citation_resolution(state) -> None:
+        """Rewrite [sN] ledger markers in final_answer into per-message [n]
+        display numbers and attach self-contained source snapshots.
+
+        Must run AFTER variable placeholder replacement and AFTER output
+        formatters, and must never break answer delivery — any failure
+        leaves the text as-is.
+        """
+        try:
+            from cuga.backend.knowledge.sources import (
+                get_ledger,
+                has_citation_markers,
+                resolve_citations,
+            )
+
+            text = state.final_answer or ""
+            if not has_citation_markers(text):
+                state.sources = []
+                return
+            ledger = get_ledger(state.thread_id, create=True) if state.thread_id else None
+            resolved, sources = resolve_citations(text, ledger)
+            state.final_answer = resolved
+            state.sources = sources
+        except Exception:
+            logger.exception("citation resolution failed; delivering unresolved answer")
+
+    @staticmethod
     async def node_handler(
         state: AgentState, agent: FinalAnswerAgent, name: str, hitl_handler: HumanInTheLoopHandler
     ) -> Command[Literal["__end__", "SuggestHumanActions", "ReuseAgent"]]:
@@ -87,8 +114,9 @@ class FinalAnswerNode(BaseNode):
             state.sender = name
             final_answer_content = state.chat_agent_messages[-1].content
             state.final_answer = final_answer_content
+            FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
-                thoughts=["Chat response provided directly."], final_answer=final_answer_content
+                thoughts=["Chat response provided directly."], final_answer=state.final_answer
             )
             state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
             tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
@@ -97,6 +125,7 @@ class FinalAnswerNode(BaseNode):
         # Handle TaskAnalyzerAgent when final_answer is already set (no apps matched)
         if state.sender == NodeNames.TASK_ANALYZER_AGENT and state.final_answer:
             state.sender = name
+            FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[
                     "No applications matched the request. Providing available applications information."
@@ -110,6 +139,7 @@ class FinalAnswerNode(BaseNode):
             state.sender = name
             state.final_answer = state.final_answer
             state.sender = name
+            FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[],
                 final_answer=state.final_answer,
@@ -126,9 +156,10 @@ class FinalAnswerNode(BaseNode):
             answer_to_forward = state.final_answer or state.last_planner_answer or ""
             if answer_to_forward:
                 state.final_answer = answer_to_forward
+                FinalAnswerNode.apply_citation_resolution(state)
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
-                    final_answer=answer_to_forward,
+                    final_answer=state.final_answer,
                 )
                 state.messages.append(AIMessage(content=final_answer_output.model_dump_json(), name=name))
                 tracker.collect_step(step=Step(name=name, data=final_answer_output.model_dump_json()))
@@ -182,3 +213,8 @@ class FinalAnswerNode(BaseNode):
             final_answer_output.final_answer
         )
         state.final_answer = final_answer_output.final_answer
+
+        # Resolve [sN] citation markers into display numbers (must be the
+        # last mutation of final_answer; chat history above keeps raw ids).
+        FinalAnswerNode.apply_citation_resolution(state)
+        final_answer_output.final_answer = state.final_answer
