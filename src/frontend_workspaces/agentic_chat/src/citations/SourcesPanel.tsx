@@ -1,3 +1,9 @@
+// The frontend app's webpack build compiles this file with the CLASSIC JSX
+// runtime (React.createElement), so this import is required at runtime there
+// even though agentic_chat's own react-jsx build never references it.
+// (Dropping it = 'React is not defined' -> blank page. See KnowledgeConfig.tsx.)
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+import React from 'react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AILabel, AILabelContent } from '@carbon/react';
 import { pageLabel, scopeLabel, type MessageSource } from './types';
