@@ -158,10 +158,11 @@ function IntegrationsTab({ refresh }: { refresh: number }) {
           </div>
           <p className="studio-muted">{i.note}</p>
           <div className="studio-card-foot">
+            <Tag type="purple" size="sm">USER — your login</Tag>
             <Tag type="outline" size="sm">{i.auth === "oauth" ? "OAuth" : "token"}</Tag>
             {i.status !== "ap_not_configured" && (
-              <Button kind="tertiary" size="sm" renderIcon={i.auth === "oauth" ? Launch : Plug}
-                onClick={() => connect(i)}>
+              <Button kind={i.status === "connected" ? "ghost" : "tertiary"} size="sm"
+                renderIcon={i.auth === "oauth" ? Launch : Plug} onClick={() => connect(i)}>
                 {i.status === "connected" ? "Reconnect" : "Connect"}
               </Button>
             )}
@@ -208,12 +209,27 @@ function SetupTab({ refresh }: { refresh: number }) {
               <Tag type="outline" size="sm">{g.wiring}</Tag>
             </span>
           </div>
+          {g.needs_connection && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, margin: "6px 0 10px" }}>
+              <Tag type={g.connected ? "green" : "red"} size="md">
+                {g.connected ? "● Connected" : "○ Not connected"}</Tag>
+              <Tag type={g.connection_scope === "tenant" ? "blue" : "purple"} size="sm">
+                {g.connection_scope === "tenant" ? "TENANT (one per org)" : "USER (per-person login)"}</Tag>
+              {(g.connect === "oauth" || g.connect === "token") && (
+                <Button kind={g.connected ? "ghost" : "tertiary"} size="sm"
+                  renderIcon={g.connect === "oauth" ? Launch : Plug} onClick={() => connect(g)}>
+                  {g.connected ? "Reconnect" : "Connect"} {g.label}</Button>
+              )}
+            </div>
+          )}
           {(g.creds || []).length === 0
             ? <p className="studio-muted" style={{ fontSize: 13 }}>No credentials needed.</p>
             : (g.creds || []).map((c: any) => (
               <div key={c.key} style={{ fontSize: 13, margin: "3px 0" }}>
                 <Tag type={c.present ? "green" : (c.required ? "red" : "gray")} size="sm">
-                  {c.present ? "set" : (c.required ? "missing" : "optional")}</Tag>
+                  {c.present ? "configured ✓" : (c.required ? "set up →" : "optional")}</Tag>
+                <Tag type={c.scope === "tenant" ? "blue" : "purple"} size="sm">
+                  {c.scope === "tenant" ? "TENANT" : "USER"}</Tag>
                 <code>{c.key}</code> — {c.label} <span className="studio-muted">({c.where})</span>
               </div>
             ))}
@@ -230,10 +246,6 @@ function SetupTab({ refresh }: { refresh: number }) {
             {(g.steps || []).map((s: string, i: number) => <li key={i} style={{ margin: "3px 0" }}>{s}</li>)}
           </ol>
           {g.note && <p className="studio-muted" style={{ fontSize: 12.5 }}>⚠ {g.note}</p>}
-          {(g.connect === "oauth" || g.connect === "token") && (
-            <Button kind="tertiary" size="sm" renderIcon={g.connect === "oauth" ? Launch : Plug}
-              onClick={() => connect(g)}>Connect {g.label}</Button>
-          )}
         </Tile>
       ))}
     </div>

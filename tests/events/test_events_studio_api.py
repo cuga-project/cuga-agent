@@ -269,6 +269,137 @@ def test_box_poll_endpoint_dispatches_new_files():
         _httpx.AsyncClient = _orig_cli
 
 
+def test_discord_direct_send_and_delivery():
+    """discord_direct.send_message posts with a Bot token; delivery.send_direct routes 'discord'."""
+    import asyncio
+    import httpx as _httpx
+    from events import discord_direct, delivery
+
+    sent = {}
+
+    class _Resp:
+        status_code = 200
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            sent.update({"url": url, "auth": (headers or {}).get("Authorization"), "content": (json or {}).get("content")})
+            return _Resp()
+
+    orig = _httpx.AsyncClient
+    _httpx.AsyncClient = lambda *a, **k: _C()
+    os.environ["DISCORD_BOT_TOKEN"] = "abc"
+    try:
+        asyncio.run(discord_direct.send_message("C123", "hello"))
+        assert sent["url"].endswith("/channels/C123/messages")
+        assert sent["auth"] == "Bot abc" and sent["content"] == "hello"
+        # delivery.send_direct dispatches 'discord' to discord_direct
+        ok, why = asyncio.run(delivery.send_direct("discord", "C999", "yo"))
+        assert ok and sent["url"].endswith("/channels/C999/messages")
+    finally:
+        _httpx.AsyncClient = orig
+        os.environ.pop("DISCORD_BOT_TOKEN", None)
+
+
+def test_arm_discord_direct_backend():
+    """POST /api/events/admin/channels/discord/arm → direct backend (no AP flow), given a bot token."""
+    os.environ["DISCORD_BOT_TOKEN"] = "abc"
+    try:
+        app = FastAPI()
+        register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None)
+        r = TestClient(app).post("/api/events/admin/channels/discord/arm",
+                                 headers={"x-user-id": "admin"}, json={})
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["ok"] and b["backend"] == "direct" and "ap_flow_id" not in b
+    finally:
+        os.environ.pop("DISCORD_BOT_TOKEN", None)
+
+
+def test_inbound_webhook_triages_and_delivers():
+    """POST /api/events/hook/{name} → renders the payload → fires an agent via /invoke → returns the
+    triage. With deliver_to+target it also delivers to a direct channel. Direct, no AP."""
+    import httpx as _httpx
+    posted = []
+
+    class _Resp:
+        status_code = 200
+
+        def json(self):
+            return {"ok": True, "answer": "HighCPU on checkout-api — P1 — restart pods"}
+
+    class _C:
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, *a):
+            return False
+
+        async def post(self, url, headers=None, json=None):
+            posted.append(json)
+            return _Resp()
+
+    _orig = _httpx.AsyncClient
+    _httpx.AsyncClient = lambda *a, **k: _C()
+    os.environ["GATEWAY_TOKEN"] = "gw"
+    try:
+        app = FastAPI()
+        register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None,
+                               gateway_token="gw")
+        c = TestClient(app)
+        r = c.post("/api/events/hook/monitoring?agent=incident_triage&deliver_to=slack&target=C1",
+                   json={"alert": "HighCPU", "service": "checkout-api", "value": "97%"})
+        assert r.status_code == 200, r.text
+        b = r.json()
+        assert b["ok"] and b["webhook"] == "monitoring" and "P1" in (b["answer"] or "")
+        # the internal /invoke got the payload as text + the direct-channel sink
+        inv = posted[0]
+        assert inv["agent"] == "incident_triage" and inv["deliver"] is True
+        assert inv["source"]["name"] == "slack" and "HighCPU" in inv["text"]
+        assert inv["event"]["payload"]["service"] == "checkout-api"
+    finally:
+        _httpx.AsyncClient = _orig
+        os.environ.pop("GATEWAY_TOKEN", None)
+
+
+def test_webhook_key_gate():
+    """When EVENTS_WEBHOOK_KEY is set, the webhook requires a matching ?key= (else 401)."""
+    os.environ["EVENTS_WEBHOOK_KEY"] = "s3cr3t"
+    try:
+        app = FastAPI()
+        register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None)
+        c = TestClient(app)
+        assert c.post("/api/events/hook/x", json={}).status_code == 401            # no key
+        # wrong key also 401; correct key passes the gate (then fails downstream w/o a live server — fine)
+        assert c.post("/api/events/hook/x?key=nope", json={}).status_code == 401
+    finally:
+        os.environ.pop("EVENTS_WEBHOOK_KEY", None)
+
+
+def test_setup_guides_connection_status_and_scope():
+    """GET /api/events/setup-guides returns, per connector: cred present + USER/TENANT scope, AND the
+    live connection status (connected + connection_scope) — the 'am I connected' the Studio renders."""
+    app = FastAPI()
+    register_events_routes(app, runtime=object(), store=None, concierge=None, engine=None)
+    r = TestClient(app).get("/api/events/setup-guides", headers={"x-user-id": "admin"})
+    assert r.status_code == 200, r.text            # regresses the KeyError('app') we hit
+    guides = {g["label"]: g for g in r.json()["guides"]}
+    # every connector carries the connection fields the UI needs
+    for g in r.json()["guides"]:
+        assert "connected" in g and "connection_scope" in g and "conn_status" in g
+        for c in g.get("creds", []):
+            assert c["scope"] in ("user", "tenant") and "present" in c
+    # channels are TENANT connections; integrations are USER connections
+    assert guides["Slack"]["connection_scope"] == "tenant"
+    assert guides["GitHub"]["connection_scope"] == "user"
+    assert guides["Gmail"]["connection_scope"] == "user"
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     passed = 0

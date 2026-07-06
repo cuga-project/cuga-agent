@@ -263,15 +263,42 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         return {"examples": as_list()}
 
     @app.get("/api/events/setup-guides")
-    async def events_setup_guides():
-        """Per-connector 'how to connect' guides for the Studio (creds, ownership, steps). Shows the
-        live EVENTS_PUBLIC_URL and whether each required credential is present, so the UI can render
-        an accurate, actionable setup guide."""
+    async def events_setup_guides(request: Request):
+        """Per-connector 'how to connect' guides for the Studio (creds, ownership, steps) PLUS the
+        live connection status — the ACTUAL 'am I connected' (an AP connection / direct token exists),
+        which is distinct from 'is the credential in .env'. Also tags each as USER vs TENANT."""
         from . import setup_guides
+        from .connectors import channels_status, integrations_status
         pub = os.environ.get("EVENTS_PUBLIC_URL", "").rstrip("/") or "<EVENTS_PUBLIC_URL>"
+        # live connection status per connector
+        p = resolve_principal(headers=request.headers)
+        conns = None
+        if engine is not None:
+            try:
+                grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
+                conns = await engine.list_connections(project_name=p.ap_project_name(grain))
+            except Exception:  # noqa: BLE001 — AP down → 'unknown', never 500
+                conns = None
+        st: dict[str, str] = {}
+        for c in channels_status():
+            st[c["name"]] = c["status"]
+        for i in integrations_status(conns, ap_configured=engine is not None):
+            st[i.get("app") or i["name"]] = i["status"]
+        if os.environ.get("EVENTS_BOX_BACKEND", "").lower() == "direct":   # box direct = a USER token
+            from . import box_direct
+            st["box"] = "connected" if box_direct.token() else "not_connected"
         out = []
+        def _cred_scope(key: str) -> str:
+            # TENANT: OAuth *app* creds + channel bot tokens (one per org). USER: personal tokens/PATs.
+            k = key.upper()
+            if k.startswith("EVENTS_OAUTH_") or k.endswith("_BOT_TOKEN") or k.endswith("_SIGNING_SECRET") \
+                    or k.endswith("_BOT_USERNAME"):
+                return "tenant"
+            return "user"     # GITHUB_TOKEN, BOX_DEV_TOKEN, …
+
         for g in setup_guides.as_list():
-            creds = [{**c, "present": bool(os.environ.get(c["key"]))} for c in g.get("creds", [])]
+            creds = [{**c, "present": bool(os.environ.get(c["key"])), "scope": _cred_scope(c["key"])}
+                     for c in g.get("creds", [])]
             steps = [s.replace("<EVENTS_PUBLIC_URL>", pub) for s in g.get("steps", [])]
             # how you connect it (drives the Studio's button): oauth consent · paste token · direct · none
             # a guide may declare `connect` explicitly (e.g. Box's default direct-token path); else derive.
@@ -286,7 +313,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 connect = "token"
             else:
                 connect = "none"
-            out.append({**g, "creds": creds, "steps": steps, "connect": connect})
+            status = st.get(app, "n/a")
+            # the CONNECTION is per-USER for integrations (each user logs in) · TENANT for channels (one bot)
+            conn_scope = "user" if g.get("kind") == "integration" else "tenant"
+            out.append({**g, "creds": creds, "steps": steps, "connect": connect,
+                        "conn_status": status, "connected": status == "connected",
+                        "connection_scope": conn_scope,
+                        "needs_connection": connect != "none"})
         return {"public_url": pub, "guides": out}
 
     # --- DIRECT Slack (default backend; no AP) — Slack Events API → /invoke → chat.postMessage -----
@@ -353,10 +386,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     # --- DIRECT Box (OAuth-free watcher; polls Box's API with a token) -----------------------------
     @app.post("/api/events/box/poll")
     async def box_poll(request: Request):
-        """Poll a Box folder for NEW files and fire the watcher agent on each — the AP-free Box path
-        (sidesteps AP's OAuth wall + the paid-app webhook). Gateway-token protected so a schedule or
-        cron can drive it. Body: {folder_id, since?, agent?, deliver_to?, scope?}. Returns the new
-        files processed + the newest created_at (the caller stores it as the next `since` baseline)."""
+        """Poll a Box folder for NEW files and fire the watcher agent on each — the OPT-IN direct Box
+        path (behind EVENTS_BOX_BACKEND=direct; sidesteps AP's OAuth wall + paid-app webhook). Box
+        defaults to the AP PUSH trigger (create_push_flow) — this endpoint is the manual/AP-free
+        alternative you drive/schedule yourself. Gateway-token protected. Body:
+        {folder_id, since?, agent?, deliver_to?, scope?}. Returns the new files + newest created_at."""
         if token and request.headers.get("X-Gateway-Token") != token:
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
         from . import box_direct
@@ -404,6 +438,114 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             tr("box.dispatch", file=file.get("name"), ok=r.status_code == 200, deliver=deliver_to)
         except Exception as e:  # noqa: BLE001
             tr.error("box.dispatch", file=file.get("name"), err=str(e))
+
+    # --- GENERIC inbound WEBHOOK (direct, no AP) — any system POSTs a payload → agent → deliver -----
+    @app.post("/api/events/hook/{name}")
+    async def inbound_webhook(name: str, request: Request):
+        """A generic inbound webhook: any external system (monitoring, CI, a form, a payment provider)
+        POSTs a JSON payload to <EVENTS_PUBLIC_URL>/api/events/hook/<name> and CUGA runs an agent to
+        triage it, optionally delivering the result to a channel.
+
+        Query: ?agent=<agent> (default incident_triage) · ?deliver_to=<channel> + ?target=<native id>
+        (deliver the triage to e.g. a Slack channel) · ?key=<secret> (required iff EVENTS_WEBHOOK_KEY
+        is set). No AP — it's just an HTTP endpoint that reuses the /invoke seam."""
+        import json as _json
+        import httpx
+        want = os.environ.get("EVENTS_WEBHOOK_KEY")
+        if want and request.query_params.get("key") != want:
+            return JSONResponse({"ok": False, "error": "bad or missing ?key"}, 401)
+        payload = await _safe_json(request)
+        agent = request.query_params.get("agent") or "incident_triage"
+        deliver_to = request.query_params.get("deliver_to")
+        target = request.query_params.get("target")
+        tr = Trace(new_trace_id())
+        tr("hook", name=name, agent=agent, deliver=deliver_to)
+        body_txt = _json.dumps(payload, indent=2)[:4000] if payload else "(empty body)"
+        text = (f"An external system POSTed to webhook '{name}'. Triage this payload:\n\n{body_txt}")
+        port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+        gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+        deliver = bool(deliver_to and target)
+        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{target}"}
+               if deliver else {"type": "integration", "name": "webhook", "thread_id": f"hook:{name}"})
+        inv = {"agent": agent, "text": text, "deliver": deliver, "source": src,
+               "event": {"kind": "message", "payload": payload if isinstance(payload, dict) else {}}}
+        try:
+            async with httpx.AsyncClient(timeout=180) as c:
+                r = await c.post(f"http://127.0.0.1:{port}/invoke",
+                                 headers={"X-Gateway-Token": gw}, json=inv)
+            j = r.json() if r.status_code == 200 else {}
+        except Exception as e:  # noqa: BLE001
+            tr.error("hook", err=str(e))
+            return JSONResponse({"ok": False, "webhook": name, "error": str(e)}, 502)
+        return {"ok": r.status_code == 200, "webhook": name, "agent": agent,
+                "answer": j.get("answer"), "delivered": deliver, "trace_id": tr.id}
+
+    # --- DIRECT Discord (default backend; a Gateway WebSocket bot — no AP, no public URL) ----------
+    async def _discord_answer(msg: dict) -> None:
+        """A Discord Gateway MESSAGE_CREATE → /invoke(concierge) → reply back to the channel.
+        thread_id keys memory per channel/thread; source.user = the author (per-user identity)."""
+        from . import discord_direct
+        import httpx
+        tr = Trace(new_trace_id())
+        channel_id = str(msg.get("channel_id") or "")
+        author = str((msg.get("author") or {}).get("id") or "")
+        text = msg.get("content") or ""
+        try:
+            port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+            gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+            payload = {"text": text, "agent": "concierge", "deliver": False,
+                       "source": {"type": "channel", "name": "discord",
+                                  "thread_id": f"gw:discord:{channel_id}", "user": author},
+                       "event": {"kind": "message", "payload": {"discord_user": author}}}
+            async with httpx.AsyncClient(timeout=180) as c:
+                r = await c.post(f"http://127.0.0.1:{port}/invoke",
+                                 headers={"X-Gateway-Token": gw}, json=payload)
+                answer = (r.json() or {}).get("answer") if r.status_code == 200 else None
+            if answer:
+                res = await discord_direct.send_message(channel_id, answer)
+                tr("discord.reply", channel=channel_id, ok=res.get("ok"))
+            else:
+                tr.error("discord", reason="no answer", status=r.status_code)
+        except Exception as e:  # noqa: BLE001
+            tr.error("discord", err=str(e))
+
+    # register the Gateway as a startup background task (direct is the default). The server's
+    # lifespan launches app.state.events_background; nothing to arm (the bot connects on boot).
+    if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") != "ap":
+        from . import discord_direct as _dd
+        if _dd.bot_token():
+            async def _discord_gateway():
+                await _dd.run_gateway(_discord_answer)
+            _bg = list(getattr(app.state, "events_background", []) or [])
+            _bg.append(_discord_gateway)
+            app.state.events_background = _bg
+
+    # Auto-connect .env USER tokens (single-operator convenience): a token set in .env becomes the
+    # operator's AP connection on startup, so "set in .env" == "connected". Multi-user deployments
+    # leave these blank and each user connects their own in the Studio.
+    async def _autoconnect_env_tokens():
+        if engine is None:
+            return
+        import logging as _lg
+        from . import credentials, oauth
+        p = resolve_principal(headers={})     # the operator principal (EVENTS_USER_ID / defaults)
+        grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
+        # GitHub PAT → a SECRET_TEXT github connection (token-auth integration)
+        gh = (os.environ.get("GITHUB_TOKEN", "") or "").split(" #", 1)[0].strip()
+        if gh:
+            try:
+                ext = credentials.connection_external_id("github", "per-user", p)
+                if not await engine.connection_exists(ext, project_name=p.ap_project_name(grain)):
+                    await engine.ensure_secret_connection(ext, oauth.provider("github")["piece"], gh,
+                                                          project_name=p.ap_project_name(grain))
+                _lg.getLogger("cuga.events").info("autoconnect: github connected from .env (%s)", ext)
+            except Exception as e:  # noqa: BLE001
+                _lg.getLogger("cuga.events").warning("autoconnect github failed: %s", e)
+
+    if os.environ.get("GITHUB_TOKEN") and engine is not None:
+        _bg = list(getattr(app.state, "events_background", []) or [])
+        _bg.append(_autoconnect_env_tokens)
+        app.state.events_background = _bg
 
     # --- per-user connect (CUGA hosts the OAuth; AP holds the token) -------------
     def _principal_from(scope: str | None, headers):
@@ -593,6 +735,16 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
+        # Discord DIRECT backend (default): nothing to arm in AP — the Gateway bot connects on boot.
+        if channel == "discord" and os.environ.get("EVENTS_DISCORD_BACKEND", "direct") != "ap":
+            from . import discord_direct
+            if not discord_direct.bot_token():
+                return JSONResponse({"ok": False, "error": "set DISCORD_BOT_TOKEN"}, 400)
+            return {"ok": True, "channel": "discord", "backend": "direct",
+                    "note": "Direct Gateway backend — the bot connects on server start; nothing to "
+                            "arm. Ensure MESSAGE CONTENT INTENT is on (Developer Portal → Bot → "
+                            "Privileged Gateway Intents). Set EVENTS_DISCORD_BACKEND=ap for the "
+                            "(polling) AP path."}
         # Slack DIRECT backend (default): nothing to arm in AP — the CUGA endpoint is always live.
         if channel == "slack" and os.environ.get("EVENTS_SLACK_BACKEND", "direct") != "ap":
             from . import slack_direct

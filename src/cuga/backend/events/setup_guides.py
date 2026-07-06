@@ -54,14 +54,19 @@ GUIDES: dict[str, dict] = {
         ],
     },
     "github": {
-        "label": "GitHub", "kind": "integration", "wiring": "AP (PUSH: PR / issue)",
+        "label": "GitHub", "kind": "integration", "wiring": "AP (PUSH: PR / issue)", "connect": "token",
         "ownership": ["per_user", "tenant"], "ownership_default": "per_user",
         "creds": [{"key": "GITHUB_TOKEN", "label": "Personal Access Token", "required": True,
                    "where": "GitHub → Settings → Developer settings → PAT (repo scope)"}],
         "steps": [
-            "Create a PAT (repo scope) → connect: POST /api/events/connect/github/token.",
-            "Ask the concierge: 'when a PR opens on my repo, summarize it and message me'.",
+            "Create a PAT (repo scope) in GitHub → Settings → Developer settings.",
+            "Single-operator: put it in .env as GITHUB_TOKEN [USER] → auto-connected on startup. "
+            "Multi-user: each user pastes their own via Integrations → GitHub → Connect.",
+            "Ask the concierge: 'when a PR opens on <owner/repo>, summarize it and message me' "
+            "(name the repo — the PR trigger needs it).",
         ],
+        "note": "Per-user token — GitHub needs no OAuth *app* creds "
+                "(it's token-auth, not OAuth).",
     },
     "gmail": {
         "label": "Gmail", "kind": "integration", "wiring": "AP (OAuth) · PUSH + email delivery",
@@ -80,28 +85,28 @@ GUIDES: dict[str, dict] = {
         "note": "OAuth requires the CONSENT flow — a pasted token won't work (AP does the code exchange).",
     },
     "box": {
-        "label": "Box", "kind": "integration", "connect": "token",
-        "wiring": "direct poll (default, token) · AP (OAuth) PUSH new_file behind the AP path",
+        "label": "Box", "kind": "integration", "connect": "oauth",
+        "wiring": "AP (OAuth) PUSH new_file — DEFAULT · direct token poll behind EVENTS_BOX_BACKEND=direct",
         "ownership": ["per_user"], "ownership_default": "per_user",
         "creds": [
-            {"key": "BOX_DEV_TOKEN", "label": "Developer Token (direct path)", "required": False,
-             "where": "Box Developer Console → your app → Generate Developer Token (~60 min, no OAuth app)"},
-            {"key": "EVENTS_OAUTH_BOX_CLIENT_ID", "label": "OAuth Client ID (AP path)", "required": False,
+            {"key": "EVENTS_OAUTH_BOX_CLIENT_ID", "label": "OAuth Client ID", "required": True,
              "where": "Box Developer Console → your app → Configuration"},
-            {"key": "EVENTS_OAUTH_BOX_CLIENT_SECRET", "label": "OAuth Client Secret (AP path)", "required": False,
+            {"key": "EVENTS_OAUTH_BOX_CLIENT_SECRET", "label": "OAuth Client Secret", "required": True,
              "where": "same app"},
+            {"key": "BOX_DEV_TOKEN", "label": "Developer Token (direct path, optional)", "required": False,
+             "where": "Box Developer Console → your app → Generate Developer Token (~60 min, no OAuth app)"},
         ],
         "steps": [
-            "DIRECT (recommended): grab a Developer Token (no OAuth app / redirect URI needed), set "
-            "BOX_DEV_TOKEN, then poll a folder via POST /api/events/box/poll {folder_id, deliver_to}.",
-            "The watcher fires resume_judge per new file and can deliver to a DIRECT channel (Slack) — "
-            "fully AP-free. Verify with tests/events/live_box_direct_check.py.",
-            "AP path (optional): a paid/dev Box app that can save a Redirect URI "
-            "(<EVENTS_PUBLIC_URL>/api/events/connect/box/callback) + manage_webhook; each user logs in "
-            "via GET /api/events/connect/box.",
+            "AP (default): create a Box OAuth 2.0 app; set EVENTS_OAUTH_BOX_CLIENT_ID/_SECRET; redirect "
+            "URI = <EVENTS_PUBLIC_URL>/api/events/connect/box/callback; each user logs in via "
+            "GET /api/events/connect/box. AP watches the folder (new_file) and fires /invoke.",
+            "The concierge arms Box PUSH on AP (create_push_flow) — this is the default when you say "
+            "'when a resume lands in my Box…'.",
+            "DIRECT (opt-in): set EVENTS_BOX_BACKEND=direct + BOX_DEV_TOKEN, then poll a folder via "
+            "POST /api/events/box/poll — no OAuth app, but you drive/schedule the poll yourself.",
         ],
-        "note": "Direct poll takes the token directly (fast, no consent). The AP push path needs the "
-                "OAuth code-exchange (AP refuses a pre-obtained dev token) + a paid Box app.",
+        "note": "Integrations default to AP (OAuth token lifecycle + the piece trigger). The direct "
+                "token poll stays available behind EVENTS_BOX_BACKEND=direct for a quick, AP-free test.",
     },
     "webhook": {
         "label": "Generic Webhook", "kind": "integration", "wiring": "AP (in) / direct (out)",

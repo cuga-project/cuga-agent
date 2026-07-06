@@ -1,9 +1,10 @@
 # Channels & Box setup (Stage 2) — what to procure + how
 
-Stage 2 wires Telegram/Discord/Slack **channels** + the **Box** resume watcher. **Telegram and
-Discord run via Activepieces** (AP does the receiving + sending); **Slack and Box now default to a
-*direct* backend** (CUGA talks to the vendor API with a token — no AP). CUGA sees a normalized
-`/invoke` envelope either way. This is the combined checklist; for a focused per-integration
+Stage 2 wires Telegram/Discord/Slack **channels** + the **Box** resume watcher. **Telegram runs via
+Activepieces** (AP does the receiving + sending); **Slack, Discord, and Box now default to *direct*
+backends** (CUGA talks to the vendor API directly — no AP; Discord via a Gateway WebSocket, Slack via
+the Events API, Box via a token poll). Each AP path stays behind `EVENTS_<CH>_BACKEND=ap`. CUGA sees
+a normalized `/invoke` envelope either way. This is the combined checklist; for a focused per-integration
 walkthrough see **[setup/](setup/)** ([Slack](setup/SLACK.md) · [Discord](setup/DISCORD.md) ·
 [Telegram](setup/TELEGRAM.md) · [Box](setup/BOX.md)).
 
@@ -20,18 +21,14 @@ walkthrough see **[setup/](setup/)** ([Slack](setup/SLACK.md) · [Discord](setup
   paste in CUGA **Integrations → GitHub → Connect** (token, no OAuth/redirect). Proves the same
   integration mechanics (New-PR/New-Issue → /invoke → router → deliver) with zero account-tier
   friction. `.env`: nothing needed (token pasted in the UI).
-- **Box** (integration) — **direct backend is the default and free-account-friendly.** Grab a Box
-  **Developer Token** (Box dev console → your app → *Generate Developer Token*, ~60 min, no OAuth app
-  / redirect URI) → `.env` `BOX_DEV_TOKEN`. The watcher polls a folder via
-  `POST /api/events/box/poll`. Full walkthrough + verify: **[setup/BOX.md](setup/BOX.md)**. No
-  Business account, no OAuth consent needed.
-  - **AP path (optional, secondary):** the AP `new_file` **webhook** trigger needs a paid Box app
-    that can save a Redirect URI + `manage_webhook`, plus the OAuth consent flow (AP refuses a
-    pre-obtained token — it does the code-exchange itself). Only bother with this if you specifically
-    want AP to own the Box connection. Set `EVENTS_OAUTH_BOX_CLIENT_ID/_SECRET` + `EVENTS_PUBLIC_URL`,
-    redirect URI = `<EVENTS_PUBLIC_URL>/api/events/connect/box/callback`, then Studio → Integrations →
-    Connect Box → approve → `ensure_oauth_connection` creates the AP connection.
-    (The free-account block on saving OAuth app config is exactly why direct is the default.)
+- **Box** (integration) — **AP is the default** (integrations run on AP: OAuth token lifecycle + the
+  `new_file` trigger). Create a Box **OAuth 2.0 app** → `.env` `EVENTS_OAUTH_BOX_CLIENT_ID/_SECRET` +
+  `EVENTS_PUBLIC_URL`; redirect URI = `<EVENTS_PUBLIC_URL>/api/events/connect/box/callback`; each user
+  logs in via `GET /api/events/connect/box`. The concierge arms Box PUSH on AP (`create_push_flow`).
+  Full walkthrough: **[setup/BOX.md](setup/BOX.md)**.
+  - **Direct poll (opt-in):** set `EVENTS_BOX_BACKEND=direct` + `BOX_DEV_TOKEN` (dev console, ~60 min,
+    no OAuth app) and drive `POST /api/events/box/poll` yourself — a quick, AP-free test path. Kept
+    behind the flag, symmetric with Slack's parked AP path.
 
 ## 2) Tunnel + AP (the real-inbound blocker)
 Telegram/Slack **push events to AP over the internet**, so AP needs a public URL (Discord uses a
@@ -87,9 +84,10 @@ GATEWAY_TOKEN=<from .env> EVENTS_SERVER_URL=http://localhost:8100 \
 ```
 Then **you** send a real message to the bot; AP → `/invoke` → the concierge resolves you (via the
 channel link) → answers → AP sends it back. Grep one `trace_id` across the CUGA + AP logs to watch
-the whole round-trip. **Telegram (AP), Discord (AP), and Slack (direct) round-trips are all
-live-verified**; Slack's direct path (Events API → `/api/events/slack/events` → `chat.postMessage`)
-is the default (AP Slack parked behind `EVENTS_SLACK_BACKEND=ap`).
+the whole round-trip. **Telegram (AP) + Slack (direct) round-trips are live-verified; Discord (direct
+Gateway) gateway-connect is verified, full round-trip pending a live message.** The direct backends
+(Slack Events API, Discord Gateway) are the defaults; each AP path is parked behind
+`EVENTS_<CH>_BACKEND=ap`.
 
 ## Verified channel send actions (from live AP piece metadata, 2026-07-03)
 One declarative row per channel in `flows.CHANNELS` (piece `telegram-bot@0.6.4` · `discord@0.5.3` ·
@@ -98,7 +96,8 @@ One declarative row per channel in `flows.CHANNELS` (piece `telegram-bot@0.6.4` 
 | Channel | Send action | Target arg | Text arg | Notes |
 |---|---|---|---|---|
 | **telegram** | `send_text_message` | `chat_id` | `message` | **fully round-trip verified live** |
-| **discord** | `sendMessageWithBot` | `channel_id` | `message` | **live round-trip verified** (AP polling, ~5 min) |
+| **discord** (`direct`, default) | REST create-message | `channel_id` | `content` | **Gateway WebSocket** (instant, no public URL); native author id; gateway connects verified |
+| **discord** (`ap` backend) | `sendMessageWithBot` | `channel_id` | `message` | AP polling (~5 min) behind `EVENTS_DISCORD_BACKEND=ap` |
 | **slack** (`ap` backend) | `send_channel_message` | `channel` | `text` | requires `sendAsBot=true`; **parked** — AP trigger emits `[]`, so `direct` is the default |
 | **slack** (`direct`, default) | `chat.postMessage` | `channel` | `text` | CUGA-native (`slack_direct`), bot token; **inbound round-trip verified** (Events API → reply) |
 

@@ -23,7 +23,7 @@ log = logging.getLogger("events.delivery")
 _DEFAULT_BACKEND = {
     "slack": "direct",     # direct is the default (bot token); AP path behind EVENTS_SLACK_BACKEND=ap
     "telegram": "ap",      # AP webhook round-trip verified live
-    "discord": "ap",       # AP polling round-trip verified live
+    "discord": "direct",   # direct Gateway (instant, no public URL); AP polling behind EVENTS_DISCORD_BACKEND=ap
 }
 
 
@@ -52,5 +52,10 @@ async def send_direct(channel: str, target: str, text: str) -> tuple[bool, str]:
         res = await slack_direct.send_message(target, text)
         ok = bool(res.get("ok"))
         return ok, ("ok" if ok else f"slack: {res.get('error') or res}")
+    if ch == "discord":
+        from . import discord_direct
+        res = await discord_direct.send_message(target, text)
+        ok = bool(res.get("ok"))
+        return ok, ("ok" if ok else f"discord: {res.get('error') or res}")
     log.warning("no direct sender for channel %s (target=%s) — dropping", channel, target)
     return False, f"no direct sender for '{channel}'"

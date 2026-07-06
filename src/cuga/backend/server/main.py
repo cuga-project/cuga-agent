@@ -934,8 +934,24 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
+    # Launch events-layer background tasks (e.g. the direct Discord Gateway bot). Registered on
+    # app.state by register_events_routes; never block startup if one fails.
+    _events_bg_tasks = []
+    try:
+        for _factory in getattr(app.state, "events_background", []) or []:
+            _events_bg_tasks.append(asyncio.create_task(_factory()))
+        if _events_bg_tasks:
+            logger.info("events: launched {} background task(s) (e.g. direct Discord gateway)",
+                        len(_events_bg_tasks))
+    except Exception as _bg_err:  # noqa: BLE001
+        logger.warning("events background launch failed: {}", _bg_err)
+
     yield
     logger.info("Application is shutting down...")
+
+    for _t in _events_bg_tasks:            # stop the events background tasks
+        _t.cancel()
 
     # Terminate the save_reuse server process if it's running
     if app_state.save_reuse_process and app_state.save_reuse_process.returncode is None:

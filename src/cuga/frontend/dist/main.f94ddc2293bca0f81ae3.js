@@ -13133,10 +13133,13 @@ function IntegrationsTab({
   }, i.note), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-card-foot"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: "purple",
+    size: "sm"
+  }, "USER \u2014 your login"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: "outline",
     size: "sm"
   }, i.auth === "oauth" ? "OAuth" : "token"), i.status !== "ap_not_configured" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
-    kind: "tertiary",
+    kind: i.status === "connected" ? "ghost" : "tertiary",
     size: "sm",
     renderIcon: i.auth === "oauth" ? _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Launch : _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Plug,
     onClick: () => connect(i)
@@ -13200,7 +13203,25 @@ function SetupTab({
   }, g.kind), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: "outline",
     size: "sm"
-  }, g.wiring))), (g.creds || []).length === 0 ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+  }, g.wiring))), g.needs_connection && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 8,
+      margin: "6px 0 10px"
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: g.connected ? "green" : "red",
+    size: "md"
+  }, g.connected ? "● Connected" : "○ Not connected"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: g.connection_scope === "tenant" ? "blue" : "purple",
+    size: "sm"
+  }, g.connection_scope === "tenant" ? "TENANT (one per org)" : "USER (per-person login)"), (g.connect === "oauth" || g.connect === "token") && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
+    kind: g.connected ? "ghost" : "tertiary",
+    size: "sm",
+    renderIcon: g.connect === "oauth" ? _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Launch : _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Plug,
+    onClick: () => connect(g)
+  }, g.connected ? "Reconnect" : "Connect", " ", g.label)), (g.creds || []).length === 0 ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     className: "studio-muted",
     style: {
       fontSize: 13
@@ -13214,7 +13235,10 @@ function SetupTab({
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: c.present ? "green" : c.required ? "red" : "gray",
     size: "sm"
-  }, c.present ? "set" : c.required ? "missing" : "optional"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, c.key), " \u2014 ", c.label, " ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+  }, c.present ? "configured ✓" : c.required ? "set up →" : "optional"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: c.scope === "tenant" ? "blue" : "purple",
+    size: "sm"
+  }, c.scope === "tenant" ? "TENANT" : "USER"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, c.key), " \u2014 ", c.label, " ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
     className: "studio-muted"
   }, "(", c.where, ")"))), (g.ownership || []).length > 0 && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     style: {
@@ -13242,12 +13266,7 @@ function SetupTab({
     style: {
       fontSize: 12.5
     }
-  }, "\u26A0 ", g.note), (g.connect === "oauth" || g.connect === "token") && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
-    kind: "tertiary",
-    size: "sm",
-    renderIcon: g.connect === "oauth" ? _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Launch : _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Plug,
-    onClick: () => connect(g)
-  }, "Connect ", g.label))));
+  }, "\u26A0 ", g.note))));
 }
 function FlowsTab({
   refresh
@@ -17487,4 +17506,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.55d02579f6de826f4d19.js.map
+//# sourceMappingURL=main.f94ddc2293bca0f81ae3.js.map

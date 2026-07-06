@@ -62,6 +62,22 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
                   channels=["web", "slack"],
                   integrations=[{"app": "slack", "ownership": "shared"}],
                   prompt="You post an overnight support digest to a shared Slack channel."),
+        AgentSpec(name="pr_reviewer", backend=b, mcp_servers=["cuga-code", "cuga-text"], channels=web,
+                  integrations=[{"app": "github", "ownership": "per-user"}],
+                  prompt="When a pull request opens, summarize what it changes and flag risks "
+                         "(bugs, security, breaking changes). Uses the user's own GitHub (PAT)."),
+        # a scheduled digest agent → posts to a chat channel (demoes CRON → Slack delivery)
+        AgentSpec(name="github_trending", backend=b, mcp_servers=["cuga-web"],
+                  channels=["web", "slack", "telegram"],
+                  prompt="Report the current top trending GitHub repositories (search the web / browse "
+                         "github.com/trending). For each of ~5–7 repos give: name, primary language, and "
+                         "a one-line description of what it does and why it's notable. Concise, bulleted "
+                         "— this posts to a busy chat channel."),
+        # the generic inbound-webhook worker: any external system POSTs a payload → this triages it
+        AgentSpec(name="incident_triage", backend=b, mcp_servers=["cuga-text"], channels=["web", "slack"],
+                  prompt="You triage an inbound alert/incident payload from a webhook. Summarize what "
+                         "happened in one line, classify severity (P1/P2/P3), name the likely component, "
+                         "and suggest the first action. Be concise — this goes to a busy on-call channel."),
     ]
 
 

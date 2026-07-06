@@ -89,14 +89,24 @@
 - [ ] Tunnel is a Cloudflare **quick-tunnel** (ephemeral URL, dies on `cloudflared` restart) —
       re-point bot webhooks after any restart. Fine for testing; use a named tunnel for anything durable.
 
-## Integrations
-- [x] **Box — direct poll backend (free-account friendly)** — `box_direct.py` +
-      `POST /api/events/box/poll` list a folder with `BOX_DEV_TOKEN` (Box REST API) and fire the
-      watcher per new file; no OAuth app, no paid account. **Live e2e verified 2026-07-06**
-      (`live_box_direct_check.py`). The AP OAuth path (needs a Business account) remains as a
-      secondary option. **Open follow-up:** the watcher passes the file *name* to `resume_judge`, not
-      its *content* (agent can't read the bytes yet — needs a Box download in `box_direct` or a
-      Box-read MCP tool).
+## Integrations (all full-AP — decision 2026-07-06: channels go direct, integrations stay on AP)
+- [x] **Box · GitHub · Gmail are first-class AP integrations.** Each has: an oauth provider (Box/Gmail
+      OAuth, GitHub PAT), an AP piece PUSH trigger (`new_file` / `new_pull_request` / `new_email`), a
+      setup guide (`events_docs/setup/{BOX,GITHUB,GMAIL}.md`), a status row, and a driving agent
+      (`resume_judge` box+gmail · `pr_reviewer` github · `mailbot` gmail). Gmail is also an **email
+      delivery sink**. **e2e harness `live_integrations_e2e.py` — 10/10** (NOW real price, CRON+POLL
+      create real AP flows, PUSH box/github/gmail route to AP → correct CONNECT-NEEDED).
+- [x] **Box direct poll** stays as an opt-in behind `EVENTS_BOX_BACKEND=direct` (symmetric with
+      Slack's parked AP path). **Open follow-up (all backends):** the watcher passes the file *name*
+      to the agent, not its *content* — needs a download/read step.
+- [ ] **Full PUSH fire e2e** — connect the integration (Box/Gmail OAuth · GitHub PAT) + a real event
+      (drop a file / open a PR / send an email) → verify the run fires and delivers. Needs creds.
+
+- [x] **Generic inbound WEBHOOK** (direct, no AP) — `POST /api/events/hook/<name>` → renders the
+      payload → fires an agent (seeded `incident_triage`) → optional direct-channel delivery. Optional
+      `EVENTS_WEBHOOK_KEY` gate. Use cases: monitoring alert / CI fail / form lead → triage → Slack.
+- [x] **Auto-connect .env USER tokens** — `GITHUB_TOKEN` in .env → the operator's AP github
+      connection on startup ("set in .env == connected"). Box dev token already auto-works.
 
 ## Phase 3+ (from DESIGN §11)
 - [~] PUSH triggers (Box / GitHub / Gmail) + branching flows — **Box direct poll e2e verified**
@@ -112,8 +122,10 @@
       identity + `/link` binds it. **Slack (`ev.user`) live-verified**; Discord (`{{trigger.author.id}}`
       via the AP flow) wired — **confirm the field on the first live Discord msg** (falls back to
       channel, no regression). Telegram keeps `chat.id`.
-- [ ] **Instant Discord** — a direct **gateway** backend (persistent WebSocket) to replace the ~5-min
-      AP polling; also yields the author id natively (closes the Discord author-field caveat).
+- [x] **Instant Discord — direct Gateway backend** (`discord_direct.py`): a persistent WebSocket bot
+      (default; AP polling behind `EVENTS_DISCORD_BACKEND=ap`). Instant, **no public URL** (outbound
+      WS), native author id. Gateway **connects verified** (READY as the bot); full human round-trip
+      pending a live message. Launched from the server lifespan (`app.state.events_background`).
 - [x] **Studio UI: Concierge · Channels · Integrations · Flows · Examples** — built into CUGA's
       existing React frontend (dumb; reads `GET /api/events/*`, posts to `/api/concierge`). See
       [STUDIO_UI.md](STUDIO_UI.md). Now also an **Agents** tab (`GET /api/events/agents`). Connect

@@ -3,15 +3,27 @@
 One focused, step-by-step guide per integration — what to procure, how to wire it, and the exact
 command to **verify** it works. Pick your integration:
 
+**Channels** (converse with an agent):
+
 | Guide | Backend | Inbound | What it's for |
 |---|---|---|---|
 | **[TELEGRAM.md](TELEGRAM.md)** | Activepieces (webhook) | instant | 1:1 chat with an agent |
-| **[DISCORD.md](DISCORD.md)** | Activepieces (polling ~5 min) | polled | channel chat with an agent |
+| **[DISCORD.md](DISCORD.md)** | **direct (default)** · AP polling behind a flag | instant (Gateway) | channel chat with an agent |
 | **[SLACK.md](SLACK.md)** | **direct (default)** · AP behind a flag | instant | channel chat with an agent |
-| **[BOX.md](BOX.md)** | **direct (default)** · AP behind a flag | polled | file/resume watcher (PUSH) |
+
+**Integrations** (an app the agent watches / acts on — all run on **Activepieces**):
+
+| Guide | Auth | Trigger | What it's for |
+|---|---|---|---|
+| **[BOX.md](BOX.md)** | AP OAuth (default) · direct token behind a flag | `new_file` | file/résumé watcher (PUSH) |
+| **[GITHUB.md](GITHUB.md)** | AP token (PAT) | `new_pull_request` / `new_issue` | PR/issue watcher (PUSH) |
+| **[GMAIL.md](GMAIL.md)** | AP OAuth (consent + refresh) | `new_email` | inbox watcher (PUSH) + email delivery sink |
+| **[WEBHOOK.md](WEBHOOK.md)** | none (direct) | HTTP POST | generic inbound webhook → triage → deliver |
 
 **Channels vs integrations.** A *channel* (Telegram/Discord/Slack) is a place you **converse with**
-an agent — two-way. An *integration* (Box/GitHub/Gmail) is an app the agent **watches or acts on**.
+an agent — two-way. An *integration* (Box/GitHub/Gmail) is an app the agent **watches or acts on**;
+integrations run on AP (OAuth/token + the piece trigger). Full integration e2e:
+`tests/events/live_integrations_e2e.py`.
 
 **Two backends per connector.** Some connectors run **direct** (CUGA talks to the vendor API with a
 token — no Activepieces) and some via **AP** (AP holds the OAuth token and runs the trigger/send).
@@ -27,7 +39,8 @@ itself) and, for Slack, its app-event trigger silently dropped events. See
 2. **A public HTTPS URL** (`EVENTS_PUBLIC_URL`) for the connectors that receive webhooks over the
    internet (Telegram, Slack-direct). A `cloudflared` quick-tunnel works:
    `cloudflared tunnel --url http://localhost:8100` → put the `https://…trycloudflare.com` URL in
-   `.env` as `EVENTS_PUBLIC_URL`. Discord (polling) and Box (polling) don't need this.
+   `.env` as `EVENTS_PUBLIC_URL`. **Discord (direct Gateway — outbound WS) and Box (polling) need no
+   public URL.**
 
 ## Verify them all at once
 

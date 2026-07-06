@@ -1,26 +1,23 @@
-# Discord setup (Activepieces backend — polling ~5 min)
+# Discord setup (direct Gateway backend — the default, instant)
 
-Discord runs through **Activepieces**. Its `new_message` trigger is a **POLLING** trigger that
-watches **one channel** (Discord has no free push webhook for reads), so replies arrive within the
-poll interval (~5 min), not instantly. Fields verified against `discord@0.5.3`
-(`sendMessageWithBot`, `channel_id`, `message`).
+Discord talks to CUGA **directly** over its **Gateway** (a persistent WebSocket bot) — **instant**
+messages, and because the Gateway is an *outbound* connection it needs **no public URL** (unlike
+Slack's Events API). The bot connects on server start; there's nothing to arm.
 
 ```
-Discord channel msg ─▶ AP polls the channel ─▶ /invoke (concierge) ─▶ AP discord send ─▶ reply
+Discord message ─▶ Gateway (MESSAGE_CREATE) ─▶ /invoke (concierge) ─▶ REST create-message ─▶ reply
 ```
 
-Replies go to the message's `channel_id`, so a message posted **in a thread** is answered **in that
-thread** automatically.
+Replies go to the message's `channel_id`, so a message in a **thread** is answered **in that thread**;
+memory is per channel/thread, and the message's **author** id gives per-user identity natively.
 
-## Why polling, not instant (vs Telegram)?
-Telegram/Slack push events to a webhook; Discord's read side is a gateway/poll model, and AP's piece
-polls. That's why Discord uses `DedupeStrategy.TIMEBASED` — each poll only processes messages newer
-than the last poll baseline (this is stored; re-processing old messages only happens if you re-arm,
-which resets the baseline).
+> The old **AP polling** path (`new_message` trigger, ~5 min latency) is still available behind
+> `EVENTS_DISCORD_BACKEND=ap`. It watches one channel with `DedupeStrategy.TIMEBASED`. Prefer the
+> direct Gateway (default) — instant, no public URL, native author id.
 
 ## What you'll need
-- A Discord server where you can add a bot.
-- Activepieces running + reachable. (Discord polling does **not** need a public URL — no webhook.)
+- A Discord server where you can add a bot, with **MESSAGE CONTENT INTENT** enabled.
+- Just the bot token — **no Activepieces, no public URL** for the direct backend.
 
 ## Steps
 
@@ -39,35 +36,30 @@ which resets the baseline).
    ```
    Restart the server.
 
-5. **Get the channel id** — in Discord, enable *Developer Mode* (User Settings → Advanced), then
-   right-click the channel → **Copy Channel ID**.
-
-6. **Arm the inbound flow** — Discord's polling trigger needs the channel id to watch:
+5. **Nothing to arm (direct backend).** The bot connects to the Gateway on server start. You can
+   confirm the backend:
    ```bash
    curl -s -X POST localhost:8100/api/events/admin/channels/discord/arm \
-        -H "content-type: application/json" -H "x-user-id: admin" \
-        -d '{"channel":"<CHANNEL_ID>"}'
-   # → {"ok":true,"ap_flow_id":"…"}
+        -H "content-type: application/json" -H "x-user-id: admin" -d '{}'
+   # → {"ok":true,"channel":"discord","backend":"direct", ...}
    ```
+   *(For the AP polling path — `EVENTS_DISCORD_BACKEND=ap` — arm with `{"channel":"<CHANNEL_ID>"}`
+   instead; get the channel id via Developer Mode → right-click channel → Copy Channel ID.)*
 
 ## Verify
 ```bash
 .venv/bin/python tests/events/preflight.py discord         # bot reachable (users/@me)
 ```
-Post a message in the watched channel → a reply appears within the poll interval (~5 min) with a
-metadata footer.
+Then **post any message** in a channel the bot can see → an **instant** reply with a metadata footer.
+The server log shows `discord gateway READY as <bot>` on startup.
 
 ## Troubleshooting
-- **preflight discord 403 (Cloudflare 1010)** — a bare user-agent is blocked; preflight already sends
-  a browser UA. If you script your own call, add `User-Agent: Mozilla/5.0`.
-- **No reply** — bot not in the server / channel; Message Content Intent off; wrong channel id in the
-  arm call; or AP can't reach CUGA's `/invoke` (`HOST_CALLBACK_URL`).
-- **Old messages re-answered** — you re-armed, which reset the poll baseline. Arm once and leave it.
-- **~5 min latency (why it feels slow)** — the AP `new_message` trigger **polls** Discord on a
-  schedule; there is no push. Telegram (webhook) and Slack (Events API) are instant because they
-  *push*. **Instant Discord = a direct gateway backend** (a persistent Discord WebSocket bot,
-  analogous to direct Slack) — not built yet; it would also give the author id for free (below).
-- **Per-user identity** — the inbound flow forwards the message author as `source.user` via
-  `{{trigger.author.id}}`, so a user who `/link`s their Discord id gets per-user creds/permissions.
-  ⚠️ The exact author field name is unverified against the AP piece — confirm on the first live
-  message (if wrong it falls back to the channel, i.e. today's behavior; a one-word descriptor fix).
+- **Gateway closes with code 4014 / no reply** — **MESSAGE CONTENT INTENT is off.** Enable it
+  (Developer Portal → your app → Bot → Privileged Gateway Intents), then restart.
+- **No reply** — bot not invited to the channel; `DISCORD_BOT_TOKEN` missing; or the server isn't
+  running (the gateway posts back via CUGA's local `/invoke`).
+- **preflight discord 403 (Cloudflare 1010)** — a bare user-agent is blocked; preflight sends a
+  browser UA. If you script your own call, add `User-Agent: Mozilla/5.0`.
+- **Per-user identity** — the Gateway message carries the full `author` object; CUGA forwards
+  `author.id` as `source.user`, so a user who `/link`s their Discord id gets per-user creds/permissions.
+- **Want the old polling behavior?** Set `EVENTS_DISCORD_BACKEND=ap` (watches one channel, ~5 min).

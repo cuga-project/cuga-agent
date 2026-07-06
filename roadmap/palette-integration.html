@@ -1,0 +1,246 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Palette × CUGA — Integration Pitch</title>
+<style>
+  :root{--blue:#0f62fe;--ink:#161616;--mut:#8d8d8d;--line:#e0e0e0;--ok:#24a148;--part:#ff832b;
+        --road:#8a3ffc;--code:#f2f4f8;--paper:#fbfbfd}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:#0c0c0f}
+  .deck{scroll-snap-type:y mandatory;overflow-y:scroll;height:100vh}
+  .slide{scroll-snap-align:start;min-height:100vh;display:flex;flex-direction:column;justify-content:center;
+       padding:70px 8vw;position:relative}
+  .slide.light{background:var(--paper);color:var(--ink)}
+  .slide.dark{background:linear-gradient(140deg,#0c0c0f,#1c1c24);color:#f4f4f4}
+  .slide.blue{background:linear-gradient(140deg,#0043ce,#0f62fe);color:#fff}
+  .kicker{font-size:13px;letter-spacing:2px;text-transform:uppercase;color:var(--blue);font-weight:700;margin-bottom:14px}
+  .slide.dark .kicker,.slide.blue .kicker{color:#8ab4ff}
+  .slide.blue .kicker{color:#cfe0ff}
+  h1{font-size:52px;line-height:1.05;margin:0 0 18px;font-weight:700;letter-spacing:-1.2px;max-width:17ch}
+  h2{font-size:36px;line-height:1.1;margin:0 0 20px;font-weight:700;letter-spacing:-.6px;max-width:22ch}
+  .lead{font-size:20px;line-height:1.5;color:#555;max-width:52ch}
+  .slide.dark .lead,.slide.blue .lead{color:#d0d0d8}
+  .slide.blue .lead{color:#eaf0ff}
+  .big{font-size:26px;line-height:1.5;max-width:34ch;font-weight:600}
+  .num{position:absolute;top:28px;right:8vw;font-size:13px;color:var(--mut)}
+  .foot{position:absolute;bottom:26px;left:8vw;font-size:13px;color:var(--mut);max-width:70ch}
+  .cols{display:flex;gap:26px;flex-wrap:wrap;margin-top:8px}
+  .col{flex:1;min-width:210px}
+  .col h3{font-size:15px;text-transform:uppercase;letter-spacing:.5px;color:var(--blue);margin:0 0 8px}
+  .slide.dark .col h3{color:#8ab4ff}
+  ul{margin:6px 0;padding-left:20px} li{margin:7px 0;font-size:17px;line-height:1.4}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .chip{border:1px solid rgba(255,255,255,.25);border-radius:22px;padding:6px 15px;font-size:15px}
+  .slide.light .chip{border-color:var(--line);background:#fff}
+  .mono{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}
+  .flow{font-family:'IBM Plex Mono',monospace;font-size:15px;background:rgba(0,0,0,.04);border-radius:10px;
+       padding:16px 20px;line-height:1.9;margin-top:12px;display:inline-block;white-space:pre}
+  .slide.dark .flow{background:rgba(255,255,255,.06)}
+  .slide.blue .flow{background:rgba(255,255,255,.12)}
+  .utter{font-family:'IBM Plex Mono',monospace;font-size:19px;font-weight:600;background:rgba(15,98,254,.08);
+     border-left:4px solid var(--blue);border-radius:0 8px 8px 0;padding:12px 16px;margin:4px 0 16px;max-width:52ch}
+  .slide.dark .utter{background:rgba(138,180,255,.12);border-left-color:#8ab4ff;color:#eaf0ff}
+  .seq{list-style:none;counter-reset:s;padding:0;margin:8px 0 0;max-width:64ch}
+  .seq li{counter-increment:s;position:relative;padding:5px 0 5px 40px;font-size:16px;line-height:1.45}
+  .seq li::before{content:counter(s);position:absolute;left:0;top:4px;width:26px;height:26px;border-radius:50%;
+     background:var(--blue);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .slide.dark .seq li::before{background:#8ab4ff;color:#0c0c0f}
+  /* verdict comparison cards */
+  .cards{display:flex;gap:18px;flex-wrap:wrap;margin-top:14px;align-items:stretch}
+  .card{flex:1;min-width:250px;border:1px solid var(--line);border-radius:12px;padding:18px 20px;background:#fff;display:flex;flex-direction:column}
+  .slide.dark .card{background:rgba(255,255,255,.04);border-color:rgba(255,255,255,.14)}
+  .card .verdict{font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;border-radius:20px;
+     padding:3px 11px;align-self:flex-start;margin-bottom:10px;color:#fff}
+  .v-no{background:#da1e28}.v-ok{background:var(--part)}.v-yes{background:var(--ok)}
+  .card h3{margin:0 0 2px;font-size:20px}
+  .card .sub{font-size:13px;color:var(--mut);margin-bottom:10px}
+  .card .pc{font-size:14.5px;line-height:1.4;margin:3px 0;padding-left:20px;position:relative}
+  .card .pc.p::before{content:"+";position:absolute;left:2px;color:var(--ok);font-weight:800}
+  .card .pc.c::before{content:"–";position:absolute;left:4px;color:#da1e28;font-weight:800}
+  .slide.dark .card .sub{color:#9a9aa4}
+  .pill{display:inline-block;padding:2px 11px;border-radius:20px;font-size:13px;font-weight:700;color:#fff}
+  .p-pick{background:var(--ok)}.p-now{background:var(--blue)}.p-later{background:var(--road)}
+  code{font-family:'IBM Plex Mono',monospace;background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px}
+  .slide.dark code,.slide.blue code{background:rgba(255,255,255,.14);color:#eaf0ff}
+  .topbar{position:fixed;top:0;left:0;right:0;height:4px;background:rgba(255,255,255,.15);z-index:50}
+  .topbar > i{display:block;height:100%;background:var(--blue);width:0}
+  .hint{position:fixed;bottom:16px;right:20px;font-size:12px;color:#888;z-index:50}
+  @media(max-width:640px){h1{font-size:34px}h2{font-size:25px}.slide{padding:56px 7vw}.flow{font-size:12.5px}}
+</style>
+</head>
+<body>
+<div class="topbar"><i id="prog"></i></div>
+<div class="hint">↓ scroll · ← → arrows</div>
+
+<div class="deck" id="deck">
+
+  <!-- 1 TITLE -->
+  <section class="slide dark">
+    <div class="kicker">Palette × CUGA · Integration proposal</div>
+    <h1>Make Palette a sub-agent inside CUGA.</h1>
+    <div class="lead">A user asks for a deck in plain English. CUGA delegates the whole job to Palette and
+      hands back a <span class="mono">.pptx</span>. Nobody ever types the word "Palette."</div>
+    <div class="foot">Internal proposal for the CUGA team · 2026-07-06</div>
+    <div class="num">01</div>
+  </section>
+
+  <!-- 2 WHAT PALETTE IS -->
+  <section class="slide light">
+    <div class="kicker">What we're plugging in</div>
+    <h2>Palette turns a topic into an editable deck.</h2>
+    <div class="cols">
+      <div class="col"><h3>What it does</h3><ul>
+        <li>Topic or reference docs → <b>editable .pptx</b> + PNG previews.</li>
+        <li>3 stages: plan → design+code → geometry repair.</li>
+        <li>Multi-turn: draft · build · retry a slide · NL edit.</li></ul></div>
+      <div class="col"><h3>What it is under the hood</h3><ul>
+        <li>Fine-tuned LoRA (served via RITS) + a render toolchain.</li>
+        <li>Node/pptxgenjs · LibreOffice · Poppler · IBM Plex.</li>
+        <li><b>Already deployed on a machine</b> — a running HTTP service.</li></ul></div>
+    </div>
+    <div class="lead" style="margin-top:16px">It's not a function — it's a small autonomous app with its own model.
+      That fact decides how it should plug in.</div>
+    <div class="num">02</div>
+  </section>
+
+  <!-- 3 THE QUESTION -->
+  <section class="slide dark">
+    <div class="kicker">The decision</div>
+    <h2>CUGA offers three ways in. Which fits Palette?</h2>
+    <div class="chips">
+      <span class="chip"><b>Skill</b> — a SKILL.md playbook CUGA's own LLM follows</span>
+      <span class="chip"><b>Tool</b> — an OpenAPI / MCP endpoint the supervisor calls</span>
+      <span class="chip"><b>Sub-agent</b> — a specialist the supervisor delegates whole tasks to</span>
+    </div>
+    <div class="lead" style="margin-top:20px">All three are <b>auto-selected by description</b> — the user never names them.
+      The only question is which shape matches what Palette actually is.</div>
+    <div class="num">03</div>
+  </section>
+
+  <!-- 4 THE COMPARISON -->
+  <section class="slide light">
+    <div class="kicker">Skills vs Tools vs Sub-agents · for Palette</div>
+    <h2>Same routing. Very different fit.</h2>
+    <div class="cards">
+      <div class="card">
+        <span class="verdict v-no">Wrong fit</span>
+        <h3>Skill</h3>
+        <div class="sub">A SKILL.md the base LLM reads &amp; runs in a sandbox</div>
+        <div class="pc p">Zero infra; auto-loaded on match</div>
+        <div class="pc c">Palette's brain is a fine-tuned model, not prose — can't live in a prompt</div>
+        <div class="pc c">Sandbox would need Node + LibreOffice + fonts + RITS</div>
+        <div class="pc c">If it just calls the service, it's redundant with a tool</div>
+      </div>
+      <div class="card">
+        <span class="verdict v-ok">OK v1</span>
+        <h3>Tool</h3>
+        <div class="sub">OpenAPI / MCP endpoint, called directly</div>
+        <div class="pc p">Near-zero effort — Palette already exposes <code>/openapi.json</code></div>
+        <div class="pc p">Auto-invoked by description</div>
+        <div class="pc c">Deck-building is multi-turn; loose tool calls are awkward</div>
+        <div class="pc c">Builds run minutes — clashes with one-call/one-answer</div>
+      </div>
+      <div class="card">
+        <span class="verdict v-yes">Best fit</span>
+        <h3>Sub-agent</h3>
+        <div class="sub">A named specialist the supervisor delegates to</div>
+        <div class="pc p">Matches Palette: autonomous, multi-turn, own model</div>
+        <div class="pc p">Clean "hand off the whole deck job" delegation</div>
+        <div class="pc p">Wraps the tool — keeps Palette in its own deployment</div>
+        <div class="pc c">One extra config layer; needs a sharp description</div>
+      </div>
+    </div>
+    <div class="num">04</div>
+  </section>
+
+  <!-- 5 RECOMMENDATION -->
+  <section class="slide blue">
+    <div class="kicker" style="color:#cfe0ff">The recommendation</div>
+    <h2>Make Palette a sub-agent — backed by its HTTP API.</h2>
+    <div class="big">An internal supervisor agent (<span class="mono">deck_designer</span>) that owns exactly one tool:
+      Palette's deployed OpenAPI service.</div>
+    <div class="lead" style="margin-top:18px">You get sub-agent delegation <b>and</b> near-zero wiring —
+      no A2A adapter to build. Palette already runs on its machine; CUGA just points at it.</div>
+    <div class="chips" style="margin-top:18px">
+      <span class="chip"><span class="pill p-now">Now</span> &nbsp;internal sub-agent + OpenAPI tool</span>
+      <span class="chip"><span class="pill p-later">Later</span> &nbsp;flip to external A2A if Palette needs its own process</span>
+    </div>
+    <div class="num">05</div>
+  </section>
+
+  <!-- 6 AUTO-INVOCATION -->
+  <section class="slide dark">
+    <div class="kicker">The part you asked about</div>
+    <h2>On-need, without the user naming it.</h2>
+    <div class="utter">"put together a deck on our Q3 results for the board"</div>
+    <ol class="seq">
+      <li>Supervisor matches the request against registered descriptions.</li>
+      <li>Sees <span class="mono">deck_designer</span> — "generates presentations / decks / slides."</li>
+      <li>Delegates the whole task to it. The word "Palette" never appears.</li>
+      <li>deck_designer drives Palette (draft → build), returns the <span class="mono">.pptx</span>.</li>
+    </ol>
+    <div class="lead" style="margin-top:16px">This is CUGA's <b>default</b> routing — same way the built-in tools fire.
+      "Built-in" = ship it in the default config, present every session, zero user setup.</div>
+    <div class="foot">Reliability lives entirely in the description: clear triggers (deck · slides · presentation · pitch · readout)
+      and anti-triggers (don't fire for a text summary).</div>
+    <div class="num">06</div>
+  </section>
+
+  <!-- 7 HOW IT WIRES -->
+  <section class="slide light">
+    <div class="kicker">How it wires — concretely</div>
+    <h2>Two entries in the default config.</h2>
+    <div class="flow">// mcp_servers.yaml — Palette as a tool (it's already deployed)
+services:
+  - palette:
+      url: http://&lt;palette-host&gt;:18814/openapi.json
+      description: "Generates editable .pptx decks from a topic or docs."
+
+// supervisor.yaml — an internal sub-agent that owns only that tool
+agents:
+  - name: deck_designer
+    description: &gt;
+      Builds &amp; iterates on PowerPoint decks / slides / presentations.
+      Use whenever a user wants a deck — even if they don't say Palette.
+    apps: [ palette ]</div>
+    <div class="foot">One thing to add on the Palette side: a synchronous <code>POST /generate</code> facade
+      (draft→build in one call) so the supervisor sees one clean call, not build-then-poll.</div>
+    <div class="num">07</div>
+  </section>
+
+  <!-- 8 ASK -->
+  <section class="slide blue">
+    <div class="kicker" style="color:#cfe0ff">What we need from the CUGA team</div>
+    <h2>Bless the sub-agent path — and three small things.</h2>
+    <div class="cols">
+      <div class="col"><h3>Decision</h3><ul>
+        <li>Agree: Palette lands as a <b>built-in sub-agent</b>, not a skill.</li>
+        <li>Ship it in the <b>default</b> config so it's on for everyone.</li></ul></div>
+      <div class="col"><h3>Small asks</h3><ul>
+        <li>A stable URL + auth for the deployed Palette.</li>
+        <li>Review the <span class="mono">deck_designer</span> description &amp; trigger phrasing.</li>
+        <li>Add a <code>/generate</code> facade (our side) for the long build.</li></ul></div>
+    </div>
+    <div class="lead" style="margin-top:18px">Working v1 in an afternoon: no changes to CUGA's engine, no A2A adapter,
+      Palette stays where it's already deployed.</div>
+    <div class="num">08</div>
+  </section>
+
+</div>
+
+<script>
+const deck=document.getElementById('deck'), prog=document.getElementById('prog');
+deck.addEventListener('scroll',()=>{const p=deck.scrollTop/(deck.scrollHeight-deck.clientHeight);prog.style.width=(p*100)+'%';});
+const slides=[...document.querySelectorAll('.slide')];
+function go(d){const y=deck.scrollTop;let i=slides.findIndex(s=>s.offsetTop> y+10);
+  if(d>0){if(i<0)i=slides.length-1;} else {i=[...slides].reverse().find(s=>s.offsetTop<y-10);i=i?slides.indexOf(i):0;}
+  const t=(typeof i==='number'?slides[i]:i); if(t)deck.scrollTo({top:t.offsetTop,behavior:'smooth'});}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key==='ArrowDown'){go(1);e.preventDefault();}
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp'){go(-1);e.preventDefault();}});
+</script>
+</body>
+</html>

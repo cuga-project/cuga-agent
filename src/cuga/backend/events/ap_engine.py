@@ -376,10 +376,12 @@ class APEngine:
         return flow_id
 
     async def create_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,
-                               prompt: str, project_name: str | None = None, scope: str = "") -> str:
+                               prompt: str, project_name: str | None = None, scope: str = "",
+                               connection: str = "", source_input: dict | None = None) -> str:
         """Arm an integration PUSH flow: <source>·<event> ▸ /invoke(agent). Powers the Box resume
-        watcher (source='box', event='new_file'). Router branches are added by the caller/flow
-        builder; here we wire trigger → /invoke (delivery handled by the agent's channels)."""
+        watcher (source='box', event='new_file'). ``connection`` = the integration's AP connection
+        externalId (wired as auth on the trigger — REQUIRED for the flow to publish). ``source_input``
+        supplies trigger-specific inputs (e.g. github needs a ``repository``, box a ``folder``)."""
         from . import flows
         piece_key, trig = flows.SOURCE_TRIGGER.get(source, (source, event))
         piece = flows.PIECE.get(piece_key, f"@activepieces/piece-{piece_key}")
@@ -389,7 +391,10 @@ class APEngine:
             flow_id = await self._new_flow(c, hdrs, f"push-{source}-{agent}", pid, scope)
             tver = await self._piece_version(c, piece)
             hver = await self._piece_version(c, flows.PIECE["http"])
-            await self._post_op(c, flow_id, self._piece_trigger_op(piece, trig, {}, tver), hdrs)
+            tinp = dict(source_input or {})
+            if connection:                       # wire the integration's connection as trigger auth
+                tinp["auth"] = f"{{{{connections['{connection}']}}}}"
+            await self._post_op(c, flow_id, self._piece_trigger_op(piece, trig, tinp, tver), hdrs)
             body = {"agent": agent, "text": prompt, "deliver": True, "scope": scope,
                     "source": {"type": "integration", "name": source, "thread_id": thread_id},
                     "event": {"kind": event, "payload": {"name": "{{trigger.body.name}}"}}}

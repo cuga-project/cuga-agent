@@ -79,6 +79,12 @@ uv run pytest tests/events/test_events_studio_api.py -q    # 9 (Studio endpoints
   `test_slack_thread_scoping`, `test_channel_author_identity`. Discord author id wired via the AP
   flow (`{{trigger.author.id}}`, pending a live field-name check).
 - Remaining: an instant *direct* Discord (gateway bot) — Discord stays AP polling (~5 min) for now.
+- **Integration e2e** (`live_integrations_e2e.py`, 2026-07-06): the four trigger modes + full-AP
+  integrations over real HTTP — **NOW** (real price), **CRON** + **POLL** (create real AP flows,
+  verified via `subscriptions.ap_flow_id`), **PUSH** box/github/gmail (route to AP → arm when
+  connected, else correct CONNECT-NEEDED). 10/10 with integrations unconnected; connect creds
+  (Box/Gmail OAuth · GitHub PAT) for the full push-fire. Offline: `test_integrations_full_ap_wiring`
+  + `pr_reviewer` in `test_seed_agents_carry_connectors`.
 - **PUSH triggers** (Box/GitHub/Gmail) — Box **direct poll e2e verified**; `create_push_flow` + the
   Box resume watcher are wired;
   live PUSH e2e **not yet proven** end-to-end.
@@ -86,3 +92,7 @@ uv run pytest tests/events/test_events_studio_api.py -q    # 9 (Studio endpoints
   pieces are verified in isolation; a single scripted server-level e2e is a nice-to-add.
 
 See [TESTING_WALKTHROUGH.md](phase_1_2/TESTING_WALKTHROUGH.md) for the narrated version.
+- **Webhook + auto-connect** (2026-07-06): `test_inbound_webhook_triages_and_delivers`,
+  `test_webhook_key_gate`, `incident_triage` seed; `.env` GITHUB_TOKEN auto-connect verified live
+  (integrations status → github connected). Full offline suite: **54 pass**. Integration e2e:
+  **11/11** (NOW/CRON/POLL real AP flows · PUSH box/github/gmail route correctly · WEBHOOK triage).

@@ -65,7 +65,7 @@
     space against what's <i>live now</i>, what's <i>one connect away</i>, and what needs a
     <i>new agent</i>. Example domains are drawn from the cuga-apps catalog.</div>
   <div class="meta">Grounded in the live fleet 2026-07-06 ·
-    <a class="link" style="color:#9cf" href="index.html">◀ Workstream board</a> ·
+    <a class="link" style="color:#9cf" href="board.html">◀ Workstream board</a> ·
     <a class="link" style="color:#9cf" href="api.html">API reference</a> ·
     <a class="link" style="color:#9cf" href="examples.html">Filterable examples</a></div>
 </header>
@@ -88,7 +88,7 @@
   <h2><span class="n">0</span> What's in place</h2>
   <div class="grid2">
     <div class="box"><h4>Channels — all live</h4><ul class="tight">
-      <li><b>Web</b> · <b>Telegram</b> (AP webhook) · <b>Discord</b> (AP polling ~5 min) ·
+      <li><b>Web</b> · <b>Telegram</b> (AP webhook) · <b>Discord</b> (<i>direct Gateway, instant</i>) ·
       <b>Slack</b> (<i>direct</i> backend — Events API → CUGA)</li>
     </ul></div>
     <div class="box"><h4>Trigger modes — all wired</h4><ul class="tight">
@@ -106,7 +106,7 @@
       the raw skills a builder composes into new agents</li>
     </ul></div>
     <div class="box"><h4>Integrations</h4><ul class="tight">
-      <li><b>Box</b> — <span class="pill p-live">direct token</span> (poll, works today) ·
+      <li><b>Box</b> — <span class="pill p-part">AP PUSH (default)</span> · direct poll behind <code>EVENTS_BOX_BACKEND=direct</code> ·
       <b>GitHub</b> / <b>Gmail</b> — <span class="pill p-part">one AP connect away</span> ·
       generic <b>webhook</b> in/out — wiring</li>
     </ul></div>
@@ -142,12 +142,12 @@
       <tr><td><span class="kbadge k-poll">POLL</span></td><td>the clock, emit-on-change</td>
         <td>Telegram / <b>Slack (direct)</b></td><td><span class="st st-live">✅ live</span></td>
         <td>interval → /invoke (suppress no-op) → deliver</td></tr>
-      <tr><td><span class="kbadge k-push">PUSH</span></td><td><b>Box</b> new file (direct token)</td>
-        <td>Slack (direct) / channel</td><td><span class="st st-live">✅ via <code>/api/events/box/poll</code></span></td>
-        <td>poll Box API → /invoke → deliver</td></tr>
-      <tr><td><span class="kbadge k-push">PUSH</span></td><td>Box, <b>armed from a chat sentence</b></td>
-        <td>any</td><td><span class="st st-build">🔨 concierge→direct-Box bridge missing</span></td>
-        <td>the NL→flow wiring (see Gaps)</td></tr>
+      <tr><td><span class="kbadge k-push">PUSH</span></td><td><b>Box</b> new file — <b>AP</b> (default)</td>
+        <td>any sink</td><td><span class="st st-conn">⚙️ connect Box (AP OAuth)</span></td>
+        <td>AP new_file trigger → /invoke → deliver</td></tr>
+      <tr><td><span class="kbadge k-push">PUSH</span></td><td>Box new file — <b>direct poll</b> (opt-in)</td>
+        <td>Slack/Discord (direct) / channel</td><td><span class="st st-live">✅ via <code>box/poll</code></span> <small>EVENTS_BOX_BACKEND=direct</small></td>
+        <td>poll Box API → /invoke → deliver (manual/scheduled)</td></tr>
       <tr><td><span class="kbadge k-push">PUSH</span></td><td>GitHub PR/issue · Gmail email</td>
         <td>any channel / email</td><td><span class="st st-conn">⚙️ connect GitHub / Gmail (AP)</span></td>
         <td>AP piece trigger → /invoke → deliver</td></tr>
@@ -230,15 +230,15 @@
 <!-- PUSH -->
 <section id="push">
   <h2><span class="n">5</span> <span class="kbadge k-push">PUSH</span> &nbsp;React to an integration event</h2>
-  <p class="lead"><b>Box works today via the direct poll</b> (<code>POST /api/events/box/poll</code>,
-  <code>BOX_DEV_TOKEN</code> — no OAuth app) and can deliver to a direct channel. Arming it from a
-  <i>chat sentence</i> still needs the concierge→direct-Box bridge (see <a class="link" href="#gaps">Gaps</a>).
-  GitHub/Gmail PUSH need one AP connect.</p>
+  <p class="lead"><b>Integrations run on AP by default.</b> The concierge arms Box/GitHub/Gmail PUSH via
+  AP (<code>create_push_flow</code>) — connect the integration (AP OAuth/token) and AP watches it. Box
+  also has an <b>opt-in direct poll</b> (<code>POST /api/events/box/poll</code>, <code>EVENTS_BOX_BACKEND=direct</code>)
+  you drive/schedule yourself.</p>
   <table>
     <thead><tr><th style="width:56%">Utterance</th><th>Flow</th><th>Status</th></tr></thead>
     <tbody>
-      <tr data-s="live"><td class="utter">"when a resume lands in my Box, judge it vs the JD and post to Slack" <span class="tag">box-doc-qa</span></td><td>Box (direct) → resume_judge → Slack (direct)</td><td><span class="st st-live">✅ runtime via <code>box/poll</code></span> <span class="st st-build">🔨 not yet from chat</span></td></tr>
-      <tr data-s="build"><td class="utter">"when a PDF drops in my folder, summarize it &amp; flag anything about 'contract'" <span class="tag">drop-summarizer</span></td><td>Box (direct) → summarizer → channel</td><td><span class="st st-build">🔨 build agent + bridge</span></td></tr>
+      <tr data-s="conn"><td class="utter">"when a resume lands in my Box, judge it vs the JD and post to Slack" <span class="tag">box-doc-qa</span></td><td>Box (AP) → resume_judge → Slack (direct)</td><td><span class="st st-conn">⚙️ connect Box (AP OAuth)</span> <small>· or direct poll opt-in</small></td></tr>
+      <tr data-s="build"><td class="utter">"when a PDF drops in my folder, summarize it &amp; flag anything about 'contract'" <span class="tag">drop-summarizer</span></td><td>Box (AP) → summarizer → channel</td><td><span class="st st-build">🔨 build agent + connect Box</span></td></tr>
       <tr data-s="conn"><td class="utter">"when a new PR opens on my repo, summarize it and message me" <span class="tag">github-trending</span></td><td>GitHub → agent → TG</td><td><span class="st st-conn">⚙️ connect GitHub (PAT)</span></td></tr>
       <tr data-s="conn"><td class="utter">"when a new issue is filed, label it and post a summary to Slack"</td><td>GitHub → agent → Slack</td><td><span class="st st-conn">⚙️ connect GitHub</span></td></tr>
       <tr data-s="conn"><td class="utter">"when an email from my boss arrives, summarize it and text me"</td><td>Gmail → mailbot → TG</td><td><span class="st st-conn">⚙️ connect Gmail</span></td></tr>
@@ -254,8 +254,8 @@
   <p class="lead">Cells that were <i>closed</i> before this week's direct-Slack + direct-Box +
   direct-channel-delivery work:</p>
   <ul class="tight">
-    <li><b>Integration IN → chat OUT, no AP</b> — a Box file → <b>Slack</b> (not just email).</li>
-    <li><b>Clock → Slack</b> — any CRON/POLL can now <b>deliver to Slack</b> (previously AP-only send-step, and Slack had no AP connection).</li>
+    <li><b>Clock → Slack / Discord</b> — any CRON/POLL can now <b>deliver to a direct channel</b> (previously AP-only send-step, and Slack/Discord had no AP connection).</li>
+    <li><b>Integration IN → direct chat OUT</b> — an AP PUSH (or the opt-in Box direct poll) can deliver its result straight to Slack/Discord (CUGA-side), not just email.</li>
     <li><b>Slack as a full conversational channel</b> — inbound <i>and</i> scheduled-delivery target, live-verified.</li>
     <li><b>Cross-channel</b> — ask from Discord, get answered in-thread; watch on a timer, deliver to a <i>different</i> channel than you asked from.</li>
   </ul>
@@ -267,8 +267,8 @@
   <table>
     <thead><tr><th>#</th><th>Gap</th><th>Closes when…</th></tr></thead>
     <tbody>
-      <tr><td>1</td><td><b>PUSH-from-chat is not wired to direct Box.</b> The concierge's <code>find_or_create_flow(kind=push)</code> routes to AP (<code>create_push_flow</code>) → asks you to connect Box (OAuth). The <i>direct</i> poll that works isn't reachable from an utterance, and nothing schedules it automatically.</td><td>a <code>box:direct</code> branch in the concierge + a CUGA-side poll scheduler</td></tr>
-      <tr><td>2</td><td><b>Box watcher passes the file <i>name</i>, not its <i>content</i></b> — the agent can't read the bytes yet (<code>cuga_text_extract_text → File not found</code>).</td><td>a Box download in <code>box_direct</code> (or a Box-read MCP tool)</td></tr>
+      <tr><td>1</td><td><b>Box PUSH (AP) needs the OAuth connect exercised.</b> The concierge arms Box on AP (<code>create_push_flow</code>) → asks you to connect Box (OAuth app + consent). This is the default; the direct poll is the AP-free opt-in.</td><td>connect Box in AP (OAuth), or use <code>EVENTS_BOX_BACKEND=direct</code></td></tr>
+      <tr><td>2</td><td><b>Box watcher passes the file <i>name</i>, not its <i>content</i></b> — the agent can't read the bytes yet (<code>cuga_text_extract_text → File not found</code>). Applies to both backends.</td><td>a Box download step (AP action, or in <code>box_direct</code>)</td></tr>
       <tr><td>3</td><td><b>The "🔨 build an agent" examples</b> have the <i>skill</i> (an MCP server or a cuga-app), but no <b>seeded agent</b> advertising it — so the router declines them.</td><td>a builder registers the agent (skill + channels + integrations)</td></tr>
       <tr><td>4</td><td><b>Gmail / GitHub / webhook</b> integrations aren't connected in AP.</td><td>connect Gmail/GitHub (Studio → Integrations) or wire the generic webhook</td></tr>
     </tbody>

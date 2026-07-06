@@ -198,12 +198,17 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             if kind == "push":
                 if not source:
                     return "error: push needs a source (box|github|gmail)."
+                # the integration's per-user connection is wired as the trigger auth (required to publish)
+                _own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
+                             if i.get("app") == source), "per-user")
+                push_conn = credentials.connection_external_id(source, _own, p)
                 try:
                     grain = getattr(engine, "project_grain", "tenant")
                     ap_flow_id = await engine.create_push_flow(
                         source=source, event=event or "new_file", agent=agent,
                         thread_id=p.thread(origin), prompt=prompt,
-                        project_name=p.ap_project_name(grain), scope=p.scope)
+                        project_name=p.ap_project_name(grain), scope=p.scope,
+                        connection=push_conn)
                 except Exception as e:  # noqa: BLE001
                     return f"error: couldn't arm push flow ({e})."
                 sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode="PUSH",

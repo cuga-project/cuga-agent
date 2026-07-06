@@ -54,7 +54,7 @@
 <header class="top">
   <h1>CUGA Event-Driven Agents — Setup &amp; Quick Test</h1>
   <div class="sub">From zero to a working stack + a passing test, in ~15 minutes.
-    ← <a href="index.html">Board</a> · <a href="pitch.html">Pitch</a> · <a href="verify.html">P1&amp;2 runbook</a> · <a href="examples.html">Examples</a></div>
+    ← <a href="board.html">Board</a> · <a href="pitch.html">Pitch</a> · <a href="verify.html">P1&amp;2 runbook</a> · <a href="examples.html">Examples</a></div>
 </header>
 
 <nav class="toc">
@@ -130,7 +130,7 @@ EVENTS_PUBLIC_URL=https://your-tunnel.trycloudflare.com
 
 <span class="c"># --- channels &amp; integrations you'll test ---</span>
 TELEGRAM_BOT_TOKEN=123456:ABC...      <span class="c"># @BotFather (AP backend)</span>
-DISCORD_BOT_TOKEN=...                 <span class="c"># dev portal (AP backend, polling)</span>
+DISCORD_BOT_TOKEN=...                 <span class="c"># direct Gateway backend (default, instant); needs MESSAGE CONTENT INTENT</span>
 SLACK_BOT_TOKEN=xoxb-...              <span class="c"># direct backend (default); SLACK_SIGNING_SECRET recommended</span>
 BOX_DEV_TOKEN=...                     <span class="c"># direct poll (default); ~60-min dev token, no OAuth app</span></div>
   <div class="note warn"><b>⚠️ Do NOT set <code>AP_WORKER_TOKEN</code>.</b> Activepieces mints it as a JWT signed with <code>AP_JWT_SECRET</code>.

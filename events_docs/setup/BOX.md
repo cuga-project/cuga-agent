@@ -1,21 +1,23 @@
-# Box setup (direct backend — the default)
+# Box setup (Activepieces backend — the default)
 
-Box runs a **direct** poll: CUGA lists a Box folder with a token (Box's REST API takes it directly)
-and fires a watcher agent on each **new** file. No Activepieces, no OAuth app, no redirect URI.
+Box is an **integration**, and integrations default to **Activepieces**: AP watches the folder
+(`new_file` trigger) with the connected OAuth token and fires `/invoke`. This is what the concierge
+arms when you say *"when a resume lands in my Box…"* (`create_push_flow`).
 
 ```
-new file in Box folder ─▶ POST /api/events/box/poll (CUGA lists the folder)
-                                          │  per new file
-                                 /invoke (resume_judge)
-                                          │
-                          deliver to a direct channel (Slack) or the /invoke response
+new file in Box ─▶ AP new_file trigger (OAuth) ─▶ /invoke (resume_judge) ─▶ deliver
 ```
 
-> The AP-based Box path (`new_file` **webhook** trigger) still exists, but it needs a **paid Box app**
-> that can save a Redirect URI + `manage_webhook` **and** the OAuth consent flow (AP refuses a
-> pre-obtained token). The direct poll sidesteps all of that — recommended.
+> **Opt-in direct poll** (`EVENTS_BOX_BACKEND=direct` + `BOX_DEV_TOKEN`): CUGA lists the folder via
+> `POST /api/events/box/poll` — no OAuth app, but you drive/schedule the poll yourself. Handy for a
+> quick, AP-free test; see the bottom of this guide. (We keep both, symmetric with Slack's parked AP
+> path — the *default* for integrations is AP.)
 
-## What you'll need
+## What you'll need (AP default)
+- A Box **OAuth 2.0 app** (client id/secret + a saved redirect URI) and Activepieces running.
+- Each user logs in via `GET /api/events/connect/box` (per-user) — AP holds + refreshes the token.
+
+## What you'll need (direct opt-in)
 - A Box account (free is fine for the **direct** path).
 - A Box **Developer Token** — a ~60-minute token you generate on demand; no OAuth app config.
 

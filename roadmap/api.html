@@ -66,7 +66,7 @@
     <code style="color:#9cf">EVENTS_ENABLED</code>): the <code style="color:#9cf">/invoke</code> seam, the concierge,
     the Studio read endpoints, connect/credential flows, the direct Slack webhook, and admin.</div>
   <div class="meta">Source of truth: <code>src/cuga/backend/events/app.py</code> ·
-    <a class="link" style="color:#9cf" href="index.html">◀ Workstream board</a> ·
+    <a class="link" style="color:#9cf" href="board.html">◀ Workstream board</a> ·
     <a class="link" style="color:#9cf" href="setup.html">⚙ Setup</a> ·
     <a class="link" style="color:#9cf" href="unlock.html">✦ What you can unlock</a> ·
     <a class="link" style="color:#9cf" href="examples.html">Examples</a></div>
@@ -194,7 +194,12 @@
 
 <!-- SLACK DIRECT -->
 <section id="slack">
-  <h2><span class="n">3</span> Direct integrations (AP-free) — Slack &amp; Box</h2>
+  <h2><span class="n">3</span> Direct (AP-free) surfaces — Slack · Discord · (Box opt-in)</h2>
+  <p class="lead"><b>Discord</b> runs a <b>Gateway WebSocket bot</b> (not an HTTP endpoint): a
+  background task launched from the server lifespan that holds a connection to Discord and, on each
+  message, calls <code>/invoke</code> then replies via the REST API. Default backend (AP polling
+  behind <code>EVENTS_DISCORD_BACKEND=ap</code>); it needs no public URL. Arm returns
+  <code>{backend:"direct"}</code> — nothing to configure.</p>
   <div class="ep">
     <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/events/slack/events</span>
       <span class="desc">Slack Events API target (this is CUGA, not AP)</span></div>
@@ -213,13 +218,13 @@
 <span class="c">// → {"ok":true} immediately; the answer is posted back asynchronously.</span></pre>
       <p class="lead"><b>Env:</b> <code>SLACK_BOT_TOKEN</code> (required) · <code>SLACK_SIGNING_SECRET</code> (recommended).
       Set <code>EVENTS_SLACK_BACKEND=ap</code> to use the parked AP path instead. See the
-      <a class="link" href="index.html#channels">Channels §7</a> callout for the two-backend story.</p>
+      <a class="link" href="board.html#channels">Channels §7</a> callout for the two-backend story.</p>
     </div>
   </div>
 
   <div class="ep">
     <div class="hd"><span class="verb v-post">POST</span><span class="path">/api/events/box/poll</span>
-      <span class="desc">AP-free Box watcher · gateway-token only</span></div>
+      <span class="desc">Box direct poll — <b>opt-in</b> (<code>EVENTS_BOX_BACKEND=direct</code>) · gateway-token only</span></div>
     <div class="body">
       <p class="lead">Poll a Box folder for <b>new files</b> and fire the watcher agent on each — the
       direct Box path that sidesteps AP's OAuth wall <i>and</i> the paid-app webhook. Box's REST API

@@ -190,6 +190,37 @@ def test_seed_agents_carry_connectors():
     assert "telegram" in mail.channels
     # a different scope sees nothing (isolation preserved through seeding)
     assert rt.get_agent("mailbot", scope="acme/·/bob") is None
+    # the three full-AP integrations each have a driving agent (drives per-user connect)
+    assert "pr_reviewer" in names                                   # GitHub agent
+    pr = rt.get_agent("pr_reviewer", scope="acme/·/alice")
+    assert any(i["app"] == "github" for i in pr.integrations)
+    assert "incident_triage" in names                               # the generic webhook worker
+    it = rt.get_agent("incident_triage", scope="acme/·/alice")
+    assert "slack" in it.channels and not it.integrations           # triage → channel, no integration
+    rj = rt.get_agent("resume_judge", scope="acme/·/alice")
+    assert {i["app"] for i in rj.integrations} >= {"box", "gmail"}   # Box + Gmail watcher
+
+
+def test_integrations_full_ap_wiring():
+    """Box · GitHub · Gmail are full-AP integrations: an OAuth/token provider, a PUSH source-trigger,
+    a setup guide, and a status row. This is the 'integrations = AP' contract."""
+    import oauth
+    import setup_guides
+    # oauth providers (Box/Gmail = OAuth; GitHub = token PAT)
+    assert oauth.connect_kind("box") == "oauth" and oauth.connect_kind("gmail") == "oauth"
+    assert oauth.connect_kind("github") == "token"
+    # AP piece PUSH triggers exist for each source
+    assert flows.SOURCE_TRIGGER["box"] == ("box", "new_file")
+    assert flows.SOURCE_TRIGGER["github_pr"][0] == "github"
+    assert flows.SOURCE_TRIGGER["gmail"] == ("gmail", "new_email")
+    # a setup guide per integration, all AP-wired
+    for app in ("box", "github", "gmail"):
+        g = setup_guides.guide(app)
+        assert g and g["kind"] == "integration" and "AP" in g["wiring"]
+    # a push flow builder wires the piece trigger → /invoke for each source
+    for src in ("box", "github_pr", "gmail"):
+        f = flows.build_push_flow(agent="x", source=src, thread_id="t", prompt="p")
+        assert f["trigger"]["settings"]["pieceName"].startswith("@activepieces/piece-")
 
 
 # ---- flow dedup: reuse-or-create by identity -----------------------------
@@ -447,20 +478,32 @@ def test_slack_channel_wiring():
 
 
 def test_delivery_backend_selection():
-    """delivery.channel_backend: Slack defaults DIRECT (CUGA sends); telegram/discord AP;
+    """delivery.channel_backend: Slack + Discord default DIRECT (CUGA sends); telegram AP;
     EVENTS_<CH>_BACKEND overrides. is_direct drives whether a flow gets an AP send step."""
     import delivery
     assert delivery.is_direct("slack") and delivery.channel_backend("slack") == "direct"
+    assert delivery.is_direct("discord") and delivery.channel_backend("discord") == "direct"
     assert not delivery.is_direct("telegram") and delivery.channel_backend("telegram") == "ap"
-    assert not delivery.is_direct("discord")
     assert delivery.channel_backend("unknown_ch") == "ap"          # unknown → AP
-    os.environ["EVENTS_SLACK_BACKEND_MARKER"] = ""                 # scratch
-    os.environ["EVENTS_TELEGRAM_BACKEND"] = "direct"
+    os.environ["EVENTS_DISCORD_BACKEND"] = "ap"                    # env override → back to AP
+    os.environ["EVENTS_TELEGRAM_BACKEND"] = "direct"               # …and telegram → direct
     try:
-        assert delivery.is_direct("telegram")                      # env override wins
+        assert not delivery.is_direct("discord")
+        assert delivery.is_direct("telegram")
     finally:
+        del os.environ["EVENTS_DISCORD_BACKEND"]
         del os.environ["EVENTS_TELEGRAM_BACKEND"]
-        del os.environ["EVENTS_SLACK_BACKEND_MARKER"]
+
+
+def test_discord_direct_module():
+    """Direct Discord (Gateway) filtering: answer real human messages; skip bot/empty."""
+    import discord_direct
+    assert discord_direct.should_process({"content": "hi", "channel_id": "C", "author": {"id": "U", "bot": False}})
+    assert not discord_direct.should_process({"content": "hi", "channel_id": "C", "author": {"id": "B", "bot": True}})
+    assert not discord_direct.should_process({"channel_id": "C", "author": {"id": "U"}})   # no content
+    assert not discord_direct.should_process({"content": "hi", "author": {"id": "U"}})       # no channel
+    # intents bitmask includes MESSAGE_CONTENT (1<<15)
+    assert discord_direct.INTENTS & (1 << 15)
 
 
 # ---- runner --------------------------------------------------------------

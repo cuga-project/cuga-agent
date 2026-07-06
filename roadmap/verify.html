@@ -61,7 +61,7 @@
 <header class="top">
   <h1>Phase 1 &amp; 2 — Acceptance Runbook</h1>
   <div class="sub">Fresh machine → debugger → Telegram → a one-by-one checklist to prove Phases 1 &amp; 2 work.
-    Your checkmarks &amp; notes auto-save in this browser. ← <a href="index.html">Board</a> ·
+    Your checkmarks &amp; notes auto-save in this browser. ← <a href="board.html">Board</a> ·
     <a href="setup.html">Setup</a> · <a href="pitch.html">Pitch</a></div>
 </header>
 
@@ -204,7 +204,7 @@ GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d '
     <li><b>Phase 1:</b> server up behind <code>EVENTS_ENABLED</code>; <code>/invoke</code> auths &amp; runs a pre-built CUGA agent with real MCP tools; store persists; offline suite green (39).</li>
     <li><b>Phase 2:</b> AP up + worker healthy; concierge does answer-now / create / dedup / decline; classifier hits NOW·CRON·POLL·PUSH; a <b>Telegram round-trip</b> works (inbound reply <em>and</em> a scheduled delivery); credentials land in AP; identity/permissions resolve; Studio shows real state; live e2e 6/6.</li>
   </ul>
-  <div class="note-b"><b>Not in P1/P2 (don't block on these):</b> Discord/Slack live round-trips, PUSH live (GitHub/Box/Gmail), OAuth connect live, multi-user isolation live, and the NL→flow benchmark — those are <b>Run/MVP</b> items on the <a class="link" href="index.html">Board</a>.</div>
+  <div class="note-b"><b>Not in P1/P2 (don't block on these):</b> Discord/Slack live round-trips, PUSH live (GitHub/Box/Gmail), OAuth connect live, multi-user isolation live, and the NL→flow benchmark — those are <b>Run/MVP</b> items on the <a class="link" href="board.html">Board</a>.</div>
 </section>
 
 </div>

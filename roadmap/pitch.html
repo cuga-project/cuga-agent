@@ -99,7 +99,7 @@
     <h1>Agents that don't just answer — they watch, schedule, and act.</h1>
     <div class="lead">Talk to them in plain English on any channel. They build the automation for you.</div>
     <div class="foot">Internal pitch · grounded in what we shipped · 2026-07-03 &nbsp;·&nbsp;
-      <a class="nav" href="index.html">Board</a> · <a class="nav" href="setup.html">Setup</a> · <a class="nav" href="unlock.html">Unlock</a> · <a class="nav" href="examples.html">Examples</a></div>
+      <a class="nav" href="board.html">Board</a> · <a class="nav" href="setup.html">Setup</a> · <a class="nav" href="unlock.html">Unlock</a> · <a class="nav" href="examples.html">Examples</a></div>
     <div class="num">01</div>
   </section>
 
@@ -337,7 +337,7 @@ access   builder · admin</div>
         <li>Multi-tenant isolation</li><li>OIDC / IdP identity</li>
         <li>Managed infra, stable URLs, secrets vault</li><li>Observability &amp; scale</li></ul></div>
     </div>
-    <div class="foot">Detailed, claimable TODOs below ↓ &nbsp;·&nbsp; full status on the <a class="nav" href="index.html">Board</a></div>
+    <div class="foot">Detailed, claimable TODOs below ↓ &nbsp;·&nbsp; full status on the <a class="nav" href="board.html">Board</a></div>
     <div class="num">08</div>
   </section>
 
@@ -356,13 +356,13 @@ access   builder · admin</div>
     <div class="kicker" style="color:var(--blue)">Detailed view — claim a task &amp; start poking</div>
     <h2>Workstreams &amp; first tasks</h2>
     <p class="lead" style="color:#555">Each has a concrete starting point. Full checkable status lives on the
-      <a class="nav" style="color:var(--blue)" href="index.html">Board</a>; try utterances on the
+      <a class="nav" style="color:var(--blue)" href="board.html">Board</a>; try utterances on the
       <a class="nav" style="color:var(--blue)" href="examples.html">Examples</a> page.</p>
 
     <div class="ws"><h3><span class="tag" style="background:#24a148">RUN ✓</span> Channels — Discord &amp; Slack (done)</h3>
-      <div class="who">Discord (AP polling) &amp; Slack (direct backend) — live round-trip verified 2026-07-06</div>
+      <div class="who">Slack (direct) verified 2026-07-06 · Discord (direct Gateway) — gateway connects verified, round-trip pending a live msg</div>
       <ul>
-        <li>Discord via AP (polling ~5 min); Slack via a <b>direct</b> backend (Events API → CUGA → chat.postMessage, no AP).</li>
+        <li>Both <b>direct</b>: Slack via the Events API (→ chat.postMessage); Discord via a <b>Gateway WebSocket bot</b> (instant, no public URL). AP paths behind <code>EVENTS_&lt;CH&gt;_BACKEND=ap</code>.</li>
         <li>Slack: <b>per-thread memory + reply-in-thread</b> (thread_ts) + <b>per-user author id</b> (ev.user) — verified. Discord author id wired via the AP flow (pending live field check).</li>
         <li>Inbound round-trips verified; direct-channel delivery closes scheduled delivery to Slack.</li>
         <li>Next: instant Discord (a direct gateway backend); channel breadth (WhatsApp, email-as-channel) is Sprint.</li></ul></div>

@@ -1,0 +1,413 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Event-Driven Agents — Workflow Ideas</title>
+<style>
+  :root{
+    --blue:#0f62fe; --blue-d:#0043ce; --ink:#161616; --ink2:#393939; --mut:#6f6f6f;
+    --line:#e0e0e0; --bg:#f4f4f4; --card:#fff; --ok:#24a148; --warn:#f1c21b; --part:#ff832b;
+    --pend:#8d8d8d; --road:#8a3ffc; --code:#f2f4f8;
+    --now:#0f62fe; --cron:#8a3ffc; --poll:#007d79; --push:#d02670;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:var(--bg);line-height:1.5;font-size:15px}
+  header.top{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:28px 40px 22px}
+  header.top h1{margin:0 0 4px;font-size:24px;font-weight:600;letter-spacing:-.3px}
+  header.top .sub{color:#c6c6c6;font-size:14px;max-width:940px}
+  header.top .meta{margin-top:10px;font-size:12px;color:#a8a8a8}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px 80px}
+  nav.toc{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);
+          padding:8px 24px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  nav.toc a{color:var(--ink2);text-decoration:none;padding:3px 6px;border-radius:4px}
+  nav.toc a:hover{background:var(--code);color:var(--blue)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:22px 0;padding:22px 26px;scroll-margin-top:52px}
+  h2{font-size:19px;margin:0 0 4px;font-weight:600;display:flex;align-items:center;gap:10px}
+  h2 .n{color:#fff;background:var(--blue);border-radius:5px;font-size:12px;padding:2px 8px;font-weight:600}
+  h3{font-size:15px;margin:20px 0 8px;color:var(--ink2);display:flex;align-items:center;gap:8px}
+  h3 .tick{width:8px;height:8px;border-radius:2px;background:var(--blue);display:inline-block}
+  p.lead{color:var(--ink2);margin:2px 0 14px;max-width:960px}
+  table{width:100%;border-collapse:collapse;margin:6px 0 4px;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafafa;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut)}
+  tbody tr:hover{background:#fafcff}
+  td.idx{color:var(--mut);font-variant-numeric:tabular-nums;width:26px}
+  td.nm{font-weight:600;white-space:nowrap}
+  code,.mono{font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+       background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .flow{font-size:13px;color:var(--ink2)} .flow b{color:var(--ink)}
+  .arw{color:var(--mut);padding:0 3px} .br{color:var(--cron);font-weight:700}
+  .hil{color:var(--push);font-weight:700}
+  .pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:11px;font-weight:600;color:#fff;white-space:nowrap}
+  .t-now{background:var(--now)} .t-cron{background:var(--cron)} .t-poll{background:var(--poll)} .t-push{background:var(--push)}
+  .tag{display:inline-block;padding:1px 7px;border-radius:4px;font-size:11px;font-weight:600;background:var(--code);color:var(--ink2);white-space:nowrap}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  .grid3{display:grid;grid-template-columns:repeat(3,1fr);gap:14px}
+  @media(max-width:820px){.grid2,.grid3{grid-template-columns:1fr}}
+  .box{border:1px solid var(--line);border-radius:6px;padding:12px 14px;background:#fcfcfc}
+  .box h4{margin:0 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut)}
+  .box.accent{border-left:4px solid var(--blue)}
+  ul.tight{margin:6px 0;padding-left:18px} ul.tight li{margin:4px 0}
+  a.link{color:var(--blue);text-decoration:none} a.link:hover{text-decoration:underline}
+  pre.blk{background:var(--ink);color:#e8e8e8;border-radius:8px;padding:14px 16px;font-family:'IBM Plex Mono',monospace;
+       font-size:12px;line-height:1.65;overflow-x:auto;margin:10px 0}
+  pre.blk .k{color:#78a9ff} pre.blk .s{color:#a7f0ba} pre.blk .c{color:#8d8d8d} pre.blk .f{color:#f1c21b}
+  .legend{display:flex;flex-wrap:wrap;gap:8px 18px;font-size:12.5px;color:var(--ink2);background:var(--code);border-radius:6px;padding:10px 14px;margin:12px 0}
+  .legend b{color:var(--ink)}
+  .callout{background:#edf5ff;border:1px solid #d0e2ff;border-left:4px solid var(--blue);border-radius:6px;padding:12px 16px;margin:14px 0;font-size:13.5px}
+  .kpi{display:flex;gap:10px;flex-wrap:wrap;margin:14px 0}
+  .kpi .c{flex:1;min-width:150px;border:1px solid var(--line);border-radius:8px;padding:12px 14px;background:#fff;text-align:center}
+  .kpi .c .big{font-size:26px;font-weight:700;color:var(--blue)}
+  .kpi .c .lb{font-size:12px;color:var(--mut);text-transform:uppercase;letter-spacing:.3px}
+  .anat{border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:12px 0}
+  .anat .row{display:grid;grid-template-columns:150px 1fr;border-bottom:1px solid var(--line)}
+  .anat .row:last-child{border-bottom:0}
+  .anat .row>div{padding:9px 14px}
+  .anat .row .k{background:#fafafa;font-family:'IBM Plex Mono',monospace;font-size:12.5px;font-weight:600;color:var(--ink2)}
+  @media print{nav.toc{display:none}section{break-inside:avoid}}
+  footer{color:var(--mut);font-size:12px;text-align:center;padding:20px}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>CUGA Event-Driven Agents — Workflow Ideas</h1>
+  <div class="sub">What becomes possible once a "cuga app" stops being a UI+orchestration bundle and collapses to
+    <b>a bag of tools</b>. The workflow — trigger, channel, delivery, branching, approval — moves into the runtime.
+    An agent is just <code style="color:#9cf">AgentSpec(prompt, tools, trigger, channels, integrations)</code>.
+    Below: the model, then <b>60+ concrete workflow ideas</b> across reactive, scheduled, tracking, enterprise, and multi-step pipelines.</div>
+  <div class="meta">Runtime: <code>src/cuga/backend/events/</code> ·
+    <a class="link" style="color:#9cf" href="index.html">📑 Contents</a> ·
+    <a class="link" style="color:#9cf" href="board.html">◀ Workstream board</a> ·
+    <a class="link" style="color:#9cf" href="unlock.html">✦ What you can unlock</a> ·
+    <a class="link" style="color:#9cf" href="api.html">API</a> ·
+    <a class="link" style="color:#9cf" href="examples.html">Examples</a></div>
+</header>
+
+<nav class="toc">
+  <a href="#model">The model</a>
+  <a href="#primitives">Primitives</a>
+  <a href="#reactive">Reactive (PUSH)</a>
+  <a href="#scheduled">Scheduled (CRON)</a>
+  <a href="#watch">Watchers (POLL)</a>
+  <a href="#ondemand">On-demand (NOW)</a>
+  <a href="#tracking">Stats &amp; tracking</a>
+  <a href="#enterprise">Enterprise ops</a>
+  <a href="#pipelines">Multi-step workflows</a>
+  <a href="#specs">Concrete specs</a>
+  <a href="#principles">Why it works</a>
+</nav>
+
+<div class="wrap">
+
+<!-- MODEL -->
+<section id="model">
+  <h2><span class="n">0</span> The lightweight-app model</h2>
+  <p class="lead">Today a cuga-app bundles a UI, its own tools, an orchestration loop, a scheduler, and delivery code.
+    On the event-driven runtime, all of that except the tools is already provided. A "cuga app" collapses to two tiny files.</p>
+  <div class="grid2">
+    <div class="box accent"><h4>The app = a bag of tools</h4>
+      <ul class="tight">
+        <li>An <b>MCP tool server</b> — a handful of functions, often thin HTTP GETs
+          (<code>get_repo_stars</code>, <code>get_usage_stats</code>, <code>extract_doc</code>).</li>
+        <li>A <b>seed manifest</b> — a few <code>AgentSpec</code>s wiring those tools to a trigger + channel.</li>
+        <li>No UI, no scheduler, no delivery code, no orchestration loop. The runtime owns all of it.</li>
+      </ul>
+    </div>
+    <div class="box"><h4>The runtime owns everything else</h4>
+      <ul class="tight">
+        <li><b>Triggers</b> — NOW / CRON / POLL / PUSH, via Activepieces.</li>
+        <li><b>Channels</b> — web, Telegram, Slack, Discord (converse + approve).</li>
+        <li><b>Integrations</b> — Box, Gmail, GitHub, webhooks (watch + act; AP holds the creds).</li>
+        <li><b>Concierge</b> — routes users to the right pre-built agent; branches and human-in-the-loop live in the agent's reasoning, not app code.</li>
+      </ul>
+    </div>
+  </div>
+  <div class="callout"><b>The one wrinkle for tracking:</b> analytics needs <i>history</i> to say "stars gained this week."
+    In most cases the source already keeps it — GitHub returns the live count; the usage-collector already exposes daily/monthly JSON — so the tool just fetches a snapshot/series and the agent reasons over it. <b>No new state in the app.</b></div>
+</section>
+
+<!-- PRIMITIVES -->
+<section id="primitives">
+  <h2><span class="n">1</span> The three primitives every idea composes</h2>
+  <div class="grid3">
+    <div class="box"><h4>Triggers · 4 modes</h4>
+      <ul class="tight">
+        <li><span class="pill t-now">NOW</span> ask &rarr; answer</li>
+        <li><span class="pill t-cron">CRON</span> scheduled (e.g. nightly)</li>
+        <li><span class="pill t-poll">POLL</span> check every N, emit-on-change</li>
+        <li><span class="pill t-push">PUSH</span> native app event fires</li>
+      </ul>
+    </div>
+    <div class="box"><h4>Channels · converse &amp; approve</h4>
+      <ul class="tight">
+        <li><span class="tag">web</span> <span class="tag">Telegram</span> <span class="tag">Slack</span> <span class="tag">Discord</span></li>
+        <li>A channel message <i>is</i> the approval UI — "reply yes/no" is the whole approval system.</li>
+      </ul>
+    </div>
+    <div class="box"><h4>Integrations · watch &amp; act</h4>
+      <ul class="tight">
+        <li><span class="tag">Box</span> <span class="tag">Gmail</span> <span class="tag">GitHub</span> <span class="tag">webhooks</span></li>
+        <li>Trigger in system A, act in system B — pure config, since targets are just connectors.</li>
+      </ul>
+    </div>
+  </div>
+
+  <h3><span class="tick"></span>The agent, anatomically</h3>
+  <div class="anat">
+    <div class="row"><div class="k">name</div><div><code>"star_tracker"</code> — how the concierge and users refer to it</div></div>
+    <div class="row"><div class="k">prompt</div><div>the skill/instruction the worker runs (and where branching &amp; approval logic lives)</div></div>
+    <div class="row"><div class="k">mcp_servers</div><div>the tool bag: <code>["cuga-stats","cuga-text"]</code> — this is the "app"</div></div>
+    <div class="row"><div class="k">integrations</div><div><code>[{"app":"gmail","ownership":"per-user"}]</code> — watch/act targets</div></div>
+    <div class="row"><div class="k">trigger</div><div><code>NOW · CRON@21:00 · POLL@2m · PUSH</code></div></div>
+    <div class="row"><div class="k">channels</div><div><code>["web","telegram","slack"]</code> — where it converses / delivers</div></div>
+  </div>
+
+  <div class="legend">
+    <span><b>Legend for the tables:</b></span>
+    <span><span class="pill t-now">NOW</span></span>
+    <span><span class="pill t-cron">CRON</span></span>
+    <span><span class="pill t-poll">POLL</span></span>
+    <span><span class="pill t-push">PUSH</span></span>
+    <span><span class="arw">&rarr;</span> step</span>
+    <span><span class="br">&#9095;</span> branch</span>
+    <span><span class="hil">&#9995;</span> human-in-the-loop (approve in chat)</span>
+    <span><span class="tag">tool app</span> · <i>(new)</i> = tool server to build</span>
+  </div>
+</section>
+
+<!-- REACTIVE -->
+<section id="reactive">
+  <h2><span class="n">2</span> Reactive agents <span class="pill t-push" style="font-size:11px">PUSH</span></h2>
+  <p class="lead">Fire the moment an integration event lands. The app supplies an extract/analyze tool; the runtime supplies the trigger and the delivery hop.</p>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>What it does</th><th>Tools (app)</th><th>Integration &rarr; Channel</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">1</td><td class="nm">Resume Judge</td><td>Extract, score against a rubric, pro/con summary when a resume lands</td><td><span class="tag">cuga-text</span> docling</td><td>Box &rarr; Gmail/Slack</td></tr>
+      <tr><td class="idx">2</td><td class="nm">PR Summarizer</td><td>Explain the diff, flag security/perf, suggest reviewers</td><td><span class="tag">cuga-code</span></td><td>GitHub &rarr; GitHub + Slack</td></tr>
+      <tr><td class="idx">3</td><td class="nm">Issue Triager</td><td>Classify severity/area, apply labels, @-mention the owner</td><td><span class="tag">cuga-code</span> <span class="tag">cuga-text</span></td><td>GitHub &rarr; GitHub + Discord</td></tr>
+      <tr><td class="idx">4</td><td class="nm">Inbox Concierge</td><td>Categorize new mail, draft a reply, escalate urgent ones to chat</td><td><span class="tag">cuga-text</span></td><td>Gmail &rarr; Telegram</td></tr>
+      <tr><td class="idx">5</td><td class="nm">Contract Reader</td><td>Pull parties/dates/liabilities, flag unusual clauses</td><td><span class="tag">cuga-text</span> docling</td><td>Box &rarr; Slack</td></tr>
+      <tr><td class="idx">6</td><td class="nm">Invoice Intake</td><td>OCR line items, vendor, total; post structured record to a ledger</td><td><span class="tag">cuga-docs</span> <i>(new)</i></td><td>Gmail/Box &rarr; webhook</td></tr>
+      <tr><td class="idx">7</td><td class="nm">Release Notes Bot</td><td>Turn merged PRs into human changelog entries</td><td><span class="tag">cuga-code</span> <span class="tag">cuga-text</span></td><td>GitHub &rarr; Slack</td></tr>
+      <tr><td class="idx">8</td><td class="nm">Support Deflector</td><td>RAG over product docs; draft a grounded reply with links</td><td><span class="tag">cuga-knowledge</span></td><td>Gmail &rarr; Gmail draft</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- SCHEDULED -->
+<section id="scheduled">
+  <h2><span class="n">3</span> Scheduled agents <span class="pill t-cron" style="font-size:11px">CRON</span></h2>
+  <p class="lead">Recurring digests and briefings. Same tools as the on-demand apps, re-expressed on a schedule with a push channel.</p>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>What it does</th><th>Tools (app)</th><th>&rarr; Channel</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">9</td><td class="nm">Morning Market Brief</td><td>Prices, movers, headlines in one 8am message</td><td><span class="tag">cuga-finance</span> <span class="tag">cuga-web</span></td><td>Telegram</td></tr>
+      <tr><td class="idx">10</td><td class="nm">arXiv Digest</td><td>New papers on your topics, summarized</td><td><span class="tag">cuga-knowledge</span></td><td>Telegram/Slack</td></tr>
+      <tr><td class="idx">11</td><td class="nm">AI Labs Watch</td><td>OpenAI/Anthropic/DeepMind posts, summarized</td><td><span class="tag">cuga-web</span></td><td>Slack</td></tr>
+      <tr><td class="idx">12</td><td class="nm">Inbox Summary</td><td>"10 emails; 2 need you" with one-line summaries</td><td><span class="tag">cuga-text</span> + Gmail</td><td>web/Telegram</td></tr>
+      <tr><td class="idx">13</td><td class="nm">Standup Prep</td><td>Yesterday's merged/open PRs, assigned issues, blockers</td><td><span class="tag">cuga-code</span> + GitHub</td><td>Slack DM</td></tr>
+      <tr><td class="idx">14</td><td class="nm">Newsletter Curator</td><td>Themed weekly roundup from tracked feeds</td><td><span class="tag">cuga-web</span></td><td>Gmail</td></tr>
+      <tr><td class="idx">15</td><td class="nm">Meetup Radar</td><td>Upcoming events by interest + city, ranked and deduped</td><td>geo/browser</td><td>Discord</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- WATCHERS -->
+<section id="watch">
+  <h2><span class="n">4</span> Watchers <span class="pill t-poll" style="font-size:11px">POLL</span></h2>
+  <p class="lead">Check every N, ping only on change. The runtime's emit-on-change means these stay quiet until something actually moves.</p>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>What it does</th><th>Tools (app)</th><th>&rarr; Channel</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">16</td><td class="nm">Price Threshold Alert</td><td>Alert only when BTC/stock crosses a threshold</td><td><span class="tag">cuga-finance</span></td><td>Telegram</td></tr>
+      <tr><td class="idx">17</td><td class="nm">Site/Status Watcher</td><td>Uptime + latency; alert on change of state</td><td><span class="tag">http_get</span></td><td>Slack</td></tr>
+      <tr><td class="idx">18</td><td class="nm">Docs Change Watcher</td><td>Watch pricing/API/policy pages, report the diff</td><td><span class="tag">cuga-web</span></td><td>Slack</td></tr>
+      <tr><td class="idx">19</td><td class="nm">GitHub Trending Watch</td><td>New repos entering trending for a topic</td><td>GitHub</td><td>Discord</td></tr>
+      <tr><td class="idx">20</td><td class="nm">Release Watcher</td><td>New version of a dependency you track</td><td>GitHub</td><td>Telegram</td></tr>
+      <tr><td class="idx">21</td><td class="nm">Competitor Watch</td><td>New coverage / launches of a named competitor</td><td><span class="tag">cuga-web</span></td><td>Slack</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ON DEMAND -->
+<section id="ondemand">
+  <h2><span class="n">5</span> On-demand assistants <span class="pill t-now" style="font-size:11px">NOW</span></h2>
+  <p class="lead">Conversational, tool-backed. Nearly every existing cuga-app slots in here unchanged.</p>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>What it does</th><th>Tools (app)</th><th>Channel</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">22</td><td class="nm">City Concierge</td><td>Weather + attractions + news in one reply</td><td><span class="tag">cuga-geo</span> <span class="tag">cuga-web</span></td><td>web/Telegram</td></tr>
+      <tr><td class="idx">23</td><td class="nm">Doc Q&amp;A over Box</td><td>RAG over a Box folder, cited answer</td><td>Box + <span class="tag">cuga-knowledge</span></td><td>Slack</td></tr>
+      <tr><td class="idx">24</td><td class="nm">Cloud Advisor</td><td>IBM service recommendations + CLI commands</td><td><span class="tag">cuga-knowledge</span></td><td>web</td></tr>
+      <tr><td class="idx">25</td><td class="nm">Trip Designer</td><td>Goal-shaped itinerary, multi-turn, live planning</td><td><span class="tag">cuga-geo</span> <span class="tag">cuga-web</span></td><td>Telegram</td></tr>
+      <tr><td class="idx">26</td><td class="nm">Recipe/Pantry Bot</td><td>Pantry-aware suggestions + substitutions</td><td>recipe tables</td><td>Discord</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- TRACKING -->
+<section id="tracking">
+  <h2><span class="n">6</span> Stats, growth &amp; product analytics</h2>
+  <p class="lead">Snapshot tool + a prompt that narrates the delta. When the source keeps history (GitHub, the usage-collector's daily JSON), the app is a single GET.</p>
+
+  <h3><span class="tick"></span>Growth &amp; dev-rel tracking</h3>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>Mode</th><th>Tracks / does</th><th>Tools (app)</th><th>&rarr; Delivery</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">27</td><td class="nm">Star Tracker</td><td><span class="pill t-cron">CRON</span>/<span class="pill t-poll">POLL</span></td><td>cuga-agent stars: count, daily delta, 7-day trend, spikes</td><td><span class="tag">cuga-stats</span> (GitHub)</td><td>Gmail/Slack</td></tr>
+      <tr><td class="idx">28</td><td class="nm">Adoption Funnel</td><td><span class="pill t-cron">CRON</span></td><td>Forks, contributors, PR/issue open&rarr;close velocity</td><td><span class="tag">cuga-stats</span></td><td>Slack</td></tr>
+      <tr><td class="idx">29</td><td class="nm">Package Pulse</td><td><span class="pill t-cron">CRON</span></td><td>PyPI/npm downloads, Docker pulls, HF Space views/model DLs</td><td><span class="tag">cuga-stats</span></td><td>Gmail</td></tr>
+      <tr><td class="idx">30</td><td class="nm">Community Growth</td><td><span class="pill t-cron">CRON</span></td><td>Discord/Slack member count, new joins, active threads</td><td>Discord/Slack</td><td>web</td></tr>
+    </tbody>
+  </table>
+
+  <h3><span class="tick"></span>Product analytics — off the usage-collector's JSON export</h3>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>Mode</th><th>Tracks / does</th><th>Tools (app)</th><th>&rarr; Delivery</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">31</td><td class="nm">Nightly Usage Digest</td><td><span class="pill t-cron">CRON</span></td><td>Requests, visitors, top apps, errors, provider spend</td><td><span class="tag">cuga-stats</span></td><td>Gmail</td></tr>
+      <tr><td class="idx">32</td><td class="nm">App Leaderboard</td><td><span class="pill t-cron">CRON</span></td><td>Which apps gained/lost usage WoW; rising &amp; fading</td><td><span class="tag">cuga-stats</span></td><td>Slack</td></tr>
+      <tr><td class="idx">33</td><td class="nm">Anomaly Sentinel</td><td><span class="pill t-poll">POLL</span></td><td>Ping only when requests/errors deviate from the 7-day baseline</td><td><span class="tag">cuga-stats</span></td><td>Slack/Telegram</td></tr>
+      <tr><td class="idx">34</td><td class="nm">Utterance Miner</td><td><span class="pill t-cron">CRON</span></td><td>Cluster the NL utterances &rarr; "what are users actually asking?"</td><td><span class="tag">cuga-stats</span> <span class="tag">cuga-text</span></td><td>Gmail</td></tr>
+      <tr><td class="idx">35</td><td class="nm">Provider Cost Watch</td><td><span class="pill t-poll">POLL</span></td><td>watsonx/tavily/alpha_vantage call volume &rarr; $ estimate, budget alert</td><td><span class="tag">cuga-stats</span></td><td>Slack</td></tr>
+      <tr><td class="idx">36</td><td class="nm">New-App Detector</td><td><span class="pill t-poll">POLL</span></td><td>Alert when a new app first appears in the collector</td><td><span class="tag">cuga-stats</span></td><td>Discord</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- ENTERPRISE -->
+<section id="enterprise">
+  <h2><span class="n">7</span> Enterprise operations &amp; observability</h2>
+  <p class="lead">The same snapshot-and-narrate shape, pointed at billing, CRM, warehouse, and helpdesk APIs. Differs only in <i>which</i> GET and <i>which</i> channel the answer lands on.</p>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>Mode</th><th>Tracks / does</th><th>Tools (app)</th><th>&rarr; Delivery</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">37</td><td class="nm">Cloud Spend Tracker</td><td><span class="pill t-cron">CRON</span></td><td>Daily IBM Cloud/AWS cost, WoW trend, per-service spikes</td><td><span class="tag">cuga-cost</span> <i>(new)</i></td><td>Gmail</td></tr>
+      <tr><td class="idx">38</td><td class="nm">CI/CD DORA Board</td><td><span class="pill t-push">PUSH</span>/<span class="pill t-cron">CRON</span></td><td>Deploy freq, lead time, change-fail rate, MTTR from GitHub</td><td><span class="tag">cuga-code</span></td><td>Slack</td></tr>
+      <tr><td class="idx">39</td><td class="nm">SLO Breach Watcher</td><td><span class="pill t-poll">POLL</span></td><td>Poll health/latency endpoints; page only on error-budget burn</td><td><span class="tag">http_get</span></td><td>Slack/Telegram</td></tr>
+      <tr><td class="idx">40</td><td class="nm">Support SLA Guard</td><td><span class="pill t-poll">POLL</span>/<span class="pill t-push">PUSH</span></td><td>Ticket backlog, aging, first-response SLA breaches</td><td><span class="tag">cuga-support</span> <i>(new)</i></td><td>Slack</td></tr>
+      <tr><td class="idx">41</td><td class="nm">Sales KPI Digest</td><td><span class="pill t-cron">CRON</span></td><td>Pipeline value, stage conversion, deals slipping</td><td><span class="tag">cuga-crm</span> <i>(new)</i></td><td>Gmail</td></tr>
+      <tr><td class="idx">42</td><td class="nm">Data Freshness Monitor</td><td><span class="pill t-poll">POLL</span></td><td>Alert when a warehouse table/pipeline goes stale</td><td><span class="tag">cuga-data</span> <i>(new)</i></td><td>Slack</td></tr>
+      <tr><td class="idx">43</td><td class="nm">Security Posture</td><td><span class="pill t-push">PUSH</span>/<span class="pill t-cron">CRON</span></td><td>New Dependabot/CVE/secret-scan alerts, severity-ranked</td><td><span class="tag">cuga-code</span></td><td>Slack</td></tr>
+      <tr><td class="idx">44</td><td class="nm">Renewal Radar</td><td><span class="pill t-cron">CRON</span></td><td>Contracts/licenses/certs expiring in N days</td><td><span class="tag">cuga-docs</span> <i>(new)</i></td><td>Gmail</td></tr>
+      <tr><td class="idx">45</td><td class="nm">Seat Utilization</td><td><span class="pill t-cron">CRON</span></td><td>SaaS license usage vs. paid seats; reclaim suggestions</td><td><span class="tag">cuga-stats</span></td><td>Gmail</td></tr>
+      <tr><td class="idx">46</td><td class="nm">Exec North-Star Brief</td><td><span class="pill t-cron">CRON</span></td><td>One narrative combining 3–4 KPIs + WoW deltas + "why"</td><td>many <span class="tag">cuga-*</span></td><td>Gmail</td></tr>
+      <tr><td class="idx">47</td><td class="nm">Compliance Evidence</td><td><span class="pill t-cron">CRON</span></td><td>Snapshot control states nightly into an audit log</td><td><span class="tag">cuga-data</span> <span class="tag">cuga-docs</span></td><td>webhook</td></tr>
+      <tr><td class="idx">48</td><td class="nm">Inventory Threshold</td><td><span class="pill t-poll">POLL</span></td><td>Alert on stock/capacity below the reorder point</td><td><span class="tag">cuga-ops</span> <i>(new)</i></td><td>Slack</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- PIPELINES -->
+<section id="pipelines">
+  <h2><span class="n">8</span> Multi-step workflows — intake, branch, approve, act</h2>
+  <p class="lead">Where the runtime earns its keep: an event fires, the agent enriches it, <span class="br">branches</span> on a decision,
+    acts in <i>another</i> system, and loops a human in for <span class="hil">approval</span> — all as reasoning + config, not app code.</p>
+
+  <h3><span class="tick"></span>Intake &rarr; enrich &rarr; route &rarr; act</h3>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>The flow</th><th>Integrations</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">49</td><td class="nm">Lead Router</td><td class="flow">New lead <span class="arw">&rarr;</span> enrich (company, size, web) <span class="arw">&rarr;</span> score fit <span class="arw">&rarr;</span> <span class="br">&#9095;</span> hot: draft intro + <span class="hil">&#9995;</span> ping AE in Slack / cold: nurture queue</td><td>Gmail/webhook &rarr; Slack</td></tr>
+      <tr><td class="idx">50</td><td class="nm">Resume Pipeline</td><td class="flow">Resume in <b>Box</b> <span class="arw">&rarr;</span> score vs. rubric <span class="arw">&rarr;</span> <span class="br">&#9095;</span> pass: draft interview invite + <span class="hil">&#9995;</span> recruiter approves / fail: log + decline draft</td><td>Box &rarr; Gmail + Slack</td></tr>
+      <tr><td class="idx">51</td><td class="nm">Invoice AP Flow</td><td class="flow">Invoice arrives <span class="arw">&rarr;</span> OCR line items <span class="arw">&rarr;</span> match to PO <span class="arw">&rarr;</span> <span class="br">&#9095;</span> match: post to ledger / mismatch: <span class="hil">&#9995;</span> flag AP clerk with the diff</td><td>Gmail/Box &rarr; webhook</td></tr>
+      <tr><td class="idx">52</td><td class="nm">Contract Triage</td><td class="flow">Doc in <b>Box</b> <span class="arw">&rarr;</span> extract parties/terms/liabilities <span class="arw">&rarr;</span> flag non-standard clauses <span class="arw">&rarr;</span> <span class="hil">&#9995;</span> route to Legal with a redline summary</td><td>Box &rarr; Slack</td></tr>
+      <tr><td class="idx">53</td><td class="nm">Support Escalation</td><td class="flow">Support email <span class="arw">&rarr;</span> search docs, draft reply <span class="arw">&rarr;</span> <span class="br">&#9095;</span> confident: <span class="hil">&#9995;</span> one-click send / unsure: escalate to on-call with context</td><td>Gmail &rarr; Gmail + Slack</td></tr>
+    </tbody>
+  </table>
+
+  <h3><span class="tick"></span>PR / repo workflows — GitHub as trigger <i>and</i> target</h3>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>The flow</th><th>Integrations</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">54</td><td class="nm">PR Reviewer</td><td class="flow">PR opens <span class="arw">&rarr;</span> summarize + flag risk <span class="arw">&rarr;</span> <span class="br">&#9095;</span> security files touched: request review + <span class="hil">&#9995;</span> ping owner / else: auto-label + suggest reviewers</td><td>GitHub &rarr; GitHub + Slack</td></tr>
+      <tr><td class="idx">55</td><td class="nm">Issue &rarr; PR Bootstrapper</td><td class="flow">Issue labeled <code>good-first</code> <span class="arw">&rarr;</span> locate files <span class="arw">&rarr;</span> draft approach + checklist <span class="arw">&rarr;</span> assign + post to Discord for a volunteer</td><td>GitHub &rarr; GitHub + Discord</td></tr>
+      <tr><td class="idx">56</td><td class="nm">Release Captain</td><td class="flow">PRs merged to main <span class="arw">&rarr;</span> collect since last tag <span class="arw">&rarr;</span> draft changelog + bump <span class="arw">&rarr;</span> <span class="hil">&#9995;</span> "cut release?" in Slack <span class="arw">&rarr;</span> on yes, open the release PR</td><td>GitHub &rarr; Slack + GitHub</td></tr>
+      <tr><td class="idx">57</td><td class="nm">Stale Sweeper</td><td class="flow"><span class="pill t-cron">CRON</span> nightly <span class="arw">&rarr;</span> find stale PRs/issues <span class="arw">&rarr;</span> draft nudge comments <span class="arw">&rarr;</span> <span class="br">&#9095;</span> &gt;30d: propose close w/ <span class="hil">&#9995;</span> maintainer confirm</td><td>GitHub &rarr; GitHub</td></tr>
+    </tbody>
+  </table>
+
+  <h3><span class="tick"></span>Approval &amp; escalation chains</h3>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>The flow</th><th>Integrations</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">58</td><td class="nm">Spend Approver</td><td class="flow">Expense request <span class="arw">&rarr;</span> policy-check + categorize <span class="arw">&rarr;</span> <span class="br">&#9095;</span> under limit: auto-approve + log / over: <span class="hil">&#9995;</span> route to manager, remember decision</td><td>webhook &rarr; Slack</td></tr>
+      <tr><td class="idx">59</td><td class="nm">Access Request</td><td class="flow">"I need access to X" in Slack <span class="arw">&rarr;</span> classify sensitivity <span class="arw">&rarr;</span> <span class="br">&#9095;</span> low: grant via webhook / high: <span class="hil">&#9995;</span> owner approval, then provision + confirm</td><td>Slack &rarr; webhook</td></tr>
+      <tr><td class="idx">60</td><td class="nm">On-Call Router</td><td class="flow">Alert fires <span class="arw">&rarr;</span> enrich (recent deploys, related PRs) <span class="arw">&rarr;</span> page primary in Telegram <span class="arw">&rarr;</span> <span class="br">&#9095;</span> no ack in 10min: escalate to secondary + open incident doc</td><td>webhook &rarr; Telegram + Box</td></tr>
+    </tbody>
+  </table>
+
+  <h3><span class="tick"></span>Recurring pipelines &amp; cross-system sync</h3>
+  <table>
+    <thead><tr><th>#</th><th>Agent</th><th>The flow</th><th>Integrations</th></tr></thead>
+    <tbody>
+      <tr><td class="idx">61</td><td class="nm">Digest Composer</td><td class="flow"><span class="pill t-cron">CRON</span> daily <span class="arw">&rarr;</span> pull GitHub activity + inbox highlights + tracked feeds <span class="arw">&rarr;</span> synthesize one narrative <span class="arw">&rarr;</span> email + Slack</td><td>GitHub + Gmail &rarr; Gmail + Slack</td></tr>
+      <tr><td class="idx">62</td><td class="nm">Meeting Prep</td><td class="flow"><span class="pill t-cron">CRON</span> before each meeting <span class="arw">&rarr;</span> gather attendee context, related Box docs, open threads <span class="arw">&rarr;</span> email a one-pager to the organizer</td><td>Box + Gmail &rarr; Gmail</td></tr>
+      <tr><td class="idx">63</td><td class="nm">Weekly Report Builder</td><td class="flow"><span class="pill t-cron">CRON</span> Fri <span class="arw">&rarr;</span> collect merged PRs + closed tickets <span class="arw">&rarr;</span> draft status report <span class="arw">&rarr;</span> <span class="hil">&#9995;</span> lead edits in chat <span class="arw">&rarr;</span> send to stakeholders</td><td>GitHub &rarr; Slack + Gmail</td></tr>
+      <tr><td class="idx">64</td><td class="nm">Doc Freshness Sweep</td><td class="flow"><span class="pill t-cron">CRON</span> weekly <span class="arw">&rarr;</span> scan Box/repo docs for stale/broken refs <span class="arw">&rarr;</span> draft update PRs or <span class="hil">&#9995;</span> assign owners</td><td>Box + GitHub &rarr; GitHub</td></tr>
+      <tr><td class="idx">65</td><td class="nm">Inbox &rarr; Tasks</td><td class="flow"><span class="pill t-push">PUSH</span> actionable email <span class="arw">&rarr;</span> extract task + due date <span class="arw">&rarr;</span> create it (issue/webhook) <span class="arw">&rarr;</span> confirm in Telegram</td><td>Gmail &rarr; GitHub/webhook</td></tr>
+      <tr><td class="idx">66</td><td class="nm">Box &rarr; Knowledge Sync</td><td class="flow">New doc in <b>Box</b> <span class="arw">&rarr;</span> extract + chunk <span class="arw">&rarr;</span> index for Q&amp;A <span class="arw">&rarr;</span> announce "ask me about X now" in Slack</td><td>Box &rarr; Slack</td></tr>
+      <tr><td class="idx">67</td><td class="nm">Onboarding Runner</td><td class="flow">New-hire webhook <span class="arw">&rarr;</span> draft welcome email, request accounts (webhook), share Box doc pack, <span class="hil">&#9995;</span> manager confirms each step in Slack</td><td>webhook &rarr; Gmail + Box + Slack</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- SPECS -->
+<section id="specs">
+  <h2><span class="n">9</span> Two concrete specs — the whole "app" is ~30 lines</h2>
+  <p class="lead">The star tracker and nightly usage analytics you asked for. One tiny tool server plus two <code>AgentSpec</code>s in <code>seed.py</code> — no new heavyweight app.</p>
+  <pre class="blk"><span class="c"># tool server "cuga-stats" — the entire "app"</span>
+<span class="f">get_repo_stars</span>(repo)        <span class="c"># GET api.github.com/repos/{repo} -> stargazers_count, forks, watchers</span>
+<span class="f">get_usage_stats</span>(window)     <span class="c"># GET usage-collector .../export.json?window=7d&amp;token=...</span>
+
+<span class="c"># seeded agents (in seed.py) — the entire "config"</span>
+<span class="k">AgentSpec</span>(
+  name=<span class="s">"star_tracker"</span>,
+  prompt=<span class="s">"Track cuga-agent stars. Report today's count, delta vs yesterday, 7-day trend, notable jumps."</span>,
+  mcp_servers=[<span class="s">"cuga-stats"</span>],
+  integrations=[{<span class="s">"app"</span>:<span class="s">"gmail"</span>,<span class="s">"ownership"</span>:<span class="s">"per-user"</span>}],
+  trigger=<span class="s">"CRON@21:00"</span>, channels=[<span class="s">"web"</span>], deliver=<span class="s">"email"</span>)   <span class="c"># or POLL to ping Slack on a jump</span>
+
+<span class="k">AgentSpec</span>(
+  name=<span class="s">"usage_analyst"</span>,
+  prompt=<span class="s">"Pull nightly usage. Summarize requests, unique visitors, top apps, error rate, "</span>
+         <span class="s">"provider-call spend, and the 3 most common utterance themes. Flag anomalies vs the 7-day baseline."</span>,
+  mcp_servers=[<span class="s">"cuga-stats"</span>],
+  integrations=[{<span class="s">"app"</span>:<span class="s">"gmail"</span>,<span class="s">"ownership"</span>:<span class="s">"per-user"</span>}],
+  trigger=<span class="s">"CRON@21:00"</span>, deliver=<span class="s">"email"</span>)</pre>
+  <div class="callout"><b>The usage-collector already keeps history</b> (daily/monthly JSON + CSV export), so <code>usage_analyst</code>
+    needs no store at all — it reads the series the collector produces and narrates the deltas.</div>
+</section>
+
+<!-- PRINCIPLES -->
+<section id="principles">
+  <h2><span class="n">10</span> Why this stays lightweight</h2>
+  <div class="kpi">
+    <div class="c"><div class="big">67</div><div class="lb">ideas above</div></div>
+    <div class="c"><div class="big">4</div><div class="lb">trigger modes</div></div>
+    <div class="c"><div class="big">~30</div><div class="lb">lines per app</div></div>
+    <div class="c"><div class="big">1</div><div class="lb">tool bag &rarr; many agents</div></div>
+  </div>
+  <div class="grid2">
+    <div class="box"><h4>The reusable primitives</h4><ul class="tight">
+      <li><b>Branch <span class="br">&#9095;</span></b> — the agent picks a path from enriched data; no <code>if/else</code> app code.</li>
+      <li><b>Human-in-the-loop <span class="hil">&#9995;</span></b> — a channel message <i>is</i> the approval UI.</li>
+      <li><b>Cross-integration hop</b> — trigger in A, act in B; targets are just connectors.</li>
+      <li><b>Trigger mode is a free axis</b> — one app becomes NOW + CRON + POLL + PUSH variants with zero new tools.</li>
+    </ul></div>
+    <div class="box"><h4>The payoff</h4><ul class="tight">
+      <li>One tool bag powers many agents: <code>cuga-finance</code> &rarr; Market Brief + Price Alert; <code>cuga-code</code> &rarr; PR Reviewer + Triager + Release Notes + Standup + DORA + Security.</li>
+      <li>Tracking any number is a config change, not an app.</li>
+      <li>Enterprise versions differ only in <i>which</i> GET (billing/CRM/warehouse) and <i>which</i> channel.</li>
+      <li>The richest demos — <b>Release Captain, On-Call Router, Onboarding Runner</b> — chain 4–5 steps across 3 systems with an approval gate. That's a workflow engine, not a chatbot.</li>
+    </ul></div>
+  </div>
+</section>
+
+</div>
+<footer>CUGA Event-Driven Agents · Workflow ideas · generated from the cuga-agent-july runtime + cuga-apps gallery</footer>
+</body>
+</html>
