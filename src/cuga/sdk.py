@@ -2144,12 +2144,24 @@ class CugaAgent:
         try:
             from cuga.backend.skills import SkillRegistry, discover_skills
             from cuga.backend.slash_commands import (
+                DispatchResult,
                 build_slash_registry,
                 parse_and_dispatch,
             )
         except Exception:
             logger.exception("Failed to import slash_commands package")
             return None
+
+        # Mirror the server's skills gating (main.py _skills_effective_enabled):
+        # when skills are disabled the slash layer stands down entirely and the
+        # raw message reaches the planner unchanged.
+        skills_on = (
+            self._enable_skills
+            if self._enable_skills is not None
+            else getattr(settings.skills, "enabled", False)
+        )
+        if not skills_on:
+            return DispatchResult(kind="passthrough", raw_input=message)
 
         skill_registry = None
         try:
