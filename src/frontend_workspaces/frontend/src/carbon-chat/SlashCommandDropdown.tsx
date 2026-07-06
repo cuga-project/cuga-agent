@@ -45,6 +45,8 @@ function extractSlashQuery(value: string): string | null {
 interface DropdownPosition {
   left: number;
   top: number;
+  /** Bottom edge of the composer — anchor when the dropdown flips below. */
+  bottom: number;
   width: number;
 }
 
@@ -58,6 +60,9 @@ interface SlashCommandDropdownProps {
 const MAX_DROPDOWN_WIDTH = 520;
 const MIN_DROPDOWN_WIDTH = 280;
 const DROPDOWN_GAP = 8;
+// Mirrors the .cuga-slash-dropdown max-height in CarbonChat.css; used to
+// decide whether the dropdown fits above the composer.
+const MAX_DROPDOWN_HEIGHT = 320;
 const FETCH_DEBOUNCE_MS = 150;
 
 export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
@@ -229,6 +234,7 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     setPosition({
       left: rect.left,
       top: rect.top,
+      bottom: rect.bottom,
       width,
     });
   }, [textarea]);
@@ -397,11 +403,17 @@ export const SlashCommandDropdown: React.FC<SlashCommandDropdownProps> = ({
     return null;
   }
 
-  // position: fixed so overflow:hidden ancestors don't clip; anchored to the textarea's top.
+  // position: fixed so overflow:hidden ancestors don't clip; anchored above
+  // the textarea's top, unless the viewport is too short to fit the dropdown
+  // there (e.g. embedded/short viewports), in which case it flips below.
+  const dropdownHeight = dropdownRef.current?.offsetHeight ?? MAX_DROPDOWN_HEIGHT;
+  const fitsAbove = position.top - DROPDOWN_GAP - dropdownHeight >= 0;
   const dropdownStyle: React.CSSProperties = {
     position: "fixed",
     left: position.left,
-    bottom: window.innerHeight - position.top + DROPDOWN_GAP,
+    ...(fitsAbove
+      ? { bottom: window.innerHeight - position.top + DROPDOWN_GAP }
+      : { top: position.bottom + DROPDOWN_GAP }),
     width: position.width,
     zIndex: 9999,
   };
