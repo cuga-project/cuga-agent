@@ -838,7 +838,12 @@ async def patch_session_settings(
     if provider and identity.user_id and identity.tenant_id:
         if not provider.check_session_access(identity.thread_id, identity.user_id, identity.tenant_id):
             raise HTTPException(status_code=403, detail="access denied to session")
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=400, detail="request body must be a JSON object")
     try:
         state = _apply_session_settings_patch(
             provider,

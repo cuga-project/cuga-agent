@@ -87,6 +87,7 @@ class FinalAnswerNode(BaseNode):
         """
         try:
             from cuga.backend.knowledge.sources import (
+                effective_citations_enabled,
                 get_ledger,
                 has_citation_markers,
                 resolve_citations,
@@ -96,7 +97,12 @@ class FinalAnswerNode(BaseNode):
             if not has_citation_markers(text):
                 state.sources = []
                 return
-            ledger = get_ledger(state.thread_id, create=True) if state.thread_id else None
+            if state.thread_id and effective_citations_enabled(state.thread_id):
+                ledger = get_ledger(state.thread_id, create=True)
+            else:
+                # Feature off (agent flag or session override): strip mode —
+                # markers are removed rather than resolved, sources stay [].
+                ledger = None
             resolved, sources = resolve_citations(text, ledger)
             state.final_answer = resolved
             state.sources = sources

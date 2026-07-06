@@ -138,7 +138,8 @@ class InvokeResult(BaseModel):
         default_factory=list,
         description="Citation sources for the answer: [{n, cite_id, filename, page, "
         "section_path, scope, snippet, score, query}] — populated when knowledge "
-        "citations are enabled and the answer cites retrieved chunks. Stream "
+        "citations are enabled and the answer cites retrieved chunks. "
+        "section_path and score are optional (omitted when absent). Stream "
         "consumers: the FinalAnswerAgent node update carries both final_answer "
         "and sources.",
     )
@@ -2069,6 +2070,11 @@ class CugaAgent:
             # Inject cuga's LLM for optional query transformation (multi_query / HyDE);
             # lazy + inert unless a profile enables search_query_transform.
             engine = KnowledgeEngine(config, chat_generator=CugaChatGenerator())
+            # Gate citation-marker resolution on this agent's flag (module-global
+            # hook — matches the session-override hook's single-process assumption).
+            from cuga.backend.knowledge.sources import set_agent_citations_lookup
+
+            set_agent_citations_lookup(lambda: bool(config.citations_enabled))
             # Use agent_id from app_state if running in server, else "cuga-default"
             _agent_id = "cuga-default"
             try:

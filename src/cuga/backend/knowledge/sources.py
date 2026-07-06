@@ -346,27 +346,66 @@ def set_session_override_lookup(
     _override_lookup = fn
 
 
+# The server/SDK wire this to read the CURRENT agent-level flag (the engine
+# config can be replaced at runtime by apply_knowledge_config, so this must
+# be a callable, not a captured value). Unwired -> default True.
+_agent_flag_lookup: Callable[[], bool] | None = None
+
+
+def set_agent_citations_lookup(fn: Callable[[], bool] | None) -> None:
+    global _agent_flag_lookup
+    _agent_flag_lookup = fn
+
+
+def _coerce_override(value: Any, thread_id: str | None) -> bool | None:
+    """Coerce a citations_enabled override to a bool; None when unusable."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in ("true", "1", "yes", "on"):
+            return True
+        if lowered in ("false", "0", "no", "off"):
+            return False
+    logger.warning(
+        "ignoring non-boolean citations_enabled override %r for thread %s",
+        value,
+        thread_id,
+    )
+    return None
+
+
+def _session_override(thread_id: str | None) -> bool | None:
+    """Per-session citations override for *thread_id*; None when absent/unusable."""
+    if not thread_id or _override_lookup is None:
+        return None
+    try:
+        overrides = _override_lookup(thread_id) or {}
+        if "citations_enabled" in overrides:
+            return _coerce_override(overrides["citations_enabled"], thread_id)
+    except Exception:
+        logger.exception("session override lookup failed; using agent-level flag")
+    return None
+
+
 def citations_enabled_for(config: "KnowledgeConfig | Any", thread_id: str | None) -> bool:
     """Effective citations flag: per-session override wins over agent config."""
-    base = bool(getattr(config, "citations_enabled", True))
-    if thread_id and _override_lookup is not None:
+    override = _session_override(thread_id)
+    if override is not None:
+        return override
+    return bool(getattr(config, "citations_enabled", True))
+
+
+def effective_citations_enabled(thread_id: str | None) -> bool:
+    """Effective flag with no config object in hand: wired agent-level flag
+    (default True) overridden by the per-session setting when present."""
+    override = _session_override(thread_id)
+    if override is not None:
+        return override
+    base = True
+    if _agent_flag_lookup is not None:
         try:
-            overrides = _override_lookup(thread_id) or {}
-            if "citations_enabled" in overrides:
-                value = overrides["citations_enabled"]
-                if isinstance(value, bool):
-                    return value
-                if isinstance(value, str):
-                    lowered = value.strip().lower()
-                    if lowered in ("true", "1", "yes", "on"):
-                        return True
-                    if lowered in ("false", "0", "no", "off"):
-                        return False
-                logger.warning(
-                    "ignoring non-boolean citations_enabled override %r for thread %s",
-                    value,
-                    thread_id,
-                )
+            base = bool(_agent_flag_lookup())
         except Exception:
-            logger.exception("session override lookup failed; using agent-level flag")
+            logger.exception("agent citations lookup failed; assuming enabled")
     return base

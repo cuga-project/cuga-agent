@@ -8,7 +8,12 @@ import pytest
 
 from cuga.backend.knowledge.awareness import CITATIONS_CONTRACT, assemble_system_prompt_section
 from cuga.backend.knowledge.config import KnowledgeConfig
-from cuga.backend.knowledge.sources import citations_enabled_for, set_session_override_lookup
+from cuga.backend.knowledge.sources import (
+    citations_enabled_for,
+    effective_citations_enabled,
+    set_agent_citations_lookup,
+    set_session_override_lookup,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -32,6 +37,7 @@ def _stub_engine(docs):
 
 def teardown_function():
     set_session_override_lookup(None)
+    set_agent_citations_lookup(None)
 
 
 def test_default_is_enabled():
@@ -96,6 +102,28 @@ def test_string_overrides_coerced_not_truthiness():
     assert citations_enabled_for(cfg, "t") is True
     set_session_override_lookup(lambda tid: {"citations_enabled": 3.14})
     assert citations_enabled_for(KnowledgeConfig(citations_enabled=False), "t") is False
+
+
+def test_effective_flag_unwired_defaults_true():
+    assert effective_citations_enabled("t") is True
+
+
+def test_effective_flag_respects_agent_lookup_and_override():
+    set_agent_citations_lookup(lambda: False)
+    assert effective_citations_enabled("t") is False
+    set_session_override_lookup(lambda tid: {"citations_enabled": True})
+    assert effective_citations_enabled("t") is True  # override wins
+    set_agent_citations_lookup(lambda: True)
+    set_session_override_lookup(lambda tid: {"citations_enabled": "false"})
+    assert effective_citations_enabled("t") is False  # coerced string
+
+
+def test_effective_flag_lookup_error_defaults_true():
+    def boom():
+        raise RuntimeError("x")
+
+    set_agent_citations_lookup(boom)
+    assert effective_citations_enabled("t") is True
 
 
 def test_citations_contract_content():

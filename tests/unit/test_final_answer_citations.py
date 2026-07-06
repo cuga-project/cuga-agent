@@ -47,6 +47,20 @@ def test_hallucinated_marker_stripped_even_without_ledger():
     assert state.sources == []
 
 
+def test_disabled_citations_strip_markers_instead_of_resolving():
+    from cuga.backend.knowledge.sources import set_session_override_lookup
+
+    _seed_ledger()
+    set_session_override_lookup(lambda tid: {"citations_enabled": False})
+    try:
+        state = _state("answer [s1] done")
+        FinalAnswerNode.apply_citation_resolution(state)
+        assert state.final_answer == "answer  done"
+        assert state.sources == []
+    finally:
+        set_session_override_lookup(None)
+
+
 def test_resolution_errors_never_break_the_answer(monkeypatch):
     _seed_ledger()
     state = _state("answer [s1]")

@@ -634,6 +634,19 @@ async def lifespan(app: FastAPI):
 
         knowledge_sources.set_session_override_lookup(_session_overrides_lookup)
 
+        # Wire the agent-level citations flag the same way, reading the LIVE
+        # engine config each call (apply_knowledge_config can replace it at
+        # runtime). Engine absent means "no gating info" -> enabled, so
+        # SDK/edge paths keep resolving citations.
+        def _agent_citations_lookup() -> bool:
+            engine = getattr(app_state, "knowledge_engine", None)
+            config = getattr(engine, "_config", None) if engine is not None else None
+            if config is None:
+                return True
+            return bool(getattr(config, "citations_enabled", True))
+
+        knowledge_sources.set_agent_citations_lookup(_agent_citations_lookup)
+
         # Start background maintenance tasks (cleanup, purge, reconcile)
         app_state.knowledge_engine.start_background_tasks()
 

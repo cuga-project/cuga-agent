@@ -123,6 +123,28 @@ def test_patch_rejects_unknown_keys_with_400():
     assert "citations_enabled" in resp.json()["detail"]
 
 
+def test_patch_malformed_json_body_returns_400():
+    client = TestClient(_make_app(SessionProvider()))
+    resp = client.patch(
+        "/api/knowledge/session/settings",
+        headers={"X-Thread-ID": "thread-1", "Content-Type": "application/json"},
+        content="{not json",
+    )
+    assert resp.status_code == 400
+    assert "JSON object" in resp.json()["detail"]
+
+
+def test_patch_non_dict_json_body_returns_400():
+    client = TestClient(_make_app(SessionProvider()))
+    resp = client.patch(
+        "/api/knowledge/session/settings",
+        headers={"X-Thread-ID": "thread-1"},
+        json=[{"citations_enabled": False}],
+    )
+    assert resp.status_code == 400
+    assert "JSON object" in resp.json()["detail"]
+
+
 def test_ownership_denied_for_other_users_session():
     """A session created by alice must not be readable/patchable by bob.
 

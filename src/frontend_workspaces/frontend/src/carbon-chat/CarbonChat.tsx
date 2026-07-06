@@ -307,12 +307,9 @@ const CarbonChat = ({
       const n = typeof detail.n === 'number' ? detail.n : null;
       const origin = event.composedPath()[0] as HTMLElement | undefined;
       const messageKey = origin?.getAttribute?.('msg') ?? '';
-      let sources = sourcesByMessageKey.current.get(messageKey);
-      if (!sources) {
-        // Fallback (e.g. key missing): most recently registered source set.
-        const all = Array.from(sourcesByMessageKey.current.values());
-        sources = all.length > 0 ? all[all.length - 1] : [];
-      }
+      // Empty-array fallback on a key miss (panel shows its empty state) —
+      // a last-entry fallback could attach chips to the wrong answer.
+      const sources = sourcesByMessageKey.current.get(messageKey) ?? [];
       setSourcesPanel({ sources, activeN: n });
     };
     document.addEventListener(CITE_CLICK_EVENT, onCiteClick);
