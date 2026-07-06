@@ -198,6 +198,9 @@ def set_rehydrator(fn: Callable[[str, SourceLedger], None] | None) -> None:
 def get_ledger(thread_id: str, create: bool = True) -> SourceLedger | None:
     if not thread_id:
         return None
+    thread_id = thread_id.strip()
+    if not thread_id:
+        return None
     with _registry_lock:
         ledger = _ledgers.get(thread_id)
         if ledger is not None:
@@ -222,6 +225,9 @@ def get_ledger(thread_id: str, create: bool = True) -> SourceLedger | None:
 
 
 def drop_ledger(thread_id: str) -> None:
+    if not thread_id:
+        return
+    thread_id = thread_id.strip()
     with _registry_lock:
         _ledgers.pop(thread_id, None)
 
@@ -305,7 +311,7 @@ CITATION_DIRECTIVE = (
     " CITATIONS: each result carries a cite_id. In your FINAL text answer, "
     "append [<cite_id>] immediately after every claim taken from that chunk "
     "(example: 'The total is 4,521 [s2].'). Use ONLY cite_ids you received in "
-    "this conversation; ids from earlier searches this conversation remain "
+    "this conversation; ids from recent searches in this conversation remain "
     "valid. Never invent ids; never write bare numeric citations like [1]."
 )
 
@@ -329,15 +335,18 @@ def annotate_envelope_with_citations(
         if not thread_id:
             logger.debug("knowledge search without thread_id — citations skipped")
         return
-    ledger = get_ledger(thread_id)
-    if ledger is None:
-        return
-    chunks = envelope.get("results") or []
-    for chunk, result in zip(chunks, results):
-        chunk["cite_id"] = ledger.register(result, query=query)
-    retrieval = envelope.get("retrieval")
-    if isinstance(retrieval, dict) and retrieval.get("reading_directive"):
-        retrieval["reading_directive"] += CITATION_DIRECTIVE
+    try:
+        ledger = get_ledger(thread_id)
+        if ledger is None:
+            return
+        chunks = envelope.get("results") or []
+        for chunk, result in zip(chunks, results):
+            chunk["cite_id"] = ledger.register(result, query=query)
+        retrieval = envelope.get("retrieval")
+        if isinstance(retrieval, dict) and retrieval.get("reading_directive"):
+            retrieval["reading_directive"] += CITATION_DIRECTIVE
+    except Exception:
+        logger.exception("citation stamping failed; returning unstamped envelope")
 
 
 # --- enablement ---------------------------------------------------------------

@@ -108,3 +108,9 @@ def test_restore_malformed_cite_id_ignored():
     ledger.restore(_snapshot(cite_id="x9"))   # wrong prefix
     ledger.restore(_snapshot(cite_id=""))     # empty
     assert len(ledger) == 0
+
+
+def test_thread_id_whitespace_is_canonicalized():
+    assert get_ledger(" t-9 ") is get_ledger("t-9")
+    drop_ledger("t-9 ")
+    assert get_ledger("t-9", create=False) is None

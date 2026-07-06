@@ -1,4 +1,5 @@
 # tests/unit/test_envelope_citations.py
+import asyncio
 from types import SimpleNamespace
 
 from cuga.backend.knowledge.sources import (
@@ -64,3 +65,47 @@ def test_result_count_mismatch_is_safe():
     annotate_envelope_with_citations(env, results, thread_id="t-1", query="q")
     assert env["results"][0]["cite_id"] == "s1"
     assert "cite_id" not in env["results"][1]
+
+
+def test_stamping_failure_never_breaks_the_envelope(monkeypatch):
+    from cuga.backend.knowledge import sources as sources_mod
+
+    results = [_result("x")]
+    env = _envelope(results)
+    ledger = sources_mod.get_ledger("t-guard")
+    monkeypatch.setattr(
+        type(ledger), "register",
+        lambda self, result, *, query: (_ for _ in ()).throw(RuntimeError("boom")),
+    )
+    annotate_envelope_with_citations(env, results, thread_id="t-guard", query="q")
+    assert "cite_id" not in env["results"][0]
+    assert env["retrieval"]["reading_directive"] == "base directive."
+
+
+def test_search_tool_prefers_runtime_thread_id():
+    """Regression for the closure fix: a thread_id injected into kwargs at
+    call time (cuga_lite wrapper) must win over the construction-time capture,
+    which is None for SDK-auto-injected tools."""
+    from cuga.backend.knowledge.client import KnowledgeClient
+
+    engine = SimpleNamespace(
+        _config=SimpleNamespace(
+            enabled=True,
+            agent_level_enabled=True,
+            session_level_enabled=False,
+            default_limit=5,
+            default_score_threshold=0.0,
+        )
+    )
+    client = KnowledgeClient(engine)
+    seen = {}
+
+    async def fake_search_envelope(query, scope, limit, score_threshold, thread_id=None):
+        seen["thread_id"] = thread_id
+        return {"scope": scope, "results": []}
+
+    client.search_envelope = fake_search_envelope
+    tools = client.get_langchain_tools(thread_id=None)
+    search = next(t for t in tools if t.name == "knowledge_search_knowledge")
+    asyncio.run(search.coroutine(query="q", thread_id="t-runtime"))
+    assert seen["thread_id"] == "t-runtime"
