@@ -1028,6 +1028,15 @@ async def lifespan(app: FastAPI):
                 subprocess.run(['xdg-open', url], check=False)
         except Exception as e:
             logger.warning(f"Failed to open browser: {e}")
+
+    # GC ephemeral stream-events rows left by Try-It-Out (X-Disable-History) threads.
+    try:
+        removed = await get_conversation_db().gc_ephemeral_stream_events()
+        if removed:
+            logger.info(f"GC removed {removed} ephemeral stream-event row(s)")
+    except Exception:
+        logger.exception("ephemeral stream-events GC failed (non-fatal)")
+
     yield
     logger.info("Application is shutting down...")
 
@@ -1180,16 +1189,23 @@ async def _save_conversation_and_events_async(
     state: AgentState,
     events: List[Dict[str, Any]],
     user_attachments: Optional[List[Dict[str, Any]]] = None,
+    events_only: bool = False,
 ):
-    """Save conversation history and stream events asynchronously."""
+    """Save conversation history and stream events asynchronously.
+
+    When *events_only* is True (e.g. X-Disable-History / Try-It-Out mode) only
+    stream_events are persisted so that citation-ledger rehydration and reload
+    replay still work — the conversation_history table (sidebar) is left untouched.
+    """
     try:
-        await save_conversation_to_db(
-            agent_id,
-            thread_id,
-            state,
-            user_id,
-            user_attachments=user_attachments,
-        )
+        if not events_only:
+            await save_conversation_to_db(
+                agent_id,
+                thread_id,
+                state,
+                user_id,
+                user_attachments=user_attachments,
+            )
         if events:
             conversation_db = get_conversation_db()
             await conversation_db.save_stream_events(agent_id, thread_id, user_id, events)
@@ -1690,8 +1706,11 @@ async def event_stream(
                             )
                             event_sequence += 1
 
-                            # Batch save all events and conversation history synchronously (for debugging)
-                            # Skip saving if disable_history is True
+                            # Batch save all events and conversation history.
+                            # When disable_history is True (Try-It-Out / X-Disable-History)
+                            # we still persist stream_events so citation-ledger rehydration
+                            # and reload replay work, but we skip conversation_history so
+                            # the sidebar is not polluted.
                             if not disable_history:
                                 await _save_conversation_and_events_async(
                                     agent_id=app_state.agent_id,
@@ -1702,7 +1721,25 @@ async def event_stream(
                                     user_attachments=user_attachments,
                                 )
                             else:
-                                logger.info(f"History saving disabled for thread_id: {thread_id}")
+                                try:
+                                    await _save_conversation_and_events_async(
+                                        agent_id=app_state.agent_id,
+                                        thread_id=thread_id,
+                                        user_id=user_id,
+                                        state=local_state if local_state else AgentState(),
+                                        events=stream_events_buffer.copy(),
+                                        user_attachments=user_attachments,
+                                        events_only=True,
+                                    )
+                                    logger.info(
+                                        f"Try-It-Out: saved stream events (no conversation history) "
+                                        f"for thread_id: {thread_id}"
+                                    )
+                                except Exception:
+                                    logger.exception(
+                                        f"Try-It-Out: ephemeral stream-events save failed (non-fatal) "
+                                        f"for thread_id: {thread_id}"
+                                    )
 
                         yield StreamEvent(
                             name="Answer",
