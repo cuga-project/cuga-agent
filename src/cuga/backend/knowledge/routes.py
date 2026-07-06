@@ -784,6 +784,74 @@ async def delete_session_collection(
     return {"status": "ok"}
 
 
+# --- Session settings ---
+
+_SESSION_SETTINGS_ALLOWED = {"citations_enabled"}
+
+
+def _coerce_flag(value) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in ("true", "1", "yes", "on")
+    return bool(value)
+
+
+def _apply_session_settings_patch(provider, thread_id: str, body: dict, *, user_id: str, tenant_id: str):
+    patch = {k: _coerce_flag(v) for k, v in (body or {}).items() if k in _SESSION_SETTINGS_ALLOWED}
+    if not patch:
+        raise ValueError(
+            f"no valid session settings in patch; allowed: {sorted(_SESSION_SETTINGS_ALLOWED)}"
+        )
+    return provider.patch_session_overrides(thread_id, patch, user_id=user_id, tenant_id=tenant_id)
+
+
+@knowledge_router.get("/session/settings")
+async def get_session_settings(
+    request: Request, identity: KnowledgeIdentity = Depends(require_internal_or_auth)
+):
+    """Per-conversation knowledge settings overrides (citations toggle)."""
+    if not identity.thread_id:
+        raise HTTPException(status_code=400, detail="X-Thread-ID header required")
+    app_state = getattr(request.app.state, "app_state", None)
+    provider = getattr(app_state, "knowledge_provider", None) if app_state else None
+    if provider is None:
+        raise HTTPException(status_code=503, detail="knowledge not initialized")
+    # Enforce session ownership (same pattern as resolve_collection for scope=session)
+    if provider and identity.user_id and identity.tenant_id:
+        if not provider.check_session_access(identity.thread_id, identity.user_id, identity.tenant_id):
+            raise HTTPException(status_code=403, detail="access denied to session")
+    session = provider.get_session(identity.thread_id)
+    return {"thread_id": identity.thread_id, "overrides": (session.overrides if session else {})}
+
+
+@knowledge_router.patch("/session/settings")
+async def patch_session_settings(
+    request: Request, identity: KnowledgeIdentity = Depends(require_internal_or_auth)
+):
+    """Update per-conversation knowledge settings overrides (citations toggle)."""
+    if not identity.thread_id:
+        raise HTTPException(status_code=400, detail="X-Thread-ID header required")
+    app_state = getattr(request.app.state, "app_state", None)
+    provider = getattr(app_state, "knowledge_provider", None) if app_state else None
+    if provider is None:
+        raise HTTPException(status_code=503, detail="knowledge not initialized")
+    # Enforce session ownership (same pattern as resolve_collection for scope=session)
+    if provider and identity.user_id and identity.tenant_id:
+        if not provider.check_session_access(identity.thread_id, identity.user_id, identity.tenant_id):
+            raise HTTPException(status_code=403, detail="access denied to session")
+    body = await request.json()
+    try:
+        state = _apply_session_settings_patch(
+            provider,
+            identity.thread_id,
+            body,
+            user_id=identity.user_id or "",
+            tenant_id=identity.tenant_id or "",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return {"thread_id": identity.thread_id, "overrides": state.overrides}
+
+
 # --- Reindex ---
 
 
