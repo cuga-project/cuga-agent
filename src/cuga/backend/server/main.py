@@ -160,6 +160,10 @@ def _session_knowledge_collection(thread_id: str) -> str:
 
 
 async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id: str) -> None:
+    from cuga.backend.knowledge.sources import drop_ledger
+
+    drop_ledger(thread_id)
+
     if not app_state:
         return
 
@@ -186,6 +190,14 @@ def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: 
     if scope == "session":
         return bool(getattr(config, "session_level_enabled", True))
     return bool(getattr(config, "agent_level_enabled", True))
+
+
+def _knowledge_citations_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+    engine = getattr(app_state, "knowledge_engine", None) if app_state else None
+    config = getattr(engine, "_config", None) if engine else None
+    if not config or not getattr(config, "enabled", False):
+        return False
+    return bool(getattr(config, "citations_enabled", True))
 
 
 def _skills_effective_enabled() -> bool:
@@ -552,6 +564,19 @@ async def lifespan(app: FastAPI):
         if not getattr(app_state, "knowledge_provider", None):
             _kb_state_path = Path.cwd() / ".cuga" / "session_knowledge.json"
             app_state.knowledge_provider = PersistentSessionProvider(_kb_state_path)
+
+        # Wire per-session citation overrides into the knowledge sources module
+        # so citations_enabled_for() can honor session-level toggles.
+        from cuga.backend.knowledge import sources as knowledge_sources
+
+        def _session_overrides_lookup(thread_id: str):
+            provider = getattr(app_state, "knowledge_provider", None)
+            if provider is None:
+                return None
+            session = provider.get_session(thread_id)
+            return session.overrides if session else None
+
+        knowledge_sources.set_session_override_lookup(_session_overrides_lookup)
 
         # Start background maintenance tasks (cleanup, purge, reconcile)
         app_state.knowledge_engine.start_background_tasks()
@@ -1431,6 +1456,37 @@ async def event_stream(
                 "filenames": _session_kb.filenames,
             }
 
+    # Restart rehydration: rebuild cited ledger entries from persisted Answer
+    # events so cite_ids stay collision-free and re-citable after a server
+    # restart (in-memory ledgers die with the process). Answer events are
+    # buffered with the plain payload JSON in event_data, so parse directly.
+    # Must never break the turn — every failure mode is swallowed.
+    if thread_id and getattr(app_state, "knowledge_engine", None) is not None:
+        try:
+            from cuga.backend.knowledge.sources import get_ledger as _get_ledger
+
+            if _get_ledger(thread_id, create=False) is None:
+                conversation_db = get_conversation_db()
+                stream_history = await conversation_db.get_stream_events(
+                    app_state.agent_id, thread_id, user_id
+                )
+                events_list = stream_history.events if stream_history else []
+                if events_list:
+                    _ledger = _get_ledger(thread_id)  # create
+                    for ev in events_list:
+                        if ev.event_name != "Answer":
+                            continue
+                        try:
+                            payload = json.loads(ev.event_data)
+                            if not isinstance(payload, dict):
+                                continue
+                            for snap in payload.get("sources", []) or []:
+                                _ledger.restore(snap)
+                        except Exception:
+                            continue
+        except Exception as e:
+            logger.debug(f"Citation ledger rehydration skipped for thread {thread_id}: {e}")
+
     _upload_ctx = format_upload_context(thread_id) if thread_id else None
 
     agent_loop_obj = AgentLoop(
@@ -1556,19 +1612,29 @@ async def event_stream(
                                             },
                                         }
                                         active_policies.append(policy_data)
-                        final_answer_text = (
-                            event.answer
-                            if settings.advanced_features.wxo_integration
-                            else json.dumps(
-                                {
-                                    "data": event.answer,
-                                    "variables": variables_metadata,
-                                    "active_policies": active_policies,
-                                }
-                            )
-                            if event.answer
-                            else "Done."
-                        )
+                        if settings.advanced_features.wxo_integration:
+                            # WXO is raw text — append a plain-text sources footer
+                            # (applied once, before final_answer_text is built, so
+                            # both the streamed payload and the persisted Answer
+                            # event carry it).
+                            if event.answer and event.sources:
+                                source_lines = []
+                                for s in event.sources:
+                                    page = f" p.{s['page']}" if s.get("page") is not None else ""
+                                    source_lines.append(f"[{s['n']}] {s['filename']}{page}")
+                                event.answer = f"{event.answer}\n\nSources:\n" + "\n".join(source_lines)
+                            final_answer_text = event.answer
+                        elif event.answer:
+                            answer_payload = {
+                                "data": event.answer,
+                                "variables": variables_metadata,
+                                "active_policies": active_policies,
+                            }
+                            if event.sources:
+                                answer_payload["sources"] = event.sources
+                            final_answer_text = json.dumps(answer_payload)
+                        else:
+                            final_answer_text = "Done."
                         logger.info("=" * 80)
                         logger.info("FINAL ANSWER")
                         logger.info("=" * 80)
@@ -2192,6 +2258,11 @@ async def reset_agent_state(
             # Clear stop event for this thread
             if thread_id in app_state.stop_events:
                 app_state.stop_events[thread_id].clear()
+
+            # Drop the in-memory citation source ledger for this thread
+            from cuga.backend.knowledge.sources import drop_ledger
+
+            drop_ledger(thread_id)
 
             # In LangGraph, state is persisted per thread_id. The client should generate a new thread_id
             # for a fresh start. If we need to clear the thread state, we would need to delete it from
@@ -3441,6 +3512,7 @@ async def get_agent_context(current_user: Optional[UserInfo] = Depends(require_a
             "knowledge_enabled": _knowledge_enabled_for_app_state(app_state),
             "agent_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "agent"),
             "session_level_knowledge_enabled": _knowledge_scope_enabled_for_app_state(app_state, "session"),
+            "citations_enabled": _knowledge_citations_enabled_for_app_state(app_state),
         }
     )
 
