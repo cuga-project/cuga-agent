@@ -1,0 +1,360 @@
+"""Offline unit tests across every Phase 1 & 2 dimension — the fast, no-network coverage.
+
+Runs with **plain python3** (stdlib only) OR pytest. Loads the dependency-light events modules
+directly (like ``test_events_core.py``), so no synced venv, no LLM, no AP, no network. Covers the
+dimensions that ``test_events_core`` doesn't: **connectors** (channels/integrations status),
+**catalog** (examples), **credentials** (shared vs per-user), **principal/isolation** (scope,
+AP project grains), **flows** (per-mode builders), and **runtime selection** (cuga default +
+fallback gating).
+
+    python3 tests/events/test_events_dimensions.py
+    uv run pytest tests/events/test_events_dimensions.py
+"""
+
+import os
+import sys
+
+_EVENTS = os.path.abspath(os.path.join(os.path.dirname(__file__),
+                                       "..", "..", "src", "cuga", "backend", "events"))
+if _EVENTS not in sys.path:
+    sys.path.insert(0, _EVENTS)
+
+import connectors        # noqa: E402
+import catalog           # noqa: E402
+import credentials       # noqa: E402
+import principal         # noqa: E402
+import flows             # noqa: E402
+import runtime           # noqa: E402
+import mcp_catalog       # noqa: E402
+
+
+# ---- connectors: channels (env-driven status) ----------------------------
+def test_channels_status_env_driven():
+    os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+    ch = {c["name"]: c for c in connectors.channels_status()}
+    assert ch["web"]["status"] == "connected"          # built-in, always on
+    assert ch["telegram"]["status"] == "not_configured"  # no token
+    os.environ["TELEGRAM_BOT_TOKEN"] = "x"
+    try:
+        ch2 = {c["name"]: c for c in connectors.channels_status()}
+        assert ch2["telegram"]["status"] == "connected"  # token present
+    finally:
+        os.environ.pop("TELEGRAM_BOT_TOKEN", None)
+
+
+# ---- connectors: integrations (AP-connection-driven status) --------------
+def test_integrations_status_from_connections():
+    # AP off → everything ap_not_configured
+    off = {i["name"]: i for i in connectors.integrations_status(None, ap_configured=False)}
+    assert off["gmail"]["status"] == "ap_not_configured"
+    # AP on, no connections → not_connected
+    none = {i["name"]: i for i in connectors.integrations_status([], ap_configured=True)}
+    assert none["github"]["status"] == "not_connected"
+    # AP on, a github connection present → connected (only github)
+    conns = [{"externalId": "ea::acme::alice::github"}]
+    got = {i["name"]: i for i in connectors.integrations_status(conns, ap_configured=True)}
+    assert got["github"]["status"] == "connected"
+    assert got["gmail"]["status"] == "not_connected"
+    # AP on but connections unknown (AP down) → unknown, never crash
+    unk = {i["name"]: i for i in connectors.integrations_status(None, ap_configured=True)}
+    assert unk["box"]["status"] == "unknown"
+
+
+# ---- catalog: examples across modes --------------------------------------
+def test_catalog_examples():
+    ex = catalog.as_list()
+    assert len(ex) >= 7
+    outcomes = {e["outcome"] for e in ex}
+    # the router's outcomes are all represented in the examples
+    assert {"answer-now", "flow-cron", "connect", "decline"} <= outcomes
+    for e in ex:
+        assert e["id"] and e["title"] and e["utterance"] and e["outcome"] and "live" in e
+
+
+# ---- credentials: shared vs per-user resolution --------------------------
+def test_credentials_shared_vs_per_user():
+    alice = principal.Principal(tenant_id="acme", user_id="alice")
+    bob = principal.Principal(tenant_id="acme", user_id="bob")
+    # shared → same connection for everyone (keyed by agent, not user)
+    sa = credentials.connection_external_id("telegram", "shared", alice, agent="mailbot")
+    sb = credentials.connection_external_id("telegram", "shared", bob, agent="mailbot")
+    assert sa == sb and "agent::mailbot" in sa
+    # per-user → distinct per user
+    pa = credentials.connection_external_id("telegram", "per-user", alice, agent="mailbot")
+    pb = credentials.connection_external_id("telegram", "per-user", bob, agent="mailbot")
+    assert pa != pb and "alice" in pa and "bob" in pb
+    assert credentials.is_per_user("per-user") is True
+    assert credentials.is_per_user("shared") is False
+
+
+# ---- principal / isolation: scope + AP project grains --------------------
+def test_principal_scope_and_grains():
+    p = principal.Principal(tenant_id="acme", instance_id="inst", user_id="alice")
+    assert p.scope == "acme/inst/alice"
+    assert principal.DEFAULT.scope == "default/default/local"
+    # AP project grain (tenant → per-(tenant,instance); shared → None; user → per-user)
+    assert p.ap_project_name("shared") is None
+    tenant_proj = p.ap_project_name("tenant")
+    assert tenant_proj and tenant_proj.startswith("ea::") and "acme" in tenant_proj
+    assert "alice" in p.ap_project_name("user")
+    # connection externalId is user-scoped
+    assert p.connection_external_id("gmail") == "ea::acme::alice::gmail"
+    # thread namespacing keeps scope
+    assert p.scope in p.thread("web:1")
+
+
+# ---- flows: a builder per mode, all valid shapes -------------------------
+def test_flow_builders_per_mode():
+    cron = flows.build_cron_flow(agent="papers", cron="0 8 * * 1-5",
+                                 thread_id="sub:1", prompt="brief")
+    assert cron["trigger"] and cron["valid"]
+    poll = flows.build_poll_flow(agent="pricebot", interval_seconds=120,
+                                 thread_id="sub:2", prompt="watch")
+    assert poll["trigger"]
+    push = flows.build_push_flow(agent="resume_judge", source="box",
+                                 event_kind="new_file", thread_id="sub:3", prompt="judge")
+    assert push["trigger"]
+    # dispatcher covers each mode (with each mode's required kwargs)
+    assert flows.build_flow("NOW", agent="a", thread_id="t", prompt="p")["trigger"]
+    assert flows.build_flow("CRON", agent="a", thread_id="t", prompt="p", cron="* * * * *")["trigger"]
+    assert flows.build_flow("POLL", agent="a", thread_id="t", prompt="p", interval_seconds=60)["trigger"]
+    assert flows.build_flow("PUSH", agent="a", thread_id="t", prompt="p", source="box")["trigger"]
+
+
+# ---- runtime selection: cuga default + fallback GATING -------------------
+def test_runtime_selection_and_fallback_gating():
+    from agent_store import AgentStore
+    store = AgentStore(":memory:")
+    # default → cuga (no react fallback unless env)
+    os.environ.pop("EVENTS_CUGA_FALLBACK_REACT", None)
+    rt = runtime.make_runtime("cuga", agent_store=store, app_context=lambda: None)
+    assert isinstance(rt, runtime.CugaRuntime)
+    assert rt._react is None                             # NO silent fallback by default
+    # explicit react
+    assert isinstance(runtime.make_runtime("react", agent_store=store,
+                                           model_factory=lambda s: None), runtime.ReactRuntime)
+    # opt-in fallback
+    os.environ["EVENTS_CUGA_FALLBACK_REACT"] = "1"
+    try:
+        rt2 = runtime.make_runtime("cuga", agent_store=store,
+                                   model_factory=lambda s: None, app_context=lambda: None)
+        assert rt2._react is not None                    # fallback present only when opted in
+    finally:
+        os.environ.pop("EVENTS_CUGA_FALLBACK_REACT", None)
+
+
+def test_cuga_storage_isolation_via_agentstore():
+    from agent_store import AgentStore
+    from runtime import CugaRuntime, AgentSpec
+    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    rt.upsert_agent(AgentSpec(name="pricebot", prompt="x", mcp_servers=["cuga-finance"]),
+                    scope="acme/·/alice")
+    got = rt.get_agent("pricebot", scope="acme/·/alice")
+    assert got is not None and got.backend == "cuga"     # tagged cuga
+    assert rt.get_agent("pricebot", scope="acme/·/bob") is None   # isolated by scope
+
+
+def test_cuga_run_raises_without_stack_and_no_fallback():
+    import asyncio
+    from agent_store import AgentStore
+    from runtime import CugaRuntime, AgentSpec
+    rt = CugaRuntime(agent_store=AgentStore(":memory:"), app_context=lambda: None)  # no ctx, no fb
+    rt.upsert_agent(AgentSpec(name="w", prompt="x"), scope="s")
+    raised = None
+    try:
+        asyncio.run(rt.run("w", "t", "hi", scope="s"))
+    except RuntimeError as e:
+        raised = str(e)
+    assert raised and "CUGA worker backend requires" in raised, \
+        f"expected the no-fallback RuntimeError, got: {raised!r}"
+
+
+# ---- mcp catalog: the full event-agent-ap set ----------------------------
+def test_mcp_catalog_full_set():
+    names = mcp_catalog.known_names()
+    for app in ("web", "knowledge", "geo", "finance", "code", "local", "text"):
+        assert f"cuga-{app}" in names                     # all 7 event-agent-ap servers
+    assert mcp_catalog.known_mcp_url("cuga-finance").endswith("/mcp")
+
+
+# ---- seed: pre-built agents carry channels + integrations ----------------
+def test_seed_agents_carry_connectors():
+    import seed
+    from agent_store import AgentStore
+    from runtime import CugaRuntime
+    rt = CugaRuntime(agent_store=AgentStore(":memory:"))
+    names = seed.seed_default_agents(rt, scope="acme/·/alice", backend="cuga")
+    assert "pricebot" in names and "mailbot" in names
+    mail = rt.get_agent("mailbot", scope="acme/·/alice")
+    assert any(i["app"] == "gmail" and i["ownership"] == "per-user" for i in mail.integrations)
+    assert "telegram" in mail.channels
+    # a different scope sees nothing (isolation preserved through seeding)
+    assert rt.get_agent("mailbot", scope="acme/·/bob") is None
+
+
+# ---- flow dedup: reuse-or-create by identity -----------------------------
+def test_flow_dedup_find_by_key():
+    from subscriptions import SubscriptionStore, Subscription
+    st = SubscriptionStore(":memory:")
+    key = "papers|time|1m|telegram|acme"
+    st.upsert(Subscription(id="s1", mode="CRON", target_agent="papers", tenant="acme/·/alice",
+                           deliver_to=["telegram"], dedup_key=key))
+    assert st.find_by_dedup_key(key).id == "s1"           # matching identity → reuse
+    assert st.find_by_dedup_key("papers|time|5m|telegram|acme") is None   # different cadence → new
+    assert st.find_by_dedup_key("") is None
+
+
+# ---- flow grain follows credentials --------------------------------------
+def test_owner_scope_grain_follows_credentials():
+    import concierge
+    from runtime import AgentSpec
+    p = principal.Principal(tenant_id="acme", instance_id="inst", user_id="alice")
+    shared = AgentSpec(name="digest", integrations=[{"app": "slack", "ownership": "shared"}])
+    peruser = AgentSpec(name="mailbot", integrations=[{"app": "gmail", "ownership": "per-user"}])
+    none = AgentSpec(name="pricebot")
+    assert concierge._owner_scope(shared, p) == p.tenant_id   # all shared → tenant-wide flow
+    assert concierge._owner_scope(none, p) == p.tenant_id     # no integrations → tenant-wide
+    assert concierge._owner_scope(peruser, p) == p.scope      # any per-user → per-user flow
+
+
+# ---- oauth connect registry (CUGA hosts connect) -------------------------
+def test_oauth_registry_and_authorize_url():
+    import oauth
+    assert oauth.connect_kind("gmail") == "oauth" and oauth.connect_kind("github") == "token"
+    assert oauth.connect_kind("nope") is None
+    assert oauth.is_configured("telegram") is True           # token apps always connectable
+    # oauth app: not configured until client id/secret present
+    for k in ("EVENTS_OAUTH_GMAIL_CLIENT_ID", "EVENTS_OAUTH_GMAIL_CLIENT_SECRET"):
+        os.environ.pop(k, None)
+    assert oauth.is_configured("gmail") is False
+    assert oauth.authorize_url("gmail", "st") is None
+    os.environ["EVENTS_OAUTH_GMAIL_CLIENT_ID"] = "cid"
+    os.environ["EVENTS_OAUTH_GMAIL_CLIENT_SECRET"] = "sec"
+    try:
+        assert oauth.is_configured("gmail") is True
+        url = oauth.authorize_url("gmail", "st123")
+        assert url and "accounts.google.com" in url and "client_id=cid" in url and "state=st123" in url
+        assert oauth.redirect_uri("gmail").endswith("/api/events/connect/gmail/callback")
+        assert oauth.decode_state(oauth.encode_state(scope="acme/·/alice", app="gmail"))["app"] == "gmail"
+    finally:
+        os.environ.pop("EVENTS_OAUTH_GMAIL_CLIENT_ID", None)
+        os.environ.pop("EVENTS_OAUTH_GMAIL_CLIENT_SECRET", None)
+
+
+# ---- users: local store + roles + auth -----------------------------------
+def test_user_store():
+    from users import UserStore
+    us = UserStore(":memory:")
+    us.add("alice", email="alice@acme.test", roles=["user"], password="pw1", tenant="acme")
+    us.add("admin", email="admin@acme.test", roles=["admin", "builder", "user"], tenant="acme")
+    assert us.get("alice", "acme").email == "alice@acme.test"
+    assert us.by_email("admin@acme.test", "acme").has_role("admin")
+    assert us.authenticate("alice@acme.test", "pw1", "acme").user_id == "alice"
+    assert us.authenticate("alice@acme.test", "wrong", "acme") is None
+    assert {u.user_id for u in us.list("acme")} == {"alice", "admin"}
+    assert us.get("alice", "other-tenant") is None            # tenant-isolated
+
+
+# ---- identity map: channel native id → user, + link tokens ---------------
+def test_identity_map_and_link_tokens():
+    from identity import IdentityMap
+    im = IdentityMap(":memory:")
+    im.link("acme", "telegram", "12345", "alice")
+    assert im.resolve("acme", "telegram", "12345") == "alice"
+    assert im.resolve("acme", "telegram", "99999") is None
+    assert im.resolve("other", "telegram", "12345") is None   # tenant-isolated
+    assert im.links_for_user("acme", "alice") == [{"channel": "telegram", "native_id": "12345"}]
+    # link-token handshake (issued from the authenticated profile)
+    tok = im.issue_token("acme", "bob", "telegram")
+    assert im.redeem_token(tok, "67890") == "bob"             # binds bob's telegram id
+    assert im.resolve("acme", "telegram", "67890") == "bob"
+    assert im.redeem_token(tok, "67890") is None              # single-use
+    assert im.redeem_token("garbage", "1") is None
+
+
+# ---- per-agent permissions -----------------------------------------------
+def test_perms_can_use_and_visible():
+    import perms
+    from runtime import AgentSpec
+    open_agent = AgentSpec(name="pricebot")                    # access [] → everyone
+    restricted = AgentSpec(name="market_briefer", access=["builder", "admin", "alice"])
+    assert perms.can_use(open_agent, roles=["user"]) is True
+    assert perms.can_use(restricted, roles=["user"]) is False  # plain user denied
+    assert perms.can_use(restricted, roles=["builder"]) is True
+    assert perms.can_use(restricted, roles=["user"], user_id="alice") is True  # allow by user_id
+    vis = perms.visible_agents([open_agent, restricted], roles=["user"])
+    assert [a.name for a in vis] == ["pricebot"]               # user sees only the open one
+
+
+# ---- principal: tenant agent_scope vs per-user scope + channel resolve ----
+def test_principal_agent_scope_and_channel_resolve():
+    from identity import IdentityMap
+    a = principal.Principal(tenant_id="acme", instance_id="inst", user_id="alice")
+    b = principal.Principal(tenant_id="acme", instance_id="inst", user_id="bob")
+    assert a.agent_scope == "acme/inst" == b.agent_scope       # agents shared across users
+    assert a.scope != b.scope                                  # run-state per user
+    im = IdentityMap(":memory:")
+    im.link("acme", "telegram", "12345", "alice")
+    p = principal.resolve_channel("telegram", "12345", im, tenant_id="acme", instance_id="inst")
+    assert p is not None and p.user_id == "alice" and p.scope == "acme/inst/alice"
+    assert principal.resolve_channel("telegram", "nope", im, tenant_id="acme") is None
+
+
+# ---- channels + box: inbound flows via descriptors, resume watcher -------
+def test_channel_inbound_flows_and_box_watcher():
+    # every channel builds from the CHANNELS descriptor — no per-channel code
+    # action names VERIFIED against live AP piece metadata (telegram-bot@0.6.4, discord@0.5.3,
+    # slack@0.17.2) — keep in sync with flows.CHANNELS.
+    for ch, send in (("telegram", "send_text_message"), ("discord", "sendMessageWithBot"),
+                     ("slack", "send_channel_message")):
+        f = flows.build_inbound_flow(channel=ch, agent="concierge")
+        trig = f["trigger"]
+        assert trig["settings"]["pieceName"] == flows.PIECE[ch]
+        # trigger → /invoke → send
+        send_step = trig["nextAction"]["nextAction"]
+        assert send_step["settings"]["actionName"] == send
+        # the sender's native id rides in the /invoke thread_id (gw:<ch>:<native>)
+        assert f"gw:{ch}:" in trig["nextAction"]["settings"]["input"]["body"]["source"]["thread_id"]
+    # Box resume watcher: box·new_file → /invoke(resume_judge) → Router(MATCH→gmail / skip)
+    rw = flows.build_resume_watcher_flow(thread_id="sub:1")
+    assert rw["trigger"]["settings"]["pieceName"] == flows.PIECE["box"]
+    router = rw["trigger"]["nextAction"]["nextAction"]
+    branches = [b["branchName"] for b in router["settings"]["branches"]]
+    assert "MATCH" in branches and router["type"] == "ROUTER"
+
+
+# ---- admin OAuth-app store + resolver (UI-entered creds override .env) ----
+def test_oauth_app_store_and_resolver():
+    import oauth
+    st = oauth.OAuthAppStore(":memory:")
+    # not configured until set
+    assert oauth.is_configured("box") is False
+    st.set("default", "box", "cid-123", "sec-456", scopes="root_readwrite")
+    assert st.get("default", "box", "CLIENT_ID") == "cid-123"
+    # status never leaks the secret
+    box = next(a for a in st.status("default") if a["app"] == "box")
+    assert box["configured"] is True and "client_secret" not in box
+    # wire the resolver → is_configured/authorize_url now see the store (no .env)
+    for k in ("EVENTS_OAUTH_BOX_CLIENT_ID", "EVENTS_OAUTH_BOX_CLIENT_SECRET"):
+        os.environ.pop(k, None)
+    oauth.set_cred_resolver(lambda app, key: st.get("default", app, key))
+    try:
+        assert oauth.is_configured("box") is True
+        assert "client_id=cid-123" in (oauth.authorize_url("box", "s") or "")
+    finally:
+        oauth.set_cred_resolver(None)
+
+
+# ---- runner --------------------------------------------------------------
+if __name__ == "__main__":
+    fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
+    passed = 0
+    for name, fn in fns:
+        try:
+            fn()
+            print(f"PASS  {name}")
+            passed += 1
+        except Exception as e:  # noqa: BLE001
+            print(f"FAIL  {name}: {type(e).__name__}: {e}")
+    print(f"\n{passed}/{len(fns)} passed")
+    sys.exit(0 if passed == len(fns) else 1)

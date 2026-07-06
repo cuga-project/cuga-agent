@@ -1,0 +1,245 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Events — Setup &amp; Quick Test</title>
+<style>
+  :root{--blue:#0f62fe;--blue-d:#0043ce;--ink:#161616;--ink2:#393939;--mut:#6f6f6f;--line:#e0e0e0;
+        --bg:#f4f4f4;--card:#fff;--ok:#24a148;--warn:#f1c21b;--part:#ff832b;--code:#1c1c24;--codebg:#f7f8fb}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:var(--bg);line-height:1.55;font-size:15px}
+  header.top{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:26px 40px 20px}
+  header.top h1{margin:0 0 4px;font-size:23px;font-weight:600}
+  header.top .sub{color:#c6c6c6;font-size:14px} header.top a{color:#9cf;text-decoration:none}
+  nav.toc{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);
+          padding:8px 24px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  nav.toc a{color:var(--ink2);text-decoration:none;padding:3px 6px;border-radius:4px}
+  nav.toc a:hover{background:var(--codebg);color:var(--blue)}
+  .wrap{max-width:920px;margin:0 auto;padding:0 24px 80px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:20px 0;padding:20px 24px;scroll-margin-top:52px}
+  h2{font-size:19px;margin:0 0 4px;font-weight:600;display:flex;align-items:center;gap:11px}
+  h2 .n{color:#fff;background:var(--blue);border-radius:6px;font-size:13px;min-width:26px;height:26px;
+        display:inline-flex;align-items:center;justify-content:center;font-weight:700}
+  h2 .n.chk{background:var(--ok)}
+  p.lead{color:var(--ink2);margin:2px 0 12px}
+  .cmd{position:relative;background:var(--codebg);border:1px solid var(--line);border-radius:8px;
+       padding:12px 44px 12px 14px;margin:10px 0;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+       font-size:13px;line-height:1.7;white-space:pre;overflow-x:auto;color:#1c1c24}
+  .cmd .cp{position:absolute;top:8px;right:8px;border:1px solid var(--line);background:#fff;border-radius:5px;
+       padding:3px 8px;font-size:11px;cursor:pointer;font-family:inherit;color:var(--mut)}
+  .cmd .cp:hover{border-color:var(--blue);color:var(--blue)}
+  .cmd .c{color:#6f6f6f} .cmd .k{color:#0043ce;font-weight:600}
+  code{font-family:'IBM Plex Mono',monospace;background:var(--codebg);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13.5px}
+  th,td{text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafafa;font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600}
+  .note{border-left:4px solid var(--blue);background:#f0f5ff;border-radius:0 6px 6px 0;padding:10px 14px;margin:12px 0;font-size:13.5px}
+  .warn{border-left:4px solid var(--part);background:#fff6ef}
+  .ok{border-left:4px solid var(--ok);background:#eefaf1}
+  .note b{color:var(--ink)}
+  ul.tight{margin:6px 0;padding-left:20px}ul.tight li{margin:5px 0}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:11px;font-weight:600;color:#fff}
+  .p-ok{background:var(--ok)}.p-opt{background:var(--mut)}
+  .tag{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 6px;margin-left:6px}
+  details{border:1px solid var(--line);border-radius:6px;padding:8px 12px;margin:8px 0;background:#fcfcfc}
+  summary{cursor:pointer;font-weight:600;font-size:14px}
+  details p,details ul{font-size:13.5px;color:var(--ink2)}
+  a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:underline}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>CUGA Event-Driven Agents — Setup &amp; Quick Test</h1>
+  <div class="sub">From zero to a working stack + a passing test, in ~15 minutes.
+    ← <a href="index.html">Board</a> · <a href="pitch.html">Pitch</a> · <a href="verify.html">P1&amp;2 runbook</a> · <a href="examples.html">Examples</a></div>
+</header>
+
+<nav class="toc">
+  <a href="#what">What you're running</a>
+  <a href="#prereq">Prerequisites</a>
+  <a href="#code">0 · Code &amp; env</a>
+  <a href="#env">1 · .env</a>
+  <a href="#ap">2 · Activepieces</a>
+  <a href="#fe">3 · Studio UI</a>
+  <a href="#cuga">4 · CUGA + registry</a>
+  <a href="#test">5 · Quick test</a>
+  <a href="#tg">6 · Telegram (optional)</a>
+  <a href="#trouble">Troubleshooting</a>
+  <a href="#ref">Reference</a>
+</nav>
+
+<div class="wrap">
+
+<section id="what">
+  <h2><span class="n">i</span> What you're running</h2>
+  <p class="lead">Three local processes. AP is a long-lived container; CUGA + the registry you start with one script.</p>
+  <table>
+    <thead><tr><th>Process</th><th>Port</th><th>Started by</th><th>Role</th></tr></thead>
+    <tbody>
+      <tr><td><b>Activepieces</b> (+ postgres + redis)</td><td><code>8081</code></td><td><code>scripts/ap_up.sh</code></td><td>connections · triggers · delivery</td></tr>
+      <tr><td><b>CUGA server</b> (events behind <code>EVENTS_ENABLED</code>)</td><td><code>8100</code></td><td><code>scripts/events_up.sh</code></td><td>concierge · worker · Studio · <code>/invoke</code></td></tr>
+      <tr><td><b>Tool registry</b> (MCP apps)</td><td><code>8001</code></td><td><code>scripts/events_up.sh</code></td><td>serves the <code>cuga_*</code> MCP tools</td></tr>
+    </tbody>
+  </table>
+  <div class="note">AP reaches CUGA at <code>http://host.containers.internal:8100/invoke</code>. Channel webhooks &amp; OAuth callbacks need HTTPS → the scripts start Cloudflare quick-tunnels automatically.</div>
+</section>
+
+<section id="prereq">
+  <h2><span class="n">1</span> Prerequisites</h2>
+  <table>
+    <thead><tr><th>Tool</th><th>For</th><th>Install (macOS)</th></tr></thead>
+    <tbody>
+      <tr><td><b>podman</b> (or docker)</td><td>Activepieces + pg + redis</td><td><code>brew install podman &amp;&amp; podman machine init &amp;&amp; podman machine start</code></td></tr>
+      <tr><td><b>cloudflared</b></td><td>public HTTPS tunnels</td><td><code>brew install cloudflared</code></td></tr>
+      <tr><td><b>node + pnpm</b></td><td>build the Studio UI</td><td><code>brew install node</code> (pnpm auto-enabled via corepack)</td></tr>
+      <tr><td><b>python 3.12 + uv</b></td><td>CUGA server &amp; tests</td><td><code>brew install uv</code></td></tr>
+      <tr><td><b>openssl, curl</b></td><td>secrets &amp; checks</td><td>preinstalled</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="code">
+  <h2><span class="n">0</span> Get the code &amp; Python env</h2>
+  <div class="cmd"><span class="c"># from your CUGA checkout root (this repo)</span>
+cd /path/to/cuga-agent-july
+uv venv .venv
+uv pip install -e .</div>
+  <p class="lead">All scripts call <code>.venv/bin/python</code>, so just having the venv populated is enough — no need to keep it "activated".</p>
+</section>
+
+<section id="env">
+  <h2><span class="n">2</span> Configure <code>.env</code></h2>
+  <p class="lead">Copy the example and fill in your credentials. The essentials:</p>
+  <div class="cmd"><span class="c"># --- LLM (pick your provider; watsonx shown) ---</span>
+LLM_PROVIDER=watsonx
+WATSONX_APIKEY=...      WATSONX_PROJECT_ID=...   WATSONX_URL=...
+
+<span class="c"># --- the /invoke seam (any non-empty shared secret) ---</span>
+GATEWAY_TOKEN=pick-any-random-string
+HOST_CALLBACK_URL=http://host.containers.internal:8100/invoke
+
+<span class="c"># --- Activepieces admin (ap_up.sh signs this up) ---</span>
+AP_BASE_URL=http://localhost:8081
+AP_EMAIL=you@example.com     AP_PASSWORD=Sup3rSecret!
+
+<span class="c"># --- channel(s) you'll test ---</span>
+TELEGRAM_BOT_TOKEN=123456:ABC...      <span class="c"># from @BotFather</span></div>
+  <div class="note warn"><b>⚠️ Do NOT set <code>AP_WORKER_TOKEN</code>.</b> Activepieces mints it as a JWT signed with <code>AP_JWT_SECRET</code>.
+    A random string makes the AP worker crash-loop and every channel/schedule arm hangs. Leave it unset — <code>ap_up.sh</code> handles the AP secrets in <code>.ap.env</code> (only <code>AP_ENCRYPTION_KEY</code> + <code>AP_JWT_SECRET</code>).</div>
+</section>
+
+<section id="ap">
+  <h2><span class="n">3</span> Bring up Activepieces</h2>
+  <div class="cmd"><span class="c"># pg + redis + app on a shared network, a tunnel, and admin sign-up — all in one</span>
+scripts/ap_up.sh</div>
+  <p class="lead">Wait for it to print <b>AP READY</b> and a <code>✓ AP worker healthy</code> line. It generates <code>.ap.env</code> (stable secrets) on first run.</p>
+  <div class="note ok"><b>Verify:</b> <code>curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8081/api/v1/flags</code> → <b>200</b>.</div>
+  <div class="note warn">The tunnel URL is <b>ephemeral</b> — if cloudflared restarts, re-run <code>scripts/ap_up.sh</code> and re-arm any channels.</div>
+</section>
+
+<section id="fe">
+  <h2><span class="n">4</span> Build the Studio UI</h2>
+  <p class="lead">The frontend is served as a pre-built bundle — build it once (and after any UI change).</p>
+  <div class="cmd">scripts/frontend_build.sh   <span class="c"># pnpm install + webpack build → src/cuga/frontend/dist</span></div>
+</section>
+
+<section id="cuga">
+  <h2><span class="n">5</span> Bring up CUGA + the registry</h2>
+  <div class="cmd"><span class="c"># starts the MCP registry (:8001), tunnels, and the CUGA server (:8100)</span>
+<span class="c"># with EVENTS_ENABLED=1, worker=cuga, seed agents, EVENTS_USER_ID=admin, EVENTS_DB, sandbox timeout</span>
+scripts/events_up.sh
+
+scripts/events_up.sh --status   <span class="c"># show ports + tunnel URLs</span>
+scripts/events_up.sh --stop     <span class="c"># tear down</span></div>
+  <div class="note ok"><b>Verify:</b> <code>curl -s http://localhost:8100/api/events/status</code> → <code>{"enabled":true,...}</code></div>
+</section>
+
+<section id="test">
+  <h2><span class="n">6</span> Quick test</h2>
+  <p class="lead">Three levels — pick any. All should pass on a healthy stack.</p>
+
+  <h3 style="font-size:15px;margin:14px 0 4px">a) Offline suite (no stack needed)</h3>
+  <div class="cmd">.venv/bin/python -m pytest tests/events/test_events_core.py tests/events/test_events_dimensions.py tests/events/test_events_studio_api.py -q</div>
+  <p class="lead">Expect <b>39 passed</b>.</p>
+
+  <h3 style="font-size:15px;margin:14px 0 4px">b) Live router end-to-end (uses the running stack)</h3>
+  <div class="cmd">EVENTS_SERVER_URL=http://localhost:8100 \
+GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-) \
+.venv/bin/python tests/events/live_server_e2e_check.py</div>
+  <p class="lead">Expect <b>6/6 checks passed</b> — status, router sees agents, answer-now price, flow create, dedup reuse, decline.</p>
+
+  <h3 style="font-size:15px;margin:14px 0 4px">c) The Studio, in your browser</h3>
+  <div class="cmd">open http://localhost:8100/studio</div>
+  <p class="lead">Tabs: <b>Concierge · Agents · Channels · Integrations · Flows · Examples · Profile · Admin</b>.
+    Try the <b>Agents</b> tab (geobot, pricebot…) and the <b>Concierge</b> tab (toggle <b>Preview</b> to see the plan without arming).</p>
+  <div class="note warn"><b>Not <code>:7860</code>.</b> That port is a different repo/checkout. The events Studio is on <b><code>:8100</code></b>. If you see "Studio is off," you're on the wrong port or an old cached bundle — go to <code>:8100/studio</code> and hard-refresh (⌘⇧R).</div>
+</section>
+
+<section id="tg">
+  <h2><span class="n">7</span> Telegram round-trip <span class="pill p-opt">optional</span></h2>
+  <p class="lead">Prove the full inbound path: message → concierge → CUGA → reply back in Telegram.</p>
+  <div class="cmd"><span class="c"># 1) hand your bot token to AP (creates the connection)</span>
+TOK=$(grep '^TELEGRAM_BOT_TOKEN=' .env|cut -d= -f2-)
+curl -s -X POST http://localhost:8100/api/events/connect/telegram/token \
+  -H 'content-type: application/json' -H 'x-user-id: admin' \
+  -d "{\"token\":\"$TOK\",\"scope\":\"default/default\"}"
+
+<span class="c"># 2) arm the inbound flow (registers the Telegram webhook via the tunnel)</span>
+curl -s -X POST http://localhost:8100/api/events/admin/channels/telegram/arm \
+  -H 'content-type: application/json' -H 'x-user-id: admin' \
+  -d '{"scope":"default/default"}'</span></div>
+  <p class="lead">Then message your bot: <code>what is the capital of Japan?</code> → you get an answer.
+    Try <code>watch bitcoin every 2 minutes and ping me on any move</code> → a scheduled flow delivers back to your chat.
+    More utterances on the <a class="link" href="examples.html">Examples</a> page.</p>
+</section>
+
+<section id="trouble">
+  <h2><span class="n">!</span> Troubleshooting</h2>
+  <details><summary>Channel/schedule arm hangs ~30s or returns an empty error</summary>
+    <p>The AP <b>worker is crash-looping</b> — almost always because <code>AP_WORKER_TOKEN</code> was set to a non-JWT value.
+      Confirm: <code>podman exec activepieces sh -c "npx pm2 list"</code> — if <code>activepieces-worker</code> shows many restarts, remove <code>AP_WORKER_TOKEN</code> from <code>.ap.env</code> and re-run <code>scripts/ap_up.sh</code>. (The script now gates on worker health.)</p></details>
+  <details><summary>"Studio is off" / no Agents tab</summary>
+    <p>You're on <code>:7860</code> (a different repo) or an old cached bundle. Use <b><code>http://localhost:8100/studio</code></b> and hard-refresh. If still off, check <code>curl http://localhost:8100/api/events/status</code> returns JSON (not HTML) with <code>enabled:true</code>.</p></details>
+  <details><summary>Telegram webhook won't register ("HTTPS URL required")</summary>
+    <p>AP builds the webhook from its tunnel URL. If the tunnel died, re-run <code>scripts/ap_up.sh</code> (new URL) and re-arm the channel.</p></details>
+  <details><summary>arXiv / papers agent times out</summary>
+    <p>External APIs (~5s/call) can exceed the default 30s sandbox timeout. The launcher sets <code>DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT=120</code>; raise it if needed.</p></details>
+  <details><summary>My flows/subscriptions vanished after a restart</summary>
+    <p><code>EVENTS_DB</code> must be a file (the launcher sets <code>&lt;repo&gt;/.events.db</code>); the default <code>:memory:</code> is wiped on restart. AP keeps running the flow regardless — it's CUGA's index that's lost.</p></details>
+  <details><summary>Port already in use</summary>
+    <p><code>scripts/events_up.sh --stop</code> and <code>scripts/ap_up.sh --stop</code>, then restart. Override with <code>EVENTS_CUGA_PORT</code> / <code>EVENTS_REGISTRY_PORT</code> / <code>AP_PORT</code>.</p></details>
+</section>
+
+<section id="ref">
+  <h2><span class="n">§</span> Reference</h2>
+  <table>
+    <thead><tr><th>Env var</th><th>Meaning</th></tr></thead>
+    <tbody>
+      <tr><td><code>EVENTS_ENABLED=1</code></td><td>turn the events layer on (launcher sets it)</td></tr>
+      <tr><td><code>EVENTS_WORKER_BACKEND=cuga</code></td><td>worker runtime (cuga default; react opt-in)</td></tr>
+      <tr><td><code>EVENTS_USER_ID=admin</code></td><td>web Studio identity (matches the Telegram user)</td></tr>
+      <tr><td><code>EVENTS_DB=&lt;repo&gt;/.events.db</code></td><td>persist subs/identity/agents across restarts</td></tr>
+      <tr><td><code>GATEWAY_TOKEN</code></td><td>shared secret on <code>/invoke</code> (same value both sides)</td></tr>
+      <tr><td><code>HOST_CALLBACK_URL</code></td><td>where AP calls CUGA back (<code>host.containers.internal:8100/invoke</code>)</td></tr>
+      <tr><td><code>.ap.env</code></td><td>AP secrets — <code>AP_ENCRYPTION_KEY</code>+<code>AP_JWT_SECRET</code> only (never <code>AP_WORKER_TOKEN</code>)</td></tr>
+    </tbody>
+  </table>
+  <p class="lead" style="margin-top:10px"><b>Scripts:</b> <code>scripts/ap_up.sh</code> · <code>scripts/events_up.sh</code> · <code>scripts/frontend_build.sh</code> &nbsp;·&nbsp;
+    <b>Deeper docs:</b> <code>events_docs/SETUP.md</code>, <code>CHANNELS_SETUP.md</code>, <code>MCP_SETUP.md</code>.</p>
+</section>
+
+</div>
+
+<script>
+document.querySelectorAll('.cmd').forEach(el=>{
+  const b=document.createElement('button');b.className='cp';b.textContent='Copy';
+  b.onclick=()=>{const t=el.innerText.replace(/\s*Copy\s*$/,'');navigator.clipboard.writeText(t)
+    .then(()=>{b.textContent='Copied ✓';setTimeout(()=>b.textContent='Copy',1100);});};
+  el.appendChild(b);
+});
+</script>
+</body>
+</html>

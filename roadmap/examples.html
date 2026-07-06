@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Events — Filterable Examples</title>
+<style>
+  :root{--blue:#0f62fe;--ink:#161616;--ink2:#393939;--mut:#6f6f6f;--line:#e0e0e0;--bg:#f4f4f4;--card:#fff;
+        --ok:#24a148;--part:#ff832b;--pend:#8d8d8d;--road:#8a3ffc;--code:#f2f4f8}
+  *{box-sizing:border-box}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Helvetica,Arial,sans-serif;color:var(--ink);
+       background:var(--bg);line-height:1.5;font-size:15px}
+  header{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:22px 40px}
+  header h1{margin:0 0 4px;font-size:22px} header .sub{color:#c6c6c6;font-size:14px}
+  header a{color:#9cf;text-decoration:none}
+  .wrap{max-width:1140px;margin:0 auto;padding:0 22px 70px}
+  .filters{position:sticky;top:0;z-index:10;background:#fff;border-bottom:1px solid var(--line);
+       padding:12px 22px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  .frow{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:4px 0}
+  .frow .lbl{font-size:11px;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);width:82px;font-weight:600}
+  .chip{border:1px solid var(--line);background:#fff;border-radius:20px;padding:3px 12px;font-size:12.5px;cursor:pointer;color:var(--ink2)}
+  .chip:hover{border-color:var(--blue)}
+  .chip.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+  .search{margin-left:auto;border:1px solid var(--line);border-radius:6px;padding:6px 10px;font-size:13px;width:220px}
+  .count{font-size:12.5px;color:var(--mut);margin:10px 2px 4px}
+  .ex{display:flex;align-items:center;gap:10px;border:1px solid var(--line);border-radius:7px;padding:10px 12px;margin:8px 0;background:#fff}
+  .ex.dim{opacity:.62}
+  .ex .main{flex:1;min-width:0}
+  .ex .u{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;font-size:13.5px;color:var(--ink);word-break:break-word}
+  .ex .meta{font-size:11.5px;color:var(--mut);margin-top:3px}
+  .ex .note{font-size:11.5px;color:#8a8a8a;margin-top:2px}
+  .tags{display:flex;gap:4px;flex-wrap:wrap;align-items:center}
+  .t{font-size:10.5px;font-weight:600;border-radius:4px;padding:1px 6px;white-space:nowrap;text-transform:uppercase;letter-spacing:.2px}
+  .t-now{background:#e5f0ff;color:#0043ce}.t-cron{background:#efe5ff;color:#6929c4}.t-poll{background:#e0f7f4;color:#007d79}
+  .t-push{background:#ffe0ef;color:#a2255f}.t-connect{background:#fff2d9;color:#8e6a00}.t-decline{background:#eee;color:#525252}
+  .t-ch{background:#f2f4f8;color:#393939;text-transform:none}
+  .t-live{background:var(--blue);color:#fff}.t-wip{background:var(--part);color:#fff}
+  .t-run{background:var(--ok);color:#fff}.t-sprint{background:var(--road);color:#fff}.t-fly{background:#161616;color:#fff}
+  .ex button{border:1px solid var(--line);background:#fff;border-radius:5px;padding:6px 11px;cursor:pointer;font-size:12px;white-space:nowrap}
+  .ex button:hover{border-color:var(--blue);color:var(--blue)}
+  .how{background:var(--code);border-radius:6px;padding:10px 14px;font-size:13px;color:var(--ink2);margin:14px 0}
+  code{font-family:'IBM Plex Mono',monospace;background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+</style>
+</head>
+<body>
+<header>
+  <h1>CUGA Events — Filterable Examples</h1>
+  <div class="sub">Every example, filterable by trigger · channel · integration · phase · live.
+    ← <a href="index.html">Board</a> · <a href="pitch.html">Pitch</a> · <a href="setup.html">Setup</a></div>
+</header>
+
+<div class="filters">
+  <div class="frow"><span class="lbl">Trigger</span><span id="f-trigger"></span>
+    <input class="search" id="q" placeholder="search utterance / agent…"></div>
+  <div class="frow"><span class="lbl">Channel</span><span id="f-channel"></span></div>
+  <div class="frow"><span class="lbl">Integration</span><span id="f-integration"></span></div>
+  <div class="frow"><span class="lbl">Phase</span><span id="f-phase"></span>
+    <span class="lbl" style="width:auto;margin-left:12px">Live</span><span id="f-live"></span></div>
+</div>
+
+<div class="wrap">
+  <div class="how">Single source of truth: <code>src/cuga/backend/events/catalog.py</code> (also powers the Studio <b>Examples</b> tab).
+    <b>Live</b> = runs end-to-end today · <b>WIP</b> = wired/planned for that phase. Click any <b>Copy</b> to grab the utterance.</div>
+  <div class="count" id="count"></div>
+  <div id="list"></div>
+</div>
+
+<script>
+const EX = [{"id":"now-price","title":"Crypto price now","trigger":"now","outcome":"answer-now","utterance":"what is the current price of bitcoin in usd?","agent":"pricebot","channel":"telegram","integration":"none","phase":"run","live":true,"note":"router → pricebot → cuga_finance → number"},{"id":"now-geo","title":"Geography + memory","trigger":"now","outcome":"answer-now","utterance":"what is the capital of Japan?","agent":"geobot","channel":"web","integration":"none","phase":"run","live":true,"note":"follow with 'and its population?' — per-thread memory holds"},{"id":"now-weather","title":"Weather now","trigger":"now","outcome":"answer-now","utterance":"what's the weather in Tokyo right now?","agent":"weatherbot","channel":"telegram","integration":"none","phase":"run","live":true,"note":""},{"id":"now-arxiv","title":"Latest papers now","trigger":"now","outcome":"answer-now","utterance":"3 latest arXiv papers on mixture-of-experts","agent":"papers","channel":"web","integration":"none","phase":"run","live":true,"note":"router → papers (one-shot)"},{"id":"now-discord","title":"Ask from Discord","trigger":"now","outcome":"answer-now","utterance":"what's the price of ethereum?","agent":"pricebot","channel":"discord","integration":"none","phase":"run","live":false,"note":"same path as Telegram; Discord send wired, not yet round-trip-verified"},{"id":"now-slack","title":"Ask from Slack","trigger":"now","outcome":"answer-now","utterance":"capital of Brazil?","agent":"geobot","channel":"slack","integration":"none","phase":"run","live":false,"note":"Slack send needs sendAsBot=true; wired, not verified"},{"id":"now-whatsapp","title":"Ask from WhatsApp","trigger":"now","outcome":"answer-now","utterance":"weather in Mumbai?","agent":"weatherbot","channel":"whatsapp","integration":"none","phase":"sprint","live":false,"note":"WhatsApp channel — Sprint (needs Meta/Twilio business onboarding)"},{"id":"cron-arxiv","title":"arXiv digest (daily)","trigger":"cron","outcome":"flow-cron","utterance":"every day at 9am send me new arXiv papers on mixture-of-experts","agent":"papers","channel":"telegram","integration":"none","phase":"run","live":true,"note":"AP CRON flow → papers → Telegram send; asking again REUSES it (dedup)"},{"id":"cron-brief","title":"Weekday market brief","trigger":"cron","outcome":"flow-cron","utterance":"every weekday at 8am send me a market brief","agent":"market_briefer","channel":"telegram","integration":"none","phase":"run","live":true,"note":"cron 0 8 * * 1-5 → market_briefer → deliver"},{"id":"cron-slack-digest","title":"Overnight support digest → Slack","trigger":"cron","outcome":"flow-cron","utterance":"every morning at 7am post an overnight support digest to our Slack channel","agent":"support_digest","channel":"slack","integration":"slack","phase":"run","live":false,"note":"shared-Slack delivery; digest agent wired"},{"id":"cron-email-brief","title":"Daily brief to my email","trigger":"cron","outcome":"flow-cron","utterance":"every day at 8am email me a market brief","agent":"market_briefer","channel":"email","integration":"gmail","phase":"run","live":false,"note":"EMAIL delivery sink (Run) — deliver to Gmail, not a chat channel"},{"id":"cron-calendar","title":"Morning agenda from Calendar","trigger":"cron","outcome":"flow-cron","utterance":"every weekday at 7:30am send me today's calendar agenda","agent":"—","channel":"telegram","integration":"calendar","phase":"sprint","live":false,"note":"Google Calendar integration — Sprint"},{"id":"poll-price","title":"Price move watcher","trigger":"poll","outcome":"flow-poll","utterance":"watch bitcoin every 2 minutes and ping me on any move","agent":"pricebot","channel":"telegram","integration":"none","phase":"run","live":true,"note":"POLL: a no-change tick delivers nothing (emit-on-change)"},{"id":"poll-papers","title":"New-papers watcher","trigger":"poll","outcome":"flow-poll","utterance":"every 5 minutes check for new MoE papers and tell me only if there are new ones","agent":"papers","channel":"telegram","integration":"none","phase":"run","live":true,"note":""},{"id":"poll-rss","title":"Watch an RSS feed","trigger":"poll","outcome":"flow-poll","utterance":"every 15 minutes check this RSS feed and message me new items","agent":"—","channel":"telegram","integration":"rss","phase":"sprint","live":false,"note":"RSS/feeds integration — Sprint"},{"id":"push-box-resume","title":"Box resume watcher","trigger":"push","outcome":"flow-push","utterance":"when a new resume lands in my Box, judge it against the JD and email me","agent":"resume_judge","channel":"email","integration":"box","phase":"run","live":false,"note":"Box new_file → resume_judge → Gmail; wired, not live-verified"},{"id":"push-github-pr","title":"GitHub PR summarizer","trigger":"push","outcome":"flow-push","utterance":"when a new PR opens on my repo, summarize it and message me","agent":"—","channel":"telegram","integration":"github","phase":"run","live":false,"note":"GitHub PUSH — recommended FIRST push test (no token time-window)"},{"id":"push-github-issue","title":"GitHub issue triage","trigger":"push","outcome":"flow-push","utterance":"when a new issue is filed, label it and post a summary to Slack","agent":"—","channel":"slack","integration":"github","phase":"run","live":false,"note":""},{"id":"push-gmail","title":"Important-email watcher","trigger":"push","outcome":"flow-push","utterance":"when an email from my boss arrives, summarize it and text me","agent":"mailbot","channel":"telegram","integration":"gmail","phase":"run","live":false,"note":"Gmail PUSH (per-user OAuth)"},{"id":"push-webhook-in","title":"Generic inbound webhook","trigger":"push","outcome":"flow-push","utterance":"when my system POSTs to my webhook, run the triage agent and reply","agent":"—","channel":"web","integration":"webhook","phase":"run","live":false,"note":"GENERIC WEBHOOK-IN (MVP) — any external system → your agent, no bespoke piece"},{"id":"push-notion","title":"Notion task watcher","trigger":"push","outcome":"flow-push","utterance":"when a task is added to my Notion board, draft a plan and DM me","agent":"—","channel":"telegram","integration":"notion","phase":"sprint","live":false,"note":"Notion/Jira/Linear 'work' tool — Sprint"},{"id":"push-drive","title":"New file in Drive","trigger":"push","outcome":"flow-push","utterance":"when a file is added to this Drive folder, summarize it","agent":"—","channel":"telegram","integration":"drive","phase":"sprint","live":false,"note":""},{"id":"sink-webhook","title":"Deliver to a webhook","trigger":"poll","outcome":"flow-poll","utterance":"watch bitcoin every 5 minutes and POST any move to this URL","agent":"pricebot","channel":"web","integration":"webhook","phase":"run","live":false,"note":"GENERIC WEBHOOK-OUT (MVP) — deliver to any HTTP endpoint; enables flow→flow chaining"},{"id":"connect-gmail","title":"My Gmail summary (login)","trigger":"connect","outcome":"connect","utterance":"summarize my gmail every morning","agent":"mailbot","channel":"telegram","integration":"gmail","phase":"run","live":false,"note":"mailbot uses Gmail (per-user) → concierge replies CONNECT NEEDED with an OAuth link"},{"id":"connect-box","title":"Connect my Box","trigger":"connect","outcome":"connect","utterance":"watch my Box folder for new resumes","agent":"resume_judge","channel":"web","integration":"box","phase":"run","live":false,"note":"per-user Box login before the watcher can arm"},{"id":"decline-flight","title":"No agent (declines)","trigger":"decline","outcome":"decline","utterance":"book me a flight to Tokyo next Friday","agent":"—","channel":"telegram","integration":"none","phase":"run","live":true,"note":"nothing fits → 'no agent set up for that; ask a builder'"},{"id":"decline-vague","title":"Ambiguous → clarify/decline","trigger":"decline","outcome":"decline","utterance":"do the thing with the stuff","agent":"—","channel":"web","integration":"none","phase":"run","live":true,"note":"unresolvable → decline rather than guess"}];
+
+const DIMS = {trigger:['now','cron','poll','push','connect','decline'],
+  channel:['web','telegram','discord','slack','whatsapp','email'],
+  integration:['none','box','github','gmail','slack','webhook','calendar','drive','notion','rss'],
+  phase:['run','sprint','fly'], live:['live','wip']};
+const sel = {trigger:new Set(),channel:new Set(),integration:new Set(),phase:new Set(),live:new Set()};
+
+function chips(dim){
+  const host=document.getElementById('f-'+dim);
+  DIMS[dim].forEach(v=>{
+    const c=document.createElement('span');c.className='chip';c.textContent=v;
+    c.onclick=()=>{sel[dim].has(v)?sel[dim].delete(v):sel[dim].add(v);c.classList.toggle('on');render();};
+    host.appendChild(c);
+  });
+}
+['trigger','channel','integration','phase','live'].forEach(chips);
+document.getElementById('q').addEventListener('input',render);
+
+function liveKey(e){return e.live?'live':'wip';}
+function match(e){
+  for(const d of ['trigger','channel','integration','phase']) if(sel[d].size && !sel[d].has(e[d])) return false;
+  if(sel.live.size && !sel.live.has(liveKey(e))) return false;
+  const q=document.getElementById('q').value.trim().toLowerCase();
+  if(q && !(e.utterance+' '+e.agent+' '+e.title).toLowerCase().includes(q)) return false;
+  return true;
+}
+function render(){
+  const rows=EX.filter(match);
+  document.getElementById('count').textContent=`${rows.length} of ${EX.length} examples`;
+  document.getElementById('list').innerHTML=rows.map(e=>{
+    const integ = e.integration!=='none' ? `<span class="t t-ch">${e.integration}</span>`:'';
+    return `<div class="ex ${e.live?'':'dim'}">
+      <div class="main">
+        <div class="u">${esc(e.utterance)}</div>
+        <div class="tags meta">
+          <span class="t t-${e.trigger}">${e.trigger}</span>
+          <span class="t t-ch">${e.channel}</span>${integ}
+          <span class="t t-${e.phase}">${e.phase}</span>
+          <span class="t ${e.live?'t-live':'t-wip'}">${e.live?'live':'wip'}</span>
+          <span style="color:#8a8a8a">→ ${esc(e.agent)}</span>
+        </div>
+        ${e.note?`<div class="note">${esc(e.note)}</div>`:''}
+      </div>
+      <button onclick="copy(this,'${esc(e.utterance).replace(/'/g,"\\'")}')">Copy</button>
+    </div>`;
+  }).join('') || '<p style="color:#8a8a8a">No examples match those filters.</p>';
+}
+function esc(s){return (s||'').replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+function copy(btn,t){navigator.clipboard.writeText(t.replace(/&amp;/g,'&').replace(/&lt;/g,'<').replace(/&gt;/g,'>').replace(/&quot;/g,'"'))
+  .then(()=>{const o=btn.textContent;btn.textContent='Copied ✓';setTimeout(()=>btn.textContent=o,1100);});}
+render();
+</script>
+</body>
+</html>

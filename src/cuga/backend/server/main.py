@@ -1738,6 +1738,86 @@ app.add_middleware(
 app.include_router(manage_routes.router)
 app.include_router(secrets_routes.router)
 
+# ---- event-driven concierge layer (opt-in: EVENTS_ENABLED; off → CUGA unchanged) ----
+try:
+    from cuga.backend.events import enabled as _events_enabled
+
+    if _events_enabled():
+        import logging as _logging
+        import os as _os
+
+        from cuga.backend.events.agent_store import AgentStore
+        from cuga.backend.events.app import register_events_routes
+        from cuga.backend.events.concierge import Concierge, WORKER_BACKEND
+        from cuga.backend.events.llm import default_model_factory
+        from cuga.backend.events.runtime import make_runtime
+        from cuga.backend.events.subscriptions import SubscriptionStore
+
+        # EVENTS_DB=<path> → agents + subscriptions persist and are SHARED across replicas
+        # (fleet model). Default ":memory:" for dev. For shared conversation memory across
+        # replicas, also wire runtime.make_sqlite_checkpointer(EVENTS_MEMORY_DB) in startup.
+        _ev_db = _os.environ.get("EVENTS_DB", ":memory:")
+
+        # WORKERS do the hard work of answering → default backend = **cuga** (they get CUGA's
+        # policies/knowledge/supervisor/tools). The concierge (NL→flow) stays react — its own
+        # graph is built inside Concierge. The cuga worker runtime needs the running server's
+        # shared context (policy_system, langfuse_handler, tool includes); we hand it a LAZY
+        # getter because this mount runs before startup populates app_state. If startup hasn't
+        # built policy_system yet (or in a partial env), the getter returns None and the cuga
+        # runtime transparently falls back to react — so nothing ever breaks.
+        def _cuga_app_context():
+            if getattr(app_state, "policy_system", None) is None:
+                return None                      # startup not ready → react fallback
+            return {
+                "policy_system": app_state.policy_system,
+                "langfuse_handler": getattr(app_state, "langfuse_handler", None),
+                "get_include_by_app": lambda: (
+                    getattr(app_state, "tools_include_by_app", None),
+                    getattr(app_state, "tools_include_version", 0)),
+            }
+
+        _ev_runtime = make_runtime(WORKER_BACKEND, model_factory=default_model_factory,
+                                   agent_store=AgentStore(_ev_db),
+                                   app_context=_cuga_app_context)
+        _ev_store = SubscriptionStore(_ev_db)
+        _ev_engine = None
+        try:  # AP engine only if Activepieces is configured
+            if _os.environ.get("AP_BASE_URL"):
+                from cuga.backend.events.ap_engine import APEngine
+                _ev_engine = APEngine()
+        except Exception:  # noqa: BLE001
+            _ev_engine = None
+        # identity anchor (decision 0007): local users + the channel identity map (shared store)
+        from cuga.backend.events.users import UserStore
+        from cuga.backend.events.identity import IdentityMap
+        from cuga.backend.events.oauth import OAuthAppStore
+        _ev_users = UserStore(_ev_db)
+        _ev_identity = IdentityMap(_ev_db)
+        _ev_oauth_store = OAuthAppStore(_ev_db)
+        # Seed the demo fleet of PRE-BUILT agents (builder's job; the concierge never creates
+        # agents) + demo users. Opt-in via EVENTS_SEED_AGENTS=1. Agents are seeded at the TENANT
+        # agent_scope ("default/default") so all the tenant's users share them (access-gated).
+        if _os.environ.get("EVENTS_SEED_AGENTS"):
+            try:
+                from cuga.backend.events.seed import seed_default_agents, seed_default_users
+                seed_default_agents(_ev_runtime, scope="default/default")
+                seed_default_users(_ev_users, tenant="default")
+            except Exception as _seed_err:  # noqa: BLE001
+                _logging.getLogger("cuga.events").warning("seed failed: %s", _seed_err)
+        _ev_concierge = Concierge(_ev_runtime, _ev_store, _ev_engine,
+                                  model_factory=default_model_factory, users=_ev_users)
+        register_events_routes(app, runtime=_ev_runtime, store=_ev_store,
+                                concierge=_ev_concierge, engine=_ev_engine,
+                                users=_ev_users, identity=_ev_identity,
+                                oauth_store=_ev_oauth_store)
+        _logging.getLogger("cuga.events").info(
+            "event-driven concierge layer mounted: /invoke, /api/concierge, "
+            "/api/events/{subscriptions,status,channels,integrations,examples} "
+            "(concierge=react, worker_backend=%s, ap=%s)", WORKER_BACKEND, bool(_ev_engine))
+except Exception as _ev_err:  # noqa: BLE001 - never block CUGA startup
+    import logging as _logging
+    _logging.getLogger("cuga.events").warning("events layer not mounted: %s", _ev_err)
+
 
 @app.get("/health")
 async def health():

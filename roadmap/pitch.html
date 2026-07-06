@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Event-Driven Agents on CUGA — Pitch</title>
+<style>
+  :root{--blue:#0f62fe;--ink:#161616;--mut:#8d8d8d;--line:#e0e0e0;--ok:#24a148;--part:#ff832b;
+        --road:#8a3ffc;--code:#f2f4f8;--paper:#fbfbfd}
+  *{box-sizing:border-box}
+  html,body{margin:0;padding:0}
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:#0c0c0f}
+  .deck{scroll-snap-type:y mandatory;overflow-y:scroll;height:100vh}
+  .slide{scroll-snap-align:start;min-height:100vh;display:flex;flex-direction:column;justify-content:center;
+       padding:70px 8vw;position:relative}
+  .slide.light{background:var(--paper);color:var(--ink)}
+  .slide.dark{background:linear-gradient(140deg,#0c0c0f,#1c1c24);color:#f4f4f4}
+  .slide.blue{background:linear-gradient(140deg,#0043ce,#0f62fe);color:#fff}
+  .kicker{font-size:13px;letter-spacing:2px;text-transform:uppercase;color:var(--blue);font-weight:700;margin-bottom:14px}
+  .slide.dark .kicker,.slide.blue .kicker{color:#8ab4ff}
+  .slide.blue .kicker{color:#cfe0ff}
+  h1{font-size:52px;line-height:1.05;margin:0 0 18px;font-weight:700;letter-spacing:-1.2px;max-width:16ch}
+  h2{font-size:36px;line-height:1.1;margin:0 0 20px;font-weight:700;letter-spacing:-.6px;max-width:20ch}
+  .lead{font-size:20px;line-height:1.5;color:#555;max-width:46ch}
+  .slide.dark .lead,.slide.blue .lead{color:#d0d0d8}
+  .slide.blue .lead{color:#eaf0ff}
+  .big{font-size:26px;line-height:1.5;max-width:30ch;font-weight:600}
+  .num{position:absolute;top:28px;right:8vw;font-size:13px;color:var(--mut)}
+  .foot{position:absolute;bottom:26px;left:8vw;font-size:13px;color:var(--mut)}
+  .cols{display:flex;gap:26px;flex-wrap:wrap;margin-top:8px}
+  .col{flex:1;min-width:210px}
+  .col h3{font-size:15px;text-transform:uppercase;letter-spacing:.5px;color:var(--blue);margin:0 0 8px}
+  .slide.dark .col h3{color:#8ab4ff}
+  ul{margin:6px 0;padding-left:20px} li{margin:7px 0;font-size:17px;line-height:1.4}
+  .chips{display:flex;gap:8px;flex-wrap:wrap;margin-top:14px}
+  .chip{border:1px solid rgba(255,255,255,.25);border-radius:22px;padding:6px 15px;font-size:15px}
+  .slide.light .chip{border-color:var(--line);background:#fff}
+  .pill{display:inline-block;padding:2px 11px;border-radius:20px;font-size:13px;font-weight:700;color:#fff}
+  .p-done{background:var(--ok)}.p-run{background:var(--blue)}.p-sprint{background:var(--road)}.p-fly{background:#161616}
+  .mono{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}
+  .flow{font-family:'IBM Plex Mono',monospace;font-size:15px;background:rgba(0,0,0,.04);border-radius:10px;
+       padding:16px 20px;line-height:2;margin-top:12px;display:inline-block}
+  .slide.dark .flow{background:rgba(255,255,255,.06)}
+  .stat{display:flex;gap:40px;flex-wrap:wrap;margin-top:20px}
+  .stat .s b{display:block;font-size:40px;font-weight:700;line-height:1}
+  .stat .s span{font-size:14px;color:var(--mut)}
+  .journey{display:flex;gap:0;margin-top:24px;flex-wrap:wrap}
+  .step{flex:1;min-width:150px;border-left:3px solid var(--line);padding:4px 16px 16px}
+  .step.on{border-left-color:var(--blue)}
+  .step .t{font-size:13px;text-transform:uppercase;letter-spacing:.5px;color:var(--mut);font-weight:700}
+  .step .h{font-size:19px;font-weight:700;margin:4px 0}
+  .step .d{font-size:14px;color:#666}
+  .slide.dark .step .d{color:#b0b0b8}
+  a.nav{color:inherit;text-decoration:none;border-bottom:1px solid currentColor}
+  .topbar{position:fixed;top:0;left:0;right:0;height:4px;background:rgba(255,255,255,.15);z-index:50}
+  .topbar > i{display:block;height:100%;background:var(--blue);width:0}
+  .hint{position:fixed;bottom:16px;right:20px;font-size:12px;color:#888;z-index:50}
+  /* appendix */
+  #appendix{background:var(--paper);color:var(--ink);padding:60px 8vw 90px;scroll-snap-align:start}
+  #appendix h2{font-size:30px}
+  .ws{border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:14px 0;background:#fff}
+  .ws h3{margin:0 0 4px;font-size:18px;display:flex;align-items:center;gap:10px}
+  .ws .who{font-size:13px;color:var(--mut);margin-bottom:8px}
+  .ws ul li{font-size:15px;margin:5px 0}
+  .tag{font-size:11px;font-weight:700;border-radius:5px;padding:2px 8px;color:#fff}
+  code{font-family:'IBM Plex Mono',monospace;background:var(--code);padding:1px 5px;border-radius:4px;font-size:13px}
+  @media(max-width:640px){h1{font-size:36px}h2{font-size:26px}.slide{padding:56px 7vw}}
+  /* walkthrough slides (05·x) — scoped classes, existing slides unaffected */
+  .wtline{margin-bottom:12px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+  .badge{display:inline-block;font-size:12px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;
+     border-radius:5px;padding:3px 10px;color:#fff}
+  .b-now{background:#0043ce}.b-cron{background:#6929c4}.b-poll{background:#007d79}.b-push{background:#a2255f}
+  .b-ch{background:#393939}
+  .status{font-size:12px;font-weight:700;border-radius:20px;padding:3px 11px}
+  .st-live{background:#24a148;color:#fff}.st-wired{background:#ff832b;color:#fff}
+  .utter{font-family:'IBM Plex Mono',monospace;font-size:19px;font-weight:600;background:rgba(15,98,254,.08);
+     border-left:4px solid var(--blue);border-radius:0 8px 8px 0;padding:12px 16px;margin:4px 0 16px;max-width:46ch}
+  .slide.dark .utter{background:rgba(138,180,255,.12);border-left-color:#8ab4ff;color:#eaf0ff}
+  .setup{font-size:14px;color:#666;margin:0 0 12px;max-width:60ch;font-style:italic}
+  .slide.dark .setup{color:#b0b0b8}
+  .seq{list-style:none;counter-reset:s;padding:0;margin:0;max-width:62ch}
+  .seq li{counter-increment:s;position:relative;padding:5px 0 5px 40px;font-size:16px;line-height:1.45}
+  .seq li::before{content:counter(s);position:absolute;left:0;top:4px;width:26px;height:26px;border-radius:50%;
+     background:var(--blue);color:#fff;font-size:13px;font-weight:700;display:flex;align-items:center;justify-content:center}
+  .slide.dark .seq li::before{background:#8ab4ff;color:#0c0c0f}
+  .mono2{font-family:'IBM Plex Mono',monospace;font-size:.92em}
+</style>
+</head>
+<body>
+<div class="topbar"><i id="prog"></i></div>
+<div class="hint">↓ scroll · ← → arrows</div>
+
+<div class="deck" id="deck">
+
+  <!-- 1 TITLE -->
+  <section class="slide dark">
+    <div class="kicker">CUGA · Event-Driven Agents</div>
+    <h1>Agents that don't just answer — they watch, schedule, and act.</h1>
+    <div class="lead">Talk to them in plain English on any channel. They build the automation for you.</div>
+    <div class="foot">Internal pitch · grounded in what we shipped · 2026-07-03 &nbsp;·&nbsp;
+      <a class="nav" href="index.html">Board</a> · <a class="nav" href="setup.html">Setup</a> · <a class="nav" href="examples.html">Examples</a></div>
+    <div class="num">01</div>
+  </section>
+
+  <!-- 2 THE GAP -->
+  <section class="slide light">
+    <div class="kicker">The gap</div>
+    <h2>Today's agents are reactive. Real work is continuous.</h2>
+    <div class="cols">
+      <div class="col"><h3>What agents do now</h3><ul>
+        <li>You ask → it answers → done.</li>
+        <li>One channel, one shot.</li>
+        <li>Nothing happens unless you're typing.</li></ul></div>
+      <div class="col"><h3>What people actually want</h3><ul>
+        <li>"<b>Watch</b> this and tell me when it changes."</li>
+        <li>"<b>Every morning</b>, brief me."</li>
+        <li>"<b>When</b> a resume lands, judge it."</li>
+        <li>…on Telegram, Slack, WhatsApp, email.</li></ul></div>
+    </div>
+    <div class="num">02</div>
+  </section>
+
+  <!-- 3 THE IDEA -->
+  <section class="slide dark">
+    <div class="kicker">The idea</div>
+    <h2>CUGA is the brain. Activepieces is the nervous system.</h2>
+    <div class="lead">One concierge you talk to in plain English. It routes to a pre-built agent, or arms a
+      standing automation — and every connection, trigger and delivery is handled by Activepieces.</div>
+    <div class="flow">you ▸ <b>Concierge</b> (plain English)
+   ├─ answer now      → a pre-built agent replies
+   ├─ set up a watcher → AP trigger ▸ /invoke ▸ deliver
+   └─ nothing fits     → politely declines</div>
+    <div class="num">03</div>
+  </section>
+
+  <!-- 4 IT'S REAL -->
+  <section class="slide blue">
+    <div class="kicker" style="color:#cfe0ff">It's real — not a slide</div>
+    <h2>You can message a Telegram bot right now and it works end-to-end.</h2>
+    <div class="stat">
+      <div class="s"><b>4</b><span>trigger types<br>NOW · CRON · POLL · PUSH</span></div>
+      <div class="s"><b>8</b><span>pre-built agents<br>routed by capability</span></div>
+      <div class="s"><b>6/6</b><span>live router e2e<br>+ 39 offline tests</span></div>
+      <div class="s"><b>1</b><span>channel fully live<br>Telegram (in + scheduled out)</span></div>
+    </div>
+    <div class="lead" style="margin-top:22px">Ask a question → get an answer. "Every 2 minutes, ping me on a move" →
+      a real scheduled flow delivers back to your chat. The plumbing works.</div>
+    <div class="num">04</div>
+  </section>
+
+  <!-- 5 THE SHAPE -->
+  <section class="slide light">
+    <div class="kicker">The shape</div>
+    <h2>Four triggers · many channels · many integrations.</h2>
+    <div class="cols">
+      <div class="col"><h3>Triggers</h3><ul>
+        <li><b>NOW</b> — ask now</li><li><b>CRON</b> — at a time</li>
+        <li><b>POLL</b> — every N, on change</li><li><b>PUSH</b> — an event fires</li></ul></div>
+      <div class="col"><h3>Channels (converse)</h3>
+        <div class="chips"><span class="chip">Web ✓</span><span class="chip">Telegram ✓</span>
+          <span class="chip">Discord</span><span class="chip">Slack</span><span class="chip">WhatsApp</span><span class="chip">Email</span></div></div>
+      <div class="col"><h3>Integrations (watch/act)</h3>
+        <div class="chips"><span class="chip">Box</span><span class="chip">GitHub</span><span class="chip">Gmail</span>
+          <span class="chip">Slack</span><span class="chip">Webhook</span><span class="chip">Calendar</span><span class="chip">Notion</span></div></div>
+    </div>
+    <div class="lead" style="margin-top:18px">The unlock: a <b>generic webhook in &amp; out</b> — any system can trigger an agent,
+      and any result can be delivered anywhere. Flows can even chain into flows.</div>
+    <div class="num">05</div>
+  </section>
+
+  <!-- 05·1  HOW AN AGENT IS SET UP -->
+  <section class="slide dark">
+    <div class="kicker">Before the flows — setup time</div>
+    <h2>An agent is <b>built with tools</b>. Channels &amp; integrations are wired in at setup.</h2>
+    <div class="cols" style="margin-top:6px">
+      <div class="col">
+        <h3>Anatomy of an agent</h3>
+        <div class="flow" style="white-space:pre;line-height:1.95;font-size:14px">agent    <b>resume_judge</b>
+skill    judge a resume vs a JD
+tools    cuga-text (MCP)
+chans    telegram · web
+integr   box · gmail (per-user)
+access   builder · admin</div>
+        <div style="font-size:14px;color:#b0b0b8;margin-top:8px">A <b>builder</b> sets this up once. The concierge never
+          creates agents — it only <b>routes</b> to the ones that exist (or declines).</div>
+      </div>
+      <div class="col">
+        <h3>What the wiring means</h3>
+        <ul>
+          <li><b>Agent + channel</b> → a conversational agent.<br>
+            <span style="color:#b0b0b8;font-size:15px"><span class="mono2">geobot</span> = geo skill + <span class="mono2">cuga-geo</span> tool, on <b>Telegram</b> → you ask, it answers there.</span></li>
+          <li><b>Agent + channel + integration</b> → a watcher/actor.<br>
+            <span style="color:#b0b0b8;font-size:15px"><span class="mono2">resume_judge</span> watches <b>Box</b>, judges with its tools, delivers to <b>Gmail / Telegram</b>.</span></li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot">Channels = where it converses &amp; delivers · Integrations = what it watches &amp; acts on — both chosen at setup.</div>
+    <div class="num">05·1</div>
+  </section>
+
+  <!-- 05·2  NOW · Telegram -->
+  <section class="slide light">
+    <div class="kicker" style="color:#0043ce">Walkthrough · a message → an answer</div>
+    <div class="wtline"><span class="badge b-now">NOW</span><span class="badge b-ch">Telegram</span><span class="status st-live">live today</span></div>
+    <h2>Ask the bot a question.</h2>
+    <div class="utter">"what's the price of bitcoin?"</div>
+    <ol class="seq">
+      <li>You message the Telegram bot.</li>
+      <li>AP's Telegram trigger fires → <span class="mono2">POST /invoke(concierge)</span> + gateway token.</li>
+      <li>Concierge routes by capability → <b>pricebot</b>.</li>
+      <li>CugaRuntime runs pricebot → <span class="mono2">cuga_finance</span> tool → a live number.</li>
+      <li>Answer returns → AP's Telegram <b>send</b> step → reply lands in your chat.</li>
+    </ol>
+    <div class="foot">One inbound flow: message in ▸ /invoke ▸ send out.</div>
+    <div class="num">05·2</div>
+  </section>
+
+  <!-- 05·2  CRON · Telegram -->
+  <section class="slide dark">
+    <div class="kicker">Walkthrough · a scheduled brief</div>
+    <div class="wtline"><span class="badge b-cron">CRON</span><span class="badge b-ch">Telegram</span><span class="status st-live">live today</span></div>
+    <h2>Every weekday morning — without being asked.</h2>
+    <div class="utter">"every weekday at 8am send me a market brief"</div>
+    <div class="setup">Set up once — concierge → find_or_create_flow(cron): AP builds a schedule flow (cron 0 8 * * 1-5) + records a subscription.</div>
+    <ol class="seq">
+      <li>8:00 Mon–Fri — AP's schedule trigger ticks.</li>
+      <li>→ <span class="mono2">/invoke(market_briefer, deliver=false)</span>.</li>
+      <li>CUGA runs market_briefer (finance + web MCP).</li>
+      <li>Brief → AP Telegram <b>send</b> step → your chat.</li>
+    </ol>
+    <div class="foot">Ask again → it REUSES the flow (dedup) — never duplicates.</div>
+    <div class="num">05·3</div>
+  </section>
+
+  <!-- 05·3  POLL · Slack -->
+  <section class="slide light">
+    <div class="kicker" style="color:#007d79">Walkthrough · watch &amp; alert</div>
+    <div class="wtline"><span class="badge b-poll">POLL</span><span class="badge b-ch">Slack</span><span class="status st-wired">wired · Run target</span></div>
+    <h2>Ping me only when it actually moves.</h2>
+    <div class="utter">"watch bitcoin every 2 minutes and ping our Slack on any move"</div>
+    <div class="setup">Set up once — poll flow: every 2 min → /invoke(pricebot) → Slack send (sendAsBot=true).</div>
+    <ol class="seq">
+      <li>AP's timer ticks every 2 minutes.</li>
+      <li>→ /invoke(pricebot) with an <i>emit-on-change</i> instruction.</li>
+      <li>No change → returns nothing → nothing delivered (silence is a feature).</li>
+      <li>On a move → answer → AP Slack <b>send</b> → the channel gets pinged.</li>
+    </ol>
+    <div class="foot">Same shape as CRON — the agent decides if there's anything worth sending.</div>
+    <div class="num">05·4</div>
+  </section>
+
+  <!-- 05·4  PUSH · Box → Gmail -->
+  <section class="slide dark">
+    <div class="kicker">Walkthrough · react to a file</div>
+    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Box → Gmail</span><span class="status st-wired">wired · Run target</span></div>
+    <h2>When a resume lands, judge it and email me.</h2>
+    <div class="utter">"when a resume lands in my Box, judge it vs the JD and email me"</div>
+    <div class="setup">Set up once — you connect your Box + Gmail (per-user OAuth); concierge arms a push flow: Box new_file → /invoke(resume_judge) → Gmail send.</div>
+    <ol class="seq">
+      <li>A file drops in your Box folder → AP's Box trigger fires (AP holds your token).</li>
+      <li>→ /invoke(resume_judge) with the file reference.</li>
+      <li>resume_judge reads it, scores fit vs the job description.</li>
+      <li>Verdict → AP Gmail <b>send</b> → lands in your inbox.</li>
+    </ol>
+    <div class="foot">Integration IN (Box) → email OUT (Gmail). No chat channel involved.</div>
+    <div class="num">05·5</div>
+  </section>
+
+  <!-- 05·5  PUSH · Gmail → Telegram -->
+  <section class="slide light">
+    <div class="kicker" style="color:#a2255f">Walkthrough · react to an email</div>
+    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Gmail → Telegram</span><span class="status st-wired">wired · Run target</span></div>
+    <h2>When my boss emails, summarize and text me.</h2>
+    <div class="utter">"when an email from my boss arrives, summarize it and text me"</div>
+    <div class="setup">Set up once — connect Gmail (per-user); push flow: Gmail trigger (from:boss) → /invoke(mailbot) → Telegram send.</div>
+    <ol class="seq">
+      <li>A matching email arrives → AP's Gmail trigger fires.</li>
+      <li>→ /invoke(mailbot).</li>
+      <li>mailbot summarizes the thread.</li>
+      <li>Summary → AP Telegram <b>send</b> → your phone buzzes.</li>
+    </ol>
+    <div class="foot">Integration IN (Gmail) → channel OUT (Telegram). Same seam, mixed surfaces.</div>
+    <div class="num">05·6</div>
+  </section>
+
+  <!-- 6 THE JOURNEY -->
+  <section class="slide dark">
+    <div class="kicker">The journey — crawl · walk · run · sprint · fly</div>
+    <h2>The MVP is Crawl → Walk → Run. Then we Sprint, then we Fly.</h2>
+    <div class="journey">
+      <div class="step on"><div class="t">Crawl · P1</div><div class="h">Core &amp; the seam</div><div class="d">runtime, /invoke, worker</div></div>
+      <div class="step on"><div class="t">Walk · P2</div><div class="h">Concierge + AP + Studio</div><div class="d">router, flows, Telegram live</div></div>
+      <div class="step on"><div class="t">Run · P3 · MVP</div><div class="h">Coverage + rigor</div><div class="d">all channels, PUSH, webhook, NL→flow benchmarks</div></div>
+      <div class="step"><div class="t">Sprint · P4</div><div class="h">Breadth</div><div class="d">WhatsApp, Calendar, Notion, RSS…</div></div>
+      <div class="step"><div class="t">Fly · P5</div><div class="h">Cloud &amp; scale</div><div class="d">multi-tenant, IdP, HA, observability</div></div>
+    </div>
+    <div class="lead" style="margin-top:20px">
+      <span class="pill p-done">Done</span> Crawl &amp; Walk &nbsp;
+      <span class="pill p-run">Now</span> Run (MVP) &nbsp;
+      <span class="pill p-sprint">Next</span> Sprint &nbsp;
+      <span class="pill p-fly">Later</span> Fly</div>
+    <div class="num">06</div>
+  </section>
+
+  <!-- 7 THE BIG BET -->
+  <section class="slide light">
+    <div class="kicker">The big bet</div>
+    <h2>The product IS the translation: plain English → the right automation.</h2>
+    <div class="cols">
+      <div class="col"><h3>Why it's the moat</h3><ul>
+        <li>Plumbing is deterministic code — flows can't be hallucinated.</li>
+        <li>All the fuzziness lives in ~5 arguments: agent · mode · cadence · source · sink.</li>
+        <li>Get that reliably right and the platform feels magic. Get it wrong and it's noise.</li></ul></div>
+      <div class="col"><h3>What we'll build</h3><ul>
+        <li>A dedicated <b>Flow-Planner agent</b> (typed output).</li>
+        <li>A <b>validation gate</b> before anything arms.</li>
+        <li>A <b>benchmark</b> — labeled corpus scored in CI.</li>
+        <li>Pick the <b>right model</b> on accuracy / latency / cost.</li></ul></div>
+    </div>
+    <div class="num">07</div>
+  </section>
+
+  <!-- 8 ROADMAP HIGH LEVEL -->
+  <section class="slide dark">
+    <div class="kicker">Roadmap — high level</div>
+    <h2>What's next, in one glance.</h2>
+    <div class="cols">
+      <div class="col"><h3><span class="pill p-run">Run / MVP</span></h3><ul>
+        <li>Discord &amp; Slack live</li><li>PUSH live (GitHub → Box → Gmail)</li>
+        <li>Generic webhook in / out</li><li>Email delivery sink</li>
+        <li><b>NL→flow: agent + gate + benchmark + model</b></li></ul></div>
+      <div class="col"><h3><span class="pill p-sprint">Sprint</span></h3><ul>
+        <li>WhatsApp, Email-as-channel</li><li>Calendar, Drive/Sheets</li>
+        <li>A "work" tool (Notion / Jira / Linear)</li><li>RSS / feeds</li></ul></div>
+      <div class="col"><h3><span class="pill p-fly">Fly</span></h3><ul>
+        <li>Multi-tenant isolation</li><li>OIDC / IdP identity</li>
+        <li>Managed infra, stable URLs, secrets vault</li><li>Observability &amp; scale</li></ul></div>
+    </div>
+    <div class="foot">Detailed, claimable TODOs below ↓ &nbsp;·&nbsp; full status on the <a class="nav" href="index.html">Board</a></div>
+    <div class="num">08</div>
+  </section>
+
+  <!-- 9 CALL TO ACTION -->
+  <section class="slide blue">
+    <div class="kicker" style="color:#cfe0ff">How you can help</div>
+    <h2>Pick a workstream. There's a clear first task in each.</h2>
+    <div class="big">The foundation is live. The next wins are well-scoped and parallelizable —
+      channels, PUSH, the webhook primitive, and the NL→flow brain.</div>
+    <div class="foot">Scroll down for the detailed TODO board ↓</div>
+    <div class="num">09</div>
+  </section>
+
+  <!-- APPENDIX: DETAILED TODOS -->
+  <section id="appendix">
+    <div class="kicker" style="color:var(--blue)">Detailed view — claim a task &amp; start poking</div>
+    <h2>Workstreams &amp; first tasks</h2>
+    <p class="lead" style="color:#555">Each has a concrete starting point. Full checkable status lives on the
+      <a class="nav" style="color:var(--blue)" href="index.html">Board</a>; try utterances on the
+      <a class="nav" style="color:var(--blue)" href="examples.html">Examples</a> page.</p>
+
+    <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> Channels — prove Discord &amp; Slack</h3>
+      <div class="who">Owner: — · effort: S · unblocks the "3 channels" claim</div>
+      <ul>
+        <li>Stand up a Discord bot + Slack app; connect via the Studio (Integrations → Connect).</li>
+        <li>Arm inbound for each; send a message → verify round-trip. Descriptors are fixed; Slack needs <code>sendAsBot=true</code> (already wired).</li>
+        <li>Deliverable: green round-trip + flip the Board rows.</li></ul></div>
+
+    <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> PUSH — first integration event (GitHub)</h3>
+      <div class="who">Owner: — · effort: M · biggest unproven piece (a whole mode)</div>
+      <ul>
+        <li>Wire a GitHub PR/issue trigger → <code>/invoke</code> (start with GitHub — no token time-window like Box).</li>
+        <li>Confirm the push flow fires, routes, and delivers. Then repeat for Box (resume watcher) &amp; Gmail.</li>
+        <li>Deliverable: one live PUSH round-trip end-to-end.</li></ul></div>
+
+    <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> The webhook primitive (in + out)</h3>
+      <div class="who">Owner: — · effort: M · highest leverage — covers the long tail</div>
+      <ul>
+        <li>Inbound: a generic AP webhook trigger → <code>/invoke</code>.</li>
+        <li>Outbound: add <code>webhook</code> as a delivery sink alongside <code>channel</code>/<code>email</code> (an AP HTTP send step, optional HMAC).</li>
+        <li>Deliverable: "POST to my URL" works; flow→flow chaining demoable.</li></ul></div>
+
+    <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> NL→Flow brain — the big bet</h3>
+      <div class="who">Owner: — · effort: L · the moat</div>
+      <ul>
+        <li>Define a typed <code>FlowSpec</code>; make <code>decide()</code> the one path (preview == live).</li>
+        <li>Validation gate: valid cron, sane interval floor, agent capable, sink connected.</li>
+        <li>Golden corpus (~40 labeled utterances incl. adversarial) → score per field in CI.</li>
+        <li>Model bake-off on the corpus (accuracy / latency / cost).</li>
+        <li>Deliverable: a number for "NL→flow accuracy" + a chosen model.</li></ul></div>
+
+    <div class="ws"><h3><span class="tag" style="background:#8a3ffc">SPRINT</span> New channels &amp; integrations</h3>
+      <div class="who">Owner: — · effort: M each · breadth, post-MVP</div>
+      <ul>
+        <li>WhatsApp (Meta/Twilio onboarding), Email-as-channel (threading).</li>
+        <li>Google Calendar / Drive-Sheets, one "work" tool (Notion / Jira / Linear), RSS/feeds.</li>
+        <li>Each is "add a <code>CHANNELS</code>/source descriptor + connect" — no bespoke engine code.</li></ul></div>
+
+    <div class="ws"><h3><span class="tag" style="background:#161616">FLY</span> Cloud &amp; scale</h3>
+      <div class="who">Owner: — · effort: L · productionization</div>
+      <ul>
+        <li>Hard multi-tenant isolation (per-tenant AP projects + row-level).</li>
+        <li>OIDC/IdP identity; stable public URLs (retire quick-tunnels); secrets vault.</li>
+        <li>Shared state across replicas; tracing, metrics, NL→flow accuracy dashboards.</li></ul></div>
+
+    <div class="ws"><h3><span class="tag" style="background:#24a148">ANYTIME</span> Quality &amp; docs</h3>
+      <div class="who">Owner: — · effort: S · good first issues</div>
+      <ul>
+        <li>Multi-user isolation test (two real users, per-user creds).</li>
+        <li>Expand the example corpus (<code>catalog.py</code>) as capabilities land.</li>
+        <li>Keep the Board &amp; sequence diagrams in sync.</li></ul></div>
+
+    <p style="color:var(--mut);margin-top:24px;font-size:13px">Backlog beyond Fly: Twilio SMS, Stripe, Salesforce/HubSpot, PagerDuty/Datadog, Dropbox/S3, MS Teams, Signal.</p>
+  </section>
+
+</div>
+
+<script>
+const deck=document.getElementById('deck'), prog=document.getElementById('prog');
+deck.addEventListener('scroll',()=>{const p=deck.scrollTop/(deck.scrollHeight-deck.clientHeight);prog.style.width=(p*100)+'%';});
+const slides=[...document.querySelectorAll('.slide,#appendix')];
+function go(d){const y=deck.scrollTop;let i=slides.findIndex(s=>s.offsetTop> y+10);
+  if(d>0){if(i<0)i=slides.length-1;} else {i=[...slides].reverse().find(s=>s.offsetTop<y-10);i=i?slides.indexOf(i):0;}
+  const t=(typeof i==='number'?slides[i]:i); if(t)deck.scrollTo({top:t.offsetTop,behavior:'smooth'});}
+document.addEventListener('keydown',e=>{if(e.key==='ArrowRight'||e.key==='ArrowDown'){go(1);e.preventDefault();}
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp'){go(-1);e.preventDefault();}});
+</script>
+</body>
+</html>

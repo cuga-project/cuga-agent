@@ -103,3 +103,8 @@ demo_knowledge_docs/
 
 # Tracked even if core.excludesfile / global gitignore lists this basename
 !scripts/smoke_pip_install_isolated.sh
+
+# events focused venv (build/test)
+.venv-events/
+.ap.env
+.events.db

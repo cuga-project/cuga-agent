@@ -4,6 +4,7 @@ import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ManageDashboard } from "./ManageDashboard";
 import { ManagePage } from "./ManagePage";
 import { ChatLanding } from "./ChatLanding";
+import { StudioPage } from "./StudioPage";
 import { UnauthorizedPage } from "./UnauthorizedPage";
 import { AuthProvider, useAuth } from "./AuthContext";
 import * as api from "./api";
@@ -112,6 +113,14 @@ function renderApp(): void {
               }
             />
             <Route path="/chat" element={<RouteRoot><ChatLanding /></RouteRoot>} />
+            <Route
+              path="/studio"
+              element={
+                <RequireRole requiredRoles={["ServiceOwner", "ServiceAdmin"]}>
+                  <RouteRoot><StudioPage /></RouteRoot>
+                </RequireRole>
+              }
+            />
             <Route path="/unauthorized" element={<RouteRoot><UnauthorizedPage /></RouteRoot>} />
           </Routes>
         </AuthProvider>

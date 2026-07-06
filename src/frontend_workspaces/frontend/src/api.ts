@@ -4,10 +4,14 @@
 
 export function getApiBaseUrl(): string {
   if (typeof window === "undefined") return "http://localhost:7860";
-  const { hostname, protocol, origin, port } = window.location;
-  if (hostname !== "localhost" && hostname !== "127.0.0.1") return origin;
-  if (port === "3002") return origin;
-  return `${protocol}//${hostname}:7860`;
+  const { origin, protocol } = window.location;
+  // The SPA is served BY the FastAPI backend, so the API lives at the SAME origin — on whatever
+  // port served this page: 7860, 8100, the :3002 webpack dev server (which proxies /api → backend),
+  // or a production domain. This must NOT hardcode a port, or a CUGA server on any non-7860 port
+  // (e.g. the events server on :8100) has its API calls silently sent to :7860 instead.
+  // Only fall back to the default CUGA port for non-web origins (electron file://), which have none.
+  if (protocol === "http:" || protocol === "https:") return origin;
+  return "http://localhost:7860";
 }
 
 let authConfigCache: { enabled: boolean; authorization_enabled: boolean } | null = null;
@@ -379,6 +383,137 @@ export async function updateSecret(
 export async function deleteSecret(id: string): Promise<Response> {
   return apiFetch(`/api/secrets/${encodeURIComponent(id)}`, {
     method: "DELETE",
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Events / Studio API (opt-in: EVENTS_ENABLED on the backend).
+// These endpoints only exist when the events layer is mounted; the Studio UI
+// hides itself when getEventsStatus() is not ok. The UI is dumb — it renders
+// exactly what these return and never computes status itself.
+// ---------------------------------------------------------------------------
+
+export interface EventsStatus {
+  ok: boolean;
+  enabled: boolean;
+  scope: string;
+  backends: string[];
+  worker_backend?: string;      // who does the hard work of answering (cuga by default)
+  concierge_backend?: string;   // NL→flow control plane (react)
+  ap_configured: boolean;
+  project_grain: string;
+  features: Record<string, boolean>;
+}
+
+// Returns null when the events layer is not mounted (vanilla CUGA) — callers
+// use that to hide the Studio entry point entirely.
+export async function getEventsStatus(): Promise<EventsStatus | null> {
+  try {
+    const res = await apiFetch("/api/events/status");
+    if (!res.ok) return null;
+    return (await res.json()) as EventsStatus;
+  } catch {
+    return null;
+  }
+}
+
+export async function getEventsChannels(): Promise<Response> {
+  return apiFetch("/api/events/channels");
+}
+
+export async function getEventsIntegrations(): Promise<Response> {
+  return apiFetch("/api/events/integrations");
+}
+
+export async function getEventsSubscriptions(): Promise<Response> {
+  return apiFetch("/api/events/subscriptions");
+}
+
+// The pre-built worker fleet (geobot, pricebot, …) the concierge routes among.
+export async function getEventsAgents(): Promise<Response> {
+  return apiFetch("/api/events/agents");
+}
+
+export async function getEventsExamples(): Promise<Response> {
+  return apiFetch("/api/events/examples");
+}
+
+// The caller's own connected integrations (which apps they've logged into).
+export async function getEventsConnections(): Promise<Response> {
+  return apiFetch("/api/events/connections");
+}
+
+// Where to send the user to log in for an integration (OAuth → redirects to consent).
+export function eventsConnectUrl(app: string): string {
+  return `${getApiBaseUrl()}/api/events/connect/${encodeURIComponent(app)}`;
+}
+
+// Token apps (GitHub PAT / Telegram bot): store a pasted token as the user's connection.
+export async function postEventsConnectToken(app: string, token: string): Promise<Response> {
+  return apiFetch(`/api/events/connect/${encodeURIComponent(app)}/token`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ token }),
+  });
+}
+
+// The caller's profile (identity anchor): who they are, roles, linked channels, connections.
+export async function getEventsMe(): Promise<Response> {
+  return apiFetch("/api/events/me");
+}
+
+// Issue a link token to bind a channel (Telegram/Discord) to this profile.
+export async function postEventsLinkChannel(channel: string): Promise<Response> {
+  return apiFetch(`/api/events/link/${encodeURIComponent(channel)}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({}),
+  });
+}
+
+// Admin: list / add users (tenant).
+export async function getEventsAdminUsers(): Promise<Response> {
+  return apiFetch("/api/events/admin/users");
+}
+export async function postEventsAdminUser(user: {
+  user_id: string; email?: string; roles?: string[]; password?: string;
+}): Promise<Response> {
+  return apiFetch("/api/events/admin/users", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(user),
+  });
+}
+
+// Admin: OAuth app credentials (client id/secret per provider) — UI instead of .env.
+export async function getEventsAdminOAuthApps(): Promise<Response> {
+  return apiFetch("/api/events/admin/oauth-apps");
+}
+export async function postEventsAdminOAuthApp(app: {
+  app: string; client_id: string; client_secret: string; scopes?: string;
+}): Promise<Response> {
+  return apiFetch("/api/events/admin/oauth-apps", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(app),
+  });
+}
+
+// Talk to the concierge (NL → reuse/create worker + arm trigger). ``dryRun``
+// returns the plan with no side effects (great for a "preview" toggle).
+export async function postConcierge(
+  text: string,
+  opts?: { threadId?: string; dryRun?: boolean; agent?: string }
+): Promise<Response> {
+  const q = opts?.dryRun ? "?dry_run=1" : "";
+  return apiFetch(`/api/concierge${q}`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      text,
+      thread_id: opts?.threadId ?? "web:studio",
+      ...(opts?.agent ? { agent: opts.agent } : {}),
+    }),
   });
 }
 

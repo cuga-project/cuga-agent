@@ -1,0 +1,500 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>CUGA Event-Driven Agents — Workstream Board</title>
+<style>
+  :root{
+    --blue:#0f62fe; --blue-d:#0043ce; --ink:#161616; --ink2:#393939; --mut:#6f6f6f;
+    --line:#e0e0e0; --bg:#f4f4f4; --card:#fff; --ok:#24a148; --warn:#f1c21b; --part:#ff832b;
+    --pend:#8d8d8d; --road:#8a3ffc; --code:#f2f4f8;
+  }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:var(--bg);line-height:1.5;font-size:15px}
+  header.top{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:28px 40px 22px}
+  header.top h1{margin:0 0 4px;font-size:24px;font-weight:600;letter-spacing:-.3px}
+  header.top .sub{color:#c6c6c6;font-size:14px;max-width:900px}
+  header.top .meta{margin-top:10px;font-size:12px;color:#a8a8a8}
+  .wrap{max-width:1180px;margin:0 auto;padding:0 24px 80px}
+  nav.toc{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);
+          padding:8px 24px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  nav.toc a{color:var(--ink2);text-decoration:none;padding:3px 6px;border-radius:4px}
+  nav.toc a:hover{background:var(--code);color:var(--blue)}
+  section{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:22px 0;padding:22px 26px;scroll-margin-top:52px}
+  h2{font-size:19px;margin:0 0 4px;font-weight:600;display:flex;align-items:center;gap:10px}
+  h2 .n{color:#fff;background:var(--blue);border-radius:5px;font-size:12px;padding:2px 8px;font-weight:600}
+  h3{font-size:15px;margin:18px 0 8px;color:var(--ink2)}
+  p.lead{color:var(--ink2);margin:2px 0 14px;max-width:940px}
+  table{width:100%;border-collapse:collapse;margin:6px 0 4px;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafafa;font-weight:600;font-size:12px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut)}
+  tbody tr:hover{background:#fafcff}
+  td.c{text-align:center;width:64px;white-space:nowrap}
+  .item b{font-weight:600}
+  .item small{color:var(--mut);display:block;font-size:12px;margin-top:1px}
+  code,.mono{font-family:'IBM Plex Mono',ui-monospace,SFMono-Regular,Menlo,monospace;
+       background:var(--code);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  .pill{display:inline-block;padding:1px 9px;border-radius:20px;font-size:11px;font-weight:600;color:#fff;white-space:nowrap}
+  .p-done{background:var(--ok)} .p-part{background:var(--part)} .p-pend{background:var(--pend)}
+  .p-road{background:var(--road)} .p-live{background:var(--blue)}
+  input[type=checkbox]{width:17px;height:17px;cursor:pointer;accent-color:var(--blue)}
+  input[type=checkbox]:disabled{accent-color:var(--ok);cursor:default;opacity:1}
+  input.note{width:100%;border:1px solid transparent;border-radius:4px;padding:4px 6px;font-size:12.5px;
+       background:#fbfbfb;font-family:inherit}
+  input.note:focus{border-color:var(--blue);background:#fff;outline:none}
+  input.note::placeholder{color:#bbb}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--ink2);background:var(--code);
+       border-radius:6px;padding:10px 14px;margin:10px 0}
+  .legend b{color:var(--ink)}
+  .grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+  @media(max-width:760px){.grid2{grid-template-columns:1fr}}
+  .box{border:1px solid var(--line);border-radius:6px;padding:12px 14px;background:#fcfcfc}
+  .box h4{margin:0 0 6px;font-size:13px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut)}
+  ul.tight{margin:6px 0;padding-left:18px} ul.tight li{margin:3px 0}
+  .arch{background:var(--ink);color:#e8e8e8;border-radius:8px;padding:16px 18px;font-family:'IBM Plex Mono',monospace;
+       font-size:12px;line-height:1.7;overflow-x:auto;white-space:pre}
+  .bar{height:8px;border-radius:6px;background:var(--line);overflow:hidden;margin-top:4px}
+  .bar > i{display:block;height:100%;background:var(--ok)}
+  .phase-row{display:flex;align-items:center;gap:12px;padding:8px 0;border-bottom:1px solid var(--line)}
+  .phase-row:last-child{border:0}
+  .phase-row .lab{width:150px;font-weight:600}
+  .phase-row .bar{flex:1}
+  .phase-row .pct{width:120px;text-align:right;font-size:12px;color:var(--mut)}
+  .toolbar{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:8px 24px;
+       display:flex;gap:10px;justify-content:flex-end;z-index:20;font-size:13px}
+  .toolbar button{border:1px solid var(--line);background:#fff;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px}
+  .toolbar button:hover{border-color:var(--blue);color:var(--blue)}
+  .note-hd{color:var(--road)}
+  a.link{color:var(--blue);text-decoration:none} a.link:hover{text-decoration:underline}
+  .tag{font-size:11px;color:var(--mut);border:1px solid var(--line);border-radius:4px;padding:0 5px;margin-left:4px}
+  @media print{nav.toc,.toolbar{display:none}section{break-inside:avoid}}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>CUGA Event-Driven Agents — Workstream Board</h1>
+  <div class="sub">Living status + requirements + design + roadmap for the event-driven agent platform built on
+    CUGA's server, delegating all connections / triggers / delivery to Activepieces (AP). Runs behind
+    <code style="color:#9cf">EVENTS_ENABLED</code>.</div>
+  <div class="meta">Last authored by Claude: <b>2026-07-03</b> · Your checkmarks &amp; notes auto-save in this browser (localStorage) ·
+    <a class="link" style="color:#9cf" href="pitch.html">▶ Pitch deck</a> ·
+    <a class="link" style="color:#9cf" href="setup.html">⚙ Setup</a> ·
+    <a class="link" style="color:#9cf" href="verify.html">✅ P1&amp;2 runbook</a> ·
+    <a class="link" style="color:#9cf" href="examples.html">Examples</a></div>
+</header>
+
+<nav class="toc">
+  <a href="#how">How to use</a>
+  <a href="#arch">Architecture</a>
+  <a href="#model">The model</a>
+  <a href="#phases">Phases</a>
+  <a href="#scope">Channels &amp; Integrations</a>
+  <a href="#impl">Implementation</a>
+  <a href="#test">Testing</a>
+  <a href="#triggers">Triggers</a>
+  <a href="#channels">Channels</a>
+  <a href="#integrations">Integrations</a>
+  <a href="#creds">Credentials</a>
+  <a href="#nlflow">NL→Flow</a>
+  <a href="#cloud">Local vs Cloud</a>
+  <a href="#gaps">Gaps &amp; Risks</a>
+  <a href="#p34">Phase 3 &amp; 4</a>
+  <a href="#refs">Pointers</a>
+</nav>
+
+<div class="wrap">
+
+<!-- HOW TO USE -->
+<section id="how">
+  <h2><span class="n">i</span> How to use this board</h2>
+  <p class="lead">This is your running log for the workstream. Each item has two check columns and a notes field.</p>
+  <div class="legend">
+    <span><b>✅ Claude</b> — my assessment of what's built (read-only; I update it as we work).</span>
+    <span><b>☐ You</b> — your independent verification (click to toggle; saved locally).</span>
+    <span><b class="note-hd">Notes</b> — your comments / blockers / follow-ups (saved locally).</span>
+  </div>
+  <div class="legend">
+    <span><span class="pill p-done">Done</span> shipped &amp; working</span>
+    <span><span class="pill p-live">Live-verified</span> proven end-to-end against the real stack</span>
+    <span><span class="pill p-part">Partial</span> wired, not fully verified</span>
+    <span><span class="pill p-pend">Pending</span> not started</span>
+    <span><span class="pill p-road">Roadmap</span> Phase 3 / 4</span>
+  </div>
+  <p class="lead" style="margin-top:12px">Use the <b>Export my notes</b> button (bottom-right) to save your column as a JSON file for sharing/backup.</p>
+</section>
+
+<!-- ARCHITECTURE -->
+<section id="arch">
+  <h2><span class="n">1</span> Architecture</h2>
+  <p class="lead">One idea: <b>CUGA is the brain, Activepieces is the nervous system.</b> CUGA reasons and answers;
+    AP owns every connection, trigger and delivery. They meet at a single HTTP seam — <code>/invoke</code> —
+    guarded by <code>X-Gateway-Token</code>. No channel/integration-specific code lives in CUGA.</p>
+  <div class="arch">  ┌─────────── CHANNELS (converse) ───────────┐        ┌─── INTEGRATIONS (watch / act) ───┐
+  Telegram · Discord · Slack · Web            │        │  Box · GitHub · Gmail · Slack     │
+  └──────────────┬────────────────────────────┘        └───────────────┬──────────────────┘
+                 │  (AP piece triggers + send)                         │  (AP piece triggers)
+                 ▼                                                     ▼
+        ╔══════════════════════════════ ACTIVEPIECES ══════════════════════════════╗
+        ║  inbound flow · schedule/poll flow · push flow   (trigger → HTTP → send)  ║
+        ║  holds all OAuth/secret CONNECTIONS · owns the OUTBOUND send step         ║
+        ╚════════════════════════════════════╤═════════════════════════════════════╝
+                        POST /invoke  (X-Gateway-Token)  ▲  answer
+                                              ▼          │
+        ╔══════════════════════════════════ CUGA ═══════════════════════════════════╗
+        ║  Concierge (runtime ROUTER: list_capabilities · answer_now · find_or_create_flow · decline) ║
+        ║  CugaRuntime → per-agent CUGA graph + MCP tools     Studio UI  (/studio)   ║
+        ║  Identity · Permissions · Credentials-connect UX · SubscriptionStore (sqlite) ║
+        ╚═══════════════════════════════════════════════════════════════════════════╝</div>
+  <div class="grid2" style="margin-top:14px">
+    <div class="box"><h4>Key design choices</h4>
+      <ul class="tight">
+        <li><b>Concierge = router, never a builder.</b> It picks among <i>pre-built</i> agents; it never creates agents or writes code.</li>
+        <li><b>Flow assembly is deterministic code</b> (<code>ap_engine.py</code> + <code>flows.CHANNELS</code>). The LLM only fills a few typed args — flows can't be hallucinated.</li>
+        <li><b>AP owns the outbound.</b> Inbound replies <i>and</i> scheduled/poll results deliver via an AP send step to the caller's channel.</li>
+        <li><b>Worker = CUGA</b> by default (<code>CugaRuntime</code>); react is opt-in.</li>
+      </ul>
+    </div>
+    <div class="box"><h4>The seam &amp; ports (dev)</h4>
+      <ul class="tight">
+        <li><code>/invoke</code> — every trigger calls back here; <code>agent="concierge"</code> routes to the router.</li>
+        <li>Activepieces <code>:8081</code> · CUGA server <code>:8100</code> · tool registry <code>:8001</code>.</li>
+        <li>AP → CUGA callback: <code>http://host.containers.internal:8100/invoke</code>.</li>
+        <li>Channel webhooks / OAuth callbacks need HTTPS → Cloudflare quick-tunnel (ephemeral).</li>
+      </ul>
+    </div>
+  </div>
+</section>
+
+<!-- THE MODEL -->
+<section id="model">
+  <h2><span class="n">2</span> The vocabulary (channels · integrations · triggers · agents)</h2>
+  <div class="grid2">
+    <div class="box"><h4>Channels — converse on</h4><p style="margin:0">Two-way chat surfaces. A message in → concierge → reply out.
+      <br><b>Web, Telegram, Discord, Slack.</b></p></div>
+    <div class="box"><h4>Integrations — watch / act on</h4><p style="margin:0">Systems an agent watches or acts on.
+      <br><b>Box, GitHub, Gmail, Slack (shared).</b></p></div>
+    <div class="box"><h4>Triggers — how a run starts</h4><p style="margin:0"><b>NOW</b> (ask now) · <b>CRON</b> (at a time) ·
+      <b>POLL</b> (every N, on change) · <b>PUSH</b> (an integration event).</p></div>
+    <div class="box"><h4>Agents — the workers</h4><p style="margin:0">Pre-built by a <i>builder</i>: skill (prompt) + tools (MCP) +
+      channels + integrations + access. The concierge routes among them.</p></div>
+  </div>
+</section>
+
+<!-- PHASES -->
+<section id="phases">
+  <h2><span class="n">3</span> Phase roadmap — Crawl · Walk · Run · Sprint · Fly</h2>
+  <p class="lead"><b>The MVP is Crawl + Walk + Run (P1–P3).</b> Then <b>Sprint</b> broadens the connector set, and <b>Fly</b> is cloud &amp; scale.</p>
+  <div class="phase-row"><div class="lab">🐛 Crawl · P1 <span class="pill p-done">Done</span></div>
+    <div class="bar"><i style="width:100%"></i></div><div class="pct">Core runtime &amp; the seam</div></div>
+  <div class="phase-row"><div class="lab">🚶 Walk · P2 <span class="pill p-live">Telegram-live</span></div>
+    <div class="bar"><i style="width:90%"></i></div><div class="pct">Concierge + AP + Studio</div></div>
+  <div class="phase-row"><div class="lab">🏃 Run · P3 <span class="pill p-part">In progress</span></div>
+    <div class="bar"><i style="width:22%"></i></div><div class="pct"><b>MVP</b> · full coverage + NL→flow rigor</div></div>
+  <div class="phase-row"><div class="lab">⚡ Sprint · P4 <span class="pill p-road">Next</span></div>
+    <div class="bar"><i style="width:3%"></i></div><div class="pct">Breadth: new channels/integrations</div></div>
+  <div class="phase-row"><div class="lab">🚀 Fly · P5 <span class="pill p-road">Later</span></div>
+    <div class="bar"><i style="width:2%"></i></div><div class="pct">Cloud &amp; scale (post-MVP)</div></div>
+  <p class="lead" style="margin-top:14px">
+    <b>Crawl (P1)</b> — events layer folded into CUGA's server, the <code>/invoke</code> seam, CugaRuntime worker, web NOW, offline test scaffolding.<br>
+    <b>Walk (P2)</b> — runtime-router concierge, AP flow builders (inbound / schedule / push), credentials + identity + permissions,
+      the Studio UI, and a full <b>live Telegram</b> path (inbound + scheduled delivery).<br>
+    <b>Run (P3) = MVP</b> — Discord/Slack live, PUSH live (GitHub/Box/Gmail), <b>generic webhook in+out</b>, email delivery sink,
+      and the big one: <b>NL→flow</b> — Flow-Planner agent + validation gate + benchmark + model selection.<br>
+    <b>Sprint (P4)</b> — WhatsApp, Email-as-channel, Google Calendar, Drive/Sheets, one "work" tool (Notion/Jira/Linear), RSS/feeds.<br>
+    <b>Fly (P5)</b> — multi-tenant cloud: real isolation, IdP/OIDC, managed infra, stable URLs, secrets vault, observability, scale.<br>
+    <span style="color:var(--mut)"><b>Beyond Fly (backlog):</b> Twilio SMS, Stripe, Salesforce/HubSpot, PagerDuty/Datadog, Dropbox/S3, MS Teams, Signal.</span></p>
+</section>
+
+<!-- CHANNELS & INTEGRATIONS SCOPE -->
+<section id="scope">
+  <h2><span class="n">3b</span> Committed channels &amp; integrations (before we Fly)</h2>
+  <p class="lead">The agreed set per phase. Fly adds no new connectors — it scales the existing ones.</p>
+  <table>
+    <thead><tr><th>Phase</th><th>Channels (converse)</th><th>Integrations (watch/act)</th><th>Delivery sinks</th></tr></thead>
+    <tbody>
+      <tr><td>🚶 <b>Walk</b> <span class="pill p-live">done</span></td><td>Web, <b>Telegram</b> ✅</td><td>connect model</td><td>channel</td></tr>
+      <tr><td>🏃 <b>Run</b> <span class="pill p-run">MVP</span></td><td>+ Discord, Slack</td><td><b>Box, GitHub, Gmail, Slack, + Generic Webhook-IN</b></td><td>channel, <b>email</b>, <b>webhook-OUT</b></td></tr>
+      <tr><td>⚡ <b>Sprint</b> <span class="pill p-road">next</span></td><td>+ WhatsApp, Email-as-channel</td><td>+ Calendar, Drive/Sheets, one work-tool (Notion/Jira/Linear), RSS</td><td>(same)</td></tr>
+      <tr><td>🚀 <b>Fly</b> <span class="pill p-road">later</span></td><td>scale existing</td><td>scale existing</td><td>—</td></tr>
+      <tr><td>🗄️ <b>Beyond</b></td><td>SMS, MS Teams, Signal</td><td>Twilio, Stripe, Salesforce/HubSpot, PagerDuty/Datadog, Dropbox/S3</td><td>—</td></tr>
+    </tbody>
+  </table>
+  <p class="lead" style="margin-top:8px"><b>Why generic webhook is in the MVP:</b> in + out covers the long tail cheaply (any system → agent → any system),
+    and lets flows chain into flows — a capability, not just another connector.</p>
+</section>
+
+<!-- IMPLEMENTATION -->
+<section id="impl">
+  <h2><span class="n">4</span> Implementation &amp; delivery</h2>
+  <p class="lead">What has been built. ✅ = Claude's assessment · ☐ You = your verification · Notes = yours.</p>
+  <table>
+    <thead><tr><th>Item</th><th>Status</th><th class="c">✅ Claude</th><th class="c">☐ You</th><th style="width:26%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td colspan="5" style="background:#f0f4ff;font-weight:600;color:var(--blue-d)">Core runtime &amp; the seam (Phase 1)</td></tr>
+      <tr><td class="item"><b>Events layer behind <code>EVENTS_ENABLED</code></b><small>additive; vanilla CUGA unaffected when off</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-eventsflag"></td><td><input class="note" data-k="n-eventsflag" placeholder="…"></td></tr>
+      <tr><td class="item"><b><code>/invoke</code> seam + <code>X-Gateway-Token</code></b><small>the one HTTP door every trigger calls back through</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-invoke"></td><td><input class="note" data-k="n-invoke" placeholder="…"></td></tr>
+      <tr><td class="item"><b>CugaRuntime worker</b><small>per-agent CUGA graph + MCP; react opt-in only</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-cugart"></td><td><input class="note" data-k="n-cugart" placeholder="…"></td></tr>
+      <tr><td class="item"><b>SubscriptionStore + persistence</b><small>sqlite; <code>EVENTS_DB</code> persists subs/identity/agents</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-store"></td><td><input class="note" data-k="n-store" placeholder="…"></td></tr>
+
+      <tr><td colspan="5" style="background:#f0f4ff;font-weight:600;color:var(--blue-d)">Concierge &amp; NL→flow (Phase 2)</td></tr>
+      <tr><td class="item"><b>Runtime-router concierge</b><small><code>list_capabilities · answer_now · find_or_create_flow · decline</code>; never creates agents</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-concierge"></td><td><input class="note" data-k="n-concierge" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Deterministic planner (dry-run/preview)</b><small><code>classify.py</code> + <code>concierge_plan.py</code>; also no-LLM fallback</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-planner"></td><td><input class="note" data-k="n-planner" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Reuse-or-create + dedup</b><small>dedup key = agent·source·cadence·sink·owner</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-dedup"></td><td><input class="note" data-k="n-dedup" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Flow-Planner agent + FlowSpec + validation gate</b> <span class="tag">MVP</span><small>typed intermediate; validate before arming (see §NL→Flow)</small></td><td><span class="pill p-pend">Run target</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-flowspec"></td><td><input class="note" data-k="n-flowspec" placeholder="…"></td></tr>
+      <tr><td class="item"><b>NL→flow benchmark + model selection</b> <span class="tag">MVP</span><small>labeled corpus scored in CI; model bake-off (accuracy/latency/cost)</small></td><td><span class="pill p-pend">Run target</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-bench"></td><td><input class="note" data-k="n-bench" placeholder="…"></td></tr>
+
+      <tr><td colspan="5" style="background:#f0f4ff;font-weight:600;color:var(--blue-d)">AP flow builders &amp; delivery</td></tr>
+      <tr><td class="item"><b>Inbound channel flow</b><small>trigger → /invoke(concierge) → channel send</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-inbound"></td><td><input class="note" data-k="n-inbound" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Schedule / poll flow + delivery</b><small>cron/interval → /invoke → <b>channel send step</b> (fixed this session)</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-sched"></td><td><input class="note" data-k="n-sched" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Push flow + resume-watcher (Box→Gmail)</b><small>builders + router branches exist</small></td><td><span class="pill p-part">Partial</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-push"></td><td><input class="note" data-k="n-push" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Outbound sinks: channel | email | webhook</b><small>delivery is a first-class list; concierge picks the sink from the ask</small></td><td><span class="pill p-part">channel done</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-sinks"></td><td><input class="note" data-k="n-sinks" placeholder="email + webhook = Run/MVP"></td></tr>
+      <tr><td class="item"><b>Generic Webhook — IN</b> <span class="tag">MVP</span><small>any external system POSTs → /invoke; no bespoke piece</small></td><td><span class="pill p-pend">Run target</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-whin"></td><td><input class="note" data-k="n-whin" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Generic Webhook — OUT</b> <span class="tag">MVP</span><small>deliver answer to any HTTP endpoint (optional HMAC); enables flow→flow</small></td><td><span class="pill p-pend">Run target</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-whout"></td><td><input class="note" data-k="n-whout" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Email delivery sink (Gmail)</b><small>"…email me the brief" — deliver to an inbox, not a chat</small></td><td><span class="pill p-pend">Run target</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-emaildeliver"></td><td><input class="note" data-k="n-emaildeliver" placeholder="…"></td></tr>
+
+      <tr><td colspan="5" style="background:#f0f4ff;font-weight:600;color:var(--blue-d)">Credentials · Identity · Permissions</td></tr>
+      <tr><td class="item"><b>CUGA-hosted connect → AP holds token</b><small><code>ensure_secret_connection</code> / <code>ensure_oauth_connection</code></small></td><td><span class="pill p-part">Partial</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-connect"></td><td><input class="note" data-k="n-connect" placeholder="telegram token path live; OAuth not live"></td></tr>
+      <tr><td class="item"><b>Per-user vs shared grain</b><small>grain follows credentials; per-user OAuth story</small></td><td><span class="pill p-part">Partial</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-grain"></td><td><input class="note" data-k="n-grain" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Identity map + channel account-linking</b><small>(tenant,channel,native)→user; <code>/start &lt;token&gt;</code></small></td><td><span class="pill p-part">Partial</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-identity"></td><td><input class="note" data-k="n-identity" placeholder="offline 8/8; not live multi-user"></td></tr>
+      <tr><td class="item"><b>Permissions (per-agent access)</b><small><code>perms.can_use</code> / visible agents</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-perms"></td><td><input class="note" data-k="n-perms" placeholder="…"></td></tr>
+
+      <tr><td colspan="5" style="background:#f0f4ff;font-weight:600;color:var(--blue-d)">Studio UI</td></tr>
+      <tr><td class="item"><b>Studio in CUGA's React app</b><small><code>/studio</code>; Carbon; dumb (renders real state, no business logic)</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-studio"></td><td><input class="note" data-k="n-studio" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Tabs: Concierge · Agents · Channels · Integrations · Flows · Examples · Profile · Admin</b><small>Agents tab + <code>/api/events/agents</code> added this session</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-tabs"></td><td><input class="note" data-k="n-tabs" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Same-origin API + build pipeline</b><small><code>getApiBaseUrl</code>=origin (bug fixed); <code>scripts/frontend_build.sh</code></small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-febuild"></td><td><input class="note" data-k="n-febuild" placeholder="…"></td></tr>
+
+      <tr><td colspan="5" style="background:#f0f4ff;font-weight:600;color:var(--blue-d)">Setup &amp; infra</td></tr>
+      <tr><td class="item"><b><code>ap_up.sh</code> — AP (pg+redis+app) + tunnel + worker health gate</b><small>AP_WORKER_TOKEN must be UNSET (JWT minted by entrypoint)</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-apup"></td><td><input class="note" data-k="n-apup" placeholder="…"></td></tr>
+      <tr><td class="item"><b><code>events_up.sh</code> — registry + tunnels + CUGA on :8100</b><small>sets EVENTS_USER_ID, EVENTS_DB, sandbox timeout</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-eventsup"></td><td><input class="note" data-k="n-eventsup" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Preflight + docs (SETUP/CHANNELS/MCP + decisions + phase_1_2 diagrams)</b><small>audited &amp; de-staled 2026-07-03; diagrams re-rendered</small></td><td><span class="pill p-done">Done</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="i-docs"></td><td><input class="note" data-k="n-docs" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- TESTING -->
+<section id="test">
+  <h2><span class="n">5</span> Testing</h2>
+  <p class="lead">"Works for real" = proven end-to-end against the running stack, not just unit-mocked.</p>
+  <table>
+    <thead><tr><th>Test</th><th>Status</th><th class="c">✅ Claude</th><th class="c">☐ You</th><th style="width:26%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="item"><b>Offline suite</b> — core / dimensions / studio_api<small>39 passed; descriptor shapes verified vs live AP metadata</small></td><td><span class="pill p-done">39 pass</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-offline"></td><td><input class="note" data-k="nt-offline" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Live router e2e</b> — status·capabilities·answer-now·create·dedup·decline<small>6/6 against :8100</small></td><td><span class="pill p-live">6/6</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-e2e"></td><td><input class="note" data-k="nt-e2e" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Telegram inbound round-trip</b><small>message → concierge → CUGA → reply back in Telegram</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-tg-in"></td><td><input class="note" data-k="nt-tg-in" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Telegram CRON/POLL + delivery</b><small>scheduled flow delivers result to the chat (send step verified)</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-tg-sched"></td><td><input class="note" data-k="nt-tg-sched" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Web NOW (pricebot/geobot/papers)</b><small>real MCP answers; arXiv fixed via 120s sandbox timeout</small></td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-now"></td><td><input class="note" data-k="nt-now" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Preflight — all integration creds</b><small>watsonx · AP · Telegram · Discord · Slack · Box · MCP reachable</small></td><td><span class="pill p-done">Green</span></td><td class="c"><input type="checkbox" checked disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-preflight"></td><td><input class="note" data-k="nt-preflight" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Discord inbound round-trip</b><small>path shared w/ telegram; descriptor fixed but unproven</small></td><td><span class="pill p-pend">Pending</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-discord"></td><td><input class="note" data-k="nt-discord" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Slack inbound round-trip</b><small>needs <code>sendAsBot=true</code> (added); unproven</small></td><td><span class="pill p-pend">Pending</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-slack"></td><td><input class="note" data-k="nt-slack" placeholder="…"></td></tr>
+      <tr><td class="item"><b>PUSH — GitHub PR watcher</b><small>entire PUSH mode never live-verified</small></td><td><span class="pill p-pend">Pending</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-github"></td><td><input class="note" data-k="nt-github" placeholder="recommended NEXT"></td></tr>
+      <tr><td class="item"><b>PUSH — Box resume watcher</b><small>needs fresh Box dev token (~60-min window)</small></td><td><span class="pill p-pend">Pending</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-box"></td><td><input class="note" data-k="nt-box" placeholder="…"></td></tr>
+      <tr><td class="item"><b>OAuth connect (per-user Gmail)</b><small>flow built; not exercised live</small></td><td><span class="pill p-pend">Pending</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-oauth"></td><td><input class="note" data-k="nt-oauth" placeholder="…"></td></tr>
+      <tr><td class="item"><b>Multi-user isolation (live)</b><small>two real users, per-user credentials + flows</small></td><td><span class="pill p-pend">Pending</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-multiuser"></td><td><input class="note" data-k="nt-multiuser" placeholder="…"></td></tr>
+      <tr><td class="item"><b>NL→flow eval harness</b><small>labeled corpus → expected FlowSpec, scored in CI (the strategic gap)</small></td><td><span class="pill p-road">Roadmap</span></td><td class="c"><input type="checkbox" disabled></td><td class="c"><input type="checkbox" class="chk" data-k="t-eval"></td><td><input class="note" data-k="nt-eval" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- TRIGGERS -->
+<section id="triggers">
+  <h2><span class="n">6</span> Triggers</h2>
+  <table>
+    <thead><tr><th>Trigger</th><th>Means</th><th>AP mechanism</th><th>Status</th><th>Example</th></tr></thead>
+    <tbody>
+      <tr><td><b>NOW</b></td><td>answer immediately</td><td>rides the inbound flow / direct <code>/invoke</code></td><td><span class="pill p-live">Live</span></td><td>"what is the capital of Japan?"</td></tr>
+      <tr><td><b>CRON</b></td><td>at a clock time</td><td>schedule <code>cron_expression</code> → /invoke → send</td><td><span class="pill p-live">Live</span></td><td>"every weekday at 8am send me a market brief"</td></tr>
+      <tr><td><b>POLL</b></td><td>every N, report on change</td><td>schedule <code>every_x_minutes</code> → /invoke → send</td><td><span class="pill p-live">Live</span></td><td>"watch bitcoin every 2 min and ping me on any move"</td></tr>
+      <tr><td><b>PUSH</b></td><td>an integration event</td><td>piece trigger (box/github/gmail) → /invoke</td><td><span class="pill p-part">Wired</span></td><td>"when a resume lands in my Box, judge it &amp; email me"</td></tr>
+    </tbody>
+  </table>
+  <p class="lead" style="margin-top:8px">POLL "on change" is currently <b>prompt-driven</b> (the worker suppresses no-change ticks). Stored per-subscription last-value is a Phase-3 upgrade.</p>
+</section>
+
+<!-- CHANNELS -->
+<section id="channels">
+  <h2><span class="n">7</span> Channels</h2>
+  <table>
+    <thead><tr><th>Channel</th><th>Send action (verified vs AP)</th><th>Status</th><th class="c">☐ You</th><th style="width:24%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td><b>Web</b></td><td>chat UI</td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-web"></td><td><input class="note" data-k="nc-web" placeholder="…"></td></tr>
+      <tr><td><b>Telegram</b></td><td><code>send_text_message</code> · chat_id · message</td><td><span class="pill p-live">Live-verified</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-tg"></td><td><input class="note" data-k="nc-tg" placeholder="…"></td></tr>
+      <tr><td><b>Discord</b></td><td><code>sendMessageWithBot</code> · channel_id · message</td><td><span class="pill p-part">Wired, untested</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-dc"></td><td><input class="note" data-k="nc-dc" placeholder="…"></td></tr>
+      <tr><td><b>Slack</b></td><td><code>send_channel_message</code> · channel · text · <b>sendAsBot=true</b></td><td><span class="pill p-part">Wired, untested</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-sl"></td><td><input class="note" data-k="nc-sl" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- INTEGRATIONS -->
+<section id="integrations">
+  <h2><span class="n">8</span> Integrations</h2>
+  <table>
+    <thead><tr><th>Integration</th><th>Use</th><th>Auth</th><th>Status</th><th class="c">☐ You</th><th style="width:20%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td><b>Box</b></td><td>resume/file watcher (PUSH)</td><td>OAuth / dev token</td><td><span class="pill p-part">Wired</span></td><td class="c"><input type="checkbox" class="chk" data-k="g-box"></td><td><input class="note" data-k="ng-box" placeholder="…"></td></tr>
+      <tr><td><b>GitHub</b></td><td>PR/issue watcher (PUSH)</td><td>PAT / OAuth</td><td><span class="pill p-part">Wired</span></td><td class="c"><input type="checkbox" class="chk" data-k="g-gh"></td><td><input class="note" data-k="ng-gh" placeholder="recommended first PUSH test"></td></tr>
+      <tr><td><b>Gmail</b></td><td>per-user summary / email delivery</td><td>OAuth (per-user)</td><td><span class="pill p-part">Wired</span></td><td class="c"><input type="checkbox" class="chk" data-k="g-gm"></td><td><input class="note" data-k="ng-gm" placeholder="…"></td></tr>
+      <tr><td><b>Slack</b></td><td>shared digest posting</td><td>OAuth (shared)</td><td><span class="pill p-part">Wired</span></td><td class="c"><input type="checkbox" class="chk" data-k="g-sl"></td><td><input class="note" data-k="ng-sl" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- CREDENTIALS -->
+<section id="creds">
+  <h2><span class="n">9</span> Credential story</h2>
+  <div class="grid2">
+    <div class="box"><h4>How it works</h4><ul class="tight">
+      <li><b>CUGA hosts the connect UX</b> for every connector (token paste or OAuth consent).</li>
+      <li><b>AP holds the token</b> — CUGA passes the credential to AP as a connection; AP executes with it.</li>
+      <li><b>Grain follows credentials:</b> shared (builder connects once, tenant-wide) vs per-user (each user logs into their own account → per-user flow).</li>
+      <li>Just-in-time: if an agent needs a per-user integration you haven't connected, the concierge replies <code>CONNECT NEEDED</code> with a link.</li>
+    </ul></div>
+    <div class="box"><h4>State</h4><ul class="tight">
+      <li><span class="pill p-live">Live</span> Telegram bot-token connection (secret) → used by the inbound + delivery flows.</li>
+      <li><span class="pill p-part">Wired</span> OAuth connect (Gmail/Box) — CUGA endpoints + AP OAuth2 connection built; not exercised live.</li>
+      <li><span class="pill p-part">Wired</span> Admin → OAuth-apps panel (enter client id/secret in UI vs .env).</li>
+      <li><span class="pill p-road">Roadmap</span> secrets vault (replace <code>.env</code>) for cloud.</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- NL FLOW -->
+<section id="nlflow">
+  <h2><span class="n">10</span> NL → Flow validation <span class="tag">the strategic piece</span></h2>
+  <p class="lead">Turning a fuzzy utterance into the <i>right</i> flow — right agent, mode, cadence, delivery, or a safe decline — is the real product surface. Flow <i>assembly</i> is deterministic code; the only fuzziness is the LLM's <b>argument selection</b> for <code>find_or_create_flow(agent, kind, cadence, source, deliver)</code>.</p>
+  <div class="grid2">
+    <div class="box"><h4>Today</h4><ul class="tight">
+      <li><b>Live path = LLM router</b> (picks agent + mode + params).</li>
+      <li><b>Preview/no-LLM = deterministic regex</b> classifier.</li>
+      <li>⚠️ The two can <b>disagree</b> → preview ≠ live.</li>
+      <li>⚠️ No pre-arm validation of the chosen args.</li>
+      <li>⚠️ No labeled eval set → correctness is spot-checked, not measured.</li>
+    </ul></div>
+    <div class="box"><h4>Target (Run / MVP)</h4><ul class="tight">
+      <li><b>Dedicated Flow-Planner agent</b> — typed <code>FlowSpec</code> output (mode·agent·cadence·source·sink).</li>
+      <li><b>One <code>decide()→FlowSpec</code></b>: dry-run returns exactly what live arms (preview==live).</li>
+      <li><b>Validation gate</b>: valid cron, sane interval floor, agent exists+capable, delivery connected, dedup — before touching AP.</li>
+      <li><b>Benchmark harness</b>: ~40 labeled utterances (incl. adversarial) → expected FlowSpec, scored per-field in CI; LLM vs regex baseline.</li>
+      <li><b>Model selection</b>: bake-off on the corpus (accuracy / latency / cost) — the planner is latency-sensitive &amp; correctness-critical.</li>
+      <li>Pattern: <b>LLM proposes · validator gates · deterministic is fallback+baseline</b>.</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- LOCAL VS CLOUD -->
+<section id="cloud">
+  <h2><span class="n">11</span> Local vs Cloud (tenant vs user)</h2>
+  <table>
+    <thead><tr><th>Concern</th><th>Local (today)</th><th>Cloud (Phase 4)</th></tr></thead>
+    <tbody>
+      <tr><td><b>Activepieces</b></td><td>single host: 3 containers (pg+redis+app), quick-tunnel URL</td><td>managed AP, HA pg/redis, stable domain</td></tr>
+      <tr><td><b>Public URLs</b></td><td>Cloudflare quick-tunnel (ephemeral, re-issued each run)</td><td>stable DNS + TLS for webhooks/OAuth callbacks</td></tr>
+      <tr><td><b>Tenancy</b></td><td>one tenant; per-tenant AP project (degrades to shared on plan cap)</td><td>hard per-tenant AP projects + row-level isolation</td></tr>
+      <tr><td><b>Users / identity</b></td><td>local user store; <code>EVENTS_USER_ID=admin</code> default</td><td>OIDC / IdP; real per-user identity + channel linking</td></tr>
+      <tr><td><b>Secrets</b></td><td><code>.env</code> + <code>.ap.env</code></td><td>secrets manager / vault</td></tr>
+      <tr><td><b>State</b></td><td><code>EVENTS_DB</code> sqlite file</td><td>shared DB across replicas; horizontal scale</td></tr>
+      <tr><td><b>Observability</b></td><td>trace ids + logs</td><td>centralized tracing, metrics, alerting, NL→flow accuracy dashboards</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- GAPS -->
+<section id="gaps">
+  <h2><span class="n">12</span> Gaps &amp; risks (identified)</h2>
+  <table>
+    <thead><tr><th>Gap / risk</th><th>Impact</th><th>Where</th><th class="c">☐ You</th><th style="width:22%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td><b>NL→flow: preview ≠ live; no eval harness</b></td><td>High — core surface unmeasured</td><td>concierge</td><td class="c"><input type="checkbox" class="chk" data-k="k-nlflow"></td><td><input class="note" data-k="nk-nlflow" placeholder="…"></td></tr>
+      <tr><td><b>PUSH plane never live-verified</b></td><td>High — a whole mode unproven</td><td>box/github/gmail</td><td class="c"><input type="checkbox" class="chk" data-k="k-push"></td><td><input class="note" data-k="nk-push" placeholder="…"></td></tr>
+      <tr><td><b>Discord/Slack wired from metadata, untested</b></td><td>Med — descriptor fixes unvalidated</td><td>flows.CHANNELS</td><td class="c"><input type="checkbox" class="chk" data-k="k-dcsl"></td><td><input class="note" data-k="nk-dcsl" placeholder="…"></td></tr>
+      <tr><td><b>OAuth connect not exercised live</b></td><td>Med — per-user story unproven</td><td>oauth</td><td class="c"><input type="checkbox" class="chk" data-k="k-oauth"></td><td><input class="note" data-k="nk-oauth" placeholder="…"></td></tr>
+      <tr><td><b>POLL on-change is prompt-only (no stored last value)</b></td><td>Med — can over/under-report</td><td>concierge</td><td class="c"><input type="checkbox" class="chk" data-k="k-poll"></td><td><input class="note" data-k="nk-poll" placeholder="…"></td></tr>
+      <tr><td><b>Ephemeral tunnel URLs</b></td><td>Med — webhooks break on restart</td><td>infra</td><td class="c"><input type="checkbox" class="chk" data-k="k-tunnel"></td><td><input class="note" data-k="nk-tunnel" placeholder="…"></td></tr>
+      <tr><td><b>AP plan caps projects → isolation degrades to namespacing</b></td><td>Low(local)/High(cloud)</td><td>ap_engine</td><td class="c"><input type="checkbox" class="chk" data-k="k-projcap"></td><td><input class="note" data-k="nk-projcap" placeholder="…"></td></tr>
+      <tr><td><b>No benchmarking of agent/answer quality yet</b></td><td>Med — quality unmeasured</td><td>workstream</td><td class="c"><input type="checkbox" class="chk" data-k="k-bench"></td><td><input class="note" data-k="nk-bench" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- PHASE 3 & 4 -->
+<section id="p34">
+  <h2><span class="n">13</span> Phase 3 &amp; 4 — the roadmap</h2>
+  <div class="grid2">
+    <div class="box"><h4>Phase 3 — full coverage + NL→flow rigor</h4><ul class="tight">
+      <li>Discord + Slack inbound round-trips (verify descriptors live).</li>
+      <li>PUSH live: GitHub PR watcher → Box resume watcher → Gmail.</li>
+      <li>OAuth per-user connect, live (Gmail).</li>
+      <li>Integration delivery (email/Gmail sink) — "send me… to my gmail".</li>
+      <li>POLL stored last-value state (robust on-change).</li>
+      <li><b>NL→flow: FlowSpec + validation gate + golden eval harness.</b></li>
+      <li>Benchmarking: NL→flow accuracy + answer quality.</li>
+    </ul></div>
+    <div class="box"><h4>Phase 4 — cloud &amp; scale</h4><ul class="tight">
+      <li>Multi-tenant isolation (hard per-tenant AP projects + row-level).</li>
+      <li>OIDC/IdP identity; real per-user + channel account-linking at scale.</li>
+      <li>Managed AP + HA pg/redis; stable public URLs (no quick-tunnels).</li>
+      <li>Secrets vault (retire <code>.env</code>).</li>
+      <li>Shared state across replicas; horizontal scale.</li>
+      <li>Observability: tracing, metrics, NL→flow accuracy dashboards, alerting.</li>
+    </ul></div>
+  </div>
+</section>
+
+<!-- REFERENCES -->
+<section id="refs">
+  <h2><span class="n">14</span> Pointers</h2>
+  <ul class="tight">
+    <li><a class="link" href="examples.html">examples.html</a> — copy-paste test utterances for NOW / CRON / POLL / PUSH / decline.</li>
+    <li><code>events_docs/SETUP.md</code>, <code>CHANNELS_SETUP.md</code>, <code>MCP_SETUP.md</code> — setup &amp; init.</li>
+    <li><code>events_docs/DESIGN.md</code>, <code>decisions/0001–0007</code> — architecture &amp; decisions.</li>
+    <li><code>events_docs/phase_1_2/</code> — sequence diagrams (re-rendered 2026-07-03) + testing walkthrough.</li>
+    <li><code>scripts/</code> — <code>ap_up.sh</code>, <code>events_up.sh</code>, <code>frontend_build.sh</code>.</li>
+    <li><code>tests/events/</code> — offline suite + live_* harnesses.</li>
+  </ul>
+</section>
+
+</div>
+
+<div class="toolbar">
+  <span id="savedmsg" style="color:var(--mut);align-self:center;margin-right:auto"></span>
+  <button onclick="exportNotes()">⬇ Export my notes (JSON)</button>
+  <button onclick="importNotes()">⬆ Import</button>
+  <button onclick="if(confirm('Clear YOUR checkmarks & notes on this device?')){localStorage.removeItem(STORE);location.reload()}">Reset my column</button>
+  <button onclick="window.print()">🖨 Print / PDF</button>
+</div>
+
+<input type="file" id="importfile" accept="application/json" style="display:none">
+<script>
+const STORE='cuga_roadmap_v1';
+const load=()=>{try{return JSON.parse(localStorage.getItem(STORE)||'{}')}catch(e){return{}}};
+const save=s=>localStorage.setItem(STORE,JSON.stringify(s));
+function flash(m){const e=document.getElementById('savedmsg');e.textContent=m;setTimeout(()=>e.textContent='',1400);}
+document.addEventListener('DOMContentLoaded',()=>{
+  const s=load();
+  document.querySelectorAll('[data-k]').forEach(el=>{
+    const k=el.dataset.k;
+    if(el.type==='checkbox'){
+      if(k in s) el.checked=!!s[k];
+      el.addEventListener('change',()=>{const st=load();st[k]=el.checked;save(st);flash('saved ✓');});
+    }else{
+      if(k in s) el.value=s[k];
+      el.addEventListener('input',()=>{const st=load();st[k]=el.value;save(st);flash('saved ✓');});
+    }
+  });
+});
+function exportNotes(){
+  const blob=new Blob([JSON.stringify(load(),null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download='cuga_roadmap_notes.json';a.click();
+}
+function importNotes(){document.getElementById('importfile').click();}
+document.getElementById('importfile').addEventListener('change',e=>{
+  const f=e.target.files[0];if(!f)return;const r=new FileReader();
+  r.onload=()=>{try{save(JSON.parse(r.result));location.reload();}catch(x){alert('Bad JSON');}};
+  r.readAsText(f);
+});
+</script>
+</body>
+</html>

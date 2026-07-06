@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>Phase 1 &amp; 2 — Acceptance Runbook</title>
+<style>
+  :root{--blue:#0f62fe;--blue-d:#0043ce;--ink:#161616;--ink2:#393939;--mut:#6f6f6f;--line:#e0e0e0;
+        --bg:#f4f4f4;--card:#fff;--ok:#24a148;--part:#ff832b;--pend:#8d8d8d;--codebg:#f7f8fb}
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif;
+       color:var(--ink);background:var(--bg);line-height:1.5;font-size:15px}
+  header.top{background:linear-gradient(120deg,#161616,#262626);color:#fff;padding:26px 40px 20px}
+  header.top h1{margin:0 0 4px;font-size:23px;font-weight:600}
+  header.top .sub{color:#c6c6c6;font-size:14px}header.top a{color:#9cf;text-decoration:none}
+  nav.toc{position:sticky;top:0;z-index:20;background:#fff;border-bottom:1px solid var(--line);
+          padding:8px 24px;display:flex;flex-wrap:wrap;gap:4px 14px;font-size:13px;box-shadow:0 1px 4px rgba(0,0,0,.05)}
+  nav.toc a{color:var(--ink2);text-decoration:none;padding:3px 6px;border-radius:4px}
+  nav.toc a:hover{background:var(--codebg);color:var(--blue)}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px 90px}
+  section{background:var(--card);border:1px solid var(--line);border-radius:8px;margin:20px 0;padding:20px 24px;scroll-margin-top:52px}
+  h2{font-size:19px;margin:0 0 4px;font-weight:600;display:flex;align-items:center;gap:11px}
+  h2 .n{color:#fff;background:var(--blue);border-radius:6px;min-width:30px;height:26px;font-size:13px;
+        display:inline-flex;align-items:center;justify-content:center;font-weight:700;padding:0 6px}
+  p.lead{color:var(--ink2);margin:2px 0 12px}
+  table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13.5px}
+  th,td{text-align:left;padding:8px 10px;border-bottom:1px solid var(--line);vertical-align:top}
+  th{background:#fafafa;font-size:11.5px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600}
+  tbody tr:hover{background:#fafcff}
+  td.c{text-align:center;width:46px}
+  td.step{width:26px;color:var(--mut);font-weight:700;text-align:center}
+  .expect{color:var(--ok);font-weight:600}
+  .cmd{position:relative;background:var(--codebg);border:1px solid var(--line);border-radius:6px;
+       padding:8px 40px 8px 10px;margin:4px 0;font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace;
+       font-size:12px;line-height:1.6;white-space:pre-wrap;word-break:break-word;color:#1c1c24}
+  .cmd .cp{position:absolute;top:5px;right:5px;border:1px solid var(--line);background:#fff;border-radius:4px;
+       padding:2px 7px;font-size:10.5px;cursor:pointer;color:var(--mut)}
+  .cmd .cp:hover{border-color:var(--blue);color:var(--blue)}
+  code{font-family:'IBM Plex Mono',monospace;background:var(--codebg);padding:1px 5px;border-radius:4px;font-size:12.5px}
+  input[type=checkbox]{width:18px;height:18px;cursor:pointer;accent-color:var(--ok)}
+  input.note{width:100%;border:1px solid transparent;border-radius:4px;padding:4px 6px;font-size:12.5px;background:#fbfbfb;font-family:inherit}
+  input.note:focus{border-color:var(--blue);background:#fff;outline:none}
+  input.note::placeholder{color:#bbb}
+  .pill{display:inline-block;padding:1px 8px;border-radius:20px;font-size:10.5px;font-weight:700;color:#fff;white-space:nowrap}
+  .p-seen{background:var(--ok)}.p-new{background:var(--pend)}.p-opt{background:var(--part)}
+  .legend{display:flex;flex-wrap:wrap;gap:14px;font-size:12.5px;color:var(--ink2);background:var(--codebg);border-radius:6px;padding:10px 14px;margin:10px 0}
+  .note-b{border-left:4px solid var(--blue);background:#f0f5ff;border-radius:0 6px 6px 0;padding:10px 14px;margin:12px 0;font-size:13.5px}
+  .note-b.warn{border-left-color:var(--part);background:#fff6ef}
+  ul.tight{margin:6px 0;padding-left:20px}ul.tight li{margin:5px 0}
+  .toolbar{position:sticky;bottom:0;background:#fff;border-top:1px solid var(--line);padding:8px 24px;
+       display:flex;gap:10px;justify-content:flex-end;z-index:20;font-size:13px}
+  .toolbar button{border:1px solid var(--line);background:#fff;padding:6px 12px;border-radius:6px;cursor:pointer;font-size:13px}
+  .toolbar button:hover{border-color:var(--blue);color:var(--blue)}
+  .prog{align-self:center;margin-right:auto;font-size:13px;color:var(--mut)}
+  a.link{color:var(--blue);text-decoration:none}a.link:hover{text-decoration:underline}
+  @media print{nav.toc,.toolbar{display:none}}
+</style>
+</head>
+<body>
+<header class="top">
+  <h1>Phase 1 &amp; 2 — Acceptance Runbook</h1>
+  <div class="sub">Fresh machine → debugger → Telegram → a one-by-one checklist to prove Phases 1 &amp; 2 work.
+    Your checkmarks &amp; notes auto-save in this browser. ← <a href="index.html">Board</a> ·
+    <a href="setup.html">Setup</a> · <a href="pitch.html">Pitch</a></div>
+</header>
+
+<nav class="toc">
+  <a href="#how">How to use</a>
+  <a href="#a">A · Fresh setup</a>
+  <a href="#b">B · Debugger</a>
+  <a href="#c">C · Telegram</a>
+  <a href="#d">D · Phase 1 checks</a>
+  <a href="#e">E · Phase 2 checks</a>
+  <a href="#done">Definition of done</a>
+</nav>
+
+<div class="wrap">
+
+<section id="how">
+  <h2><span class="n">i</span> How to use this runbook</h2>
+  <p class="lead">Go top to bottom. Each row: <b>do the thing</b> → confirm the <span class="expect">expected</span> → tick <b>☐</b> → jot a note if anything's off.</p>
+  <div class="legend">
+    <span><span class="pill p-seen">seen</span> I verified this live this session</span>
+    <span><span class="pill p-new">fresh</span> you confirm it on your machine</span>
+    <span><span class="pill p-opt">optional</span> nice-to-have / needs extra setup</span>
+    <span class="expect">green text = the expected result</span>
+  </div>
+  <div class="note-b">Assumes the repo is <code>cuga-agent-july</code> and you run commands from its root. Ports: AP <code>8081</code>, CUGA <code>8100</code>, registry <code>8001</code>. Full details on the <a class="link" href="setup.html">Setup</a> page.</div>
+</section>
+
+<!-- A: FRESH SETUP -->
+<section id="a">
+  <h2><span class="n">A</span> Fresh machine — stand it up</h2>
+  <table>
+    <thead><tr><th>#</th><th>Do this</th><th>Expected</th><th class="c">☐</th><th style="width:20%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="step">1</td><td><b>Prereqs</b> — install podman (or docker), cloudflared, node, uv.<div class="cmd">brew install podman cloudflared node uv
+podman machine init &amp;&amp; podman machine start</div></td><td class="expect">all four on PATH; podman machine running</td><td class="c"><input type="checkbox" data-k="a1"></td><td><input class="note" data-k="na1" placeholder="…"></td></tr>
+      <tr><td class="step">2</td><td><b>Python env</b><div class="cmd">uv venv .venv &amp;&amp; uv pip install -e .</div></td><td class="expect"><code>.venv/bin/python</code> works; imports resolve</td><td class="c"><input type="checkbox" data-k="a2"></td><td><input class="note" data-k="na2" placeholder="…"></td></tr>
+      <tr><td class="step">3</td><td><b>.env</b> — LLM creds, <code>GATEWAY_TOKEN</code>, <code>AP_EMAIL/PASSWORD</code>, <code>HOST_CALLBACK_URL</code>, <code>TELEGRAM_BOT_TOKEN</code>. <b>Do NOT set <code>AP_WORKER_TOKEN</code>.</b></td><td class="expect">.env present; no AP_WORKER_TOKEN anywhere</td><td class="c"><input type="checkbox" data-k="a3"></td><td><input class="note" data-k="na3" placeholder="…"></td></tr>
+      <tr><td class="step">4</td><td><b>Activepieces</b><div class="cmd">scripts/ap_up.sh</div></td><td class="expect">prints <b>AP READY</b> + <code>✓ AP worker healthy</code></td><td class="c"><input type="checkbox" data-k="a4"></td><td><input class="note" data-k="na4" placeholder="…"></td></tr>
+      <tr><td class="step">5</td><td><b>Studio UI build</b><div class="cmd">scripts/frontend_build.sh</div></td><td class="expect"><code>✓ Studio present in main.*.js</code></td><td class="c"><input type="checkbox" data-k="a5"></td><td><input class="note" data-k="na5" placeholder="…"></td></tr>
+      <tr><td class="step">6</td><td><b>CUGA + registry</b><div class="cmd">scripts/events_up.sh
+scripts/events_up.sh --status</div></td><td class="expect">registry :8001 &amp; cuga :8100 both <b>200</b></td><td class="c"><input type="checkbox" data-k="a6"></td><td><input class="note" data-k="na6" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+  <div class="note-b warn"><b>If arm/connect hangs later:</b> the AP worker is crash-looping — you set <code>AP_WORKER_TOKEN</code>. Remove it from <code>.ap.env</code>, re-run <code>scripts/ap_up.sh</code>.</div>
+</section>
+
+<!-- B: DEBUGGER -->
+<section id="b">
+  <h2><span class="n">B</span> Set up a debugger &amp; trace the flow</h2>
+  <p class="lead">The point: <b>watch a request travel the whole path</b> so you understand every piece. Uses VS Code + the committed launcher.</p>
+  <table>
+    <thead><tr><th>#</th><th>Do this</th><th>Expected</th><th class="c">☐</th><th style="width:20%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="step">1</td><td><b>Start the registry</b> (Run &amp; Debug → "API Registry Demo"), or leave <code>events_up.sh</code>'s registry running.</td><td class="expect">registry :8001 up</td><td class="c"><input type="checkbox" data-k="b1"></td><td><input class="note" data-k="nb1" placeholder="…"></td></tr>
+      <tr><td class="step">2</td><td><b>Launch the debug server</b>: Run &amp; Debug → <b>"Events: CUGA server :8100 (debug)"</b> (runs <code>scripts/run_events_server.py</code>, <code>justMyCode:false</code>).</td><td class="expect">console prints <code>[events] EVENTS_ENABLED=1 …</code>; :8100 up</td><td class="c"><input type="checkbox" data-k="b2"></td><td><input class="note" data-k="nb2" placeholder="…"></td></tr>
+      <tr><td class="step">3</td><td><b>Set breakpoints</b> (the request path, in order):<ul class="tight"><li><code>events/app.py</code> → <code>invoke()</code> (the seam; token check, scope, agent)</li><li><code>events/concierge.py</code> → <code>find_or_create_flow()</code> (NL→flow args)</li><li><code>events/ap_engine.py</code> → <code>create_schedule_flow()</code> (AP ops + send step)</li><li><code>events/runtime.py</code> → <code>CugaRuntime.run()</code> (the worker)</li></ul></td><td class="expect">4 red dots set</td><td class="c"><input type="checkbox" data-k="b3"></td><td><input class="note" data-k="nb3" placeholder="…"></td></tr>
+      <tr><td class="step">4</td><td><b>Trigger it</b> — in another terminal, arm a poll via the concierge:<div class="cmd">GT=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-)
+curl -s -X POST "http://localhost:8100/api/concierge" \
+ -H 'content-type: application/json' -H 'x-user-id: admin' \
+ -d '{"text":"every 5 minutes send me the bitcoin price","thread_id":"gw:telegram:12345"}'</div></td><td class="expect">breakpoints hit in order; step through &amp; inspect <code>agent</code>, <code>kind</code>, <code>sink</code>, the AP ops</td><td class="c"><input type="checkbox" data-k="b4"></td><td><input class="note" data-k="nb4" placeholder="…"></td></tr>
+      <tr><td class="step">5</td><td><b>Watch a NOW seam</b> — set a breakpoint only in <code>invoke()</code>, then call it directly:<div class="cmd">curl -s -X POST http://localhost:8100/invoke \
+ -H 'content-type: application/json' -H "X-Gateway-Token: $GT" \
+ -d '{"text":"price of bitcoin?","agent":"pricebot","source":{"type":"channel","name":"web","thread_id":"web:1"},"event":{"kind":"message","payload":{}},"scope":"default/default/admin","deliver":false}'</div></td><td class="expect">token check passes → <code>runtime.run(pricebot…)</code> → a number returns</td><td class="c"><input type="checkbox" data-k="b5"></td><td><input class="note" data-k="nb5" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+  <div class="note-b"><b>Tip:</b> <code>justMyCode:false</code> lets you step into CUGA graph + langchain internals. Turn it back on to stay in the events layer. Logs stream to the Debug Console; add <code>LOGURU_LEVEL=DEBUG</code> in the launch env for more.</div>
+</section>
+
+<!-- C: TELEGRAM -->
+<section id="c">
+  <h2><span class="n">C</span> Test Telegram (the live channel)</h2>
+  <table>
+    <thead><tr><th>#</th><th>Do this</th><th>Expected</th><th class="c">☐</th><th style="width:18%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="step">1</td><td><b>Connect the bot token</b><div class="cmd">TOK=$(grep '^TELEGRAM_BOT_TOKEN=' .env|cut -d= -f2-)
+curl -s -X POST http://localhost:8100/api/events/connect/telegram/token \
+ -H 'content-type: application/json' -H 'x-user-id: admin' \
+ -d "{\"token\":\"$TOK\",\"scope\":\"default/default\"}"</div></td><td class="expect"><code>{"ok":true,"connection":"ea::default::admin::telegram"}</code></td><td class="c"><input type="checkbox" data-k="c1"></td><td><input class="note" data-k="nc1" placeholder="…"></td></tr>
+      <tr><td class="step">2</td><td><b>Arm the inbound flow</b><div class="cmd">curl -s -X POST http://localhost:8100/api/events/admin/channels/telegram/arm \
+ -H 'content-type: application/json' -H 'x-user-id: admin' \
+ -d '{"scope":"default/default"}'</div></td><td class="expect"><code>{"ok":true,"ap_flow_id":"…"}</code> (in ~4s, not 30s)</td><td class="c"><input type="checkbox" data-k="c2"></td><td><input class="note" data-k="nc2" placeholder="…"></td></tr>
+      <tr><td class="step">3</td><td><b>Webhook registered?</b><div class="cmd">curl -s "https://api.telegram.org/bot$TOK/getWebhookInfo"</div></td><td class="expect"><code>url</code> = your tunnel <code>/api/v1/webhooks/…</code>, <code>pending:0</code>, no error</td><td class="c"><input type="checkbox" data-k="c3"></td><td><input class="note" data-k="nc3" placeholder="…"></td></tr>
+      <tr><td class="step">4</td><td><b>Message the bot</b>: send <code>what is the capital of Japan?</code></td><td class="expect">a real answer comes back <b>in Telegram</b></td><td class="c"><input type="checkbox" data-k="c4"></td><td><input class="note" data-k="nc4" placeholder="…"></td></tr>
+      <tr><td class="step">5</td><td><b>Scheduled delivery</b>: send <code>watch bitcoin every 2 minutes and ping me on any move</code></td><td class="expect">"poll set" reply; within ~2 min a price update arrives in Telegram</td><td class="c"><input type="checkbox" data-k="c5"></td><td><input class="note" data-k="nc5" placeholder="…"></td></tr>
+      <tr><td class="step">6</td><td><b>Inspect the AP run</b> — open AP (<code>:8081</code>), switch project to <b>ea::default-default</b>, open the run.</td><td class="expect">trigger ✓ → http /invoke ✓ (answer) → telegram send ✓</td><td class="c"><input type="checkbox" data-k="c6"></td><td><input class="note" data-k="nc6" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+  <div class="note-b warn">Tunnel URLs are ephemeral — if cloudflared restarted, re-run <code>scripts/ap_up.sh</code> and re-arm (step 2).</div>
+</section>
+
+<!-- D: PHASE 1 -->
+<section id="d">
+  <h2><span class="n">D</span> Phase 1 — the seam &amp; the runtime</h2>
+  <p class="lead">Core plumbing: the CUGA server, the <code>/invoke</code> seam, the worker, the store, the registry.</p>
+  <table>
+    <thead><tr><th>#</th><th>Check</th><th>Expected</th><th class="c">seen</th><th class="c">☐</th><th style="width:16%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="step">1</td><td><b>Events layer on</b><div class="cmd">curl -s http://localhost:8100/api/events/status</div></td><td class="expect"><code>{"enabled":true,"worker_backend":"cuga",…}</code></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="d1"></td><td><input class="note" data-k="nd1" placeholder="…"></td></tr>
+      <tr><td class="step">2</td><td><b>Seam rejects unauthenticated</b><div class="cmd">curl -s -X POST http://localhost:8100/invoke -H 'content-type: application/json' -d '{}'</div></td><td class="expect"><code>"bad or missing X-Gateway-Token"</code> (401)</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="d2"></td><td><input class="note" data-k="nd2" placeholder="…"></td></tr>
+      <tr><td class="step">3</td><td><b>Seam runs a pre-built agent (web NOW)</b> — the <code>/invoke</code> call from B·5.</td><td class="expect"><code>{"ok":true,"answer":"…"}</code> with a real number</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="d3"></td><td><input class="note" data-k="nd3" placeholder="…"></td></tr>
+      <tr><td class="step">4</td><td><b>CugaRuntime worker + MCP tools</b> — the answer used a tool (not hallucinated); latency &gt; a plain LLM call.</td><td class="expect">real tool-backed answer (e.g. live price/geo)</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="d4"></td><td><input class="note" data-k="nd4" placeholder="…"></td></tr>
+      <tr><td class="step">5</td><td><b>Registry serves cuga_* tools</b><div class="cmd">curl -s http://localhost:8001/applications | python3 -m json.tool | grep cuga</div></td><td class="expect">lists <code>cuga_finance</code>, <code>cuga_geo</code>, … </td><td class="c"><span class="pill p-new">fresh</span></td><td class="c"><input type="checkbox" data-k="d5"></td><td><input class="note" data-k="nd5" placeholder="…"></td></tr>
+      <tr><td class="step">6</td><td><b>Store persists across restart</b> — arm a flow, restart CUGA, then:<div class="cmd">curl -s http://localhost:8100/api/events/subscriptions</div></td><td class="expect">the subscription is still listed (<code>.events.db</code> file exists)</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="d6"></td><td><input class="note" data-k="nd6" placeholder="…"></td></tr>
+      <tr><td class="step">7</td><td><b>Offline test suite</b><div class="cmd">.venv/bin/python -m pytest tests/events/test_events_core.py tests/events/test_events_dimensions.py tests/events/test_events_studio_api.py -q</div></td><td class="expect"><b>39 passed</b></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="d7"></td><td><input class="note" data-k="nd7" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- E: PHASE 2 -->
+<section id="e">
+  <h2><span class="n">E</span> Phase 2 — concierge · AP · channels · creds · identity · Studio</h2>
+  <table>
+    <thead><tr><th>#</th><th>Check</th><th>Expected</th><th class="c">seen</th><th class="c">☐</th><th style="width:16%">Notes</th></tr></thead>
+    <tbody>
+      <tr><td class="step">1</td><td><b>AP reachable</b><div class="cmd">curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8081/api/v1/flags</div></td><td class="expect"><b>200</b></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e1"></td><td><input class="note" data-k="ne1" placeholder="…"></td></tr>
+      <tr><td class="step">2</td><td><b>AP worker healthy (not crash-looping)</b><div class="cmd">podman exec activepieces sh -c "npx pm2 list" | grep worker</div></td><td class="expect">worker <b>online</b>, restarts ≈ 0</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e2"></td><td><input class="note" data-k="ne2" placeholder="…"></td></tr>
+      <tr><td class="step">3</td><td><b>Router sees pre-built agents</b> (list_capabilities)<div class="cmd">curl -s -X POST "http://localhost:8100/api/concierge?dry_run=1" -H 'content-type: application/json' -d '{"text":"hi"}'</div></td><td class="expect">plan JSON returns (no error)</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e3"></td><td><input class="note" data-k="ne3" placeholder="…"></td></tr>
+      <tr><td class="step">4</td><td><b>Answer-now</b> (live route)<div class="cmd">curl -s -X POST http://localhost:8100/api/concierge -H 'content-type: application/json' -H 'x-user-id: admin' -d '{"text":"what is the current price of bitcoin?"}'</div></td><td class="expect">reply with a price → routed to pricebot</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e4"></td><td><input class="note" data-k="ne4" placeholder="…"></td></tr>
+      <tr><td class="step">5</td><td><b>Classifier — NOW / CRON / POLL / PUSH</b> (dry-run). Try each utterance and check <code>decision.mode</code>:<div class="cmd">for t in "capital of Japan?" "every day at 8am send me a brief" "watch btc every 2 min, ping on a move" "when a file lands in Box, email me"; do curl -s -X POST "http://localhost:8100/api/concierge?dry_run=1" -H 'content-type: application/json' -d "{\"text\":\"$t\"}" | python3 -c "import sys,json;print(json.load(sys.stdin)['decision']['mode'])"; done</div></td><td class="expect">prints <code>NOW · CRON · POLL · PUSH</code></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e5"></td><td><input class="note" data-k="ne5" placeholder="…"></td></tr>
+      <tr><td class="step">6</td><td><b>Create + dedup</b> — arm a CRON via concierge; ask again identically.</td><td class="expect">first = "created"; second = "REUSING … nothing new"</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e6"></td><td><input class="note" data-k="ne6" placeholder="…"></td></tr>
+      <tr><td class="step">7</td><td><b>Decline</b><div class="cmd">curl -s -X POST http://localhost:8100/api/concierge -H 'content-type: application/json' -H 'x-user-id: admin' -d '{"text":"book me a flight to Tokyo"}'</div></td><td class="expect">politely declines → "ask a builder"</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e7"></td><td><input class="note" data-k="ne7" placeholder="…"></td></tr>
+      <tr><td class="step">8</td><td><b>Inbound channel flow valid</b> — Telegram arm from C·2; check the flow in AP.</td><td class="expect">status ENABLED, valid=True, steps: trigger → http → telegram send</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e8"></td><td><input class="note" data-k="ne8" placeholder="…"></td></tr>
+      <tr><td class="step">9</td><td><b>Scheduled flow delivers</b> — the poll from C·5 has a send step to your chat.</td><td class="expect">flow step_2 = telegram send(chat_id, {{step_1.body.answer}})</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e9"></td><td><input class="note" data-k="ne9" placeholder="…"></td></tr>
+      <tr><td class="step">10</td><td><b>Credentials — connection lands in AP</b><div class="cmd">curl -s http://localhost:8100/api/events/connections -H 'x-user-id: admin'</div></td><td class="expect">lists your telegram connection</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e10"></td><td><input class="note" data-k="ne10" placeholder="…"></td></tr>
+      <tr><td class="step">11</td><td><b>Identity / profile</b><div class="cmd">curl -s http://localhost:8100/api/events/me -H 'x-user-id: admin'</div></td><td class="expect">your user, roles, linked channels, connections</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e11"></td><td><input class="note" data-k="ne11" placeholder="…"></td></tr>
+      <tr><td class="step">12</td><td><b>Permissions</b> — a restricted agent (<code>market_briefer</code>, access=builder/admin) is <b>marked not-usable</b> for a plain user (shown, but flagged).<div class="cmd">for u in bob admin; do echo -n "$u: "; curl -s http://localhost:8100/api/events/agents -H "x-user-id: $u" | python3 -c "import sys,json;a={x['name']:x for x in json.load(sys.stdin)['agents']};print('market_briefer can_use=',a['market_briefer']['can_use'])"; done</div></td><td class="expect"><code>bob: can_use=False</code> · <code>admin: can_use=True</code></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e12"></td><td><input class="note" data-k="ne12" placeholder="…"></td></tr>
+      <tr><td class="step">13</td><td><b>Studio loads &amp; shows real state</b> — open <code>http://localhost:8100/studio</code> (hard-refresh).</td><td class="expect">Agents tab = 8 agents; Flows = your subs; Channels/Integrations show live status</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e13"></td><td><input class="note" data-k="ne13" placeholder="…"></td></tr>
+      <tr><td class="step">14</td><td><b>Live e2e harness</b> (the whole router, scripted)<div class="cmd">EVENTS_SERVER_URL=http://localhost:8100 \
+GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-) \
+.venv/bin/python tests/events/live_server_e2e_check.py</div></td><td class="expect"><b>6/6 checks passed</b></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e14"></td><td><input class="note" data-k="ne14" placeholder="…"></td></tr>
+    </tbody>
+  </table>
+</section>
+
+<!-- DONE -->
+<section id="done">
+  <h2><span class="n">✓</span> Definition of done — Phases 1 &amp; 2</h2>
+  <p class="lead">You're good on P1 &amp; P2 when all of the below hold:</p>
+  <ul class="tight">
+    <li><b>Phase 1:</b> server up behind <code>EVENTS_ENABLED</code>; <code>/invoke</code> auths &amp; runs a pre-built CUGA agent with real MCP tools; store persists; offline suite green (39).</li>
+    <li><b>Phase 2:</b> AP up + worker healthy; concierge does answer-now / create / dedup / decline; classifier hits NOW·CRON·POLL·PUSH; a <b>Telegram round-trip</b> works (inbound reply <em>and</em> a scheduled delivery); credentials land in AP; identity/permissions resolve; Studio shows real state; live e2e 6/6.</li>
+  </ul>
+  <div class="note-b"><b>Not in P1/P2 (don't block on these):</b> Discord/Slack live round-trips, PUSH live (GitHub/Box/Gmail), OAuth connect live, multi-user isolation live, and the NL→flow benchmark — those are <b>Run/MVP</b> items on the <a class="link" href="index.html">Board</a>.</div>
+</section>
+
+</div>
+
+<div class="toolbar">
+  <span class="prog" id="prog"></span>
+  <button onclick="exportN()">⬇ Export notes</button>
+  <button onclick="if(confirm('Clear your ticks & notes on this device?')){localStorage.removeItem(STORE);location.reload()}">Reset</button>
+  <button onclick="window.print()">🖨 Print / PDF</button>
+</div>
+
+<script>
+const STORE='cuga_verify_v1';
+const load=()=>{try{return JSON.parse(localStorage.getItem(STORE)||'{}')}catch(e){return{}}};
+const save=s=>localStorage.setItem(STORE,JSON.stringify(s));
+function prog(){const b=[...document.querySelectorAll('input[type=checkbox][data-k]')];
+  const n=b.filter(x=>x.checked).length;document.getElementById('prog').textContent=`${n} / ${b.length} checks done`;}
+document.addEventListener('DOMContentLoaded',()=>{
+  const s=load();
+  document.querySelectorAll('[data-k]').forEach(el=>{
+    const k=el.dataset.k;
+    if(el.type==='checkbox'){if(k in s)el.checked=!!s[k];el.addEventListener('change',()=>{const st=load();st[k]=el.checked;save(st);prog();});}
+    else{if(k in s)el.value=s[k];el.addEventListener('input',()=>{const st=load();st[k]=el.value;save(st);});}
+  });
+  document.querySelectorAll('.cmd').forEach(el=>{const b=document.createElement('button');b.className='cp';b.textContent='copy';
+    b.onclick=()=>{const t=el.innerText.replace(/\s*copy\s*$/,'');navigator.clipboard.writeText(t).then(()=>{b.textContent='✓';setTimeout(()=>b.textContent='copy',900);});};el.appendChild(b);});
+  prog();
+});
+function exportN(){const blob=new Blob([JSON.stringify(load(),null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='phase12_verify_notes.json';a.click();}
+</script>
+</body>
+</html>
