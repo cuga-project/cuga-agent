@@ -281,6 +281,10 @@ interface KnowledgeConfigValues {
   enabled?: boolean;
   agent_level_enabled?: boolean;
   session_level_enabled?: boolean;
+  // Citations toggle — numbered source markers ([1]) with clickable
+  // snippets in answers. Agent-level default; per-session override
+  // lives in the session settings API, not this config.
+  citations_enabled?: boolean;
   rag_profile?: string;
   embedding_provider?: string;
   embedding_model?: string;
@@ -512,6 +516,7 @@ export default function KnowledgePanel({
   const knowledgeEnabled = knowledgeConfig?.enabled ?? true;
   const agentLevelEnabled = knowledgeEnabled && (knowledgeConfig?.agent_level_enabled ?? true);
   const sessionLevelEnabled = knowledgeEnabled && (knowledgeConfig?.session_level_enabled ?? true);
+  const citationsEnabled = knowledgeEnabled && (knowledgeConfig?.citations_enabled ?? true);
 
   // Documents tab state
   const [documents, setDocuments] = useState<KnowledgeDocument[]>([]);
@@ -2515,6 +2520,40 @@ export default function KnowledgePanel({
                                   labelB="On"
                                   toggled={knowledgeConfig.session_level_enabled ?? true}
                                   onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, session_level_enabled: checked })}
+                                  size="sm"
+                                />
+                              </Stack>
+                            </Stack>
+                          </Tile>
+
+                          {/* Citations card */}
+                          <Tile
+                            style={{
+                              borderLeft: citationsEnabled
+                                ? "3px solid var(--cds-support-success)"
+                                : "3px solid var(--cds-border-subtle)",
+                              transition: "border-color 0.15s ease",
+                            }}
+                          >
+                            <Stack gap={3}>
+                              <Stack orientation="horizontal" gap={4} style={{ alignItems: "center", justifyContent: "space-between" }}>
+                                <div>
+                                  <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--cds-text-primary)", margin: 0 }}>
+                                    Citations
+                                  </p>
+                                  <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: "0.125rem 0 0 0" }}>
+                                    Number knowledge sources in answers ([1]) with clickable snippets
+                                  </p>
+                                </div>
+                                <Toggle
+                                  id="knowledge-citations-enabled"
+                                  labelText="Citations"
+                                  hideLabel
+                                  labelA="Off"
+                                  labelB="On"
+                                  disabled={!knowledgeEnabled}
+                                  toggled={knowledgeConfig.citations_enabled ?? true}
+                                  onToggle={(checked: boolean) => onKnowledgeConfigChange({ ...knowledgeConfig, citations_enabled: checked })}
                                   size="sm"
                                 />
                               </Stack>

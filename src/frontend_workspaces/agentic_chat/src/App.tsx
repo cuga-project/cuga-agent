@@ -68,6 +68,7 @@ export function App() {
   const [knowledgeEnabled, setKnowledgeEnabled] = useState<boolean | null>(null);
   const [agentKnowledgeEnabled, setAgentKnowledgeEnabled] = useState<boolean | null>(null);
   const [sessionKnowledgeEnabled, setSessionKnowledgeEnabled] = useState<boolean | null>(null);
+  const [citationsEnabled, setCitationsEnabled] = useState<boolean | null>(null);
   const [agentLabel, setAgentLabel] = useState("this agent");
   const [sessionDocsVersion, setSessionDocsVersion] = useState(0);
   const [knowledgeDocCount, setKnowledgeDocCount] = useState(0);
@@ -106,6 +107,7 @@ export function App() {
           setKnowledgeEnabled(data.knowledge_enabled ?? false);
           setAgentKnowledgeEnabled(data.agent_level_knowledge_enabled ?? false);
           setSessionKnowledgeEnabled(data.session_level_knowledge_enabled ?? false);
+          setCitationsEnabled(data.citations_enabled ?? true);
           api.setKnowledgeAgentId(agentId);
           const wfr = data.workspace_filesystem_root;
           if (typeof wfr === "string" && wfr.trim()) {
@@ -293,6 +295,7 @@ export function App() {
               knowledgeEnabled={knowledgeEnabled}
               agentKnowledgeEnabled={agentKnowledgeEnabled}
               sessionKnowledgeEnabled={sessionKnowledgeEnabled}
+              citationsEnabled={citationsEnabled}
               agentLabel={agentLabel}
             />
           )}

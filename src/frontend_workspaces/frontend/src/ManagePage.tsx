@@ -124,6 +124,7 @@ export interface AgentConfig {
     enabled?: boolean;
     agent_level_enabled?: boolean;
     session_level_enabled?: boolean;
+    citations_enabled?: boolean;
     rag_profile?: string;
     embedding_provider?: string;
     embedding_model?: string;
@@ -173,6 +174,7 @@ const DEFAULT_KNOWLEDGE_CONFIG: NonNullable<AgentConfig["knowledge"]> = {
   enabled: false,
   agent_level_enabled: true,
   session_level_enabled: true,
+  citations_enabled: true,
   rag_profile: "standard",
   embedding_provider: "huggingface",
   embedding_model: "",

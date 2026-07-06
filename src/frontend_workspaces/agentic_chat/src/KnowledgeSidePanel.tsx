@@ -34,6 +34,10 @@ interface KnowledgeSidePanelProps {
   knowledgeEnabled?: boolean | null;
   agentKnowledgeEnabled?: boolean | null;
   sessionKnowledgeEnabled?: boolean | null;
+  // Agent-level citations flag from agent context. When explicitly false
+  // the per-session citations toggle is hidden (the master switch lives
+  // in Manage → Knowledge → Settings). null/undefined = treat as on.
+  citationsEnabled?: boolean | null;
   agentLabel?: string;
 }
 
@@ -57,6 +61,7 @@ export function KnowledgeSidePanel({
   knowledgeEnabled = true,
   agentKnowledgeEnabled = true,
   sessionKnowledgeEnabled = true,
+  citationsEnabled = true,
   agentLabel,
 }: KnowledgeSidePanelProps) {
   const [dragover, setDragover] = useState(false);
@@ -100,6 +105,42 @@ export function KnowledgeSidePanel({
   const effectiveThreadId = sessionScopeEnabled ? threadId : "";
   const conversationReady = sessionScopeEnabled && Boolean(effectiveThreadId);
   const disabledAgentLabel = agentLabel || "this agent";
+
+  // Per-session citations override. ``null`` = no override stored, follow
+  // the agent-level default (on). Loaded from the session settings API on
+  // mount / thread change; written back optimistically on toggle.
+  const [sessionCitations, setSessionCitations] = useState<boolean | null>(null);
+  useEffect(() => {
+    setSessionCitations(null); // reset when switching conversations
+    if (!threadId) return;
+    let cancelled = false;
+    api
+      .getSessionKnowledgeSettings(threadId)
+      .then((r) => {
+        if (cancelled) return;
+        const v = r.overrides?.citations_enabled;
+        setSessionCitations(typeof v === "boolean" ? v : null);
+      })
+      .catch(() => {
+        // No stored override (or transient failure) — follow agent default.
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [threadId]);
+
+  const handleSessionCitationsChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (!threadId) return;
+    const next = e.target.checked;
+    const prev = sessionCitations;
+    setSessionCitations(next); // optimistic
+    try {
+      await api.patchSessionKnowledgeSettings(threadId, { citations_enabled: next });
+    } catch (err) {
+      console.error("Failed to update session citations setting:", err);
+      setSessionCitations(prev); // revert on failure
+    }
+  };
 
   const {
     documents: sessionDocs,
@@ -252,6 +293,23 @@ export function KnowledgeSidePanel({
           <div className="knowledge-section">
             <div className="knowledge-section-title">This Conversation</div>
             <div className="knowledge-section-subtitle">Only available in this chat session</div>
+            {citationsEnabled !== false && (
+              <div className="knowledge-session-citations">
+                <div className="knowledge-session-citations-info">
+                  <span className="knowledge-session-citations-label">Citations for this chat</span>
+                  <span className="knowledge-session-citations-help">Show numbered sources under answers</span>
+                </div>
+                <label className="knowledge-mini-switch" title="Citations for this chat">
+                  <input
+                    type="checkbox"
+                    checked={sessionCitations ?? true}
+                    onChange={handleSessionCitationsChange}
+                    disabled={!conversationReady}
+                  />
+                  <span className="knowledge-mini-switch-track" />
+                </label>
+              </div>
+            )}
             {sessionDocs.length === 0 ? (
               <div className="knowledge-empty">No session documents</div>
             ) : (
