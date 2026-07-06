@@ -27,6 +27,7 @@ import { customSendMessage as customSendMessageImpl, stopCugaAgent } from './cus
 import { customLoadHistory } from './customLoadHistory';
 import { initAgentProfile, getResponseUserProfile } from './carbonChatHelpers';
 import { SlashCommandDropdown } from './SlashCommandDropdown';
+import { findShadowRoots } from './composerTextarea';
 import './CarbonChat.css';
 
 // Reset thread ID when conversation restarts
@@ -294,39 +295,9 @@ const CarbonChat = ({
     currentThreadId = threadId ?? null;
   }, [threadId]);
 
-  const resolveChatDomRoots = useCallback(() => {
-    const directCandidates = [
-      chatElementRef.current,
-      document.querySelector("cds-custom-aichat-react"),
-      document.querySelector("cds-custom-aichat-custom-element"),
-      document.querySelector("cds-aichat-react"),
-      document.querySelector("cds-aichat-custom-element"),
-    ].filter(Boolean) as Array<HTMLElement & { shadowRoot?: ShadowRoot | null }>;
-
-    const roots: ShadowRoot[] = [];
-    for (const candidate of directCandidates) {
-      const candidateShadow = candidate.shadowRoot;
-      if (candidateShadow && !roots.includes(candidateShadow)) {
-        roots.push(candidateShadow);
-      }
-
-      const nestedContainers = candidateShadow
-        ? Array.from(
-            candidateShadow.querySelectorAll(
-              "cds-custom-aichat-container, cds-aichat-container",
-            ),
-          ) as Array<HTMLElement & { shadowRoot?: ShadowRoot | null }>
-        : [];
-
-      for (const nestedContainer of nestedContainers) {
-        if (nestedContainer.shadowRoot && !roots.includes(nestedContainer.shadowRoot)) {
-          roots.push(nestedContainer.shadowRoot);
-        }
-      }
-    }
-
-    return roots;
-  }, []);
+  // Shared shadow-DOM walk (same candidate selectors + nested-container
+  // traversal as the slash-command composer lookup) — see composerTextarea.ts.
+  const resolveChatDomRoots = useCallback(() => findShadowRoots(chatElementRef.current), []);
 
   const refreshMessageAttachmentSnapshots = useCallback(
     async (targetThreadId?: string | null) => {
