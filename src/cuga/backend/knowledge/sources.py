@@ -17,13 +17,15 @@ ago. Display numbers ([1], [2]) are a per-message concern — assigned by
 from __future__ import annotations
 
 import hashlib
+import logging
 import re
 import threading
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
-from loguru import logger
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -65,8 +67,13 @@ def _content_key(scope: str, filename: str, page: int | None, text: str) -> str:
 
 
 class SourceLedger:
-    """Per-thread registry of retrieved chunks. Thread-safe: retrieval runs
-    on worker threads while resolution runs on the event loop."""
+    """Per-thread registry of retrieved chunks.
+
+    Thread-safe: retrieval runs on worker threads while resolution runs on
+    the event loop.  cited-marking is lock-protected via ``mark_cited``; use
+    that method from external code rather than setting ``record.cited``
+    directly.
+    """
 
     def __init__(self, max_records: int = 500):
         self._by_key: OrderedDict[str, SourceRecord] = OrderedDict()
@@ -109,6 +116,13 @@ class SourceLedger:
     def get(self, cite_id: str) -> SourceRecord | None:
         return self._by_cite_id.get(cite_id.lower())
 
+    def mark_cited(self, cite_id: str) -> None:
+        """Set cited=True for cite_id under the ledger lock."""
+        with self._lock:
+            record = self._by_cite_id.get(cite_id.lower())
+            if record is not None:
+                record.cited = True
+
     def restore(self, snapshot: dict[str, Any]) -> None:
         """Re-insert a persisted snapshot (restart rehydration). Keeps the
         original cite_id and bumps the counter past it so future ids never
@@ -124,6 +138,10 @@ class SourceLedger:
             snapshot.get("snippet", "") or "",
         )
         with self._lock:
+            # Bump the counter regardless of duplicate status so future
+            # register() calls never collide with ids already in the persisted
+            # conversation.
+            self._counter = max(self._counter, int(m.group(1)))
             if key in self._by_key or cite_id in self._by_cite_id:
                 return
             record = SourceRecord(
@@ -140,7 +158,7 @@ class SourceLedger:
             )
             self._by_key[key] = record
             self._by_cite_id[cite_id] = record
-            self._counter = max(self._counter, int(m.group(1)))
+            self._evict_if_needed()
 
     def _evict_if_needed(self) -> None:
         # Called under self._lock. Evict oldest uncited first; cited records
@@ -185,6 +203,10 @@ def get_ledger(thread_id: str, create: bool = True) -> SourceLedger | None:
         if not create:
             return None
         ledger = SourceLedger()
+        # Publish to registry before rehydration so concurrent callers can
+        # locate the ledger.  Accepted tradeoff: a concurrent caller may
+        # briefly see an un-rehydrated ledger, and a failed rehydrator is not
+        # retried.
         _ledgers[thread_id] = ledger
         while len(_ledgers) > _MAX_THREADS:
             _ledgers.popitem(last=False)
@@ -192,7 +214,7 @@ def get_ledger(thread_id: str, create: bool = True) -> SourceLedger | None:
         try:
             _rehydrator(thread_id, ledger)
         except Exception:
-            logger.exception("source-ledger rehydration failed for thread {}", thread_id)
+            logger.exception("source-ledger rehydration failed for thread %s", thread_id)
     return ledger
 
 
@@ -208,11 +230,15 @@ def _reset_all_ledgers_for_tests() -> None:
 
 # --- citation resolution ------------------------------------------------------
 
-# [s1] or [s1, s4] — case-insensitive. Requires the s-prefix so plain
-# bracketed numbers/text ("[1]", "[note]") never match.
-_MARKER_RE = re.compile(r"\[\s*([sS]\d+(?:\s*,\s*[sS]\d+)*)\s*\]")
+# [s1] or [s1, s4] or [s1 s4] — case-insensitive. Requires the s-prefix so
+# plain bracketed numbers/text ("[1]", "[note]") never match.
+_MARKER_RE = re.compile(r"\[\s*([sS]\d+(?:[\s,]+[sS]\d+)*)\s*\]")
 # Segments the answer so markers inside code are never rewritten.
-_CODE_RE = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)")
+# Handles: fenced blocks (``` or ~~~, terminated or unterminated/truncated),
+# double-backtick inline spans, and single-backtick inline spans.
+_CODE_RE = re.compile(
+    r"(```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$|``[^`\n](?:[^`\n]|`[^`\n])*``|`[^`\n]*`)"
+)
 
 
 def has_citation_markers(text: str) -> bool:
@@ -226,7 +252,12 @@ def resolve_citations(
 
     - Display numbers are assigned in order of first appearance.
     - Ids missing from the ledger (hallucinated, or evicted) are stripped.
-    - Code fences / inline code are left byte-identical.
+    - Code fences (``` or ~~~, including unterminated/truncated ones),
+      double-backtick inline spans, and single-backtick inline spans are
+      left byte-identical.
+    - Unknown markers are warned once per ``resolve_citations`` call.
+    - Whitespace-separated id lists (``[s1 s3]``) are treated identically
+      to comma-separated ones.
     Returns ``(display_text, sources_snapshots)``.
     """
     if not text or not has_citation_markers(text):
@@ -234,18 +265,23 @@ def resolve_citations(
 
     numbers: dict[str, int] = {}          # cite_id -> display n
     ordered: list[SourceRecord] = []
+    warned: set[str] = set()
 
-    def _sub(match: re.Match) -> str:
+    def _sub(match: re.Match[str]) -> str:
         out = []
-        for raw_id in match.group(1).split(","):
+        for raw_id in re.split(r"[\s,]+", match.group(1)):
             cite_id = raw_id.strip().lower()
+            if not cite_id:
+                continue
             record = ledger.get(cite_id) if ledger is not None else None
             if record is None:
-                logger.warning("citation marker [{}] not in ledger — stripped", cite_id)
+                if cite_id not in warned:
+                    logger.warning("citation marker [%s] not in ledger — stripped", cite_id)
+                    warned.add(cite_id)
                 continue
             if cite_id not in numbers:
                 numbers[cite_id] = len(numbers) + 1
-                record.cited = True
+                ledger.mark_cited(cite_id)
                 ordered.append(record)
             out.append(f"[{numbers[cite_id]}]")
         return "".join(out)

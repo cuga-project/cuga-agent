@@ -82,3 +82,31 @@ def test_none_ledger_strips_all_markers():
     text, sources = resolve_citations("orphan [s1]", None)
     assert text == "orphan "
     assert sources == []
+
+
+# --- fix 2: code-fence guard extended ----------------------------------------
+
+def test_unterminated_fence_protects_marker():
+    """Truncated LLM output: unterminated ``` fence — [s2] inside must survive."""
+    raw = "intro [s1]\n```py\nprint(arr[s2])\n# never closed"
+    text, sources = resolve_citations(raw, _ledger_with())
+    assert "arr[s2]" in text          # protected — not resolved
+    assert text.startswith("intro [1]")
+    assert len(sources) == 1
+
+
+def test_double_backtick_inline_protects_marker():
+    """Double-backtick inline span — [s2] inside must survive."""
+    raw = "``x[s2]`` inline [s1]"
+    text, sources = resolve_citations(raw, _ledger_with())
+    assert "x[s2]" in text            # protected
+    assert "[1]" in text              # [s1] resolved
+    assert len(sources) == 1
+
+
+# --- fix 9: whitespace separator in marker list ------------------------------
+
+def test_space_separated_marker_list():
+    text, sources = resolve_citations("x [s1 s3].", _ledger_with())
+    assert text == "x [1][2]."
+    assert len(sources) == 2

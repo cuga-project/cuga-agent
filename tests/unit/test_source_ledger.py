@@ -71,3 +71,40 @@ def test_thread_registry_isolated_and_droppable():
 
 def test_get_ledger_without_create_returns_none_on_miss():
     assert get_ledger("nope", create=False) is None
+
+
+# --- restore tests -----------------------------------------------------------
+
+def _snapshot(cite_id="s5", filename="f.pdf", page=1, scope="agent",
+              snippet="text", query="q", **kwargs):
+    return {"cite_id": cite_id, "filename": filename, "page": page,
+            "scope": scope, "snippet": snippet, "query": query, **kwargs}
+
+
+def test_restore_then_register_continues_numbering():
+    ledger = SourceLedger()
+    ledger.restore(_snapshot(cite_id="s5"))
+    assert ledger.get("s5") is not None
+    assert ledger.get("s5").cited is True
+    # next new content should get s6
+    next_id = ledger.register(_chunk(text="brand new content"), query="q")
+    assert next_id == "s6"
+
+
+def test_restore_duplicate_is_noop_but_still_bumps_counter():
+    """Regression for fix 1: duplicate key on restore must still advance counter."""
+    ledger = SourceLedger()
+    snap_a = _snapshot(cite_id="s2", snippet="shared content")
+    snap_b = _snapshot(cite_id="s57", snippet="shared content")  # same key, different id
+    ledger.restore(snap_a)
+    ledger.restore(snap_b)  # duplicate key -> early return, but counter should reach 57
+    assert len(ledger) == 1
+    next_id = ledger.register(_chunk(text="something totally new"), query="q")
+    assert next_id == "s58"
+
+
+def test_restore_malformed_cite_id_ignored():
+    ledger = SourceLedger()
+    ledger.restore(_snapshot(cite_id="x9"))   # wrong prefix
+    ledger.restore(_snapshot(cite_id=""))     # empty
+    assert len(ledger) == 0
