@@ -1,11 +1,11 @@
 # DESIGN — event-driven concierge on CUGA (the goal)
 
-**Status: goal doc — Phase 1 & 2 are BUILT; the router model (decisions 0005–0007) shipped;
-channel-inbound + PUSH + delivery are now wired (Telegram round-trip live-verified, Discord/Slack
-wired-not-yet-tested).** This is the consolidated design; some phrasing below (e.g. `provision_agent`,
-"Phase 3" labels for now-wired legs) predates the router — see PHASE_1_2_ACCOMPLISHMENTS.md +
-decisions 0005–0007 for the current truth. It supersedes the scattered planning in
-`~/explorations/event-agent-ap/refactor/` (kept there for history).
+**Status: the architecture doc.** Everything here is built and verified — channels (web/Telegram +
+direct Slack/Discord), integrations on AP (Gmail/Box/GitHub), and all trigger modes
+(NOW/CRON/POLL/PUSH/webhook). For the live status table see [README.md](README.md); for the model of
+record see the ADRs in [decisions/](decisions/) (0005 the router, 0007 identity, 0008 direct
+backends). This doc is the durable "why it's shaped this way"; [KNOWN_GAPS.md](KNOWN_GAPS.md) has the
+deferred items.
 
 Build target: an **event-driven agent platform** on CUGA's FastAPI server — a **concierge**
 turns natural language into **worker agents** + **Activepieces (AP) flows**; AP owns every
@@ -15,7 +15,7 @@ connection, trigger, credential, and delivery.
 
 ## 1. Principles (the non-negotiables)
 1. **Reuse CUGA, don't duplicate** — agent CRUD, tools/MCP config, secrets, the `/stream`
-   runtime, and `thread_id`/memory are all reused (see [REUSE_MAP.md](REUSE_MAP.md)).
+   runtime, and `thread_id`/memory are all reused (see [ARCHITECTURE.md](ARCHITECTURE.md)).
 2. **AP owns the event plane** — connections (channels + integrations), triggers, delivery,
    integration credentials, run history. CUGA has none of this today (by design).
 3. **Additive + opt-in = non-breaking** — everything behind `settings.events.enabled`
@@ -40,14 +40,21 @@ connection, trigger, credential, and delivery.
   the set of `source → skill → sink` utterances every leg of which is wired.
 
 ## 3. Architecture
+
+![Architecture](architecture.png)
+
+*Channels reach CUGA directly (Slack/Discord) or via AP (Telegram); integrations always go through
+Activepieces; every trigger converges on `/invoke`. Source: [architecture.mmd](architecture.mmd).
+The detailed component view:*
+
 ```
               ┌─────────────────── CUGA FastAPI server (opt-in: settings.events.enabled) ──────────────────┐
   web chat ──►│  /stream (existing, untouched)      ➕ POST /invoke   (AP seam; normalized envelope)        │
   Telegram ──►│  /api/manage/* (reuse: agent CRUD)  ➕ POST /api/concierge (NL → flow; reuses SSE)          │
   (via AP)    │  /api/secrets/* (reuse: encrypted)                                                          │
               │                                                                                             │
-              │         CONCIERGE (a CUGA agent + host-bound meta-tools; never answers)                     │
-              │           list_capabilities · provision_agent · run_now · create_subscription               │
+              │         CONCIERGE (a runtime ROUTER over pre-built agents; never answers directly)          │
+              │           list_capabilities · answer_now · find_or_create_flow · decline                    │
               │                         │                         │                                          │
               │                         ▼ (port)                  ▼ (REST)                                   │
               │              ┌──────────────────────┐   ┌───────────────────┐                               │
@@ -213,58 +220,12 @@ stronger model if it's flaky at chaining tools (workers can stay cheap).
 - **CUGA-side creds** (LLM keys, MCP tokens, `X-Gateway-Token`) → CUGA **secrets** (Fernet at
   rest / Vault). Configs reference them by `db://` / `vault://`. **Nothing plaintext in config.**
 
-## 11. Build phases — 4 verifiable slices
-Each phase ends with a **runnable deliverable** and an explicit **what you can verify**. Every
-phase carries `trace_id` + dry-run and lands its own tests, so nothing is "done" without proof.
-
-### Phase 1 — The agent seam (the whole NOW story; no AP needed)
-**Deliverable:** `AgentRuntime` port + **both adapters** (`CugaAgentRuntime` with
-`get_or_build_agent_graph` · `LangGraphReactRuntime`) · `POST /invoke` · `POST /api/concierge`
-(reuse-or-create + NOW only) · the 7 `cuga-*` MCP auto-registration · `trace_id` + `dry_run`.
-**You can verify:**
-- `curl /invoke … agent=geobot` → a real answer (both backends run an arbitrary `agent_id`).
-- In web chat: *"bitcoin price now?"* → creates/reuses **pricebot** → live number; *"capital of
-  Japan?"* → *"and its population?"* → **memory holds**; two topics → two agents, repeat → reuse.
-- All event-agent-ap **NOW / follow-up / create-new** examples (weather, arXiv, wiki, geo, price…).
-- `dry_run=1` returns a decision without side effects.
-**Tests:** `unit` (port, MCP registry) · `dryrun` (27-utterance eval, NOW subset) · `e2e_local`
-NOW dimensions (1–4, 10).
-
-### Phase 2 — Timer watchers via AP (CRON + POLL)
-**Deliverable:** AP engine client · `create_subscription` · flow builders (cron / poll /
-run-once) · subscription index · AP→`/invoke` callback · delivery (AP send-step) · a basic
-**Flows** view. Lands **2 of the 3 headline watchers** (only need clock + MCP + a channel sink).
-**You can verify:**
-- *"every 1 min send me arXiv papers on mixture-of-experts"* → **arXiv watcher (CRON)** fires,
-  delivers to Telegram/capture-sink; AP run history + `/api/runs` show it.
-- *"watch BTC every 1 min, ping me on any move"* → **stock watcher (POLL)**; a no-change tick
-  delivers nothing (emit-on-change proven).
-- Flows view lists armed subscriptions with run history.
-**Tests:** `e2e_local` CRON + POLL (matrix #5, #6) · dry-run flow JSON diffs.
-
-### Phase 3 — Integrations & PUSH + channels inbound (the resume watcher + live creds)
-**Deliverable:** connect integrations via AP (**Box · Gmail · GitHub**) · PUSH flow builder with
-**router branches** · channels inbound (**Telegram · Discord** → `/invoke`) · **Integrations** +
-**Channels** views. Lands **the 3rd watcher** and the two-way channel story.
-**You can verify:**
-- **Resume watcher:** `e2e_local` (sim Box `new_file` with real `test_resumes/` → MATCH → Gmail
-  capture; decoy → SKIP, no send) **and** `e2e_live` (real Box upload → real Gmail).
-- **GitHub PR reviewer:** real PR on a test repo → RISKY/OK comment.
-- **Two-way Telegram & Discord:** real message in → real reply out.
-- Integrations/Channels views show live connection status.
-**Tests:** `e2e_local` + `e2e_live` PUSH + channel-inbound (matrix #7, #11, #12).
-
-### Phase 4 — Parity + Studio + full green
-**Deliverable:** the **complete** event-agent-ap example catalog works · **Examples** view
-(click-to-load) · multi-channel fan-out · Studio polish · the **full real e2e suite green** ·
-the events README verified.
-**You can verify:**
-- Every catalog example runs from the Studio.
-- `pytest -m "unit or dryrun or e2e_local"` green; `RUN_LIVE=1 pytest -m e2e_live` green
-  (Box/Gmail/GitHub/Telegram/Discord).
-- Walk Channels · Integrations · Flows · Examples end to end.
-
-*(I pause for your review at each phase boundary.)*
+## 11. Build status
+All of it is built and verified — the agent seam (`/invoke` + both runtimes), the timer watchers
+(CRON/POLL via AP), integrations & PUSH (Box/Gmail/GitHub), channels inbound (Telegram via AP +
+direct Slack/Discord), delivery (AP send-step + direct-channel), and the Studio. The live
+per-connector status table is in [README.md](README.md); the test coverage matrix and the exact
+runnable checks are in [TESTING.md](TESTING.md); deferred items are in [KNOWN_GAPS.md](KNOWN_GAPS.md).
 
 ## 12. Testability, tracing & the acceptance test
 The system is testable **by construction**; this section makes that explicit (Principle 7).
@@ -305,13 +266,12 @@ Grep one `trace_id` → the whole life of a request across CUGA **and** AP.
 
 **Acceptance test (the eval)** — the **27 conformance utterances → expected outcome**
 (`{mode, agent action, source, sink, tool sequence}`), run in **dry-run** so it's fast and
-side-effect-free. This is both the **definition of done for the concierge** and the **model
-swap harness** (§7): change the model, rerun, compare pass-rate. See
-[EXAMPLES_CONFORMANCE.md](EXAMPLES_CONFORMANCE.md).
+side-effect-free — the **model swap harness** (§7): change the model, rerun, compare pass-rate.
+The eval oracle lives in `classify.py` and is exercised by the offline suite.
 
 **Real e2e tests (not mocks).** Beyond dry-run, a full suite runs the watchers against **live
-MCP servers + real AP + real triggers** (resume/stock/arXiv), with deliveries captured on a
-real HTTP sink. Tiers + fixtures in [E2E_TEST_PLAN.md](E2E_TEST_PLAN.md).
+MCP servers + real AP + real triggers**, with deliveries captured on a real HTTP sink. The
+coverage matrix and the exact runnable checks are in [TESTING.md](TESTING.md).
 
 ## 13. Scope & parity with event-agent-ap (must-work checklist)
 The port must make **all** of event-agent-ap's use cases work, not just the resume watcher.
@@ -332,7 +292,7 @@ Grounded in an inventory of that repo:
   | **arXiv/papers** | CRON | papers · cuga-knowledge | schedule (e.g. weekdays 9am) | Telegram |
   | **Resume** | PUSH | resume_judge · box tools+mcp-text | Box `new_file` (folder) | Gmail/Telegram (router on MATCH) |
 - **Cross-cutting:** reuse-first routing · per-thread memory · web chat + Telegram · fan-out ·
-  run history. These map onto [EXAMPLES_CONFORMANCE.md](EXAMPLES_CONFORMANCE.md) (27 utterances).
+  run history — all covered by the offline + live suites ([TESTING.md](TESTING.md)).
 
 ## 14. UI changes — CUGA Studio (additive) — ✅ BUILT
 CUGA serves a React frontend (catch-all route). We **add** views behind the events flag; the
@@ -344,7 +304,8 @@ The UI is **dumb**: config + visibility only, all decisions server-side. Full de
 |---|---|---|---|
 | **Concierge** | NL chat → reuse/create + arm; **Preview** toggle = dry-run plan | `POST /api/concierge` (+`?dry_run=1`) | ✅ |
 | **Channels** (converse-with) | web · telegram · discord · slack — real status (token present?) | `GET /api/events/channels` | ✅ |
-| **Integrations** (watch/act-on) | gmail · box · github · slack — real AP-connection status, **CUGA-hosted Connect** (`/api/events/connect/*`) | `GET /api/events/integrations` | ✅ (token path live vs real AP; OAuth built, degrades) |
+| **Integrations** (watch/act-on) | gmail · box · github — real connection status (AP connection or direct token), **CUGA-hosted Connect/Reconnect** (`/api/events/connect/*`) | `GET /api/events/integrations` | ✅ |
+| **Agents** (build) | the worker fleet + **Add/Edit** an agent (skill · tools · connectors · access) | `GET`/`POST`/`PUT /api/events/agents` | ✅ |
 | **Flows** | armed subscriptions (NOW/CRON/PUSH/POLL badges) + backend + delivery | `GET /api/events/subscriptions` | ✅ |
 | **Examples** | click-to-load catalog (event-agent-ap set) → loads into the Concierge tab | `GET /api/events/examples` | ✅ |
 | **Agents** | the pre-built worker fleet + tools/channels/integrations/access | `GET /api/events/agents` | ✅ |
@@ -353,11 +314,7 @@ Descriptors/catalog are server-side (`connectors.py`, `catalog.py`) so the UI ca
 what the backend supports.
 
 ## 15. Open items
-- Confirm exact `config_store.save_config` / `load_config` signatures for dynamic worker `agent_id`s
-  (the review shows they accept `agent_id`; validate multi-tenant keys).
-- `get_or_build_agent_graph` cache eviction policy + concurrency (LRU + per-agent build lock).
-- AP piece coverage per integration (e.g. Box = New File trigger + Custom API Call only; reads
-  stay in the worker). Verify per integration before promising a flow.
-
-See [EXAMPLES_CONFORMANCE.md](EXAMPLES_CONFORMANCE.md) for the design tested against box_qa +
-the resume watcher + a spread of channel/integration utterances.
+The current deferred list lives in [KNOWN_GAPS.md](KNOWN_GAPS.md) (the reviewer's list). Durable
+architectural follow-ups: `get_or_build_agent_graph` cache eviction + concurrency (LRU + per-agent
+build lock); AP piece coverage per integration (verify the trigger/action shapes before promising a
+new flow); unifying the two flow-builder paths (`flows.py` dry-run vs `ap_engine.py` live REST).

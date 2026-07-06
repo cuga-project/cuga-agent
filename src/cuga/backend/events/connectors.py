@@ -11,8 +11,12 @@ Two views of one ``connector`` idea (DESIGN §2):
 Status is derived from **real state**, never hardcoded "connected":
   - channels  → presence of the bot token in env (the thing that actually enables inbound/outbound).
   - integrations → an AP **connection** whose externalId names the app (AP owns creds, §10).
-So what the UI shows is exactly what the backend can do right now. Phase-3 capabilities
-(inbound routing, OAuth connect) are labelled ``planned`` honestly rather than faked.
+So what the UI shows is exactly what the backend can do right now.
+
+``live`` = wired end-to-end and verified. Channels deliver two-way today: web (built-in),
+Telegram (AP webhook), Slack + Discord (DIRECT backends — Events API / Gateway, see ADR-0008).
+Integrations watch/act through AP (OAuth/token connection + a piece trigger). ``outlook`` is the
+one connector still genuinely planned.
 """
 
 from __future__ import annotations
@@ -21,29 +25,29 @@ import os
 
 # --- descriptors ---------------------------------------------------------------
 # ``env`` = the env var whose presence means "this channel can send/receive".
-# ``live`` = wired end-to-end today (Phase 1/2). ``planned`` marks Phase-3 legs so the UI
-# can show them without pretending they work.
+# ``live`` = wired end-to-end and verified. ``backend`` names how a channel talks to the outside
+# world: direct (CUGA owns the socket) vs AP (Activepieces piece). See delivery.channel_backend.
 CHANNELS = [
-    {"name": "web", "label": "Web chat", "env": None, "live": True,
+    {"name": "web", "label": "Web chat", "env": None, "live": True, "backend": "direct",
      "note": "the built-in /chat + /api/concierge surface — always on"},
     {"name": "telegram", "label": "Telegram", "env": "TELEGRAM_BOT_TOKEN", "live": True,
-     "note": "outbound delivery live; two-way inbound routing is Phase 3"},
+     "backend": "ap", "note": "two-way via the AP Telegram piece (webhook)"},
     {"name": "discord", "label": "Discord", "env": "DISCORD_BOT_TOKEN", "live": True,
-     "note": "outbound delivery live; two-way inbound routing is Phase 3"},
-    {"name": "slack", "label": "Slack", "env": "SLACK_BOT_TOKEN", "live": False,
-     "note": "planned — AP Slack piece"},
+     "backend": "direct", "note": "two-way via the direct Gateway WebSocket bot (instant)"},
+    {"name": "slack", "label": "Slack", "env": "SLACK_BOT_TOKEN", "live": True,
+     "backend": "direct", "note": "two-way via the direct Events API (signed) + chat.postMessage"},
 ]
 
 # ``app`` = the AP piece / substring we match a connection's externalId against.
 # ``auth`` = how a connection is created: ``oauth`` (authorized in AP's connect UI) vs
 # ``token`` (a PAT/secret that can be created via the API).
 INTEGRATIONS = [
-    {"name": "gmail", "label": "Gmail", "app": "gmail", "auth": "oauth", "live": False,
-     "note": "connect in Activepieces; PUSH (new-email) triggers are Phase 3"},
-    {"name": "box", "label": "Box", "app": "box", "auth": "oauth", "live": False,
-     "note": "connect in Activepieces; New-File (resume watcher) trigger is Phase 3"},
-    {"name": "github", "label": "GitHub", "app": "github", "auth": "token", "live": False,
-     "note": "PAT connection via API; New-PR trigger is Phase 3"},
+    {"name": "gmail", "label": "Gmail", "app": "gmail", "auth": "oauth", "live": True,
+     "note": "AP OAuth connection + new-email trigger (source) / send-email (sink)"},
+    {"name": "box", "label": "Box", "app": "box", "auth": "oauth", "live": True,
+     "note": "AP OAuth (new-file resume watcher); direct-poll opt-in via EVENTS_BOX_BACKEND=direct"},
+    {"name": "github", "label": "GitHub", "app": "github", "auth": "token", "live": True,
+     "note": "AP PAT connection + new-PR trigger (pr_reviewer)"},
     {"name": "outlook", "label": "Outlook", "app": "microsoft-outlook", "auth": "oauth",
      "live": False, "note": "planned — M365 / Graph"},
 ]
@@ -60,7 +64,7 @@ def channels_status() -> list[dict]:
         out.append({"name": c["name"], "label": c["label"], "kind": "channel",
                     "direction": "converse", "status": status,
                     "configured_via": c["env"] or "built-in", "live": c["live"],
-                    "note": c["note"]})
+                    "backend": c.get("backend", "ap"), "note": c["note"]})
     return out
 
 
@@ -90,6 +94,6 @@ def integrations_status(connections: list[dict] | None, *, ap_configured: bool,
             status = "not_connected"
         out.append({"name": i["name"], "label": i["label"], "kind": "integration",
                     "direction": "watch/act", "auth": i["auth"], "status": status,
-                    "live": i["live"], "note": i["note"],
+                    "connected": status == "connected", "live": i["live"], "note": i["note"],
                     "connect_url": ap_connect_url})
     return out

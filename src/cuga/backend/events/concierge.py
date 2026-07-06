@@ -192,8 +192,9 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             dedup_key = f"{agent}|{source or 'time'}|{cadence}|{sink}|{_owner_scope(spec, p)}"
             existing = store.find_by_dedup_key(dedup_key)
             if existing:
-                return (f"REUSING existing flow {existing.id} ({existing.mode}) for {agent} "
-                        f"→ {sink}. Nothing new created.")
+                nm = f"\"{existing.flow_name}\" " if getattr(existing, "flow_name", "") else ""
+                return (f"REUSING existing flow {nm}({existing.mode}) for {agent} → {sink} "
+                        f"(subscription {existing.id}). Nothing new created.")
             origin = _origin.get()
             if kind == "push":
                 if not source:
@@ -202,33 +203,38 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 _own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
                              if i.get("app") == source), "per-user")
                 push_conn = credentials.connection_external_id(source, _own, p)
+                flow_name = f"push-{source}-{agent}"
                 try:
                     grain = getattr(engine, "project_grain", "tenant")
                     ap_flow_id = await engine.create_push_flow(
                         source=source, event=event or "new_file", agent=agent,
                         thread_id=p.thread(origin), prompt=prompt,
                         project_name=p.ap_project_name(grain), scope=p.scope,
-                        connection=push_conn)
+                        connection=push_conn, name=flow_name)
                 except Exception as e:  # noqa: BLE001
                     return f"error: couldn't arm push flow ({e})."
                 sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode="PUSH",
                                    target_agent=agent, tenant=p.scope, backend=spec.backend,
                                    source_type="integration", source_connector=source,
                                    ap_flow_id=ap_flow_id, deliver_to=[sink],
-                                   thread_id=p.thread(origin), prompt=prompt, dedup_key=dedup_key)
+                                   thread_id=p.thread(origin), prompt=prompt, dedup_key=dedup_key,
+                                   flow_name=flow_name)
                 store.upsert(sub)
                 log.info("concierge armed push agent=%s src=%s flow=%s", agent, source, ap_flow_id)
-                return f"ARMED push ({source}/{event or 'new_file'}) for {agent} → {sink} (id {sub.id})."
+                return (f"ARMED push ({source}/{event or 'new_file'}) for {agent} → {sink}. "
+                        f"Flow name: \"{flow_name}\" (subscription {sub.id}).")
             if kind not in ("cron", "poll"):
                 return "error: kind must be cron, poll, or push."
             run_prompt = prompt + ("" if kind == "cron" else
                                    " Only report if it changed since last time; else say nothing changed.")
             origin = _origin.get()
             interval = (every_minutes * 60) if every_minutes else None
+            cadence_tag = cron.replace(" ", "_") if cron else (f"{every_minutes}m" if every_minutes else kind)
+            flow_name = f"ea:{kind}-{agent}-{cadence_tag}-{uuid.uuid4().hex[:4]}"
             try:
                 grain = getattr(engine, "project_grain", "tenant")
                 ap_flow_id = await engine.create_schedule_flow(
-                    name=f"ea:{agent}-{uuid.uuid4().hex[:6]}", agent=agent,
+                    name=flow_name, agent=agent,
                     thread_id=p.thread(origin), prompt=run_prompt, cron=cron,
                     interval_seconds=interval, deliver=True,
                     project_name=p.ap_project_name(grain), scope=p.scope,
@@ -242,10 +248,11 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                                target_agent=agent, tenant=p.scope, backend=spec.backend,
                                source_type="time", source_connector="cron", ap_flow_id=ap_flow_id,
                                deliver_to=[sink], thread_id=p.thread(origin), prompt=run_prompt,
-                               dedup_key=dedup_key)
+                               dedup_key=dedup_key, flow_name=flow_name)
             store.upsert(sub)
             log.info("concierge armed %s agent=%s flow=%s tenant=%s", kind, agent, ap_flow_id, p.scope)
-            return f"ARMED {kind} for {agent} → {sink} (AP flow {ap_flow_id}, id {sub.id})."
+            return (f"ARMED {kind} for {agent} → {sink}. "
+                    f"Flow name: \"{flow_name}\" (subscription {sub.id}).")
 
         tools.append(find_or_create_flow)
 

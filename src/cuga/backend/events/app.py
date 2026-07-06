@@ -11,6 +11,7 @@ dependency; the dependency-light core doesn't import this module.
 
 from __future__ import annotations
 
+import logging
 import os
 
 from fastapi import Request
@@ -20,6 +21,8 @@ from . import concierge_plan
 from .envelope import Envelope
 from .principal import resolve as resolve_principal
 from .trace import Trace, new_trace_id
+
+_elog = logging.getLogger("cuga.events")
 
 
 def register_events_routes(app, *, runtime, store=None, concierge=None, engine=None,
@@ -32,6 +35,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
     exactly what the backend can do, no client-side business logic.
     """
     token = gateway_token if gateway_token is not None else os.environ.get("GATEWAY_TOKEN", "")
+    if not token:
+        # /invoke runs agents on a caller-supplied scope; with no token the seam is open. Fine for
+        # local dev, dangerous in a shared deploy — warn loudly rather than fail silently.
+        _elog.warning("events: GATEWAY_TOKEN is empty — /invoke and the poll/webhook seams are "
+                      "UNAUTHENTICATED. Set GATEWAY_TOKEN before exposing this server.")
 
     # let OAuth app creds come from the admin store (UI) before .env
     if oauth_store is not None:
@@ -46,6 +54,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         tr = Trace(body.get("trace_id") or new_trace_id())
         if token and request.headers.get("X-Gateway-Token") != token:
             return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
+        from .envelope import validate as _validate_envelope
+        problems = _validate_envelope(body)
+        if problems:
+            tr.error("error", reason="invalid envelope", problems=problems)
+            return JSONResponse({"ok": False, "error": "invalid envelope: " + "; ".join(problems)}, 400)
         env = Envelope.from_dict(body)
         env.trace_id = tr.id
         # isolation scope: from the AP body (env.scope, set when the flow was armed); else, for a
@@ -227,14 +240,26 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             except Exception as e:  # noqa: BLE001 — AP down → report 'unknown', never 500
                 conns = None
                 Trace(new_trace_id()).error("integrations", err=str(e))
-        return {"integrations": integrations_status(
-            conns, ap_configured=engine is not None, ap_connect_url=connect_url)}
+        rows = integrations_status(conns, ap_configured=engine is not None,
+                                   ap_connect_url=connect_url)
+        # DIRECT-backend override: Box in direct-poll mode connects via a token, not an AP
+        # connection, so AP-derived status would wrongly read 'not_connected'. Reflect the token.
+        if os.environ.get("EVENTS_BOX_BACKEND") == "direct":
+            from . import box_direct
+            has_tok = bool(box_direct.token())
+            for r in rows:
+                if r["name"] == "box":
+                    r["status"] = "connected" if has_tok else "not_connected"
+                    r["connected"] = has_tok
+                    r["backend"] = "direct"
+        return {"integrations": rows}
 
     @app.get("/api/events/agents")
     async def events_agents(request: Request):
         """The pre-built worker fleet (geobot, pricebot, …) the concierge routes among. Dumb read:
         the UI renders the specs; visibility follows per-agent access (perms.can_use)."""
         from . import perms
+        from .catalog import as_list as _examples
         p = _principal_from(request.query_params.get("scope"), request.headers)
         roles = ["user"]
         if users is not None:
@@ -243,6 +268,10 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 roles = u.roles
         agent_scope = "/".join(p.scope.split("/")[:2]) or p.scope
         specs = runtime.list_agents(scope=agent_scope) if runtime is not None else []
+        # per-agent example utterances (from the catalog) so the UI can show "try this" per agent
+        by_agent: dict[str, list[str]] = {}
+        for ex in _examples():
+            by_agent.setdefault(ex.get("agent", ""), []).append(ex.get("utterance", ""))
         agents = []
         for s in specs:
             usable = perms.can_use(s, roles=roles, user_id=p.user_id)
@@ -253,9 +282,94 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                            "integrations": list(getattr(s, "integrations", []) or []),
                            "access": list(getattr(s, "access", []) or []),
                            "restricted": bool(getattr(s, "access", []) or []),
+                           "examples": [u for u in by_agent.get(s.name, []) if u][:3],
                            "can_use": usable})
         agents.sort(key=lambda a: a["name"])
         return {"scope": agent_scope, "agents": agents}
+
+    @app.get("/api/events/mcp-servers")
+    async def events_mcp_servers():
+        """The tool servers a builder can attach to an agent (name + one-line hint). Drives the
+        Agent-editor form so the UI never hardcodes the catalog."""
+        from . import mcp_catalog
+        return {"servers": [{"name": n, "hint": mcp_catalog.HINTS.get(n, "")}
+                            for n in mcp_catalog.known_names()]}
+
+    def _agent_spec_from_body(body: dict):
+        """Validate an agent-editor payload → AgentSpec (or a (None, error) pair)."""
+        from .runtime import AgentSpec
+        from . import mcp_catalog
+        name = (body.get("name") or "").strip()
+        if not name or any(ch.isspace() for ch in name):
+            return None, "name is required and must not contain whitespace"
+        backend = (body.get("backend") or "cuga").strip()
+        if backend not in ("react", "cuga"):
+            return None, "backend must be 'react' or 'cuga'"
+        known = set(mcp_catalog.known_names())
+        mcp = [str(m) for m in (body.get("mcp_servers") or [])]
+        bad = [m for m in mcp if m not in known]
+        if bad:
+            return None, f"unknown mcp_servers: {bad} (known: {sorted(known)})"
+        channels = [str(c) for c in (body.get("channels") or [])]
+        bad_ch = [c for c in channels if c not in ("web", "telegram", "slack", "discord")]
+        if bad_ch:
+            return None, f"unknown channels: {bad_ch}"
+        integrations = []
+        for it in (body.get("integrations") or []):
+            app_name = (it.get("app") or "").strip() if isinstance(it, dict) else ""
+            own = (it.get("ownership") or "per-user") if isinstance(it, dict) else "per-user"
+            if not app_name:
+                return None, "each integration needs an 'app'"
+            if own not in ("shared", "per-user"):
+                return None, "integration ownership must be 'shared' or 'per-user'"
+            integrations.append({"app": app_name, "ownership": own})
+        access = [str(a) for a in (body.get("access") or [])]
+        return AgentSpec(name=name, prompt=body.get("prompt", "") or "", backend=backend,
+                         mcp_servers=mcp, channels=channels, integrations=integrations,
+                         access=access), None
+
+    @app.post("/api/events/agents")
+    async def create_agent(request: Request):
+        """Builder: create (or upsert) a worker agent from the Studio. Builder/admin only.
+        Agents are TENANT-shared (stored at agent_scope), so the whole tenant's users can route to
+        the new agent immediately. Idempotent by name (re-POST = update)."""
+        body = await _safe_json(request)
+        p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
+        if not _is_builder(p):
+            return JSONResponse({"ok": False, "error": "builder or admin only"}, 403)
+        spec, err = _agent_spec_from_body(body)
+        if err:
+            return JSONResponse({"ok": False, "error": err}, 400)
+        agent_scope = "/".join(p.scope.split("/")[:2]) or p.scope
+        try:
+            runtime.upsert_agent(spec, scope=agent_scope)
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": str(e)}, 500)
+        Trace(new_trace_id())("agent.upsert", name=spec.name, scope=agent_scope, backend=spec.backend)
+        return {"ok": True, "name": spec.name, "scope": agent_scope}
+
+    @app.put("/api/events/agents/{name}")
+    async def update_agent(name: str, request: Request):
+        """Builder: update an existing agent (must already exist). Builder/admin only."""
+        body = await _safe_json(request)
+        body.setdefault("name", name)
+        if (body.get("name") or "").strip() != name:
+            return JSONResponse({"ok": False, "error": "name in body must match the URL"}, 400)
+        p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
+        if not _is_builder(p):
+            return JSONResponse({"ok": False, "error": "builder or admin only"}, 403)
+        agent_scope = "/".join(p.scope.split("/")[:2]) or p.scope
+        if runtime.get_agent(name, scope=agent_scope) is None:
+            return JSONResponse({"ok": False, "error": f"no such agent '{name}'"}, 404)
+        spec, err = _agent_spec_from_body(body)
+        if err:
+            return JSONResponse({"ok": False, "error": err}, 400)
+        try:
+            runtime.upsert_agent(spec, scope=agent_scope)
+        except Exception as e:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": str(e)}, 500)
+        Trace(new_trace_id())("agent.update", name=spec.name, scope=agent_scope)
+        return {"ok": True, "name": spec.name, "scope": agent_scope}
 
     @app.get("/api/events/examples")
     async def events_examples():
@@ -449,10 +563,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         Query: ?agent=<agent> (default incident_triage) · ?deliver_to=<channel> + ?target=<native id>
         (deliver the triage to e.g. a Slack channel) · ?key=<secret> (required iff EVENTS_WEBHOOK_KEY
         is set). No AP — it's just an HTTP endpoint that reuses the /invoke seam."""
+        import hmac as _hmac
         import json as _json
         import httpx
         want = os.environ.get("EVENTS_WEBHOOK_KEY")
-        if want and request.query_params.get("key") != want:
+        if want and not _hmac.compare_digest(request.query_params.get("key") or "", want):
             return JSONResponse({"ok": False, "error": "bad or missing ?key"}, 401)
         payload = await _safe_json(request)
         agent = request.query_params.get("agent") or "incident_triage"
@@ -813,3 +928,10 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return True                 # no user store → open (dev)
         u = users.get(p.user_id, p.tenant_id)
         return bool(u and u.has_role("admin"))
+
+    def _is_builder(p) -> bool:
+        """Builders (and admins) may create/edit agents — that's design-time work (ADR-0005)."""
+        if users is None:
+            return True                 # no user store → open (dev)
+        u = users.get(p.user_id, p.tenant_id)
+        return bool(u and (u.has_role("builder") or u.has_role("admin")))

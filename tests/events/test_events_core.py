@@ -127,10 +127,12 @@ def test_subscription_store():
     sub = subscriptions.Subscription(id="s1", mode="CRON", target_agent="papers",
                                      backend="react", source_type="time", source_connector="cron",
                                      ap_flow_id="f1", deliver_to=["telegram"], thread_id="sub:1",
-                                     prompt="arxiv")
+                                     prompt="arxiv", flow_name="ea:cron-papers-daily-ab12")
     st.upsert(sub)
     got = st.get("s1")
     assert got and got.mode == "CRON" and got.deliver_to == ["telegram"] and got.created_at > 0
+    assert got.flow_name == "ea:cron-papers-daily-ab12"            # the readable AP flow name
+    assert st.as_dicts()[0]["flow_name"] == "ea:cron-papers-daily-ab12"  # surfaced to the UI
     assert len(st.list()) == 1 and st.by_agent("papers")[0].id == "s1"
     st.set_status("s1", "paused")
     assert st.get("s1").status == "paused" and st.list(status="active") == []

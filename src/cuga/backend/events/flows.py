@@ -37,6 +37,21 @@ SOURCE_TRIGGER = {
     "webhook": ("webhook", "catch_webhook"),
 }
 
+# The trigger fields we hand the worker in the /invoke payload, per source — so the agent reasons
+# over real content (an email's subject/body, a PR's title) instead of just a filename. Values are
+# AP mustache refs into the piece's trigger body; a path the piece doesn't emit renders empty
+# (harmless — envelope.worker_input skips empties). Extend when a piece's shape is verified.
+PUSH_PAYLOAD = {
+    "box": {"name": "{{trigger.body.name}}"},
+    "gmail": {"subject": "{{trigger.body.subject}}", "from": "{{trigger.body.from}}",
+              "snippet": "{{trigger.body.snippet}}", "body": "{{trigger.body.body_plain}}"},
+    "github_pr": {"title": "{{trigger.body.title}}", "repo": "{{trigger.body.repository.full_name}}",
+                  "url": "{{trigger.body.html_url}}"},
+    "github_issue": {"title": "{{trigger.body.title}}", "repo": "{{trigger.body.repository.full_name}}",
+                     "url": "{{trigger.body.html_url}}"},
+}
+PUSH_PAYLOAD["github"] = PUSH_PAYLOAD["github_pr"]     # router may name the source just 'github'
+
 # CHANNEL descriptors — the ONLY place channel specifics live, as declarative config (AP owns the
 # execution; CUGA just names the piece + which trigger fields hold the message/sender and which
 # send action + arg names to use). Adding a channel = one row here, no CUGA code.

@@ -400,6 +400,108 @@ def test_setup_guides_connection_status_and_scope():
     assert guides["Gmail"]["connection_scope"] == "user"
 
 
+def test_channels_report_direct_vs_ap_backend():
+    """The channels endpoint tells the UI HOW each channel talks to the world (ADR-0008):
+    Slack/Discord are direct backends, Telegram is AP."""
+    r = _client().get("/api/events/channels")
+    chans = {c["name"]: c for c in r.json()["channels"]}
+    assert chans["slack"]["backend"] == "direct"
+    assert chans["discord"]["backend"] == "direct"
+    assert chans["telegram"]["backend"] == "ap"
+    # all channels are live now — no stale "Phase 3" markers
+    assert all(c["live"] for c in chans.values())
+
+
+class _FakeRuntime:
+    """Minimal AgentRuntime for the agent-CRUD endpoints — a dict-backed store."""
+    def __init__(self):
+        self._store = {}
+
+    def upsert_agent(self, spec, *, scope="default/default"):
+        self._store[(scope, spec.name)] = spec
+        return spec.name
+
+    def get_agent(self, name, *, scope="default/default"):
+        return self._store.get((scope, name))
+
+    def list_agents(self, *, scope="default/default"):
+        return [s for (sc, _), s in self._store.items() if sc == scope]
+
+
+def _agent_client(runtime):
+    app = FastAPI()
+    register_events_routes(app, runtime=runtime, store=None, concierge=None, engine=None)
+    return TestClient(app)
+
+
+def test_mcp_servers_endpoint():
+    r = _agent_client(_FakeRuntime()).get("/api/events/mcp-servers")
+    assert r.status_code == 200
+    names = {s["name"] for s in r.json()["servers"]}
+    assert "cuga-web" in names and "cuga-finance" in names
+
+
+def test_agent_create_list_and_update():
+    rt = _FakeRuntime()
+    c = _agent_client(rt)
+    # create
+    body = {"name": "digestbot", "backend": "cuga", "prompt": "post a digest",
+            "mcp_servers": ["cuga-web"], "channels": ["web", "slack"],
+            "integrations": [{"app": "github", "ownership": "per-user"}], "access": ["builder"]}
+    r = c.post("/api/events/agents", json=body, headers={"x-user-id": "admin"})
+    assert r.status_code == 200 and r.json()["ok"], r.text
+    # it shows up in the list
+    names = {a["name"] for a in c.get("/api/events/agents").json()["agents"]}
+    assert "digestbot" in names
+    # update via PUT
+    body2 = dict(body, prompt="post a BETTER digest")
+    r = c.put("/api/events/agents/digestbot", json=body2, headers={"x-user-id": "admin"})
+    assert r.status_code == 200 and r.json()["ok"], r.text
+    assert rt.get_agent("digestbot", scope="default/default").prompt == "post a BETTER digest"
+
+
+def test_agents_carry_example_utterances():
+    """Each agent row includes up to 3 example utterances (from the catalog) so the Agents tab can
+    render clickable 'Try' chips."""
+    rt = _FakeRuntime()
+    from events.runtime import AgentSpec
+    rt.upsert_agent(AgentSpec(name="pricebot", backend="cuga"), scope="default/default")
+    agents = {a["name"]: a for a in _agent_client(rt).get("/api/events/agents").json()["agents"]}
+    assert "examples" in agents["pricebot"]
+    assert isinstance(agents["pricebot"]["examples"], list)
+    assert len(agents["pricebot"]["examples"]) >= 1        # catalog has pricebot utterances
+
+
+def test_agent_create_validation_rejects_bad_input():
+    c = _agent_client(_FakeRuntime())
+    # unknown mcp server
+    r = c.post("/api/events/agents", json={"name": "x", "mcp_servers": ["not-a-server"]},
+               headers={"x-user-id": "admin"})
+    assert r.status_code == 400
+    # whitespace in name
+    r = c.post("/api/events/agents", json={"name": "bad name"}, headers={"x-user-id": "admin"})
+    assert r.status_code == 400
+    # PUT to a non-existent agent → 404
+    r = c.put("/api/events/agents/ghost", json={"name": "ghost"}, headers={"x-user-id": "admin"})
+    assert r.status_code == 404
+
+
+def test_integrations_box_direct_backend_reports_connected():
+    """With EVENTS_BOX_BACKEND=direct + a token, Box reads 'connected' even though there's no AP
+    connection — the direct-backend override (else the UI would show a live token as disconnected)."""
+    old_be = os.environ.get("EVENTS_BOX_BACKEND")
+    old_tok = os.environ.get("BOX_DEV_TOKEN")
+    os.environ["EVENTS_BOX_BACKEND"] = "direct"
+    os.environ["BOX_DEV_TOKEN"] = "dev-token-xyz"
+    try:
+        rows = {i["name"]: i for i in _client().get("/api/events/integrations").json()["integrations"]}
+        assert rows["box"]["status"] == "connected" and rows["box"]["connected"] is True
+        assert rows["box"]["backend"] == "direct"
+    finally:
+        os.environ.pop("BOX_DEV_TOKEN", None) if old_tok is None else os.environ.__setitem__("BOX_DEV_TOKEN", old_tok)
+        os.environ.pop("EVENTS_BOX_BACKEND", None) if old_be is None else os.environ.__setitem__("EVENTS_BOX_BACKEND", old_be)
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     passed = 0

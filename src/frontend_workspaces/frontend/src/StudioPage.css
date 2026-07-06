@@ -87,6 +87,25 @@
   line-height: 1.4;
 }
 
+/* per-agent example chips (Agents tab) — click to load into the Concierge */
+.studio-example-chip {
+  display: inline-block;
+  margin: 0 6px 6px 0;
+  padding: 3px 10px;
+  font-size: 12px;
+  font-style: italic;
+  color: #0f62fe;
+  background: #edf5ff;
+  border: 1px solid #d0e2ff;
+  border-radius: 14px;
+  cursor: pointer;
+  text-align: left;
+  line-height: 1.35;
+}
+.studio-example-chip:hover {
+  background: #d0e2ff;
+}
+
 /* concierge chat */
 .studio-chat {
   display: flex;

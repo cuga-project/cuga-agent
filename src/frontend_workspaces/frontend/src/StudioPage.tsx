@@ -11,8 +11,14 @@ import {
   Button,
   InlineLoading,
   InlineNotification,
+  Modal,
+  TextInput,
+  TextArea,
+  Select,
+  SelectItem,
+  Checkbox,
 } from "@carbon/react";
-import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot } from "@carbon/icons-react";
+import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot, Add, Edit } from "@carbon/icons-react";
 import * as api from "./api";
 import { CugaHeader } from "./CugaHeader";
 import { ConciergeChat } from "./ConciergeChat";
@@ -67,15 +73,159 @@ function Loader({ loading, error }: { loading: boolean; error: string | null }) 
 }
 
 // ---- tabs --------------------------------------------------------------------
-function AgentsTab({ refresh }: { refresh: number }) {
-  const { data, loading, error } = useEndpoint<any[]>(api.getEventsAgents, (d) => d.agents ?? [], refresh);
+const KNOWN_CHANNELS = ["web", "telegram", "slack", "discord"];
+const KNOWN_INTEGRATIONS = ["gmail", "box", "github", "outlook"];
+// Fallback tool catalog so the picker is NEVER empty (used if /api/events/mcp-servers is
+// unreachable, e.g. an older running server). Enriched with live hints when the fetch succeeds.
+const FALLBACK_MCP = [
+  { name: "cuga-web", hint: "web search / browse / weather / wiki" },
+  { name: "cuga-finance", hint: "stock quote / crypto price" },
+  { name: "cuga-knowledge", hint: "search arXiv (recent papers)" },
+  { name: "cuga-geo", hint: "country capital / population / region" },
+  { name: "cuga-text", hint: "summarize / translate / text utilities" },
+  { name: "cuga-code", hint: "explain / analyze code" },
+  { name: "cuga-local", hint: "local / system operations" },
+];
+
+// The Add/Edit agent form. A builder defines an agent = skill (prompt) + tools (mcp_servers) +
+// the connectors it may use (channels to converse on, integrations to watch/act on). Saving
+// upserts by name (POST for new, PUT for existing).
+function AgentEditor({ open, editing, onClose }: {
+  open: boolean; editing: any | null; onClose: (saved: boolean) => void;
+}) {
+  const isEdit = !!editing;
+  const [name, setName] = useState("");
+  const [backend, setBackend] = useState("cuga");
+  const [prompt, setPrompt] = useState("");
+  const [mcp, setMcp] = useState<string[]>([]);
+  const [channels, setChannels] = useState<string[]>(["web"]);
+  const [integrations, setIntegrations] = useState<Record<string, string>>({});
+  const [access, setAccess] = useState("");
+  const [servers, setServers] = useState<{ name: string; hint: string }[]>([]);
+  const [saving, setSaving] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    setErr(null); setSaving(false);
+    setName(editing?.name ?? "");
+    setBackend(editing?.backend || "cuga");
+    setPrompt(editing?.prompt ?? "");
+    setMcp(editing?.mcp_servers ?? []);
+    setChannels(editing?.channels?.length ? editing.channels : ["web"]);
+    const im: Record<string, string> = {};
+    (editing?.integrations ?? []).forEach((i: any) => { im[i.app] = i.ownership || "per-user"; });
+    setIntegrations(im);
+    setAccess((editing?.access ?? []).join(", "));
+    setServers(FALLBACK_MCP);   // always have a catalog; enrich from the server if reachable
+    api.getEventsMcpServers().then((r) => r.json())
+      .then((d) => { if (d.servers?.length) setServers(d.servers); })
+      .catch(() => {});
+  }, [open, editing]);
+
+  const toggle = (list: string[], set: (v: string[]) => void, v: string) =>
+    set(list.includes(v) ? list.filter((x) => x !== v) : [...list, v]);
+
+  const save = () => {
+    setSaving(true); setErr(null);
+    const spec: api.AgentSpecBody = {
+      name: name.trim(), backend, prompt,
+      mcp_servers: mcp, channels,
+      integrations: Object.entries(integrations).map(([app, ownership]) => ({ app, ownership })),
+      access: access.split(",").map((s) => s.trim()).filter(Boolean),
+    };
+    const req = isEdit ? api.putEventsAgent(editing.name, spec) : api.postEventsAgent(spec);
+    req.then((r) => r.json()).then((res) => {
+      if (res.ok) { onClose(true); }
+      else { setErr(res.error || "save failed"); setSaving(false); }
+    }).catch((e) => { setErr(String(e)); setSaving(false); });
+  };
+
+  return (
+    <Modal open={open} modalHeading={isEdit ? `Edit agent · ${editing?.name}` : "Add agent"}
+      primaryButtonText={saving ? "Saving…" : "Save"} secondaryButtonText="Cancel"
+      primaryButtonDisabled={saving || !name.trim()}
+      onRequestClose={() => onClose(false)} onRequestSubmit={save}>
+      {err && <InlineNotification kind="error" title="Error" subtitle={err} lowContrast hideCloseButton />}
+      <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+        <TextInput id="agent-name" labelText="Name" value={name} disabled={isEdit}
+          placeholder="e.g. support_digest" onChange={(e) => setName(e.target.value)} />
+        <Select id="agent-backend" labelText="Backend" value={backend}
+          onChange={(e) => setBackend(e.target.value)}>
+          <SelectItem value="cuga" text="cuga — full CUGA worker (tools + web)" />
+          <SelectItem value="react" text="react — lightweight ReAct agent" />
+        </Select>
+        <TextArea id="agent-prompt" labelText="Skill (prompt)" rows={4} value={prompt}
+          placeholder="What this agent does and how it should answer."
+          onChange={(e) => setPrompt(e.target.value)} />
+        <div>
+          <div className="cds--label">Tools (MCP servers)</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "2px 16px" }}>
+            {servers.map((s) => (
+              <Checkbox key={s.name} id={`mcp-${s.name}`} checked={mcp.includes(s.name)}
+                labelText={`${s.name}${s.hint ? " — " + s.hint : ""}`}
+                onChange={() => toggle(mcp, setMcp, s.name)} />
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="cds--label">Channels (converse on)</div>
+          <div style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
+            {KNOWN_CHANNELS.map((ch) => (
+              <Checkbox key={ch} id={`ch-${ch}`} labelText={ch} checked={channels.includes(ch)}
+                onChange={() => toggle(channels, setChannels, ch)} />
+            ))}
+          </div>
+        </div>
+        <div>
+          <div className="cds--label">Integrations (watch / act on)</div>
+          {KNOWN_INTEGRATIONS.map((app) => (
+            <div key={app} style={{ display: "flex", alignItems: "center", gap: 12 }}>
+              <Checkbox id={`int-${app}`} labelText={app} checked={app in integrations}
+                onChange={(_: any, { checked }: any) => setIntegrations((prev) => {
+                  const next = { ...prev };
+                  if (checked) next[app] = next[app] || "per-user"; else delete next[app];
+                  return next;
+                })} />
+              {app in integrations && (
+                <Select id={`own-${app}`} labelText="" size="sm" value={integrations[app]}
+                  inline onChange={(e) => setIntegrations((prev) => ({ ...prev, [app]: e.target.value }))}>
+                  <SelectItem value="per-user" text="per-user (each user logs in)" />
+                  <SelectItem value="shared" text="shared (one service account)" />
+                </Select>
+              )}
+            </div>
+          ))}
+        </div>
+        <TextInput id="agent-access" labelText="Access (roles / user-ids, comma-separated · blank = everyone)"
+          value={access} placeholder="e.g. builder, admin" onChange={(e) => setAccess(e.target.value)} />
+      </div>
+    </Modal>
+  );
+}
+
+function AgentsTab({ refresh, onTry }: { refresh: number; onTry: (u: string) => void }) {
+  const [localBump, setLocalBump] = useState(0);
+  const { data, loading, error } = useEndpoint<any[]>(
+    api.getEventsAgents, (d) => d.agents ?? [], refresh + localBump);
+  const [editorOpen, setEditorOpen] = useState(false);
+  const [editing, setEditing] = useState<any | null>(null);
+  const openAdd = () => { setEditing(null); setEditorOpen(true); };
+  const openEdit = (a: any) => { setEditing(a); setEditorOpen(true); };
+  const onClose = (saved: boolean) => { setEditorOpen(false); if (saved) setLocalBump((n) => n + 1); };
   return (
     <div>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <p className="studio-muted" style={{ margin: 0 }}>
+          A builder defines agents (skill + tools + connectors); the concierge routes among them.
+        </p>
+        <Button size="sm" renderIcon={Add} onClick={openAdd}>Add agent</Button>
+      </div>
       <Loader loading={loading} error={error} />
       {!loading && !error && (data?.length ?? 0) === 0 && (
         <InlineNotification kind="info" lowContrast hideCloseButton
           title="No agents yet"
-          subtitle="A builder sets up agents (skill + tools + connectors); the concierge routes among them." />
+          subtitle="Click “Add agent” to define one — a skill (prompt) plus the tools and connectors it may use." />
       )}
       <div className="studio-grid">
         {data?.map((a) => (
@@ -101,9 +251,22 @@ function AgentsTab({ refresh }: { refresh: number }) {
                 </Tag>
               )}
             </div>
+            {(a.examples?.length ?? 0) > 0 && (
+              <div style={{ marginTop: 10 }}>
+                <div className="studio-muted" style={{ fontSize: 12, marginBottom: 4 }}>Try:</div>
+                {a.examples.map((u: string) => (
+                  <button key={u} className="studio-example-chip" title="Load into Concierge"
+                    onClick={() => onTry(u)}>"{u}"</button>
+                ))}
+              </div>
+            )}
+            <div className="studio-card-foot">
+              <Button kind="ghost" size="sm" renderIcon={Edit} onClick={() => openEdit(a)}>Edit</Button>
+            </div>
           </Tile>
         ))}
       </div>
+      <AgentEditor open={editorOpen} editing={editing} onClose={onClose} />
     </div>
   );
 }
@@ -122,7 +285,9 @@ function ChannelsTab({ refresh }: { refresh: number }) {
           <p className="studio-muted">{c.note}</p>
           <div className="studio-card-foot">
             <Tag type="outline" size="sm">converse</Tag>
-            {!c.live && <Tag type="warm-gray" size="sm">Phase 3</Tag>}
+            {c.backend && <Tag type={c.backend === "direct" ? "cyan" : "teal"} size="sm">
+              {c.backend === "direct" ? "direct" : "Activepieces"}</Tag>}
+            <Tag type="blue" size="sm">TENANT — shared bot</Tag>
           </div>
         </Tile>
       ))}
@@ -189,6 +354,18 @@ function SetupTab({ refresh }: { refresh: number }) {
         .then((res) => alert(res.ok ? `${g.label} connected (${ownership}).` : `Failed: ${res.error || "error"}`));
     }
   };
+  // TENANT-level OAuth app registration (client id/secret) — the org-wide credential that must exist
+  // before per-user OAuth connect works. Consolidated here (was a separate Admin panel) so all
+  // credential setup lives in ONE place.
+  const setOAuthApp = (g: any) => {
+    const cid = window.prompt(`${g.label} — OAuth app Client ID:`);
+    if (!cid) return;
+    const sec = window.prompt(`${g.label} — OAuth app Client Secret:`);
+    if (!sec) return;
+    api.postEventsAdminOAuthApp({ app: g.app, client_id: cid, client_secret: sec })
+      .then((r) => r.json())
+      .then((res) => alert(res.ok ? `${g.label} OAuth app saved (tenant).` : `Failed: ${res.error || "error"}`));
+  };
   const pill = (label: string, on: boolean, click?: () => void) => (
     <span onClick={click} style={{ cursor: click ? "pointer" : "default", fontSize: 12, fontWeight: 600,
       padding: "2px 10px", borderRadius: 20, marginRight: 6,
@@ -219,6 +396,10 @@ function SetupTab({ refresh }: { refresh: number }) {
                 <Button kind={g.connected ? "ghost" : "tertiary"} size="sm"
                   renderIcon={g.connect === "oauth" ? Launch : Plug} onClick={() => connect(g)}>
                   {g.connected ? "Reconnect" : "Connect"} {g.label}</Button>
+              )}
+              {g.connect === "oauth" && g.connection_scope === "user" && (
+                <Button kind="ghost" size="sm" renderIcon={Settings} onClick={() => setOAuthApp(g)}>
+                  OAuth app creds (tenant)</Button>
               )}
             </div>
           )}
@@ -269,6 +450,8 @@ function FlowsTab({ refresh }: { refresh: number }) {
               <span className="studio-card-title"><Flow size={18} /> {s.target_agent}</span>
               <Tag type={(MODE_TAG[s.mode] as any) ?? "gray"} size="sm">{s.mode}</Tag>
             </div>
+            {s.flow_name && <p className="studio-muted" style={{ fontSize: 12, margin: "0 0 4px" }}>
+              flow <code>{s.flow_name}</code></p>}
             <p className="studio-muted">{s.prompt || `${s.source_type}/${s.source_connector}`}</p>
             <div className="studio-card-foot">
               <Tag type="outline" size="sm">{s.backend}</Tag>
@@ -343,8 +526,11 @@ function ProfileTab({ refresh }: { refresh: number }) {
         })}
       </div>
       <h4 style={{ margin: "1.5rem 0 0.5rem" }}>My connected integrations</h4>
+      <p className="studio-muted" style={{ fontSize: 13, marginTop: 0 }}>
+        Read-only — this is who you are. To connect or reconnect an app, use the <b>Setup</b> tab.
+      </p>
       {(data?.connections ?? []).length === 0
-        ? <p className="studio-muted">None yet — connect from the Integrations tab.</p>
+        ? <p className="studio-muted">None yet.</p>
         : (data.connections).map((c: any) => (
             <Tag key={c.externalId} type="green" size="sm">{c.externalId}</Tag>))}
     </div>
@@ -363,6 +549,10 @@ function AdminTab({ refresh }: { refresh: number }) {
   return (
     <div>
       <Loader loading={loading} error={error} />
+      <p className="studio-muted" style={{ marginBottom: 12 }}>
+        Users &amp; roles for this tenant. <b>Credentials &amp; app connections</b> (OAuth app client
+        id/secret, tokens, connect/reconnect) all live in the <b>Setup</b> tab — one place.
+      </p>
       <Button kind="tertiary" size="sm" onClick={add} style={{ marginBottom: "1rem" }}>Add user</Button>
       <div className="studio-grid">
         {data?.map((u) => (
@@ -372,40 +562,6 @@ function AdminTab({ refresh }: { refresh: number }) {
               {(u.roles ?? []).map((r: string) => <Tag key={r} type="gray" size="sm">{r}</Tag>)}
             </div>
             <p className="studio-muted">{u.email}</p>
-          </Tile>
-        ))}
-      </div>
-      <OAuthAppsPanel refresh={refresh} />
-    </div>
-  );
-}
-
-function OAuthAppsPanel({ refresh }: { refresh: number }) {
-  const { data, loading, error } = useEndpoint<any[]>(api.getEventsAdminOAuthApps, (d) => d.apps ?? [], refresh);
-  const setApp = (app: string) => {
-    const cid = window.prompt(`${app} — Client ID:`);
-    if (!cid) return;
-    const sec = window.prompt(`${app} — Client Secret:`);
-    if (!sec) return;
-    api.postEventsAdminOAuthApp({ app, client_id: cid, client_secret: sec })
-      .then((r) => r.json()).then((res) => alert(res.ok ? `${app} OAuth app saved.` : `Failed: ${res.error}`));
-  };
-  return (
-    <div style={{ marginTop: "1.5rem" }}>
-      <h4 style={{ margin: "0 0 0.5rem" }}>OAuth apps (client id/secret — no .env editing)</h4>
-      <Loader loading={loading} error={error} />
-      <div className="studio-grid">
-        {data?.map((a) => (
-          <Tile key={a.app} className="studio-card">
-            <div className="studio-card-head">
-              <span className="studio-card-title"><Plug size={18} /> {a.app}</span>
-              <StatusTag status={a.configured ? "connected" : "not_configured"} />
-            </div>
-            <div className="studio-card-foot">
-              <Button kind="tertiary" size="sm" onClick={() => setApp(a.app)}>
-                {a.configured ? "Update" : "Set client id/secret"}
-              </Button>
-            </div>
           </Tile>
         ))}
       </div>
@@ -490,7 +646,7 @@ export function StudioPage() {
           </TabList>
           <TabPanels>
             <TabPanel><ConciergeChat draft={draft} setDraft={setDraft} /></TabPanel>
-            <TabPanel><AgentsTab refresh={refresh} /></TabPanel>
+            <TabPanel><AgentsTab refresh={refresh} onTry={onTry} /></TabPanel>
             <TabPanel><ChannelsTab refresh={refresh} /></TabPanel>
             <TabPanel><IntegrationsTab refresh={refresh} /></TabPanel>
             <TabPanel><SetupTab refresh={refresh} /></TabPanel>

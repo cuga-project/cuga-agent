@@ -13,7 +13,7 @@ against `telegram-bot@0.6.4` (`send_text_message`, `chat_id`, `message`).
 ## What you'll need
 - The Telegram app (phone or desktop).
 - Activepieces running + reachable, with a public HTTPS URL (webhooks need it). See
-  [../CHANNELS_SETUP.md](../CHANNELS_SETUP.md) for the AP + tunnel bring-up (`scripts/ap_up.sh`).
+  [../SETUP.md](../SETUP.md) for the AP + tunnel bring-up (`scripts/ap_up.sh`).
 
 ## Steps
 

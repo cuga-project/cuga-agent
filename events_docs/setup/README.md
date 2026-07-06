@@ -30,7 +30,7 @@ token — no Activepieces) and some via **AP** (AP holds the OAuth token and run
 The default is chosen per connector; override with `EVENTS_<NAME>_BACKEND=direct|ap`. Direct exists
 because AP's OAuth2 connection refuses a pre-obtained token (it insists on doing the code-exchange
 itself) and, for Slack, its app-event trigger silently dropped events. See
-[../CHANNELS_SETUP.md](../CHANNELS_SETUP.md) for the "AP owns it" boundary and the parked Slack bug.
+[../SETUP.md](../SETUP.md) for the "AP owns it" boundary and the parked Slack bug.
 
 ## Before any integration — the two shared prerequisites
 

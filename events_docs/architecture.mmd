@@ -1,0 +1,53 @@
+%% Event-driven agents on CUGA — system architecture.
+%% Channels talk to CUGA DIRECTLY (Slack Events API, Discord Gateway) or via AP (Telegram);
+%% integrations (Gmail/Box/GitHub) always go through Activepieces (OAuth/token + piece trigger + clock).
+%% Every trigger converges on the one /invoke seam (X-Gateway-Token).
+flowchart LR
+  subgraph users[People and apps]
+    web[Web chat]
+    tg[Telegram]
+    sl[Slack]
+    dc[Discord]
+    hook[External system<br/>webhook POST]
+  end
+
+  subgraph ap[Activepieces  — the event engine for integrations + the clock]
+    api[Integration triggers<br/>Gmail new-email · Box new-file · GitHub new-PR]
+    clk[Schedule / poll clock<br/>CRON · POLL]
+    tgp[Telegram piece]
+  end
+
+  subgraph cuga[CUGA FastAPI server  — behind EVENTS_ENABLED]
+    direct[Direct backends<br/>slack_direct · discord_direct · box_direct]
+    invoke[POST /invoke seam<br/>normalized envelope · X-Gateway-Token]
+    concierge[Concierge ROUTER<br/>answer-now · reuse or create flow · decline]
+    runtime[AgentRuntime port<br/>cuga or react workers]
+    deliver[Delivery<br/>direct-channel · AP send-step · capture]
+  end
+
+  mcp[[MCP tool servers<br/>cuga-web/finance/geo/…]]
+
+  web --> invoke
+  sl <--> direct
+  dc <--> direct
+  tg <--> tgp
+  tgp --> invoke
+  hook --> invoke
+  api --> invoke
+  clk --> invoke
+  direct --> invoke
+
+  invoke --> concierge
+  concierge --> runtime
+  runtime <--> mcp
+  runtime --> deliver
+  concierge -. arms flows .-> ap
+  deliver -. direct reply .-> direct
+  deliver -. AP send .-> ap
+
+  classDef apcls fill:#e8f0fe,stroke:#4285f4,color:#111;
+  classDef cugacls fill:#e6f4ea,stroke:#34a853,color:#111;
+  classDef dircls fill:#e0f7fa,stroke:#00acc1,color:#111;
+  class ap,api,clk,tgp apcls;
+  class cuga,invoke,concierge,runtime,deliver cugacls;
+  class direct dircls;

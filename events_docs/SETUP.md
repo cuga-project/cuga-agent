@@ -43,7 +43,7 @@ re-run `ap_up.sh` if cloudflared restarts.
 > any stale `AP_WORKER_TOKEN` and gates on worker health.
 
 ## 3. The `.env` (the credential surface)
-See [CHANNELS_SETUP.md](CHANNELS_SETUP.md) for how to get each. Keys:
+See the per-connector guides in [setup/](setup/) for how to get each. Keys:
 - **LLM:** `WATSONX_APIKEY` / `WATSONX_URL` / `WATSONX_PROJECT_ID` (+ `LLM_PROVIDER`/`LLM_MODEL`).
 - **AP:** `AP_BASE_URL`, `AP_EMAIL`, `AP_PASSWORD`, `EVENTS_AP_PROJECT_GRAIN=shared` (CE).
 - **Events:** `EVENTS_ENABLED=1`, `EVENTS_WORKER_BACKEND=cuga`, `EVENTS_SEED_AGENTS=1`,

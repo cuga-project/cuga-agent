@@ -434,6 +434,39 @@ export async function getEventsAgents(): Promise<Response> {
   return apiFetch("/api/events/agents");
 }
 
+// The tool servers a builder can attach to an agent (drives the Agent editor form).
+export async function getEventsMcpServers(): Promise<Response> {
+  return apiFetch("/api/events/mcp-servers");
+}
+
+export interface AgentSpecBody {
+  name: string;
+  prompt?: string;
+  backend?: string;                 // cuga | react
+  mcp_servers?: string[];
+  channels?: string[];
+  integrations?: { app: string; ownership: string }[];
+  access?: string[];
+}
+
+// Builder: create (or upsert) an agent. Idempotent by name.
+export async function postEventsAgent(spec: AgentSpecBody): Promise<Response> {
+  return apiFetch("/api/events/agents", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(spec),
+  });
+}
+
+// Builder: update an existing agent.
+export async function putEventsAgent(name: string, spec: AgentSpecBody): Promise<Response> {
+  return apiFetch(`/api/events/agents/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(spec),
+  });
+}
+
 export async function getEventsExamples(): Promise<Response> {
   return apiFetch("/api/events/examples");
 }

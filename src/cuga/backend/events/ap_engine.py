@@ -195,7 +195,7 @@ class APEngine:
         if rc.status_code == 402 or "FEATURE_DISABLED" in rc.text:
             # AP plan caps team projects → degrade to the default project with scope-prefixed
             # flow names (still isolated + filterable per tenant at the app layer).
-            self._project_degraded = True
+            self._degraded = True
             self._project_cache[project_name] = self.project_id
             log.warning("AP plan limits projects (%s) — using namespace isolation "
                         "(scope-prefixed flows) in the default project for '%s'",
@@ -377,7 +377,8 @@ class APEngine:
 
     async def create_push_flow(self, *, source: str, event: str, agent: str, thread_id: str,
                                prompt: str, project_name: str | None = None, scope: str = "",
-                               connection: str = "", source_input: dict | None = None) -> str:
+                               connection: str = "", source_input: dict | None = None,
+                               name: str | None = None) -> str:
         """Arm an integration PUSH flow: <source>·<event> ▸ /invoke(agent). Powers the Box resume
         watcher (source='box', event='new_file'). ``connection`` = the integration's AP connection
         externalId (wired as auth on the trigger — REQUIRED for the flow to publish). ``source_input``
@@ -388,16 +389,20 @@ class APEngine:
         async with httpx.AsyncClient(timeout=30) as c:
             hdrs = await self._auth(c)
             pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
-            flow_id = await self._new_flow(c, hdrs, f"push-{source}-{agent}", pid, scope)
+            flow_id = await self._new_flow(c, hdrs, name or f"push-{source}-{agent}", pid, scope)
             tver = await self._piece_version(c, piece)
             hver = await self._piece_version(c, flows.PIECE["http"])
             tinp = dict(source_input or {})
             if connection:                       # wire the integration's connection as trigger auth
                 tinp["auth"] = f"{{{{connections['{connection}']}}}}"
             await self._post_op(c, flow_id, self._piece_trigger_op(piece, trig, tinp, tver), hdrs)
+            # Pass the trigger's meaningful fields into the /invoke payload so the worker has real
+            # content to reason over (not just a filename). Field paths are the AP piece's trigger
+            # body shape; unknown paths render empty (harmless). See flows.PUSH_PAYLOAD.
+            payload = flows.PUSH_PAYLOAD.get(source, {"name": "{{trigger.body.name}}"})
             body = {"agent": agent, "text": prompt, "deliver": True, "scope": scope,
                     "source": {"type": "integration", "name": source, "thread_id": thread_id},
-                    "event": {"kind": event, "payload": {"name": "{{trigger.body.name}}"}}}
+                    "event": {"kind": event, "payload": payload}}
             await self._post_op(c, flow_id, self._http_action(body, hver), hdrs)
             await self._post_op(c, flow_id,
                                 {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)

@@ -37,6 +37,7 @@ class Subscription:
     # all-shared-connector flows and the full user scope when any connector is per-user — so the
     # flow grain follows the credentials (a matching key → reuse instead of a duplicate flow).
     dedup_key: str = ""
+    flow_name: str = ""            # the AP flow's readable display name (e.g. push-gmail-mailbot)
 
 
 class SubscriptionStore:
@@ -66,11 +67,14 @@ class SubscriptionStore:
                  prompt TEXT NOT NULL DEFAULT '',
                  status TEXT NOT NULL DEFAULT 'active',
                  created_at REAL NOT NULL DEFAULT 0,
-                 dedup_key TEXT NOT NULL DEFAULT ''
+                 dedup_key TEXT NOT NULL DEFAULT '',
+                 flow_name TEXT NOT NULL DEFAULT ''
                )""")
         cols = {r[1] for r in self._db.execute("PRAGMA table_info(subscription)").fetchall()}
         if "dedup_key" not in cols:
             self._db.execute("ALTER TABLE subscription ADD COLUMN dedup_key TEXT NOT NULL DEFAULT ''")
+        if "flow_name" not in cols:
+            self._db.execute("ALTER TABLE subscription ADD COLUMN flow_name TEXT NOT NULL DEFAULT ''")
         self._db.commit()
 
     # ---- writes ----------------------------------------------------------
@@ -80,17 +84,18 @@ class SubscriptionStore:
         self._db.execute(
             """INSERT INTO subscription
                  (id,mode,target_agent,tenant,backend,source_type,source_connector,ap_flow_id,
-                  deliver_to,thread_id,prompt,status,created_at,dedup_key)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                  deliver_to,thread_id,prompt,status,created_at,dedup_key,flow_name)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
                ON CONFLICT(id) DO UPDATE SET
                  mode=excluded.mode, target_agent=excluded.target_agent, tenant=excluded.tenant,
                  backend=excluded.backend, source_type=excluded.source_type,
                  source_connector=excluded.source_connector, ap_flow_id=excluded.ap_flow_id,
                  deliver_to=excluded.deliver_to, thread_id=excluded.thread_id,
-                 prompt=excluded.prompt, status=excluded.status, dedup_key=excluded.dedup_key""",
+                 prompt=excluded.prompt, status=excluded.status, dedup_key=excluded.dedup_key,
+                 flow_name=excluded.flow_name""",
             (sub.id, sub.mode, sub.target_agent, sub.tenant, sub.backend, sub.source_type,
              sub.source_connector, sub.ap_flow_id, json.dumps(sub.deliver_to),
-             sub.thread_id, sub.prompt, sub.status, sub.created_at, sub.dedup_key))
+             sub.thread_id, sub.prompt, sub.status, sub.created_at, sub.dedup_key, sub.flow_name))
         self._db.commit()
         return sub
 

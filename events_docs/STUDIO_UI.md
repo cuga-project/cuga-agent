@@ -25,11 +25,11 @@ but shows a "Studio is off" note if reached directly.
 |---|---|---|
 | **Concierge** | `POST /api/concierge` (+ `?dry_run=1` via the **Preview** toggle) | chat; live reply, or the plan JSON in Preview mode |
 | **Channels** | `GET /api/events/channels` | web/telegram/discord/slack + real status (token present?) |
-| **Integrations** | `GET /api/events/integrations` + `/connect/*` | gmail/box/github/slack + real AP-connection status + a **Connect** button: OAuth apps open the login popup, token apps prompt for a token |
+| **Integrations** | `GET /api/events/integrations` + `/connect/*` | gmail/box/github + real status (AP connection **or** a direct-backend token) → a green **Connected** tag with a **Reconnect** button when connected, else **Connect**: OAuth apps open the login popup, token apps prompt for a token |
 | **Flows** | `GET /api/events/subscriptions` | armed watchers with CRON/POLL badges, backend, delivery |
 | **Examples** | `GET /api/events/examples` | click-to-load catalog tagged by **outcome** (answer-now / flow / connect / decline) → drops the utterance into Concierge |
 | **Profile** | `GET /api/events/me` + `/link/*` + `/connect/*` | the user's identity, roles, **linked channels** (Link buttons: Telegram/Discord), and connected integrations |
-| **Agents** | `GET /api/events/agents` | the pre-built worker fleet (geobot/pricebot/…) the concierge routes among + each agent's tools/channels/integrations + per-user access |
+| **Agents** | `GET /api/events/agents` · `POST`/`PUT /api/events/agents` · `GET /api/events/mcp-servers` | the pre-built worker fleet the concierge routes among + each agent's tools/channels/integrations/access. An **Add agent** button + per-card **Edit** open a form (name · backend · skill/prompt · tools · channels · integrations+ownership · access) — builder/admin only; saves upsert the agent |
 | **Admin** | `GET/POST /api/events/admin/users` + `/oauth-apps` | tenant users + roles (add user); **OAuth apps** — enter each provider's client id/secret in the UI (stored server-side, overrides `.env`); arm channel inbound flows |
 
 Status is **derived from real state**, never faked: channels from the presence of the bot token
@@ -49,6 +49,8 @@ GET /api/events/channels      → {channels:[{name,label,status,live,note}]}
 GET /api/events/integrations  → {integrations:[{name,label,auth,status,connect_url,live,note}]}
 GET /api/events/examples      → {examples:[{id,title,utterance,mode,agent,mcp,live,note}]}
 GET /api/events/agents        → {scope, agents:[{name,prompt,backend,mcp_servers,channels,integrations,access,can_use}]}
+POST /api/events/agents       → create/upsert an agent (builder/admin)   ·   PUT /api/events/agents/<name> → update
+GET /api/events/mcp-servers   → {servers:[{name,hint}]}   (drives the agent-editor tool picker)
 GET /api/events/subscriptions → {scope, subscriptions:[…]}   (already existed)
 POST /api/concierge           → live route / ?dry_run=1 preview   (already existed)
 GET  /api/events/connect/<app>          → OAuth: 302 to consent · token: instructions
@@ -83,4 +85,4 @@ to whatever host/port served it — no hardcoded port.
 > (a pnpm monorepo; the script enables pnpm via corepack if missing). **Rebuild after any `.tsx`
 > change**, then restart the server.
 
-See [HOW_TO_TEST.md](HOW_TO_TEST.md) → *Testing the Studio UI* for the click-through.
+See [TESTING.md](TESTING.md) → *Studio UI walkthrough* for the click-through.

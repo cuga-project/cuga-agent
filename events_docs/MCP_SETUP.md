@@ -66,4 +66,4 @@ hyphenated names (`cuga-finance`, from `mcp_catalog`) to them (`app_names=[n.rep
 | Needs registry? | no | **yes** (for tools; the worker still runs without it, toolless) |
 | Reasoning | thin ReAct loop | full CUGA supervisor / policies / knowledge |
 
-See [phase_1_2/TESTING_WALKTHROUGH.md](phase_1_2/TESTING_WALKTHROUGH.md) and [TODO.md](TODO.md).
+See [TESTING.md](TESTING.md) and [TODO.md](TODO.md).

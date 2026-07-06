@@ -5,7 +5,7 @@ in Phase 1 (the agent seam, NOW) and Phase 2 (timer watchers via Activepieces), 
 isolation/statefulness/credentials rewires and the Studio UI. Grounded in the actual code under
 `src/cuga/backend/events/`.
 
-> **➡️ Start here to test:** [TESTING_WALKTHROUGH.md](TESTING_WALKTHROUGH.md) — a narrated
+> **➡️ Start here to test:** [../TESTING.md](../TESTING.md) — a narrated
 > "backend first, then UI" guide: run this → what you'll see → why → which diagram. It's the
 > answer to "I want to know exactly what is going on as I test."
 
