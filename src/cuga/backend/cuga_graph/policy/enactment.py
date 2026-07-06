@@ -898,6 +898,7 @@ Important:
 - Extract all factual information from the original response
 - Map it to the JSON schema structure
 - Preserve all factual information
+- Preserve citation markers like [s3] verbatim and attached to the same claims; never renumber, drop, or invent them.
 - Return valid JSON matching the schema exactly"""
 
                 # Include user input if available
