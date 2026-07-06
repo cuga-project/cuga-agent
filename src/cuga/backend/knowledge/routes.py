@@ -30,6 +30,7 @@ from cuga.backend.knowledge.engine import (
     ReindexBusyError,
     ReindexInProgressError,
 )
+from cuga.backend.knowledge.sources import annotate_envelope_with_citations, citations_enabled_for
 
 logger = logging.getLogger("cuga.knowledge")
 
@@ -356,6 +357,8 @@ async def search(
             fallback_from=fallback_from,
             include_scores=include_scores,
         )
+        if citations_enabled_for(engine._config, identity.thread_id):
+            annotate_envelope_with_citations(env, results, thread_id=identity.thread_id, query=query)
         _emit_canonical_log(
             tid_preview=_tid_preview,
             query_preview=_query_preview,
@@ -416,6 +419,8 @@ async def search(
         fallback_from=None,
         include_scores=include_scores,
     )
+    if citations_enabled_for(engine._config, identity.thread_id):
+        annotate_envelope_with_citations(env, results, thread_id=identity.thread_id, query=query)
     _emit_canonical_log(
         tid_preview=_tid_preview,
         query_preview=_query_preview,

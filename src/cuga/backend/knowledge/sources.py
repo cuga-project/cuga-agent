@@ -297,6 +297,49 @@ def resolve_citations(
     return resolved, sources
 
 
+# --- envelope stamping --------------------------------------------------------
+
+# Rides on retrieval.reading_directive so the LLM sees it at composition time
+# (the system-prompt contract is thousands of tokens upstream by then).
+CITATION_DIRECTIVE = (
+    " CITATIONS: each result carries a cite_id. In your FINAL text answer, "
+    "append [<cite_id>] immediately after every claim taken from that chunk "
+    "(example: 'The total is 4,521 [s2].'). Use ONLY cite_ids you received in "
+    "this conversation; ids from earlier searches this conversation remain "
+    "valid. Never invent ids; never write bare numeric citations like [1]."
+)
+
+
+def annotate_envelope_with_citations(
+    envelope: dict[str, Any],
+    results: list[Any],
+    *,
+    thread_id: str | None,
+    query: str,
+) -> None:
+    """Register results in the thread ledger and stamp ``cite_id`` onto the
+    wire chunks (in place). No-op when thread_id is missing — a search that
+    cannot be correlated to a conversation cannot be cited.
+
+    ``envelope["results"][i]`` must correspond to ``results[i]`` (the
+    invariant of build_retrieval_envelope). ``by_source`` holds the SAME
+    chunk dict objects, so stamping results also stamps the grouped view.
+    """
+    if not thread_id or not results:
+        if not thread_id:
+            logger.debug("knowledge search without thread_id — citations skipped")
+        return
+    ledger = get_ledger(thread_id)
+    if ledger is None:
+        return
+    chunks = envelope.get("results") or []
+    for chunk, result in zip(chunks, results):
+        chunk["cite_id"] = ledger.register(result, query=query)
+    retrieval = envelope.get("retrieval")
+    if isinstance(retrieval, dict) and retrieval.get("reading_directive"):
+        retrieval["reading_directive"] += CITATION_DIRECTIVE
+
+
 # --- enablement ---------------------------------------------------------------
 
 # The server wires this to the session provider at startup (main.py); until then,

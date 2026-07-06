@@ -10,6 +10,7 @@ import re
 from typing import Any
 
 from cuga.backend.knowledge.engine import KnowledgeEngine
+from cuga.backend.knowledge.sources import annotate_envelope_with_citations, citations_enabled_for
 
 
 class KnowledgeClient:
@@ -244,7 +245,7 @@ class KnowledgeClient:
                 limit=limit,
                 score_threshold=score_threshold,
             )
-            return build_retrieval_envelope(
+            envelope = build_retrieval_envelope(
                 results=results,
                 scope_requested=scope_requested,
                 multi_stats=multi_stats,
@@ -254,6 +255,9 @@ class KnowledgeClient:
                 fallback_from=fallback_from,
                 include_scores=True,
             )
+            if citations_enabled_for(self._engine._config, thread_id):
+                annotate_envelope_with_citations(envelope, results, thread_id=thread_id, query=query)
+            return envelope
 
         if scope == "all":
             self._require_scope_enabled("all")
@@ -288,7 +292,7 @@ class KnowledgeClient:
                 )
                 return await _run_multi(scope_requested="all", fallback_from="session")
 
-        return build_retrieval_envelope(
+        envelope = build_retrieval_envelope(
             results=results,
             scope_requested=scope,
             multi_stats=None,
@@ -298,6 +302,9 @@ class KnowledgeClient:
             fallback_from=None,
             include_scores=True,
         )
+        if citations_enabled_for(self._engine._config, thread_id):
+            annotate_envelope_with_citations(envelope, results, thread_id=thread_id, query=query)
+        return envelope
 
     async def ingest(
         self,
