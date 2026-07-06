@@ -40,10 +40,10 @@ at least one tier. Run offline on every change; run live before a release/demo.
 # PREFLIGHT — does every integration actually work, from .env alone? (run first)
 python3 tests/events/preflight.py                   # watsonx·AP·Telegram·Discord·Slack·Box·MCP
 
-# OFFLINE (stdlib) — run on every change
-python3 tests/events/test_events_core.py            # 14/14
-python3 tests/events/test_events_dimensions.py      # 10/10
-.venv-events/bin/python tests/events/test_events_studio_api.py   # 5/5 (fastapi)
+# OFFLINE — run on every change (all in one: `uv run pytest tests/events/ -q` → 46 passed)
+python3 tests/events/test_events_core.py            # 14
+uv run pytest tests/events/test_events_dimensions.py -q    # 23 (delivery-backend + direct-delivery incl.)
+uv run pytest tests/events/test_events_studio_api.py -q    # 9 (Studio endpoints + slack/box direct + poll)
 
 # LIVE (needs the CUGA venv + creds; AP on :8081; registry for MCP)
 .venv/bin/python tests/events/live_cuga_worker_check.py          # cuga executes
@@ -71,10 +71,12 @@ python3 tests/events/test_events_dimensions.py      # 10/10
   `<app>_<tool>` as a Python id → underscore app names).
 
 ## Gaps / not yet
-- **Channel inbound + delivery is now WIRED** (`create_inbound_flow`; scheduled/poll flows append a
-  channel send step) — but **only the Telegram round-trip is fully live-verified**. Discord/Slack are
-  wired from AP piece metadata and **not yet live round-trip-tested**.
-- **PUSH triggers** (Box/GitHub/Gmail) — `create_push_flow` + the Box resume watcher are wired;
+- **Channel inbound + delivery — live round-trip verified: Telegram (AP), Discord (AP), Slack
+  (direct, default)** (2026-07-06). Slack/Box default to a *direct* backend (no AP); direct-channel
+  delivery closes scheduled-flow delivery to a direct channel (no AP send-step). Remaining: an
+  instant *direct* Discord (gateway bot) is not built (Discord stays AP polling for now).
+- **PUSH triggers** (Box/GitHub/Gmail) — Box **direct poll e2e verified**; `create_push_flow` + the
+  Box resume watcher are wired;
   live PUSH e2e **not yet proven** end-to-end.
 - **cuga worker inside the full server** via `/api/concierge` (end-to-end through HTTP) — the
   pieces are verified in isolation; a single scripted server-level e2e is a nice-to-add.

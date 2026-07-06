@@ -13142,6 +13142,113 @@ function IntegrationsTab({
     onClick: () => connect(i)
   }, i.status === "connected" ? "Reconnect" : "Connect")))));
 }
+
+// The connect SETUP GUIDE — per connector: required creds (+ present?), ownership (per-user vs
+// tenant), and the concrete steps. Dumb: it renders the server's guides + drives the connect action.
+function SetupTab({
+  refresh
+}) {
+  const {
+    data,
+    loading,
+    error
+  } = useEndpoint(_api__WEBPACK_IMPORTED_MODULE_4__.getEventsSetupGuides, d => d.guides ?? [], refresh);
+  const [own, setOwn] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)({});
+  const connect = g => {
+    const ownership = own[g.app] || g.ownership_default || (g.ownership || [])[0] || "per_user";
+    if (g.connect === "oauth") {
+      window.open(_api__WEBPACK_IMPORTED_MODULE_4__.eventsConnectUrl(g.app, ownership), "_blank", "noreferrer");
+    } else if (g.connect === "token") {
+      const token = window.prompt(`Paste your ${g.label} token/secret:`);
+      if (token) _api__WEBPACK_IMPORTED_MODULE_4__.postEventsConnectToken(g.app, token, ownership).then(r => r.json()).then(res => alert(res.ok ? `${g.label} connected (${ownership}).` : `Failed: ${res.error || "error"}`));
+    }
+  };
+  const pill = (label, on, click) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+    onClick: click,
+    style: {
+      cursor: click ? "pointer" : "default",
+      fontSize: 12,
+      fontWeight: 600,
+      padding: "2px 10px",
+      borderRadius: 20,
+      marginRight: 6,
+      background: on ? "#0f62fe" : "#e0e0e0",
+      color: on ? "#fff" : "#525252"
+    }
+  }, label);
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(Loader, {
+    loading: loading,
+    error: error
+  }), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    className: "studio-muted",
+    style: {
+      marginBottom: 12
+    }
+  }, "How to connect each channel & integration \u2014 required credentials, where to store them (", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("b", null, "per-user"), " vs ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("b", null, "per-tenant"), "), and the steps."), data?.map(g => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tile, {
+    key: g.app,
+    className: "studio-card",
+    style: {
+      marginBottom: 12
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    className: "studio-card-head"
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+    className: "studio-card-title"
+  }, g.label), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: g.kind === "channel" ? "blue" : "teal",
+    size: "sm"
+  }, g.kind), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: "outline",
+    size: "sm"
+  }, g.wiring))), (g.creds || []).length === 0 ? /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    className: "studio-muted",
+    style: {
+      fontSize: 13
+    }
+  }, "No credentials needed.") : (g.creds || []).map(c => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    key: c.key,
+    style: {
+      fontSize: 13,
+      margin: "3px 0"
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: c.present ? "green" : c.required ? "red" : "gray",
+    size: "sm"
+  }, c.present ? "set" : c.required ? "missing" : "optional"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, c.key), " \u2014 ", c.label, " ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
+    className: "studio-muted"
+  }, "(", c.where, ")"))), (g.ownership || []).length > 0 && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      fontSize: 13,
+      margin: "8px 0 4px"
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("b", null, "Store credential:"), " ", (g.ownership || []).map(o => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement((react__WEBPACK_IMPORTED_MODULE_0___default().Fragment), {
+    key: o
+  }, pill(o === "per_user" ? "per-user" : "per-tenant", (own[g.app] || g.ownership_default) === o, (g.ownership || []).length > 1 ? () => setOwn({
+    ...own,
+    [g.app]: o
+  }) : undefined)))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("ol", {
+    style: {
+      fontSize: 13,
+      margin: "6px 0",
+      paddingLeft: 18
+    }
+  }, (g.steps || []).map((s, i) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("li", {
+    key: i,
+    style: {
+      margin: "3px 0"
+    }
+  }, s))), g.note && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    className: "studio-muted",
+    style: {
+      fontSize: 12.5
+    }
+  }, "\u26A0 ", g.note), (g.connect === "oauth" || g.connect === "token") && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
+    kind: "tertiary",
+    size: "sm",
+    renderIcon: g.connect === "oauth" ? _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Launch : _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Plug,
+    onClick: () => connect(g)
+  }, "Connect ", g.label))));
+}
 function FlowsTab({
   refresh
 }) {
@@ -13483,6 +13590,8 @@ function StudioPage() {
   }, "Channels"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tab, {
     renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Plug
   }, "Integrations"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tab, {
+    renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Settings
+  }, "Setup"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tab, {
     renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Flow
   }, "Flows"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tab, {
     renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Idea
@@ -13498,6 +13607,8 @@ function StudioPage() {
   })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TabPanel, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(ChannelsTab, {
     refresh: refresh
   })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TabPanel, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(IntegrationsTab, {
+    refresh: refresh
+  })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TabPanel, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(SetupTab, {
     refresh: refresh
   })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TabPanel, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(FlowsTab, {
     refresh: refresh
@@ -14075,6 +14186,7 @@ function UnauthorizedPage() {
 /* harmony export */   getEventsExamples: function() { return /* binding */ getEventsExamples; },
 /* harmony export */   getEventsIntegrations: function() { return /* binding */ getEventsIntegrations; },
 /* harmony export */   getEventsMe: function() { return /* binding */ getEventsMe; },
+/* harmony export */   getEventsSetupGuides: function() { return /* binding */ getEventsSetupGuides; },
 /* harmony export */   getEventsStatus: function() { return /* binding */ getEventsStatus; },
 /* harmony export */   getEventsSubscriptions: function() { return /* binding */ getEventsSubscriptions; },
 /* harmony export */   getKnowledgeAccelerator: function() { return /* binding */ getKnowledgeAccelerator; },
@@ -14557,19 +14669,25 @@ async function getEventsConnections() {
 }
 
 // Where to send the user to log in for an integration (OAuth → redirects to consent).
-function eventsConnectUrl(app) {
-  return `${getApiBaseUrl()}/api/events/connect/${encodeURIComponent(app)}`;
+// Per-connector setup guides (how to connect, creds present?, ownership options, steps).
+async function getEventsSetupGuides() {
+  return apiFetch("/api/events/setup-guides");
+}
+function eventsConnectUrl(app, ownership) {
+  const own = ownership ? `?ownership=${encodeURIComponent(ownership)}` : "";
+  return `${getApiBaseUrl()}/api/events/connect/${encodeURIComponent(app)}${own}`;
 }
 
-// Token apps (GitHub PAT / Telegram bot): store a pasted token as the user's connection.
-async function postEventsConnectToken(app, token) {
+// Token apps (GitHub PAT / Telegram bot): store a pasted token as a per-user OR tenant connection.
+async function postEventsConnectToken(app, token, ownership) {
   return apiFetch(`/api/events/connect/${encodeURIComponent(app)}/token`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json"
     },
     body: JSON.stringify({
-      token
+      token,
+      ownership: ownership || "per_user"
     })
   });
 }
@@ -17369,4 +17487,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.fc8f0d6a355f9ac28a80.js.map
+//# sourceMappingURL=main.55d02579f6de826f4d19.js.map

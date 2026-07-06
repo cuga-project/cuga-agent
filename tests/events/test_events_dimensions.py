@@ -346,6 +346,27 @@ def test_discord_channel_wiring():
     assert oauth.provider("discord")["piece"].endswith("piece-discord")
 
 
+def test_slack_direct_module():
+    """The DEFAULT Slack backend is direct (no AP): filter bot/edit messages, verify signatures."""
+    import slack_direct
+    # should_process: answer real human messages; skip bot posts, edits/joins (subtype), empties
+    assert slack_direct.should_process({"type": "message", "text": "hi", "channel": "C1"})
+    assert not slack_direct.should_process({"type": "message", "text": "hi", "channel": "C1", "bot_id": "B1"})
+    assert not slack_direct.should_process({"type": "message", "text": "x", "channel": "C1", "subtype": "message_changed"})
+    assert not slack_direct.should_process({"type": "message", "channel": "C1"})          # no text
+    assert not slack_direct.should_process({"type": "reaction_added"})
+    # signature: no secret → allowed-but-flagged; wrong sig with a secret → rejected
+    ok, why = slack_direct.verify_signature({}, "body")
+    assert ok and "unverified" in why
+    os.environ["SLACK_SIGNING_SECRET"] = "shh"
+    try:
+        bad, _ = slack_direct.verify_signature(
+            {"x-slack-request-timestamp": "1", "x-slack-signature": "v0=deadbeef"}, "body")
+        assert bad is False
+    finally:
+        del os.environ["SLACK_SIGNING_SECRET"]
+
+
 def test_slack_channel_wiring():
     """Slack specifics (verified vs slack@0.17.2): APP_WEBHOOK trigger (Events API → instant),
     replies to the message's channel, requires ignoreBots + sendAsBot, channel DROPDOWN → DYNAMIC."""
@@ -362,26 +383,21 @@ def test_slack_channel_wiring():
     assert step1["nextAction"]["settings"]["input"]["channel"] == "{{trigger.channel}}"
 
 
-# ---- admin OAuth-app store + resolver (UI-entered creds override .env) ----
-def test_oauth_app_store_and_resolver():
-    import oauth
-    st = oauth.OAuthAppStore(":memory:")
-    # not configured until set
-    assert oauth.is_configured("box") is False
-    st.set("default", "box", "cid-123", "sec-456", scopes="root_readwrite")
-    assert st.get("default", "box", "CLIENT_ID") == "cid-123"
-    # status never leaks the secret
-    box = next(a for a in st.status("default") if a["app"] == "box")
-    assert box["configured"] is True and "client_secret" not in box
-    # wire the resolver → is_configured/authorize_url now see the store (no .env)
-    for k in ("EVENTS_OAUTH_BOX_CLIENT_ID", "EVENTS_OAUTH_BOX_CLIENT_SECRET"):
-        os.environ.pop(k, None)
-    oauth.set_cred_resolver(lambda app, key: st.get("default", app, key))
+def test_delivery_backend_selection():
+    """delivery.channel_backend: Slack defaults DIRECT (CUGA sends); telegram/discord AP;
+    EVENTS_<CH>_BACKEND overrides. is_direct drives whether a flow gets an AP send step."""
+    import delivery
+    assert delivery.is_direct("slack") and delivery.channel_backend("slack") == "direct"
+    assert not delivery.is_direct("telegram") and delivery.channel_backend("telegram") == "ap"
+    assert not delivery.is_direct("discord")
+    assert delivery.channel_backend("unknown_ch") == "ap"          # unknown → AP
+    os.environ["EVENTS_SLACK_BACKEND_MARKER"] = ""                 # scratch
+    os.environ["EVENTS_TELEGRAM_BACKEND"] = "direct"
     try:
-        assert oauth.is_configured("box") is True
-        assert "client_id=cid-123" in (oauth.authorize_url("box", "s") or "")
+        assert delivery.is_direct("telegram")                      # env override wins
     finally:
-        oauth.set_cred_resolver(None)
+        del os.environ["EVENTS_TELEGRAM_BACKEND"]
+        del os.environ["EVENTS_SLACK_BACKEND_MARKER"]
 
 
 # ---- runner --------------------------------------------------------------

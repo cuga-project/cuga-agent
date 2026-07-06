@@ -444,16 +444,22 @@ export async function getEventsConnections(): Promise<Response> {
 }
 
 // Where to send the user to log in for an integration (OAuth → redirects to consent).
-export function eventsConnectUrl(app: string): string {
-  return `${getApiBaseUrl()}/api/events/connect/${encodeURIComponent(app)}`;
+// Per-connector setup guides (how to connect, creds present?, ownership options, steps).
+export async function getEventsSetupGuides(): Promise<Response> {
+  return apiFetch("/api/events/setup-guides");
 }
 
-// Token apps (GitHub PAT / Telegram bot): store a pasted token as the user's connection.
-export async function postEventsConnectToken(app: string, token: string): Promise<Response> {
+export function eventsConnectUrl(app: string, ownership?: string): string {
+  const own = ownership ? `?ownership=${encodeURIComponent(ownership)}` : "";
+  return `${getApiBaseUrl()}/api/events/connect/${encodeURIComponent(app)}${own}`;
+}
+
+// Token apps (GitHub PAT / Telegram bot): store a pasted token as a per-user OR tenant connection.
+export async function postEventsConnectToken(app: string, token: string, ownership?: string): Promise<Response> {
   return apiFetch(`/api/events/connect/${encodeURIComponent(app)}/token`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ token }),
+    body: JSON.stringify({ token, ownership: ownership || "per_user" }),
   });
 }
 

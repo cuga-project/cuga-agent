@@ -124,9 +124,12 @@ tool); *"every morning summarize my gmail"* → *"connect your Gmail"* → you l
 concierge router → channel·send) and **PUSH** integration flows (`create_push_flow`, the Box resume
 watcher) are wired end-to-end; **scheduled/poll flows now DELIVER** (cron/interval → `/invoke` →
 channel send back to the caller's native id — the concierge infers the delivery channel from the
-origin thread `gw:<channel>:<native>`). **Live-verified: only the Telegram round-trip.** Discord and
-Slack are wired from AP piece metadata but **not yet live round-trip-tested**. Slack's
-`send_channel_message` requires a constant `sendAsBot=true`.
+origin thread `gw:<channel>:<native>`). **Live round-trip verified (2026-07-06): Telegram (AP),
+Discord (AP), Slack (direct, default).** Slack + Box now default to a *direct* backend (CUGA↔vendor
+API, no AP — sidesteps AP's OAuth wall + the parked Slack-piece bug); `delivery.channel_backend`
+picks direct-vs-AP per channel, and **direct-channel delivery** lets a scheduled flow deliver to a
+direct channel with no AP send-step. Box direct poll (`/api/events/box/poll`) is e2e verified.
 
-**Still next:** the builder's connector-config UI; live Discord/Slack round-trips; real Gmail/Box
+**Still next:** the builder's connector-config UI; feed the Box watcher the file *content* (not just
+the name); an instant *direct* Discord (gateway bot); real Gmail/Box
 OAuth once the platform's OAuth app is registered.

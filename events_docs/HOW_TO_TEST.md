@@ -191,18 +191,17 @@ CUGA calls `get_crypto_price` → real number (`A: 61397`). All 7 event-agent-ap
 
 ### Offline coverage across dimensions
 ```bash
-python3 tests/events/test_events_core.py            # 14/14 — envelope/flows/subs/classify/planner
-python3 tests/events/test_events_dimensions.py      # 10/10 — connectors/catalog/creds/isolation/runtime
-.venv-events/bin/python tests/events/test_events_studio_api.py   # 5/5 — Studio endpoints
+uv run pytest tests/events/ -q            # 46 passed (core 14 + dimensions 23 + studio 9)
 ```
 Full matrix: [TEST_COVERAGE.md](TEST_COVERAGE.md).
 
-## Now wired (post Phase 1 & 2) — Telegram live-verified only
+## Now wired (post Phase 1 & 2) — Telegram/Discord/Slack all live-verified
 - **Channel inbound + real channel delivery** — channel·message → `/invoke` → concierge router →
-  channel·send (`ap_engine.create_inbound_flow`); **scheduled/poll flows now deliver** back to the
-  caller's native channel id (`create_schedule_flow` appends a channel send step). **Only the
-  Telegram round-trip is fully live-verified**; Discord/Slack are wired from AP piece metadata but
-  not yet live round-trip-tested. Slack's `send_channel_message` requires a constant `sendAsBot=true`.
+  channel·send. **Live round-trip verified: Telegram (AP), Discord (AP), Slack (direct backend,
+  default)** (2026-07-06). Slack/Box now default to a *direct* backend (CUGA↔vendor API, no AP);
+  `delivery.channel_backend` picks direct-vs-AP per channel, and **direct-channel delivery** lets a
+  scheduled flow deliver to a direct channel with no AP send-step. Per-integration setup:
+  [setup/](setup/).
 - **PUSH triggers** — `ap_engine.create_push_flow` + the Box resume watcher (`build_resume_watcher_flow`);
   concierge `find_or_create_flow(kind="push", ...)`. Live PUSH round-trip not yet proven end-to-end.
 - **OAuth connect-in-place** — the Integrations tab now posts to `/api/events/connect/*` (token path

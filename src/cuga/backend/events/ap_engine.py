@@ -113,11 +113,15 @@ class APEngine:
         return ps
 
     def _invoke_body(self, agent: str, thread_id: str, prompt: str, deliver: bool,
-                     scope: str = "") -> dict:
+                     scope: str = "", source: dict | None = None) -> dict:
         """The normalized envelope the AP HTTP step POSTs to /invoke. ``scope`` (the
-        principal) rides along so the fired run executes in the right tenant namespace."""
+        principal) rides along so the fired run executes in the right tenant namespace.
+
+        ``source`` overrides the default time/cron source — used for a DIRECT-channel sink, where
+        the source is set to {type:channel, name:<ch>, thread_id:gw:<ch>:<native>} so ``/invoke``
+        delivers the answer itself via the channel's direct adapter (no AP send step)."""
         return {"agent": agent, "text": prompt, "deliver": deliver, "scope": scope,
-                "source": {"type": "time", "name": "cron", "thread_id": thread_id},
+                "source": source or {"type": "time", "name": "cron", "thread_id": thread_id},
                 "event": {"kind": "tick", "payload": {}}}
 
     def _trigger_op(self, cron: str | None, interval_seconds: int | None, ver: str) -> dict:
@@ -226,7 +230,9 @@ class APEngine:
                                    project_name: str | None = None, scope: str = "",
                                    deliver_channel: str | None = None,
                                    deliver_target: str | None = None,
-                                   deliver_connection: str | None = None) -> str:
+                                   deliver_connection: str | None = None,
+                                   deliver_direct_channel: str | None = None,
+                                   deliver_direct_target: str | None = None) -> str:
         """Create + ENABLE a schedule→/invoke flow. Returns the AP flow id.
 
         ``project_name`` (a Principal.ap_project_name()) isolates the flow into that principal's
@@ -255,13 +261,21 @@ class APEngine:
             flow_id = r.json()["id"]
             # deliver to a CHANNEL → AP owns the outbound: cron → /invoke(deliver=False) → channel
             # send. Without a channel target we keep deliver=True (web/capture-sink delivery).
+            # A DIRECT-channel sink (e.g. Slack default) appends NO AP send step — instead the
+            # invoke body's source is the channel, so /invoke sends the answer via its direct
+            # adapter (deliver=True). This is how a scheduled flow reaches an out-of-AP channel.
             from . import flows
             has_send = bool(deliver_channel in flows.CHANNELS and deliver_target)
+            direct_source = None
+            if deliver_direct_channel and deliver_direct_target and not has_send:
+                direct_source = {"type": "channel", "name": deliver_direct_channel,
+                                 "thread_id": f"gw:{deliver_direct_channel}:{deliver_direct_target}"}
             await self._post_op(c, flow_id, self._trigger_op(cron, interval_seconds, sched_ver), hdrs)
             await self._post_op(c, flow_id,
                                 self._http_action(self._invoke_body(agent, thread_id, prompt,
                                                                     deliver and not has_send,
-                                                                    scope), http_ver), hdrs)
+                                                                    scope, source=direct_source),
+                                                  http_ver), hdrs)
             if has_send:
                 piece = flows.PIECE[flows.CHANNELS[deliver_channel]["piece"]]
                 sver = await self._piece_version(c, piece)
@@ -270,7 +284,9 @@ class APEngine:
             await self._post_op(c, flow_id,
                                 {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
         log.info("created AP schedule flow=%s name=%s (sched=%s http=%s send=%s)",
-                 flow_id, name, sched_ver, http_ver, deliver_channel if has_send else "none")
+                 flow_id, name, sched_ver, http_ver,
+                 deliver_channel if has_send else (f"direct:{deliver_direct_channel}"
+                                                   if direct_source else "none"))
         return flow_id
 
     # ---- inbound (channel) + push (integration) flows -------------------

@@ -97,19 +97,19 @@ def main():
           d["native_ref"] == "{{trigger.channel}}" and d["trigger_const"].get("ignoreBots")
           and d["const"].get("sendAsBot") and "channel" in d["dynamic_props"])
 
-    # 5) can CUGA arm it? (only if an OAuth2 connection already exists in AP)
+    # 5) arm the DIRECT backend (default): returns the Events URL to paste — no AP, no OAuth
     _, r = _http("POST", f"{SERVER}/api/events/admin/channels/slack/arm",
-                 {"scope": "default/default"}, {"content-type": "application/json", "x-user-id": "admin"})
-    armed = r.get("ok")
-    print(f"  [{'PASS' if armed else 'INFO'}] arm inbound flow — "
-          + (r.get("ap_flow_id") if armed else "needs a Slack OAuth2 connection first (see below)"))
+                 {}, {"content-type": "application/json", "x-user-id": "admin"})
+    check("arm slack (direct backend)", r.get("ok") and r.get("backend") == "direct",
+          r.get("backend") or r.get("error"))
+    print(f"  [INFO] Events Request URL → {r.get('events_url', '?')}")
+    print(f"  [INFO] signature verification: {r.get('signature_verification', '?')}")
 
-    print(f"\nRESULT: {'PASS — wiring + delivery confirmed' if ok else 'FAIL'}")
-    print("\nTwo Slack-app steps (no code can do these for you):")
-    print("  1. Create the OAuth2 connection: set EVENTS_OAUTH_SLACK_CLIENT_ID/_SECRET + open")
-    print("     /api/events/connect/slack, OR add it in the AP UI (Connections → Slack → Add to Slack).")
-    print("  2. Slack app → Event Subscriptions: Request URL = <AP tunnel>/api/v1/app-events,")
-    print("     subscribe bot event 'message.channels'. Then arm + post a message → instant reply.")
+    print(f"\nRESULT: {'PASS — direct Slack wiring + delivery confirmed' if ok else 'FAIL'}")
+    print("\nOne Slack-app step (no code can do it for you):")
+    print("  • Slack app → Event Subscriptions → Request URL = the events_url above,")
+    print("    subscribe bot event 'message.channels'. Recommended: set SLACK_SIGNING_SECRET.")
+    print("    Then post in the channel → instant reply (direct backend, no AP).")
     return 0 if ok else 1
 
 

@@ -236,34 +236,34 @@ access   builder · admin</div>
   <!-- 05·3  POLL · Slack -->
   <section class="slide light">
     <div class="kicker" style="color:#007d79">Walkthrough · watch &amp; alert</div>
-    <div class="wtline"><span class="badge b-poll">POLL</span><span class="badge b-ch">Slack</span><span class="status st-wired">wired · Run target</span></div>
+    <div class="wtline"><span class="badge b-poll">POLL</span><span class="badge b-ch">Slack</span><span class="status st-live">live · direct backend</span></div>
     <h2>Ping me only when it actually moves.</h2>
     <div class="utter">"watch bitcoin every 2 minutes and ping our Slack on any move"</div>
-    <div class="setup">Set up once — poll flow: every 2 min → /invoke(pricebot) → Slack send (sendAsBot=true).</div>
+    <div class="setup">Set up once — poll flow: every 2 min → /invoke(pricebot) → <b>Slack direct</b> (CUGA sends via chat.postMessage; no AP).</div>
     <ol class="seq">
-      <li>AP's timer ticks every 2 minutes.</li>
+      <li>The timer ticks every 2 minutes.</li>
       <li>→ /invoke(pricebot) with an <i>emit-on-change</i> instruction.</li>
       <li>No change → returns nothing → nothing delivered (silence is a feature).</li>
-      <li>On a move → answer → AP Slack <b>send</b> → the channel gets pinged.</li>
+      <li>On a move → answer → <b>direct-channel delivery</b> → the Slack channel gets pinged.</li>
     </ol>
-    <div class="foot">Same shape as CRON — the agent decides if there's anything worth sending.</div>
+    <div class="foot">Slack runs a <b>direct</b> backend (bot token, no AP). Same shape as CRON — the agent decides if there's anything worth sending.</div>
     <div class="num">05·4</div>
   </section>
 
   <!-- 05·4  PUSH · Box → Gmail -->
   <section class="slide dark">
     <div class="kicker">Walkthrough · react to a file</div>
-    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Box → Gmail</span><span class="status st-wired">wired · Run target</span></div>
-    <h2>When a resume lands, judge it and email me.</h2>
-    <div class="utter">"when a resume lands in my Box, judge it vs the JD and email me"</div>
-    <div class="setup">Set up once — you connect your Box + Gmail (per-user OAuth); concierge arms a push flow: Box new_file → /invoke(resume_judge) → Gmail send.</div>
+    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Box → Slack/Gmail</span><span class="status st-live">direct poll · e2e verified</span></div>
+    <h2>When a resume lands, judge it and tell me.</h2>
+    <div class="utter">"when a resume lands in my Box, judge it vs the JD and tell me"</div>
+    <div class="setup">Set up once — drop a Box <b>dev token</b> in .env (no OAuth app). A poll (<code>/api/events/box/poll</code>) watches the folder: Box new file → /invoke(resume_judge) → deliver (Slack direct, or Gmail).</div>
     <ol class="seq">
-      <li>A file drops in your Box folder → AP's Box trigger fires (AP holds your token).</li>
+      <li>A file drops in your Box folder → the direct poll lists it (CUGA hits Box's API with the token — no AP).</li>
       <li>→ /invoke(resume_judge) with the file reference.</li>
-      <li>resume_judge reads it, scores fit vs the job description.</li>
-      <li>Verdict → AP Gmail <b>send</b> → lands in your inbox.</li>
+      <li>resume_judge scores fit vs the job description.</li>
+      <li>Verdict → delivered (direct-channel send, or Gmail).</li>
     </ol>
-    <div class="foot">Integration IN (Box) → email OUT (Gmail). No chat channel involved.</div>
+    <div class="foot">Box direct poll is <b>free-account friendly</b> (no paid Box app). <span style="opacity:.7">Open gap: the agent gets the file <i>name</i>, not the content yet — content-fetch is the next step.</span></div>
     <div class="num">05·5</div>
   </section>
 
@@ -359,19 +359,19 @@ access   builder · admin</div>
       <a class="nav" style="color:var(--blue)" href="index.html">Board</a>; try utterances on the
       <a class="nav" style="color:var(--blue)" href="examples.html">Examples</a> page.</p>
 
-    <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> Channels — prove Discord &amp; Slack</h3>
-      <div class="who">Owner: — · effort: S · unblocks the "3 channels" claim</div>
+    <div class="ws"><h3><span class="tag" style="background:#24a148">RUN ✓</span> Channels — Discord &amp; Slack (done)</h3>
+      <div class="who">Discord (AP polling) &amp; Slack (direct backend) — live round-trip verified 2026-07-06</div>
       <ul>
-        <li>Stand up a Discord bot + Slack app; connect via the Studio (Integrations → Connect).</li>
-        <li>Arm inbound for each; send a message → verify round-trip. Descriptors are fixed; Slack needs <code>sendAsBot=true</code> (already wired).</li>
-        <li>Deliverable: green round-trip + flip the Board rows.</li></ul></div>
+        <li>Discord via AP; Slack via a <b>direct</b> backend (Events API → CUGA → chat.postMessage, no AP).</li>
+        <li>Inbound round-trips verified; direct-channel delivery closes scheduled delivery to Slack.</li>
+        <li>Next channel breadth (WhatsApp, email-as-channel) is Sprint.</li></ul></div>
 
-    <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> PUSH — first integration event (GitHub)</h3>
-      <div class="who">Owner: — · effort: M · biggest unproven piece (a whole mode)</div>
+    <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> PUSH — integration events</h3>
+      <div class="who">Owner: — · Box direct poll ✓ done; GitHub/Gmail AP PUSH next</div>
       <ul>
-        <li>Wire a GitHub PR/issue trigger → <code>/invoke</code> (start with GitHub — no token time-window like Box).</li>
-        <li>Confirm the push flow fires, routes, and delivers. Then repeat for Box (resume watcher) &amp; Gmail.</li>
-        <li>Deliverable: one live PUSH round-trip end-to-end.</li></ul></div>
+        <li>✓ <b>Box direct poll</b> (<code>/api/events/box/poll</code>) → resume_judge — e2e verified (AP-free, dev token). Open gap: feed the agent file <i>content</i>, not just the name.</li>
+        <li>Next: a GitHub PR/issue AP trigger → <code>/invoke</code> (no token time-window); then Gmail.</li>
+        <li>Deliverable: one live AP PUSH round-trip end-to-end.</li></ul></div>
 
     <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> The webhook primitive (in + out)</h3>
       <div class="who">Owner: — · effort: M · highest leverage — covers the long tail</div>

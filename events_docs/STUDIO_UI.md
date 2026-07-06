@@ -34,11 +34,12 @@ but shows a "Studio is off" note if reached directly.
 
 Status is **derived from real state**, never faked: channels from the presence of the bot token
 that enables delivery; integrations from live AP connections (AP owns creds). PUSH and channel
-inbound are now **wired end-to-end in code** (`ap_engine.create_push_flow` / `create_inbound_flow`,
-concierge routing); **only the Telegram inbound round-trip is fully live-verified** — Discord/Slack
-are wired from AP piece metadata but not yet live round-trip-tested, and OAuth connect-in-place is
-built but only the token path is proven against real AP. The `/api/events/status` `features` flags
-(`push:false`, `channels_inbound:false`) are conservative and lag the wiring.
+inbound are wired end-to-end; **channel inbound is live round-trip verified: Telegram (AP), Discord
+(AP), Slack (direct, default)** (2026-07-06). Slack/Box default to a *direct* backend (no AP); Box
+direct poll is e2e verified. OAuth connect-in-place is built (token path proven against real AP;
+OAuth path degrades cleanly). A **Setup** tab renders `GET /api/events/setup-guides` (per-connector
+steps + credential ownership). The `/api/events/status` `features` flags are conservative and lag the
+wiring.
 
 ## The endpoints behind it (all additive, behind `EVENTS_ENABLED`)
 Added to `src/cuga/backend/events/app.py` (`register_events_routes(..., engine=…)`):

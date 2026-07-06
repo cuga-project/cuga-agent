@@ -90,18 +90,22 @@
       re-point bot webhooks after any restart. Fine for testing; use a named tunnel for anything durable.
 
 ## Integrations
-- [ ] **Box needs a Box Business/Enterprise account** — free/personal Box can't save OAuth app
-      config (redirect URIs are paid-tier: "some changes on configuration page cannot be saved").
-      PUSH/watcher demo uses **GitHub** (PAT, frictionless) instead; Box drops in unchanged once a
-      business account is available. (Or simulate the Box new-file event for the resume-watcher story.)
+- [x] **Box — direct poll backend (free-account friendly)** — `box_direct.py` +
+      `POST /api/events/box/poll` list a folder with `BOX_DEV_TOKEN` (Box REST API) and fire the
+      watcher per new file; no OAuth app, no paid account. **Live e2e verified 2026-07-06**
+      (`live_box_direct_check.py`). The AP OAuth path (needs a Business account) remains as a
+      secondary option. **Open follow-up:** the watcher passes the file *name* to `resume_judge`, not
+      its *content* (agent can't read the bytes yet — needs a Box download in `box_direct` or a
+      Box-read MCP tool).
 
 ## Phase 3+ (from DESIGN §11)
-- [~] PUSH triggers (Box / GitHub / Gmail) + branching flows — **wired** (`create_push_flow`,
-      `build_resume_watcher_flow`, router branches); live PUSH e2e not yet proven.
-- [~] Real channel delivery (Telegram / Discord / Slack) + inbound — **wired**
-      (`create_inbound_flow`; scheduled/poll flows now append a channel send step to deliver back to
-      the caller's native id). **Only Telegram is live round-trip-verified**; Discord/Slack wired
-      from AP piece metadata, not yet tested (Slack `send_channel_message` needs `sendAsBot=true`).
+- [~] PUSH triggers (Box / GitHub / Gmail) + branching flows — **Box direct poll e2e verified**
+      (2026-07-06); AP `create_push_flow` / `build_resume_watcher_flow` / router branches wired;
+      GitHub/Gmail AP PUSH live e2e not yet proven.
+- [x] Real channel delivery (Telegram / Discord / Slack) + inbound — **live round-trip verified:
+      Telegram (AP), Discord (AP), Slack (direct, default)** (2026-07-06). Slack/Box direct backends
+      bypass AP; `delivery.channel_backend` picks direct-vs-AP per channel and **direct-channel
+      delivery** lets a scheduled flow deliver to a direct channel with no AP send-step.
 - [x] **Studio UI: Concierge · Channels · Integrations · Flows · Examples** — built into CUGA's
       existing React frontend (dumb; reads `GET /api/events/*`, posts to `/api/concierge`). See
       [STUDIO_UI.md](STUDIO_UI.md). Now also an **Agents** tab (`GET /api/events/agents`). Connect

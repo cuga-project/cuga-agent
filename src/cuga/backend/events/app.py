@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 
 from fastapi import Request
-from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 
 from . import concierge_plan
 from .envelope import Envelope
@@ -122,12 +122,24 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             foot = runmeta.footer(meta, ms=ms)
             if foot:
                 answer = f"{answer}\n\n{foot}"
-        # Delivery: channel/schedule flows now deliver via an AP send step (deliver=False here,
-        # AP owns the outbound). deliver=True is the web/self-delivery path: POST the answer to
-        # EA_CAPTURE_URL when set (an assertable, real-HTTP delivery target for e2e/web).
+        # Delivery. AP-backed channels deliver via an AP send step (deliver=False here). deliver=True
+        # is CUGA-owned delivery, in priority order:
+        #   1. DIRECT channel sink (e.g. Slack): the fired flow's source is the channel, so CUGA
+        #      sends the answer itself via the channel's direct adapter (no AP connection needed).
+        #   2. capture sink: POST to EA_CAPTURE_URL when set (assertable real-HTTP target for e2e/web).
         if env.deliver:
+            from . import delivery
+            from .principal import channel_native_id
+            direct_done = False
+            if env.source.type == "channel" and delivery.is_direct(env.source.name) \
+                    and isinstance(answer, str):
+                target = channel_native_id(env.source) or ""
+                if target:
+                    ok, why = await delivery.send_direct(env.source.name, target, answer)
+                    tr("deliver", via="direct", channel=env.source.name, ok=ok, reason=why)
+                    direct_done = ok
             cap = os.environ.get("EA_CAPTURE_URL")
-            if cap:
+            if not direct_done and cap:
                 try:
                     import httpx
                     async with httpx.AsyncClient(timeout=10) as hc:
@@ -190,7 +202,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 "project_grain": grain,
                 # all wired via AP when the engine is configured (inbound channel flows, PUSH
                 # watchers, and scheduled/poll flows that deliver via an appended channel send
-                # step). Telegram is the only channel round-trip-verified live so far.
+                # step). Telegram/Discord (AP) + Slack (direct) are round-trip-verified live.
                 "features": {"now": True, "cron": engine is not None,
                              "poll": engine is not None, "push": engine is not None,
                              "channels_inbound": engine is not None}}
@@ -250,6 +262,143 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         from .catalog import as_list
         return {"examples": as_list()}
 
+    @app.get("/api/events/setup-guides")
+    async def events_setup_guides():
+        """Per-connector 'how to connect' guides for the Studio (creds, ownership, steps). Shows the
+        live EVENTS_PUBLIC_URL and whether each required credential is present, so the UI can render
+        an accurate, actionable setup guide."""
+        from . import setup_guides
+        pub = os.environ.get("EVENTS_PUBLIC_URL", "").rstrip("/") or "<EVENTS_PUBLIC_URL>"
+        out = []
+        for g in setup_guides.as_list():
+            creds = [{**c, "present": bool(os.environ.get(c["key"]))} for c in g.get("creds", [])]
+            steps = [s.replace("<EVENTS_PUBLIC_URL>", pub) for s in g.get("steps", [])]
+            # how you connect it (drives the Studio's button): oauth consent · paste token · direct · none
+            # a guide may declare `connect` explicitly (e.g. Box's default direct-token path); else derive.
+            app = g["app"]
+            if g.get("connect"):
+                connect = g["connect"]
+            elif app == "slack":
+                connect = "direct"
+            elif any(c["key"].startswith("EVENTS_OAUTH_") for c in g.get("creds", [])):
+                connect = "oauth"
+            elif g.get("creds"):
+                connect = "token"
+            else:
+                connect = "none"
+            out.append({**g, "creds": creds, "steps": steps, "connect": connect})
+        return {"public_url": pub, "guides": out}
+
+    # --- DIRECT Slack (default backend; no AP) — Slack Events API → /invoke → chat.postMessage -----
+    @app.post("/api/events/slack/events")
+    async def slack_events(request: Request):
+        """Slack Events API receiver. Handles the url_verification handshake, verifies the request
+        signature, and (for a real human message) answers via the concierge + posts the reply back.
+        Acks in <3s and does the slow agent work in the background (Slack's timeout)."""
+        import asyncio
+        import json as _json
+        from . import slack_direct
+        raw = (await request.body()).decode("utf-8", "replace")
+        try:
+            body = _json.loads(raw or "{}")
+        except Exception:  # noqa: BLE001
+            return JSONResponse({"ok": False, "error": "bad json"}, 400)
+        # 1) URL verification handshake (must echo the challenge; no signature yet)
+        if body.get("type") == "url_verification":
+            return PlainTextResponse(body.get("challenge", ""))
+        # 2) verify it's really Slack
+        ok_sig, why = slack_direct.verify_signature(request.headers, raw)
+        if not ok_sig:
+            Trace(new_trace_id()).error("slack", reason=why)
+            return JSONResponse({"ok": False, "error": why}, 401)
+        # 3) a real human message → answer it (in the background; ack now)
+        ev = body.get("event") or {}
+        if slack_direct.should_process(ev):
+            asyncio.create_task(_slack_answer(ev.get("text", ""), ev.get("channel", ""),
+                                              ev.get("user", "")))
+        return {"ok": True}
+
+    async def _slack_answer(text: str, channel: str, user: str) -> None:
+        """Route a Slack message through /invoke (concierge + metadata footer) and post the reply."""
+        from . import slack_direct
+        import httpx
+        tr = Trace(new_trace_id())
+        try:
+            port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+            gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+            # reuse the whole /invoke path (routing, identity, metadata footer). native id = channel,
+            # so a shared-channel bot replies where the message came from.
+            payload = {"text": text, "agent": "concierge", "deliver": False,
+                       "source": {"type": "channel", "name": "slack",
+                                  "thread_id": f"gw:slack:{channel}"},
+                       "event": {"kind": "message", "payload": {"slack_user": user}}}
+            async with httpx.AsyncClient(timeout=180) as c:
+                r = await c.post(f"http://127.0.0.1:{port}/invoke",
+                                 headers={"X-Gateway-Token": gw}, json=payload)
+                answer = (r.json() or {}).get("answer") if r.status_code == 200 else None
+            if answer:
+                res = await slack_direct.send_message(channel, answer)
+                tr("slack.reply", channel=channel, ok=res.get("ok"))
+            else:
+                tr.error("slack", reason="no answer", status=r.status_code)
+        except Exception as e:  # noqa: BLE001
+            tr.error("slack", err=str(e))
+
+    # --- DIRECT Box (OAuth-free watcher; polls Box's API with a token) -----------------------------
+    @app.post("/api/events/box/poll")
+    async def box_poll(request: Request):
+        """Poll a Box folder for NEW files and fire the watcher agent on each — the AP-free Box path
+        (sidesteps AP's OAuth wall + the paid-app webhook). Gateway-token protected so a schedule or
+        cron can drive it. Body: {folder_id, since?, agent?, deliver_to?, scope?}. Returns the new
+        files processed + the newest created_at (the caller stores it as the next `since` baseline)."""
+        if token and request.headers.get("X-Gateway-Token") != token:
+            return JSONResponse({"ok": False, "error": "bad or missing X-Gateway-Token"}, 401)
+        from . import box_direct
+        body = await _safe_json(request)
+        folder = str(body.get("folder_id") or "0")
+        since = body.get("since")
+        agent = body.get("agent") or "resume_judge"
+        deliver_to = body.get("deliver_to")            # e.g. a direct channel: "slack"
+        tr = Trace(new_trace_id())
+        try:
+            files = await box_direct.new_files_since(folder, since)
+        except Exception as e:  # noqa: BLE001
+            tr.error("box.poll", folder=folder, err=str(e))
+            return JSONResponse({"ok": False, "error": str(e)}, 502)
+        tr("box.poll", folder=folder, new=len(files), since=since)
+        processed, newest = [], since or ""
+        for f in files:
+            newest = max(newest, f.get("created_at") or "")
+            await _box_dispatch(agent, f, deliver_to, body.get("scope"))
+            processed.append({"id": f["id"], "name": f.get("name")})
+        return {"ok": True, "folder": folder, "processed": processed, "newest": newest,
+                "trace_id": tr.id}
+
+    async def _box_dispatch(agent: str, file: dict, deliver_to, scope) -> None:
+        """Fire one Box file through /invoke(agent). If deliver_to is a DIRECT channel the reply is
+        sent CUGA-side (no AP); otherwise the answer just rides back in the /invoke response."""
+        import httpx
+        from . import delivery
+        tr = Trace(new_trace_id())
+        port = os.environ.get("EVENTS_CUGA_PORT", "8100")
+        gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
+        direct = bool(deliver_to and delivery.is_direct(deliver_to))
+        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:"}
+               if direct else {"type": "integration", "name": "box", "thread_id": f"box:{file['id']}"})
+        payload = {"agent": agent, "deliver": bool(direct), "scope": scope or "",
+                   "text": (f"A file '{file.get('name')}' landed in Box. Judge fit vs the JD. "
+                            "Start your reply with MATCH or SKIP."),
+                   "source": src,
+                   "event": {"kind": "new_file", "payload": {"file_id": file["id"],
+                                                             "name": file.get("name")}}}
+        try:
+            async with httpx.AsyncClient(timeout=180) as c:
+                r = await c.post(f"http://127.0.0.1:{port}/invoke",
+                                 headers={"X-Gateway-Token": gw}, json=payload)
+            tr("box.dispatch", file=file.get("name"), ok=r.status_code == 200, deliver=deliver_to)
+        except Exception as e:  # noqa: BLE001
+            tr.error("box.dispatch", file=file.get("name"), err=str(e))
+
     # --- per-user connect (CUGA hosts the OAuth; AP holds the token) -------------
     def _principal_from(scope: str | None, headers):
         from .principal import Principal, resolve as _resolve
@@ -276,6 +425,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                                           "CLIENT_ID / _CLIENT_SECRET"}, 501)
         state = oauth.encode_state(scope=p.scope, app=app,
                                    agent=request.query_params.get("agent", ""),
+                                   ownership=request.query_params.get("ownership", "per-user"),
                                    ret=request.query_params.get("return", ""))
         return RedirectResponse(oauth.authorize_url(app, state), status_code=302)
 
@@ -290,7 +440,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return HTMLResponse("<h3>Connect failed</h3><p>No authorization code.</p>", 400)
         try:
             # AP does the code→token exchange itself (UpsertOAuth2Request wants the code, not tokens)
-            ext = credentials.connection_external_id(app, "per-user", p)
+            own = "shared" if st.get("ownership") in ("tenant", "shared") else "per-user"
+            ext = credentials.connection_external_id(app, own, p)
             if engine is not None:
                 prov = oauth.provider(app)
                 grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
@@ -333,7 +484,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 f"'{app}' is an OAuth connector — AP can't build a connection from a pasted token. "
                 f"Use the OAuth login: GET /api/events/connect/{app} (consent → callback).")}, 400)
         p = _principal_from((body or {}).get("scope"), request.headers)
-        ext = credentials.connection_external_id(app, "per-user", p)
+        # ownership: 'tenant' (shared across the tenant) | 'per_user' (each user's own). Default per-user.
+        own = "shared" if (body or {}).get("ownership") in ("tenant", "shared") else "per-user"
+        ext = credentials.connection_external_id(app, own, p)
         if engine is None:
             return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
@@ -427,14 +580,28 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
 
     @app.post("/api/events/admin/channels/{channel}/arm")
     async def admin_arm_channel(channel: str, request: Request):
-        """Admin: arm a channel INBOUND flow in AP (channel·new_message → /invoke(concierge) →
-        send). One per channel; every message routes to the concierge. AP owns the channel."""
-        if engine is None:
-            return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
+        """Admin: arm a channel INBOUND flow. Slack uses the DIRECT backend by default (no AP — the
+        Slack Events API posts straight to /api/events/slack/events); set EVENTS_SLACK_BACKEND=ap to
+        use the (kept-for-revisit) AP path. Other channels go through AP."""
         body = await _safe_json(request)
         p = _principal_from(body.get("scope") or request.query_params.get("scope"), request.headers)
         if not _is_admin(p):
             return JSONResponse({"ok": False, "error": "admin only"}, 403)
+        # Slack DIRECT backend (default): nothing to arm in AP — the CUGA endpoint is always live.
+        if channel == "slack" and os.environ.get("EVENTS_SLACK_BACKEND", "direct") != "ap":
+            from . import slack_direct
+            pub = os.environ.get("EVENTS_PUBLIC_URL", "").rstrip("/")
+            if not slack_direct.bot_token():
+                return JSONResponse({"ok": False, "error": "set SLACK_BOT_TOKEN"}, 400)
+            return {"ok": True, "channel": "slack", "backend": "direct",
+                    "events_url": f"{pub}/api/events/slack/events" if pub else
+                                  "<EVENTS_PUBLIC_URL>/api/events/slack/events",
+                    "signature_verification": "on" if slack_direct.signing_secret() else
+                                              "OFF (set SLACK_SIGNING_SECRET)",
+                    "note": "Set this events_url as your Slack app's Event Subscriptions Request URL "
+                            "and subscribe the bot event 'message.channels'. No AP flow needed."}
+        if engine is None:
+            return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
         from . import credentials
         conn = credentials.connection_external_id(channel, "per-user", p)  # the bot connection

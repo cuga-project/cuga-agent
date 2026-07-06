@@ -18,7 +18,8 @@ agents in the **web** interface; end users then talk to them and set up triggers
 | Doc | What it is |
 |---|---|
 | **[SETUP.md](SETUP.md)** | **fresh-machine setup cost** + the one-command bootstrap (`scripts/events_up.sh`). |
-| **[CHANNELS_SETUP.md](CHANNELS_SETUP.md)** | procure + wire Telegram/Discord/Slack + Box/GitHub (bots, tokens, tunnel). |
+| **[setup/](setup/)** | **per-integration step-by-step guides** — [Slack](setup/SLACK.md) · [Discord](setup/DISCORD.md) · [Telegram](setup/TELEGRAM.md) · [Box](setup/BOX.md) (procure → wire → verify → troubleshoot). |
+| **[CHANNELS_SETUP.md](CHANNELS_SETUP.md)** | the combined channels+Box reference: AP + tunnel bring-up, the "AP owns it" boundary, verified send actions. |
 | **[MCP_SETUP.md](MCP_SETUP.md)** | give CUGA workers their tools via the registry (the cuga-apps servers). |
 | **[STUDIO_UI.md](STUDIO_UI.md)** | the Studio (Concierge/Channels/Integrations/Flows/Examples/Profile/Admin) — dumb, additive. |
 | **[TODO.md](TODO.md)** | what's done, what's next, infra/ops notes. |

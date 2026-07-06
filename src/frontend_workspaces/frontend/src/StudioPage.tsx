@@ -172,6 +172,74 @@ function IntegrationsTab({ refresh }: { refresh: number }) {
   );
 }
 
+// The connect SETUP GUIDE — per connector: required creds (+ present?), ownership (per-user vs
+// tenant), and the concrete steps. Dumb: it renders the server's guides + drives the connect action.
+function SetupTab({ refresh }: { refresh: number }) {
+  const { data, loading, error } = useEndpoint<any[]>(api.getEventsSetupGuides, (d) => d.guides ?? [], refresh);
+  const [own, setOwn] = useState<Record<string, string>>({});
+
+  const connect = (g: any) => {
+    const ownership = own[g.app] || g.ownership_default || (g.ownership || [])[0] || "per_user";
+    if (g.connect === "oauth") {
+      window.open(api.eventsConnectUrl(g.app, ownership), "_blank", "noreferrer");
+    } else if (g.connect === "token") {
+      const token = window.prompt(`Paste your ${g.label} token/secret:`);
+      if (token) api.postEventsConnectToken(g.app, token, ownership).then((r) => r.json())
+        .then((res) => alert(res.ok ? `${g.label} connected (${ownership}).` : `Failed: ${res.error || "error"}`));
+    }
+  };
+  const pill = (label: string, on: boolean, click?: () => void) => (
+    <span onClick={click} style={{ cursor: click ? "pointer" : "default", fontSize: 12, fontWeight: 600,
+      padding: "2px 10px", borderRadius: 20, marginRight: 6,
+      background: on ? "#0f62fe" : "#e0e0e0", color: on ? "#fff" : "#525252" }}>{label}</span>
+  );
+
+  return (
+    <div>
+      <Loader loading={loading} error={error} />
+      <p className="studio-muted" style={{ marginBottom: 12 }}>How to connect each channel &amp; integration —
+        required credentials, where to store them (<b>per-user</b> vs <b>per-tenant</b>), and the steps.</p>
+      {data?.map((g) => (
+        <Tile key={g.app} className="studio-card" style={{ marginBottom: 12 }}>
+          <div className="studio-card-head">
+            <span className="studio-card-title">{g.label}</span>
+            <span>
+              <Tag type={g.kind === "channel" ? "blue" : "teal"} size="sm">{g.kind}</Tag>
+              <Tag type="outline" size="sm">{g.wiring}</Tag>
+            </span>
+          </div>
+          {(g.creds || []).length === 0
+            ? <p className="studio-muted" style={{ fontSize: 13 }}>No credentials needed.</p>
+            : (g.creds || []).map((c: any) => (
+              <div key={c.key} style={{ fontSize: 13, margin: "3px 0" }}>
+                <Tag type={c.present ? "green" : (c.required ? "red" : "gray")} size="sm">
+                  {c.present ? "set" : (c.required ? "missing" : "optional")}</Tag>
+                <code>{c.key}</code> — {c.label} <span className="studio-muted">({c.where})</span>
+              </div>
+            ))}
+          {(g.ownership || []).length > 0 && (
+            <div style={{ fontSize: 13, margin: "8px 0 4px" }}>
+              <b>Store credential:</b>{" "}
+              {(g.ownership || []).map((o: string) =>
+                <React.Fragment key={o}>{pill(o === "per_user" ? "per-user" : "per-tenant",
+                  (own[g.app] || g.ownership_default) === o,
+                  (g.ownership || []).length > 1 ? () => setOwn({ ...own, [g.app]: o }) : undefined)}</React.Fragment>)}
+            </div>
+          )}
+          <ol style={{ fontSize: 13, margin: "6px 0", paddingLeft: 18 }}>
+            {(g.steps || []).map((s: string, i: number) => <li key={i} style={{ margin: "3px 0" }}>{s}</li>)}
+          </ol>
+          {g.note && <p className="studio-muted" style={{ fontSize: 12.5 }}>⚠ {g.note}</p>}
+          {(g.connect === "oauth" || g.connect === "token") && (
+            <Button kind="tertiary" size="sm" renderIcon={g.connect === "oauth" ? Launch : Plug}
+              onClick={() => connect(g)}>Connect {g.label}</Button>
+          )}
+        </Tile>
+      ))}
+    </div>
+  );
+}
+
 function FlowsTab({ refresh }: { refresh: number }) {
   const { data, loading, error } = useEndpoint<any[]>(api.getEventsSubscriptions, (d) => d.subscriptions ?? [], refresh);
   return (
@@ -402,6 +470,7 @@ export function StudioPage() {
             <Tab renderIcon={Bot}>Agents</Tab>
             <Tab renderIcon={Chat}>Channels</Tab>
             <Tab renderIcon={Plug}>Integrations</Tab>
+            <Tab renderIcon={Settings}>Setup</Tab>
             <Tab renderIcon={Flow}>Flows</Tab>
             <Tab renderIcon={Idea}>Examples</Tab>
             <Tab renderIcon={User}>Profile</Tab>
@@ -412,6 +481,7 @@ export function StudioPage() {
             <TabPanel><AgentsTab refresh={refresh} /></TabPanel>
             <TabPanel><ChannelsTab refresh={refresh} /></TabPanel>
             <TabPanel><IntegrationsTab refresh={refresh} /></TabPanel>
+            <TabPanel><SetupTab refresh={refresh} /></TabPanel>
             <TabPanel><FlowsTab refresh={refresh} /></TabPanel>
             <TabPanel><ExamplesTab refresh={refresh} onTry={onTry} /></TabPanel>
             <TabPanel><ProfileTab refresh={refresh} /></TabPanel>

@@ -170,13 +170,19 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 _parts = origin.split(":", 2)
                 if len(_parts) == 3:
                     o_channel, o_native = _parts[1], _parts[2]
+            from . import delivery
             sink = deliver_to or o_channel or (spec.channels[0] if spec.channels else "web")
-            # AP appends a channel send step only when the sink is the origin channel (so we have
-            # the caller's native id) and it's a known channel connector; else web/capture delivery.
-            deliver_channel = sink if (sink in flows.CHANNELS and sink == o_channel and o_native) else None
+            # Deliver to the origin channel only when we have the caller's native id and it's a
+            # known channel connector. Then split by BACKEND: an AP-backed channel gets an AP send
+            # step; a DIRECT channel (e.g. Slack) has CUGA send it — no AP connection, no send step.
+            _chan_sink = sink if (sink in flows.CHANNELS and sink == o_channel and o_native) else None
+            _direct = bool(_chan_sink and delivery.is_direct(_chan_sink))
+            deliver_channel = None if _direct else _chan_sink          # AP send step (ap channels)
             deliver_target = o_native if deliver_channel else None
             deliver_connection = (credentials.connection_external_id(deliver_channel, "per-user", p)
                                   if deliver_channel else None)
+            deliver_direct_channel = _chan_sink if _direct else None   # CUGA-side send (direct)
+            deliver_direct_target = o_native if _direct else None
             # just-in-time connect for a per-user integration the flow (or agent) needs
             connect = await _connect_needed(spec, p, engine)
             if connect:
@@ -222,7 +228,9 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                     interval_seconds=interval, deliver=True,
                     project_name=p.ap_project_name(grain), scope=p.scope,
                     deliver_channel=deliver_channel, deliver_target=deliver_target,
-                    deliver_connection=deliver_connection)
+                    deliver_connection=deliver_connection,
+                    deliver_direct_channel=deliver_direct_channel,
+                    deliver_direct_target=deliver_direct_target)
             except Exception as e:  # noqa: BLE001
                 return f"error: couldn't arm flow ({e})."
             sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode=kind.upper(),

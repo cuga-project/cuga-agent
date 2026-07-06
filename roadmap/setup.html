@@ -125,10 +125,19 @@ HOST_CALLBACK_URL=http://host.containers.internal:8100/invoke
 AP_BASE_URL=http://localhost:8081
 AP_EMAIL=you@example.com     AP_PASSWORD=Sup3rSecret!
 
-<span class="c"># --- channel(s) you'll test ---</span>
-TELEGRAM_BOT_TOKEN=123456:ABC...      <span class="c"># from @BotFather</span></div>
+<span class="c"># --- public HTTPS (Telegram/Slack webhooks) — a cloudflared quick-tunnel to :8100 ---</span>
+EVENTS_PUBLIC_URL=https://your-tunnel.trycloudflare.com
+
+<span class="c"># --- channels &amp; integrations you'll test ---</span>
+TELEGRAM_BOT_TOKEN=123456:ABC...      <span class="c"># @BotFather (AP backend)</span>
+DISCORD_BOT_TOKEN=...                 <span class="c"># dev portal (AP backend, polling)</span>
+SLACK_BOT_TOKEN=xoxb-...              <span class="c"># direct backend (default); SLACK_SIGNING_SECRET recommended</span>
+BOX_DEV_TOKEN=...                     <span class="c"># direct poll (default); ~60-min dev token, no OAuth app</span></div>
   <div class="note warn"><b>⚠️ Do NOT set <code>AP_WORKER_TOKEN</code>.</b> Activepieces mints it as a JWT signed with <code>AP_JWT_SECRET</code>.
     A random string makes the AP worker crash-loop and every channel/schedule arm hangs. Leave it unset — <code>ap_up.sh</code> handles the AP secrets in <code>.ap.env</code> (only <code>AP_ENCRYPTION_KEY</code> + <code>AP_JWT_SECRET</code>).</div>
+  <p class="lead" style="margin-top:12px"><b>Per-integration setup</b> (procure → wire → verify → troubleshoot) lives in
+    <code>events_docs/setup/</code>: Slack · Discord · Telegram · Box. Slack &amp; Box default to a
+    <b>direct</b> backend (CUGA↔vendor API, no Activepieces); Telegram &amp; Discord run via AP.</p>
 </section>
 
 <section id="ap">
