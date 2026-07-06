@@ -1726,7 +1726,10 @@ async def event_stream(
                                         agent_id=app_state.agent_id,
                                         thread_id=thread_id,
                                         user_id=user_id,
-                                        state=local_state if local_state else AgentState(),
+                                        # state is unused when events_only=True; pass it
+                                        # like the normal branch does (AgentState() would
+                                        # raise on its required fields anyway).
+                                        state=local_state,
                                         events=stream_events_buffer.copy(),
                                         user_attachments=user_attachments,
                                         events_only=True,
