@@ -118,7 +118,7 @@ scripts/events_up.sh --status</div></td><td class="expect">registry :8001 &amp; 
       <tr><td class="step">1</td><td><b>Start the registry</b> (Run &amp; Debug → "API Registry Demo"), or leave <code>events_up.sh</code>'s registry running.</td><td class="expect">registry :8001 up</td><td class="c"><input type="checkbox" data-k="b1"></td><td><input class="note" data-k="nb1" placeholder="…"></td></tr>
       <tr><td class="step">2</td><td><b>Launch the debug server</b>: Run &amp; Debug → <b>"Events: CUGA server :8100 (debug)"</b> (runs <code>scripts/run_events_server.py</code>, <code>justMyCode:false</code>).</td><td class="expect">console prints <code>[events] EVENTS_ENABLED=1 …</code>; :8100 up</td><td class="c"><input type="checkbox" data-k="b2"></td><td><input class="note" data-k="nb2" placeholder="…"></td></tr>
       <tr><td class="step">3</td><td><b>Set breakpoints</b> (the request path, in order):<ul class="tight"><li><code>events/app.py</code> → <code>invoke()</code> (the seam; token check, scope, agent)</li><li><code>events/concierge.py</code> → <code>find_or_create_flow()</code> (NL→flow args)</li><li><code>events/ap_engine.py</code> → <code>create_schedule_flow()</code> (AP ops + send step)</li><li><code>events/runtime.py</code> → <code>CugaRuntime.run()</code> (the worker)</li></ul></td><td class="expect">4 red dots set</td><td class="c"><input type="checkbox" data-k="b3"></td><td><input class="note" data-k="nb3" placeholder="…"></td></tr>
-      <tr><td class="step">4</td><td><b>Trigger it</b> — in another terminal, arm a poll via the concierge:<div class="cmd">GT=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-)
+      <tr><td class="step">4</td><td><b>Trigger it</b> — in another terminal, arm a poll via the concierge:<div class="cmd">GT=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d ' ')
 curl -s -X POST "http://localhost:8100/api/concierge" \
  -H 'content-type: application/json' -H 'x-user-id: admin' \
  -d '{"text":"every 5 minutes send me the bitcoin price","thread_id":"gw:telegram:12345"}'</div></td><td class="expect">breakpoints hit in order; step through &amp; inspect <code>agent</code>, <code>kind</code>, <code>sink</code>, the AP ops</td><td class="c"><input type="checkbox" data-k="b4"></td><td><input class="note" data-k="nb4" placeholder="…"></td></tr>
@@ -136,7 +136,7 @@ curl -s -X POST "http://localhost:8100/api/concierge" \
   <table>
     <thead><tr><th>#</th><th>Do this</th><th>Expected</th><th class="c">☐</th><th style="width:18%">Notes</th></tr></thead>
     <tbody>
-      <tr><td class="step">1</td><td><b>Connect the bot token</b><div class="cmd">TOK=$(grep '^TELEGRAM_BOT_TOKEN=' .env|cut -d= -f2-)
+      <tr><td class="step">1</td><td><b>Connect the bot token</b><div class="cmd">TOK=$(grep '^TELEGRAM_BOT_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d ' ')
 curl -s -X POST http://localhost:8100/api/events/connect/telegram/token \
  -H 'content-type: application/json' -H 'x-user-id: admin' \
  -d "{\"token\":\"$TOK\",\"scope\":\"default/default\"}"</div></td><td class="expect"><code>{"ok":true,"connection":"ea::default::admin::telegram"}</code></td><td class="c"><input type="checkbox" data-k="c1"></td><td><input class="note" data-k="nc1" placeholder="…"></td></tr>
@@ -190,7 +190,7 @@ curl -s -X POST http://localhost:8100/api/events/connect/telegram/token \
       <tr><td class="step">12</td><td><b>Permissions</b> — a restricted agent (<code>market_briefer</code>, access=builder/admin) is <b>marked not-usable</b> for a plain user (shown, but flagged).<div class="cmd">for u in bob admin; do echo -n "$u: "; curl -s http://localhost:8100/api/events/agents -H "x-user-id: $u" | python3 -c "import sys,json;a={x['name']:x for x in json.load(sys.stdin)['agents']};print('market_briefer can_use=',a['market_briefer']['can_use'])"; done</div></td><td class="expect"><code>bob: can_use=False</code> · <code>admin: can_use=True</code></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e12"></td><td><input class="note" data-k="ne12" placeholder="…"></td></tr>
       <tr><td class="step">13</td><td><b>Studio loads &amp; shows real state</b> — open <code>http://localhost:8100/studio</code> (hard-refresh).</td><td class="expect">Agents tab = 8 agents; Flows = your subs; Channels/Integrations show live status</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e13"></td><td><input class="note" data-k="ne13" placeholder="…"></td></tr>
       <tr><td class="step">14</td><td><b>Live e2e harness</b> (the whole router, scripted)<div class="cmd">EVENTS_SERVER_URL=http://localhost:8100 \
-GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-) \
+GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d ' ') \
 .venv/bin/python tests/events/live_server_e2e_check.py</div></td><td class="expect"><b>6/6 checks passed</b></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e14"></td><td><input class="note" data-k="ne14" placeholder="…"></td></tr>
     </tbody>
   </table>

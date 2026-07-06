@@ -323,6 +323,45 @@ def test_channel_inbound_flows_and_box_watcher():
     assert "MATCH" in branches and router["type"] == "ROUTER"
 
 
+def test_discord_channel_wiring():
+    """Discord specifics (verified vs discord@0.5.3): POLLING trigger over ONE channel, replies go
+    to the message's channel_id (so THREAD messages reply in-thread), DROPDOWNs are DYNAMIC."""
+    import oauth
+    d = flows.CHANNELS["discord"]
+    # reply target = the channel the message came from (NOT the author) → thread-safe
+    assert d["native_ref"] == "{{trigger.channel_id}}"
+    assert d["target_arg"] == "channel_id" and d["send_action"] == "sendMessageWithBot"
+    assert d["text_arg"] == "message"
+    # the polling trigger needs the channel id at arm time; channel dropdowns must be DYNAMIC
+    assert d["trigger_args"] == ["channel"]
+    assert "channel" in d["dynamic_props"] and "channel_id" in d["dynamic_props"]
+    # the built inbound flow: /invoke thread_id + send both key off channel_id (in-thread replies)
+    f = flows.build_inbound_flow(channel="discord", agent="concierge")
+    step1 = f["trigger"]["nextAction"]
+    assert step1["settings"]["input"]["body"]["source"]["thread_id"] == "gw:discord:{{trigger.channel_id}}"
+    send = step1["nextAction"]
+    assert send["settings"]["input"]["channel_id"] == "{{trigger.channel_id}}"
+    # discord is a connectable token (Bot Token) app
+    assert oauth.connect_kind("discord") == "token"
+    assert oauth.provider("discord")["piece"].endswith("piece-discord")
+
+
+def test_slack_channel_wiring():
+    """Slack specifics (verified vs slack@0.17.2): APP_WEBHOOK trigger (Events API → instant),
+    replies to the message's channel, requires ignoreBots + sendAsBot, channel DROPDOWN → DYNAMIC."""
+    d = flows.CHANNELS["slack"]
+    assert d["native_ref"] == "{{trigger.channel}}"          # reply to the channel, not the user
+    assert d["send_action"] == "send_channel_message" and d["target_arg"] == "channel"
+    assert d["text_arg"] == "text"
+    assert d["const"].get("sendAsBot") is True               # required by send_channel_message
+    assert d["trigger_const"].get("ignoreBots") is True      # required by new-message; skips bots
+    assert "channel" in d["dynamic_props"]                   # DROPDOWN fed a template
+    f = flows.build_inbound_flow(channel="slack", agent="concierge")
+    step1 = f["trigger"]["nextAction"]
+    assert step1["settings"]["input"]["body"]["source"]["thread_id"] == "gw:slack:{{trigger.channel}}"
+    assert step1["nextAction"]["settings"]["input"]["channel"] == "{{trigger.channel}}"
+
+
 # ---- admin OAuth-app store + resolver (UI-entered creds override .env) ----
 def test_oauth_app_store_and_resolver():
     import oauth

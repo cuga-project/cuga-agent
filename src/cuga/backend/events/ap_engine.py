@@ -103,8 +103,10 @@ class APEngine:
 
     # ---- flow ops --------------------------------------------------------
     @staticmethod
-    def _prop_settings(inp: dict) -> dict:
-        ps = {k: {"type": "MANUAL"} for k in inp}
+    def _prop_settings(inp: dict, dynamic=()) -> dict:
+        # DROPDOWN props fed a {{template}} (e.g. Discord channel_id) must be marked DYNAMIC, or AP
+        # validates the value against the (unfetched) dropdown options and flags the step invalid.
+        ps = {k: {"type": "DYNAMIC" if k in dynamic else "MANUAL"} for k in inp}
         if "body" in ps:
             ps["body"] = {"type": "MANUAL", "schema": {
                 "data": {"type": "JSON", "required": True, "displayName": "JSON Body"}}}
@@ -216,7 +218,7 @@ class APEngine:
         if connection:
             send_inp["auth"] = f"{{{{connections['{connection}']}}}}"
         return self._piece_action_op(parent, name, piece, d["send_action"], send_inp, sver,
-                                     f"{channel} · send")
+                                     f"{channel} · send", dynamic=d.get("dynamic_props", []))
 
     async def create_schedule_flow(self, *, name: str, agent: str, thread_id: str, prompt: str,
                                    cron: str | None = None, interval_seconds: int | None = None,
@@ -276,16 +278,16 @@ class APEngine:
     # All channel/integration specifics come from flows.CHANNELS / flows.SOURCE_TRIGGER (config),
     # so there is NO channel/integration API in CUGA — AP does the receiving + sending.
     # ⚠️ VERIFY the piece trigger/action op shapes against your AP build on first live arm.
-    def _piece_trigger_op(self, piece: str, trigger: str, inp: dict, ver: str) -> dict:
-        settings = {"propertySettings": self._prop_settings(inp), "pieceName": piece,
+    def _piece_trigger_op(self, piece: str, trigger: str, inp: dict, ver: str, dynamic=()) -> dict:
+        settings = {"propertySettings": self._prop_settings(inp, dynamic), "pieceName": piece,
                     "pieceVersion": ver, "triggerName": trigger, "input": inp}
         return {"type": "UPDATE_TRIGGER",
                 "request": {"name": "trigger", "valid": True, "displayName": f"{piece} · {trigger}",
                             "type": "PIECE_TRIGGER", "settings": settings}}
 
     def _piece_action_op(self, parent: str, name: str, piece: str, action: str, inp: dict,
-                         ver: str, display: str) -> dict:
-        settings = {"propertySettings": self._prop_settings(inp), "pieceName": piece,
+                         ver: str, display: str, dynamic=()) -> dict:
+        settings = {"propertySettings": self._prop_settings(inp, dynamic), "pieceName": piece,
                     "pieceVersion": ver, "actionName": action, "input": inp}
         return {"type": "ADD_ACTION",
                 "request": {"parentStep": parent,
@@ -305,10 +307,12 @@ class APEngine:
 
     async def create_inbound_flow(self, *, channel: str, agent: str = "concierge",
                                   connection: str = "", project_name: str | None = None,
-                                  scope: str = "") -> str:
+                                  scope: str = "", trigger_input: dict | None = None) -> str:
         """Arm a channel INBOUND flow: <channel>·trigger ▸ /invoke ▸ <channel>·send. Every
         message from the channel reaches the concierge; the reply goes back out via AP.
-        ``connection`` = the bot's AP connection externalId (wired as auth on trigger + send)."""
+        ``connection`` = the bot's AP connection externalId (wired as auth on trigger + send).
+        ``trigger_input`` supplies channel-specific trigger config declared in ``trigger_args``
+        (e.g. Discord's polling trigger needs the ``channel`` id to watch)."""
         from . import flows
         d = flows.CHANNELS.get(channel)
         if not d:
@@ -321,9 +325,15 @@ class APEngine:
             piece = flows.PIECE[d["piece"]]
             tver = await self._piece_version(c, piece)
             hver = await self._piece_version(c, flows.PIECE["http"])
-            # trigger (auth = the bot connection)
+            # trigger (auth = the bot connection; + any required trigger inputs, e.g. discord channel)
             tinp = {"auth": auth} if auth else {}
-            await self._post_op(c, flow_id, self._piece_trigger_op(piece, d["trigger"], tinp, tver), hdrs)
+            for k in d.get("trigger_args", []):
+                if not trigger_input or trigger_input.get(k) in (None, ""):
+                    raise APError(f"channel '{channel}' trigger needs '{k}' — pass it when arming")
+                tinp[k] = trigger_input[k]
+            tinp.update(d.get("trigger_const", {}))     # fixed trigger inputs (e.g. slack ignoreBots)
+            await self._post_op(c, flow_id, self._piece_trigger_op(
+                piece, d["trigger"], tinp, tver, dynamic=d.get("dynamic_props", [])), hdrs)
             # HTTP → /invoke (channel envelope: text + native id ride in the body/thread_id)
             body = {"agent": agent, "text": d["text_ref"], "deliver": False, "scope": scope,
                     "source": {"type": "channel", "name": channel,
@@ -339,7 +349,7 @@ class APEngine:
                 send_inp["auth"] = auth
             await self._post_op(c, flow_id, self._piece_action_op(
                 "step_1", "step_2", piece, d["send_action"], send_inp, sver,
-                f"{channel} · send"), hdrs)
+                f"{channel} · send", dynamic=d.get("dynamic_props", [])), hdrs)
             await self._post_op(c, flow_id,
                                 {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
         log.info("armed inbound flow channel=%s agent=%s flow=%s", channel, agent, flow_id)
@@ -400,16 +410,18 @@ class APEngine:
                               f"HTTP {r.status_code} {r.text[:200]}")
             return external_id
 
-    async def ensure_oauth_connection(self, external_id: str, piece: str, token_data: dict,
-                                      *, client_id: str, client_secret: str, token_url: str,
-                                      scope: str = "", redirect_url: str = "",
+    async def ensure_oauth_connection(self, external_id: str, piece: str, code: str,
+                                      *, client_id: str, client_secret: str, redirect_url: str,
+                                      scope: str = "", authorization_method: str = "BODY",
                                       project_name: str | None = None) -> str:
-        """Create an AP **OAUTH2** connection from CUGA-exchanged tokens; AP refreshes it.
+        """Create an AP **OAUTH2** connection by handing AP the authorization ``code`` — AP does the
+        token exchange itself and owns the refresh lifecycle.
 
-        CUGA hosts the consent + code exchange (oauth.py); here we hand AP the tokens + the OAuth
-        app config so AP owns the refresh lifecycle. ⚠️ VERIFY the ``value`` schema against your
-        AP build (OAUTH2 connection shape shifts between versions) — this is the best-effort CE
-        shape; adjust keys if AP rejects it. Token apps use ``ensure_secret_connection`` instead.
+        IMPORTANT (AP 0.82): the ``UpsertOAuth2Request`` schema REQUIRES ``code`` (+ client_id,
+        client_secret, redirect_url, all min-1). AP does NOT accept a pre-obtained access token —
+        so a "dev token"/"bot token" cannot be turned into an OAuth2 connection; the OAuth consent
+        flow (oauth.py authorize → callback with a code) is the only path. Token-auth pieces
+        (telegram/discord/github) use ``ensure_secret_connection`` instead.
         """
         async with httpx.AsyncClient(timeout=20) as c:
             hdrs = await self._auth(c)
@@ -417,12 +429,9 @@ class APEngine:
             if any(x.get("externalId") == external_id for x in await self._connections(c, hdrs, pid)):
                 return external_id
             value = {"type": "OAUTH2", "client_id": client_id, "client_secret": client_secret,
-                     "token_url": token_url, "redirect_url": redirect_url, "scope": scope,
-                     "grant_type": "authorization_code", "authorization_method": "BODY",
-                     "data": token_data,
-                     "access_token": token_data.get("access_token"),
-                     "refresh_token": token_data.get("refresh_token"),
-                     "expires_in": token_data.get("expires_in")}
+                     "code": code, "redirect_url": redirect_url, "scope": scope,
+                     "grant_type": "authorization_code", "authorization_method": authorization_method,
+                     "props": {}}
             r = await c.post(f"{self.base}/api/v1/app-connections", headers=hdrs, json={
                 "externalId": external_id, "displayName": external_id, "pieceName": piece,
                 "projectId": pid, "type": "OAUTH2", "value": value})

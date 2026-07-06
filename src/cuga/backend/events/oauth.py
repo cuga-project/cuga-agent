@@ -55,6 +55,7 @@ PROVIDERS: dict[str, dict] = {
     # token apps — no redirect; user pastes a secret (handled by ensure_secret_connection)
     "github": {"kind": "token", "piece": "@activepieces/piece-github"},
     "telegram": {"kind": "token", "piece": "@activepieces/piece-telegram-bot"},
+    "discord": {"kind": "token", "piece": "@activepieces/piece-discord"},   # Bot Token (SECRET_TEXT)
 }
 
 

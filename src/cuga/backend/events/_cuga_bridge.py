@@ -101,9 +101,22 @@ async def run_graph(graph, thread_id: str, text: str) -> str:
         cuga_lite_max_steps=getattr(graph, "cuga_lite_max_steps", None),
         enable_filesystem_tools=getattr(graph, "enable_filesystem_tools", None),
     )
+    from . import runmeta
+
+    def _tool_name(t):
+        for attr in ("api_name", "tool_name", "name"):
+            v = getattr(t, attr, None) or (t.get(attr) if isinstance(t, dict) else None)
+            if v:
+                return v
+        return None
+
     answer = ""
     async for event in loop.run_stream(state=state):
         if isinstance(event, AgentLoopAnswer):
+            if getattr(event, "tools", None):
+                names = [n for n in (_tool_name(t) for t in event.tools) if n]
+                if names:
+                    runmeta.add(tools=names)
             if event.answer is not None:
                 answer = event.answer
             if event.end:

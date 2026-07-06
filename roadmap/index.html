@@ -321,8 +321,8 @@
     <tbody>
       <tr><td><b>Web</b></td><td>chat UI</td><td><span class="pill p-live">Live</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-web"></td><td><input class="note" data-k="nc-web" placeholder="…"></td></tr>
       <tr><td><b>Telegram</b></td><td><code>send_text_message</code> · chat_id · message</td><td><span class="pill p-live">Live-verified</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-tg"></td><td><input class="note" data-k="nc-tg" placeholder="…"></td></tr>
-      <tr><td><b>Discord</b></td><td><code>sendMessageWithBot</code> · channel_id · message</td><td><span class="pill p-part">Wired, untested</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-dc"></td><td><input class="note" data-k="nc-dc" placeholder="…"></td></tr>
-      <tr><td><b>Slack</b></td><td><code>send_channel_message</code> · channel · text · <b>sendAsBot=true</b></td><td><span class="pill p-part">Wired, untested</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-sl"></td><td><input class="note" data-k="nc-sl" placeholder="…"></td></tr>
+      <tr><td><b>Discord</b></td><td><code>sendMessageWithBot</code> · channel_id · message · <i>polling</i></td><td><span class="pill p-live">Live-verified</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-dc"></td><td><input class="note" data-k="nc-dc" placeholder="human msg round-tripped 2026-07-05"></td></tr>
+      <tr><td><b>Slack</b></td><td><code>send_channel_message</code> · sendAsBot · <i>APP_WEBHOOK (instant)</i></td><td><span class="pill p-part">Wired · needs OAuth+Events</span></td><td class="c"><input type="checkbox" class="chk" data-k="c-sl"></td><td><input class="note" data-k="nc-sl" placeholder="delivery leg ok; connect needs OAuth consent"></td></tr>
     </tbody>
   </table>
 </section>
@@ -353,7 +353,7 @@
     </ul></div>
     <div class="box"><h4>State</h4><ul class="tight">
       <li><span class="pill p-live">Live</span> Telegram bot-token connection (secret) → used by the inbound + delivery flows.</li>
-      <li><span class="pill p-part">Wired</span> OAuth connect (Gmail/Box) — CUGA endpoints + AP OAuth2 connection built; not exercised live.</li>
+      <li><span class="pill p-part">Wired</span> OAuth connect (Gmail/Box/Slack) — AP requires the OAuth <b>code-exchange</b> flow (it will NOT accept a pasted access/dev token); needs client id/secret + consent. <code>ensure_oauth_connection</code> fixed to AP's code schema (2026-07-05).</li>
       <li><span class="pill p-part">Wired</span> Admin → OAuth-apps panel (enter client id/secret in UI vs .env).</li>
       <li><span class="pill p-road">Roadmap</span> secrets vault (replace <code>.env</code>) for cloud.</li>
     </ul></div>

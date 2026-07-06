@@ -221,6 +221,9 @@ class CugaRuntime(AgentRuntime):
                 "EVENTS_CUGA_FALLBACK_REACT=1 to allow one).")
         try:
             from ._cuga_bridge import run_graph
+            from . import runmeta
+            runmeta.add(agent=agent_id.split("::")[-1], backend="cuga",
+                        mcp=list(getattr(spec, "mcp_servers", []) or []))
             graph = await self._get_or_build(spec, scope, ctx)
             return await run_graph(graph, thread_id, text)
         except Exception as e:

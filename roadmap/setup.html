@@ -167,7 +167,7 @@ scripts/events_up.sh --stop     <span class="c"># tear down</span></div>
 
   <h3 style="font-size:15px;margin:14px 0 4px">b) Live router end-to-end (uses the running stack)</h3>
   <div class="cmd">EVENTS_SERVER_URL=http://localhost:8100 \
-GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-) \
+GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d ' ') \
 .venv/bin/python tests/events/live_server_e2e_check.py</div>
   <p class="lead">Expect <b>6/6 checks passed</b> — status, router sees agents, answer-now price, flow create, dedup reuse, decline.</p>
 
@@ -182,7 +182,7 @@ GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-) \
   <h2><span class="n">7</span> Telegram round-trip <span class="pill p-opt">optional</span></h2>
   <p class="lead">Prove the full inbound path: message → concierge → CUGA → reply back in Telegram.</p>
   <div class="cmd"><span class="c"># 1) hand your bot token to AP (creates the connection)</span>
-TOK=$(grep '^TELEGRAM_BOT_TOKEN=' .env|cut -d= -f2-)
+TOK=$(grep '^TELEGRAM_BOT_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d ' ')
 curl -s -X POST http://localhost:8100/api/events/connect/telegram/token \
   -H 'content-type: application/json' -H 'x-user-id: admin' \
   -d "{\"token\":\"$TOK\",\"scope\":\"default/default\"}"

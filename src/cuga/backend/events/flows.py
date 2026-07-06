@@ -47,15 +47,26 @@ CHANNELS = {
                  "text_ref": "{{trigger.message.text}}",
                  "native_ref": "{{trigger.message.chat.id}}",
                  "send_action": "send_text_message", "target_arg": "chat_id", "text_arg": "message"},
+    # Discord's new_message is a POLLING trigger that watches ONE channel (required `channel` input,
+    # supplied at arm time). Replies go to the message's channel_id — which for a message posted in a
+    # THREAD is the thread's id, so replies land back in the thread automatically.
     "discord": {"piece": "discord", "trigger": "new_message",
                 "text_ref": "{{trigger.content}}",
-                "native_ref": "{{trigger.author.id}}",
-                "send_action": "sendMessageWithBot", "target_arg": "channel_id", "text_arg": "message"},
+                "native_ref": "{{trigger.channel_id}}",
+                "send_action": "sendMessageWithBot", "target_arg": "channel_id", "text_arg": "message",
+                "trigger_args": ["channel"],    # the channel id to poll (given at arm time)
+                "dynamic_props": ["channel", "channel_id"]},  # DROPDOWNs fed literal/template → DYNAMIC
+    # Slack's new-message is an APP_WEBHOOK (Slack Events API → instant, like Telegram). Replies go
+    # to the message's channel (thread-safe: a threaded reply carries the parent channel + thread_ts).
+    # The trigger requires ignoreBots=true (avoids the bot replying to itself); the send DROPDOWN
+    # channel is fed a template → DYNAMIC; sendAsBot is required.
     "slack": {"piece": "slack", "trigger": "new-message",
               "text_ref": "{{trigger.text}}",
-              "native_ref": "{{trigger.user}}",
+              "native_ref": "{{trigger.channel}}",
               "send_action": "send_channel_message", "target_arg": "channel", "text_arg": "text",
-              "const": {"sendAsBot": True}},   # send_channel_message REQUIRES sendAsBot
+              "const": {"sendAsBot": True},              # send_channel_message REQUIRES sendAsBot
+              "trigger_const": {"ignoreBots": True},     # required trigger input (skip bot messages)
+              "dynamic_props": ["channel"]},             # DROPDOWN fed a template → DYNAMIC
 }
 
 _HOST = "{{connections.ea_host}}"

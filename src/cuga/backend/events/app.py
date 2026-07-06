@@ -79,6 +79,9 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                                        if uid else "That link code is invalid or expired.")}
         # agents are tenant-shared (agent_scope = first 2 scope segments); run-state is per-user
         agent_scope = "/".join(scope.split("/")[:2]) or scope
+        from . import runmeta
+        runmeta.start()
+        ms = None
         agent = env.agent
         # 'concierge' is the runtime ROUTER (picks among pre-built agents / arms flows), not a
         # worker agent — inbound CHANNEL messages arm agent='concierge', so route those through
@@ -92,7 +95,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 t0 = time.time()
                 principal = _principal_from(scope, request.headers)
                 answer = await concierge.run(env.thread_id, env.text, principal)
-                tr("concierge", ok=True, scope=scope, ms=int((time.time() - t0) * 1000))
+                ms = int((time.time() - t0) * 1000)
+                tr("concierge", ok=True, scope=scope, ms=ms)
             except Exception as e:  # noqa: BLE001
                 tr.error("error", agent=agent, err=str(e))
                 return JSONResponse({"ok": False, "error": str(e)}, 500)
@@ -105,10 +109,19 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 t0 = time.time()
                 answer = await runtime.run(agent, env.thread_id, env.worker_input(), scope=agent_scope,
                                            deliver_to=[env.source.name] if env.deliver else None)
-                tr("worker.done", agent=agent, ok=True, ms=int((time.time() - t0) * 1000))
+                ms = int((time.time() - t0) * 1000)
+                tr("worker.done", agent=agent, ok=True, ms=ms)
             except Exception as e:  # noqa: BLE001
                 tr.error("error", agent=agent, err=str(e))
                 return JSONResponse({"ok": False, "error": str(e)}, 500)
+        # metadata footer — who answered + which tools ran — appended to the reply so it shows on
+        # every channel (Telegram/Discord/…). Structured `meta` also rides in the API response.
+        # Off with EVENTS_REPLY_METADATA=0.
+        meta = runmeta.get() or {}
+        if os.environ.get("EVENTS_REPLY_METADATA", "1") != "0" and isinstance(answer, str):
+            foot = runmeta.footer(meta, ms=ms)
+            if foot:
+                answer = f"{answer}\n\n{foot}"
         # Delivery: channel/schedule flows now deliver via an AP send step (deliver=False here,
         # AP owns the outbound). deliver=True is the web/self-delivery path: POST the answer to
         # EA_CAPTURE_URL when set (an assertable, real-HTTP delivery target for e2e/web).
@@ -123,7 +136,10 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     tr("deliver", via="capture", ok=True)
                 except Exception as e:  # noqa: BLE001
                     tr.error("deliver", via="capture", err=str(e))
-        return {"ok": True, "agent": agent, "answer": answer, "trace_id": tr.id}
+        return {"ok": True, "agent": agent, "answer": answer, "trace_id": tr.id,
+                "meta": {"agent": meta.get("agent") or (agent if agent != "concierge" else None),
+                         "backend": meta.get("backend"), "mcp": meta.get("mcp") or [],
+                         "tools": meta.get("tools") or [], "ms": ms}}
 
     @app.post("/api/concierge")
     async def api_concierge(request: Request):   # NOT 'concierge' — that name is the instance arg
@@ -273,16 +289,16 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         if not code:
             return HTMLResponse("<h3>Connect failed</h3><p>No authorization code.</p>", 400)
         try:
-            tokens = await oauth.exchange_code(app, code)
+            # AP does the code→token exchange itself (UpsertOAuth2Request wants the code, not tokens)
             ext = credentials.connection_external_id(app, "per-user", p)
             if engine is not None:
                 prov = oauth.provider(app)
                 grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
                 await engine.ensure_oauth_connection(
-                    ext, prov["piece"], tokens,
+                    ext, prov["piece"], code,
                     client_id=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_ID", ""),
                     client_secret=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_SECRET", ""),
-                    token_url=prov["token"], scope=" ".join(prov.get("scopes", [])),
+                    scope=" ".join(prov.get("scopes", [])),
                     redirect_url=oauth.redirect_uri(app),
                     project_name=p.ap_project_name(grain))
         except Exception as e:  # noqa: BLE001
@@ -295,12 +311,14 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
 
     @app.post("/api/events/connect/{app}/token")
     async def connect_token(app: str, request: Request):
-        """Paste a raw credential → an AP connection.
-          - token apps (GitHub PAT, Telegram bot) → a SECRET_TEXT connection.
-          - OAuth apps (Box/Gmail/…) with a pasted **access/developer token** → an OAUTH2
-            connection carrying just that access_token (no refresh). This is the **Box Developer
-            Token** path: it sidesteps the redirect-URI config a free Box account can't save, but
-            the token **expires (~60 min) and can't refresh** — regenerate to re-demo.
+        """Paste a raw credential → a SECRET_TEXT AP connection. ONLY for token-auth pieces
+        (GitHub PAT, Telegram/Discord bot token).
+
+        OAuth pieces (Box/Gmail/Slack/Outlook) CANNOT use a pasted token: AP's OAuth2 connection
+        schema requires the authorization **code** and does the exchange itself — it will not accept
+        a pre-obtained access/dev token. Those must go through the OAuth login at
+        ``GET /api/events/connect/{app}`` (consent → callback). We return a clear 400 here instead
+        of a cryptic AP validation error.
         """
         from . import oauth, credentials
         body = await request.json()
@@ -310,30 +328,22 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return JSONResponse({"ok": False, "error": f"unknown app '{app}'"}, 404)
         if not token:
             return JSONResponse({"ok": False, "error": "missing 'token'"}, 400)
+        if oauth.connect_kind(app) != "token":
+            return JSONResponse({"ok": False, "app": app, "error": (
+                f"'{app}' is an OAuth connector — AP can't build a connection from a pasted token. "
+                f"Use the OAuth login: GET /api/events/connect/{app} (consent → callback).")}, 400)
         p = _principal_from((body or {}).get("scope"), request.headers)
         ext = credentials.connection_external_id(app, "per-user", p)
         if engine is None:
             return JSONResponse({"ok": False, "error": "AP not configured"}, 501)
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
-        dev = oauth.connect_kind(app) != "token"      # OAuth app + pasted token = dev/access token
         try:
-            if not dev:
-                await engine.ensure_secret_connection(ext, prov["piece"], token,
-                                                      project_name=p.ap_project_name(grain))
-            else:
-                await engine.ensure_oauth_connection(
-                    ext, prov["piece"], {"access_token": token},
-                    client_id=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_ID", ""),
-                    client_secret=os.environ.get(f"EVENTS_OAUTH_{app.upper()}_CLIENT_SECRET", ""),
-                    token_url=prov.get("token", ""), scope=" ".join(prov.get("scopes", [])),
-                    redirect_url=oauth.redirect_uri(app), project_name=p.ap_project_name(grain))
+            await engine.ensure_secret_connection(ext, prov["piece"], token,
+                                                  project_name=p.ap_project_name(grain))
         except Exception as e:  # noqa: BLE001
             import traceback
             Trace(new_trace_id()).error("connect_token", app=app, err=repr(e), tb=traceback.format_exc())
             return JSONResponse({"ok": False, "error": repr(e) or type(e).__name__}, 500)
-        if dev:
-            return {"ok": True, "app": app, "connection": ext,
-                    "note": "access-token connection (dev token: ~60 min, no refresh — regenerate to renew)"}
         return {"ok": True, "app": app, "connection": ext}
 
     @app.get("/api/events/connections")
@@ -428,10 +438,13 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
         from . import credentials
         conn = credentials.connection_external_id(channel, "per-user", p)  # the bot connection
+        # channel-specific trigger inputs (e.g. Discord polls ONE channel → pass {"channel": "<id>"})
+        trigger_input = {k: v for k, v in body.items() if k not in ("scope",)}
         try:
             flow_id = await engine.create_inbound_flow(
                 channel=channel, agent="concierge", connection=conn,
-                project_name=p.ap_project_name(grain), scope=p.scope)
+                project_name=p.ap_project_name(grain), scope=p.scope,
+                trigger_input=trigger_input)
         except Exception as e:  # noqa: BLE001
             import traceback
             Trace(new_trace_id()).error("arm", channel=channel, err=repr(e), tb=traceback.format_exc())
