@@ -302,6 +302,9 @@ export function KnowledgeSidePanel({
                 <label className="knowledge-mini-switch" title="Citations for this chat">
                   <input
                     type="checkbox"
+                    role="switch"
+                    aria-checked={sessionCitations ?? true}
+                    aria-label="Citations for this chat"
                     checked={sessionCitations ?? true}
                     onChange={handleSessionCitationsChange}
                     disabled={!conversationReady}
