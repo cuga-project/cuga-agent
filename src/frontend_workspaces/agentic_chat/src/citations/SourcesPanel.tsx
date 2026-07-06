@@ -119,7 +119,9 @@ export default function SourcesPanel({
                   disabled={!!unavailable[s.n]}
                   title={unavailable[s.n] ? 'Document no longer in the knowledge base' : undefined}
                   onClick={async () => {
-                    const ok = await onOpenDocument(s);
+                    // A rejecting opener (network error) must not become an unhandled
+                    // rejection; treat it as "unavailable" like a false return.
+                    const ok = await onOpenDocument(s).catch(() => false);
                     if (!ok) setUnavailable((u) => ({ ...u, [s.n]: true }));
                   }}
                 >

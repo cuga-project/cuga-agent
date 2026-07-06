@@ -1,7 +1,9 @@
 import { escapeAttr, pageLabel, type MessageSource } from './types';
 
 const CODE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g;
-const MARKER = /\[(\d{1,3})\]/g;
+// (?![:(]) keeps markdown reference links ("[1]: url", "[1](url)") intact when
+// a link's numeric text collides with a source number.
+const MARKER = /\[(\d{1,3})\](?![:(])/g;
 
 /**
  * Replace resolved display markers [n] in answer markdown with <cuga-cite>
@@ -36,7 +38,14 @@ export function injectCitations(
           (page ? ` page="${escapeAttr(page)}"` : '') +
           ` scope="${escapeAttr(source.scope)}"` +
           (source.section_path ? ` section="${escapeAttr(source.section_path)}"` : '') +
-          ` preview="${escapeAttr((source.snippet || '').slice(0, 140))}"` +
+          // Newlines inside an attribute split the surrounding markdown
+          // paragraph — normalize whitespace BEFORE slicing (safe order:
+          // escaping after slicing can never truncate an entity).
+          ` preview="${escapeAttr(
+            (source.snippet || '')
+              .replace(/\s+/g, ' ')
+              .slice(0, 140),
+          )}"` +
           `></cuga-cite>`
         );
       });
