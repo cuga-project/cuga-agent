@@ -1,4 +1,6 @@
 # tests/unit/test_citation_settings.py
+import pytest
+
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.sources import citations_enabled_for, set_session_override_lookup
 
@@ -44,3 +46,28 @@ def test_lookup_errors_fall_back_to_config():
         raise RuntimeError("provider down")
     set_session_override_lookup(boom)
     assert citations_enabled_for(KnowledgeConfig(citations_enabled=True), "t") is True
+
+
+def test_validate_rejects_non_bool():
+    cfg = KnowledgeConfig()
+    cfg.citations_enabled = "yes"
+    with pytest.raises(ValueError, match="citations_enabled"):
+        cfg.validate()
+
+
+def test_lookup_returning_none_falls_back():
+    set_session_override_lookup(lambda tid: None)
+    assert citations_enabled_for(KnowledgeConfig(citations_enabled=True), "t") is True
+
+
+def test_string_overrides_coerced_not_truthiness():
+    cfg = KnowledgeConfig(citations_enabled=True)
+    set_session_override_lookup(lambda tid: {"citations_enabled": "false"})
+    assert citations_enabled_for(cfg, "t") is False
+    set_session_override_lookup(lambda tid: {"citations_enabled": "on"})
+    assert citations_enabled_for(KnowledgeConfig(citations_enabled=False), "t") is True
+    # junk values fall back to the agent-level flag
+    set_session_override_lookup(lambda tid: {"citations_enabled": "banana"})
+    assert citations_enabled_for(cfg, "t") is True
+    set_session_override_lookup(lambda tid: {"citations_enabled": 3.14})
+    assert citations_enabled_for(KnowledgeConfig(citations_enabled=False), "t") is False

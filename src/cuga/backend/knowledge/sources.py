@@ -23,7 +23,10 @@ import threading
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from cuga.backend.knowledge.config import KnowledgeConfig
 
 logger = logging.getLogger(__name__)
 
@@ -296,8 +299,8 @@ def resolve_citations(
 
 # --- enablement ---------------------------------------------------------------
 
-# Server wires this to the session provider (main.py); SDK leaves it None so
-# enablement falls back to the agent-level KnowledgeConfig flag alone.
+# The server wires this to the session provider at startup (main.py); until then,
+# and always in the SDK, enablement falls back to the agent-level KnowledgeConfig flag alone.
 _override_lookup: Callable[[str], dict[str, Any] | None] | None = None
 
 
@@ -308,14 +311,27 @@ def set_session_override_lookup(
     _override_lookup = fn
 
 
-def citations_enabled_for(config: Any, thread_id: str | None) -> bool:
+def citations_enabled_for(config: "KnowledgeConfig | Any", thread_id: str | None) -> bool:
     """Effective citations flag: per-session override wins over agent config."""
     base = bool(getattr(config, "citations_enabled", True))
     if thread_id and _override_lookup is not None:
         try:
             overrides = _override_lookup(thread_id) or {}
             if "citations_enabled" in overrides:
-                return bool(overrides["citations_enabled"])
+                value = overrides["citations_enabled"]
+                if isinstance(value, bool):
+                    return value
+                if isinstance(value, str):
+                    lowered = value.strip().lower()
+                    if lowered in ("true", "1", "yes", "on"):
+                        return True
+                    if lowered in ("false", "0", "no", "off"):
+                        return False
+                logger.warning(
+                    "ignoring non-boolean citations_enabled override %r for thread %s",
+                    value,
+                    thread_id,
+                )
         except Exception:
             logger.exception("session override lookup failed; using agent-level flag")
     return base

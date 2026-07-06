@@ -449,8 +449,8 @@ class KnowledgeConfig:
     session_level_enabled: bool = True
     # Numbered source citations ([1] + snippets) in agent answers. Search-only
     # behavior: deliberately EXCLUDED from vector_config_hash() so flipping it
-    # never triggers a reindex. Per-session override lives in
-    # SessionKnowledgeState.overrides (see knowledge/sources.py).
+    # never triggers a reindex.
+    # Per-session override lives in SessionKnowledgeState.overrides (session_provider.py); consumed via citations_enabled_for() in sources.py.
     citations_enabled: bool = True
     persist_dir: Path = field(default_factory=lambda: Path.cwd() / ".cuga" / "knowledge")
 
@@ -801,11 +801,13 @@ class KnowledgeConfig:
         # the structured glossary in place so callers see the cleaned form.
         _validate_client_adaptation(self.client_adaptation_text)
         self.client_adaptation_glossary = _validate_glossary(self.client_adaptation_glossary)
+        if not isinstance(self.citations_enabled, bool):
+            raise ValueError(
+                f"citations_enabled must be a boolean, got {type(self.citations_enabled).__name__}"
+            )
         # Reranker bounds: top_k_in 1..100; model name is a free string
         # (operators may point at fine-tuned variants); loading-time tests
         # reachability.
-        if not isinstance(self.citations_enabled, bool):
-            raise ValueError("knowledge.citations_enabled must be a boolean")
         if not isinstance(self.rerank_enabled, bool):
             raise ValueError(f"rerank_enabled must be bool, got {type(self.rerank_enabled).__name__}")
         if self.rerank_top_k_in < 1 or self.rerank_top_k_in > 100:
