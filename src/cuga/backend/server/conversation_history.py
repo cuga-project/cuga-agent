@@ -385,7 +385,13 @@ class ConversationHistoryDB:
                 # only buffers per-request events, so without this multi-turn refresh
                 # loses every turn except the most recent. Re-sequence the new events
                 # so numbers stay unique and monotonic across the merged list.
-                existing_events = json.loads(existing["events"]) if existing["events"] else []
+                raw_existing = json.loads(existing["events"]) if existing["events"] else []
+                # Tolerate corrupted rows: drop non-dict entries (and non-list
+                # payloads) so one bad row can't permanently break persistence
+                # for this thread via the except below.
+                if not isinstance(raw_existing, list):
+                    raw_existing = []
+                existing_events = [e for e in raw_existing if isinstance(e, dict)]
                 max_seq = max((e.get("sequence", -1) for e in existing_events), default=-1)
                 renumbered = [{**e, "sequence": max_seq + 1 + offset} for offset, e in enumerate(events)]
                 events_json = json.dumps(existing_events + renumbered)
