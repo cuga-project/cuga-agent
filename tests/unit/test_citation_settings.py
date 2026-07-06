@@ -1,9 +1,33 @@
 # tests/unit/test_citation_settings.py
+import asyncio
+from dataclasses import dataclass
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
+
 import pytest
 
-from cuga.backend.knowledge.awareness import CITATIONS_CONTRACT
+from cuga.backend.knowledge.awareness import CITATIONS_CONTRACT, assemble_system_prompt_section
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.sources import citations_enabled_for, set_session_override_lookup
+
+
+# ---------------------------------------------------------------------------
+# Stub helpers (mirror the harness in test_knowledge_client_adaptation.py)
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class _StubDoc:
+    filename: str
+    chunk_count: int = 1
+    preview: str = ""
+
+
+def _stub_engine(docs):
+    """Minimal engine stub that satisfies assemble_system_prompt_section."""
+    engine = SimpleNamespace()
+    engine.list_documents = AsyncMock(return_value=docs)
+    return engine
 
 
 def teardown_function():
@@ -79,3 +103,50 @@ def test_citations_contract_content():
     assert "cite_id" in CITATIONS_CONTRACT
     assert "earlier turns" in CITATIONS_CONTRACT.lower()
     assert "never write bare numeric" in CITATIONS_CONTRACT.lower()
+
+
+def test_contract_present_iff_enabled():
+    """CITATIONS_CONTRACT appears iff citations_enabled=True; legacy
+    '## Citing sources' section is suppressed when citations are enabled
+    and retained when they are not."""
+
+    def _search_cfg(citations_enabled: bool) -> SimpleNamespace:
+        return SimpleNamespace(
+            enabled=True,
+            citations_enabled=citations_enabled,
+            client_adaptation_text="",
+            client_adaptation_glossary=[],
+            max_search_attempts=3,
+            default_limit=10,
+            rag_profile="standard",
+        )
+
+    engine = _stub_engine([_StubDoc("report.pdf")])
+
+    # --- citations ON ---
+    assembled_on = asyncio.run(
+        assemble_system_prompt_section(
+            engine,
+            agent_id="test_agent",
+            thread_id=None,
+            base_instructions="BASE",
+            search_config=_search_cfg(citations_enabled=True),
+        )
+    )
+    assert assembled_on.has_knowledge is True
+    assert assembled_on.text.count("## Citations (use [sN] markers") == 1
+    assert "## Citing sources" not in assembled_on.text  # legacy section suppressed
+
+    # --- citations OFF ---
+    assembled_off = asyncio.run(
+        assemble_system_prompt_section(
+            engine,
+            agent_id="test_agent",
+            thread_id=None,
+            base_instructions="BASE",
+            search_config=_search_cfg(citations_enabled=False),
+        )
+    )
+    assert assembled_off.has_knowledge is True
+    assert "## Citations (use [sN] markers" not in assembled_off.text
+    assert "## Citing sources" in assembled_off.text  # legacy section retained

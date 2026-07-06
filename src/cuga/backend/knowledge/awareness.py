@@ -15,6 +15,7 @@ of the contract / doc-list / hash plumbing.
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -27,14 +28,18 @@ logger = logging.getLogger("cuga.knowledge")
 _AWARENESS_PREVIEW_MAX_CHARS = 200
 
 CITATIONS_CONTRACT = """
-## Citations (mandatory when answering from knowledge results)
+## Citations (use [sN] markers when results carry cite_ids)
 
 Every knowledge search result carries a `cite_id` (like "s3"). In your FINAL
 answer, append the marker right after each claim that comes from a retrieved
-chunk — before the sentence-ending punctuation is fine:
+chunk, before the sentence-ending punctuation:
 "The report number is 4521 [s3]."
 
 Rules:
+- This supersedes any earlier instruction to cite sources in prose: use
+  [sN] markers INSTEAD of `(source: <filename>)` or naming filename/page
+  in your sentences. Mention filenames in prose only when the user asks
+  about the documents themselves.
 - Use ONLY cite_ids that appeared in this conversation's search results.
   Results from earlier turns of this conversation remain citable by their
   original ids. Never invent an id; never write bare numeric citations
@@ -499,6 +504,16 @@ async def assemble_system_prompt_section(
     contract_text = load_knowledge_instructions(max_search_attempts=attempts)
 
     if getattr(cfg, "citations_enabled", True):
+        # The legacy prose-attribution section contradicts marker citations —
+        # drop it from the assembled prompt (operators may have edited or
+        # removed it; a non-match is fine) and let CITATIONS_CONTRACT own the
+        # attribution style.
+        contract_text = re.sub(
+            r"^## Citing sources\s*\n.*?(?=^## |\Z)",
+            "",
+            contract_text,
+            flags=re.MULTILINE | re.DOTALL,
+        )
         contract_text = contract_text + "\n" + CITATIONS_CONTRACT
 
     composed = compose_knowledge_prompt(contract_text, knowledge_block, base_instructions)
