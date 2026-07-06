@@ -15,6 +15,7 @@ import {
   NumberInput,
   Select,
   SelectItem,
+  ActionableNotification,
   InlineNotification,
   InlineLoading,
   Theme,
@@ -2984,23 +2985,19 @@ export default function KnowledgePanel({
                                 </Stack>
                                 {knowledgeConfig.embedding_provider === "openrouter" && (
                                   <>
-                                    <InlineNotification
+                                    <ActionableNotification
                                       kind="info"
                                       lowContrast
                                       hideCloseButton
                                       title="OpenRouter"
-                                      subtitle={
-                                        <>
-                                          Paste any embeddings model id from{" "}
-                                          <a
-                                            href="https://openrouter.ai/models?output_modalities=embeddings"
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                          >
-                                            openrouter.ai/models
-                                          </a>{" "}
-                                          (e.g. <code>openai/text-embedding-3-small</code>). Both Model and API Key are required.
-                                        </>
+                                      subtitle="Paste any embeddings model id (e.g. openai/text-embedding-3-small). Both Model and API Key are required."
+                                      actionButtonLabel="Browse models"
+                                      onActionButtonClick={() =>
+                                        window.open(
+                                          "https://openrouter.ai/models?output_modalities=embeddings",
+                                          "_blank",
+                                          "noopener,noreferrer",
+                                        )
                                       }
                                     />
                                     <TextInput
@@ -3031,23 +3028,19 @@ export default function KnowledgePanel({
                                         }
                                       />
                                     ) : (
-                                      <InlineNotification
+                                      <ActionableNotification
                                         kind="success"
                                         lowContrast
                                         hideCloseButton
                                         title="LiteLLM ready"
-                                        subtitle={
-                                          <>
-                                            <code>{knowledgeConfig.embedding_model}</code> will be routed via LiteLLM. See{" "}
-                                            <a
-                                              href="https://docs.litellm.ai/docs/embedding/supported_embedding"
-                                              target="_blank"
-                                              rel="noopener noreferrer"
-                                            >
-                                              supported models
-                                            </a>
-                                            . API key falls back to env var if empty. Base URL is for self-hosted proxies.
-                                          </>
+                                        subtitle={`${knowledgeConfig.embedding_model} will be routed via LiteLLM. API key falls back to env var if empty. Base URL is for self-hosted proxies.`}
+                                        actionButtonLabel="Supported models"
+                                        onActionButtonClick={() =>
+                                          window.open(
+                                            "https://docs.litellm.ai/docs/embedding/supported_embedding",
+                                            "_blank",
+                                            "noopener,noreferrer",
+                                          )
                                         }
                                       />
                                     )}
