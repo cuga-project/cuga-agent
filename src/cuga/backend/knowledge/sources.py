@@ -1,0 +1,258 @@
+# src/cuga/backend/knowledge/sources.py
+"""Thread-scoped source ledger + citation resolution for the knowledge engine.
+
+Deliberately imports nothing from ``engine.py`` — retrieval results are
+duck-typed (``text/filename/page/scope/score/section_path`` attributes) so
+this module stays cheap to import in unit tests and in the graph layer.
+
+The ledger is the memory that makes citations survive multi-hop retrieval
+and multi-turn conversations: every retrieved chunk is registered under a
+content-identity hash and receives a thread-stable ``cite_id`` (``s1``,
+``s2``, …). Re-retrieving the same chunk in any later hop or turn returns
+the SAME id, which is what lets the LLM cite a source found three turns
+ago. Display numbers ([1], [2]) are a per-message concern — assigned by
+``resolve_citations`` at final-answer time, never stored here.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import re
+import threading
+from collections import OrderedDict
+from dataclasses import dataclass
+from typing import Any, Callable
+
+from loguru import logger
+
+
+@dataclass
+class SourceRecord:
+    cite_id: str
+    key: str
+    scope: str
+    filename: str
+    page: int | None
+    section_path: str
+    text: str
+    score: float
+    query: str
+    cited: bool = False
+
+    def to_snapshot(self, n: int) -> dict[str, Any]:
+        """Self-contained per-message source entry. Must render without the
+        ledger, the collection, or the document still existing."""
+        snap: dict[str, Any] = {
+            "n": n,
+            "cite_id": self.cite_id,
+            "filename": self.filename,
+            "page": self.page,
+            "scope": self.scope,
+            "snippet": self.text,
+            "query": self.query,
+        }
+        if self.section_path:
+            snap["section_path"] = self.section_path
+        if self.score:
+            snap["score"] = round(float(self.score), 4)
+        return snap
+
+
+def _content_key(scope: str, filename: str, page: int | None, text: str) -> str:
+    text_h = hashlib.sha1(text.encode("utf-8", errors="replace")).hexdigest()[:16]
+    raw = f"{scope}|{filename}|{page if page is not None else ''}|{text_h}"
+    return hashlib.sha1(raw.encode("utf-8", errors="replace")).hexdigest()[:16]
+
+
+class SourceLedger:
+    """Per-thread registry of retrieved chunks. Thread-safe: retrieval runs
+    on worker threads while resolution runs on the event loop."""
+
+    def __init__(self, max_records: int = 500):
+        self._by_key: OrderedDict[str, SourceRecord] = OrderedDict()
+        self._by_cite_id: dict[str, SourceRecord] = {}
+        self._counter = 0
+        self._max = max_records
+        self._lock = threading.Lock()
+
+    def __len__(self) -> int:
+        return len(self._by_key)
+
+    def register(self, result: Any, *, query: str) -> str:
+        """Record one retrieved chunk; return its stable cite_id."""
+        text = getattr(result, "text", "") or ""
+        filename = getattr(result, "filename", "") or ""
+        page = getattr(result, "page", None)
+        scope = getattr(result, "scope", "") or ""
+        key = _content_key(scope, filename, page, text)
+        with self._lock:
+            existing = self._by_key.get(key)
+            if existing is not None:
+                return existing.cite_id
+            self._counter += 1
+            record = SourceRecord(
+                cite_id=f"s{self._counter}",
+                key=key,
+                scope=scope,
+                filename=filename,
+                page=page,
+                section_path=getattr(result, "section_path", "") or "",
+                text=text,
+                score=float(getattr(result, "score", 0.0) or 0.0),
+                query=query,
+            )
+            self._by_key[key] = record
+            self._by_cite_id[record.cite_id] = record
+            self._evict_if_needed()
+            return record.cite_id
+
+    def get(self, cite_id: str) -> SourceRecord | None:
+        return self._by_cite_id.get(cite_id.lower())
+
+    def restore(self, snapshot: dict[str, Any]) -> None:
+        """Re-insert a persisted snapshot (restart rehydration). Keeps the
+        original cite_id and bumps the counter past it so future ids never
+        collide with ids already present in the on-disk conversation."""
+        cite_id = str(snapshot.get("cite_id", "")).lower()
+        m = re.fullmatch(r"s(\d+)", cite_id)
+        if not m:
+            return
+        key = _content_key(
+            snapshot.get("scope", "") or "",
+            snapshot.get("filename", "") or "",
+            snapshot.get("page"),
+            snapshot.get("snippet", "") or "",
+        )
+        with self._lock:
+            if key in self._by_key or cite_id in self._by_cite_id:
+                return
+            record = SourceRecord(
+                cite_id=cite_id,
+                key=key,
+                scope=snapshot.get("scope", "") or "",
+                filename=snapshot.get("filename", "") or "",
+                page=snapshot.get("page"),
+                section_path=snapshot.get("section_path", "") or "",
+                text=snapshot.get("snippet", "") or "",
+                score=float(snapshot.get("score", 0.0) or 0.0),
+                query=snapshot.get("query", "") or "",
+                cited=True,
+            )
+            self._by_key[key] = record
+            self._by_cite_id[cite_id] = record
+            self._counter = max(self._counter, int(m.group(1)))
+
+    def _evict_if_needed(self) -> None:
+        # Called under self._lock. Evict oldest uncited first; cited records
+        # are referenced by persisted messages' history semantics — keep them
+        # as long as possible so re-citing stays possible.
+        while len(self._by_key) > self._max:
+            victim_key = None
+            for k, rec in self._by_key.items():
+                if not rec.cited:
+                    victim_key = k
+                    break
+            if victim_key is None:  # everything cited — evict absolute oldest
+                victim_key = next(iter(self._by_key))
+            victim = self._by_key.pop(victim_key)
+            self._by_cite_id.pop(victim.cite_id, None)
+
+
+# --- module-level thread registry -------------------------------------------
+
+_ledgers: OrderedDict[str, SourceLedger] = OrderedDict()
+_registry_lock = threading.Lock()
+_MAX_THREADS = 300
+
+# Optional hook set by the server so a fresh process can rebuild cited
+# entries from persisted conversation events (see main.py wiring).
+_rehydrator: Callable[[str, SourceLedger], None] | None = None
+
+
+def set_rehydrator(fn: Callable[[str, SourceLedger], None] | None) -> None:
+    global _rehydrator
+    _rehydrator = fn
+
+
+def get_ledger(thread_id: str, create: bool = True) -> SourceLedger | None:
+    if not thread_id:
+        return None
+    with _registry_lock:
+        ledger = _ledgers.get(thread_id)
+        if ledger is not None:
+            _ledgers.move_to_end(thread_id)
+            return ledger
+        if not create:
+            return None
+        ledger = SourceLedger()
+        _ledgers[thread_id] = ledger
+        while len(_ledgers) > _MAX_THREADS:
+            _ledgers.popitem(last=False)
+    if _rehydrator is not None:
+        try:
+            _rehydrator(thread_id, ledger)
+        except Exception:
+            logger.exception("source-ledger rehydration failed for thread {}", thread_id)
+    return ledger
+
+
+def drop_ledger(thread_id: str) -> None:
+    with _registry_lock:
+        _ledgers.pop(thread_id, None)
+
+
+def _reset_all_ledgers_for_tests() -> None:
+    with _registry_lock:
+        _ledgers.clear()
+
+
+# --- citation resolution ------------------------------------------------------
+
+# [s1] or [s1, s4] — case-insensitive. Requires the s-prefix so plain
+# bracketed numbers/text ("[1]", "[note]") never match.
+_MARKER_RE = re.compile(r"\[\s*([sS]\d+(?:\s*,\s*[sS]\d+)*)\s*\]")
+# Segments the answer so markers inside code are never rewritten.
+_CODE_RE = re.compile(r"(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)")
+
+
+def has_citation_markers(text: str) -> bool:
+    return bool(text) and _MARKER_RE.search(text) is not None
+
+
+def resolve_citations(
+    text: str, ledger: SourceLedger | None
+) -> tuple[str, list[dict[str, Any]]]:
+    """Rewrite ``[sN]`` markers into per-message display numbers ``[k]``.
+
+    - Display numbers are assigned in order of first appearance.
+    - Ids missing from the ledger (hallucinated, or evicted) are stripped.
+    - Code fences / inline code are left byte-identical.
+    Returns ``(display_text, sources_snapshots)``.
+    """
+    if not text or not has_citation_markers(text):
+        return text, []
+
+    numbers: dict[str, int] = {}          # cite_id -> display n
+    ordered: list[SourceRecord] = []
+
+    def _sub(match: re.Match) -> str:
+        out = []
+        for raw_id in match.group(1).split(","):
+            cite_id = raw_id.strip().lower()
+            record = ledger.get(cite_id) if ledger is not None else None
+            if record is None:
+                logger.warning("citation marker [{}] not in ledger — stripped", cite_id)
+                continue
+            if cite_id not in numbers:
+                numbers[cite_id] = len(numbers) + 1
+                record.cited = True
+                ordered.append(record)
+            out.append(f"[{numbers[cite_id]}]")
+        return "".join(out)
+
+    parts = _CODE_RE.split(text)
+    resolved = "".join(
+        part if i % 2 else _MARKER_RE.sub(_sub, part) for i, part in enumerate(parts)
+    )
+    sources = [rec.to_snapshot(n=i + 1) for i, rec in enumerate(ordered)]
+    return resolved, sources
