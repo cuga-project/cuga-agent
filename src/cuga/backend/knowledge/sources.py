@@ -292,3 +292,30 @@ def resolve_citations(
     )
     sources = [rec.to_snapshot(n=i + 1) for i, rec in enumerate(ordered)]
     return resolved, sources
+
+
+# --- enablement ---------------------------------------------------------------
+
+# Server wires this to the session provider (main.py); SDK leaves it None so
+# enablement falls back to the agent-level KnowledgeConfig flag alone.
+_override_lookup: Callable[[str], dict[str, Any] | None] | None = None
+
+
+def set_session_override_lookup(
+    fn: Callable[[str], dict[str, Any] | None] | None,
+) -> None:
+    global _override_lookup
+    _override_lookup = fn
+
+
+def citations_enabled_for(config: Any, thread_id: str | None) -> bool:
+    """Effective citations flag: per-session override wins over agent config."""
+    base = bool(getattr(config, "citations_enabled", True))
+    if thread_id and _override_lookup is not None:
+        try:
+            overrides = _override_lookup(thread_id) or {}
+            if "citations_enabled" in overrides:
+                return bool(overrides["citations_enabled"])
+        except Exception:
+            logger.exception("session override lookup failed; using agent-level flag")
+    return base
