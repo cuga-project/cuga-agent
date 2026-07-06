@@ -1,6 +1,7 @@
 # tests/unit/test_citation_settings.py
 import pytest
 
+from cuga.backend.knowledge.awareness import CITATIONS_CONTRACT
 from cuga.backend.knowledge.config import KnowledgeConfig
 from cuga.backend.knowledge.sources import citations_enabled_for, set_session_override_lookup
 
@@ -71,3 +72,10 @@ def test_string_overrides_coerced_not_truthiness():
     assert citations_enabled_for(cfg, "t") is True
     set_session_override_lookup(lambda tid: {"citations_enabled": 3.14})
     assert citations_enabled_for(KnowledgeConfig(citations_enabled=False), "t") is False
+
+
+def test_citations_contract_content():
+    assert "[s3]" in CITATIONS_CONTRACT
+    assert "cite_id" in CITATIONS_CONTRACT
+    assert "earlier turns" in CITATIONS_CONTRACT.lower()
+    assert "never write bare numeric" in CITATIONS_CONTRACT.lower()

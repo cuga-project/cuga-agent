@@ -26,6 +26,26 @@ logger = logging.getLogger("cuga.knowledge")
 # Max characters of preview shown per document in the awareness summary
 _AWARENESS_PREVIEW_MAX_CHARS = 200
 
+CITATIONS_CONTRACT = """
+## Citations (mandatory when answering from knowledge results)
+
+Every knowledge search result carries a `cite_id` (like "s3"). In your FINAL
+answer, append the marker right after each claim that comes from a retrieved
+chunk — before the sentence-ending punctuation is fine:
+"The report number is 4521 [s3]."
+
+Rules:
+- Use ONLY cite_ids that appeared in this conversation's search results.
+  Results from earlier turns of this conversation remain citable by their
+  original ids. Never invent an id; never write bare numeric citations
+  like [1] — the UI assigns display numbers automatically.
+- Multiple supporting chunks: [s1][s4] (or [s1, s4]).
+- Do NOT add a "Sources" section or list — the UI renders sources from
+  your markers.
+- If no retrieved chunk supports a claim, omit the claim or say the
+  knowledge base doesn't cover it (no marker).
+"""
+
 # Sentinel for {{max_search_attempts}} in knowledge_instructions.md. Using
 # a Jinja-style placeholder makes the template obvious to anyone editing
 # the .md file without dragging in a templating engine.
@@ -477,6 +497,9 @@ async def assemble_system_prompt_section(
     # Load the contract with the configured budget substituted in.
     attempts = getattr(cfg, "max_search_attempts", None)
     contract_text = load_knowledge_instructions(max_search_attempts=attempts)
+
+    if getattr(cfg, "citations_enabled", True):
+        contract_text = contract_text + "\n" + CITATIONS_CONTRACT
 
     composed = compose_knowledge_prompt(contract_text, knowledge_block, base_instructions)
     _hash = prompt_hash(composed)
