@@ -56,3 +56,29 @@ def test_resolution_errors_never_break_the_answer(monkeypatch):
     )
     FinalAnswerNode.apply_citation_resolution(state)  # must not raise
     assert state.final_answer == "answer [s1]"  # untouched on failure
+    assert state.sources == []
+
+
+def _make_agent_state(**overrides):
+    from cuga.backend.cuga_graph.state.agent_state import AgentState
+
+    defaults = dict(input="test input", url="https://example.com", thread_id="t-x")
+    defaults.update(overrides)
+    return AgentState(**defaults)
+
+
+def test_supervisor_empty_fallback_clears_stale_sources():
+    import asyncio
+
+    from cuga.backend.cuga_graph.utils.nodes_names import NodeNames
+
+    state = _make_agent_state(
+        sender=NodeNames.CUGA_SUPERVISOR,
+        final_answer="",
+        last_planner_answer="",
+        sources=[{"n": 1, "cite_id": "s1", "filename": "old.pdf"}],
+    )
+    asyncio.run(
+        FinalAnswerNode.node_handler(state, agent=None, name="FinalAnswerAgent", hitl_handler=None)
+    )
+    assert state.sources == []

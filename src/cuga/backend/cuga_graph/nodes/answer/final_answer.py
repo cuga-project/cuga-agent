@@ -82,6 +82,8 @@ class FinalAnswerNode(BaseNode):
         Must run AFTER variable placeholder replacement and AFTER output
         formatters, and must never break answer delivery — any failure
         leaves the text as-is.
+
+        Calling this twice on the same state is destructive: the second run sees no [sN] markers in the already-resolved text and clears state.sources. Call exactly once per terminal path.
         """
         try:
             from cuga.backend.knowledge.sources import (
@@ -99,6 +101,8 @@ class FinalAnswerNode(BaseNode):
             state.final_answer = resolved
             state.sources = sources
         except Exception:
+            # stale turn-N sources must not ride an unresolved turn-N+1 answer
+            state.sources = []
             logger.exception("citation resolution failed; delivering unresolved answer")
 
     @staticmethod
@@ -137,8 +141,6 @@ class FinalAnswerNode(BaseNode):
             return Command(update=state.model_dump(), goto=NodeNames.END)
         if state.sender == NodeNames.CUGA_LITE:
             state.sender = name
-            state.final_answer = state.final_answer
-            state.sender = name
             FinalAnswerNode.apply_citation_resolution(state)
             final_answer_output = FinalAnswerOutput(
                 thoughts=[],
@@ -170,6 +172,7 @@ class FinalAnswerNode(BaseNode):
                     "Supervisor callback: no final_answer or last_planner_answer found, forwarding empty answer"
                 )
                 state.final_answer = ""
+                FinalAnswerNode.apply_citation_resolution(state)
                 final_answer_output = FinalAnswerOutput(
                     thoughts=[],
                     final_answer="",
