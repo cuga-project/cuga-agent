@@ -18,7 +18,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url logs channels channels-status test test-all test-live sync
+.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url tunnels tunnels-up tunnels-down logs channels channels-status test test-all test-live sync
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -67,6 +67,15 @@ status: ## Show what's running + tunnel URLs
 
 public-url: ## Print the current public URL + the exact Slack/Gmail strings to update
 	@scripts/events_up.sh --public-url
+
+tunnels: ## Status of both public tunnel agents (AP cloudflared + CUGA ngrok/cloudflared)
+	@scripts/tunnels.sh --status
+
+tunnels-up: ## (Re)start any DOWN tunnel agent (ngrok CUGA is safe; AP needs `make ap`)
+	@scripts/tunnels.sh --up
+
+tunnels-down: ## Stop both tunnel agents (cloudflared + ngrok)
+	@scripts/tunnels.sh --down
 
 logs: ## Tail the runtime logs
 	@tail -n 40 -F /tmp/events_up/*.log

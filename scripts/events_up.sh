@@ -16,16 +16,23 @@ CFG="src/cuga/backend/tools_env/registry/config/mcp_servers_cuga_apps.yaml"
 RUN=/tmp/events_up
 
 # --- public-URL helpers ----------------------------------------------------
-# The CUGA quick-tunnel URL IS EVENTS_PUBLIC_URL — the base for Slack's Request URL and every OAuth
-# callback (Gmail/Box). It's random per run, so we (a) feed the live one into the server so the
-# server always matches reality, and (b) print a clear "update these consoles" panel.
-cuga_tunnel_url() { grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/cuga_tunnel.log" 2>/dev/null | tail -1; }
+# EVENTS_PUBLIC_URL is the CUGA public base (Slack Request URL + OAuth callbacks). Two modes:
+#   • EVENTS_NGROK_DOMAIN set → a STABLE ngrok reserved domain (never changes). This is the fix for
+#     the flapping quick-tunnel. We start ngrok (not cloudflared) for :8100 and pin the URL.
+#   • unset → a cloudflared quick-tunnel (random per run); we auto-detect + feed the live one in.
 env_val() { grep -E "^$1=" "$REPO/.env" 2>/dev/null | tail -1 | cut -d= -f2- \
   | sed -e 's/ *#.*//' -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e 's/^"//' -e 's/"$//'; }
+NGROK_DOMAIN="$(env_val EVENTS_NGROK_DOMAIN)"
 
-# Export EVENTS_PUBLIC_URL from the live CUGA tunnel so the server matches it without editing .env —
-# UNLESS .env pins a non-trycloudflare URL (a stable/named tunnel), which we respect as-is.
+cuga_tunnel_url() {
+  [ -n "$NGROK_DOMAIN" ] && { echo "https://$NGROK_DOMAIN"; return; }   # stable ngrok URL is known
+  grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/cuga_tunnel.log" 2>/dev/null | tail -1;
+}
+
+# Export EVENTS_PUBLIC_URL so the server matches the live tunnel without editing .env. With a stable
+# ngrok/pinned URL we just use it; otherwise the live cloudflared URL wins over a stale .env value.
 export_public_url() {
+  if [ -n "$NGROK_DOMAIN" ]; then export EVENTS_PUBLIC_URL="https://$NGROK_DOMAIN"; return; fi
   local pin url; pin="$(env_val EVENTS_PUBLIC_URL)"; url="$(cuga_tunnel_url)"
   if [ -n "$pin" ] && ! printf '%s' "$pin" | grep -q trycloudflare; then
     export EVENTS_PUBLIC_URL="$pin"; return          # pinned stable URL — leave it alone
@@ -39,9 +46,12 @@ print_public_url() {
   echo ""
   echo "──────────── PUBLIC URL  (EVENTS_PUBLIC_URL) ────────────"
   echo "  $url"
-  echo "  ↑ the server is already using this — no need to edit .env."
-  echo ""
-  echo "  When this URL changes (restart / new tunnel), update these EXTERNAL consoles:"
+  if [ -n "$NGROK_DOMAIN" ]; then
+    echo "  ✓ STABLE (ngrok) — this never changes. Set these EXTERNAL consoles ONCE:"
+  else
+    echo "  ⚠ quick tunnel — this URL CHANGES on restart (set EVENTS_NGROK_DOMAIN for a stable one)."
+    echo "    Each time it changes, re-point these EXTERNAL consoles:"
+  fi
   echo "    • Slack  → Event Subscriptions Request URL : $url/api/events/slack/events"
   echo "    • Gmail  → OAuth redirect URI (+ re-consent): $url/api/events/connect/gmail/callback"
   echo "  Nothing to do for: Box (direct poll), Discord (Gateway); Telegram → just 'make channels'."
@@ -53,7 +63,8 @@ stop() {
   for p in "$RUN"/*.pid; do [ -f "$p" ] && kill "$(cat "$p")" 2>/dev/null && rm -f "$p" || true; done
   pkill -f "uvicorn cuga.backend.tools_env.registry" 2>/dev/null || true
   pkill -f "events_up_server.py" 2>/dev/null || true
-  pkill -f "cloudflared tunnel" 2>/dev/null || true
+  pkill -f "cloudflared tunnel" 2>/dev/null || true    # kills BOTH tunnel agents (AP + CUGA)
+  pkill -f "ngrok http" 2>/dev/null || true            # ngrok agent (when EVENTS_NGROK_DOMAIN is set)
   echo "stopped."
 }
 [ "${1:-}" = "--stop" ] && { stop; exit 0; }
@@ -62,7 +73,7 @@ if [ "${1:-}" = "--status" ]; then
   echo "registry :$REGISTRY_PORT  $(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:$REGISTRY_PORT/applications || echo down)"
   echo "cuga     :$CUGA_PORT      $(curl -s -o /dev/null -w '%{http_code}' --max-time 3 http://localhost:$CUGA_PORT/api/events/status || echo down)"
   echo "AP tunnel:   $(grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN"/ap_tunnel.log 2>/dev/null | tail -1 || echo none)"
-  echo "CUGA tunnel: $(grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN"/cuga_tunnel.log 2>/dev/null | tail -1 || echo none)"
+  _ct="$(cuga_tunnel_url)"; echo "CUGA tunnel: ${_ct:-none}$([ -n "$NGROK_DOMAIN" ] && echo '  (ngrok static)')"
   exit 0
 fi
 
@@ -103,11 +114,27 @@ MCP_SERVERS_FILE="$CFG" .venv/bin/python -m uvicorn \
   cuga.backend.tools_env.registry.registry.api_registry_server:app --host 127.0.0.1 --port "$REGISTRY_PORT" \
   > "$RUN/registry.log" 2>&1 & echo $! > "$RUN/registry.pid"
 
-echo "== CUGA tunnel (cloudflared) =="
 # ONLY the CUGA (:8100) tunnel here. The AP (:8081) tunnel is owned by ap_up.sh, which bakes its URL
 # into the AP container as AP_FRONTEND_URL — starting a second one here just clobbers ap_tunnel.log
 # and leaves AP pointing at a different (often dead) URL, breaking Telegram/Slack-AP setWebhook.
-cloudflared tunnel --url "http://localhost:$CUGA_PORT" --no-autoupdate > "$RUN/cuga_tunnel.log" 2>&1 & echo $! > "$RUN/cuga_tunnel.pid"
+if [ -n "$NGROK_DOMAIN" ]; then
+  echo "== CUGA tunnel (ngrok STATIC: $NGROK_DOMAIN) =="
+  command -v ngrok >/dev/null || { echo "MISSING: ngrok — brew install ngrok, then verify email + reserve a domain (dashboard.ngrok.com)"; exit 1; }
+  ngrok http "$CUGA_PORT" --domain="$NGROK_DOMAIN" --log=stdout > "$RUN/cuga_tunnel.log" 2>&1 & echo $! > "$RUN/cuga_tunnel.pid"
+  for i in $(seq 1 10); do
+    grep -q 'started tunnel\|msg="join connexions"\|url=' "$RUN/cuga_tunnel.log" 2>/dev/null && break
+    if grep -q 'ERR_NGROK' "$RUN/cuga_tunnel.log" 2>/dev/null; then
+      echo "  ✗ ngrok could not start ($(grep -ao 'ERR_NGROK_[0-9]*' "$RUN/cuga_tunnel.log" | tail -1)):"
+      grep -o 'err="[^"]*"' "$RUN/cuga_tunnel.log" | tail -1
+      echo "    Common: verify your email at dashboard.ngrok.com, and reserve the domain '$NGROK_DOMAIN'."
+      exit 1
+    fi
+    sleep 1
+  done
+else
+  echo "== CUGA tunnel (cloudflared quick — flaps; set EVENTS_NGROK_DOMAIN for a stable URL) =="
+  cloudflared tunnel --url "http://localhost:$CUGA_PORT" --no-autoupdate > "$RUN/cuga_tunnel.log" 2>&1 & echo $! > "$RUN/cuga_tunnel.pid"
+fi
 
 # capture the fresh CUGA tunnel URL and feed it to the server as EVENTS_PUBLIC_URL, so the server
 # always matches the live tunnel (no stale-.env "one step behind" after a restart).

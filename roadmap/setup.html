@@ -103,6 +103,7 @@
       <tr><td><code>make nuke</code></td><td>stop <b>and</b> wipe AP volumes (<code>ap_pgdata</code>/<code>ap_redis</code>) + <code>events.db</code></td></tr>
       <tr><td><code>make status</code> / <code>make logs</code></td><td>what's running + tunnel URLs / tail the runtime logs</td></tr>
       <tr><td><code>make public-url</code></td><td>print the current public URL + the exact Slack/Gmail strings to update</td></tr>
+      <tr><td><code>make tunnels</code> / <code>tunnels-up</code> / <code>tunnels-down</code></td><td>status / (re)start / stop the tunnel agents (cloudflared + ngrok)</td></tr>
       <tr><td><code>make test</code> / <code>make test-all</code></td><td>offline events suite (~60) / all offline tests (events + unit)</td></tr>
       <tr><td><code>make test-live</code></td><td>live e2e — needs the stack up (<code>make up</code>) + creds</td></tr>
     </tbody>
@@ -116,7 +117,8 @@
     <thead><tr><th>Tool</th><th>For</th><th>Install (macOS)</th></tr></thead>
     <tbody>
       <tr><td><b>podman</b> (or docker)</td><td>Activepieces + pg + redis</td><td><code>brew install podman &amp;&amp; podman machine init &amp;&amp; podman machine start</code></td></tr>
-      <tr><td><b>cloudflared</b></td><td>public HTTPS tunnels</td><td><code>brew install cloudflared</code></td></tr>
+      <tr><td><b>cloudflared</b></td><td>public HTTPS tunnels (default; AP tunnel always)</td><td><code>brew install cloudflared</code></td></tr>
+      <tr><td><b>ngrok</b> <span class="pill p-opt">recommended</span></td><td>a <b>stable</b> CUGA URL (set <code>EVENTS_NGROK_DOMAIN</code>) — no re-pointing Slack/Gmail. Needs a free account: verify email + reserve a domain, then <code>ngrok config add-authtoken &lt;token&gt;</code></td><td><code>brew install ngrok</code></td></tr>
       <tr><td><b>node + pnpm</b></td><td>build the Studio UI</td><td><code>brew install node</code> (pnpm auto-enabled via corepack)</td></tr>
       <tr><td><b>python 3.12 + uv</b></td><td>CUGA server &amp; tests</td><td><code>brew install uv</code></td></tr>
       <tr><td><b>openssl, curl</b></td><td>secrets &amp; checks</td><td>preinstalled</td></tr>

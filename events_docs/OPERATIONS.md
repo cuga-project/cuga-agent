@@ -58,6 +58,11 @@ Fix: use a **named tunnel or a real domain** for anything you don't want to re-p
 tunnel-resilient connectors are **direct Discord (Gateway)** and **Box poll** — both are outbound-only
 and need **no** public URL.
 
+**Best fix: a stable URL.** Set `EVENTS_NGROK_DOMAIN` (free reserved ngrok domain) and the CUGA URL
+never changes — you configure Slack/Gmail **once**, and this whole checklist collapses to "`make
+channels` after an AP restart." See [PUBLIC_URL.md](PUBLIC_URL.md). The checklist below is for the
+quick-tunnel (default) case.
+
 **Checklist — after a restart / tunnel change:**
 | # | Action | How |
 |---|---|---|

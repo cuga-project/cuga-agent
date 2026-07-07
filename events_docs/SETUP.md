@@ -4,6 +4,56 @@ The **single end-to-end runbook**: from setting up base CUGA, through Activepiec
 event-driven platform running with agents seeded. There's no single button for *everything* (some
 pieces are external accounts a human must create), but the runtime services are one command each.
 
+## Quick setup — the whole sequence
+Top to bottom. **A–C are one-time**; **D onward is every boot**. Detailed sections (§0–§5) are below.
+
+**A. Machine installs (one-time)**
+```bash
+brew install uv node podman cloudflared ngrok
+podman machine init && podman machine start          # the Linux VM Podman needs on macOS
+```
+
+**B. Accounts / tokens (one-time, external)** — the irreducible manual part:
+- **ngrok** (for a stable public URL): verify your email → reserve a domain at dashboard.ngrok.com/domains → `ngrok config add-authtoken <token>`
+- **Bots/keys**: Telegram (@BotFather), Discord (dev portal + **Message Content Intent**), Slack app, watsonx key, and an AP admin email/password *(you invent it)*. Per-connector guides: [setup/](setup/).
+
+**C. Project config (one-time)**
+```bash
+cp .env.events.example .env          # then fill in your creds (§3)
+# the line that makes the URL stable (no more re-pointing Slack/Gmail):
+#   EVENTS_NGROK_DOMAIN=<your-domain>.ngrok-free.app
+make sync                            # populate .venv (re-run after dependency changes)
+make env-check                       # confirm .env is complete → green
+```
+
+**D. Bring it up**
+```bash
+make fresh                           # clean slate: nuke → up (fresh AP + CUGA on ngrok) → channels → prints URL
+#   — or a normal boot that keeps data:
+make up && make channels
+```
+
+**E. Wire external consoles (one-time, because the ngrok URL is stable)** — `make public-url` prints the exact strings:
+1. **Slack** → api.slack.com/apps → your app → Event Subscriptions → Request URL `https://<domain>/api/events/slack/events` → subscribe `message.channels` → invite the bot
+2. **Discord** → Developer Portal → Bot → enable **Message Content Intent**
+3. **Gmail** *(only if used)* → Google Cloud redirect URI `https://<domain>/api/events/connect/gmail/callback`
+
+**F. Verify**
+```bash
+make status      # everything up          make tunnels   # both tunnel agents up + reachable (200)
+make doctor      # live creds ok          make test      # 61 offline checks green
+```
+Then smoke-test: DM your Telegram bot · post in the Discord/Slack channel · open `localhost:8100/studio`.
+
+**G. Day-to-day (after the one-time steps)**
+```bash
+make up          # boot   ·   make reload  if you only changed .env/code (no tunnel churn)
+make channels    # re-arm — needed after an AP-tunnel flap (Telegram); Slack/Gmail stay put
+```
+When a channel goes quiet: `make tunnels` (which agent died?) · `make public-url` (current URL) · `make logs`.
+
+---
+
 ## TL;DR — the `make` shortcuts
 Once base CUGA + `.env` are in place (§0–§3), the day-to-day loop is just `make` (a root
 [`Makefile`](../Makefile) wraps the scripts below; run `make` with no target to list everything):
@@ -20,9 +70,10 @@ Once base CUGA + `.env` are in place (§0–§3), the day-to-day loop is just `m
 | `make nuke` | stop **and** wipe AP volumes (`ap_pgdata`/`ap_redis`) + `events.db` |
 | `make fresh` | full from-scratch cycle: `env-check` → `nuke` → `up` → `channels` → print public URL |
 | `make reload` | bounce **only** CUGA (pick up `.env`/code) — keeps AP + tunnels, URLs unchanged |
-| `make restart` | `stop` then `up` — ⚠️ new tunnel URLs (re-point `EVENTS_PUBLIC_URL` after) |
+| `make restart` | `stop` then `up` — then `make channels`. CUGA URL is stable if `EVENTS_NGROK_DOMAIN` set; else it changes |
 | `make status` / `make logs` | what's running + tunnel URLs / tail the runtime logs |
 | `make public-url` | print the current public URL + the exact Slack/Gmail strings to update |
+| `make tunnels` / `tunnels-up` / `tunnels-down` | status / (re)start / stop the tunnel agents (cloudflared + ngrok) |
 | `make test` / `make test-all` | offline events suite (~60) / all offline tests (events + unit) |
 | `make test-live` | live e2e — needs the stack up (`make up`) + creds |
 
@@ -68,8 +119,13 @@ continue below — §1–§5 add the events platform.
 | **uv** | Python deps / venv | `brew install uv` |
 | **Node + pnpm** | build the Studio UI (pnpm monorepo; `frontend_build.sh` enables pnpm via corepack) | `brew install node` |
 | **Docker or Podman** | run Activepieces | `brew install podman` (or Docker Desktop) |
-| **cloudflared** | public tunnels (channel webhooks + OAuth callbacks) | `brew install cloudflared` |
+| **cloudflared** | public tunnels — the **default** (AP tunnel always; CUGA tunnel when no ngrok) | `brew install cloudflared` |
+| **ngrok** *(recommended)* | a **stable** CUGA public URL via `EVENTS_NGROK_DOMAIN` (no more re-pointing Slack/Gmail). Needs a free account: verify email + reserve a domain at dashboard.ngrok.com, then `ngrok config add-authtoken <token>` | `brew install ngrok` |
 | *(dev only)* **mermaid-cli** | regenerate diagrams | `npm i -g @mermaid-js/mermaid-cli` |
+
+> **Tunnels are local agent processes** — `cloudflared`/`ngrok` must stay running to hold their URL
+> (if one dies its URL 502s). `events_up.sh`/`ap_up.sh` start them; check with **`make tunnels`**,
+> (re)start a dead one with **`make tunnels-up`**, stop with **`make tunnels-down`**.
 
 ## 2. One-time project setup
 ```bash
@@ -115,10 +171,15 @@ See the per-connector guides in [setup/](setup/) for how to get each. Keys:
 - **Events:** `EVENTS_ENABLED=1`, `EVENTS_WORKER_BACKEND=cuga`, `EVENTS_SEED_AGENTS=1`,
   `EVENTS_DB=<abs path>.db` (persist subs/identity; default `:memory:` is wiped on restart),
   `GATEWAY_TOKEN`, `HOST_CALLBACK_URL=http://host.containers.internal:8100/invoke` (podman host
-  alias; Docker: `host.docker.internal`), `EVENTS_PUBLIC_URL=<cuga tunnel or http://localhost:8100>`.
+  alias; Docker: `host.docker.internal`).
   `events_up.sh` also sets `EVENTS_USER_ID=admin` (web Studio browses as admin, matching the telegram
   identity) and `DYNACONF_ADVANCED_FEATURES__SANDBOX_EXECUTION_TIMEOUT=120` (arXiv/Semantic Scholar
   are ~5.5s/call; the 30s default times out the papers agent).
+- **Public URL (recommended: stable):** set **`EVENTS_NGROK_DOMAIN`** to a free reserved ngrok domain
+  (verify email → reserve at dashboard.ngrok.com/domains). `events_up.sh` then serves `:8100` on it and
+  pins `EVENTS_PUBLIC_URL`, so **Slack/Gmail get configured once and never break on restart**. Without
+  it, `EVENTS_PUBLIC_URL` falls back to an ephemeral cloudflared quick-tunnel that changes every run.
+  Full explainer: **[PUBLIC_URL.md](PUBLIC_URL.md)**.
 - **Channels:** `TELEGRAM_BOT_TOKEN` + `EVENTS_TELEGRAM_BOT_USERNAME`, `DISCORD_BOT_TOKEN`, `SLACK_BOT_TOKEN`.
 - **Integrations:** `BOX_DEV_TOKEN` (or OAuth via Admin UI), GitHub PAT (paste in UI).
 
