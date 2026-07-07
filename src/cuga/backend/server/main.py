@@ -176,15 +176,18 @@ async def _delete_session_knowledge_for_thread(app_state: "AppState", thread_id:
         provider.delete_session(thread_id)
 
 
-def _knowledge_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+def _knowledge_config(app_state: "AppState" | None):
     engine = getattr(app_state, "knowledge_engine", None) if app_state else None
-    config = getattr(engine, "_config", None) if engine else None
+    return getattr(engine, "_config", None) if engine else None
+
+
+def _knowledge_enabled_for_app_state(app_state: "AppState" | None) -> bool:
+    config = _knowledge_config(app_state)
     return bool(config and getattr(config, "enabled", False))
 
 
 def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: str) -> bool:
-    engine = getattr(app_state, "knowledge_engine", None) if app_state else None
-    config = getattr(engine, "_config", None) if engine else None
+    config = _knowledge_config(app_state)
     if not config or not getattr(config, "enabled", False):
         return False
     if scope == "session":
@@ -193,8 +196,7 @@ def _knowledge_scope_enabled_for_app_state(app_state: "AppState" | None, scope: 
 
 
 def _knowledge_citations_enabled_for_app_state(app_state: "AppState" | None) -> bool:
-    engine = getattr(app_state, "knowledge_engine", None) if app_state else None
-    config = getattr(engine, "_config", None) if engine else None
+    config = _knowledge_config(app_state)
     if not config or not getattr(config, "enabled", False):
         return False
     return bool(getattr(config, "citations_enabled", True))

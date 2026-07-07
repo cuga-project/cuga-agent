@@ -7,7 +7,7 @@ Uses the storage layer (get_storage().get_relational_store("conversation")) for 
 """
 
 import json
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
@@ -439,8 +439,6 @@ class ConversationHistoryDB:
         try:
             await self._ensure_schema()
             store = self._get_store()
-            from datetime import timedelta
-
             cutoff = (datetime.utcnow() - timedelta(days=older_than_days)).isoformat()
             await store.execute(
                 """
