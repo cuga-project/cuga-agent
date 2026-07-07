@@ -87,6 +87,29 @@
   <div class="note">AP reaches CUGA at <code>http://host.containers.internal:8100/invoke</code>. Channel webhooks &amp; OAuth callbacks need HTTPS → the scripts start Cloudflare quick-tunnels automatically.</div>
 </section>
 
+<section id="make">
+  <h2><span class="n">▶</span> The <code>make</code> shortcuts</h2>
+  <p class="lead">Once the code, <code>.env</code>, and the AP container exist (steps below), the day-to-day loop is a root <code>Makefile</code> that wraps the scripts. Run <code>make</code> with no target to list everything.</p>
+  <table>
+    <thead><tr><th>Command</th><th>Does</th></tr></thead>
+    <tbody>
+      <tr><td><code>make env-check</code></td><td>verify <code>.env</code> has the required keys — offline, no network</td></tr>
+      <tr><td><code>make doctor</code></td><td>live credential doctor (<code>preflight.py</code>) — pings each service</td></tr>
+      <tr><td><code>make ap</code> / <code>make cuga</code></td><td>start Activepieces / CUGA + registry + tunnels</td></tr>
+      <tr><td><code>make up</code> (<code>make start</code>)</td><td>start both, AP first</td></tr>
+      <tr><td><code>make channels</code></td><td>connect + arm every inbound chat channel with a token in <code>.env</code> (run after <code>up</code>)</td></tr>
+      <tr><td><code>make reload</code></td><td>bounce <b>only</b> the CUGA server (pick up <code>.env</code>/code) — keeps AP + tunnels, URLs unchanged</td></tr>
+      <tr><td><code>make stop</code></td><td>stop everything (AP + CUGA + tunnels), <b>keep</b> data</td></tr>
+      <tr><td><code>make nuke</code></td><td>stop <b>and</b> wipe AP volumes (<code>ap_pgdata</code>/<code>ap_redis</code>) + <code>events.db</code></td></tr>
+      <tr><td><code>make status</code> / <code>make logs</code></td><td>what's running + tunnel URLs / tail the runtime logs</td></tr>
+      <tr><td><code>make public-url</code></td><td>print the current public URL + the exact Slack/Gmail strings to update</td></tr>
+      <tr><td><code>make test</code> / <code>make test-all</code></td><td>offline events suite (~60) / all offline tests (events + unit)</td></tr>
+      <tr><td><code>make test-live</code></td><td>live e2e — needs the stack up (<code>make up</code>) + creds</td></tr>
+    </tbody>
+  </table>
+  <div class="note">The numbered steps below are the from-scratch runbook these shortcuts wrap. First machine: follow them once; after that, live in <code>make up</code> / <code>make stop</code> / <code>make nuke</code>.</div>
+</section>
+
 <section id="prereq">
   <h2><span class="n">1</span> Prerequisites</h2>
   <table>
@@ -143,7 +166,7 @@ BOX_DEV_TOKEN=...                     <span class="c"># direct poll (default); ~
 <section id="ap">
   <h2><span class="n">3</span> Bring up Activepieces</h2>
   <div class="cmd"><span class="c"># pg + redis + app on a shared network, a tunnel, and admin sign-up — all in one</span>
-scripts/ap_up.sh</div>
+make ap        <span class="c"># = scripts/ap_up.sh</span></div>
   <p class="lead">Wait for it to print <b>AP READY</b> and a <code>✓ AP worker healthy</code> line. It generates <code>.ap.env</code> (stable secrets) on first run.</p>
   <div class="note ok"><b>Verify:</b> <code>curl -s -o /dev/null -w "%{http_code}\n" http://localhost:8081/api/v1/flags</code> → <b>200</b>.</div>
   <div class="note warn">The tunnel URL is <b>ephemeral</b> — if cloudflared restarts, re-run <code>scripts/ap_up.sh</code> and re-arm any channels.</div>
@@ -159,10 +182,10 @@ scripts/ap_up.sh</div>
   <h2><span class="n">5</span> Bring up CUGA + the registry</h2>
   <div class="cmd"><span class="c"># starts the MCP registry (:8001), tunnels, and the CUGA server (:8100)</span>
 <span class="c"># with EVENTS_ENABLED=1, worker=cuga, seed agents, EVENTS_USER_ID=admin, EVENTS_DB, sandbox timeout</span>
-scripts/events_up.sh
+make cuga                       <span class="c"># = scripts/events_up.sh  (or make up to start AP + CUGA together)</span>
 
-scripts/events_up.sh --status   <span class="c"># show ports + tunnel URLs</span>
-scripts/events_up.sh --stop     <span class="c"># tear down</span></div>
+make status                     <span class="c"># show ports + tunnel URLs</span>
+make stop                       <span class="c"># tear down (keep data);  make nuke also wipes the DBs</span></div>
   <div class="note ok"><b>Verify:</b> <code>curl -s http://localhost:8100/api/events/status</code> → <code>{"enabled":true,...}</code></div>
 </section>
 
@@ -171,7 +194,7 @@ scripts/events_up.sh --stop     <span class="c"># tear down</span></div>
   <p class="lead">Three levels — pick any. All should pass on a healthy stack.</p>
 
   <h3 style="font-size:15px;margin:14px 0 4px">a) Offline suite (no stack needed)</h3>
-  <div class="cmd">.venv/bin/python -m pytest tests/events/test_events_core.py tests/events/test_events_dimensions.py tests/events/test_events_studio_api.py -q</div>
+  <div class="cmd">make test        <span class="c"># = pytest tests/events -q</span></div>
   <p class="lead">Expect <b>39 passed</b>.</p>
 
   <h3 style="font-size:15px;margin:14px 0 4px">b) Live router end-to-end (uses the running stack)</h3>
@@ -236,7 +259,8 @@ curl -s -X POST http://localhost:8100/api/events/admin/channels/telegram/arm \
       <tr><td><code>.ap.env</code></td><td>AP secrets — <code>AP_ENCRYPTION_KEY</code>+<code>AP_JWT_SECRET</code> only (never <code>AP_WORKER_TOKEN</code>)</td></tr>
     </tbody>
   </table>
-  <p class="lead" style="margin-top:10px"><b>Scripts:</b> <code>scripts/ap_up.sh</code> · <code>scripts/events_up.sh</code> · <code>scripts/frontend_build.sh</code> &nbsp;·&nbsp;
+  <p class="lead" style="margin-top:10px"><b>Shortcuts:</b> <code>Makefile</code> (run <code>make</code> to list) &nbsp;·&nbsp;
+    <b>Scripts:</b> <code>scripts/ap_up.sh</code> · <code>scripts/events_up.sh</code> · <code>scripts/frontend_build.sh</code> &nbsp;·&nbsp;
     <b>Deeper docs:</b> <code>events_docs/SETUP.md</code>, <code>CHANNELS_SETUP.md</code>, <code>MCP_SETUP.md</code>.</p>
 </section>
 

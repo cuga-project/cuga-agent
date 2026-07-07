@@ -10,10 +10,13 @@ How to test the events layer: the offline suite (fast, runs anywhere), the live 
 
 ```bash
 # OFFLINE — 60 green, no network, run on every change
-.venv/bin/python -m pytest tests/events -q
+make test                             # = pytest tests/events -q   (offline events gate, ~60 green)
+make test-all                         # all OFFLINE tests: pytest tests/events tests/unit -q
+make test-live                        # live e2e (needs `make up` + creds) — the full round-trip
 
 # PREFLIGHT — credential doctor: does every integration work from .env alone? (never fails)
-python3 tests/events/preflight.py     # watsonx · AP · Telegram · Discord · Slack · Box · MCP
+make doctor                           # = python3 tests/events/preflight.py
+#   watsonx · AP · Telegram · Discord · Slack · Box · MCP
 ```
 
 The offline suite is **60 passing**:

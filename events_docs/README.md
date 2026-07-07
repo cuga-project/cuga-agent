@@ -20,6 +20,28 @@ server · cyan = direct backends. Every trigger converges on the one `/invoke` s
 
 ---
 
+## 0. Quick start — the `make` shortcuts
+
+With base CUGA installed and `.env` filled ([SETUP.md](SETUP.md) is the full runbook), the whole
+day-to-day loop is a root [`Makefile`](../Makefile). Run `make` (no target) to list everything:
+
+```bash
+make env-check      # verify .env has the required keys (offline)
+make doctor         # live credential doctor — ping each configured service
+make up             # start Activepieces + CUGA + registry + tunnels (AP first)
+make channels       # connect + arm every inbound chat channel with a token in .env
+make status         # what's running + the tunnel URLs
+open http://localhost:8100/studio
+make test           # ~60 offline checks, all green
+make stop           # stop everything, keep data (make nuke also wipes the DBs)
+make nuke           # stop AND wipe AP volumes + events.db (full reset)
+```
+
+Everything below is the detail behind those commands. New here? Read §1–§2 for the model, then live
+in `make`.
+
+---
+
 ## 1. What this is — channels, integrations, triggers
 
 Two kinds of connector (see [DESIGN.md](DESIGN.md)):
@@ -73,8 +95,8 @@ there with the rationale.
 
 ```bash
 # from the repo root
-.venv/bin/python -m pytest tests/events -q          # 60 offline checks, all green
-python3 tests/events/preflight.py                   # doctor: which live creds are present in .env
+make test           # = pytest tests/events -q  → 60 offline checks, all green
+make doctor         # = preflight.py: which live creds are present in .env
 ```
 
 `preflight.py` never fails the build — it just reports which external services you *could* test live.
@@ -83,8 +105,10 @@ python3 tests/events/preflight.py                   # doctor: which live creds a
 
 ## 4. How to set it up
 
-Start with **[SETUP.md](SETUP.md)** (prereqs + one-command bootstrap), then the per-connector guide
-for whatever you're wiring — each ends with a **Verify** step and the exact test to run:
+**[SETUP.md](SETUP.md) is the single end-to-end runbook** — from setting up base CUGA (repo, venv,
+deps, an LLM key) through Activepieces and the events services, with an at-a-glance step table. Then
+the per-connector guide for whatever you're wiring — each ends with a **Verify** step and the exact
+test to run:
 
 [Slack](setup/SLACK.md) · [Discord](setup/DISCORD.md) · [Telegram](setup/TELEGRAM.md) ·
 [GitHub](setup/GITHUB.md) · [Box](setup/BOX.md) · [Gmail](setup/GMAIL.md) · [Webhook](setup/WEBHOOK.md)
@@ -117,7 +141,7 @@ EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/live_integ
 The bring-up script starts CUGA + AP + a tunnel; then talk to the concierge from a real channel:
 
 ```bash
-scripts/events_up.sh              # CUGA :8100, AP :8081, tunnel; seeds the demo fleet
+make up                           # CUGA :8100, AP :8081, tunnels; seeds the demo fleet
 open http://localhost:8100/studio # the builder/operator console
 ```
 
@@ -171,6 +195,7 @@ no public URL for Discord. The full rationale and the direct/AP division is
 | [SETUP.md](SETUP.md) + [setup/](setup/) | One-command bootstrap + per-connector setup (each with its own Verify + test). |
 | [TESTING.md](TESTING.md) | The full test recipe (offline suite + live e2e + Studio walkthrough) and the coverage matrix. |
 | [OPERATIONS.md](OPERATIONS.md) | Running it day-to-day: the tunnel, ports, and every sharp edge (the warts-and-all journal). |
+| [PUBLIC_URL.md](PUBLIC_URL.md) | The public URL (`EVENTS_PUBLIC_URL`) in one page: the two tunnels, auto-wire, `make public-url`, and the Slack/Gmail update checklist. |
 | [KNOWN_GAPS.md](KNOWN_GAPS.md) | Design decisions, known gaps, and issues — the reviewer's list. |
 | [STUDIO_UI.md](STUDIO_UI.md) | The Studio console (tabs, the "dumb + additive" contract, agent editor). |
 | [MCP_SETUP.md](MCP_SETUP.md) | Giving CUGA workers tools via the MCP registry. |

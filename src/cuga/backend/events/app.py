@@ -643,21 +643,44 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
             return
         import logging as _lg
         from . import credentials, oauth
+        log = _lg.getLogger("cuga.events")
         p = resolve_principal(headers={})     # the operator principal (EVENTS_USER_ID / defaults)
         grain = os.environ.get("EVENTS_AP_PROJECT_GRAIN", "tenant")
-        # GitHub PAT → a SECRET_TEXT github connection (token-auth integration)
-        gh = (os.environ.get("GITHUB_TOKEN", "") or "").split(" #", 1)[0].strip()
-        if gh:
-            try:
-                ext = credentials.connection_external_id("github", "per-user", p)
-                if not await engine.connection_exists(ext, project_name=p.ap_project_name(grain)):
-                    await engine.ensure_secret_connection(ext, oauth.provider("github")["piece"], gh,
-                                                          project_name=p.ap_project_name(grain))
-                _lg.getLogger("cuga.events").info("autoconnect: github connected from .env (%s)", ext)
-            except Exception as e:  # noqa: BLE001
-                _lg.getLogger("cuga.events").warning("autoconnect github failed: %s", e)
+        # token-auth pieces whose secret sits in .env → create the operator's SECRET_TEXT AP
+        # connection on startup, so "set in .env" == "connected" (mirrors the Studio's connect).
+        # Without this the piece's inbound flow can't publish (AP: ConnectionNotFound) at arm time.
+        #   · github   — PAT (integration)
+        #   · telegram — bot token; Telegram is ALWAYS the AP backend, so it always needs this
+        #   · discord  — bot token, but only when the AP backend is selected (default is the direct
+        #                Gateway, which connects the socket on boot and needs no AP connection)
+        autoconn = [("github", os.environ.get("GITHUB_TOKEN", "")),
+                    ("telegram", os.environ.get("TELEGRAM_BOT_TOKEN", ""))]
+        if os.environ.get("EVENTS_DISCORD_BACKEND", "direct") == "ap":
+            autoconn.append(("discord", os.environ.get("DISCORD_BOT_TOKEN", "")))
+        import asyncio
+        for app_name, raw in autoconn:
+            tok = (raw or "").split(" #", 1)[0].strip()
+            if not tok:
+                continue
+            ext = credentials.connection_external_id(app_name, "per-user", p)
+            # AP can be briefly not-ready right after a cold co-start (make up/restart recreates the
+            # container); retry with backoff so the channel still connects without a manual re-run.
+            for attempt in range(1, 5):
+                try:
+                    if not await engine.connection_exists(ext, project_name=p.ap_project_name(grain)):
+                        await engine.ensure_secret_connection(ext, oauth.provider(app_name)["piece"],
+                                                              tok, project_name=p.ap_project_name(grain))
+                    log.info("autoconnect: %s connected from .env (%s)", app_name, ext)
+                    break
+                except Exception as e:  # noqa: BLE001
+                    if attempt == 4:
+                        log.warning("autoconnect %s failed after %d attempts: %r",
+                                    app_name, attempt, e, exc_info=True)
+                    else:
+                        await asyncio.sleep(2 * attempt)
 
-    if os.environ.get("GITHUB_TOKEN") and engine is not None:
+    if engine is not None and any(os.environ.get(k) for k in
+                                  ("GITHUB_TOKEN", "TELEGRAM_BOT_TOKEN", "DISCORD_BOT_TOKEN")):
         _bg = list(getattr(app.state, "events_background", []) or [])
         _bg.append(_autoconnect_env_tokens)
         app.state.events_background = _bg

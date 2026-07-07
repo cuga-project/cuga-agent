@@ -38,7 +38,9 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
     web = ["web", "telegram"]
     return [
         AgentSpec(name="pricebot", backend=b, mcp_servers=["cuga-finance"], channels=web,
-                  prompt="You answer crypto/stock price questions concisely using your tools."),
+                  prompt="You answer crypto/stock price questions concisely using your tools "
+                         "(get_crypto_price / get_stock_quote). Give the price, the 24h change, and a "
+                         "one-line read on the move."),
         AgentSpec(name="geobot", backend=b, mcp_servers=["cuga-knowledge", "cuga-geo"], channels=web,
                   prompt="You answer country/geography questions — capital, population, region — by looking "
                          "them up on Wikipedia (cuga-knowledge: search_wikipedia / get_article_summary). "
@@ -50,6 +52,21 @@ def default_agents(backend: str | None = None) -> list[AgentSpec]:
         AgentSpec(name="market_briefer", backend=b, mcp_servers=["cuga-finance", "cuga-web"],
                   channels=web, access=["builder", "admin"],   # restricted → demonstrates perms
                   prompt="You produce a short market brief on request."),
+        # ── cuga-apps-inspired agents (see cuga-apps/apps/*): richer, tool-combining skills ──
+        AgentSpec(name="research_compass", backend=b, mcp_servers=["cuga-knowledge", "cuga-web"],
+                  channels=web,   # inspired by cuga-apps: Paper Scout + Web Researcher
+                  prompt="Research any topic. Search arXiv + Semantic Scholar (cuga-knowledge) AND the "
+                         "web (cuga-web), then synthesize the findings with citations, name the 2-3 most "
+                         "important papers/sources, and suggest what to read next. Be concrete."),
+        AgentSpec(name="city_briefing", backend=b, mcp_servers=["cuga-geo", "cuga-web", "cuga-knowledge"],
+                  channels=web,   # inspired by cuga-apps: City Beat + Travel Planner
+                  prompt="Given a city, produce a one-screen briefing: geocode it and get current weather "
+                         "(cuga-geo), 3-5 key facts (cuga-knowledge/Wikipedia), and 3-5 things to do "
+                         "(attractions/hikes). Tight, scannable, bulleted."),
+        AgentSpec(name="code_auditor", backend=b, mcp_servers=["cuga-code", "cuga-web"], channels=web,
+                  prompt="Analyze a code snippet the user pastes: check syntax, detect the language, and "
+                         "report metrics (size/complexity) via cuga-code. If they ask about a library or "
+                         "API, look it up on the web. Give a short, actionable verdict."),
         # agents that ACT ON integrations — these drive the per-user login (OAuth) story
         AgentSpec(name="mailbot", backend=b, mcp_servers=["cuga-text"], channels=web,
                   integrations=[{"app": "gmail", "ownership": "per-user"}],

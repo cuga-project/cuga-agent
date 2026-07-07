@@ -49,7 +49,10 @@ if [ -z "$TUN" ]; then
   command -v cloudflared >/dev/null || { echo "need cloudflared"; exit 1; }
   pkill -f "cloudflared tunnel --url http://localhost:$AP_PORT" 2>/dev/null || true
   cloudflared tunnel --url "http://localhost:$AP_PORT" --no-autoupdate > "$RUN/ap_tunnel.log" 2>&1 &
-  for i in $(seq 1 20); do TUN=$(grep -o 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/ap_tunnel.log" 2>/dev/null|tail -1); [ -n "$TUN" ] && break; sleep 2; done
+  # NB: the `|| true` is load-bearing. Under `set -euo pipefail`, on the first iteration cloudflared
+  # hasn't written the URL yet, so grep matches nothing and exits 1; pipefail propagates that to the
+  # `TUN=$(...)` assignment, and set -e then kills the whole script before the URL ever appears.
+  for i in $(seq 1 20); do TUN=$(grep -ao 'https://[a-z0-9-]*\.trycloudflare\.com' "$RUN/ap_tunnel.log" 2>/dev/null | tail -1 || true); [ -n "$TUN" ] && break; sleep 2; done
 fi
 [ -n "$TUN" ] || { echo "no tunnel URL"; exit 1; }
 echo "AP_FRONTEND_URL = $TUN"
@@ -77,7 +80,8 @@ for i in $(seq 1 40); do curl -s -o /dev/null --max-time 4 "http://localhost:$AP
 echo "checking AP worker health…"
 sleep 8
 WORKER_LINE=$($D exec activepieces sh -c "npx pm2 jlist 2>/dev/null" 2>/dev/null \
-  | node -e "try{const a=JSON.parse(require('fs').readFileSync(0));const w=a.find(x=>x.name==='activepieces-worker')||{};const m=w.pm2_env||{};process.stdout.write((m.restart_time||0)+' '+(m.status||'?'))}catch(e){process.stdout.write('NA ?')}" 2>/dev/null)
+  | node -e "try{const a=JSON.parse(require('fs').readFileSync(0));const w=a.find(x=>x.name==='activepieces-worker')||{};const m=w.pm2_env||{};process.stdout.write((m.restart_time||0)+' '+(m.status||'?'))}catch(e){process.stdout.write('NA ?')}" 2>/dev/null || true)
+WORKER_LINE=${WORKER_LINE:-NA ?}
 RESTARTS=${WORKER_LINE%% *}; WSTATUS=${WORKER_LINE##* }
 if [ "$RESTARTS" != "NA" ] && [ "${RESTARTS:-0}" -gt 5 ] 2>/dev/null; then
   echo "  ✗ AP worker is crash-looping (restarts=$RESTARTS, status=$WSTATUS)."

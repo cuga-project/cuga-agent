@@ -8,6 +8,12 @@ For architecture see [README.md](README.md); for the clean quick-start see [SETU
 per-connector step-by-steps see [setup/](setup/README.md). Security posture lives in
 [KNOWN_GAPS.md](KNOWN_GAPS.md) — not repeated here.
 
+> **Everyday commands** — the root [`Makefile`](../Makefile) wraps the day-to-day loop; `make` lists
+> all targets. The ones you'll use most: `make up` / `make stop` (start/stop AP + CUGA, keeps data),
+> `make channels` (connect + arm the inbound chat channels — **re-run after any tunnel-URL change**),
+> `make nuke` (stop **and** wipe AP volumes + `events.db` — the full reset), `make status`,
+> `make logs`, `make env-check` / `make doctor`, `make test`. Details in [SETUP.md](SETUP.md#tldr--the-make-shortcuts).
+
 ---
 
 ## 1. The mental model (TENANT vs USER creds)
@@ -37,6 +43,9 @@ Getting this split right ends most of the confusion.
 ## 2. The recurring pains (biggest first)
 
 ### The ephemeral tunnel URL (the #1 pain)
+> Full one-pager: **[PUBLIC_URL.md](PUBLIC_URL.md)** — what it is, when it's generated, the auto-wire,
+> and the per-connector update checklist. The essentials are below.
+
 Cloudflare **quick-tunnels are ephemeral** — the URL changes on every `cloudflared` restart. When it
 does, **all** of these go stale at once:
 - `EVENTS_PUBLIC_URL`
@@ -49,9 +58,25 @@ Fix: use a **named tunnel or a real domain** for anything you don't want to re-p
 tunnel-resilient connectors are **direct Discord (Gateway)** and **Box poll** — both are outbound-only
 and need **no** public URL.
 
+**Checklist — after a restart / tunnel change:**
+| # | Action | How |
+|---|---|---|
+| 1 | `EVENTS_PUBLIC_URL` → the new tunnel | **automatic** — `make up` / `make reload` detect the live CUGA tunnel and feed it to the server, so it's never stale. (`.env`'s value is just a fallback; a *non-tunnel* URL there is treated as a pinned/stable override and respected.) |
+| 2 | Find the URL + what to update | **`make public-url`** — prints the URL and the exact Slack/Gmail strings (also printed at the end of `make up`) |
+| 3 | Re-arm inbound channels | `make channels` — re-sets Telegram's webhook, re-prints the Slack Request URL |
+| 4 | **Slack** (direct): Event Subscriptions **Request URL** | `<url>/api/events/slack/events` at api.slack.com/apps → your app (Slack re-verifies) |
+| 5 | **Gmail** (OAuth): redirect URI **+ re-consent** | `<url>/api/events/connect/gmail/callback` in Google Cloud Console (char-exact, no trailing slash) → re-Connect in the Studio |
+| — | **Box** (direct poll), **Discord** (Gateway), **Telegram** | nothing (Box/Discord are outbound-only; Telegram is handled by step 3) |
+
+So after a restart the runtime self-heals its own URL; the only **external consoles** you ever touch
+are **Slack** and **Gmail** — and `make public-url` hands you the exact strings. Prefer `make reload`
+(server-only, tunnels + URL unchanged) over `make restart` so you rarely hit this at all.
+
 ### The server caches `.env` at startup
-Creds/tokens are read once at boot. **Edit `.env` → restart the server** to pick them up. Silent
-"why is my new token not working" is almost always this.
+Creds/tokens are read once at boot. **Edit `.env` → `make reload`** to pick them up (bounces the
+CUGA server only — keeps AP + tunnels, so URLs don't change). Reach for `make restart` **only** when
+you changed AP or need fresh tunnels; it re-triggers the whole tunnel checklist above. Silent "why is
+my new token not working" is almost always a missed reload.
 
 ### DO NOT set `AP_WORKER_TOKEN`
 AP 0.82's entrypoint **mints** `AP_WORKER_TOKEN` as a JWT signed with `AP_JWT_SECRET` when it is left
@@ -163,8 +188,11 @@ channel delivery. No AP, no OAuth. Use for monitoring alerts / CI failures / for
 
 ## Testing
 
-- **Offline suite:** `uv run pytest tests/events/` (no network / AP / LLM).
+- **Offline suite:** `make test` (= `pytest tests/events/`, no network / AP / LLM); `make test-all`
+  runs all offline tests (`tests/events` + `tests/unit`). The full product suite (`pytest tests`,
+  with browser/pgvector/e2e) needs a complete dev env and isn't the events gate.
 - **Live e2e:** `tests/events/live_integrations_e2e.py` (4 trigger modes + integrations), plus the
-  per-connector `live_*_check.py`. Set `GATEWAY_TOKEN` + `EVENTS_SERVER_URL`.
+  per-connector `live_*_check.py`. Set `GATEWAY_TOKEN` + `EVENTS_SERVER_URL`. Check creds first with
+  `make doctor`.
 
 See [TESTING.md](TESTING.md) for the full testing guide.

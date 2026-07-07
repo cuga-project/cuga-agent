@@ -147,13 +147,16 @@ def main() -> int:
         armed = bool(_find_sub(mode="PUSH", source=app))          # authoritative: a subscription exists
         connect_needed = ("connect" in low and app in low)
         # honest outcomes:  not connected → CONNECT-NEEDED · connected + no required input → ARMED ·
-        # connected but the trigger needs a slot (github repo / box folder) → the concierge asks for it.
+        # connected but the trigger needs a slot/input → the concierge asks for it. That "slot" is
+        # per-agent: a github repo, a box folder, or a domain input like the job description that
+        # resume_judge judges resumes against ("share the JD").
         needs_input = any(w in low for w in ("repo", "repository", "folder", "which ", "specify",
-                                             "builder", "no push trigger"))
+                                             "builder", "no push trigger", "job description", "jd",
+                                             "share the", "provide the", "attach"))
         ok = armed or connect_needed or (connected and needs_input)
         state = ("ARMED (AP flow)" if armed else
                  "connect-needed (not connected — correct)" if connect_needed else
-                 "connected → needs a repo/folder slot (correct)" if (connected and needs_input) else
+                 "connected → needs a repo/folder/input slot (correct)" if (connected and needs_input) else
                  f"unexpected: {rep[:80]}")
         check(f"PUSH {app}: routes to AP correctly [{state}]", ok)
         if armed:
