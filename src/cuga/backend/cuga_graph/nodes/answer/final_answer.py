@@ -39,7 +39,10 @@ class HumanInTheLoopHandler:
         if action_id in self._action_handlers:
             return self._action_handlers[action_id](state, node_name)
 
-        # Default fallback
+        # Default fallback — this is a terminal path to END, so resolve
+        # citations here too (every other terminal path does): resolve any [sN]
+        # markers and drop stale prior-turn sources before the state is dumped.
+        FinalAnswerNode.apply_citation_resolution(state)
         return Command(update=state.model_dump(), goto=NodeNames.END)
 
     def add_action_handler(self, action_id: str, handler: Callable):

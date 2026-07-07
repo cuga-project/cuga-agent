@@ -96,3 +96,27 @@ def test_supervisor_empty_fallback_clears_stale_sources():
         FinalAnswerNode.node_handler(state, agent=None, name="FinalAnswerAgent", hitl_handler=None)
     )
     assert state.sources == []
+
+
+def test_hitl_default_fallback_clears_stale_sources():
+    """fix: the HITL default-fallback is a terminal path to END, so it must
+    resolve citations too — otherwise stale prior-turn sources ride an
+    unresolved answer (every other terminal path already guards this)."""
+    from cuga.backend.cuga_graph.nodes.answer.final_answer import HumanInTheLoopHandler
+    from cuga.backend.cuga_graph.nodes.human_in_the_loop.followup_model import (
+        ActionResponse,
+        ActionType,
+    )
+
+    resp = ActionResponse(
+        action_id="unrecognized-action",  # not in the handler map -> default fallback
+        response_type=ActionType.BUTTON,
+        timestamp="2026-01-01T00:00:00Z",
+    )
+    state = _make_agent_state(
+        final_answer="a plain answer with no markers",
+        sources=[{"n": 1, "cite_id": "s1", "filename": "old.pdf"}],
+        hitl_response=resp,
+    )
+    HumanInTheLoopHandler().handle_human_response(state, "FinalAnswerAgent")
+    assert state.sources == []  # stale prior-turn sources dropped on the fallback
