@@ -111,6 +111,7 @@ def main():
         return 0
     if status_only:
         print(f"✗ {len(missing)} missing — run `make ap-pieces`")
+        print("  (until installed, .env-token integrations like github/telegram can't auto-connect)")
         return 1
 
     # ROOT CAUSE this handles: a FRESH AP runs an OFFICIAL_AUTO catalog sync from cloud.activepieces.com

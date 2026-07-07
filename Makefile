@@ -110,7 +110,7 @@ test-live: ## Live e2e — needs the stack up (make up) + creds (make doctor)
 	EVENTS_SERVER_URL=http://localhost:$(CUGA_PORT) $(PY) tests/events/live_integrations_e2e.py
 
 doctor: ## Live credential doctor — hit each service with its real .env cred
-	$(PY) tests/events/preflight.py
+	-$(PY) tests/events/preflight.py
 	@echo; echo "--- Activepieces pieces (integration Connect needs these) ---"; \
 	  $(PY) scripts/ap_pieces.py --status 2>/dev/null || echo "  (AP down — start it with 'make ap')"
 

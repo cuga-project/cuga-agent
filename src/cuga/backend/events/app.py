@@ -368,6 +368,18 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     r["status"] = "connected" if has_tok else "not_connected"
                     r["connected"] = has_tok
                     r["backend"] = "direct"
+        # .env-TOKEN integrations (github) AUTO-CONNECT on startup — so a token in .env == connected.
+        # If the token is set but no AP connection exists yet, it's not a UI bug and not "not
+        # connected": auto-connect hasn't succeeded, almost always because AP's piece isn't installed
+        # yet on a fresh DB (see `make ap-pieces`). Say that explicitly instead of a bare red status.
+        _env_token = {"github": "GITHUB_TOKEN"}
+        for r in rows:
+            var = _env_token.get(r["name"])
+            if var and r["status"] == "not_connected" and os.environ.get(var, "").strip():
+                r["status"] = "auto_connect_pending"
+                r["note"] = (f"{var} is set — this auto-connects on startup. If it's still pending, "
+                             f"AP's {r['name']} piece isn't installed yet (run `make ap-pieces`), then "
+                             f"restart. No manual Connect needed once pieces are ready.")
         return {"integrations": rows}
 
     @app.get("/api/events/agents")

@@ -543,6 +543,29 @@ def test_integrations_box_direct_backend_reports_connected():
         os.environ.pop("EVENTS_BOX_BACKEND", None) if old_be is None else os.environ.__setitem__("EVENTS_BOX_BACKEND", old_be)
 
 
+def test_integrations_github_env_token_reads_auto_connect_pending():
+    """A .env GITHUB_TOKEN auto-connects on startup; if the AP connection isn't there yet (typically
+    the piece isn't installed on a fresh DB), the status reads 'auto_connect_pending' — NOT a bare
+    'not connected' — so it never looks like a UI bug lying about the connection."""
+    class _Engine:
+        base = "http://ap"
+        project_grain = "tenant"
+
+        async def list_connections(self, project_name=None):
+            return []                                   # no github connection yet
+
+    old = os.environ.get("GITHUB_TOKEN")
+    os.environ["GITHUB_TOKEN"] = "ghp_test_value"
+    try:
+        app = FastAPI()
+        register_events_routes(app, runtime=object(), store=None, concierge=None, engine=_Engine())
+        rows = {i["name"]: i for i in TestClient(app).get("/api/events/integrations").json()["integrations"]}
+        assert rows["github"]["status"] == "auto_connect_pending", rows["github"]
+        assert "GITHUB_TOKEN" in rows["github"]["note"]
+    finally:
+        os.environ.pop("GITHUB_TOKEN", None) if old is None else os.environ.__setitem__("GITHUB_TOKEN", old)
+
+
 if __name__ == "__main__":
     fns = [(n, f) for n, f in sorted(globals().items()) if n.startswith("test_") and callable(f)]
     passed = 0

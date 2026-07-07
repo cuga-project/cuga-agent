@@ -6,7 +6,7 @@ you know what's actually working before wiring flows. No CUGA server needed. Std
     python3 tests/events/preflight.py
     python3 tests/events/preflight.py telegram box        # only these
 
-Checks: watsonx (LLM) · Activepieces · Telegram · Discord · Slack · Box (dev token) · cuga-* MCP.
+Checks: watsonx (LLM) · Activepieces · Telegram · Discord · Slack · Box (dev token) · GitHub (PAT) · cuga-* MCP.
 """
 
 from __future__ import annotations
@@ -140,6 +140,21 @@ def check_box():
     return False, f"users/me HTTP {code}: {str(body)[:120]}"
 
 
+def check_github():
+    tok = os.environ.get("GITHUB_TOKEN")
+    if not tok:
+        return None, "skip — no GITHUB_TOKEN (a PAT here auto-connects github on startup)"
+    code, body = _http("https://api.github.com/user",
+                       headers={"Authorization": f"token {tok}",
+                                "Accept": "application/vnd.github+json"}, timeout=15)
+    if code == 200 and isinstance(body, dict) and body.get("login"):
+        return True, (f"PAT valid as {body.get('login')} — note: PR/issue triggers also need "
+                      f"Webhooks:R/W (fine-grained PAT) or admin:repo_hook (classic)")
+    if code == 401:
+        return False, "401 bad credentials — PAT invalid/expired (regenerate + reconnect github)"
+    return False, f"user HTTP {code}: {str(body)[:120]}"
+
+
 def check_mcp():
     # the cuga-* servers scale to zero; a reachable HTTP (even 4xx from a GET) = the host is up.
     apps = ("finance", "geo", "web", "knowledge", "code", "local", "text")
@@ -156,7 +171,8 @@ def check_mcp():
 
 CHECKS = {
     "watsonx": check_watsonx, "activepieces": check_activepieces, "telegram": check_telegram,
-    "discord": check_discord, "slack": check_slack, "box": check_box, "mcp": check_mcp,
+    "discord": check_discord, "slack": check_slack, "box": check_box, "github": check_github,
+    "mcp": check_mcp,
 }
 
 

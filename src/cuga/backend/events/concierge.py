@@ -157,8 +157,19 @@ async def _connect_needed(spec, p: Principal, engine) -> tuple[str, str] | None:
                    f"?scope={p.scope}&agent={spec.name}")
             return app, f"connect your {app}: {url}"
         if oauth.connect_kind(app) == "token":
+            hint = ""
+            if app == "github":
+                # PR/issue triggers create a repo WEBHOOK, so the token must be able to manage hooks.
+                # Give the EXACT, correct guidance (classic uses scopes, fine-grained uses named
+                # permissions — don't mix them) so it can't be relayed as misleading instructions.
+                hint = (" — for PR/issue watchers the token must manage repo webhooks. Easiest: a "
+                        "CLASSIC PAT at github.com/settings/tokens/new with the **`repo`** scope "
+                        "(covers webhooks + PR read). Or a FINE-GRAINED PAT at "
+                        "github.com/settings/personal-access-tokens/new, resource owner = the repo's "
+                        "owner, Only-select-repositories = that repo, then Repository permissions → "
+                        "**Webhooks: Read and write** + **Pull requests: Read** (+ Contents: Read)")
             return app, (f"connect your {app}: paste your {app} token in the Studio "
-                         f"(Integrations → {app} → Connect)")
+                         f"(Integrations → {app} → Connect){hint}")
         return app, (f"{app} isn't configured for OAuth on this deployment "
                      f"(set EVENTS_OAUTH_{app.upper()}_CLIENT_ID/SECRET)")
     return None
@@ -278,10 +289,24 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
             if kind == "push":
                 if not source:
                     return "error: push needs a source (box|github|gmail)."
-                # the integration's per-user connection is wired as the trigger auth (required to publish)
+                # The trigger sub-name (github_pr/github_issue) is NOT the connection app — the AP
+                # connection is under the BASE app (github). Normalize so the auth references the real
+                # connection (else the trigger references a non-existent one and publish fails).
+                base_app = {"github_pr": "github", "github_issue": "github"}.get(source, source)
                 _own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
-                             if i.get("app") == source), "per-user")
-                push_conn = credentials.connection_external_id(source, _own, p)
+                             if i.get("app") == base_app), "per-user")
+                push_conn = credentials.connection_external_id(base_app, _own, p)
+                # github's PR/issue trigger REQUIRES a repository (owner/repo). Pull it from the
+                # utterance; without it the trigger can't activate (AP 400 TRIGGER_UPDATE_STATUS).
+                src_input, repo_label = None, ""
+                if base_app == "github":
+                    import re
+                    m = re.search(r"\b([A-Za-z0-9][\w.-]*)/([A-Za-z0-9][\w.-]*)\b", prompt or "")
+                    if not m:
+                        return ("Which repo? Name it as owner/repo — e.g. "
+                                "`/automate new PRs on psf/requests and summarize them`.")
+                    repo_label = f"{m.group(1)}/{m.group(2)}"
+                    src_input = {"repository": {"owner": m.group(1), "repo": m.group(2)}}
                 flow_name = f"push-{source}-{agent}"
                 try:
                     grain = getattr(engine, "project_grain", "tenant")
@@ -289,8 +314,19 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                         source=source, event=event or "new_file", agent=agent,
                         thread_id=p.thread(origin), prompt=prompt,
                         project_name=p.ap_project_name(grain), scope=p.scope,
-                        connection=push_conn, name=flow_name)
+                        connection=push_conn, source_input=src_input, name=flow_name)
                 except Exception as e:  # noqa: BLE001
+                    msg = str(e)
+                    # github's PR/issue trigger creates a repo WEBHOOK on publish; GitHub rejects it if
+                    # the token can't manage webhooks (fine-grained PAT missing "Webhooks" permission,
+                    # surfaced by AP as TRIGGER_UPDATE_STATUS / bad credentials). Make that actionable.
+                    if base_app == "github" and ("TRIGGER_UPDATE_STATUS" in msg
+                            or "credential" in msg.lower() or "webhook" in msg.lower()):
+                        return (f"GitHub wouldn't arm the watcher on {repo_label}: it rejected the "
+                                f"webhook this trigger needs. Reconnect GitHub with a token that can "
+                                f"manage webhooks — a fine-grained PAT needs **Webhooks: Read and "
+                                f"write** (+ Pull requests: Read, Contents: Read) on that repo, or a "
+                                f"classic PAT with `admin:repo_hook` + `repo`.")
                     return f"error: couldn't arm push flow ({e})."
                 sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode="PUSH",
                                    target_agent=agent, tenant=p.scope, backend=spec.backend,

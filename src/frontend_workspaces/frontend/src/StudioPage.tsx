@@ -34,6 +34,7 @@ import "./StudioPage.css";
 const STATUS_TAG: Record<string, { type: string; label: string }> = {
   connected: { type: "green", label: "connected" },
   not_connected: { type: "gray", label: "not connected" },
+  auto_connect_pending: { type: "cyan", label: "auto-connect pending" },
   not_configured: { type: "gray", label: "not configured" },
   ap_not_configured: { type: "gray", label: "AP not configured" },
   unknown: { type: "cool-gray", label: "unknown" },
@@ -718,24 +719,39 @@ function RunsTab({ refresh }: { refresh: number }) {
 
 function ExamplesTab({ refresh, onTry }: { refresh: number; onTry: (utterance: string) => void }) {
   const { data, loading, error } = useEndpoint<any[]>(api.getEventsExamples, (d) => d.examples ?? [], refresh);
+  const [starOnly, setStarOnly] = useState(false);
+  // ⭐ recommended starter flows sort first; optional filter to show only them.
+  const items = (data ?? [])
+    .filter((e) => !starOnly || e.star)
+    .sort((a, b) => (b.star ? 1 : 0) - (a.star ? 1 : 0));
   return (
-    <div className="studio-grid">
-      <Loader loading={loading} error={error} />
-      {data?.map((e) => (
-        <Tile key={e.id} className="studio-card">
-          <div className="studio-card-head">
-            <span className="studio-card-title"><Idea size={18} /> {e.title}</span>
-            <Tag type={(OUTCOME_TAG[e.outcome] as any) ?? "gray"} size="sm">{e.outcome}</Tag>
-          </div>
-          <p className="studio-example-utterance">"{e.utterance}"</p>
-          <p className="studio-muted">agent: {e.agent} — {e.note}</p>
-          <div className="studio-card-foot">
-            <Button kind="tertiary" size="sm" onClick={() => onTry(e.utterance)}>
-              Try it
-            </Button>
-          </div>
-        </Tile>
-      ))}
+    <div>
+      <div style={{ display: "flex", alignItems: "center", gap: 16, margin: "0 0 12px", flexWrap: "wrap" }}>
+        <p className="studio-muted" style={{ margin: 0, fontSize: 13 }}>
+          Click <b>Try it</b> to load an example into the Concierge. <b>⭐ = recommended starter flow</b>
+          (one per integration + a cron & poll, all via <code>/automate</code>).
+        </p>
+        <Checkbox id="ex-star-only" labelText="⭐ Recommended only"
+          checked={starOnly} onChange={(_e: any, d: any) => setStarOnly(!!d?.checked)} />
+      </div>
+      <div className="studio-grid">
+        <Loader loading={loading} error={error} />
+        {items.map((e) => (
+          <Tile key={e.id} className="studio-card"
+            style={e.star ? { borderLeft: "3px solid #f1c21b" } : undefined}>
+            <div className="studio-card-head">
+              <span className="studio-card-title"><Idea size={18} /> {e.title}</span>
+              <Tag type={(OUTCOME_TAG[e.outcome] as any) ?? "gray"} size="sm">{e.outcome}</Tag>
+            </div>
+            <p className="studio-example-utterance">"{e.utterance}"</p>
+            <p className="studio-muted">agent: {e.agent} — {e.note}</p>
+            <div className="studio-card-foot">
+              {e.star && <Tag type="warm-gray" size="sm">★ recommended</Tag>}
+              <Button kind="tertiary" size="sm" onClick={() => onTry(e.utterance)}>Try it</Button>
+            </div>
+          </Tile>
+        ))}
+      </div>
     </div>
   );
 }

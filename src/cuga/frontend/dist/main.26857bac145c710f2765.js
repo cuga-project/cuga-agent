@@ -12913,6 +12913,10 @@ const STATUS_TAG = {
     type: "gray",
     label: "not connected"
   },
+  auto_connect_pending: {
+    type: "cyan",
+    label: "auto-connect pending"
+  },
   not_configured: {
     type: "gray",
     label: "not configured"
@@ -14008,14 +14012,39 @@ function ExamplesTab({
     loading,
     error
   } = useEndpoint(_api__WEBPACK_IMPORTED_MODULE_4__.getEventsExamples, d => d.examples ?? [], refresh);
-  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+  const [starOnly, setStarOnly] = (0,react__WEBPACK_IMPORTED_MODULE_0__.useState)(false);
+  // ⭐ recommended starter flows sort first; optional filter to show only them.
+  const items = (data ?? []).filter(e => !starOnly || e.star).sort((a, b) => (b.star ? 1 : 0) - (a.star ? 1 : 0));
+  return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+    style: {
+      display: "flex",
+      alignItems: "center",
+      gap: 16,
+      margin: "0 0 12px",
+      flexWrap: "wrap"
+    }
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    className: "studio-muted",
+    style: {
+      margin: 0,
+      fontSize: 13
+    }
+  }, "Click ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("b", null, "Try it"), " to load an example into the Concierge. ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("b", null, "\u2B50 = recommended starter flow"), "(one per integration + a cron & poll, all via ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, "/automate"), ")."), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Checkbox, {
+    id: "ex-star-only",
+    labelText: "\u2B50 Recommended only",
+    checked: starOnly,
+    onChange: (_e, d) => setStarOnly(!!d?.checked)
+  })), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-grid"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(Loader, {
     loading: loading,
     error: error
-  }), data?.map(e => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tile, {
+  }), items.map(e => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tile, {
     key: e.id,
-    className: "studio-card"
+    className: "studio-card",
+    style: e.star ? {
+      borderLeft: "3px solid #f1c21b"
+    } : undefined
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-card-head"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("span", {
@@ -14031,11 +14060,14 @@ function ExamplesTab({
     className: "studio-muted"
   }, "agent: ", e.agent, " \u2014 ", e.note), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-card-foot"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
+  }, e.star && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+    type: "warm-gray",
+    size: "sm"
+  }, "\u2605 recommended"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
     kind: "tertiary",
     size: "sm",
     onClick: () => onTry(e.utterance)
-  }, "Try it")))));
+  }, "Try it"))))));
 }
 function ProfileTab({
   refresh
@@ -18218,4 +18250,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.ded2578e16ad40acdf14.js.map
+//# sourceMappingURL=main.26857bac145c710f2765.js.map
