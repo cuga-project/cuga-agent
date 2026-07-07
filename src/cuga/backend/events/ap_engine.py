@@ -398,8 +398,12 @@ class APEngine:
             await self._post_op(c, flow_id, self._piece_trigger_op(piece, trig, tinp, tver), hdrs)
             # Pass the trigger's meaningful fields into the /invoke payload so the worker has real
             # content to reason over (not just a filename). Field paths are the AP piece's trigger
-            # body shape; unknown paths render empty (harmless). See flows.PUSH_PAYLOAD.
-            payload = flows.PUSH_PAYLOAD.get(source, {"name": "{{trigger.body.name}}"})
+            # output shape; unknown paths render empty (harmless). See flows.PUSH_PAYLOAD.
+            # ROBUSTNESS (Tier 0): ALWAYS also forward the FULL raw trigger output as `_raw`. If the
+            # curated per-piece paths are wrong or missing (a new/unmapped piece), the worker still
+            # gets the whole payload — envelope.worker_input falls back to `_raw` when the curated
+            # fields come back empty. Retires the "flow ran green but the agent got nothing" class.
+            payload = {**flows.PUSH_PAYLOAD.get(source, {}), "_raw": "{{trigger}}"}
             body = {"agent": agent, "text": prompt, "deliver": True, "scope": scope,
                     "source": {"type": "integration", "name": source, "thread_id": thread_id},
                     "event": {"kind": event, "payload": payload}}

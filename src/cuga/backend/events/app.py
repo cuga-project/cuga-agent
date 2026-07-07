@@ -137,20 +137,22 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 answer = f"{answer}\n\n{foot}"
         # Delivery. AP-backed channels deliver via an AP send step (deliver=False here). deliver=True
         # is CUGA-owned delivery, in priority order:
-        #   1. DIRECT channel sink (e.g. Slack): the fired flow's source is the channel, so CUGA
-        #      sends the answer itself via the channel's direct adapter (no AP connection needed).
+        #   1. DIRECT channel sink (e.g. Slack): the reply goes to the gw:<channel>:<native> origin
+        #      encoded in the thread_id — the caller's channel — whether the flow was triggered BY that
+        #      channel (a reply) or was armed from it to deliver TO it (a push/cron/poll flow, whose
+        #      source is an integration/timer, so source.name is NOT the sink). CUGA sends via the
+        #      channel's direct adapter (no AP connection). AP-backed sinks never reach here (they use
+        #      an AP send step + deliver=False), so a deliver=True direct-send is unambiguous.
         #   2. capture sink: POST to EA_CAPTURE_URL when set (assertable real-HTTP target for e2e/web).
         if env.deliver:
             from . import delivery
-            from .principal import channel_native_id
+            from .principal import channel_origin
             direct_done = False
-            if env.source.type == "channel" and delivery.is_direct(env.source.name) \
-                    and isinstance(answer, str):
-                target = channel_native_id(env.source) or ""
-                if target:
-                    ok, why = await delivery.send_direct(env.source.name, target, answer)
-                    tr("deliver", via="direct", channel=env.source.name, ok=ok, reason=why)
-                    direct_done = ok
+            origin = channel_origin(env.thread_id)     # (channel, native) from the thread_id
+            if origin and delivery.is_direct(origin[0]) and origin[1] and isinstance(answer, str):
+                ok, why = await delivery.send_direct(origin[0], origin[1], answer)
+                tr("deliver", via="direct", channel=origin[0], ok=ok, reason=why)
+                direct_done = ok
             cap = os.environ.get("EA_CAPTURE_URL")
             if not direct_done and cap:
                 try:
@@ -284,6 +286,7 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 "agent": sub.get("target_agent"), "mode": sub.get("mode"),
                 "integration": sub.get("source_connector"),
                 "channel": ", ".join(sub.get("deliver_to") or []),
+                "utterance": sub.get("prompt"),
                 "flow_name": sub.get("flow_name"), "subscription_id": sub.get("id"),
             })
         return {"scope": scope, "runs": out}

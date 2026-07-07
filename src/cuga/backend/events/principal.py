@@ -107,6 +107,21 @@ def channel_native_id(source) -> str | None:
     return None
 
 
+def channel_origin(thread_id: str) -> tuple[str, str] | None:
+    """Extract ``(channel, native_id)`` from a thread_id's ``gw:<channel>:<native>`` origin, tolerating
+    a scope prefix (``<scope>::gw:slack:C123#locus``). This is the DELIVERY target — where a reply goes
+    — for BOTH a channel-sourced reply AND a push/cron/poll flow armed from that channel (whose source
+    is an integration/timer, so ``source.name`` is NOT the sink). The ``#<locus>`` suffix is stripped."""
+    tid = thread_id or ""
+    i = tid.find("gw:")
+    if i < 0:
+        return None
+    parts = tid[i:].split(":", 2)          # ["gw", channel, "<native>#<locus>"]
+    if len(parts) == 3:
+        return parts[1], parts[2].split("#", 1)[0]
+    return None
+
+
 def channel_user_id(source) -> str | None:
     """The channel-native id of the message AUTHOR — for per-user identity (whose creds/perms/memory).
     Prefer an explicit ``source.user`` (Slack ``ev.user`` / Discord author id, forwarded by the

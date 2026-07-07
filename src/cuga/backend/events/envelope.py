@@ -11,6 +11,7 @@ Stdlib-only and self-contained so it's trivially testable. See events_docs/DESIG
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field, asdict
 
 SOURCE_TYPES = ("channel", "integration", "time")
@@ -83,14 +84,31 @@ class Envelope:
         return self.source.thread_id
 
     def worker_input(self) -> str:
-        """What the worker actually runs on: the utterance for a channel message, else a
-        rendered line from the event payload (so a Box new_file / GitHub new_pr becomes text)."""
+        """What the worker actually runs on: the utterance for a channel message, else a rendered
+        line from the event payload (so a Box new_file / GitHub new_pr becomes text).
+
+        ROBUSTNESS (Tier 0): flows forward the full raw trigger output as ``_raw``. We prefer the
+        curated, non-empty fields (clean context); but if the curated map produced nothing — a new/
+        unmapped piece, or a wrong hand-written path — we fall back to ``_raw`` so the worker is
+        NEVER handed a blank payload. This retires the whole class of "flow ran green but the agent
+        got nothing" bugs regardless of whether the per-piece field map is right."""
         if self.source.type == "channel" and self.text:
             return self.text
-        if self.event.payload:
-            ctx = ", ".join(f"{k}={v}" for k, v in self.event.payload.items()
-                            if not str(k).startswith("_"))
-            return (self.text + ("\n\n[event] " + ctx if ctx else "")).strip() or ctx
+        pl = self.event.payload or {}
+        if pl:
+            # curated fields (non-_) that actually resolved to a value
+            parts = [f"{k}={v}" for k, v in pl.items()
+                     if not str(k).startswith("_") and str(v).strip()]
+            ctx = ", ".join(parts)
+            if not ctx and pl.get("_raw"):
+                # curated map came back empty → surface the FULL raw trigger output instead
+                try:
+                    raw = json.dumps(pl["_raw"], default=str)[:4000]
+                except Exception:  # noqa: BLE001
+                    raw = str(pl["_raw"])[:4000]
+                ctx = f"raw={raw}"
+            return (self.text + ("\n\n[event] " + ctx if ctx else "")).strip() or ctx \
+                or (self.text or "(no input)")
         return self.text or "(no input)"
 
 

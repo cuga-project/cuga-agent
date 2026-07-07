@@ -494,6 +494,28 @@
     </div>
     <p class="lead" style="margin:8px 0 0"><b>Middle path (recommended):</b> let a coding agent author the <b>agent</b> (prompt + tool set) + the params, but still emit into the <b>constrained flow template + the validation gate</b> above — flexibility on <i>what the worker does</i> without losing determinism/safety on <i>how the flow is wired</i>. That validator is exactly what would have caught the <code>new-email</code>→<code>new_email</code> bug for free. (Note: the <b>workers already are</b> agentic — CUGA plans + acts — so the system blends both today.)</p>
   </div>
+  <div class="box" style="border-left:3px solid var(--blue);margin:14px 0 0">
+    <h4>The <i>second</i> fuzzy seam — piece payload → envelope (not just NL → intent)</h4>
+    <p class="lead" style="margin:0 0 8px">NL→intent is only ONE fuzzy boundary. The other: every integration piece emits a <i>different</i>
+      output shape, and hand-coding the paths that forward it into <code>/invoke</code> is a guess that fails <b>silently</b>
+      (the flow runs green, the agent gets an empty payload). Real example: gmail's map used <code>{{trigger.body.subject}}</code>
+      but the piece nests under <code>message</code> → every field empty → mailbot asked for the content. Same lesson as
+      NL→Flow: <b>static code is brittle wherever the shape is fuzzy.</b></p>
+    <div class="grid2">
+      <div class="box"><h4>Tier 0 — raw safety net <span class="pill p-done">Done</span></h4><ul class="tight">
+        <li>Every push flow forwards the <b>full raw trigger output</b> as <code>_raw</code> (<code>{{trigger}}</code>).</li>
+        <li><code>envelope.worker_input</code> prefers curated fields but <b>falls back to <code>_raw</code></b> when they're empty.</li>
+        <li>A new / unmapped / mis-mapped piece can <b>never</b> hand the worker a blank payload.</li>
+      </ul></div>
+      <div class="box"><h4>Tier 1 — schema/LLM-derived maps <span class="pill p-pend">Run target</span></h4><ul class="tight">
+        <li>At <b>arm time</b>, read the piece's <b>published output schema / sample data</b> and derive the map <i>once</i>.</li>
+        <li>LLM or heuristic proposes → a <b>validator gates</b> it before the flow ships.</li>
+        <li>Clean, typed fields for preview/validation with <b>zero hand-coding per piece</b>.</li>
+      </ul></div>
+    </div>
+    <p class="lead" style="margin:8px 0 0"><b>Tier 2:</b> keep curated maps for the top pieces (nicest UX/preview) — always with Tier 0's
+      raw net underneath. Pattern for <b>both</b> seams: <b>LLM/introspection proposes · validator gates · the intelligent worker consumes raw.</b></p>
+  </div>
 </section>
 
 <!-- LOCAL VS CLOUD -->

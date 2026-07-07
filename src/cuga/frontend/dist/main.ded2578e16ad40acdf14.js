@@ -13798,7 +13798,7 @@ function RunDetail({
   const trig = detail?.trigger_payload;
   return /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     style: {
-      margin: "0 0 8px",
+      margin: "0 0 6px",
       display: "flex",
       gap: 8,
       alignItems: "center"
@@ -13811,7 +13811,13 @@ function RunDetail({
     style: {
       fontSize: 12
     }
-  }, fmtTime(run.started_at))), detail?.error_msg && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.InlineNotification, {
+  }, fmtTime(run.started_at))), detail?.utterance && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
+    className: "studio-muted",
+    style: {
+      fontSize: 12,
+      margin: "0 0 8px"
+    }
+  }, "Flow: ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("i", null, detail.utterance)), detail?.error_msg && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.InlineNotification, {
     kind: "error",
     lowContrast: true,
     hideCloseButton: true,
@@ -13879,16 +13885,18 @@ function RunsTab({
       bv = b[sort.col] ?? "";
     return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
   });
-  const view = async id => {
+  const view = async row => {
     setDetailLoading(true);
     setDetail({
-      id
+      id: row.id,
+      utterance: row.utterance
     });
     try {
-      const res = await _api__WEBPACK_IMPORTED_MODULE_4__.getEventsRunDetail(id);
+      const res = await _api__WEBPACK_IMPORTED_MODULE_4__.getEventsRunDetail(row.id);
       const d = await res.json();
       setDetail(res.ok ? {
         ...d,
+        utterance: row.utterance,
         error_msg: d.error
       } : {
         error: d?.error || res.statusText
@@ -13956,9 +13964,14 @@ function RunsTab({
     subtitle: "Once a cron/poll/push flow fires, its runs appear here with success/failure and output."
   }) : /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Table, {
     size: "sm"
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHead, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, null, th("started_at", "Time"), th("agent", "Agent"), th("mode", "Trigger"), th("integration", "Integration"), th("channel", "Channel"), th("status", "Status"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Output"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableBody, null, sorted.map(r => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHead, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, null, th("started_at", "Time"), th("agent", "Agent"), th("utterance", "Flow (utterance)"), th("mode", "Trigger"), th("integration", "Integration"), th("channel", "Channel"), th("status", "Status"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableHeader, null, "Output"))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableBody, null, sorted.map(r => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableRow, {
     key: r.id
-  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, fmtTime(r.started_at)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.agent), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+  }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, fmtTime(r.started_at)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.agent), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, {
+    title: r.utterance || "",
+    style: {
+      maxWidth: 260
+    }
+  }, r.utterance ? r.utterance.length > 52 ? r.utterance.slice(0, 52) + "…" : r.utterance : "—"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: MODE_TAG[r.mode] ?? "gray",
     size: "sm"
   }, r.mode)), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.integration), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, r.channel), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.TableCell, null, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
@@ -13968,7 +13981,7 @@ function RunsTab({
     kind: "ghost",
     size: "sm",
     renderIcon: _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.View,
-    onClick: () => view(r.id)
+    onClick: () => view(r)
   }, "View")))))), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     className: "studio-muted",
     style: {
@@ -18205,4 +18218,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.7ab3ec88f4a2af4fd220.js.map
+//# sourceMappingURL=main.ded2578e16ad40acdf14.js.map

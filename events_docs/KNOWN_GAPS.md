@@ -131,3 +131,15 @@ The full warts-and-all account is in [OPERATIONS.md](OPERATIONS.md). The recurri
   AP flow JSON; the **Flows console** (`GET /api/events/flows/console`, `make flows`) renders it as a
   read-only diagram and hosts the pause/resume/delete controls. Self-contained page — no frontend
   build, so it can't affect the pre-built Studio bundle.
+- **Execution log (Studio *Runs* tab)** — `GET /api/events/runs` (+ `…/<id>`) joins AP flow-runs with
+  their subscription, so you can filter/sort every standing-flow run by agent / integration / channel /
+  trigger / status and open each run's actual **output** (the `/invoke` answer) + trigger payload.
+- **Push-payload robustness (Tier 0 — raw safety net).** A push flow's `/invoke` body carries curated
+  per-piece fields (`flows.PUSH_PAYLOAD`) **and always** the full raw trigger output as `_raw`
+  (`{{trigger}}`). `envelope.worker_input` prefers the curated fields but **falls back to `_raw`** when
+  they come back empty — so a new/unmapped piece, or a wrong hand-written path, can never hand the
+  worker a blank payload (the "flow ran green but the agent got nothing" bug). *Root cause it retires:*
+  the gmail map used `{{trigger.body.subject}}` but the piece nests under `message` → every field empty
+  → mailbot asked for the content. Fixed the gmail paths **and** added the raw net. The deeper fix
+  (LLM/schema-derived maps at arm time, validated) is tracked in the roadmap (board §10 "NL → Flow",
+  pitch slide 07·1) — the *second* fuzzy seam alongside NL→intent.

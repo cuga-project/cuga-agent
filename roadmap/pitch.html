@@ -136,6 +136,22 @@
     <div class="num">03</div>
   </section>
 
+  <!-- 03·1  UNDER THE HOOD (sequence diagram) -->
+  <section class="slide light">
+    <div class="kicker">Under the hood</div>
+    <h2>One command → a live flow. Arming is pure code; firing delivers itself.</h2>
+    <figure style="margin:8px 0 0;text-align:center">
+      <img src="../events_docs/automate_flow.svg"
+        alt="/automate sequence diagram: ARM (pure code, no LLM) then FIRE (email → Activepieces → CUGA /invoke → mailbot → Slack)"
+        style="max-width:100%;max-height:60vh;border:1px solid #d0d7e2;border-radius:8px;background:#fff">
+      <figcaption class="lead" style="font-size:13px;margin-top:8px">
+        <code>/automate summarize new emails</code> — <b>ARM</b> (router + builder, no LLM) then, later,
+        <b>FIRE</b> (a new email → Activepieces → CUGA <code>/invoke</code> → mailbot → Slack).
+        Source: <code>events_docs/automate_flow.mmd</code>.</figcaption>
+    </figure>
+    <div class="num">03·1</div>
+  </section>
+
   <!-- 4 IT'S REAL -->
   <section class="slide blue">
     <div class="kicker" style="color:#cfe0ff">It's real — not a slide</div>
@@ -338,7 +354,7 @@ access   builder · admin</div>
         <li><b>One hand-written map per piece = one silent failure waiting per piece.</b></li>
       </ul></div>
       <div class="col"><h3>The smarter way (same pattern as NL→Flow)</h3><ul>
-        <li><b>Forward the raw trigger output</b> and let the worker — <i>already an LLM</i> — read it. Zero per-piece mapping to get wrong.</li>
+        <li><b>Forward the raw trigger output</b> and let the worker — <i>already an LLM</i> — read it. Zero per-piece mapping to get wrong. <b>✓ shipped</b> — every push flow now carries <code>_raw</code>; the worker falls back to it when a curated field is empty, so a payload is never blank.</li>
         <li>Or an <b>LLM / schema step at arm time</b> reads the piece's published output schema and derives the map <i>once</i>, behind a <b>validator</b>.</li>
         <li>Keep curated maps for clean UX — but always with the raw payload as a safety net, so nothing is ever blank.</li>
         <li>Lesson: <b>static code is brittle wherever the shape is fuzzy</b> — the NL <i>and</i> the piece payload. <b>LLM proposes · validator gates · the intelligent worker consumes.</b></li>

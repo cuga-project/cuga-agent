@@ -410,6 +410,13 @@ def test_slack_thread_scoping():
     assert principal.channel_native_id(Source(name="slack", thread_id="gw:slack:C1")) == "C1"
     assert principal.channel_native_id(Source(name="discord", thread_id="gw:discord:42")) == "42"
 
+    # channel_origin resolves the DELIVERY sink (channel, native) from a thread_id — tolerating a
+    # scope prefix, which a PUSH flow always has (its source is the integration, not the channel).
+    assert principal.channel_origin("gw:slack:C1#1699.9") == ("slack", "C1")           # channel reply
+    assert principal.channel_origin("default/default/admin::gw:slack:C1#9.9") == ("slack", "C1")  # push
+    assert principal.channel_origin("scope::gw:discord:42") == ("discord", "42")
+    assert principal.channel_origin("web:studio") is None                              # not a gw thread
+
     sent = {}
 
     class _Resp:

@@ -111,6 +111,47 @@ def test_invoke_direct_channel_delivery():
         os.environ.pop("EVENTS_REPLY_METADATA", None)
 
 
+def test_invoke_push_flow_delivers_to_direct_channel():
+    """REGRESSION — the "flow ran green but nothing showed in Slack" bug. A PUSH flow's /invoke has
+    an INTEGRATION source (gmail) — NOT a channel — and a SCOPE-PREFIXED thread_id that carries the
+    sink (``…::gw:slack:<id>``). Delivery must still resolve the direct sink from the thread_id origin
+    and send there. This guards against re-adding a ``source.type=="channel"`` gate OR a
+    prefix-blind target parser (the two compounding causes of the original bug)."""
+    from events import delivery
+
+    sent = []
+
+    async def _fake_send_direct(channel, target, text):
+        sent.append((channel, target, text))
+        return True, "ok"
+
+    class _Runtime:
+        def get_agent(self, agent, scope=""):
+            return object()
+
+        async def run(self, agent, thread_id, worker_input, scope="", deliver_to=None):
+            return "email summary"
+
+    _orig = delivery.send_direct
+    delivery.send_direct = _fake_send_direct
+    os.environ["EVENTS_REPLY_METADATA"] = "0"
+    try:
+        app = FastAPI()
+        register_events_routes(app, runtime=_Runtime(), store=None, concierge=None, engine=None)
+        c = TestClient(app)
+        r = c.post("/invoke", json={
+            "agent": "mailbot", "deliver": True, "text": "summarize",
+            "source": {"type": "integration", "name": "gmail",
+                       "thread_id": "default/default/admin::gw:slack:C0BEYJ9NATB#1699.9"},
+            "event": {"kind": "new_email", "payload": {"subject": "Hi"}}})
+        assert r.status_code == 200 and r.json()["ok"] is True
+        # delivered to the SLACK sink parsed from the scope-prefixed thread_id — not 'gmail', not dropped
+        assert sent == [("slack", "C0BEYJ9NATB", "email summary")], sent
+    finally:
+        delivery.send_direct = _orig
+        os.environ.pop("EVENTS_REPLY_METADATA", None)
+
+
 def test_schedule_flow_direct_sink_has_no_ap_send_step():
     """A scheduled flow delivering to a DIRECT channel appends NO AP send step; instead the
     /invoke body's source is the channel (deliver=True) so CUGA sends the answer itself."""

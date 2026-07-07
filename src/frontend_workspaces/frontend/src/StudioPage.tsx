@@ -588,10 +588,12 @@ function RunDetail({ detail }: { detail: any }) {
   const trig = detail?.trigger_payload;
   return (
     <div>
-      <p style={{ margin: "0 0 8px", display: "flex", gap: 8, alignItems: "center" }}>
+      <p style={{ margin: "0 0 6px", display: "flex", gap: 8, alignItems: "center" }}>
         <Tag type={(RUN_STATUS_TAG[run.status] as any) ?? "gray"} size="sm">{run.status}</Tag>
         <span className="studio-muted" style={{ fontSize: 12 }}>{fmtTime(run.started_at)}</span>
       </p>
+      {detail?.utterance && <p className="studio-muted" style={{ fontSize: 12, margin: "0 0 8px" }}>
+        Flow: <i>{detail.utterance}</i></p>}
       {detail?.error_msg && <InlineNotification kind="error" lowContrast hideCloseButton
         title="Flow error" subtitle={String(detail.error_msg)} />}
       <h5 style={{ margin: "8px 0 4px" }}>Agent output</h5>
@@ -628,12 +630,13 @@ function RunsTab({ refresh }: { refresh: number }) {
     return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
   });
 
-  const view = async (id: string) => {
-    setDetailLoading(true); setDetail({ id });
+  const view = async (row: any) => {
+    setDetailLoading(true); setDetail({ id: row.id, utterance: row.utterance });
     try {
-      const res = await api.getEventsRunDetail(id);
+      const res = await api.getEventsRunDetail(row.id);
       const d = await res.json();
-      setDetail(res.ok ? { ...d, error_msg: d.error } : { error: d?.error || res.statusText });
+      setDetail(res.ok ? { ...d, utterance: row.utterance, error_msg: d.error }
+        : { error: d?.error || res.statusText });
     } catch (e) { setDetail({ error: e instanceof Error ? e.message : "failed" }); }
     finally { setDetailLoading(false); }
   };
@@ -676,9 +679,9 @@ function RunsTab({ refresh }: { refresh: number }) {
             <Table size="sm">
               <TableHead>
                 <TableRow>
-                  {th("started_at", "Time")}{th("agent", "Agent")}{th("mode", "Trigger")}
-                  {th("integration", "Integration")}{th("channel", "Channel")}{th("status", "Status")}
-                  <TableHeader>Output</TableHeader>
+                  {th("started_at", "Time")}{th("agent", "Agent")}{th("utterance", "Flow (utterance)")}
+                  {th("mode", "Trigger")}{th("integration", "Integration")}{th("channel", "Channel")}
+                  {th("status", "Status")}<TableHeader>Output</TableHeader>
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -686,12 +689,14 @@ function RunsTab({ refresh }: { refresh: number }) {
                   <TableRow key={r.id}>
                     <TableCell>{fmtTime(r.started_at)}</TableCell>
                     <TableCell>{r.agent}</TableCell>
+                    <TableCell title={r.utterance || ""} style={{ maxWidth: 260 }}>
+                      {r.utterance ? (r.utterance.length > 52 ? r.utterance.slice(0, 52) + "…" : r.utterance) : "—"}</TableCell>
                     <TableCell><Tag type={(MODE_TAG[r.mode] as any) ?? "gray"} size="sm">{r.mode}</Tag></TableCell>
                     <TableCell>{r.integration}</TableCell>
                     <TableCell>{r.channel}</TableCell>
                     <TableCell><Tag type={(RUN_STATUS_TAG[r.status] as any) ?? "gray"} size="sm">{r.status}</Tag></TableCell>
                     <TableCell><Button kind="ghost" size="sm" renderIcon={View}
-                      onClick={() => view(r.id)}>View</Button></TableCell>
+                      onClick={() => view(r)}>View</Button></TableCell>
                   </TableRow>
                 ))}
               </TableBody>
