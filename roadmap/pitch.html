@@ -152,6 +152,22 @@
     <div class="num">03·1</div>
   </section>
 
+  <!-- 03·2  RESOLUTION (how each known fact resolves) -->
+  <section class="slide light">
+    <div class="kicker">Under the hood — the resolve step</div>
+    <h2>You already know the source, the channel, and the agent. Arming just resolves each — no LLM.</h2>
+    <figure style="margin:8px 0 0;text-align:center">
+      <img src="../events_docs/automate_resolve.svg"
+        alt="Resolution diagram: 'lands in Box' → Box·new_file trigger; your Box → ea::tenant::you::box connection; 'judge it' → resume_judge + its tools; asked in Slack → Slack direct send. These assemble via build_push_flow into Box trigger ▸ POST /invoke ▸ deliver → Slack."
+        style="max-width:100%;max-height:62vh;border:1px solid #d0d7e2;border-radius:8px;background:#fff">
+      <figcaption class="lead" style="font-size:13px;margin-top:8px">
+        <code>/automate when a resume lands in Box, judge it and message me</code> — each thing you
+        already know maps deterministically to a value (trigger · credential · agent · sink), then
+        <code>build_push_flow</code> assembles + publishes it. Source: <code>events_docs/automate_resolve.svg</code>.</figcaption>
+    </figure>
+    <div class="num">03·2</div>
+  </section>
+
   <!-- 4 IT'S REAL -->
   <section class="slide blue">
     <div class="kicker" style="color:#cfe0ff">It's real — not a slide</div>

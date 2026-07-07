@@ -144,6 +144,8 @@ async def _connect_needed(spec, p: Principal, engine) -> tuple[str, str] | None:
         app, ownership = integ.get("app"), integ.get("ownership", "per-user")
         if not credentials.is_per_user(ownership):
             continue                       # shared → the builder connected it once
+        if app == "box" and os.environ.get("EVENTS_BOX_BACKEND") == "direct":
+            continue                       # DIRECT box polls with BOX_DEV_TOKEN — no AP connection
         ext = credentials.connection_external_id(app, ownership, p)
         try:
             grain = getattr(engine, "project_grain", "tenant")
@@ -293,6 +295,40 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 # connection is under the BASE app (github). Normalize so the auth references the real
                 # connection (else the trigger references a non-existent one and publish fails).
                 base_app = {"github_pr": "github", "github_issue": "github"}.get(source, source)
+                # DIRECT box: no AP OAuth, no box connection. Arm a schedule→/box/poll watcher that
+                # polls Box with BOX_DEV_TOKEN and fires the agent per NEW file (matches
+                # EVENTS_BOX_BACKEND=direct — the path the operator actually set up).
+                if base_app == "box" and os.environ.get("EVENTS_BOX_BACKEND") == "direct":
+                    folder = (os.environ.get("BOX_FOLDER_ID", "") or "0").split(" #", 1)[0].strip() or "0"
+                    every = every_minutes or 5
+                    # baseline the watermark so ONLY files added AFTER arming fire (not the backlog)
+                    try:
+                        from . import box_direct
+                        seen = await box_direct.new_files_since(folder, None)
+                        box_direct.save_since(folder, max((f.get("created_at", "") for f in seen), default=""))
+                    except Exception:  # noqa: BLE001
+                        pass
+                    flow_name = f"box-poll-{agent}"
+                    try:
+                        grain = getattr(engine, "project_grain", "tenant")
+                        ap_flow_id = await engine.create_box_poll_flow(
+                            name=flow_name, agent=agent, folder_id=folder,
+                            deliver_to=(deliver_direct_channel or (sink if sink in flows.CHANNELS else None)),
+                            deliver_target=deliver_direct_target, interval_seconds=every * 60,
+                            scope=p.scope, project_name=p.ap_project_name(grain))
+                    except Exception as e:  # noqa: BLE001
+                        return f"error: couldn't arm box watcher ({e})."
+                    sub = Subscription(id=f"{agent}-{uuid.uuid4().hex[:6]}", mode="POLL",
+                                       target_agent=agent, tenant=p.scope, backend=spec.backend,
+                                       source_type="integration", source_connector="box",
+                                       ap_flow_id=ap_flow_id, deliver_to=[sink],
+                                       thread_id=p.thread(origin), prompt=prompt, dedup_key=dedup_key,
+                                       flow_name=flow_name)
+                    store.upsert(sub)
+                    log.info("concierge armed DIRECT box watcher agent=%s folder=%s flow=%s",
+                             agent, folder, ap_flow_id)
+                    return (f"ARMED box watcher (direct poll every {every}m, folder {folder}) for "
+                            f"{agent} → {sink}. Flow: \"{flow_name}\" (subscription {sub.id}).")
                 _own = next((i.get("ownership", "per-user") for i in (spec.integrations or [])
                              if i.get("app") == base_app), "per-user")
                 push_conn = credentials.connection_external_id(base_app, _own, p)

@@ -141,9 +141,10 @@ class APEngine:
                 "request": {"name": "trigger", "valid": True, "displayName": display,
                             "type": "PIECE_TRIGGER", "settings": settings}}
 
-    def _http_action(self, body: dict, ver: str) -> dict:
+    def _http_action(self, body: dict, ver: str, url: str | None = None,
+                     display: str = "Invoke CUGA") -> dict:
         headers = {"X-Gateway-Token": self.gateway_token} if self.gateway_token else {}
-        inp = {"url": self.invoke_url, "body": {"data": body}, "method": "POST",
+        inp = {"url": url or self.invoke_url, "body": {"data": body}, "method": "POST",
                "headers": headers, "timeout": "", "authType": "NONE", "body_type": "json",
                "use_proxy": False, "authFields": {}, "failureMode": "continue_none",
                "queryParams": {}, "proxy_settings": {}, "followRedirects": False,
@@ -153,8 +154,36 @@ class APEngine:
         return {"type": "ADD_ACTION",
                 "request": {"parentStep": "trigger",
                             "action": {"name": "step_1", "skip": False, "type": "PIECE",
-                                       "valid": True, "displayName": "Invoke CUGA",
+                                       "valid": True, "displayName": display,
                                        "settings": settings}}}
+
+    async def create_box_poll_flow(self, *, name: str, agent: str, folder_id: str,
+                                   deliver_to: str | None, deliver_target: str | None = None,
+                                   interval_seconds: int, scope: str = "",
+                                   project_name: str | None = None) -> str:
+        """A STANDING DIRECT-Box watcher — AP-free source, no Box OAuth. AP's schedule piece is just
+        the clock: schedule → HTTP POST /api/events/box/poll, which polls Box with the dev token and
+        fires <agent> on each new file (the server tracks the per-folder watermark). Returns flow id."""
+        box_url = self.invoke_url.replace("/invoke", "/api/events/box/poll")
+        body = {"folder_id": str(folder_id), "agent": agent, "deliver_to": deliver_to,
+                "deliver_target": deliver_target, "scope": scope}
+        async with httpx.AsyncClient(timeout=30) as c:
+            hdrs = await self._auth(c)
+            pid = (await self.ensure_project(c, hdrs, project_name)) if project_name else self.project_id
+            if not pid:
+                raise APError("AP project unresolved for box-poll flow")
+            flow_id = await self._new_flow(c, hdrs, name, pid, scope)
+            sched_ver = await self._piece_version(c, SCHEDULE_PIECE)
+            http_ver = await self._piece_version(c, HTTP_PIECE)
+            await self._post_op(c, flow_id,
+                                self._trigger_op(None, interval_seconds, sched_ver), hdrs)
+            await self._post_op(c, flow_id,
+                                self._http_action(body, http_ver, url=box_url, display="Poll Box"), hdrs)
+            await self._post_op(c, flow_id,
+                                {"type": "LOCK_AND_PUBLISH", "request": {"status": "ENABLED"}}, hdrs)
+        log.info("created AP box-poll flow=%s name=%s folder=%s every=%ss", flow_id, name,
+                 folder_id, interval_seconds)
+        return flow_id
 
     async def _post_op(self, c: httpx.AsyncClient, flow_id: str, op: dict, hdrs: dict) -> dict:
         r = await c.post(f"{self.base}/api/v1/flows/{flow_id}", json=op, headers=hdrs)

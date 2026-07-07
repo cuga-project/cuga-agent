@@ -340,8 +340,12 @@ function IntegrationsTab({ refresh }: { refresh: number }) {
           </div>
           <p className="studio-muted">{i.note}</p>
           <div className="studio-card-foot">
-            <Tag type="purple" size="sm">USER — your login</Tag>
-            <Tag type="outline" size="sm">{i.auth === "oauth" ? "OAuth" : "token"}</Tag>
+            <Tag type={i.backend === "direct" ? "teal" : "blue"} size="sm">
+              {i.backend === "direct" ? "direct backend" : "via Activepieces"}
+            </Tag>
+            <Tag type="outline" size="sm">
+              {i.backend === "direct" ? "token" : (i.auth === "oauth" ? "OAuth" : "token")}
+            </Tag>
             {i.status !== "ap_not_configured" && (
               <Button kind={i.status === "connected" ? "ghost" : "tertiary"} size="sm"
                 renderIcon={i.auth === "oauth" ? Launch : Plug} onClick={() => connect(i)}>

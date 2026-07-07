@@ -1,0 +1,134 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1240 706" width="100%" font-family="-apple-system,BlinkMacSystemFont,'Segoe UI','IBM Plex Sans',Helvetica,Arial,sans-serif">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#8d8d8d"/>
+    </marker>
+    <marker id="arb" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0 0 L10 5 L0 10 z" fill="#0f62fe"/>
+    </marker>
+    <style>
+      .kick{fill:#0f62fe;font-size:12px;font-weight:700;letter-spacing:2px}
+      .h{fill:#161616;font-size:22px;font-weight:700;letter-spacing:-.4px}
+      .colh{fill:#8d8d8d;font-size:11px;font-weight:700;letter-spacing:1px}
+      .lab{fill:#161616;font-size:14.5px;font-weight:700}
+      .sub{fill:#6f6f6f;font-size:11.5px}
+      .mono{font-family:'IBM Plex Mono',ui-monospace,Menlo,monospace}
+      .code{fill:#161616;font-size:13px}
+      .file{fill:#a2a2a2;font-size:10.5px}
+      .fire{fill:#3d3d3d;font-size:13px}
+    </style>
+  </defs>
+
+  <rect x="0" y="0" width="1240" height="706" fill="#fbfbfd"/>
+
+  <!-- header -->
+  <text x="36" y="34" class="kick">HOW /AUTOMATE RESOLVES WHAT YOU ALREADY KNOW</text>
+  <text x="36" y="63" class="h">You already know the source, the channel, and the agent. Arming just resolves each — no LLM.</text>
+
+  <!-- utterance banner -->
+  <rect x="36" y="82" width="1168" height="52" rx="8" fill="#eef3ff" stroke="#c9d9ff"/>
+  <rect x="36" y="82" width="4" height="52" rx="2" fill="#0f62fe"/>
+  <text x="56" y="106" class="mono" font-size="14.5" font-weight="600" fill="#0f2f8f">/automate when a resume lands in Box, judge it and message me</text>
+  <text x="56" y="124" class="sub">a slash command → deterministic arm (the LLM is skipped entirely)</text>
+  <rect x="1086" y="96" width="102" height="24" rx="12" fill="#393939"/>
+  <text x="1137" y="112" text-anchor="middle" fill="#fff" font-size="12" font-weight="700">asked in Slack</text>
+
+  <!-- column headers -->
+  <text x="36"  y="168" class="colh">WHAT YOU ALREADY KNOW</text>
+  <text x="400" y="168" class="colh">DETERMINISTIC RESOLVER · NO LLM</text>
+  <text x="906" y="168" class="colh">RESOLVED VALUE</text>
+
+  <!-- ROW 1 · source -->
+  <g>
+    <rect x="36" y="182" width="292" height="58" rx="8" fill="#fff" stroke="#e0e0e0"/>
+    <rect x="36" y="182" width="4" height="58" rx="2" fill="#a2255f"/>
+    <text x="54" y="207" class="lab">Source — “lands in Box”</text>
+    <text x="54" y="226" class="sub">the phrasing names the app</text>
+    <line x1="330" y1="211" x2="396" y2="211" stroke="#8d8d8d" stroke-width="1.5" marker-end="url(#ar)"/>
+    <rect x="400" y="182" width="430" height="58" rx="8" fill="#fff" stroke="#e0e0e0"/>
+    <text x="418" y="205" class="code">classify.source_of  ▸  SOURCE_TRIGGER[box]</text>
+    <text x="418" y="228" class="file mono">flows.py:28 · concierge._slash_parse</text>
+    <line x1="832" y1="211" x2="902" y2="211" stroke="#8d8d8d" stroke-width="1.5" marker-end="url(#ar)"/>
+    <rect x="906" y="182" width="298" height="58" rx="8" fill="#fff5f9" stroke="#f0c4d7"/>
+    <text x="924" y="207" class="lab" fill="#a2255f">Box · new_file trigger</text>
+    <text x="924" y="226" class="sub mono">@activepieces/piece-box</text>
+  </g>
+
+  <!-- ROW 2 · credentials -->
+  <g>
+    <rect x="36" y="254" width="292" height="58" rx="8" fill="#fff" stroke="#e0e0e0"/>
+    <rect x="36" y="254" width="4" height="58" rx="2" fill="#007d79"/>
+    <text x="54" y="279" class="lab">Credentials — your Box</text>
+    <text x="54" y="298" class="sub">go find the connection to use</text>
+    <line x1="330" y1="283" x2="396" y2="283" stroke="#8d8d8d" stroke-width="1.5" marker-end="url(#ar)"/>
+    <rect x="400" y="254" width="430" height="58" rx="8" fill="#fff" stroke="#e0e0e0"/>
+    <text x="418" y="277" class="code">connection_external_id + _connect_needed</text>
+    <text x="418" y="300" class="file mono">credentials.py:40 · concierge.py:139</text>
+    <line x1="832" y1="283" x2="902" y2="283" stroke="#8d8d8d" stroke-width="1.5" marker-end="url(#ar)"/>
+    <rect x="906" y="254" width="298" height="58" rx="8" fill="#f0fbfa" stroke="#b9e3e0"/>
+    <text x="924" y="279" class="mono" font-size="12" font-weight="700" fill="#007d79">ea::tenant::you::box</text>
+    <text x="924" y="298" class="sub">missing → just-in-time connect link</text>
+  </g>
+
+  <!-- ROW 3 · agent -->
+  <g>
+    <rect x="36" y="326" width="292" height="58" rx="8" fill="#fff" stroke="#e0e0e0"/>
+    <rect x="36" y="326" width="4" height="58" rx="2" fill="#6929c4"/>
+    <text x="54" y="351" class="lab">Agent — “judge it”</text>
+    <text x="54" y="370" class="sub">point to a pre-built agent</text>
+    <line x1="330" y1="355" x2="396" y2="355" stroke="#8d8d8d" stroke-width="1.5" marker-end="url(#ar)"/>
+    <rect x="400" y="326" width="430" height="58" rx="8" fill="#fff" stroke="#e0e0e0"/>
+    <text x="418" y="349" class="code">_resolve_agent — filter by integration</text>
+    <text x="418" y="372" class="file mono">concierge.py:102 · agents with box, ranked</text>
+    <line x1="832" y1="355" x2="902" y2="355" stroke="#8d8d8d" stroke-width="1.5" marker-end="url(#ar)"/>
+    <rect x="906" y="326" width="298" height="58" rx="8" fill="#f8f3fe" stroke="#dcc7f5"/>
+    <text x="924" y="351" class="lab" fill="#6929c4">resume_judge</text>
+    <text x="924" y="370" class="sub">+ its MCP tools (builder wired them)</text>
+  </g>
+
+  <!-- ROW 4 · reply channel -->
+  <g>
+    <rect x="36" y="398" width="292" height="58" rx="8" fill="#fff" stroke="#e0e0e0"/>
+    <rect x="36" y="398" width="4" height="58" rx="2" fill="#24a148"/>
+    <text x="54" y="423" class="lab">Reply — asked in Slack</text>
+    <text x="54" y="442" class="sub">origin thread gw:slack:&lt;chan&gt;</text>
+    <line x1="330" y1="427" x2="396" y2="427" stroke="#8d8d8d" stroke-width="1.5" marker-end="url(#ar)"/>
+    <rect x="400" y="398" width="430" height="58" rx="8" fill="#fff" stroke="#e0e0e0"/>
+    <text x="418" y="421" class="code">sink = origin channel  ·  is_direct?</text>
+    <text x="418" y="444" class="file mono">concierge.py:264 · delivery.is_direct</text>
+    <line x1="832" y1="427" x2="902" y2="427" stroke="#8d8d8d" stroke-width="1.5" marker-end="url(#ar)"/>
+    <rect x="906" y="398" width="298" height="58" rx="8" fill="#f1faf3" stroke="#bfe6c9"/>
+    <text x="924" y="423" class="lab" fill="#24a148">Slack — direct send</text>
+    <text x="924" y="442" class="sub">CUGA delivers · no AP step</text>
+  </g>
+
+  <!-- assemble label -->
+  <text x="620" y="488" text-anchor="middle" class="colh" fill="#0f62fe">ASSEMBLE ▸ build_push_flow (flows.py:233) ▸ publish to Activepieces</text>
+
+  <!-- assembled flow strip -->
+  <rect x="36" y="500" width="304" height="58" rx="8" fill="#fff" stroke="#a2255f"/>
+  <text x="188" y="524" text-anchor="middle" class="lab" fill="#a2255f">Box · new_file</text>
+  <text x="188" y="543" text-anchor="middle" class="sub">trigger (auth: your box connection)</text>
+
+  <line x1="342" y1="529" x2="384" y2="529" stroke="#0f62fe" stroke-width="2" marker-end="url(#arb)"/>
+
+  <rect x="388" y="500" width="452" height="58" rx="8" fill="#eef3ff" stroke="#0f62fe"/>
+  <text x="614" y="524" text-anchor="middle" class="lab mono" fill="#0f2f8f">POST /invoke</text>
+  <text x="614" y="543" text-anchor="middle" class="sub mono">{ agent: resume_judge, text, event, deliver }</text>
+
+  <line x1="842" y1="529" x2="884" y2="529" stroke="#0f62fe" stroke-width="2" marker-end="url(#arb)"/>
+
+  <rect x="888" y="500" width="316" height="58" rx="8" fill="#f1faf3" stroke="#24a148"/>
+  <text x="1046" y="524" text-anchor="middle" class="lab" fill="#24a148">deliver → Slack</text>
+  <text x="1046" y="543" text-anchor="middle" class="sub">direct (CUGA), or an AP send step</text>
+
+  <!-- fire lane -->
+  <rect x="36" y="582" width="1168" height="88" rx="8" fill="#fff" stroke="#e0e0e0"/>
+  <text x="54" y="606" class="kick" fill="#8d8d8d">LATER · FIRE</text>
+  <text x="54" y="632" class="fire">A resume drops in Box  ▸  the trigger fires  ▸  Activepieces POSTs the envelope to /invoke  ▸</text>
+  <text x="54" y="654" class="fire">resume_judge scores it vs the JD  ▸  the verdict is delivered back to your Slack channel.</text>
+  <text x="1188" y="606" text-anchor="end" class="sub">the same flow, every time — no LLM in the plumbing</text>
+
+  <!-- footnote -->
+  <text x="36" y="694" class="file">Only the router (mode) + agent-rank read the phrasing; the piece / trigger / field map is a per-integration descriptor (SOURCE_TRIGGER, CHANNELS). Source: src/cuga/backend/events/{concierge,flows,credentials}.py</text>
+</svg>

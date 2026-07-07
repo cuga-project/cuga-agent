@@ -19,7 +19,12 @@ These are choices, not bugs. Each has an ADR.
 2. **Activepieces owns integration triggers + the clock; channels are direct.** The division and the
    reasons (AP's OAuth wall, the empty-payload Slack piece, poll latency) →
    [decisions/0008](decisions/0008-direct-backends-for-channels.md), amending
-   [0001](decisions/0001-ap-as-the-event-engine.md).
+   [0001](decisions/0001-ap-as-the-event-engine.md). **Box has both paths:** the default AP OAuth
+   `new_file` trigger, OR — behind `EVENTS_BOX_BACKEND=direct` — a DIRECT watcher (`BOX_DEV_TOKEN`, no
+   OAuth). With direct set, `/automate …box…` arms an **AP schedule (clock only) → `POST /box/poll`**
+   flow (`create_box_poll_flow`); the server tracks a per-folder watermark so only new files fire. The
+   Studio Integrations tab labels each integration **via Activepieces** vs **direct backend** so the
+   two never look contradictory.
 3. **The concierge is a runtime *router*, not an agent factory.** It selects among builder-defined
    agents (answer-now / reuse-or-create-flow / decline); it never invents tools or agents.
    → [decisions/0005](decisions/0005-runtime-router-over-prebuilt-agents.md).

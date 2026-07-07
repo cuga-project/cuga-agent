@@ -13429,12 +13429,12 @@ function IntegrationsTab({
   }, i.note), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     className: "studio-card-foot"
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
-    type: "purple",
+    type: i.backend === "direct" ? "teal" : "blue",
     size: "sm"
-  }, "USER \u2014 your login"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
+  }, i.backend === "direct" ? "direct backend" : "via Activepieces"), /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Tag, {
     type: "outline",
     size: "sm"
-  }, i.auth === "oauth" ? "OAuth" : "token"), i.status !== "ap_not_configured" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
+  }, i.backend === "direct" ? "token" : i.auth === "oauth" ? "OAuth" : "token"), i.status !== "ap_not_configured" && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_2__.Button, {
     kind: i.status === "connected" ? "ghost" : "tertiary",
     size: "sm",
     renderIcon: i.auth === "oauth" ? _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Launch : _carbon_icons_react__WEBPACK_IMPORTED_MODULE_3__.Plug,
@@ -18250,4 +18250,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.26857bac145c710f2765.js.map
+//# sourceMappingURL=main.091d9b80c62e358b9de2.js.map

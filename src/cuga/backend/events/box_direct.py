@@ -16,11 +16,39 @@ whose ``created_at`` is newer than the last poll. Emit-on-change is caller-track
 """
 from __future__ import annotations
 
+import json
 import os
 
 import httpx
 
 API = "https://api.box.com/2.0"
+
+# Server-tracked per-folder "last created_at seen" — so a STANDING scheduled poll fires only on
+# files added since the previous run (an AP schedule flow carries no state between runs). File-backed
+# so it survives restarts (else every file re-fires on reboot). One tiny JSON: {folder_id: created_at}.
+_SINCE_FILE = (os.environ.get("EVENTS_BOX_SINCE_FILE", "") or ".box_since.json")
+
+
+def load_since(folder_id: str) -> str | None:
+    try:
+        return json.load(open(_SINCE_FILE)).get(str(folder_id))
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def save_since(folder_id: str, created_at: str) -> None:
+    if not created_at:
+        return
+    try:
+        d = json.load(open(_SINCE_FILE))
+    except Exception:  # noqa: BLE001
+        d = {}
+    d[str(folder_id)] = created_at
+    try:
+        with open(_SINCE_FILE, "w") as f:
+            json.dump(d, f)
+    except Exception:  # noqa: BLE001
+        pass
 
 
 def token() -> str:

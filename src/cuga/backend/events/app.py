@@ -358,6 +358,11 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                 Trace(new_trace_id()).error("integrations", err=str(e))
         rows = integrations_status(conns, ap_configured=engine is not None,
                                    ap_connect_url=connect_url)
+        # Which backend owns each integration's trigger + connection: AP (OAuth/PAT connection, the
+        # default) vs DIRECT (CUGA polls the app's API with a token — no AP, no OAuth). Surfaced in
+        # the UI so it's explicit that e.g. box-direct connects/tests differently from gmail-on-AP.
+        for r in rows:
+            r["backend"] = "ap"
         # DIRECT-backend override: Box in direct-poll mode connects via a token, not an AP
         # connection, so AP-derived status would wrongly read 'not_connected'. Reflect the token.
         if os.environ.get("EVENTS_BOX_BACKEND") == "direct":
@@ -368,6 +373,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                     r["status"] = "connected" if has_tok else "not_connected"
                     r["connected"] = has_tok
                     r["backend"] = "direct"
+                    r["note"] = ("DIRECT backend — CUGA polls Box with BOX_DEV_TOKEN (no AP, no OAuth). "
+                                 "Fires via POST /api/events/box/poll; test with live_box_direct_check.py.")
         # .env-TOKEN integrations (github) AUTO-CONNECT on startup — so a token in .env == connected.
         # If the token is set but no AP connection exists yet, it's not a UI bug and not "not
         # connected": auto-connect hasn't succeeded, almost always because AP's piece isn't installed
@@ -638,9 +645,15 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         from . import box_direct
         body = await _safe_json(request)
         folder = str(body.get("folder_id") or "0")
+        # `since` in the body wins (manual/test poll); otherwise use the SERVER-tracked last-seen for
+        # this folder, so a standing scheduled poll fires only on files added since the previous run.
         since = body.get("since")
+        server_tracked = since is None
+        if server_tracked:
+            since = box_direct.load_since(folder)
         agent = body.get("agent") or "resume_judge"
         deliver_to = body.get("deliver_to")            # e.g. a direct channel: "slack"
+        deliver_target = body.get("deliver_target")    # the channel-native id (e.g. Slack channel id)
         tr = Trace(new_trace_id())
         try:
             files = await box_direct.new_files_since(folder, since)
@@ -651,21 +664,25 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         processed, newest = [], since or ""
         for f in files:
             newest = max(newest, f.get("created_at") or "")
-            await _box_dispatch(agent, f, deliver_to, body.get("scope"))
+            await _box_dispatch(agent, f, deliver_to, body.get("scope"), deliver_target)
             processed.append({"id": f["id"], "name": f.get("name")})
+        if server_tracked and newest and newest != (since or ""):
+            box_direct.save_since(folder, newest)      # advance the watermark for the next poll
         return {"ok": True, "folder": folder, "processed": processed, "newest": newest,
                 "trace_id": tr.id}
 
-    async def _box_dispatch(agent: str, file: dict, deliver_to, scope) -> None:
+    async def _box_dispatch(agent: str, file: dict, deliver_to, scope, deliver_target=None) -> None:
         """Fire one Box file through /invoke(agent). If deliver_to is a DIRECT channel the reply is
-        sent CUGA-side (no AP); otherwise the answer just rides back in the /invoke response."""
+        sent CUGA-side (no AP); otherwise the answer just rides back in the /invoke response.
+        ``deliver_target`` is the channel-native id (e.g. the Slack channel) so the answer lands in
+        the right place — without it a direct sink has no destination."""
         import httpx
         from . import delivery
         tr = Trace(new_trace_id())
         port = os.environ.get("EVENTS_CUGA_PORT", "8100")
         gw = (os.environ.get("GATEWAY_TOKEN", "") or "").split(" #", 1)[0].strip()
         direct = bool(deliver_to and delivery.is_direct(deliver_to))
-        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:"}
+        src = ({"type": "channel", "name": deliver_to, "thread_id": f"gw:{deliver_to}:{deliver_target or ''}"}
                if direct else {"type": "integration", "name": "box", "thread_id": f"box:{file['id']}"})
         payload = {"agent": agent, "deliver": bool(direct), "scope": scope or "",
                    "text": (f"A file '{file.get('name')}' landed in Box. Judge fit vs the JD. "

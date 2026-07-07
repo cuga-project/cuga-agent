@@ -160,7 +160,8 @@ EXAMPLES = [
     _ex("automate-box", "⭐ Box — judge new resumes", "push",
         "/automate when a resume lands in Box, judge it and message me",
         agent="resume_judge", channel="web", integration="box", phase="run", live=False, star=True,
-        note="Box PUSH (new_file) → resume_judge scores it → delivers the verdict to you"),
+        note="DIRECT box (EVENTS_BOX_BACKEND=direct): /automate arms a schedule→/box/poll watcher — no "
+             "OAuth, no AP box connection. Set BOX_FOLDER_ID + a fresh BOX_DEV_TOKEN; fires resume_judge per new file"),
     _ex("automate-pr", "⭐ GitHub — watch a repo's PRs", "push",
         "/automate new pull requests on psf/requests and summarize them",
         agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=False, star=True,
