@@ -25,8 +25,7 @@ const TEMPLATE = `
   button:focus-visible { outline: 2px solid var(--cds-focus, #0f62fe); outline-offset: 1px; }
   :host([active]) button { background: var(--cds-link-primary, #0f62fe); color: #ffffff; }
   .card {
-    display: none; position: absolute; bottom: calc(100% + 8px); left: 50%;
-    transform: translateX(-50%); z-index: 9000;
+    display: none; position: fixed; transform: translate(-50%, calc(-100% - 8px)); z-index: 9000;
     width: max-content; max-width: 280px; padding: 10px 12px;
     background: var(--cds-layer-01, #ffffff);
     border: 1px solid var(--cds-border-subtle-01, #e0e0e0);
@@ -76,6 +75,17 @@ export class CugaCiteElement extends HTMLElement {
       // The hover card advertises "Click to view source" — honor clicks on
       // the card itself, not just the chip underneath it.
       root.querySelector('.card')!.addEventListener('click', open);
+      // The card is position:fixed so it escapes any ancestor's overflow clip
+      // (e.g. a markdown table's scroll wrapper). Anchor it to the chip on
+      // hover/focus; the CSS transform centers it and pops it above.
+      const card = root.querySelector('.card') as HTMLElement;
+      const place = () => {
+        const r = this.getBoundingClientRect();
+        card.style.left = `${r.left + r.width / 2}px`;
+        card.style.top = `${r.top}px`;
+      };
+      this.addEventListener('mouseenter', place);
+      this.addEventListener('focusin', place);
     }
     this.render();
   }
