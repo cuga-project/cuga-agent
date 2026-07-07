@@ -209,10 +209,10 @@ def test_integrations_full_ap_wiring():
     # oauth providers (Box/Gmail = OAuth; GitHub = token PAT)
     assert oauth.connect_kind("box") == "oauth" and oauth.connect_kind("gmail") == "oauth"
     assert oauth.connect_kind("github") == "token"
-    # AP piece PUSH triggers exist for each source
+    # AP piece PUSH triggers use the REAL piece trigger names (verified against the running pieces)
     assert flows.SOURCE_TRIGGER["box"] == ("box", "new_file")
-    assert flows.SOURCE_TRIGGER["github_pr"][0] == "github"
-    assert flows.SOURCE_TRIGGER["gmail"] == ("gmail", "new_email")
+    assert flows.SOURCE_TRIGGER["github_pr"] == ("github", "trigger_pull_request")
+    assert flows.SOURCE_TRIGGER["gmail"] == ("gmail", "gmail_new_email_received")
     # a setup guide per integration, all AP-wired
     for app in ("box", "github", "gmail"):
         g = setup_guides.guide(app)

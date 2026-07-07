@@ -62,6 +62,71 @@ CONCIERGE_PROMPT = (
     "Confirm in one line, stating only what the tool result actually says." + CHAT_STYLE)
 
 
+def _slash_parse(text: str) -> dict | None:
+    """SLASH COMMANDS — an explicit "make me a flow" from ANY surface (web chat or a channel; both
+    call ``run``). The advertised command is **``/automate <what>``** — one command whose ROUTER (the
+    heuristic classifier) picks push vs cron vs poll from the phrasing. The five mode-specific
+    commands (``/watch|/schedule|/cron|/poll|/push``) are kept as hidden power-user overrides that
+    FORCE a mode. DETERMINISTIC either way — the arm bypasses the LLM entirely (no flaky mode pick, no
+    decline). Returns None when it isn't a slash command (normal NL routing then applies)."""
+    import re
+    from . import classify
+    m = re.match(r"\s*/(automate|watch|schedule|cron|poll|push)\b\s*(.*)", text or "", re.I | re.S)
+    if not m:
+        return None
+    cmd, rest = m.group(1).lower(), (m.group(2) or "").strip()
+    if not rest:
+        return {"cmd": cmd, "error": (f"/{cmd}: tell me WHAT to automate — e.g. "
+                                      f"`/{cmd} summarize new emails and message me`.")}
+    # /automate and /watch let the router decide; the rest force a specific mode.
+    forced = {"cron": "CRON", "schedule": "CRON", "poll": "POLL", "push": "PUSH"}.get(cmd)
+    d = classify.decision(rest)
+    mode = forced or (d.get("mode") if d.get("mode") in ("CRON", "POLL", "PUSH") else "PUSH")
+    kind = {"CRON": "cron", "POLL": "poll", "PUSH": "push"}[mode]
+    out = {"cmd": cmd, "kind": kind, "utterance": rest}
+    if kind == "push":
+        # /watch may force PUSH even when the classifier read the phrasing as NOW, so run the
+        # source detector directly (not via decision(), which only fills source when mode==PUSH).
+        se = d.get("source") and (d.get("source"), d.get("event")) or classify.source_of(rest)
+        out["source"], out["event"] = (se if se else (None, None))
+    else:
+        cad = d.get("cadence") or {}
+        if cad.get("cron"):
+            out["cron"] = cad["cron"]
+        elif cad.get("interval_seconds"):
+            out["every_minutes"] = max(1, int(cad["interval_seconds"]) // 60)
+    return out
+
+
+def _resolve_agent(agents, kind: str, source: str | None, utterance: str) -> str | None:
+    """Deterministically pick the pre-built agent for a slash command — no LLM. PUSH: the agent must
+    have the integration for ``source``; then rank candidates by keyword overlap with the utterance
+    (so 'summarize emails' → mailbot, not resume_judge). CRON/POLL: rank all agents the same way."""
+    import re
+    u = (utterance or "").lower()
+    # the classifier may name a source by its sub-trigger (github_pr/github_issue); agents declare the
+    # base integration app (github), so normalize before matching.
+    base = {"github_pr": "github", "github_issue": "github"}.get(source, source)
+    if kind == "push" and base:
+        cands = [a for a in agents if any((i.get("app") == base) for i in (a.integrations or []))]
+    else:
+        cands = list(agents)
+    if not cands:
+        return None
+    if len(cands) == 1:
+        return cands[0].name
+    words = set(re.findall(r"[a-z]{3,}", u))
+
+    def score(a) -> int:
+        hay = (f"{a.name} {(a.prompt or '')[:160]} {' '.join(a.mcp_servers or [])} "
+               f"{' '.join(i.get('app', '') for i in (a.integrations or []))}").lower()
+        s = sum(1 for w in words if w in hay)
+        if a.name in u or a.name.replace("_", " ") in u:      # explicit name mention wins
+            s += 5
+        return s
+    return max(cands, key=score).name
+
+
 def _owner_scope(spec, p: Principal) -> str:
     """Grain follows credentials: tenant-wide if all connectors are shared, else the full user
     scope when any integration is per-user (that flow is necessarily per-user)."""
@@ -291,6 +356,10 @@ class Concierge:
         if self._graph is None:
             self._build()
         p = principal or DEFAULT_PRINCIPAL
+        # /watch|/schedule|/cron|/poll|/push → deterministic arm (bypasses the LLM entirely)
+        parsed = _slash_parse(text)
+        if parsed is not None:
+            return await self._arm_slash(thread_id, p, parsed)
         t_origin = _origin.set(thread_id)
         t_princ = _principal.set(p)
         try:
@@ -301,6 +370,47 @@ class Concierge:
             _origin.reset(t_origin)
             _principal.reset(t_princ)
         return res["messages"][-1].content or ""
+
+    async def _arm_slash(self, thread_id: str, p, parsed: dict) -> str:
+        """Arm a slash flow. The MODE is always deterministic (the router). The AGENT is resolved by
+        the method each mode is good at:
+          • PUSH  → DETERMINISTIC (filter agents by the integration for the source). This is the case
+            the LLM fumbles (it won't believe mailbot can push-watch gmail), so we never involve it.
+          • CRON/POLL → the LLM picks the agent (a domain judgment it does well — 'bitcoin'→pricebot,
+            'market brief'→market_briefer), but with the MODE FORCED so it can't mis-route or decline."""
+        if parsed.get("error"):
+            return parsed["error"]
+        kind = parsed["kind"]
+        if kind in ("cron", "poll"):
+            directive = (f"[/automate — arm a STANDING {kind.upper()} flow now: call "
+                         f"find_or_create_flow(kind={kind}, …) with the best-matching pre-built agent "
+                         f"from list_capabilities. Do NOT answer_now and do NOT decline.] "
+                         f"{parsed['utterance']}")
+            return await self.run(thread_id, directive, p)   # LLM picks the agent; mode is forced
+        # PUSH — deterministic agent from the integration filter
+        agents = [a for a in self._runtime.list_agents(scope=p.agent_scope) if a.name != "concierge"]
+        agent = _resolve_agent(agents, kind, parsed.get("source"), parsed["utterance"])
+        if agent is None:
+            names = ", ".join(a.name for a in agents) or "none"
+            return (f"/{parsed['cmd']}: no agent is wired for that source. Available: {names}.")
+        tool = next((t for t in self._tools if t.name == "find_or_create_flow"), None)
+        if tool is None:
+            return "Flow arming isn't available (Activepieces not configured)."
+        source = parsed.get("source")
+        if not source:   # infer from the resolved agent's integrations (first push-capable app)
+            spec = next((a for a in agents if a.name == agent), None)
+            apps = [i.get("app") for i in (spec.integrations or [])] if spec else []
+            source = next((s for s in ("gmail", "box", "github") if s in apps),
+                          (apps[0] if apps else None))
+        args = {"agent": agent, "kind": "push", "prompt": parsed["utterance"],
+                "source": source, "event": parsed.get("event")}
+        t_origin = _origin.set(thread_id)
+        t_princ = _principal.set(p)
+        try:
+            return await tool.ainvoke(args)
+        finally:
+            _origin.reset(t_origin)
+            _principal.reset(t_princ)
 
 
 # WORKER_BACKEND kept for import-compatibility (main.py + seed read it).

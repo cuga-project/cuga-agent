@@ -136,6 +136,16 @@ agents + their connectors) → `answer_now(agent)` (NOW) **or** `find_or_create_
 a matching flow, else create) — and **decline** if nothing fits. Per-user integrations trigger a
 just-in-time **connect** (CUGA hosts OAuth, AP holds the token). `provision_agent` is removed.
 
+The concierge also accepts **slash commands** (parsed in `concierge.py`, from any surface — web chat
+*or* channels, all via `concierge.run`). **`/automate <what>`** is the router-driven one: a heuristic
+classifier picks the trigger mode (**push / cron / poll**) from the phrasing, so the user never picks
+a mode (`/automate summarize new emails and message me` → PUSH · `/automate the market brief every
+weekday at 8am` → CRON · `/automate check bitcoin every 5 min on a move` → POLL). Reliability is
+hybrid: the *mode* is always deterministic (the classifier); the *agent* resolves deterministically
+for PUSH (filtered by the source's integration) and via the LLM for CRON/POLL (with the mode FORCED).
+Five hidden power-user overrides force a mode: `/watch` (smart, = `/automate`), `/push`, `/schedule`,
+`/cron`, `/poll`.
+
 ## 6. NL → Flow: reason vs. build (how the concierge translates)
 **Decision:** the flow is **not** figured out by hardcoded rules, and **not** by an LLM emitting
 raw AP JSON. The **model reasons; deterministic code builds.**

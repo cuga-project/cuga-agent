@@ -100,9 +100,11 @@
       <tr><td><code>make channels</code></td><td>connect + arm every inbound chat channel with a token in <code>.env</code> (run after <code>up</code>)</td></tr>
       <tr><td><code>make reload</code></td><td>bounce <b>only</b> the CUGA server (pick up <code>.env</code>/code) — keeps AP + tunnels, URLs unchanged</td></tr>
       <tr><td><code>make stop</code></td><td>stop everything (AP + CUGA + tunnels), <b>keep</b> data</td></tr>
-      <tr><td><code>make nuke</code></td><td>stop <b>and</b> wipe AP volumes (<code>ap_pgdata</code>/<code>ap_redis</code>) + <code>events.db</code></td></tr>
+      <tr><td><code>make reset-flows</code></td><td>wipe <b>only</b> <code>events.db</code> (your armed flows) + bounce CUGA — keeps AP connections/pieces/tunnels, <b>no reconnect</b> (the everyday reset)</td></tr>
+      <tr><td><code>make nuke</code></td><td>stop <b>and</b> wipe AP volumes (<code>ap_pgdata</code>/<code>ap_redis</code>) + <code>events.db</code> (full from-zero reset)</td></tr>
       <tr><td><code>make status</code> / <code>make logs</code></td><td>what's running + tunnel URLs / tail the runtime logs</td></tr>
       <tr><td><code>make public-url</code></td><td>print the current public URL + the exact Slack/Gmail strings to update</td></tr>
+      <tr><td><code>make flows</code></td><td>open the Flows console — list · pause/resume · delete · rich flow view (no AP console)</td></tr>
       <tr><td><code>make tunnels</code> / <code>tunnels-up</code> / <code>tunnels-down</code></td><td>status / (re)start / stop the tunnel agents (cloudflared + ngrok)</td></tr>
       <tr><td><code>make test</code> / <code>make test-all</code></td><td>offline events suite (~60) / all offline tests (events + unit)</td></tr>
       <tr><td><code>make test-live</code></td><td>live e2e — needs the stack up (<code>make up</code>) + creds</td></tr>

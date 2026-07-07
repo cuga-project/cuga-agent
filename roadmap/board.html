@@ -433,6 +433,25 @@
 <section id="nlflow">
   <h2><span class="n">10</span> NL → Flow validation <span class="tag">the strategic piece</span></h2>
   <p class="lead">Turning a fuzzy utterance into the <i>right</i> flow — right agent, mode, cadence, delivery, or a safe decline — is the real product surface. Flow <i>assembly</i> is deterministic code; the only fuzziness is the LLM's <b>argument selection</b> for <code>find_or_create_flow(agent, kind, cadence, source, deliver)</code>.</p>
+  <div class="box" style="border-left:3px solid var(--blue);margin:0 0 14px">
+    <h4>Two ways to create a flow — NL and the <code>/automate</code> slash command</h4>
+    <p class="lead" style="margin:0 0 6px">Besides plain natural language, <b><code>/automate &lt;what&gt;</code></b> is
+    <b>one</b> slash command whose <b>router</b> (a heuristic classifier) picks the trigger mode —
+    <b>push / cron / poll</b> — from the phrasing, so users never pick a mode. It works from <b>any surface</b>
+    (web Studio chat <i>and</i> channels like Slack/Telegram/Discord — all call <code>concierge.run</code>):</p>
+    <ul class="tight">
+      <li><code>/automate summarize new emails and message me</code> → <b>PUSH</b> (gmail)</li>
+      <li><code>/automate the market brief every weekday at 8am</code> → <b>CRON</b></li>
+      <li><code>/automate check bitcoin every 5 min on a move</code> → <b>POLL</b></li>
+    </ul>
+    <p class="lead" style="margin:6px 0 0"><b>Hybrid reliability:</b> the <i>mode</i> is always deterministic
+    (the classifier); the <i>agent</i> resolves deterministically for PUSH (filtered by the source's
+    integration, so gmail→mailbot never mis-routes) and via the LLM for CRON/POLL (mode FORCED so it can't
+    decline or mis-mode). Five hidden power-user overrides force a mode:
+    <code>/watch</code> (smart, = <code>/automate</code>), <code>/push</code>, <code>/schedule</code>,
+    <code>/cron</code>, <code>/poll</code>. Manage flows in the <b>Flows console</b>
+    (<code>make flows</code> → <code>/api/events/flows/console</code>): pause / resume / delete / view.</p>
+  </div>
   <div class="grid2">
     <div class="box"><h4>Today</h4><ul class="tight">
       <li><b>Live path = LLM router</b> (picks agent + mode + params).</li>

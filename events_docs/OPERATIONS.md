@@ -11,8 +11,17 @@ per-connector step-by-steps see [setup/](setup/README.md). Security posture live
 > **Everyday commands** — the root [`Makefile`](../Makefile) wraps the day-to-day loop; `make` lists
 > all targets. The ones you'll use most: `make up` / `make stop` (start/stop AP + CUGA, keeps data),
 > `make channels` (connect + arm the inbound chat channels — **re-run after any tunnel-URL change**),
-> `make nuke` (stop **and** wipe AP volumes + `events.db` — the full reset), `make status`,
+> `make reset-flows` (wipe **only** `events.db` — your armed flows — and bounce CUGA, keeping AP
+> connections/pieces/tunnels; the everyday reset, no reconnect), `make nuke` (stop **and** wipe AP
+> volumes + `events.db` — the full from-zero reset), `make status`,
+> `make flows` (the Flows console — pause/resume/delete/view standing flows without opening AP),
 > `make logs`, `make env-check` / `make doctor`, `make test`. Details in [SETUP.md](SETUP.md#tldr--the-make-shortcuts).
+>
+> **Creating flows:** natural language, or **`/automate <what>`** — one slash command whose router
+> picks push/cron/poll from the phrasing. PUSH agents resolve deterministically from the seeded
+> integrations (gmail never mis-routes); CRON/POLL let the LLM pick the agent with the mode forced.
+> (`/watch`, `/push`, `/schedule`, `/cron`, `/poll` remain as hidden mode-forcing overrides.) See
+> [STUDIO_UI.md](STUDIO_UI.md#flows--create-manage-and-see-them-cuga-first-ap-stays-hidden).
 
 ---
 

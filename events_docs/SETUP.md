@@ -26,26 +26,55 @@ make sync                            # populate .venv (re-run after dependency c
 make env-check                       # confirm .env is complete → green
 ```
 
-**D. Bring it up**
+**D. Before a clean start — refresh the two *perishable* creds** (everything else in `.env` is stable):
+- **Box** (`EVENTS_BOX_BACKEND=direct`) → `BOX_DEV_TOKEN` **expires ~60 min**. Regenerate it in the Box
+  dev console right before Box tests, paste into `.env`, then `make reload` (the server caches `.env`
+  at startup). Skip if `EVENTS_BOX_BACKEND` is unset/`ap` (OAuth push — no dev token).
+- **Gmail** (Testing-mode OAuth) → the stored refresh token **expires after 7 days**; re-Connect in
+  Studio → Integrations if stale.
+- **`make nuke`/`make fresh` wipes AP volumes**, so **all** integration *connections*
+  (Gmail/GitHub/Telegram) are lost and must be reconnected. `make stop && make up` keeps them.
+- **To reset just your armed flows** (not connections/pieces), use **`make reset-flows`** — it wipes
+  only `events.db` and bounces CUGA, leaving Activepieces (connections, pieces, tunnel) untouched, so
+  there's **no reconnect and no `make channels`**. This is the everyday reset; save `nuke` for a true
+  from-zero rebuild.
+- **A fresh AP must re-sync its piece catalog from `cloud.activepieces.com`** — `make up` now
+  force-installs the needed pieces after boot. If a Connect still 404s with `piece_metadata_not_found`
+  (network blipped during boot), run **`make ap-pieces`** (idempotent). `make doctor` shows piece status.
+- **Stable — no action across restarts:** the ngrok static URL (`EVENTS_NGROK_DOMAIN`/`EVENTS_PUBLIC_URL`),
+  `HOST_CALLBACK_URL` (podman internal DNS), all bot tokens, OAuth *app* client id/secret,
+  `GATEWAY_TOKEN`, WatsonX.
+
+**E. Bring it up**
 ```bash
 make fresh                           # clean slate: nuke → up (fresh AP + CUGA on ngrok) → channels → prints URL
-#   — or a normal boot that keeps data:
+#   — or a normal boot that keeps data + connections (recommended for iterating):
 make up && make channels
 ```
 
-**E. Wire external consoles (one-time, because the ngrok URL is stable)** — `make public-url` prints the exact strings:
+**F. Wire external consoles (one-time, because the ngrok URL is stable)** — `make public-url` prints the exact strings:
 1. **Slack** → api.slack.com/apps → your app → Event Subscriptions → Request URL `https://<domain>/api/events/slack/events` → subscribe `message.channels` → invite the bot
 2. **Discord** → Developer Portal → Bot → enable **Message Content Intent**
 3. **Gmail** *(only if used)* → Google Cloud redirect URI `https://<domain>/api/events/connect/gmail/callback`
 
-**F. Verify**
+**G. Verify**
 ```bash
 make status      # everything up          make tunnels   # both tunnel agents up + reachable (200)
 make doctor      # live creds ok          make test      # 61 offline checks green
 ```
-Then smoke-test: DM your Telegram bot · post in the Discord/Slack channel · open `localhost:8100/studio`.
+Smoke-test the channels: DM your Telegram bot · post in the Discord/Slack channel · open `localhost:8100/studio`.
+Then the integrations end-to-end (each hits the real API — full matrix in [TESTING.md](TESTING.md)):
+```bash
+make test-live                                    # all trigger modes in one pass
+.venv/bin/python tests/events/live_github_e2e.py  # real open PR → pr_reviewer
+.venv/bin/python tests/events/live_box_e2e.py     # real upload → resume_judge  (needs a FRESH BOX_DEV_TOKEN)
+.venv/bin/python tests/events/live_gmail_e2e.py   # Gmail OAuth connection + arm inbox watcher
+```
+And the **`/automate`** create-path — in the Studio Concierge (or any channel) type: `/automate summarize
+new emails` (→PUSH) · `/automate the market brief every weekday 8am` (→CRON) · `/automate check bitcoin
+every 5 min on a move` (→POLL). Manage them with `make flows`.
 
-**G. Day-to-day (after the one-time steps)**
+**H. Day-to-day (after the one-time steps)**
 ```bash
 make up          # boot   ·   make reload  if you only changed .env/code (no tunnel churn)
 make channels    # re-arm — needed after an AP-tunnel flap (Telegram); Slack/Gmail stay put
@@ -64,20 +93,39 @@ Once base CUGA + `.env` are in place (§0–§3), the day-to-day loop is just `m
 | `make env-check` | verify `.env` has the required keys — offline, no network |
 | `make doctor` | live credential doctor (`preflight.py`) — pings each service |
 | `make ap` / `make cuga` | start Activepieces / CUGA + registry + tunnels |
+| `make ap-pieces` | ensure AP has the integration pieces installed (fixes fresh-DB `piece_metadata_not_found`) |
 | `make up` (`make start`) | start both, AP first |
 | `make channels` | connect + arm every inbound chat channel with a token in `.env` (run after `up`) |
 | `make stop` | stop everything (AP + CUGA + tunnels), **keep** data |
-| `make nuke` | stop **and** wipe AP volumes (`ap_pgdata`/`ap_redis`) + `events.db` |
+| `make reset-flows` | wipe **only** `events.db` (your armed flows) + bounce CUGA — keeps AP connections/pieces/tunnels, **no reconnect** |
+| `make nuke` | stop **and** wipe AP volumes (`ap_pgdata`/`ap_redis`) + `events.db` (full reset) |
 | `make fresh` | full from-scratch cycle: `env-check` → `nuke` → `up` → `channels` → print public URL |
 | `make reload` | bounce **only** CUGA (pick up `.env`/code) — keeps AP + tunnels, URLs unchanged |
 | `make restart` | `stop` then `up` — then `make channels`. CUGA URL is stable if `EVENTS_NGROK_DOMAIN` set; else it changes |
 | `make status` / `make logs` | what's running + tunnel URLs / tail the runtime logs |
 | `make public-url` | print the current public URL + the exact Slack/Gmail strings to update |
+| `make flows` | open the Flows console (list · pause/resume · delete · rich flow view) |
 | `make tunnels` / `tunnels-up` / `tunnels-down` | status / (re)start / stop the tunnel agents (cloudflared + ngrok) |
 | `make test` / `make test-all` | offline events suite (~60) / all offline tests (events + unit) |
 | `make test-live` | live e2e — needs the stack up (`make up`) + creds |
 
 The from-scratch runbook below is what those shortcuts wrap — read it once, then live in `make`.
+
+## Cheat sheet — "I changed X, how do I make it take effect?"
+CUGA caches `.env` at startup, so a change needs a restart. **Which** restart depends on *which
+process reads the variable* — but for ~95% of `.env` the answer is just `make reload`.
+
+| I changed… | Run | Why / notes |
+|---|---|---|
+| **Almost anything** — LLM/WatsonX keys, `GATEWAY_TOKEN`, any `EVENTS_*`, `AP_BASE_URL`/`AP_EMAIL`/`AP_PASSWORD`, `EVENTS_OAUTH_*`, `EVENTS_BOX_BACKEND`, **`BOX_DEV_TOKEN`**, `GITHUB_TOKEN` | **`make reload`** | bounces **only** CUGA (fresh process re-reads `.env`); keeps AP + tunnels + URL. ~10s, no reconnect. Then `make doctor` to confirm. |
+| a **channel bot token** or the **public URL** webhooks point at (Telegram/Slack/Discord) | `make reload` **then `make channels`** | CUGA gets the value, but the webhook **registration** is stale — re-arm it. |
+| **`AP_ENCRYPTION_KEY`** or **`AP_JWT_SECRET`** | **`make ap`** | baked into the AP **container** at run time (volumes kept → connections/pieces survive). ⚠️ changing the encryption key invalidates stored connections. |
+| **`EVENTS_NGROK_DOMAIN`** (the CUGA tunnel domain) | **`make restart`** | read when the **tunnel** starts; `make reload` deliberately keeps the tunnel. |
+| just want to **clear armed flows** (no `.env` change) | **`make reset-flows`** | wipes `events.db` only; AP connections/pieces/tunnels untouched. |
+| a Connect 404s with `piece_metadata_not_found` | **`make ap-pieces`** | (re)installs the integration pieces a fresh AP needs. |
+
+**Rule of thumb:** *edit `.env` → `make reload`.* Only reach for `make ap` / `make restart` for the
+handful of AP-container / tunnel-domain vars above.
 
 ## The whole path at a glance
 Do these in order. Each row links to the section/guide with the details and the "what success looks

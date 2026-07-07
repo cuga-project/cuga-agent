@@ -100,5 +100,15 @@ PW=$(grep '^AP_PASSWORD=' .env 2>/dev/null|cut -d= -f2-|sed 's/ *#.*//'|tr -d ' 
   -X POST "http://localhost:$AP_PORT/api/v1/authentication/sign-up" -H 'content-type: application/json' \
   -d "{\"email\":\"$EMAIL\",\"password\":\"$PW\",\"firstName\":\"Admin\",\"lastName\":\"User\",\"trackEvents\":false,\"newsLetter\":false}" || true
 
+# Ensure the pieces the events layer needs are present before we hand back. On a FRESH DB the AP
+# cloud-sync (PIECES_SYNC_MODE=OFFICIAL_AUTO) takes ~3-4 min to deliver the full catalog; until it
+# does, an integration Connect 404s with `piece_metadata_not_found`. ap_pieces.py WAITS for the sync
+# to deliver our pieces (and installs them directly, pinned, only if it stalls). This step therefore
+# blocks for up to a few minutes on a first/fresh boot — that's expected, not a hang.
+echo "ensuring integration pieces are installed (fresh DB: waiting for AP catalog sync, up to ~4 min)…"
+PYBIN="$([ -x .venv/bin/python ] && echo .venv/bin/python || echo python3)"
+"$PYBIN" scripts/ap_pieces.py \
+  || echo "  ⚠ piece ensure incomplete — run 'make ap-pieces' once the network is up (Connect 404s until then)."
+
 echo ""; echo "AP READY: http://localhost:$AP_PORT  (public: $TUN)"
 echo "  the tunnel URL is EPHEMERAL — re-run this script if cloudflared restarts."

@@ -76,6 +76,11 @@ export function ConciergeChat({
             Tell the concierge what you want — e.g. <em>"every 1 minute send me new arXiv
             papers on mixture-of-experts"</em>. It reuses or creates a worker and arms the
             trigger. Toggle <strong>Preview</strong> to see the plan without side effects.
+            <br />
+            Or type <code>/automate &lt;what&gt;</code> — one command whose router picks
+            push / cron / poll for you: <em>"/automate summarize new emails"</em> (push),
+            <em>"/automate the market brief every weekday 8am"</em> (cron),
+            <em>"/automate check bitcoin every 5 min on a move"</em> (poll).
           </p>
         )}
         {messages.map((m, i) => (
@@ -103,7 +108,7 @@ export function ConciergeChat({
         <TextArea
           labelText=""
           hideLabel
-          placeholder="Ask the concierge…"
+          placeholder="Ask the concierge…  (or /automate <what> to arm a flow)"
           rows={2}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}

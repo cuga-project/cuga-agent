@@ -161,6 +161,16 @@
       <p class="lead">The human-facing concierge entry. <code>?dry_run=1</code> returns the deterministic planner's
       decision with <b>no side effects</b> (great for tests/UI preview). Live path runs the LLM concierge (reuse/create
       + run/arm a flow).</p>
+      <p class="lead"><b>Slash commands</b> are handled here too (<code>concierge.run</code>, same handler from any
+      surface — web chat or channels): <code>/automate &lt;what&gt;</code> is the router-driven one — its heuristic
+      classifier picks the trigger mode (<b>push / cron / poll</b>) from the phrasing, e.g.
+      <code>/automate summarize new emails and message me</code> → PUSH,
+      <code>/automate the market brief every weekday at 8am</code> → CRON,
+      <code>/automate check bitcoin every 5 min on a move</code> → POLL. Five hidden overrides force a mode
+      (<code>/watch</code> = <code>/automate</code>, <code>/push</code>, <code>/schedule</code>, <code>/cron</code>,
+      <code>/poll</code>). Manage the armed flows via the lifecycle endpoints below
+      (<code>subscriptions/&lt;id&gt;/pause · /resume</code>, <code>DELETE subscriptions/&lt;id&gt;</code>,
+      <code>flows/console</code>).</p>
       <div class="lbl">Request</div>
 <pre class="blk"><span class="k">{</span> <span class="k">"text"</span>: <span class="s">"every weekday 8am post a market brief to slack"</span>,
   <span class="k">"agent"</span>: <span class="s">"worker"</span>, <span class="k">"thread_id"</span>: <span class="s">"web:local"</span> <span class="k">}</span></pre>
@@ -183,6 +193,10 @@
     <tbody>
       <tr><td><code>GET /api/events/status</code></td><td><code>{enabled, worker_backend, concierge_backend, ap_configured, project_grain, features:{now,cron,poll,push,channels_inbound}}</code></td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/subscriptions</code></td><td><code>{scope, subscriptions:[…]}</code> — this principal's standing flows</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>POST /api/events/subscriptions/&lt;id&gt;/pause · /resume</code></td><td>pause/resume a flow — disables/enables it in Activepieces</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>DELETE /api/events/subscriptions/&lt;id&gt;</code></td><td>delete a flow — removes it from Activepieces too</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/subscriptions/&lt;id&gt;/flow</code></td><td>rich flow detail: the CUGA model + the live AP flow JSON (trigger + steps)</td><td><span class="pill p-live">Live</span></td></tr>
+      <tr><td><code>GET /api/events/flows/console</code></td><td>the self-contained <b>Flows console</b> page (list · pause/resume · delete · view)</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/channels</code></td><td><code>{channels:[{name,status}]}</code> — web/telegram/discord/slack connect state</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/integrations</code></td><td><code>{integrations:[{name,status}]}</code> — box/github/gmail/slack AP-connection state</td><td><span class="pill p-live">Live</span></td></tr>
       <tr><td><code>GET /api/events/agents</code></td><td>the pre-built agents visible to this principal (name, prompt, channels, mcp)</td><td><span class="pill p-live">Live</span></td></tr>

@@ -27,15 +27,17 @@ PIECE = {
 # AP piece + trigger for each integration/channel source we support.
 SOURCE_TRIGGER = {
     "box": ("box", "new_file"),
-    "github_pr": ("github", "new_pull_request"),
-    "github_issue": ("github", "new_issue"),
-    "gmail": ("gmail", "new_email"),
+    "github_pr": ("github", "trigger_pull_request"),
+    "github_issue": ("github", "trigger_issues"),
+    "gmail": ("gmail", "gmail_new_email_received"),
     "rss": ("rss", "new_item"),
     "telegram": ("telegram", "new_message"),
     "discord": ("discord", "new_message"),
     "slack": ("slack", "new_message"),
     "webhook": ("webhook", "catch_webhook"),
 }
+SOURCE_TRIGGER["github"] = SOURCE_TRIGGER["github_pr"]   # bare 'github' source (e.g. inferred from an
+#                                                         agent's integration) defaults to the PR trigger
 
 # The trigger fields we hand the worker in the /invoke payload, per source — so the agent reasons
 # over real content (an email's subject/body, a PR's title) instead of just a filename. Values are

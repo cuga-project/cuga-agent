@@ -127,6 +127,14 @@
   </div>
   <div class="callout"><b>The one wrinkle for tracking:</b> analytics needs <i>history</i> to say "stars gained this week."
     In most cases the source already keeps it — GitHub returns the live count; the usage-collector already exposes daily/monthly JSON — so the tool just fetches a snapshot/series and the agent reasons over it. <b>No new state in the app.</b></div>
+  <div class="callout"><b>How you create any of these — one command.</b> Besides plain English, <code>/automate &lt;what&gt;</code>
+    is <b>one</b> slash command whose <b>router</b> picks the trigger mode — <b>push / cron / poll</b> — from the phrasing,
+    so you never pick a mode. It works from any surface (web Studio chat <i>and</i> channels like Slack/Telegram/Discord —
+    all call <code>concierge.run</code>): <code>/automate summarize new emails and message me</code> → <b>PUSH</b> (gmail) ·
+    <code>/automate the market brief every weekday at 8am</code> → <b>CRON</b> ·
+    <code>/automate check bitcoin every 5 min on a move</code> → <b>POLL</b>. Five hidden overrides force a mode
+    (<code>/watch</code> = <code>/automate</code>, <code>/push</code>, <code>/schedule</code>, <code>/cron</code>, <code>/poll</code>);
+    manage the results in the Flows console (<code>make flows</code>).</div>
 </section>
 
 <!-- PRIMITIVES -->

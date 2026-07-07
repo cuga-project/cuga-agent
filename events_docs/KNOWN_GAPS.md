@@ -90,6 +90,13 @@ The full warts-and-all account is in [OPERATIONS.md](OPERATIONS.md). The recurri
 - **Box dev tokens expire ~60 min** — regenerate for direct-poll tests.
 - **Gmail (Testing mode) refresh tokens expire after 7 days** — re-Connect weekly.
 - **Run AP Community Edition on Postgres** — the single-container sqlite build wipes its own project.
+- **Fresh AP must sync its piece catalog from `cloud.activepieces.com`.** AP 0.82 CE
+  (`PIECES_SYNC_MODE=OFFICIAL_AUTO`) fetches all piece metadata from the cloud at boot. On a fresh DB
+  (`make nuke`/`make fresh`), if the network blips at that moment (laptop asleep / VPN off) the sync
+  races or fails and the piece table is left empty or half-populated (e.g. 28 pieces) — then **every
+  integration Connect 404s with `piece_metadata_not_found`**. `ap_up.sh` now force-installs the
+  needed pieces deterministically after boot (`scripts/ap_pieces.py`); if you still see the 404, run
+  **`make ap-pieces`** (idempotent) once the network is back. `make doctor` reports piece status.
 
 ---
 
@@ -104,3 +111,23 @@ The full warts-and-all account is in [OPERATIONS.md](OPERATIONS.md). The recurri
 - Docs reconciled: one status table (README), the "Phase 1 & 2" framing retired, obsolete
   `EXAMPLES_CONFORMANCE.md` / `PHASE_1_2_ACCOMPLISHMENTS.md` removed, test counts reconciled to the
   real **61 offline**.
+- **AP piece-trigger names corrected** in `flows.SOURCE_TRIGGER` (they must match the real installed
+  pieces): gmail `new_email` → **`gmail_new_email_received`**; github `new_pull_request`/`new_issue` →
+  **`trigger_pull_request`**/**`trigger_issues`**. Gmail/GitHub PUSH flows previously failed to publish
+  with `ENTITY_NOT_FOUND`; gmail `/watch` now arms end-to-end.
+
+## New in this PR (CUGA-first flow management)
+
+- **`/automate` slash command** (`concierge.py::_slash_parse`/`_arm_slash`) — one command whose router
+  picks push/cron/poll from the phrasing. **Hybrid** for reliability: mode always deterministic (the
+  classifier); agent resolved deterministically for **PUSH** (integration filter — fixes the LLM's
+  gmail blind spot) and via the **LLM** for **CRON/POLL** (its strength) with the mode forced. Five
+  mode-forcing overrides kept (`/watch`, `/push`, `/schedule`, `/cron`, `/poll`). Works from web chat
+  **and** channels.
+- **Flow lifecycle from CUGA** — `POST /api/events/subscriptions/<id>/{pause,resume}`,
+  `DELETE …/<id>`. CUGA drives Activepieces internally (`ap_engine.set_flow_status` / `delete_flow`),
+  so operators never open the AP console.
+- **Rich flow view** — `GET …/<id>/flow` returns the CUGA Source→Agent→Sink model **plus** the live
+  AP flow JSON; the **Flows console** (`GET /api/events/flows/console`, `make flows`) renders it as a
+  read-only diagram and hosts the pause/resume/delete controls. Self-contained page — no frontend
+  build, so it can't affect the pre-built Studio bundle.

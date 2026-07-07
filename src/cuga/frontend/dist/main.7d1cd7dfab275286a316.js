@@ -9529,7 +9529,7 @@ function ConciergeChat({
     className: "studio-chat-log"
   }, messages.length === 0 && /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("p", {
     className: "studio-muted"
-  }, "Tell the concierge what you want \u2014 e.g. ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"every 1 minute send me new arXiv papers on mixture-of-experts\""), ". It reuses or creates a worker and arms the trigger. Toggle ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Preview"), " to see the plan without side effects."), messages.map((m, i) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
+  }, "Tell the concierge what you want \u2014 e.g. ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"every 1 minute send me new arXiv papers on mixture-of-experts\""), ". It reuses or creates a worker and arms the trigger. Toggle ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("strong", null, "Preview"), " to see the plan without side effects.", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("br", null), "Or type ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("code", null, "/automate <what>"), " \u2014 one command whose router picks push / cron / poll for you: ", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"/automate summarize new emails\""), " (push),", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"/automate the market brief every weekday 8am\""), " (cron),", /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("em", null, "\"/automate check bitcoin every 5 min on a move\""), " (poll)."), messages.map((m, i) => /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
     key: i,
     className: `studio-msg studio-msg-${m.role}`
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement("div", {
@@ -9555,7 +9555,7 @@ function ConciergeChat({
   }, /*#__PURE__*/react__WEBPACK_IMPORTED_MODULE_0___default().createElement(_carbon_react__WEBPACK_IMPORTED_MODULE_1__.TextArea, {
     labelText: "",
     hideLabel: true,
-    placeholder: "Ask the concierge\u2026",
+    placeholder: "Ask the concierge\u2026  (or /automate <what> to arm a flow)",
     rows: 2,
     value: draft,
     onChange: e => setDraft(e.target.value),
@@ -17793,4 +17793,4 @@ const AUTH_TYPE_OPTIONS = [{
 /******/ 	
 /******/ })()
 ;
-//# sourceMappingURL=main.b41d5f5cb95eb631d242.js.map
+//# sourceMappingURL=main.7d1cd7dfab275286a316.js.map

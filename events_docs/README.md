@@ -33,8 +33,9 @@ make channels       # connect + arm every inbound chat channel with a token in .
 make status         # what's running + the tunnel URLs
 open http://localhost:8100/studio
 make test           # ~61 offline checks, all green
-make stop           # stop everything, keep data (make nuke also wipes the DBs)
-make nuke           # stop AND wipe AP volumes + events.db (full reset)
+make stop           # stop everything, keep data
+make reset-flows    # wipe ONLY events.db (armed flows) + bounce CUGA — keeps AP connections/pieces (no reconnect)
+make nuke           # stop AND wipe AP volumes + events.db (full reset — reconnect everything after)
 ```
 
 Everything below is the detail behind those commands. New here? Read §1–§2 for the model, then live
@@ -148,6 +149,16 @@ open http://localhost:8100/studio # the builder/operator console
 Then, from Slack, message the bot: *"every hour post the top trending GitHub repos here."* The
 concierge arms a real AP CRON flow that runs `github_trending` and delivers straight to that Slack
 channel (direct backend, no AP send-step). That exact flow is live today.
+
+**Two ways to create a flow, one place to manage them.** Besides natural language, **`/automate`** is
+one slash command whose router picks the mode from the phrasing: `/automate summarize new emails`
+(→PUSH), `/automate the market brief every weekday 8am` (→CRON), `/automate bitcoin every 5 min on a
+move` (→POLL). PUSH agents resolve deterministically from the seeded integrations (so gmail never
+mis-routes); CRON/POLL let the LLM pick the agent with the mode forced. Manage everything in the
+**Flows console**
+(`make flows` → `/api/events/flows/console`): **pause / resume / delete** flows (CUGA drives
+Activepieces for you) and **view** a rich read-only diagram — the CUGA Source→Agent→Sink model plus
+the live AP flow steps. See [STUDIO_UI.md](STUDIO_UI.md#flows--create-manage-and-see-them-cuga-first-ap-stays-hidden).
 
 ---
 

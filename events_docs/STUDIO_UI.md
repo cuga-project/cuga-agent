@@ -52,6 +52,10 @@ GET /api/events/agents        → {scope, agents:[{name,prompt,backend,mcp_serve
 POST /api/events/agents       → create/upsert an agent (builder/admin)   ·   PUT /api/events/agents/<name> → update
 GET /api/events/mcp-servers   → {servers:[{name,hint}]}   (drives the agent-editor tool picker)
 GET /api/events/subscriptions → {scope, subscriptions:[…]}   (already existed)
+POST   /api/events/subscriptions/<id>/pause · /resume  → pause/resume a flow (disables/enables it in AP)
+DELETE /api/events/subscriptions/<id>                  → delete a flow (removes it from AP too)
+GET    /api/events/subscriptions/<id>/flow             → rich flow detail: CUGA model + live AP flow JSON
+GET    /api/events/flows/console                        → the self-contained Flows console page (HTML)
 POST /api/concierge           → live route / ?dry_run=1 preview   (already existed)
 GET  /api/events/connect/<app>          → OAuth: 302 to consent · token: instructions
 GET  /api/events/connect/<app>/callback → OAuth code exchange → create the user's AP connection
@@ -62,6 +66,31 @@ Connect model: **CUGA hosts the login; AP holds the token** (decision 0006). Per
 need `EVENTS_OAUTH_<APP>_CLIENT_ID/_SECRET`; token apps work out of the box.
 Descriptors + status logic: `connectors.py` (channels/integrations) and `catalog.py` (examples)
 — the single source of truth, server-side.
+
+## Flows — create, manage, and *see* them (CUGA-first; AP stays hidden)
+Two ways to create a standing flow, both converging on the same `find_or_create_flow` → AP engine:
+- **Natural language** through the concierge ("every hour post trending repos to Slack").
+- **`/automate <what>`** — **one** slash command whose ROUTER picks push vs cron vs poll from the
+  phrasing (no NOW-vs-standing ambiguity, no mis-route). Works from **any surface** (web chat AND
+  channels — both call `concierge.run`), handled in `concierge.py::_slash_parse`/`_arm_slash`:
+  - `/automate summarize new emails and message me` → the router picks **PUSH** (gmail).
+  - `/automate the market brief every weekday at 8am` → **CRON**.
+  - `/automate check bitcoin every 5 min and ping me on a move` → **POLL**.
+
+  **How it stays reliable (hybrid):** the *mode* is always deterministic (the heuristic classifier).
+  The *agent* is resolved by the method each mode is best at — **PUSH deterministically** (filter
+  agents by the source's integration, so gmail→mailbot never declines, the LLM's blind spot), and
+  **CRON/POLL via the LLM** (a domain judgment it does well — "bitcoin"→pricebot — but with the mode
+  FORCED so it can't decline or mis-mode). GitHub PUSH needs a named repo (`… on owner/repo …`).
+
+  Five mode-specific commands are kept as **hidden power-user overrides** that force a mode:
+  `/watch` (smart, = `/automate`), `/push`, `/schedule`, `/cron`, `/poll`.
+
+**The Flows console** (`GET /api/events/flows/console`, or `make flows`) — a self-contained page (no
+build step, so it can't break the pre-built Studio bundle). It lists your standing flows and lets you
+**pause / resume / delete** them — CUGA drives Activepieces internally, so you never open the AP
+console. **View** renders a *rich, read-only* flow: the CUGA **Source → Agent → Sink** model **plus**
+the live **AP flow steps** (trigger → Invoke CUGA → delivery) pulled from AP's flow JSON.
 
 ## Isolation
 Every read endpoint resolves the caller's `Principal` from headers → `scope`, and filters by it

@@ -492,3 +492,26 @@ class APEngine:
                 await c.delete(f"{self.base}/api/v1/flows/{flow_id}", headers=hdrs)
         except Exception as e:  # noqa: BLE001
             log.warning("AP delete flow %s failed: %s", flow_id, e)
+
+    async def set_flow_status(self, flow_id: str, enabled: bool) -> None:
+        """Pause/resume a published flow via AP's CHANGE_STATUS op (ENABLED/DISABLED). Best-effort —
+        logs on failure so the caller can still update its own record."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                hdrs = await self._auth(c)
+                await self._post_op(c, flow_id, {"type": "CHANGE_STATUS",
+                    "request": {"status": "ENABLED" if enabled else "DISABLED"}}, hdrs)
+        except Exception as e:  # noqa: BLE001
+            log.warning("AP set flow %s status=%s failed: %s", flow_id, enabled, e)
+
+    async def get_flow(self, flow_id: str) -> dict | None:
+        """Fetch the full AP flow JSON (trigger + steps) for a rich, read-only view in the CUGA UI.
+        Returns None if AP is unreachable or the flow is gone."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                hdrs = await self._auth(c)
+                r = await c.get(f"{self.base}/api/v1/flows/{flow_id}", headers=hdrs)
+                return r.json() if r.status_code == 200 and r.text else None
+        except Exception as e:  # noqa: BLE001
+            log.warning("AP get flow %s failed: %s", flow_id, e)
+            return None

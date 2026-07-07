@@ -18,7 +18,7 @@ REQUIRED := LLM_PROVIDER LLM_MODEL AGENT_SETTING_CONFIG \
 OPTIONAL := EVENTS_PUBLIC_URL TELEGRAM_BOT_TOKEN SLACK_BOT_TOKEN \
             DISCORD_BOT_TOKEN BOX_DEV_TOKEN GITHUB_TOKEN
 
-.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url tunnels tunnels-up tunnels-down logs channels channels-status test test-all test-live sync
+.PHONY: help env-check doctor ap cuga up start stop restart reload nuke fresh status public-url flows tunnels tunnels-up tunnels-down logs channels channels-status test test-all test-live sync
 
 help: ## Show this help
 	@echo "CUGA event-runtime — make targets:"
@@ -28,6 +28,9 @@ help: ## Show this help
 ## ---- start / stop ---------------------------------------------------------
 ap: ## Start Activepieces (app + postgres + redis + tunnel)
 	scripts/ap_up.sh
+
+ap-pieces: ## Ensure AP has the integration pieces installed (fixes fresh-DB "piece_metadata_not_found")
+	@$(PY) scripts/ap_pieces.py
 
 cuga: ## Start CUGA server + MCP registry + tunnels
 	scripts/events_up.sh
@@ -50,6 +53,12 @@ nuke: stop ## Stop everything AND wipe all data (AP volumes + events.db)
 	-rm -f $(DB)
 	@echo "💥 nuked: $(VOLS) + $(DB) (ea-postgres / cuga-agent-apps NOT touched)"
 
+reset-flows: ## Wipe ONLY CUGA's flow DB (events.db) + bounce CUGA — keeps AP connections/pieces/tunnels (no reconnect)
+	-scripts/events_up.sh --stop
+	-rm -f $(DB)
+	@$(MAKE) --no-print-directory cuga
+	@echo "✅ flows reset: $(DB) wiped, CUGA restarted. AP connections + pieces + tunnels untouched — no reconnect needed."
+
 fresh: ## FULL from-scratch cycle: nuke → up (fresh AP+CUGA) → arm channels → print public URL
 	@echo "== 1/4 env-check =="; $(MAKE) --no-print-directory env-check
 	@echo "== 2/4 nuke =="; $(MAKE) --no-print-directory nuke
@@ -67,6 +76,10 @@ status: ## Show what's running + tunnel URLs
 
 public-url: ## Print the current public URL + the exact Slack/Gmail strings to update
 	@scripts/events_up.sh --public-url
+
+flows: ## Open the Flows console (list · pause/resume · delete · rich flow view)
+	@echo "Flows console → http://localhost:$(CUGA_PORT)/api/events/flows/console"
+	@open "http://localhost:$(CUGA_PORT)/api/events/flows/console" 2>/dev/null || true
 
 tunnels: ## Status of both public tunnel agents (AP cloudflared + CUGA ngrok/cloudflared)
 	@scripts/tunnels.sh --status
@@ -98,6 +111,8 @@ test-live: ## Live e2e — needs the stack up (make up) + creds (make doctor)
 
 doctor: ## Live credential doctor — hit each service with its real .env cred
 	$(PY) tests/events/preflight.py
+	@echo; echo "--- Activepieces pieces (integration Connect needs these) ---"; \
+	  $(PY) scripts/ap_pieces.py --status 2>/dev/null || echo "  (AP down — start it with 'make ap')"
 
 sync: ## uv sync the venv
 	uv sync --python 3.12

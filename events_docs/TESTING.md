@@ -92,6 +92,22 @@ EVENTS_SERVER_URL=http://localhost:8100 .venv/bin/python tests/events/live_integ
 `subscriptions.ap_flow_id`); PUSH box/github/gmail either arm an AP flow (if connected) or return
 the correct CONNECT-NEEDED; WEBHOOK triages and delivers.
 
+### `/automate` slash-command routing (one command, router picks the mode)
+`/automate <what>` is one slash command whose router (a heuristic classifier) picks push/cron/poll
+from the phrasing — verify each of the three modes routes correctly:
+```bash
+for t in "/automate summarize new emails and message me" \
+         "/automate the market brief every weekday at 8am" \
+         "/automate check bitcoin every 5 min on a move"; do
+  curl -s -X POST http://localhost:8100/api/concierge \
+    -H 'content-type: application/json' -H 'x-user-id: admin' \
+    -d "{\"text\":\"$t\"}" | python3 -c "import sys,json;print(json.load(sys.stdin).get('reply','')[:90])"
+done
+```
+**PASS:** 1st arms **PUSH** (gmail → `mailbot`, resolved deterministically from the integration),
+2nd arms **CRON**, 3rd arms **POLL** (the LLM picks the agent with the mode FORCED). The five hidden
+overrides (`/watch` = `/automate`, `/push`, `/schedule`, `/cron`, `/poll`) force a specific mode.
+
 ### Box — upload a real file, watcher detects + judges it
 ```bash
 BOX_FOLDER_ID=0 EVENTS_SERVER_URL=http://localhost:8100 GATEWAY_TOKEN=<..> \

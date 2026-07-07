@@ -149,6 +149,24 @@ EXAMPLES = [
         agent="github_trending", channel="web", phase="run", live=True,
         note="github_trending answering NOW (vs its hourly CRON → Slack)"),
 
+    # ─────── /automate — ONE slash command; a router picks push vs cron vs poll (no LLM mis-route) ───────
+    _ex("automate-gmail", "/automate new emails", "push",
+        "/automate summarize new emails and message me",
+        agent="mailbot", channel="web", integration="gmail", phase="run", live=True,
+        note="/automate → router picks PUSH (gmail); source+agent resolved from seeded integrations"),
+    _ex("automate-brief", "/automate market brief", "cron",
+        "/automate the market brief every weekday at 8am",
+        agent="market_briefer", channel="telegram", phase="run", live=True,
+        note="/automate → router picks CRON (a fixed clock schedule)"),
+    _ex("automate-price", "/automate bitcoin watch", "poll",
+        "/automate check bitcoin every 5 minutes and ping me on a move",
+        agent="pricebot", channel="telegram", phase="run", live=True,
+        note="/automate → router picks POLL (interval + act-on-change)"),
+    _ex("automate-pr", "/automate PRs on a repo", "push",
+        "/automate new pull requests on psf/requests and summarize them",
+        agent="pr_reviewer", channel="telegram", integration="github", phase="run", live=False,
+        note="/automate → PUSH (github); name the repo owner/repo (the PR trigger requires it)"),
+
     # ─────────────────────────── OUTBOUND webhook sink ───────────────────────────
     _ex("sink-webhook", "Deliver to a webhook", "poll",
         "watch bitcoin every 5 minutes and POST any move to this URL",

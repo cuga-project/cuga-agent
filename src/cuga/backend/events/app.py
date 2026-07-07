@@ -187,6 +187,8 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
                  "plan": planned, "trace_id": tr.id}, 501)
         thread_id = (body or {}).get("thread_id", "web:local")
         principal = resolve_principal(headers=request.headers)
+        # /watch|/schedule|/cron|/poll|/push slash commands are handled inside concierge.run (so they
+        # work from every surface — web chat AND channels), no interception needed here.
         try:
             reply = await concierge.run(thread_id, text, principal)
             tr("concierge", ok=True, scope=principal.scope)
@@ -200,6 +202,66 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         # only THIS principal's subscriptions (isolation)
         scope = resolve_principal(headers=request.headers).scope
         return {"scope": scope, "subscriptions": store.as_dicts(scope=scope) if store else []}
+
+    # --- flow lifecycle: pause / resume / delete from the CUGA UI (AP is driven internally) -------
+    def _owned_sub(sub_id: str, request: Request):
+        """Fetch a subscription IFF it belongs to the caller (isolation), else (None, scope)."""
+        scope = resolve_principal(headers=request.headers).scope
+        sub = store.get(sub_id) if store else None
+        return (sub if (sub and sub.tenant == scope) else None), scope
+
+    @app.post("/api/events/subscriptions/{sub_id}/pause")
+    async def pause_subscription(sub_id: str, request: Request):
+        sub, _ = _owned_sub(sub_id, request)
+        if sub is None:
+            return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        if engine is not None and sub.ap_flow_id:
+            await engine.set_flow_status(sub.ap_flow_id, enabled=False)   # disable in AP
+        store.set_status(sub_id, "paused")
+        Trace(new_trace_id())("sub.pause", id=sub_id, flow=sub.ap_flow_id)
+        return {"ok": True, "id": sub_id, "status": "paused"}
+
+    @app.post("/api/events/subscriptions/{sub_id}/resume")
+    async def resume_subscription(sub_id: str, request: Request):
+        sub, _ = _owned_sub(sub_id, request)
+        if sub is None:
+            return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        if engine is not None and sub.ap_flow_id:
+            await engine.set_flow_status(sub.ap_flow_id, enabled=True)    # re-enable in AP
+        store.set_status(sub_id, "active")
+        Trace(new_trace_id())("sub.resume", id=sub_id, flow=sub.ap_flow_id)
+        return {"ok": True, "id": sub_id, "status": "active"}
+
+    @app.delete("/api/events/subscriptions/{sub_id}")
+    async def delete_subscription(sub_id: str, request: Request):
+        sub, _ = _owned_sub(sub_id, request)
+        if sub is None:
+            return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        if engine is not None and sub.ap_flow_id:
+            await engine.delete_flow(sub.ap_flow_id)                      # delete in AP
+        store.delete(sub_id)
+        Trace(new_trace_id())("sub.delete", id=sub_id, flow=sub.ap_flow_id)
+        return {"ok": True, "id": sub_id, "deleted": True}
+
+    @app.get("/api/events/subscriptions/{sub_id}/flow")
+    async def subscription_flow(sub_id: str, request: Request):
+        """Rich read-only flow view: the CUGA subscription model + the live AP flow JSON (trigger +
+        steps), so the Studio can render the flow like AP does without opening the AP console."""
+        import dataclasses as _dc
+        sub, _ = _owned_sub(sub_id, request)
+        if sub is None:
+            return JSONResponse({"ok": False, "error": "subscription not found"}, 404)
+        ap_flow = None
+        if engine is not None and sub.ap_flow_id:
+            ap_flow = await engine.get_flow(sub.ap_flow_id)
+        return {"ok": True, "subscription": _dc.asdict(sub), "ap_flow": ap_flow}
+
+    @app.get("/api/events/flows/console")
+    async def flows_console():
+        """Self-contained Flows console: list · pause/resume/delete · rich read-only flow view.
+        A plain HTML page (no build step) so it can't break the pre-built Studio bundle."""
+        from .flows_console import FLOWS_CONSOLE_HTML
+        return HTMLResponse(FLOWS_CONSOLE_HTML)
 
     # --- Studio read endpoints (dumb UI reads these; all real state) -------------
     @app.get("/api/events/status")

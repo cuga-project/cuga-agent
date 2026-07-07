@@ -15,9 +15,11 @@ import re
 # event verbs that imply a native app trigger (PUSH)
 _PUSH = re.compile(r"\bwhen (a |an |someone |my |the )?\b|\bwhenever\b|\blands?\b|\barrives?\b|"
                    r"\bopens?\b|\bis (opened|created|added|labeled|uploaded)\b|\bposts?\b", re.I)
-# "only when it changes / crosses / moves" → POLL
-_POLL = re.compile(r"\bonly (if|when)\b|\bif it (changes|moves|drops|crosses|goes)\b|"
-                   r"\bwatch\b.*\b(change|move|>|<|%|threshold|drops?|rises?)\b|"
+# "only when it changes / crosses / moves / on a move" → POLL (an interval that emits on change).
+# Verbs are restricted to change-signals so "when a PR opens"/"when it lands" stay PUSH.
+_POLL = re.compile(r"\bonly (if|when)\b|\b(if|when) it (changes?|moves?|drops?|crosses?|rises?|"
+                   r"spikes?|jumps?|goes|hits)\b|\b(on|upon) a (move|change|dip|spike|jump|drop|"
+                   r"rise|swing)\b|\bwatch\b.*\b(change|move|>|<|%|threshold|drops?|rises?)\b|"
                    r"\bnotify me (only|when)\b", re.I)
 # recurring clock words → CRON
 _CRON = re.compile(r"\bevery\b|\bdaily\b|\bhourly\b|\bweekday\b|\beach (morning|day|week|friday|"
@@ -26,9 +28,9 @@ _CRON = re.compile(r"\bevery\b|\bdaily\b|\bhourly\b|\bweekday\b|\beach (morning|
 # native sources → (source, event)
 _SOURCES = [
     (re.compile(r"\bbox\b", re.I), ("box", "new_file")),
-    (re.compile(r"\b(pull request|\bPR\b|new pr)\b", re.I), ("github_pr", "new_pull_request")),
+    (re.compile(r"\b(pull requests?|\bPRs?\b|new pr)\b", re.I), ("github_pr", "new_pull_request")),
     (re.compile(r"\bissue\b", re.I), ("github_issue", "new_issue")),
-    (re.compile(r"\b(email|gmail|inbox)\b", re.I), ("gmail", "new_email")),
+    (re.compile(r"\b(e-?mails?|gmail|inbox)\b", re.I), ("gmail", "new_email")),
     (re.compile(r"\brss|blog|feed\b", re.I), ("rss", "new_item")),
     (re.compile(r"\bwebhook\b", re.I), ("webhook", "catch_webhook")),
 ]
