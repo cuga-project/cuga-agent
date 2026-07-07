@@ -96,7 +96,7 @@
       <span class="kbadge k-poll">POLL</span> watch &amp; alert-on-change ·
       <span class="kbadge k-push">PUSH</span> react to an event</li>
     </ul></div>
-    <div class="box"><h4>Pre-built agent skills (8)</h4><ul class="tight">
+    <div class="box"><h4>Pre-built agent skills (14)</h4><ul class="tight">
       <li><code>pricebot</code> finance · <code>market_briefer</code> finance+web · <code>weatherbot</code> web ·
       <code>geobot</code> geo+facts · <code>papers</code> arXiv · <code>resume_judge</code> Box+text ·
       <code>support_digest</code> web→Slack · <code>mailbot</code> Gmail+text</li>
@@ -181,8 +181,8 @@
       <tr data-s="live"><td class="utter">"what's the weather in Kyoto right now?"</td><td>weatherbot</td><td><span class="st st-live">✅ live</span></td></tr>
       <tr data-s="live"><td class="utter">"capital of Brazil? …and its population?" <span class="tag">memory</span></td><td>geobot</td><td><span class="st st-live">✅ live</span></td></tr>
       <tr data-s="live"><td class="utter">"3 latest arXiv papers on mixture-of-experts"</td><td>papers</td><td><span class="st st-live">✅ live</span></td></tr>
-      <tr data-s="build"><td class="utter">"review this Python function for bugs, security &amp; performance" <span class="tag">code-reviewer</span></td><td>cuga-code</td><td><span class="st st-build">🔨 build agent</span></td></tr>
-      <tr data-s="build"><td class="utter">"brief me on Lisbon — weather, headlines &amp; nearby museums" <span class="tag">city-beat</span></td><td>web+geo+knowledge</td><td><span class="st st-build">🔨 build agent</span></td></tr>
+      <tr data-s="live"><td class="utter">"review this Python function for bugs, security &amp; performance" <span class="tag">code-reviewer</span></td><td>code_auditor <span class="tag">cuga-code</span></td><td><span class="st st-live">✅ live</span></td></tr>
+      <tr data-s="live"><td class="utter">"brief me on Lisbon — weather, headlines &amp; nearby museums" <span class="tag">city-beat</span></td><td>city_briefing <span class="tag">web+geo+knowledge</span></td><td><span class="st st-live">✅ live</span></td></tr>
       <tr data-s="build"><td class="utter">"plan a 5-day Kyoto trip: temples, arts, street food in April" <span class="tag">travel-planner</span></td><td>web+geo</td><td><span class="st st-build">🔨 build agent</span></td></tr>
       <tr data-s="build"><td class="utter">"find a pediatric dentist in Austin who's good with anxious kids" <span class="tag">find-a-doctor</span></td><td>geo+web</td><td><span class="st st-build">🔨 build agent</span></td></tr>
       <tr data-s="build"><td class="utter">"independent restaurants in Pleasantville NY without online ordering — draft pitches" <span class="tag">ouroboros</span></td><td>geo+web+text</td><td><span class="st st-build">🔨 build agent</span></td></tr>
@@ -202,7 +202,7 @@
       <tr data-s="live"><td class="utter">"every morning at 7am post an overnight support digest to our Slack"</td><td>Slack (direct)</td><td><span class="st st-live">✅ live</span></td></tr>
       <tr data-s="live"><td class="utter">"every day at 9am send new arXiv MoE papers"</td><td>Discord / TG</td><td><span class="st st-live">✅ live</span></td></tr>
       <tr data-s="build"><td class="utter">"daily digest: what's new from Anthropic &amp; OpenAI?" <span class="tag">ai-labs-news</span></td><td>Slack / TG</td><td><span class="st st-build">🔨 build agent</span></td></tr>
-      <tr data-s="build"><td class="utter">"weekly digest of trending LLM-agent repos on GitHub" <span class="tag">github-trending</span></td><td>Slack / TG</td><td><span class="st st-build">🔨 build agent</span></td></tr>
+      <tr data-s="live"><td class="utter">"weekly digest of trending LLM-agent repos on GitHub" <span class="tag">github-trending</span></td><td>github_trending → Slack / TG</td><td><span class="st st-live">✅ live</span></td></tr>
       <tr data-s="build"><td class="utter">"daily: new IBM Cloud services &amp; major feature updates" <span class="tag">ibm-whats-new</span></td><td>TG</td><td><span class="st st-build">🔨 build agent</span></td></tr>
       <tr data-s="conn"><td class="utter">"every day at 8am email me a market brief"</td><td>Gmail</td><td><span class="st st-conn">⚙️ connect Gmail</span></td></tr>
       <tr data-s="conn"><td class="utter">"scan my feeds hourly for 'LLM release' and email matches" <span class="tag">newsletter-intel</span></td><td>Gmail</td><td><span class="st st-conn">⚙️ connect Gmail + build agent</span></td></tr>

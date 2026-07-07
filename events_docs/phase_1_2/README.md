@@ -27,12 +27,13 @@ fire). Open them for a visual read of the sequence of operations.
 
 ## Which engine runs where (the two planes)
 - **Concierge** (control plane — NL → flow) = a lightweight **LangGraph** react agent
-  (`create_react_agent`, `concierge.py:169`) bound to host meta-tools. Fast tool-caller; stays react.
+  (`create_react_agent`, `concierge.py:286`) bound to host meta-tools. Fast tool-caller; stays react.
 - **Workers** (data plane — *doing the hard work of answering*) = **CUGA** by default
   (`CugaRuntime`, `runtime.py`): a per-agent `DynamicAgentGraph` so workers get CUGA's
   policies/knowledge/supervisor/tools. Storage + isolation delegate to the shared react
-  `AgentStore`; if the full CUGA stack isn't present, execution **falls back to react**
-  (`create_react_agent`, `runtime.py:126`). Set `EVENTS_WORKER_BACKEND=react` to force react.
+  `AgentStore`. **There is NO silent react fallback** (`runtime.py:158`): if the full CUGA stack
+  isn't present, execution **raises** — a react fallback exists only when opted in via
+  `EVENTS_CUGA_FALLBACK_REACT=1` (dev/partial envs). Set `EVENTS_WORKER_BACKEND=react` to force react.
 
 ## Legend
 ```
@@ -45,4 +46,3 @@ AP          Activepieces — owns triggers, connections, delivery
 scope       tenant/instance/user string from Principal (isolation key)
 ```
 Cross-cutting in every diagram: a single **`trace_id`** stamped at each seam (DESIGN §12).
-</content>

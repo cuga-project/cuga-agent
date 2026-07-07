@@ -187,13 +187,14 @@ Verify it all at once: `python3 tests/events/preflight.py`.
 
 ## 4. Bring it up — the one command
 ```bash
-make cuga                       # → scripts/events_up.sh: MCP registry + 2 tunnels + CUGA server
+make cuga                       # → scripts/events_up.sh: MCP registry + CUGA tunnel + CUGA server (AP tunnel is ap_up.sh's)
 make stop                       # stop AP + CUGA + tunnels (keep data);  make nuke also wipes the DBs
 # (the raw scripts still work: scripts/events_up.sh  /  scripts/events_up.sh --stop)
 ```
-It checks prereqs, ensures `.venv`, starts the **MCP registry** (with the cuga-apps config), two
-**tunnels** (AP + CUGA), and the **CUGA server** on :8100 — then prints the URLs. (It does **not**
-start Activepieces — that's your long-lived container — or create external accounts.)
+It checks prereqs, ensures `.venv`, starts the **MCP registry** (with the cuga-apps config), the
+**CUGA tunnel** (ngrok if `EVENTS_NGROK_DOMAIN` is set, else a cloudflared quick-tunnel), and the
+**CUGA server** on :8100 — then prints the URLs. (The **AP tunnel** is owned by `ap_up.sh`, and it does
+**not** start Activepieces — that's your long-lived container — or create external accounts.)
 
 ## 4½. Arm the inbound chat channels
 Starting the server makes channels *available*, but each inbound channel still has to be **armed**
@@ -231,7 +232,7 @@ to paste into those consoles. Full explainer: **[PUBLIC_URL.md](PUBLIC_URL.md)**
 |---|---|
 | System installs | 5 tools (uv, node, podman, cloudflared, python) |
 | One-time | `uv sync` (~minutes) · frontend build · AP container · `.env` |
-| Per-boot | **1 command** (`events_up.sh`) → registry + 2 tunnels + CUGA; AP container already up |
+| Per-boot | **1 command** (`events_up.sh`) → registry + CUGA tunnel + CUGA; AP container already up |
 | External (human) | bot/app accounts (Telegram/Discord/Slack/Box/GitHub) + watsonx + AP admin |
 
 So: **first machine ≈ 30–45 min** (mostly `uv sync` + creating bot accounts). **Subsequent boots

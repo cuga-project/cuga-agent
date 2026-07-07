@@ -104,7 +104,7 @@ Run Activepieces Community Edition against **Postgres**, not sqlite. Note `activ
 ### Ports
 - **AP → 8081**
 - **CUGA → 8100** (Studio at `http://localhost:8100/studio`)
-- **registry → 8021**
+- **registry → 8001**
 
 The server caches env at startup (see above). The frontend is a **pre-built webpack bundle** in
 `src/cuga/frontend/dist` — rebuild after `.tsx` changes via `scripts/frontend_build.sh`.

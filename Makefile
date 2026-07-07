@@ -6,7 +6,7 @@ SHELL := /bin/bash
 
 PY        := .venv/bin/python
 DOCKER    := $(shell command -v podman || command -v docker)
-DB        := events.db
+DB        := events.db .events.db
 VOLS      := ap_pgdata ap_redis
 CUGA_PORT := 8100
 

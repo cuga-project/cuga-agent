@@ -32,7 +32,7 @@ make up             # start Activepieces + CUGA + registry + tunnels (AP first)
 make channels       # connect + arm every inbound chat channel with a token in .env
 make status         # what's running + the tunnel URLs
 open http://localhost:8100/studio
-make test           # ~60 offline checks, all green
+make test           # ~61 offline checks, all green
 make stop           # stop everything, keep data (make nuke also wipes the DBs)
 make nuke           # stop AND wipe AP volumes + events.db (full reset)
 ```
@@ -63,8 +63,8 @@ Four+one **trigger** shapes, all normalized onto one `/invoke` envelope:
 
 ## 2. Status — what's completed
 
-Everything below is wired end-to-end and covered by tests. **Offline suite: 60 passing**
-(14 core + 27 dimensions + 19 Studio API). Backend column = how the connector talks to the world.
+Everything below is wired end-to-end and covered by tests. **Offline suite: 61 passing**
+(14 core + 27 dimensions + 20 Studio API). Backend column = how the connector talks to the world.
 
 ### Channels
 | Channel | Backend | Two-way | Verified |
@@ -95,7 +95,7 @@ there with the rationale.
 
 ```bash
 # from the repo root
-make test           # = pytest tests/events -q  → 60 offline checks, all green
+make test           # = pytest tests/events -q  → 61 offline checks, all green
 make doctor         # = preflight.py: which live creds are present in .env
 ```
 

@@ -9,8 +9,8 @@ How to test the events layer: the offline suite (fast, runs anywhere), the live 
 ## 1. Quick test
 
 ```bash
-# OFFLINE — 60 green, no network, run on every change
-make test                             # = pytest tests/events -q   (offline events gate, ~60 green)
+# OFFLINE — 61 green, no network, run on every change
+make test                             # = pytest tests/events -q   (offline events gate, ~61 green)
 make test-all                         # all OFFLINE tests: pytest tests/events tests/unit -q
 make test-live                        # live e2e (needs `make up` + creds) — the full round-trip
 
@@ -19,13 +19,13 @@ make doctor                           # = python3 tests/events/preflight.py
 #   watsonx · AP · Telegram · Discord · Slack · Box · MCP
 ```
 
-The offline suite is **60 passing**:
+The offline suite is **61 passing**:
 
 | File | Count | Covers |
 |---|---|---|
 | `tests/events/test_events_core.py` | 14 | envelope · MCP catalog · flow builders (cron/poll/push/router) · subscription index · classifier · reason→build planner · StubRuntime memory · 12-utterance oracle |
 | `tests/events/test_events_dimensions.py` | 27 | connectors · catalog · credentials (shared/per-user) · seed agents · flow dedup · OAuth registry · isolation · runtime selection + fallback gating · users · identity map · per-agent permissions · delivery backend + direct delivery |
-| `tests/events/test_events_studio_api.py` | 19 | Studio API contract (status/channels/integrations/examples/subscriptions) · **agent create/update + mcp-servers** · channel direct-vs-AP backend · slack/box direct · poll · webhook triage + key gate |
+| `tests/events/test_events_studio_api.py` | 20 | Studio API contract (status/channels/integrations/examples/subscriptions) · **agent create/update + mcp-servers** · channel direct-vs-AP backend · slack/box direct · poll · webhook triage + key gate |
 
 `preflight.py` reads `.env` and reports which integrations are actually reachable — it is a
 diagnostic, so it always exits cleanly (it never fails the run).

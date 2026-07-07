@@ -21,7 +21,11 @@ new file in Box ─▶ AP new_file trigger (OAuth) ─▶ /invoke (resume_judge)
 - A Box account (free is fine for the **direct** path).
 - A Box **Developer Token** — a ~60-minute token you generate on demand; no OAuth app config.
 
-## Steps
+## Steps — the DIRECT path (`EVENTS_BOX_BACKEND=direct`, AP-free)
+These steps set up the **opt-in direct poll** (fastest for a test). For the **AP OAuth default**
+instead: register the Box OAuth app above, set `EVENTS_OAUTH_BOX_CLIENT_ID/_SECRET`, have each user
+run `GET /api/events/connect/box` (consent → AP holds the token), then the concierge arms the
+`new_file` **push** flow. The numbered steps below are the direct path only.
 
 1. **Create a Box app (for the token)** — <https://app.box.com/developers/console> → **Create New
    App** → *Custom App* → *User Authentication (OAuth 2.0)*. (You won't configure OAuth — you only

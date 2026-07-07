@@ -140,7 +140,7 @@
     <h2>You can message a Telegram bot right now and it works end-to-end.</h2>
     <div class="stat">
       <div class="s"><b>4</b><span>trigger types<br>NOW · CRON · POLL · PUSH</span></div>
-      <div class="s"><b>8</b><span>pre-built agents<br>routed by capability</span></div>
+      <div class="s"><b>14</b><span>pre-built agents<br>routed by capability</span></div>
       <div class="s"><b>60</b><span>offline tests green<br>+ live e2e per integration</span></div>
       <div class="s"><b>1</b><span>channel fully live<br>Telegram (in + scheduled out)</span></div>
     </div>
@@ -253,7 +253,7 @@ access   builder · admin</div>
   <!-- 05·4  PUSH · Box → Gmail -->
   <section class="slide dark">
     <div class="kicker">Walkthrough · react to a file</div>
-    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Box → Slack/Gmail</span><span class="status st-live">direct poll · e2e verified</span></div>
+    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Box → Slack/Gmail</span><span class="status st-live">direct poll · wired</span></div>
     <h2>When a resume lands, judge it and tell me.</h2>
     <div class="utter">"when a resume lands in my Box, judge it vs the JD and tell me"</div>
     <div class="setup">Set up once — drop a Box <b>dev token</b> in .env (no OAuth app). A poll (<code>/api/events/box/poll</code>) watches the folder: Box new file → /invoke(resume_judge) → deliver (Slack direct, or Gmail).</div>
@@ -370,7 +370,7 @@ access   builder · admin</div>
     <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> PUSH — integration events</h3>
       <div class="who">Owner: — · Box direct poll ✓ done; GitHub/Gmail AP PUSH next</div>
       <ul>
-        <li>✓ <b>Box direct poll</b> (<code>/api/events/box/poll</code>) → resume_judge — e2e verified (AP-free, dev token). Open gap: feed the agent file <i>content</i>, not just the name.</li>
+        <li>✓ <b>Box direct poll</b> (<code>/api/events/box/poll</code>) → resume_judge — wired (AP-free, dev token), not yet live-verified. Open gap: feed the agent file <i>content</i>, not just the name.</li>
         <li>Next: a GitHub PR/issue AP trigger → <code>/invoke</code> (no token time-window); then Gmail.</li>
         <li>Deliverable: one live AP PUSH round-trip end-to-end.</li></ul></div>
 

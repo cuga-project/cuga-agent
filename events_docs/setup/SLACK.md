@@ -81,10 +81,16 @@ curl -s -X POST localhost:8100/api/events/slack/events -H "content-type: applica
   Unlinked users fall back to the default principal.
 
 ## Troubleshooting
-- **Request URL won't verify** — the tunnel URL changed (quick-tunnels are ephemeral). Update
-  `EVENTS_PUBLIC_URL`, restart, re-arm, re-paste. Confirm `curl <tunnel>/api/events/status` → 200.
-- **No reply after posting** — bot not invited to the channel; or you posted in a private channel
-  without `groups:history` + `message.groups`; or `SLACK_BOT_TOKEN` missing (arm returns 400).
+- **No reply after posting** — the #1 cause: the **Request URL is stale** (pointing at an old tunnel).
+  On a quick tunnel the URL changes every restart; set **`EVENTS_NGROK_DOMAIN`** for a stable URL you
+  paste **once** (see [PUBLIC_URL.md](../PUBLIC_URL.md)). Diagnose: `make public-url` shows the current
+  URL — it must match your Slack app's Request URL. The endpoint itself is easy to test:
+  `curl -s -X POST <url>/api/events/slack/events -d '{"type":"url_verification","challenge":"x"}'`
+  should echo `x`. If that works but posts get no reply, Slack isn't delivering → **Request URL wrong/
+  unverified**, or **`message.channels` not subscribed**, or the **bot isn't invited** to the channel
+  (`/invite @bot`), or a private channel needs `groups:history` + `message.groups`.
+- **Request URL won't verify** — the endpoint must be publicly reachable (`curl <url>/api/events/status`
+  → 200) and echo the challenge (above). With a quick tunnel, re-check `make public-url` first.
 - **Bot replies to itself / loops** — shouldn't happen: `should_process` skips bot messages
   (`bot_id`/`subtype`). If it does, check the bot isn't posting as a user token.
 - **Delivery to Slack from a *scheduled* flow** (not a reply) uses **direct-channel delivery** — CUGA

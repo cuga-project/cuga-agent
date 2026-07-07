@@ -28,7 +28,7 @@ connection, trigger, credential, and delivery.
 6. **Triggers are inferred, not declared** — the user says what they want; the concierge
    derives the trigger `(source × cadence)` from the utterance against what's wired.
 7. **Testable by default** — deterministic flow builders, a **dry-run** mode, an end-to-end
-   **trace id**, and an eval over the 27 utterances make every path inspectable (§12).
+   **trace id**, and an eval over the conformance utterances make every path inspectable (§12).
 
 ## 2. Conceptual model (brief; full version in refactor/)
 - **Connector** = a link to an external system, seen two ways: **Channel** (converse-with:
@@ -189,9 +189,9 @@ reuse each stack's provider abstraction (CUGA `llm: {provider, model}` supportin
 
 **Why it's low-stakes (but one thing to verify):** the §6 builders shrink the model's job to
 picking **typed slots**, not emitting valid JSON — so a mid-tier model can drive the concierge
-*if its tool-calling is reliable*. **Validate that empirically:** ship a small **eval** (the 27
-conformance utterances → expected tool sequence `list_capabilities → provision_agent →
-create_subscription`) as the **acceptance test**, so models can be swapped and measured rather
+*if its tool-calling is reliable*. **Validate that empirically:** ship a small **eval** (the
+conformance utterances → expected tool sequence `list_capabilities → answer_now |
+find_or_create_flow`) as the **acceptance test**, so models can be swapped and measured rather
 than guessed. Test the current `gpt-oss-120b` default there first; bump the concierge to a
 stronger model if it's flaky at chaining tools (workers can stay cheap).
 
@@ -264,7 +264,7 @@ Grep one `trace_id` → the whole life of a request across CUGA **and** AP.
 | **AP run history** | trigger fired · flow steps · delivery | Activepieces (the one flow pane) |
 | **`/api/runs` + trace logs** | our seam-level structured log, keyed by `trace_id` | the concierge layer |
 
-**Acceptance test (the eval)** — the **27 conformance utterances → expected outcome**
+**Acceptance test (the eval)** — the **conformance utterances → expected outcome**
 (`{mode, agent action, source, sink, tool sequence}`), run in **dry-run** so it's fast and
 side-effect-free — the **model swap harness** (§7): change the model, rerun, compare pass-rate.
 The eval oracle lives in `classify.py` and is exercised by the offline suite.
@@ -281,10 +281,12 @@ Grounded in an inventory of that repo:
   `cuga-web · cuga-knowledge · cuga-geo · cuga-finance · cuga-code · cuga-local · cuga-text`
   (`https://cuga-apps-mcp-<app>.1gxwxi8kos9y.us-east.codeengine.appdomain.cloud/mcp`).
   ⚠️ scale-to-zero → **warm before demos/tests**.
-- **6 agents, created on demand via chat** (not seeded): `pricebot`(finance), `geobot`(geo),
-  `weatherbot`(web), `papers`(knowledge), `market_briefer`(finance+web), + the `concierge`.
-- **Full example set** (from `docs/EXAMPLES.md` / the Examples tab): NOW · follow-ups
-  (per-thread memory) · create-new-agent · CRON · POLL · PUSH · multi-channel fan-out.
+- **14 agents, pre-seeded** (`seed.py`; the concierge ROUTES to them, never creates them — see
+  decision 0005): `pricebot`, `geobot`, `weatherbot`, `papers`, `market_briefer`, `research_compass`,
+  `city_briefing`, `code_auditor`, `mailbot`, `resume_judge`, `support_digest`, `pr_reviewer`,
+  `github_trending`, `incident_triage`, + the `concierge` router.
+- **Full example set** (from `catalog.py` / the Examples tab): NOW · follow-ups
+  (per-thread memory) · CRON · POLL · PUSH · multi-channel fan-out.
 - **The 3 watchers** (the headline e2e targets):
   | Watcher | Mode | Agent · MCP | Trigger | Delivery |
   |---|---|---|---|---|

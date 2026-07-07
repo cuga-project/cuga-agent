@@ -127,6 +127,28 @@ EXAMPLES = [
         "when a file is added to this Drive folder, summarize it",
         agent="—", channel="telegram", integration="drive", phase="sprint", live=False),
 
+    # ────────── per-agent round-out: give each agent examples across the modes it supports ──────────
+    _ex("cron-price", "Daily price ping", "cron", "every day at 9am send me the price of bitcoin",
+        agent="pricebot", channel="telegram", phase="run", live=True,
+        note="pricebot on a CRON clock (vs the NOW price / the POLL move-watcher)"),
+    _ex("cron-weather", "Morning weather", "cron", "every morning at 7am send me the weather in New York",
+        agent="weatherbot", channel="telegram", phase="run", live=True,
+        note="weatherbot on a schedule (vs the NOW 'weather right now')"),
+    _ex("poll-weather", "Rain watcher", "poll",
+        "check the New York weather every hour and ping me only if rain is forecast",
+        agent="weatherbot", channel="telegram", phase="run", live=True,
+        note="weatherbot POLL — emit only on the condition"),
+    _ex("now-market", "Market brief now", "now", "give me a market brief right now",
+        agent="market_briefer", channel="web", phase="run", live=True,
+        note="market_briefer answering NOW (vs its CRON/weekday brief)"),
+    _ex("cron-research", "Weekly research digest", "cron",
+        "every Monday at 9am send me a research digest on parameter-efficient fine-tuning",
+        agent="research_compass", channel="telegram", phase="run", live=True,
+        note="research_compass on a CRON clock (vs its NOW research)"),
+    _ex("now-trending", "Trending repos now", "now", "show me the top trending GitHub repos right now",
+        agent="github_trending", channel="web", phase="run", live=True,
+        note="github_trending answering NOW (vs its hourly CRON → Slack)"),
+
     # ─────────────────────────── OUTBOUND webhook sink ───────────────────────────
     _ex("sink-webhook", "Deliver to a webhook", "poll",
         "watch bitcoin every 5 minutes and POST any move to this URL",

@@ -84,7 +84,7 @@
       <tr><td><b>Tool registry</b> (MCP apps)</td><td><code>8001</code></td><td><code>scripts/events_up.sh</code></td><td>serves the <code>cuga_*</code> MCP tools</td></tr>
     </tbody>
   </table>
-  <div class="note">AP reaches CUGA at <code>http://host.containers.internal:8100/invoke</code>. Channel webhooks &amp; OAuth callbacks need HTTPS → the scripts start Cloudflare quick-tunnels automatically.</div>
+  <div class="note">AP reaches CUGA at <code>http://host.containers.internal:8100/invoke</code>. Channel webhooks &amp; OAuth callbacks need HTTPS. The <b>AP tunnel</b> (<code>ap_up.sh</code>) is always a cloudflared quick-tunnel; the <b>CUGA tunnel</b> (<code>events_up.sh</code>) is a <b>stable ngrok</b> domain when <code>EVENTS_NGROK_DOMAIN</code> is set (recommended — configure Slack/Gmail once), else a cloudflared quick-tunnel. See <code>events_docs/PUBLIC_URL.md</code>.</div>
 </section>
 
 <section id="make">
@@ -150,8 +150,10 @@ HOST_CALLBACK_URL=http://host.containers.internal:8100/invoke
 AP_BASE_URL=http://localhost:8081
 AP_EMAIL=you@example.com     AP_PASSWORD=Sup3rSecret!
 
-<span class="c"># --- public HTTPS (Telegram/Slack webhooks) — a cloudflared quick-tunnel to :8100 ---</span>
-EVENTS_PUBLIC_URL=https://your-tunnel.trycloudflare.com
+<span class="c"># --- public HTTPS for :8100 (Slack Request URL + OAuth). RECOMMENDED: a STABLE ngrok domain so you</span>
+<span class="c">#     configure Slack/Gmail ONCE. Reserve a free one at dashboard.ngrok.com/domains (verify email).</span>
+<span class="c">#     Without it, EVENTS_PUBLIC_URL is auto-detected from a cloudflared quick-tunnel (changes each run).</span>
+EVENTS_NGROK_DOMAIN=your-name.ngrok-free.app
 
 <span class="c"># --- channels &amp; integrations you'll test ---</span>
 TELEGRAM_BOT_TOKEN=123456:ABC...      <span class="c"># @BotFather (AP backend)</span>
@@ -197,12 +199,10 @@ make stop                       <span class="c"># tear down (keep data);  make n
 
   <h3 style="font-size:15px;margin:14px 0 4px">a) Offline suite (no stack needed)</h3>
   <div class="cmd">make test        <span class="c"># = pytest tests/events -q</span></div>
-  <p class="lead">Expect <b>39 passed</b>.</p>
+  <p class="lead">Expect <b>~60 passed</b>.</p>
 
   <h3 style="font-size:15px;margin:14px 0 4px">b) Live router end-to-end (uses the running stack)</h3>
-  <div class="cmd">EVENTS_SERVER_URL=http://localhost:8100 \
-GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d ' ') \
-.venv/bin/python tests/events/live_server_e2e_check.py</div>
+  <div class="cmd">make test-live   <span class="c"># = live_integrations_e2e.py — NOW/CRON/POLL/PUSH + webhook</span></div>
   <p class="lead">Expect <b>6/6 checks passed</b> — status, router sees agents, answer-now price, flow create, dedup reuse, decline.</p>
 
   <h3 style="font-size:15px;margin:14px 0 4px">c) The Studio, in your browser</h3>
@@ -253,6 +253,8 @@ curl -s -X POST http://localhost:8100/api/events/admin/channels/telegram/arm \
     <thead><tr><th>Env var</th><th>Meaning</th></tr></thead>
     <tbody>
       <tr><td><code>EVENTS_ENABLED=1</code></td><td>turn the events layer on (launcher sets it)</td></tr>
+      <tr><td><code>EVENTS_NGROK_DOMAIN</code></td><td><b>stable public URL</b> (recommended): a reserved ngrok domain served on :8100 → pins <code>EVENTS_PUBLIC_URL</code>. Unset = cloudflared quick-tunnel (auto-detected).</td></tr>
+      <tr><td><code>EVENTS_PUBLIC_URL</code></td><td>public HTTPS base (Slack Request URL + OAuth). Auto-wired from the live tunnel; a non-trycloudflare value is a pin.</td></tr>
       <tr><td><code>EVENTS_WORKER_BACKEND=cuga</code></td><td>worker runtime (cuga default; react opt-in)</td></tr>
       <tr><td><code>EVENTS_USER_ID=admin</code></td><td>web Studio identity (matches the Telegram user)</td></tr>
       <tr><td><code>EVENTS_DB=&lt;repo&gt;/.events.db</code></td><td>persist subs/identity/agents across restarts</td></tr>
@@ -263,7 +265,7 @@ curl -s -X POST http://localhost:8100/api/events/admin/channels/telegram/arm \
   </table>
   <p class="lead" style="margin-top:10px"><b>Shortcuts:</b> <code>Makefile</code> (run <code>make</code> to list) &nbsp;·&nbsp;
     <b>Scripts:</b> <code>scripts/ap_up.sh</code> · <code>scripts/events_up.sh</code> · <code>scripts/frontend_build.sh</code> &nbsp;·&nbsp;
-    <b>Deeper docs:</b> <code>events_docs/SETUP.md</code>, <code>CHANNELS_SETUP.md</code>, <code>MCP_SETUP.md</code>.</p>
+    <b>Deeper docs:</b> <code>events_docs/SETUP.md</code>, <code>events_docs/PUBLIC_URL.md</code>, <code>events_docs/setup/</code>, <code>events_docs/MCP_SETUP.md</code>.</p>
 </section>
 
 </div>

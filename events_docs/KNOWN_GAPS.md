@@ -103,4 +103,4 @@ The full warts-and-all account is in [OPERATIONS.md](OPERATIONS.md). The recurri
   constant-time.
 - Docs reconciled: one status table (README), the "Phase 1 & 2" framing retired, obsolete
   `EXAMPLES_CONFORMANCE.md` / `PHASE_1_2_ACCOMPLISHMENTS.md` removed, test counts reconciled to the
-  real **60 offline**.
+  real **61 offline**.

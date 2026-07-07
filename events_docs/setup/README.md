@@ -37,10 +37,11 @@ itself) and, for Slack, its app-event trigger silently dropped events. See
 1. **A running events server** on `:8100` (behind `EVENTS_ENABLED=1`) with the tool registry up.
    See [../SETUP.md](../SETUP.md). Quick check: `curl -s localhost:8100/api/events/status`.
 2. **A public HTTPS URL** (`EVENTS_PUBLIC_URL`) for the connectors that receive webhooks over the
-   internet (Telegram, Slack-direct). A `cloudflared` quick-tunnel works:
-   `cloudflared tunnel --url http://localhost:8100` → put the `https://…trycloudflare.com` URL in
-   `.env` as `EVENTS_PUBLIC_URL`. **Discord (direct Gateway — outbound WS) and Box (polling) need no
-   public URL.**
+   internet (Telegram, Slack-direct). `events_up.sh` provides it **automatically** — a **stable
+   ngrok** domain when `EVENTS_NGROK_DOMAIN` is set (recommended: configure Slack/Gmail once), else a
+   cloudflared quick-tunnel it auto-detects and wires into the server (no manual `.env` edit). Full
+   story: [../PUBLIC_URL.md](../PUBLIC_URL.md). **Discord (direct Gateway — outbound WS) and Box
+   (polling) need no public URL.**
 
 ## Verify them all at once
 
