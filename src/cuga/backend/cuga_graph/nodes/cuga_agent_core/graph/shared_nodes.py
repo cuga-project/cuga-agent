@@ -37,7 +37,10 @@ from cuga.backend.cuga_graph.nodes.cuga_agent_core.graph.graph_nodes import (
     enforce_step_limit,
 )
 from cuga.backend.cuga_graph.nodes.cuga_agent_core.policy.tool_approval_handler import ToolApprovalHandler
-from cuga.backend.cuga_graph.utils.context_management_utils import apply_context_summarization
+from cuga.backend.cuga_graph.utils.context_management_utils import (
+    apply_context_summarization,
+    truncate_text_for_context,
+)
 
 
 def create_call_model_node(
@@ -80,6 +83,11 @@ def create_call_model_node(
             existing_var_names = var_manager.get_variable_names()
             if existing_var_names:
                 variables_summary_text = var_manager.get_variables_summary(variable_names=existing_var_names)
+                variables_summary_text = truncate_text_for_context(
+                    variables_summary_text,
+                    settings.advanced_features.variables_summary_max_length,
+                    label="Variables summary",
+                )
                 variables_addendum = (
                     f"\n\n## Available Variables\n\n{variables_summary_text}"
                     f"\n\nYou can use these variables directly by their names."

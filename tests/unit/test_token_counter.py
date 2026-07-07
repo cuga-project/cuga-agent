@@ -278,6 +278,37 @@ def test_clamp_watsonx_completion_for_messages_updates_params():
     assert model.params["max_completion_tokens"] == 16000
 
 
+def test_clamp_watsonx_completion_applies_safety_margin_for_undercounted_prompts():
+    """Our approximate counter undercounts real WatsonX tokenization on dense prompts.
+
+    A prompt whose *raw* estimate leaves just enough room for the requested completion
+    must still be clamped once the safety margin/buffer is applied, so we never send a
+    request that watsonx.ai would reject with a negative max_tokens.
+    """
+    pytest.importorskip("langchain_ibm")
+    from unittest.mock import patch
+    from langchain_ibm import ChatWatsonx
+
+    model = ChatWatsonx.model_construct(
+        params={"max_completion_tokens": 16000, "temperature": 0.1},
+        max_completion_tokens=16000,
+        model_id="openai/gpt-oss-120b",
+        profile={"max_input_tokens": 131072},
+    )
+    # Raw estimate leaves exactly enough headroom for the old buffer (256) but not for
+    # the safety-margin-inflated estimate plus the larger WatsonX buffer.
+    messages = [{"role": "user", "content": "placeholder"}]
+
+    with patch(
+        "cuga.backend.cuga_graph.utils.token_counter.TokenCounter.count_total_context_tokens",
+        return_value=114_500,
+    ):
+        clamp_watsonx_completion_for_messages(model, messages)
+
+    assert model.params["max_completion_tokens"] < 16000
+    assert model.params["max_completion_tokens"] >= 1
+
+
 def test_update_model_parameters_updates_chat_watsonx_params():
     pytest.importorskip("langchain_ibm")
     from langchain_ibm import ChatWatsonx

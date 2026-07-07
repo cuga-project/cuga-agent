@@ -18,6 +18,14 @@ from cuga.backend.cuga_graph.utils.message_utils import convert_to_proper_messag
 CHARS_PER_TOKEN_FALLBACK = 4  # Rough estimate: 1 token ≈ 4 characters
 DEFAULT_CONTEXT_SIZE = 131072  # Default context size for unknown models (based on gpt-oss-120b)
 
+# Our approximate counter (count_tokens_approximately + 15% overhead) has been observed to
+# undercount IBM's real tokenizer by ~20% on JSON/dict-heavy prompts (e.g. skill/report
+# generation). Inflate the estimate and reserve a larger buffer before trusting it to size
+# max_completion_tokens for a WatsonX call, so we clamp to a small budget instead of sending
+# a request that watsonx.ai rejects with "max_tokens must be at least 1".
+WATSONX_PROMPT_SAFETY_MARGIN = 0.20
+WATSONX_COMPLETION_BUFFER = 1024
+
 # Model context size constants (in tokens)
 MODEL_CONTEXT_SIZES = {
     # ============================================================================
@@ -376,7 +384,9 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
                 lc_messages.append(HumanMessage(content=content))
         else:
             lc_messages.append(message)
-    prompt_tokens = counter.count_total_context_tokens(lc_messages)
+    raw_prompt_tokens = counter.count_total_context_tokens(lc_messages)
+    # Inflate: our estimator undercounts vs IBM's real tokenizer on dense/JSON-heavy prompts.
+    prompt_tokens = int(raw_prompt_tokens * (1 + WATSONX_PROMPT_SAFETY_MARGIN))
 
     params = dict(llm.params or {})
     requested = (
@@ -387,12 +397,16 @@ def clamp_watsonx_completion_for_messages(model: Any, messages: list) -> None:
     )
     requested = int(requested)
 
-    clamped = clamp_completion_tokens(context_size, prompt_tokens, requested)
+    clamped = clamp_completion_tokens(
+        context_size, prompt_tokens, requested, buffer=WATSONX_COMPLETION_BUFFER
+    )
     if clamped != requested:
         logger.warning(
-            "Clamped WatsonX max_completion_tokens {} -> {} (~{} prompt tokens, {} context)",
+            "Clamped WatsonX max_completion_tokens {} -> {} "
+            "(~{} raw / ~{} safety-inflated prompt tokens, {} context)",
             requested,
             clamped,
+            raw_prompt_tokens,
             prompt_tokens,
             context_size,
         )
