@@ -59,6 +59,21 @@ def test_cap_evicts_oldest_uncited_first():
     assert ledger.get("s4").cite_id == "s4"
 
 
+def test_re_retrieval_refreshes_recency_before_eviction():
+    """Regression: a re-retrieved (still-uncited) chunk must not be evicted
+    before newer one-off chunks — register() move_to_end on a content re-hit."""
+    ledger = SourceLedger(max_records=3)
+    ledger.register(_chunk(text="t1"), query="q")   # s1
+    ledger.register(_chunk(text="t2"), query="q")   # s2
+    ledger.register(_chunk(text="t3"), query="q")   # s3
+    # re-retrieve t1 (same content) — refreshes its recency to newest
+    assert ledger.register(_chunk(text="t1"), query="q2") == "s1"
+    ledger.register(_chunk(text="t4"), query="q")   # overflow -> evicts oldest uncited
+    assert ledger.get("s1") is not None   # survived: refreshed by re-retrieval
+    assert ledger.get("s2") is None       # evicted: now the oldest uncited
+    assert ledger.get("s4") is not None
+
+
 def test_thread_registry_isolated_and_droppable():
     l1 = get_ledger("t-1")
     l2 = get_ledger("t-2")

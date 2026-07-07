@@ -98,6 +98,9 @@ class SourceLedger:
         with self._lock:
             existing = self._by_key.get(key)
             if existing is not None:
+                # Refresh recency so a re-retrieved (still-uncited) chunk is not
+                # the oldest and evicted before newer one-off chunks.
+                self._by_key.move_to_end(key)
                 return existing.cite_id
             self._counter += 1
             record = SourceRecord(
@@ -267,7 +270,9 @@ def resolve_citations(
                 continue
             record = ledger.get(cite_id) if ledger is not None else None
             if record is None:
-                if cite_id not in warned:
+                # Strip-mode (ledger is None, feature off) removes markers by
+                # design — only a real ledger miss (hallucinated/evicted id) warns.
+                if ledger is not None and cite_id not in warned:
                     logger.warning("citation marker [%s] not in ledger — stripped", cite_id)
                     warned.add(cite_id)
                 continue

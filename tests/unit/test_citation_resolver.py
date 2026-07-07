@@ -84,6 +84,27 @@ def test_none_ledger_strips_all_markers():
     assert sources == []
 
 
+def test_strip_mode_does_not_warn(caplog):
+    """fix 4: strip-mode (ledger is None, feature off) removes markers silently —
+    no per-marker 'not in ledger' warnings that would mask real misses."""
+    import logging as _logging
+
+    with caplog.at_level(_logging.WARNING, logger="cuga.backend.knowledge.sources"):
+        text, sources = resolve_citations("orphan [s1] and [s2]", None)
+    assert text == "orphan  and "
+    assert sources == []
+    assert "not in ledger" not in caplog.text
+
+
+def test_real_ledger_miss_still_warns(caplog):
+    """fix 4: a genuine miss (hallucinated/evicted id with a live ledger) still warns."""
+    import logging as _logging
+
+    with caplog.at_level(_logging.WARNING, logger="cuga.backend.knowledge.sources"):
+        resolve_citations("real [s1] fake [s9]", _ledger_with())
+    assert "not in ledger" in caplog.text
+
+
 # --- fix 2: code-fence guard extended ----------------------------------------
 
 def test_unterminated_fence_protects_marker():
