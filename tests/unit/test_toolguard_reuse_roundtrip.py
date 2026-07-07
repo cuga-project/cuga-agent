@@ -12,7 +12,7 @@ from cuga.backend.cuga_graph.policy.folder_loader import (
     parse_markdown_with_frontmatter,
 )
 from cuga.backend.cuga_graph.policy.filesystem_sync import PolicyFilesystemSync
-from cuga.backend.cuga_graph.policy.models import ToolGuide
+from cuga.backend.cuga_graph.policy.models import AlwaysTrigger, ToolGuard, ToolGuide
 from cuga.backend.cuga_graph.policy.utils import (
     apply_policies_data_to_storage,
     export_policies_to_json,
@@ -172,7 +172,11 @@ async def test_sdk_export_import_roundtrip_preserves_tool_guards_and_guards_enab
         fail_if_generation_is_called,
     )
 
-    # Seed source storage with the real Finance policy
+    # Seed source storage with the real Finance policy.
+    # FINANCE_POLICY_DICT intentionally uses "policy_type" (the frontend/UI key), while
+    # the round-trip export uses "type" (model_dump key).  Both are handled by
+    # apply_policies_data_to_storage (utils.py: policy_data.get("policy_type") or ...get("type")),
+    # so this seed exercises the "policy_type" fallback path and the re-import exercises the "type" path.
     source = FakePolicyStorage()
     await apply_policies_data_to_storage(
         source, [FINANCE_POLICY_DICT], clear_existing=False, filesystem_sync=None
@@ -212,15 +216,20 @@ async def test_sdk_export_import_roundtrip_preserves_tool_guards_and_guards_enab
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.asyncio
-async def test_markdown_filesystem_roundtrip_preserves_tool_guards_and_guards_enabled() -> None:
-    # Build a ToolGuide from the real policy data (guards_enabled=False to prove it's preserved)
-    source = FakePolicyStorage()
-    policy_with_disabled_guards = dict(FINANCE_POLICY_DICT, guards_enabled=False)
-    await apply_policies_data_to_storage(
-        source, [policy_with_disabled_guards], clear_existing=False, filesystem_sync=None
+def test_markdown_filesystem_roundtrip_preserves_tool_guards_and_guards_enabled() -> None:
+    # Build a ToolGuide directly (guards_enabled=False to prove it's preserved).
+    # No async needed — all functions under test are synchronous.
+    guard_data = FINANCE_POLICY_DICT["tool_guards"][TOOL_NAME]
+    original = ToolGuide(
+        id=FINANCE_POLICY_DICT["id"],
+        name=FINANCE_POLICY_DICT["name"],
+        description=FINANCE_POLICY_DICT["description"],
+        triggers=[AlwaysTrigger()],
+        target_tools=FINANCE_POLICY_DICT["target_tools"],
+        guide_content=FINANCE_POLICY_DICT["guide_content"],
+        tool_guards={TOOL_NAME: ToolGuard(**guard_data)},
+        guards_enabled=False,
     )
-    original: ToolGuide = source.policies[0]
     assert original.guards_enabled is False
 
     with tempfile.TemporaryDirectory() as tmpdir:
