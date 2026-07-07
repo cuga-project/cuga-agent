@@ -1,8 +1,17 @@
 import { escapeAttr, pageLabel, type MessageSource } from './types';
 
-const CODE_SPLIT = /(```[\s\S]*?```|~~~[\s\S]*?~~~|`[^`\n]*`)/g;
+// Mirrors the backend resolver's _CODE_RE (sources.py) exactly so the two
+// stages agree on what is code: fenced blocks (``` / ~~~, incl. unterminated/
+// truncated), double-backtick inline spans, and single-backtick inline spans.
+// Double-backtick was missing here, so ``arr[1]`` got mangled + falsely cited.
+const CODE_SPLIT =
+  /(```[\s\S]*?```|~~~[\s\S]*?~~~|```[\s\S]*$|~~~[\s\S]*$|``[^`\n](?:[^`\n]|`[^`\n])*``|`[^`\n]*`)/g;
 // (?![:(]) keeps markdown reference links ("[1]: url", "[1](url)") intact when
-// a link's numeric text collides with a source number.
+// a link's numeric text collides with a source number. This deliberately also
+// skips a citation flush against "(" — that IS link syntax and rendering it as
+// a chip would break the link. A genuine incidental "[n]" in prose whose value
+// matches a source can still be linkified, but the LLM contract forbids bare
+// numeric brackets, so post-resolution the only "[n]" should be real citations.
 const MARKER = /\[(\d{1,3})\](?![:(])/g;
 
 /**
