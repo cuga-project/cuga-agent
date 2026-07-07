@@ -33,7 +33,7 @@ import {
   AILabel,
   AILabelContent,
 } from "@carbon/react";
-import { Upload, TrashCan, Search, Renew, Document, Checkmark, ErrorFilled, Reset, Close } from "@carbon/icons-react";
+import { Upload, TrashCan, Search, Renew, Document, Quotes, Checkmark, ErrorFilled, Reset, Close } from "@carbon/icons-react";
 import { apiFetch } from "../../frontend/src/api";
 import * as api from "../../frontend/src/api";
 import { EnvPresetsPanel } from "./EnvPresetsPanel";
@@ -2543,14 +2543,17 @@ export default function KnowledgePanel({
                           >
                             <Stack gap={3}>
                               <Stack orientation="horizontal" gap={4} style={{ alignItems: "center", justifyContent: "space-between" }}>
-                                <div>
-                                  <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--cds-text-primary)", margin: 0 }}>
-                                    Citations
-                                  </p>
-                                  <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: "0.125rem 0 0 0" }}>
-                                    Number knowledge sources in answers ([1]) with clickable snippets
-                                  </p>
-                                </div>
+                                <Stack orientation="horizontal" gap={3} style={{ alignItems: "center" }}>
+                                  <Quotes size={20} style={{ color: citationsEnabled ? "var(--cds-support-success)" : "var(--cds-text-disabled)", flexShrink: 0 }} />
+                                  <div>
+                                    <p style={{ fontSize: "0.875rem", fontWeight: 600, color: "var(--cds-text-primary)", margin: 0 }}>
+                                      Citations
+                                    </p>
+                                    <p style={{ fontSize: "0.75rem", color: "var(--cds-text-secondary)", margin: "0.125rem 0 0 0" }}>
+                                      Number knowledge sources in answers ([1]) with clickable snippets
+                                    </p>
+                                  </div>
+                                </Stack>
                                 <Toggle
                                   id="knowledge-citations-enabled"
                                   aria-label="Citations"
