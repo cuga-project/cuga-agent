@@ -723,11 +723,17 @@ async def get_document_file(
         raise HTTPException(status_code=404, detail="document not found")
 
     media_type, _ = mimetypes.guess_type(str(file_path))
+    # Let Starlette build Content-Disposition. It RFC 5987-encodes non-ASCII
+    # filenames (Hebrew, Arabic, CJK, emoji…) as ``filename*=utf-8''…``, which
+    # is latin-1-safe — hand-rolling ``filename="<raw>"`` crashed on any name
+    # outside latin-1 (Starlette encodes all header values as latin-1).
+    # content_disposition_type="inline" so the browser opens the doc (e.g. a
+    # PDF preview) instead of forcing a download.
     return FileResponse(
         file_path,
         filename=file_path.name,
         media_type=media_type or "application/octet-stream",
-        headers={"Content-Disposition": f'inline; filename="{file_path.name}"'},
+        content_disposition_type="inline",
     )
 
 
