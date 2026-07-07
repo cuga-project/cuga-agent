@@ -138,6 +138,7 @@ class PolicyFilesystemSync:
             if policy.target_apps:
                 frontmatter['target_apps'] = policy.target_apps
             frontmatter['prepend'] = policy.prepend
+            frontmatter['guards_enabled'] = policy.guards_enabled
             content = policy.guide_content or ""
             if policy.tool_guards:
                 frontmatter['tool_guards'] = {
