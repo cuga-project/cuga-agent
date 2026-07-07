@@ -384,11 +384,6 @@ interface KnowledgePanelProps {
   knowledgeConfig?: KnowledgeConfigValues;
   onKnowledgeConfigChange?: (config: KnowledgeConfigValues) => void;
   knowledgeReindexNeeded?: boolean;
-  // True when the draft's index config differs from the PUBLISHED (live) config
-  // — computed by the parent against liveKnowledge. Drives the selected
-  // profile's "Modified" tag so it means "unpublished changes" (clears on
-  // revert-to-published), not "differs from the packaged preset".
-  knowledgeConfigModified?: boolean;
   knowledgeStale?: boolean;
   knowledgeReindexDeferred?: boolean;
   // ``tasks`` is the new field carrying [{task_id, filename}] pairs so
@@ -481,7 +476,6 @@ export default function KnowledgePanel({
   knowledgeConfig,
   onKnowledgeConfigChange,
   knowledgeReindexNeeded,
-  knowledgeConfigModified,
   knowledgeStale,
   knowledgeReindexDeferred,
   onReindex,
@@ -2654,14 +2648,14 @@ export default function KnowledgePanel({
                                   // reason to drop the profile from the selected state. ``Modified``
                                   // tag inside the selected tile signals the drift (see below).
                                   const isSelected = isNamedProfile;
-                                  // "Modified" = the selected profile's config differs from the
-                                  // PUBLISHED (live) config — unpublished vector-config changes,
-                                  // computed by the parent against liveKnowledge (same signal as
-                                  // the "Live" pill). Clears on revert-to-published, unlike a
-                                  // preset-relative check (which showed "Modified" forever for a
-                                  // saved override). The non-selected tiles' reindex hint below
-                                  // still uses the preset-relative ``willReindex``.
-                                  const isModified = isNamedProfile && !!knowledgeConfigModified;
+                                  // "Modified" = this profile is running settings that differ from
+                                  // its packaged defaults (e.g. "standard" with a non-default
+                                  // embedder or chunk size) — a CUSTOMIZATION indicator, independent
+                                  // of publish state (it stays after Publish; a customized profile
+                                  // is still customized). Clears when the vector fields are set back
+                                  // to the profile's defaults. The save-bar "Live" pill separately
+                                  // signals unpublished changes. willReindex reuses the same check.
+                                  const isModified = isNamedProfile && !vectorConfigMatches;
                                   const willReindex = !vectorConfigMatches;
                                   return (
                                     <Tile
@@ -2736,7 +2730,7 @@ export default function KnowledgePanel({
                                           )}
                                           {isModified && (
                                             <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.6875rem", color: "var(--cds-support-warning)" }}>
-                                              Unpublished changes — re-indexing runs on Publish.
+                                              Overrides the profile defaults — re-indexing runs on Publish.
                                             </p>
                                           )}
                                         </Stack>

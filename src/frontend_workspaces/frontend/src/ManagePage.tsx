@@ -2776,7 +2776,6 @@ export function ManagePage() {
             forceImmediateSaveRef.current = true;
           }}
           knowledgeReindexNeeded={knowledgeReindexNeeded}
-          knowledgeConfigModified={isDivergedFromLive(knowledgeConfig, liveKnowledge)}
           knowledgeStale={knowledgeStale}
           knowledgeReindexDeferred={knowledgeReindexDeferred}
           knowledgeReindexing={knowledgeReindexing}
