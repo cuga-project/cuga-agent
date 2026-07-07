@@ -192,7 +192,7 @@ curl -s -X POST http://localhost:8100/api/events/connect/telegram/token \
       <tr><td class="step">13</td><td><b>Studio loads &amp; shows real state</b> — open <code>http://localhost:8100/studio</code> (hard-refresh).</td><td class="expect">Agents tab = 14 agents; Flows = your subs; Channels/Integrations show live status</td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e13"></td><td><input class="note" data-k="ne13" placeholder="…"></td></tr>
       <tr><td class="step">14</td><td><b>Live e2e harness</b> (the whole router, scripted)<div class="cmd">EVENTS_SERVER_URL=http://localhost:8100 \
 GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d ' ') \
-.venv/bin/python tests/events/live_server_e2e_check.py</div></td><td class="expect"><b>6/6 checks passed</b></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e14"></td><td><input class="note" data-k="ne14" placeholder="…"></td></tr>
+.venv/bin/python tests/events/live_integrations_e2e.py</div></td><td class="expect"><b>6/6 checks passed</b> <small>(canonical script: <code>live_integrations_e2e.py</code>)</small></td><td class="c"><span class="pill p-seen">seen</span></td><td class="c"><input type="checkbox" data-k="e14"></td><td><input class="note" data-k="ne14" placeholder="…"></td></tr>
     </tbody>
   </table>
 </section>
@@ -202,7 +202,7 @@ GATEWAY_TOKEN=$(grep '^GATEWAY_TOKEN=' .env|cut -d= -f2-|sed 's/ *#.*//'|tr -d '
   <h2><span class="n">✓</span> Definition of done — Phases 1 &amp; 2</h2>
   <p class="lead">You're good on P1 &amp; P2 when all of the below hold:</p>
   <ul class="tight">
-    <li><b>Phase 1:</b> server up behind <code>EVENTS_ENABLED</code>; <code>/invoke</code> auths &amp; runs a pre-built CUGA agent with real MCP tools; store persists; offline suite green (39).</li>
+    <li><b>Phase 1:</b> server up behind <code>EVENTS_ENABLED</code>; <code>/invoke</code> auths &amp; runs a pre-built CUGA agent with real MCP tools; store persists; offline suite green (~60).</li>
     <li><b>Phase 2:</b> AP up + worker healthy; concierge does answer-now / create / dedup / decline; classifier hits NOW·CRON·POLL·PUSH; a <b>Telegram round-trip</b> works (inbound reply <em>and</em> a scheduled delivery); credentials land in AP; identity/permissions resolve; Studio shows real state; live e2e 6/6.</li>
   </ul>
   <div class="note-b"><b>Not in P1/P2 (don't block on these):</b> Discord/Slack live round-trips, PUSH live (GitHub/Box/Gmail), OAuth connect live, multi-user isolation live, and the NL→flow benchmark — those are <b>Run/MVP</b> items on the <a class="link" href="board.html">Board</a>.</div>

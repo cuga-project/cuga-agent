@@ -58,7 +58,7 @@
     every <b>channel + integration</b>. Read each cell as <b>trigger/inbound · reason · deliver</b>.
     Current stance: <b>Slack &amp; Discord = direct (CUGA)</b>; <b>Telegram &amp; all integrations
     (Box/GitHub/Gmail) = AP</b>; the <b>clock (cron/poll) = AP</b>; reasoning = always CUGA.</div>
-  <div class="meta">2026-07-06 · <a class="link" style="color:#9cf" href="board.html">◀ Board</a> ·
+  <div class="meta">2026-07-07 · <a class="link" style="color:#9cf" href="board.html">◀ Board</a> ·
     <a class="link" style="color:#9cf" href="unlock.html">What you can unlock</a> ·
     <a class="link" style="color:#9cf" href="api.html">API reference</a></div>
 </header>
@@ -172,9 +172,9 @@
         <td class="cell na">—</td>
         <td class="cell na">—</td>
         <td class="cell na">—</td>
-        <td class="cell"><span class="who A">A</span> new_file · <span class="who C">C</span> · → sink<small>AP watches Box; direct poll opt-in (<code>EVENTS_BOX_BACKEND=direct</code>)</small></td>
+        <td class="cell"><span class="who C">C</span> poll · <span class="who C">C</span> · → sink<small><b>direct poll recommended</b> (<code>EVENTS_BOX_BACKEND=direct</code>); AP OAuth watch still available</small></td>
         <td class="cell"><span class="who A">A</span> new_pr · <span class="who C">C</span> · → sink<small>AP watches the repo (webhook)</small></td>
-        <td class="cell"><span class="who A">A</span> new_email · <span class="who C">C</span> · → sink<small>AP watches the inbox (OAuth)</small></td>
+        <td class="cell"><span class="who A">A</span> new_email · <span class="who C">C</span> · → sink<small>✅ live — AP watches the inbox (OAuth)</small></td>
       </tr>
     </tbody>
   </table>
@@ -302,7 +302,7 @@
       <tr><td>A <b>clock</b> (cron/poll timing)</td><td><span class="who A">A</span> today → trivially <span class="who C">C</span></td><td>a CUGA scheduler (a background task) reads due subs from the DB and fires — same pattern as the Discord gateway</td></tr>
       <tr><td>A <b>token-auth channel</b> (Slack, Discord)</td><td><span class="who C">C</span> direct</td><td>instant, no OAuth wall, no public URL needed (Discord); already built + verified</td></tr>
       <tr><td>A <b>webhook channel</b> (Telegram)</td><td><span class="who A">A</span> (could be direct)</td><td>needs a public URL; AP handles setWebhook + send — direct Telegram is easy but not built</td></tr>
-      <tr><td>A <b>token-pollable integration</b> (Box)</td><td><span class="who A">A</span> default · <span class="who C">C</span> opt-in</td><td>AP is the default (per this decision); direct poll stays behind <code>EVENTS_BOX_BACKEND=direct</code></td></tr>
+      <tr><td>A <b>token-pollable integration</b> (Box)</td><td><span class="who C">C</span> direct (recommended) · <span class="who A">A</span> OAuth</td><td>the <b>direct poll is the recommended Box path</b> (<code>EVENTS_BOX_BACKEND=direct</code>, no OAuth); AP OAuth watch still available</td></tr>
       <tr><td>A <b>webhook integration</b> (GitHub)</td><td><span class="who A">A</span></td><td>direct doable (GitHub webhooks) but needs a public URL</td></tr>
       <tr><td>An <b>OAuth-watched integration</b> (Gmail)</td><td><span class="who A">A</span></td><td><b>AP's real moat</b> — it owns OAuth refresh + the watch; going direct means owning token refresh</td></tr>
     </tbody>

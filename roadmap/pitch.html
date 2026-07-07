@@ -98,7 +98,7 @@
     <div class="kicker">CUGA · Event-Driven Agents</div>
     <h1>Agents that don't just answer — they watch, schedule, and act.</h1>
     <div class="lead">Talk to them in plain English on any channel. They build the automation for you.</div>
-    <div class="foot">Internal pitch · grounded in what we shipped · 2026-07-03 &nbsp;·&nbsp;
+    <div class="foot">Internal pitch · grounded in what we shipped · 2026-07-07 &nbsp;·&nbsp;
       <a class="nav" href="board.html">Board</a> · <a class="nav" href="setup.html">Setup</a> · <a class="nav" href="unlock.html">Unlock</a> · <a class="nav" href="examples.html">Examples</a></div>
     <div class="num">01</div>
   </section>
@@ -171,15 +171,15 @@
   <!-- 4 IT'S REAL -->
   <section class="slide blue">
     <div class="kicker" style="color:#cfe0ff">It's real — not a slide</div>
-    <h2>You can message a Telegram bot right now and it works end-to-end.</h2>
+    <h2>You can message a Slack, Telegram, or Discord bot right now and it works end-to-end.</h2>
     <div class="stat">
       <div class="s"><b>4</b><span>trigger types<br>NOW · CRON · POLL · PUSH</span></div>
       <div class="s"><b>14</b><span>pre-built agents<br>routed by capability</span></div>
-      <div class="s"><b>60</b><span>offline tests green<br>+ live e2e per integration</span></div>
-      <div class="s"><b>1</b><span>channel fully live<br>Telegram (in + scheduled out)</span></div>
+      <div class="s"><b>63</b><span>offline tests green<br>+ live e2e per integration</span></div>
+      <div class="s"><b>4</b><span>channels live<br>web · telegram · slack · discord</span></div>
     </div>
     <div class="lead" style="margin-top:22px">Ask a question → get an answer. "Every 2 minutes, ping me on a move" →
-      a real scheduled flow delivers back to your chat. The plumbing works.</div>
+      a real scheduled flow delivers back to your chat. <b>Gmail push</b> (new email → summary) fires end-to-end too. The plumbing works.</div>
     <div class="num">04</div>
   </section>
 
@@ -193,7 +193,7 @@
         <li><b>POLL</b> — every N, on change</li><li><b>PUSH</b> — an event fires</li></ul></div>
       <div class="col"><h3>Channels (converse)</h3>
         <div class="chips"><span class="chip">Web ✓</span><span class="chip">Telegram ✓</span>
-          <span class="chip">Discord</span><span class="chip">Slack</span><span class="chip">WhatsApp</span><span class="chip">Email</span></div></div>
+          <span class="chip">Discord ✓</span><span class="chip">Slack ✓</span><span class="chip">WhatsApp</span><span class="chip">Email</span></div></div>
       <div class="col"><h3>Integrations (watch/act)</h3>
         <div class="chips"><span class="chip">Box</span><span class="chip">GitHub</span><span class="chip">Gmail</span>
           <span class="chip">Slack</span><span class="chip">Webhook</span><span class="chip">Calendar</span><span class="chip">Notion</span></div></div>
@@ -287,10 +287,10 @@ access   builder · admin</div>
   <!-- 05·4  PUSH · Box → Gmail -->
   <section class="slide dark">
     <div class="kicker">Walkthrough · react to a file</div>
-    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Box → Slack/Gmail</span><span class="status st-live">direct poll · wired</span></div>
+    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Box → Slack/Gmail</span><span class="status st-live">direct poll · live · recommended box path</span></div>
     <h2>When a resume lands, judge it and tell me.</h2>
     <div class="utter">"when a resume lands in my Box, judge it vs the JD and tell me"</div>
-    <div class="setup">Set up once — drop a Box <b>dev token</b> in .env (no OAuth app). A poll (<code>/api/events/box/poll</code>) watches the folder: Box new file → /invoke(resume_judge) → deliver (Slack direct, or Gmail).</div>
+    <div class="setup">Set up once — drop a Box <b>dev token</b> in .env (no OAuth app). <code>/automate</code> arms an AP schedule (clock only) → <code>/api/events/box/poll</code>: Box new file → /invoke(resume_judge) → deliver (Slack direct, or Gmail). The server tracks a per-folder watermark, so only new files fire.</div>
     <ol class="seq">
       <li>A file drops in your Box folder → the direct poll lists it (CUGA hits Box's API with the token — no AP).</li>
       <li>→ /invoke(resume_judge) with the file reference.</li>
@@ -304,7 +304,7 @@ access   builder · admin</div>
   <!-- 05·5  PUSH · Gmail → Telegram -->
   <section class="slide light">
     <div class="kicker" style="color:#a2255f">Walkthrough · react to an email</div>
-    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Gmail → Telegram</span><span class="status st-wired">wired · Run target</span></div>
+    <div class="wtline"><span class="badge b-push">PUSH</span><span class="badge b-ch">Gmail → Slack/Telegram</span><span class="status st-live">live end-to-end</span></div>
     <h2>When my boss emails, summarize and text me.</h2>
     <div class="utter">"when an email from my boss arrives, summarize it and text me"</div>
     <div class="setup">Set up once — connect Gmail (per-user); push flow: Gmail trigger (from:boss) → /invoke(mailbot) → Telegram send.</div>
@@ -385,9 +385,10 @@ access   builder · admin</div>
     <h2>What's next, in one glance.</h2>
     <div class="cols">
       <div class="col"><h3><span class="pill p-run">Run / MVP</span></h3><ul>
-        <li>Discord &amp; Slack live</li><li>PUSH live (GitHub → Box → Gmail)</li>
+        <li>✓ All 4 channels live · ✓ Gmail PUSH live · GitHub &amp; Box working</li>
+        <li>✓ <code>/automate</code> · ✓ Runs tab · ✓ Flows controls · ✓ direct-channel delivery</li>
         <li>Generic webhook in / out</li><li>Email delivery sink</li>
-        <li><b>NL→flow: agent + gate + benchmark + model</b></li></ul></div>
+        <li><b>NL→flow: agent + gate + benchmark + model</b> (the real remaining work)</li></ul></div>
       <div class="col"><h3><span class="pill p-sprint">Sprint</span></h3><ul>
         <li>WhatsApp, Email-as-channel</li><li>Calendar, Drive/Sheets</li>
         <li>A "work" tool (Notion / Jira / Linear)</li><li>RSS / feeds</li></ul></div>
@@ -418,19 +419,19 @@ access   builder · admin</div>
       <a class="nav" style="color:var(--blue)" href="examples.html">Examples</a> page.</p>
 
     <div class="ws"><h3><span class="tag" style="background:#24a148">RUN ✓</span> Channels — Discord &amp; Slack (done)</h3>
-      <div class="who">Slack (direct) verified 2026-07-06 · Discord (direct Gateway) — gateway connects verified, round-trip pending a live msg</div>
+      <div class="who">Slack (direct, Events API) + Discord (direct Gateway) — both round-trip verified. All 4 channels live.</div>
       <ul>
         <li>Both <b>direct</b>: Slack via the Events API (→ chat.postMessage); Discord via a <b>Gateway WebSocket bot</b> (instant, no public URL). AP paths behind <code>EVENTS_&lt;CH&gt;_BACKEND=ap</code>.</li>
-        <li>Slack: <b>per-thread memory + reply-in-thread</b> (thread_ts) + <b>per-user author id</b> (ev.user) — verified. Discord author id wired via the AP flow (pending live field check).</li>
+        <li>Slack: <b>per-thread memory + reply-in-thread</b> (thread_ts) + <b>per-user author id</b> (ev.user) — verified. Discord author id is native from the direct Gateway.</li>
         <li>Inbound round-trips verified; direct-channel delivery closes scheduled delivery to Slack.</li>
         <li>Next: instant Discord (a direct gateway backend); channel breadth (WhatsApp, email-as-channel) is Sprint.</li></ul></div>
 
-    <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> PUSH — integration events</h3>
-      <div class="who">Owner: — · Box direct poll ✓ done; GitHub/Gmail AP PUSH next</div>
+    <div class="ws"><h3><span class="tag" style="background:#24a148">RUN ✓</span> PUSH — integration events</h3>
+      <div class="who">Gmail PUSH live e2e · GitHub working · Box direct via <code>/automate</code></div>
       <ul>
-        <li>✓ <b>Box direct poll</b> (<code>/api/events/box/poll</code>) → resume_judge — wired (AP-free, dev token), not yet live-verified. Open gap: feed the agent file <i>content</i>, not just the name.</li>
-        <li>Next: a GitHub PR/issue AP trigger → <code>/invoke</code> (no token time-window); then Gmail.</li>
-        <li>Deliverable: one live AP PUSH round-trip end-to-end.</li></ul></div>
+        <li>✓ <b>Gmail PUSH live</b>: new email → <code>/invoke(mailbot)</code> → summary delivered (proven end-to-end). Every push flow also forwards the full raw trigger output (<code>_raw</code>), so the worker never gets a blank payload.</li>
+        <li>✓ <b>GitHub</b> PR/issue trigger — owner/repo auto-extracted from the utterance; connection normalized. (PAT needs webhook-create scope: fine-grained "Webhooks: R/W" + "Pull requests: Read", or classic <code>repo</code>.)</li>
+        <li>✓ <b>Box direct poll</b> (<code>/api/events/box/poll</code>) → resume_judge — <code>/automate</code> arms a schedule→poll watcher (AP-free, dev token). Open gap: feed the agent file <i>content</i>, not just the name.</li></ul></div>
 
     <div class="ws"><h3><span class="tag" style="background:#0f62fe">RUN</span> The webhook primitive (in + out)</h3>
       <div class="who">Owner: — · effort: M · highest leverage — covers the long tail</div>

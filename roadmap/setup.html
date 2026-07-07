@@ -94,7 +94,8 @@
     <thead><tr><th>Command</th><th>Does</th></tr></thead>
     <tbody>
       <tr><td><code>make env-check</code></td><td>verify <code>.env</code> has the required keys — offline, no network</td></tr>
-      <tr><td><code>make doctor</code></td><td>live credential doctor (<code>preflight.py</code>) — pings each service</td></tr>
+      <tr><td><code>make doctor</code></td><td>live credential doctor (<code>preflight.py</code>) — pings each service (now checks <b>github</b> too)</td></tr>
+      <tr><td><code>make ap-pieces</code></td><td>ensure AP integration pieces are installed</td></tr>
       <tr><td><code>make ap</code> / <code>make cuga</code></td><td>start Activepieces / CUGA + registry + tunnels</td></tr>
       <tr><td><code>make up</code> (<code>make start</code>)</td><td>start both, AP first</td></tr>
       <tr><td><code>make channels</code></td><td>connect + arm every inbound chat channel with a token in <code>.env</code> (run after <code>up</code>)</td></tr>
@@ -209,7 +210,7 @@ make stop                       <span class="c"># tear down (keep data);  make n
 
   <h3 style="font-size:15px;margin:14px 0 4px">c) The Studio, in your browser</h3>
   <div class="cmd">open http://localhost:8100/studio</div>
-  <p class="lead">Tabs: <b>Concierge · Agents · Channels · Integrations · Flows · Examples · Profile · Admin</b>.
+  <p class="lead">Tabs: <b>Concierge · Agents · Channels · Integrations · Flows · Runs · Examples · Profile · Admin</b>.
     Try the <b>Agents</b> tab (geobot, pricebot…) and the <b>Concierge</b> tab (toggle <b>Preview</b> to see the plan without arming).</p>
   <div class="note warn"><b>Not <code>:7860</code>.</b> That port is a different repo/checkout. The events Studio is on <b><code>:8100</code></b>. If you see "Studio is off," you're on the wrong port or an old cached bundle — go to <code>:8100/studio</code> and hard-refresh (⌘⇧R).</div>
 </section>
@@ -226,7 +227,7 @@ curl -s -X POST http://localhost:8100/api/events/connect/telegram/token \
 <span class="c"># 2) arm the inbound flow (registers the Telegram webhook via the tunnel)</span>
 curl -s -X POST http://localhost:8100/api/events/admin/channels/telegram/arm \
   -H 'content-type: application/json' -H 'x-user-id: admin' \
-  -d '{"scope":"default/default"}'</span></div>
+  -d '{"scope":"default/default"}'</div>
   <p class="lead">Then message your bot: <code>what is the capital of Japan?</code> → you get an answer.
     Try <code>watch bitcoin every 2 minutes and ping me on any move</code> → a scheduled flow delivers back to your chat.
     More utterances on the <a class="link" href="examples.html">Examples</a> page.</p>
