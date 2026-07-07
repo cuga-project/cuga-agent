@@ -149,6 +149,57 @@ def test_rehydration_skipped_when_citations_disabled(monkeypatch):
     assert get_ledger("t-disabled", create=False) is None
 
 
+def test_rehydration_honors_session_override_over_agent_flag(monkeypatch):
+    """fix: rehydration gates on the SAME session-aware predicate as stamping and
+    resolution. Agent-level citations_enabled=False + a per-session override=True
+    must still rehydrate — otherwise the fresh ledger re-issues colliding cite_ids
+    after a restart."""
+    from cuga.backend.knowledge.sources import set_session_override_lookup
+
+    events = [
+        _ev(
+            "Answer",
+            json.dumps(
+                {
+                    "data": "y",
+                    "sources": [
+                        {
+                            "cite_id": "s2",
+                            "filename": "a.pdf",
+                            "page": 1,
+                            "scope": "agent",
+                            "snippet": "alpha",
+                            "query": "q",
+                            "n": 1,
+                        }
+                    ],
+                }
+            ),
+        ),
+    ]
+
+    async def get_stream_events(agent_id, thread_id, user_id):
+        return SimpleNamespace(events=events)
+
+    db = SimpleNamespace(get_stream_events=get_stream_events)
+    # agent-level citations OFF, but knowledge enabled
+    engine = SimpleNamespace(_config=SimpleNamespace(enabled=True, citations_enabled=False))
+    app_state = SimpleNamespace(knowledge_engine=engine, agent_id="cuga-default")
+    monkeypatch.setattr(_main, "get_conversation_db", lambda: db)
+    # per-session override turns citations ON for this thread
+    set_session_override_lookup(
+        lambda tid: {"citations_enabled": True} if tid == "t-override" else {}
+    )
+    try:
+        asyncio.run(_rehydrate_citation_ledger(app_state, "t-override", "default_user"))
+    finally:
+        set_session_override_lookup(None)
+
+    ledger = get_ledger("t-override", create=False)
+    assert ledger is not None
+    assert ledger.get("s2") is not None  # restored despite the agent flag being off
+
+
 def test_rehydration_noop_when_ledger_already_present(monkeypatch):
     """If the ledger already exists, no DB fetch is performed."""
     app_state, db = _app_state_with_engine(events=[])

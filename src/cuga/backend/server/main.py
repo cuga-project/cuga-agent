@@ -223,9 +223,18 @@ async def _rehydrate_citation_ledger(app_state: "AppState", thread_id: str, user
 
     Must never break the turn — every failure mode is swallowed.
     """
-    if not _knowledge_citations_enabled_for_app_state(app_state):
-        return
     if not thread_id:
+        return
+    # Gate on the SAME session-aware predicate that stamping and resolution use
+    # (citations_enabled_for), not the agent-only flag — otherwise a thread with
+    # a per-session override diverges: rehydration is skipped while writes still
+    # register, so the fresh ledger re-issues colliding cite_ids after a restart.
+    from cuga.backend.knowledge.sources import citations_enabled_for
+
+    config = _knowledge_config(app_state)
+    if not config or not getattr(config, "enabled", False):
+        return
+    if not citations_enabled_for(config, thread_id):
         return
     try:
         from cuga.backend.knowledge.sources import get_ledger as _get_ledger
