@@ -215,9 +215,7 @@ def create_tool_guide_from_markdown(
     raw_tool_guards = frontmatter.get('tool_guards')
     tool_guards = (
         {
-            tool_name: (
-                guard_config if isinstance(guard_config, ToolGuard) else ToolGuard(**guard_config)
-            )
+            tool_name: (guard_config if isinstance(guard_config, ToolGuard) else ToolGuard(**guard_config))
             for tool_name, guard_config in raw_tool_guards.items()
         }
         if isinstance(raw_tool_guards, dict)

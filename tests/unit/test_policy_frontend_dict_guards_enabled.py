@@ -29,9 +29,7 @@ def _tool_guide_policy_dict(**overrides):
 
 
 def test_policy_to_frontend_dict_preserves_tool_guide_guards_enabled_false() -> None:
-    frontend_policy = _policy_to_frontend_dict(
-        _tool_guide_policy_dict(guards_enabled=False)
-    )
+    frontend_policy = _policy_to_frontend_dict(_tool_guide_policy_dict(guards_enabled=False))
 
     assert frontend_policy["policy_type"] == "tool_guide"
     assert frontend_policy["guards_enabled"] is False
