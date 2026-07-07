@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import json
 import os
 import tempfile
@@ -179,7 +180,7 @@ async def test_sdk_export_import_roundtrip_preserves_tool_guards_and_guards_enab
     # so this seed exercises the "policy_type" fallback path and the re-import exercises the "type" path.
     source = FakePolicyStorage()
     await apply_policies_data_to_storage(
-        source, [FINANCE_POLICY_DICT], clear_existing=False, filesystem_sync=None
+        source, [copy.deepcopy(FINANCE_POLICY_DICT)], clear_existing=False, filesystem_sync=None
     )
 
     with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
