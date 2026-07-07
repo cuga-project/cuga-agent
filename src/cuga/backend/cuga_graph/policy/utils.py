@@ -221,16 +221,20 @@ async def apply_policies_data_to_storage(
                 )
             elif policy_type == "tool_guide":
                 raw_tool_guards = policy_data.get("tool_guards")
-                tool_guards = (
-                    {
-                        tool_name: (
-                            guard_config if isinstance(guard_config, ToolGuard) else ToolGuard(**guard_config)
-                        )
-                        for tool_name, guard_config in raw_tool_guards.items()
-                    }
-                    if isinstance(raw_tool_guards, dict)
-                    else {}
-                )
+                tool_guards: dict = {}
+                if isinstance(raw_tool_guards, dict):
+                    for tool_name, guard_config in raw_tool_guards.items():
+                        try:
+                            tool_guards[tool_name] = (
+                                guard_config
+                                if isinstance(guard_config, ToolGuard)
+                                else ToolGuard(**guard_config)
+                            )
+                        except Exception as e:
+                            errors.append(
+                                f"Policy '{policy_data.get('name', policy_data.get('id'))}': "
+                                f"invalid guard for tool '{tool_name}': {e}"
+                            )
                 policy = ToolGuide(
                     id=policy_data["id"],
                     name=policy_data["name"],
@@ -241,7 +245,7 @@ async def apply_policies_data_to_storage(
                     guide_content=policy_data.get("guide_content", ""),
                     tool_guards=tool_guards,
                     prepend=policy_data.get("prepend", False),
-                    guards_enabled=False if policy_data.get("guards_enabled") is False else True,
+                    guards_enabled=policy_data.get("guards_enabled", True),
                     priority=policy_data.get("priority", 50),
                     enabled=policy_data.get("enabled", True),
                 )
