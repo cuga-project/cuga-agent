@@ -15,6 +15,7 @@ from cuga.backend.cuga_graph.policy.models import (
     Playbook,
     OutputFormatter,
     ToolGuide,
+    ToolGuard,
     IntentGuard,
     ToolApproval,
     KeywordTrigger,
@@ -196,8 +197,6 @@ def create_tool_guide_from_markdown(
     Returns:
         ToolGuide instance
     """
-    from cuga.backend.cuga_graph.policy.models import ToolGuard
-
     name = frontmatter.get('name')
     if not name:
         raise ValueError(f"ToolGuide in {file_path} missing 'name' in frontmatter")
@@ -213,14 +212,15 @@ def create_tool_guide_from_markdown(
         triggers = [AlwaysTrigger()]
 
     raw_tool_guards = frontmatter.get('tool_guards')
-    tool_guards = (
-        {
-            tool_name: (guard_config if isinstance(guard_config, ToolGuard) else ToolGuard(**guard_config))
-            for tool_name, guard_config in raw_tool_guards.items()
-        }
-        if isinstance(raw_tool_guards, dict)
-        else {}
-    )
+    tool_guards: dict = {}
+    if isinstance(raw_tool_guards, dict):
+        for tool_name, guard_config in raw_tool_guards.items():
+            try:
+                tool_guards[tool_name] = (
+                    guard_config if isinstance(guard_config, ToolGuard) else ToolGuard(**guard_config)
+                )
+            except Exception as e:
+                logger.warning(f"Skipping invalid guard for tool '{tool_name}' in {file_path}: {e}")
 
     return ToolGuide(
         id=frontmatter.get('id', f"tool_guide_{Path(file_path).stem}"),
@@ -232,7 +232,7 @@ def create_tool_guide_from_markdown(
         guide_content=content,
         tool_guards=tool_guards,
         prepend=frontmatter.get('prepend', False),
-        guards_enabled=False if frontmatter.get('guards_enabled') is False else True,
+        guards_enabled=frontmatter.get('guards_enabled', True),
         priority=frontmatter.get('priority', 50),
         enabled=frontmatter.get('enabled', True),
     )
