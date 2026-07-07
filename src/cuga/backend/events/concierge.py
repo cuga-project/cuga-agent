@@ -44,8 +44,9 @@ CONCIERGE_PROMPT = (
     "  • Immediate question an existing agent can answer → call answer_now(agent, task) and relay it.\n"
     "  • Standing request → call find_or_create_flow(agent, kind, prompt, source=..., event=...). "
     "Choose kind CAREFULLY:\n"
-    "      – push — watching an app for a NEW ITEM the agent has an integration for: gmail new-email, "
-    "box new-file, github new-PR ('when a new email/file/PR…', 'whenever X lands in my inbox/Box/repo'). "
+    "      – push — watching an app for a NEW ITEM the agent has an integration for. Pass the exact "
+    "event value: gmail→event=new_email, box→event=new_file, github→event=new_pr (or new_issue). "
+    "('when a new email/file/PR…', 'whenever X lands in my inbox/Box/repo'). "
     "ALWAYS use push for this (pass source=gmail|box|github). Only push delivers the item's CONTENT to "
     "the agent; poll/cron CANNOT fetch it, so NEVER use them to watch an app's new items. If a LISTED "
     "agent already has that integration (e.g. mailbot [integrations: gmail]), YOU arm the push flow now "
@@ -233,6 +234,11 @@ def make_concierge_tools(runtime, store=None, engine=None, users=None):
                 return f"error: no agent named '{agent}'. Choose one from list_capabilities."
             if not perms.can_use(spec, _roles(p), p.user_id):
                 return f"error: you don't have access to '{agent}'."
+            # canonicalize the event kind (LLM may pass 'new-email'; the envelope only accepts
+            # 'new_email') so the AP flow body + dedup_key are built with the valid form.
+            if event:
+                from .envelope import normalize_kind
+                event = normalize_kind(event)
             # where does the reply go? explicit deliver_to, else the CHANNEL the caller asked from
             # ('send me' → origin thread 'gw:<channel>:<native>' delivers back there), else the
             # agent's first configured channel.

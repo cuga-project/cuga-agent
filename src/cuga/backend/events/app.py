@@ -263,6 +263,57 @@ def register_events_routes(app, *, runtime, store=None, concierge=None, engine=N
         from .flows_console import FLOWS_CONSOLE_HTML
         return HTMLResponse(FLOWS_CONSOLE_HTML)
 
+    # --- execution log: which flows RAN, succeeded/failed, and their output -----------------------
+    @app.get("/api/events/runs")
+    async def list_runs(request: Request):
+        """The execution log. Recent Activepieces flow-runs, each JOINED to its CUGA subscription so
+        the row carries agent / mode(trigger) / integration / channel — the Studio filters+sorts on
+        those. Isolation: only runs for THIS caller's own flows."""
+        scope = resolve_principal(headers=request.headers).scope
+        subs = store.as_dicts(scope=scope) if store else []
+        by_flow = {s.get("ap_flow_id"): s for s in subs if s.get("ap_flow_id")}
+        runs = await engine.list_runs(limit=80) if engine is not None else []
+        out = []
+        for r in runs:
+            sub = by_flow.get(r.get("flowId"))
+            if sub is None:
+                continue   # isolation: skip runs whose flow isn't the caller's
+            out.append({
+                "id": r.get("id"), "status": r.get("status"),
+                "started_at": r.get("startTime"), "finished_at": r.get("finishTime"),
+                "agent": sub.get("target_agent"), "mode": sub.get("mode"),
+                "integration": sub.get("source_connector"),
+                "channel": ", ".join(sub.get("deliver_to") or []),
+                "flow_name": sub.get("flow_name"), "subscription_id": sub.get("id"),
+            })
+        return {"scope": scope, "runs": out}
+
+    @app.get("/api/events/runs/{run_id}")
+    async def run_detail(run_id: str, request: Request):
+        """One run's detail + the agent's OUTPUT: the CUGA /invoke answer, the trigger payload, and
+        any error. Scoped to the caller's own flows."""
+        scope = resolve_principal(headers=request.headers).scope
+        owned = {s.get("ap_flow_id") for s in (store.as_dicts(scope=scope) if store else [])}
+        run = await engine.get_run(run_id) if engine is not None else None
+        if run is None or run.get("flowId") not in owned:
+            return JSONResponse({"ok": False, "error": "run not found"}, 404)
+        steps = run.get("steps") or {}
+        answer = trigger_payload = error = None
+        for name, s in (steps.items() if isinstance(steps, dict) else []):
+            if not isinstance(s, dict):
+                continue
+            outp = s.get("output")
+            if name == "trigger":
+                trigger_payload = outp
+            elif isinstance(outp, dict) and isinstance(outp.get("body"), dict) and "answer" in outp["body"]:
+                answer = outp["body"]["answer"]
+            if s.get("status") not in ("SUCCEEDED", None) and s.get("errorMessage"):
+                error = s.get("errorMessage")
+        return {"ok": True,
+                "run": {"id": run.get("id"), "status": run.get("status"),
+                        "started_at": run.get("startTime"), "finished_at": run.get("finishTime")},
+                "answer": answer, "trigger_payload": trigger_payload, "error": error}
+
     # --- Studio read endpoints (dumb UI reads these; all real state) -------------
     @app.get("/api/events/status")
     async def events_status(request: Request):

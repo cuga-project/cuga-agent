@@ -433,6 +433,10 @@
 <section id="nlflow">
   <h2><span class="n">10</span> NL → Flow validation <span class="tag">the strategic piece</span></h2>
   <p class="lead">Turning a fuzzy utterance into the <i>right</i> flow — right agent, mode, cadence, delivery, or a safe decline — is the real product surface. Flow <i>assembly</i> is deterministic code; the only fuzziness is the LLM's <b>argument selection</b> for <code>find_or_create_flow(agent, kind, cadence, source, deliver)</code>.</p>
+  <figure style="margin:0 0 14px;text-align:center">
+    <img src="../events_docs/automate_flow.svg" alt="/automate sequence diagram: ARM (pure code) then FIRE (email to AP to CUGA to mailbot to Slack)" style="max-width:100%;border:1px solid var(--line);border-radius:8px;background:#fff">
+    <figcaption class="lead" style="font-size:12px;margin-top:6px">How <code>/automate summarize new emails</code> becomes a live flow — <b>ARM</b> (pure code, no LLM) then, later, <b>FIRE</b> (email → Activepieces → CUGA <code>/invoke</code> → mailbot → Slack). Source: <code>events_docs/automate_flow.mmd</code> (rendered SVG/PNG alongside).</figcaption>
+  </figure>
   <div class="box" style="border-left:3px solid var(--blue);margin:0 0 14px">
     <h4>Two ways to create a flow — NL and the <code>/automate</code> slash command</h4>
     <p class="lead" style="margin:0 0 6px">Besides plain natural language, <b><code>/automate &lt;what&gt;</code></b> is
@@ -468,6 +472,27 @@
       <li><b>Model selection</b>: bake-off on the corpus (accuracy / latency / cost) — the planner is latency-sensitive &amp; correctness-critical.</li>
       <li>Pattern: <b>LLM proposes · validator gates · deterministic is fallback+baseline</b>.</li>
     </ul></div>
+  </div>
+  <div class="box" style="border-left:3px solid var(--blue);margin:14px 0 0">
+    <h4>The fork — runtime <i>router</i> vs. a coding agent that <i>authors</i> flows</h4>
+    <p class="lead" style="margin:0 0 8px">Today the concierge <b>selects</b> among pre-built agents and fills typed args — it never <b>writes</b> a flow (ADR 0005: <i>router, not a factory</i>). The strategic question: should a <b>coding agent</b> synthesize the flow — even new agents / tool compositions / custom AP logic — from the utterance instead?</p>
+    <div class="grid2">
+      <div class="box"><h4>Router + pre-built agents (today)</h4><ul class="tight">
+        <li><b>Predictable</b> — same input, same flow.</li>
+        <li><b>Safe</b> — fixed templates, known tools; easy isolation/perms.</li>
+        <li><b>Fast/cheap</b> — <code>/automate</code> arms with zero tokens.</li>
+        <li>Narrow failure mode (e.g. the one-line <code>new-email</code> bug).</li>
+        <li>⚠️ Limited to what builders pre-built — no truly novel requests.</li>
+      </ul></div>
+      <div class="box"><h4>Coding agent authors flows</h4><ul class="tight">
+        <li><b>Flexible</b> — handles novel requests; can compose new tools/agents.</li>
+        <li>⚠️ Non-deterministic — generated per call.</li>
+        <li>⚠️ Harder to secure/validate (arbitrary generated logic to sandbox).</li>
+        <li>⚠️ LLM latency + cost per arm.</li>
+        <li>⚠️ Broad failure mode — a bad generated flow is hard to catch.</li>
+      </ul></div>
+    </div>
+    <p class="lead" style="margin:8px 0 0"><b>Middle path (recommended):</b> let a coding agent author the <b>agent</b> (prompt + tool set) + the params, but still emit into the <b>constrained flow template + the validation gate</b> above — flexibility on <i>what the worker does</i> without losing determinism/safety on <i>how the flow is wired</i>. That validator is exactly what would have caught the <code>new-email</code>→<code>new_email</code> bug for free. (Note: the <b>workers already are</b> agentic — CUGA plans + acts — so the system blends both today.)</p>
   </div>
 </section>
 

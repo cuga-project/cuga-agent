@@ -17,6 +17,16 @@ SOURCE_TYPES = ("channel", "integration", "time")
 EVENT_KINDS = ("message", "new_email", "new_pr", "new_issue", "new_file", "tick", "runonce")
 
 
+def normalize_kind(kind: str | None) -> str:
+    """Canonicalize an event kind to the EVENT_KINDS form: hyphens→underscores, lowercased — so an
+    LLM-/AP-produced ``new-email`` / ``new-PR`` becomes ``new_email`` / ``new_pr``. Unknown kinds pass
+    through (still non-canonical) so ``validate`` can flag genuinely-bad ones. This is the seam that
+    keeps a flow built with a hyphenated kind from being 400'd at ``/invoke``."""
+    if not kind:
+        return "message"
+    return str(kind).replace("-", "_").lower()
+
+
 @dataclass
 class Source:
     type: str = "channel"          # channel | integration | time
@@ -56,7 +66,7 @@ class Envelope:
                 thread_id=src.get("thread_id", "web:local"),
                 user=src.get("user", "") or "",
             ),
-            event=Event(kind=ev.get("kind", "message"), payload=dict(ev.get("payload") or {})),
+            event=Event(kind=normalize_kind(ev.get("kind", "message")), payload=dict(ev.get("payload") or {})),
             text=d.get("text", "") or "",
             agent=d.get("agent"),
             deliver=bool(d.get("deliver", False)),
@@ -91,7 +101,7 @@ def validate(d: dict) -> list[str]:
     if src.get("type") and src["type"] not in SOURCE_TYPES:
         problems.append(f"source.type '{src['type']}' not in {SOURCE_TYPES}")
     ev = (d or {}).get("event") or {}
-    if ev.get("kind") and ev["kind"] not in EVENT_KINDS:
+    if ev.get("kind") and normalize_kind(ev["kind"]) not in EVENT_KINDS:
         problems.append(f"event.kind '{ev['kind']}' not in {EVENT_KINDS}")
     if src.get("type") == "channel" and not (d.get("text") or "").strip() \
             and ev.get("kind", "message") == "message":

@@ -41,16 +41,20 @@ SOURCE_TRIGGER["github"] = SOURCE_TRIGGER["github_pr"]   # bare 'github' source 
 
 # The trigger fields we hand the worker in the /invoke payload, per source — so the agent reasons
 # over real content (an email's subject/body, a PR's title) instead of just a filename. Values are
-# AP mustache refs into the piece's trigger body; a path the piece doesn't emit renders empty
-# (harmless — envelope.worker_input skips empties). Extend when a piece's shape is verified.
+# AP mustache refs into the PIECE TRIGGER's output object (NOT ``trigger.body`` — that's only for raw
+# webhook triggers; a piece trigger's output is referenced directly as ``{{trigger.<field>}}``). Paths
+# the piece doesn't emit render empty (harmless — envelope.worker_input skips empties). The gmail
+# shape is verified against a live fire: output = {message:{subject, from:{value:[{address}]}, text,
+# html, …}, thread}. box/github paths are best-effort — VERIFY against a real fire before trusting.
 PUSH_PAYLOAD = {
-    "box": {"name": "{{trigger.body.name}}"},
-    "gmail": {"subject": "{{trigger.body.subject}}", "from": "{{trigger.body.from}}",
-              "snippet": "{{trigger.body.snippet}}", "body": "{{trigger.body.body_plain}}"},
-    "github_pr": {"title": "{{trigger.body.title}}", "repo": "{{trigger.body.repository.full_name}}",
-                  "url": "{{trigger.body.html_url}}"},
-    "github_issue": {"title": "{{trigger.body.title}}", "repo": "{{trigger.body.repository.full_name}}",
-                     "url": "{{trigger.body.html_url}}"},
+    "box": {"name": "{{trigger.name}}", "id": "{{trigger.id}}"},
+    "gmail": {"subject": "{{trigger.message.subject}}",
+              "from": "{{trigger.message.from.value[0].address}}",
+              "body": "{{trigger.message.text}}"},
+    "github_pr": {"title": "{{trigger.title}}", "repo": "{{trigger.base.repo.full_name}}",
+                  "url": "{{trigger.html_url}}"},
+    "github_issue": {"title": "{{trigger.title}}", "repo": "{{trigger.repository.full_name}}",
+                     "url": "{{trigger.html_url}}"},
 }
 PUSH_PAYLOAD["github"] = PUSH_PAYLOAD["github_pr"]     # router may name the source just 'github'
 

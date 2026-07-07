@@ -515,3 +515,31 @@ class APEngine:
         except Exception as e:  # noqa: BLE001
             log.warning("AP get flow %s failed: %s", flow_id, e)
             return None
+
+    async def list_runs(self, limit: int = 60) -> list[dict]:
+        """The execution log: recent AP flow-runs for the project. Each row carries status
+        (SUCCEEDED/FAILED/RUNNING), flowId, displayName, and start/finish times. [] on failure."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                hdrs = await self._auth(c)
+                r = await c.get(f"{self.base}/api/v1/flow-runs", headers=hdrs,
+                                params={"projectId": self.project_id, "limit": limit})
+                if r.status_code != 200 or not r.text:
+                    return []
+                data = r.json()
+                return data.get("data", data) if isinstance(data, dict) else (data or [])
+        except Exception as e:  # noqa: BLE001
+            log.warning("AP list runs failed: %s", e)
+            return []
+
+    async def get_run(self, run_id: str) -> dict | None:
+        """One flow-run's detail incl. per-step outputs — the trigger payload and the CUGA
+        ``/invoke`` response that carries the agent's answer. None on failure."""
+        try:
+            async with httpx.AsyncClient(timeout=15) as c:
+                hdrs = await self._auth(c)
+                r = await c.get(f"{self.base}/api/v1/flow-runs/{run_id}", headers=hdrs)
+                return r.json() if r.status_code == 200 and r.text else None
+        except Exception as e:  # noqa: BLE001
+            log.warning("AP get run %s failed: %s", run_id, e)
+            return None

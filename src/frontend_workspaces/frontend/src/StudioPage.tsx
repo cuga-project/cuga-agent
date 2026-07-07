@@ -17,8 +17,14 @@ import {
   Select,
   SelectItem,
   Checkbox,
+  Table,
+  TableHead,
+  TableRow,
+  TableHeader,
+  TableBody,
+  TableCell,
 } from "@carbon/react";
-import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot, Add, Edit } from "@carbon/icons-react";
+import { Chat, Plug, Application, Flow, Idea, Launch, User, Settings, Bot, Add, Edit, View, Pause, Play, TrashCan, Activity } from "@carbon/icons-react";
 import * as api from "./api";
 import { CugaHeader } from "./CugaHeader";
 import { ConciergeChat } from "./ConciergeChat";
@@ -40,6 +46,16 @@ function StatusTag({ status }: { status: string }) {
 const MODE_TAG: Record<string, string> = {
   NOW: "blue", CRON: "purple", POLL: "teal", PUSH: "magenta",
 };
+
+const RUN_STATUS_TAG: Record<string, string> = {
+  SUCCEEDED: "green", FAILED: "red", RUNNING: "blue",
+  PAUSED: "gray", STOPPED: "gray", TIMEOUT: "red", INTERNAL_ERROR: "red",
+};
+
+function fmtTime(s?: string): string {
+  if (!s) return "—";
+  try { return new Date(s).toLocaleString(); } catch { return s; }
+}
 
 // router outcomes shown on Examples
 const OUTCOME_TAG: Record<string, string> = {
@@ -433,34 +449,264 @@ function SetupTab({ refresh }: { refresh: number }) {
   );
 }
 
+// Walk the AP flow's trigger→nextAction chain into a flat step list, then show the CUGA
+// Source→Agent→Sink model + those AP steps. This is the "see it like AP" view, in-Studio.
+function FlowDetail({ detail }: { detail: any }) {
+  const s = detail?.subscription || {};
+  const ap = detail?.ap_flow || null;
+  const steps: any[] = [];
+  let node = ap?.version?.trigger;
+  while (node) {
+    const set = node.settings || {};
+    steps.push({ name: node.displayName || node.name, piece: set.pieceName,
+      action: set.actionName || set.triggerName });
+    node = node.nextAction;
+  }
+  return (
+    <div>
+      <p className="studio-muted" style={{ marginBottom: 10 }}>
+        <strong>Source</strong> {s.source_connector || s.source_type} → <strong>Agent</strong>{" "}
+        {s.target_agent} → <strong>Sink</strong> {(s.deliver_to || []).join(", ") || "web"}
+      </p>
+      <p style={{ margin: "0 0 8px" }}>
+        <Tag type={(MODE_TAG[s.mode] as any) ?? "gray"} size="sm">{s.mode}</Tag>
+        <Tag type={s.status === "paused" ? "gray" : "green"} size="sm">{s.status}</Tag>
+        {s.flow_name && <Tag type="outline" size="sm">{s.flow_name}</Tag>}
+      </p>
+      <p className="studio-muted" style={{ fontSize: 13 }}>{s.prompt}</p>
+      <h5 style={{ margin: "16px 0 6px" }}>Activepieces flow steps</h5>
+      {ap ? (
+        <ol style={{ paddingLeft: 18, margin: 0 }}>
+          {steps.map((st, i) => (
+            <li key={i} style={{ fontSize: 13, marginBottom: 4 }}>
+              <strong>{st.name}</strong>{" "}
+              {st.piece && <code>{String(st.piece).replace("@activepieces/piece-", "")}</code>}
+              {st.action && <span className="studio-muted"> · {st.action}</span>}
+            </li>
+          ))}
+        </ol>
+      ) : <p className="studio-muted">No live AP flow (a direct/no-AP flow, or AP unreachable).</p>}
+    </div>
+  );
+}
+
 function FlowsTab({ refresh }: { refresh: number }) {
-  const { data, loading, error } = useEndpoint<any[]>(api.getEventsSubscriptions, (d) => d.subscriptions ?? [], refresh);
+  const [tick, setTick] = useState(0);
+  const { data, loading, error } = useEndpoint<any[]>(
+    api.getEventsSubscriptions, (d) => d.subscriptions ?? [], refresh + tick);
+  const [busy, setBusy] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [detail, setDetail] = useState<any | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const act = async (id: string, fn: (id: string) => Promise<Response>) => {
+    setBusy(id); setActionError(null);
+    try {
+      const res = await fn(id);
+      if (!res.ok) throw new Error((await res.json().catch(() => null))?.error || res.statusText);
+      setTick((t) => t + 1);
+    } catch (e) { setActionError(e instanceof Error ? e.message : "action failed"); }
+    finally { setBusy(null); }
+  };
+  const del = async (id: string, name: string) => {
+    if (!window.confirm(`Delete flow "${name}"? This removes it from Activepieces too.`)) return;
+    await act(id, api.deleteFlow);
+  };
+  const view = async (id: string) => {
+    setDetailLoading(true); setDetail({ id }); setActionError(null);
+    try {
+      const res = await api.getEventsFlowDetail(id);
+      const d = await res.json();
+      if (!res.ok) throw new Error(d?.error || res.statusText);
+      setDetail(d);
+    } catch (e) {
+      setActionError(e instanceof Error ? e.message : "could not load flow"); setDetail(null);
+    } finally { setDetailLoading(false); }
+  };
+
   return (
     <div>
       <Loader loading={loading} error={error} />
+      {actionError && <InlineNotification kind="error" lowContrast title="Error"
+        subtitle={actionError} onCloseButtonClick={() => setActionError(null)} />}
       {!loading && !error && (data?.length ?? 0) === 0 && (
         <InlineNotification kind="info" lowContrast hideCloseButton
           title="No armed flows yet"
-          subtitle="Ask the concierge to watch or schedule something — it appears here." />
+          subtitle="Ask the concierge to watch or schedule something — or type /automate <what>. It appears here." />
       )}
       <div className="studio-grid">
-        {data?.map((s) => (
-          <Tile key={s.id} className="studio-card">
-            <div className="studio-card-head">
-              <span className="studio-card-title"><Flow size={18} /> {s.target_agent}</span>
-              <Tag type={(MODE_TAG[s.mode] as any) ?? "gray"} size="sm">{s.mode}</Tag>
-            </div>
-            {s.flow_name && <p className="studio-muted" style={{ fontSize: 12, margin: "0 0 4px" }}>
-              flow <code>{s.flow_name}</code></p>}
-            <p className="studio-muted">{s.prompt || `${s.source_type}/${s.source_connector}`}</p>
-            <div className="studio-card-foot">
-              <Tag type="outline" size="sm">{s.backend}</Tag>
-              <Tag type={s.status === "active" ? "green" : "gray"} size="sm">{s.status}</Tag>
-              {s.deliver_to?.length > 0 && <Tag type="blue" size="sm">→ {s.deliver_to.join(", ")}</Tag>}
-            </div>
-          </Tile>
-        ))}
+        {data?.map((s) => {
+          const paused = s.status === "paused";
+          return (
+            <Tile key={s.id} className="studio-card">
+              <div className="studio-card-head">
+                <span className="studio-card-title"><Flow size={18} /> {s.target_agent}</span>
+                <Tag type={(MODE_TAG[s.mode] as any) ?? "gray"} size="sm">{s.mode}</Tag>
+              </div>
+              {s.flow_name && <p className="studio-muted" style={{ fontSize: 12, margin: "0 0 4px" }}>
+                flow <code>{s.flow_name}</code></p>}
+              <p className="studio-muted">{s.prompt || `${s.source_type}/${s.source_connector}`}</p>
+              <div className="studio-card-foot">
+                <Tag type="outline" size="sm">{s.backend}</Tag>
+                <Tag type={paused ? "gray" : "green"} size="sm">{s.status}</Tag>
+                {s.deliver_to?.length > 0 && <Tag type="blue" size="sm">→ {s.deliver_to.join(", ")}</Tag>}
+              </div>
+              <div style={{ display: "flex", gap: 4, marginTop: 12, flexWrap: "wrap" }}>
+                <Button size="sm" kind="ghost" renderIcon={View}
+                  onClick={() => view(s.id)} disabled={busy === s.id}>View</Button>
+                <Button size="sm" kind="ghost" renderIcon={paused ? Play : Pause}
+                  onClick={() => act(s.id, paused ? api.resumeFlow : api.pauseFlow)}
+                  disabled={busy === s.id}>{paused ? "Resume" : "Pause"}</Button>
+                <Button size="sm" kind="danger--ghost" renderIcon={TrashCan}
+                  onClick={() => del(s.id, s.flow_name || s.id)} disabled={busy === s.id}>Delete</Button>
+              </div>
+            </Tile>
+          );
+        })}
       </div>
+      {detail && (
+        <Modal open passiveModal
+          modalHeading={`Flow — ${detail?.subscription?.flow_name || detail?.id || ""}`}
+          onRequestClose={() => setDetail(null)}>
+          {detailLoading ? <InlineLoading description="Loading flow…" />
+            : detail?.subscription ? <FlowDetail detail={detail} />
+            : <p className="studio-muted">No detail.</p>}
+        </Modal>
+      )}
+    </div>
+  );
+}
+
+// The execution log — every standing-flow run (cron/poll/push), filterable by agent / integration /
+// channel / trigger / status, with the agent's output on demand.
+function RunDetail({ detail }: { detail: any }) {
+  if (detail?.error) {
+    return <InlineNotification kind="error" lowContrast hideCloseButton title="Error"
+      subtitle={String(detail.error)} />;
+  }
+  const run = detail?.run || {};
+  const trig = detail?.trigger_payload;
+  return (
+    <div>
+      <p style={{ margin: "0 0 8px", display: "flex", gap: 8, alignItems: "center" }}>
+        <Tag type={(RUN_STATUS_TAG[run.status] as any) ?? "gray"} size="sm">{run.status}</Tag>
+        <span className="studio-muted" style={{ fontSize: 12 }}>{fmtTime(run.started_at)}</span>
+      </p>
+      {detail?.error_msg && <InlineNotification kind="error" lowContrast hideCloseButton
+        title="Flow error" subtitle={String(detail.error_msg)} />}
+      <h5 style={{ margin: "8px 0 4px" }}>Agent output</h5>
+      {detail?.answer
+        ? <pre className="studio-msg-text" style={{ whiteSpace: "pre-wrap", fontSize: 13 }}>{detail.answer}</pre>
+        : <p className="studio-muted">No answer captured (a failed run, or the flow doesn't return one).</p>}
+      {trig != null && (
+        <details style={{ marginTop: 10 }}>
+          <summary className="studio-muted" style={{ cursor: "pointer", fontSize: 12 }}>Trigger payload</summary>
+          <pre className="studio-msg-text" style={{ whiteSpace: "pre-wrap", fontSize: 12, maxHeight: 220, overflow: "auto" }}>
+            {JSON.stringify(trig, null, 2).slice(0, 4000)}</pre>
+        </details>
+      )}
+    </div>
+  );
+}
+
+function RunsTab({ refresh }: { refresh: number }) {
+  const [tick, setTick] = useState(0);
+  const { data, loading, error } = useEndpoint<any[]>(
+    api.getEventsRuns, (d) => d.runs ?? [], refresh + tick);
+  const [f, setF] = useState<Record<string, string>>(
+    { agent: "all", integration: "all", channel: "all", mode: "all", status: "all" });
+  const [sort, setSort] = useState<{ col: string; dir: 1 | -1 }>({ col: "started_at", dir: -1 });
+  const [detail, setDetail] = useState<any | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+
+  const runs = data ?? [];
+  const uniq = (k: string) => Array.from(new Set(runs.map((r) => r[k]).filter(Boolean))).sort();
+  const filtered = runs.filter((r) => ["agent", "integration", "channel", "mode", "status"]
+    .every((k) => f[k] === "all" || String(r[k]) === f[k]));
+  const sorted = [...filtered].sort((a, b) => {
+    const av = a[sort.col] ?? "", bv = b[sort.col] ?? "";
+    return (av < bv ? -1 : av > bv ? 1 : 0) * sort.dir;
+  });
+
+  const view = async (id: string) => {
+    setDetailLoading(true); setDetail({ id });
+    try {
+      const res = await api.getEventsRunDetail(id);
+      const d = await res.json();
+      setDetail(res.ok ? { ...d, error_msg: d.error } : { error: d?.error || res.statusText });
+    } catch (e) { setDetail({ error: e instanceof Error ? e.message : "failed" }); }
+    finally { setDetailLoading(false); }
+  };
+
+  const th = (col: string, label: string) => (
+    <TableHeader onClick={() => setSort((s) =>
+      ({ col, dir: s.col === col ? (s.dir * -1) as 1 | -1 : 1 }))} style={{ cursor: "pointer" }}>
+      {label}{sort.col === col ? (sort.dir === 1 ? " ▲" : " ▼") : ""}
+    </TableHeader>
+  );
+  const filterSel = (key: string, label: string) => (
+    <Select id={`run-f-${key}`} labelText={label} size="sm"
+      value={f[key]} onChange={(e: any) => setF((p) => ({ ...p, [key]: e.target.value }))}>
+      <SelectItem value="all" text={`All`} />
+      {uniq(key).map((v) => <SelectItem key={String(v)} value={String(v)} text={String(v)} />)}
+    </Select>
+  );
+
+  return (
+    <div>
+      <Loader loading={loading} error={error} />
+      {!loading && !error && (
+        <>
+          <p className="studio-muted" style={{ margin: "0 0 10px", fontSize: 13 }}>
+            Execution log of your standing flows (cron / poll / push). Click a column to sort;
+            filter with the dropdowns. <Button kind="ghost" size="sm"
+              onClick={() => setTick((t) => t + 1)}>Refresh</Button>
+          </p>
+          <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 12, alignItems: "flex-end" }}>
+            {filterSel("agent", "Agent")}
+            {filterSel("integration", "Integration")}
+            {filterSel("channel", "Channel")}
+            {filterSel("mode", "Trigger")}
+            {filterSel("status", "Status")}
+          </div>
+          {runs.length === 0 ? (
+            <InlineNotification kind="info" lowContrast hideCloseButton title="No runs yet"
+              subtitle="Once a cron/poll/push flow fires, its runs appear here with success/failure and output." />
+          ) : (
+            <Table size="sm">
+              <TableHead>
+                <TableRow>
+                  {th("started_at", "Time")}{th("agent", "Agent")}{th("mode", "Trigger")}
+                  {th("integration", "Integration")}{th("channel", "Channel")}{th("status", "Status")}
+                  <TableHeader>Output</TableHeader>
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {sorted.map((r) => (
+                  <TableRow key={r.id}>
+                    <TableCell>{fmtTime(r.started_at)}</TableCell>
+                    <TableCell>{r.agent}</TableCell>
+                    <TableCell><Tag type={(MODE_TAG[r.mode] as any) ?? "gray"} size="sm">{r.mode}</Tag></TableCell>
+                    <TableCell>{r.integration}</TableCell>
+                    <TableCell>{r.channel}</TableCell>
+                    <TableCell><Tag type={(RUN_STATUS_TAG[r.status] as any) ?? "gray"} size="sm">{r.status}</Tag></TableCell>
+                    <TableCell><Button kind="ghost" size="sm" renderIcon={View}
+                      onClick={() => view(r.id)}>View</Button></TableCell>
+                  </TableRow>
+                ))}
+              </TableBody>
+            </Table>
+          )}
+          <p className="studio-muted" style={{ fontSize: 12, marginTop: 8 }}>
+            Showing {sorted.length} of {runs.length}. (NOW chat answers aren't standing flows, so they're not logged here.)
+          </p>
+        </>
+      )}
+      {detail && (
+        <Modal open passiveModal modalHeading="Run output" onRequestClose={() => setDetail(null)}>
+          {detailLoading ? <InlineLoading description="Loading…" /> : <RunDetail detail={detail} />}
+        </Modal>
+      )}
     </div>
   );
 }
@@ -640,6 +886,7 @@ export function StudioPage() {
             <Tab renderIcon={Plug}>Integrations</Tab>
             <Tab renderIcon={Settings}>Setup</Tab>
             <Tab renderIcon={Flow}>Flows</Tab>
+            <Tab renderIcon={Activity}>Runs</Tab>
             <Tab renderIcon={Idea}>Examples</Tab>
             <Tab renderIcon={User}>Profile</Tab>
             <Tab renderIcon={Settings}>Admin</Tab>
@@ -651,6 +898,7 @@ export function StudioPage() {
             <TabPanel><IntegrationsTab refresh={refresh} /></TabPanel>
             <TabPanel><SetupTab refresh={refresh} /></TabPanel>
             <TabPanel><FlowsTab refresh={refresh} /></TabPanel>
+            <TabPanel><RunsTab refresh={refresh} /></TabPanel>
             <TabPanel><ExamplesTab refresh={refresh} onTry={onTry} /></TabPanel>
             <TabPanel><ProfileTab refresh={refresh} /></TabPanel>
             <TabPanel><AdminTab refresh={refresh} /></TabPanel>

@@ -429,6 +429,30 @@ export async function getEventsSubscriptions(): Promise<Response> {
   return apiFetch("/api/events/subscriptions");
 }
 
+// Flow lifecycle — CUGA drives Activepieces internally (pause/resume/delete), so operators never
+// open the AP console. getEventsFlowDetail returns the CUGA Source→Agent→Sink model + live AP flow.
+export async function pauseFlow(id: string): Promise<Response> {
+  return apiFetch(`/api/events/subscriptions/${encodeURIComponent(id)}/pause`, { method: "POST" });
+}
+export async function resumeFlow(id: string): Promise<Response> {
+  return apiFetch(`/api/events/subscriptions/${encodeURIComponent(id)}/resume`, { method: "POST" });
+}
+export async function deleteFlow(id: string): Promise<Response> {
+  return apiFetch(`/api/events/subscriptions/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+export async function getEventsFlowDetail(id: string): Promise<Response> {
+  return apiFetch(`/api/events/subscriptions/${encodeURIComponent(id)}/flow`);
+}
+
+// Execution log — recent flow runs (joined to their subscription: agent/mode/integration/channel/
+// status), and one run's detail with the agent's output.
+export async function getEventsRuns(): Promise<Response> {
+  return apiFetch("/api/events/runs");
+}
+export async function getEventsRunDetail(id: string): Promise<Response> {
+  return apiFetch(`/api/events/runs/${encodeURIComponent(id)}`);
+}
+
 // The pre-built worker fleet (geobot, pricebot, …) the concierge routes among.
 export async function getEventsAgents(): Promise<Response> {
   return apiFetch("/api/events/agents");

@@ -323,6 +323,30 @@ access   builder · admin</div>
     <div class="num">07</div>
   </section>
 
+  <!-- 7·1 THE FUZZY SEAM (concrete example) -->
+  <section class="slide blue">
+    <div class="kicker">The big bet — a concrete example</div>
+    <h2>Even the “deterministic plumbing” has a fuzzy seam: mapping each piece's shape.</h2>
+    <div class="lead">Every integration returns a <i>different</i> shape. Hand-coding the field paths is a
+      guess that fails <b>silently</b> — the flow “succeeds,” but the agent receives an empty payload.</div>
+    <div class="cols">
+      <div class="col"><h3>The bug (real, this week)</h3><ul>
+        <li>A gmail push flow armed fine and ran <b>green</b> — but mailbot replied <i>“please provide the email content.”</i></li>
+        <li>The builder had hard-coded <code>{{trigger.body.subject}}</code>.</li>
+        <li>But the gmail piece nests under <code>message</code>, with <i>different</i> names
+          (<code>text</code>, not <code>body_plain</code>; <code>from</code> is an object). Every field resolved to empty.</li>
+        <li><b>One hand-written map per piece = one silent failure waiting per piece.</b></li>
+      </ul></div>
+      <div class="col"><h3>The smarter way (same pattern as NL→Flow)</h3><ul>
+        <li><b>Forward the raw trigger output</b> and let the worker — <i>already an LLM</i> — read it. Zero per-piece mapping to get wrong.</li>
+        <li>Or an <b>LLM / schema step at arm time</b> reads the piece's published output schema and derives the map <i>once</i>, behind a <b>validator</b>.</li>
+        <li>Keep curated maps for clean UX — but always with the raw payload as a safety net, so nothing is ever blank.</li>
+        <li>Lesson: <b>static code is brittle wherever the shape is fuzzy</b> — the NL <i>and</i> the piece payload. <b>LLM proposes · validator gates · the intelligent worker consumes.</b></li>
+      </ul></div>
+    </div>
+    <div class="num">07·1</div>
+  </section>
+
   <!-- 8 ROADMAP HIGH LEVEL -->
   <section class="slide dark">
     <div class="kicker">Roadmap — high level</div>

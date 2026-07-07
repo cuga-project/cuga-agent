@@ -26,7 +26,8 @@ but shows a "Studio is off" note if reached directly.
 | **Concierge** | `POST /api/concierge` (+ `?dry_run=1` via the **Preview** toggle) | chat; live reply, or the plan JSON in Preview mode |
 | **Channels** | `GET /api/events/channels` | web/telegram/discord/slack + real status (token present?) |
 | **Integrations** | `GET /api/events/integrations` + `/connect/*` | gmail/box/github + real status (AP connection **or** a direct-backend token) → a green **Connected** tag with a **Reconnect** button when connected, else **Connect**: OAuth apps open the login popup, token apps prompt for a token |
-| **Flows** | `GET /api/events/subscriptions` | armed watchers with CRON/POLL badges, backend, delivery |
+| **Flows** | `GET /api/events/subscriptions` (+ `…/<id>/pause`·`/resume`·`DELETE`·`/flow`) | armed watchers with CRON/POLL badges, backend, delivery — each card has **View** (rich Source→Agent→Sink + live AP steps), **Pause/Resume**, **Delete** (CUGA drives AP for you). Same controls as the standalone `make flows` console, in-Studio. |
+| **Runs** | `GET /api/events/runs` (+ `…/<id>`) | **execution log** of standing flows (cron/poll/push): a table you can **sort** (click a column) and **filter by agent / integration / channel / trigger / status**; each row shows success/failure, and **View** opens the agent's actual **output** (the `/invoke` answer) + trigger payload. Runs come from Activepieces, joined to their subscription. NOW chat answers aren't standing flows, so they're not logged. |
 | **Examples** | `GET /api/events/examples` | click-to-load catalog tagged by **outcome** (answer-now / flow / connect / decline) → drops the utterance into Concierge |
 | **Profile** | `GET /api/events/me` + `/link/*` + `/connect/*` | the user's identity, roles, **linked channels** (Link buttons: Telegram/Discord), and connected integrations |
 | **Agents** | `GET /api/events/agents` · `POST`/`PUT /api/events/agents` · `GET /api/events/mcp-servers` | the pre-built worker fleet the concierge routes among + each agent's tools/channels/integrations/access. An **Add agent** button + per-card **Edit** open a form (name · backend · skill/prompt · tools · channels · integrations+ownership · access) — builder/admin only; saves upsert the agent |
@@ -56,6 +57,8 @@ POST   /api/events/subscriptions/<id>/pause · /resume  → pause/resume a flow 
 DELETE /api/events/subscriptions/<id>                  → delete a flow (removes it from AP too)
 GET    /api/events/subscriptions/<id>/flow             → rich flow detail: CUGA model + live AP flow JSON
 GET    /api/events/flows/console                        → the self-contained Flows console page (HTML)
+GET    /api/events/runs                                 → execution log: AP flow-runs joined with subscriptions (agent/mode/integration/channel/status)
+GET    /api/events/runs/<id>                            → one run's detail + the agent's output (the /invoke answer) + trigger payload
 POST /api/concierge           → live route / ?dry_run=1 preview   (already existed)
 GET  /api/events/connect/<app>          → OAuth: 302 to consent · token: instructions
 GET  /api/events/connect/<app>/callback → OAuth code exchange → create the user's AP connection
@@ -86,11 +89,14 @@ Two ways to create a standing flow, both converging on the same `find_or_create_
   Five mode-specific commands are kept as **hidden power-user overrides** that force a mode:
   `/watch` (smart, = `/automate`), `/push`, `/schedule`, `/cron`, `/poll`.
 
-**The Flows console** (`GET /api/events/flows/console`, or `make flows`) — a self-contained page (no
-build step, so it can't break the pre-built Studio bundle). It lists your standing flows and lets you
-**pause / resume / delete** them — CUGA drives Activepieces internally, so you never open the AP
-console. **View** renders a *rich, read-only* flow: the CUGA **Source → Agent → Sink** model **plus**
-the live **AP flow steps** (trigger → Invoke CUGA → delivery) pulled from AP's flow JSON.
+**Manage them in two equivalent places** — both call the same `…/<id>/pause`·`/resume`·`DELETE`·`/flow`
+endpoints (CUGA drives Activepieces internally, so you never open the AP console):
+- **The Studio Flows tab** — each flow card has **View / Pause·Resume / Delete** buttons inline.
+- **The standalone Flows console** (`GET /api/events/flows/console`, or `make flows`) — a self-contained
+  page (no build step), handy for a full-screen list outside the Studio.
+
+**View** renders a *rich, read-only* flow: the CUGA **Source → Agent → Sink** model **plus** the live
+**AP flow steps** (trigger → Invoke CUGA → delivery) pulled from AP's flow JSON.
 
 ## Isolation
 Every read endpoint resolves the caller's `Principal` from headers → `scope`, and filters by it
