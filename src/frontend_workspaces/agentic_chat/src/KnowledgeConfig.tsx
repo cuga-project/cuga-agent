@@ -384,6 +384,11 @@ interface KnowledgePanelProps {
   knowledgeConfig?: KnowledgeConfigValues;
   onKnowledgeConfigChange?: (config: KnowledgeConfigValues) => void;
   knowledgeReindexNeeded?: boolean;
+  // True when the draft's index config differs from the PUBLISHED (live) config
+  // — computed by the parent against liveKnowledge. Drives the selected
+  // profile's "Modified" tag so it means "unpublished changes" (clears on
+  // revert-to-published), not "differs from the packaged preset".
+  knowledgeConfigModified?: boolean;
   knowledgeStale?: boolean;
   knowledgeReindexDeferred?: boolean;
   // ``tasks`` is the new field carrying [{task_id, filename}] pairs so
@@ -476,6 +481,7 @@ export default function KnowledgePanel({
   knowledgeConfig,
   onKnowledgeConfigChange,
   knowledgeReindexNeeded,
+  knowledgeConfigModified,
   knowledgeStale,
   knowledgeReindexDeferred,
   onReindex,
@@ -2645,11 +2651,14 @@ export default function KnowledgePanel({
                                   // reason to drop the profile from the selected state. ``Modified``
                                   // tag inside the selected tile signals the drift (see below).
                                   const isSelected = isNamedProfile;
-                                  // True when this is the selected profile AND the user has edited
-                                  // a vector-config field — drives the "Modified" Tag + the in-tile
-                                  // reindex hint. The non-selected reindex hint (offered to OTHER
-                                  // profiles to inform their decision) still uses ``willReindex`` below.
-                                  const isModified = isNamedProfile && !vectorConfigMatches;
+                                  // "Modified" = the selected profile's config differs from the
+                                  // PUBLISHED (live) config — unpublished vector-config changes,
+                                  // computed by the parent against liveKnowledge (same signal as
+                                  // the "Live" pill). Clears on revert-to-published, unlike a
+                                  // preset-relative check (which showed "Modified" forever for a
+                                  // saved override). The non-selected tiles' reindex hint below
+                                  // still uses the preset-relative ``willReindex``.
+                                  const isModified = isNamedProfile && !!knowledgeConfigModified;
                                   const willReindex = !vectorConfigMatches;
                                   return (
                                     <Tile
@@ -2724,7 +2733,7 @@ export default function KnowledgePanel({
                                           )}
                                           {isModified && (
                                             <p style={{ margin: "0.25rem 0 0 0", fontSize: "0.6875rem", color: "var(--cds-support-warning)" }}>
-                                              Your edits override profile defaults — re-indexing will run on Publish.
+                                              Unpublished changes — re-indexing runs on Publish.
                                             </p>
                                           )}
                                         </Stack>
