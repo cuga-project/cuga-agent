@@ -84,6 +84,18 @@ def test_none_ledger_strips_all_markers():
     assert sources == []
 
 
+def test_fullwidth_cjk_brackets_are_resolved_to_ascii():
+    """Some models emit 【sN】 / ［sN］ instead of ASCII [sN] despite the contract.
+    They must still detect + resolve, and rewrite to ASCII [n] so the frontend
+    chip injector (which matches [n]) works. Regression: chat answer used 【s1】,
+    so citations weren't clickable and no sources showed."""
+    assert has_citation_markers("goal 【s1】 and ［s2］")
+    text, sources = resolve_citations("open 【s2】 transparent ［s1］", _ledger_with())
+    assert text == "open [1] transparent [2]"
+    assert [s["n"] for s in sources] == [1, 2]
+    assert sources[0]["cite_id"] == "s2"
+
+
 def test_strip_mode_does_not_warn(caplog):
     """fix 4: strip-mode (ledger is None, feature off) removes markers silently —
     no per-marker 'not in ledger' warnings that would mask real misses."""

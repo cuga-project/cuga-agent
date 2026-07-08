@@ -227,7 +227,11 @@ def _reset_all_ledgers_for_tests() -> None:
 
 # [s1] or [s1, s4] or [s1 s4] — case-insensitive. Requires the s-prefix so
 # plain bracketed numbers/text ("[1]", "[note]") never match.
-_MARKER_RE = re.compile(r"\[\s*([sS]\d+(?:[\s,]+[sS]\d+)*)\s*\]")
+# Also accepts the FULLWIDTH / CJK bracket variants some models emit instead of
+# ASCII despite the [sN] contract — 【sN】 (lenticular) and ［sN］ (fullwidth).
+# Resolution always rewrites the match to ASCII [n], so the frontend chip
+# injector (which matches [n]) works regardless of which brackets the model used.
+_MARKER_RE = re.compile(r"[\[【［]\s*([sS]\d+(?:[\s,]+[sS]\d+)*)\s*[\]】］]")
 # Segments the answer so markers inside code are never rewritten.
 # Handles: fenced blocks (``` or ~~~, terminated or unterminated/truncated),
 # double-backtick inline spans, and single-backtick inline spans.
