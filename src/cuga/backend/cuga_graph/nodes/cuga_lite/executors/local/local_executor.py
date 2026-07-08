@@ -1,4 +1,5 @@
 import asyncio
+import ast
 import contextlib
 import difflib
 import io
@@ -145,7 +146,11 @@ class LocalExecutor(BaseExecutor):
         The hint is suppressed when the missing name is not called like a
         function in ``code`` — a NameError on a plain variable reference means
         the agent forgot to compute something, and tool guidance there would
-        steer it away from the real fix.
+        steer it away from the real fix. It is also suppressed when ``code``
+        itself defines the name (def / class / assignment / import): that
+        NameError is an ordering or self-reference bug in the agent's own code,
+        not a fabricated tool name. Both checks work on the AST, so names
+        inside string literals or comments never count as calls.
         """
         if not isinstance(error, NameError) or not available_tools:
             return ""
@@ -154,25 +159,63 @@ class LocalExecutor(BaseExecutor):
         if not missing:
             return ""
 
-        if code is not None and not re.search(rf"\b{re.escape(missing)}\s*\(", code):
-            return ""
+        if code is not None:
+            called, defined = LocalExecutor._missing_name_usage(missing, code)
+            if not called or defined:
+                return ""
 
         close = difflib.get_close_matches(missing, available_tools, n=5, cutoff=0.6)
-        hint = (
-            f"\n\n[tool-name correction] '{missing}' is NOT an available tool — tool names "
-            "cannot be guessed or constructed. Call tools by the EXACT name returned by "
-            "find_tools."
-        )
         if close:
-            hint += (
+            return (
+                f"\n\n[tool-name correction] '{missing}' is NOT an available tool — tool names "
+                "cannot be guessed or constructed. Call tools by the EXACT name returned by "
+                "find_tools."
                 "\nDid you mean one of: " + ", ".join(close) + "?"
                 "\nSimilarly named tools can do very different things (e.g. delete vs get) — "
                 "pick only a suggestion whose action matches your intent."
+                "\nDo not retry the same invented name."
             )
-        else:
-            hint += (
-                "\nNo close match is loaded. Call find_tools again with a different query to "
-                "discover the correct tool name."
-            )
-        hint += "\nDo not retry the same invented name."
-        return hint
+        # No similar tool is loaded: the name may equally be an agent-written
+        # helper whose definition did not make it into this execution, so do
+        # not steer unconditionally toward find_tools.
+        return (
+            f"\n\n[tool-name correction] '{missing}' is not defined in this execution and is "
+            "not an available tool."
+            "\nIf it is a helper function you wrote, include its definition in this script "
+            "before the call."
+            "\nIf you meant a tool, do not guess names and do not substitute a similar-looking "
+            "one from memory (similarly named tools can do very different things, e.g. delete "
+            "vs get) — call find_tools to discover the exact name. Do not retry the same "
+            "undefined name."
+        )
+
+    @staticmethod
+    def _missing_name_usage(missing: str, code: str) -> tuple[bool, bool]:
+        """Return ``(called, defined)`` for *missing* in *code*, via the AST.
+
+        ``called`` — the name is invoked as a bare function (directly or under
+        ``await``). ``defined`` — the code itself binds the name (function /
+        class definition, assignment, or import). Code that raised a runtime
+        ``NameError`` always parses; the text fallback covers callers that pass
+        arbitrary snippets.
+        """
+        try:
+            tree = ast.parse(code)
+        except SyntaxError:
+            return bool(re.search(rf"\b{re.escape(missing)}\s*\(", code)), False
+
+        called = False
+        defined = False
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id == missing:
+                called = True
+            elif isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                if node.name == missing:
+                    defined = True
+            elif isinstance(node, (ast.Import, ast.ImportFrom)):
+                for alias in node.names:
+                    if (alias.asname or alias.name.split(".")[0]) == missing:
+                        defined = True
+            elif isinstance(node, ast.Name) and isinstance(node.ctx, ast.Store) and node.id == missing:
+                defined = True
+        return called, defined

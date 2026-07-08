@@ -202,6 +202,62 @@ def test_correction_warns_about_lookalike_actions():
     )
 
     assert "Did you mean" in hint
+
+
+def test_correction_ignores_call_shapes_inside_string_literals():
+    """A name followed by ``(`` inside a string literal is not a call.
+
+    PR #416 review: the old text search matched phrases like
+    ``var = " agent_1("`` and treated the plain-variable NameError as a
+    fabricated tool call. The AST check only counts real Call nodes.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
+
+    hint = LocalExecutor._unknown_tool_correction(
+        NameError("name 'agent_1' is not defined", name='agent_1'),
+        available_tools=['find_tools', 'authors_get_author_details'],
+        code='var = " agent_1(x)"\nprint(agent_1)',
+    )
+
+    assert hint == ""
+
+
+def test_correction_suppressed_for_agent_defined_helper():
+    """A helper the agent defines in the same code keeps its bare NameError.
+
+    PR #416 review: calling a self-written helper before its ``def`` (or after
+    a definition that failed) used to get "call find_tools" guidance — the
+    right fix is to repair the helper, not to hunt for a tool.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
+
+    hint = LocalExecutor._unknown_tool_correction(
+        NameError("name 'helper1' is not defined", name='helper1'),
+        available_tools=['find_tools', 'authors_get_author_details'],
+        code="res = await helper1(arg1)\n\nasync def helper1(a):\n    return a\n",
+    )
+
+    assert hint == ""
+
+
+def test_correction_no_close_match_mentions_helper_possibility():
+    """With no similar tool, the hint must not assume the name was a tool.
+
+    A lost agent-written helper (defined in an earlier, separate execution)
+    reaches this path too; the message covers both repairs — re-include the
+    definition, or find_tools if a tool was meant.
+    """
+    from cuga.backend.cuga_graph.nodes.cuga_lite.executors.local.local_executor import LocalExecutor
+
+    hint = LocalExecutor._unknown_tool_correction(
+        NameError("name 'helper1' is not defined", name='helper1'),
+        available_tools=['authors_get_author_details'],
+        code="res = await helper1(arg1)",
+    )
+
+    assert "tool-name correction" in hint
+    assert "helper function" in hint
+    assert "find_tools" in hint
     assert "delete vs get" in hint
 
 
