@@ -8,39 +8,67 @@ reviews:
   suggested_labels: true
   auto_apply_labels: true
 
+  mutually_exclusive_groups:
+    readability:
+      - "readability: good"
+      - "readability: fair"
+      - "readability: poor"
+
   labeling_instructions:
-    - label: "complexity: low"
+    - label: "ready: maintainer-review"
       instructions: |
-        Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
-        Use complexity: low when the change is narrow, well-bounded, and easy to reason about:
-        - Single concern: one bug, one doc fix, one test, one config knob, one isolated helper
-        - Behavior is obvious from the diff; no hidden coupling or cross-subsystem effects
-        - No changes to core agent loop, auth, security, policies, concurrency, or data integrity
-        - Reviewer can validate correctness without tracing through multiple subsystems
-        - A large diff can still be low complexity if it is mechanical (formatting, renames, generated
-          output, bulk docs) and does not alter runtime behavior or review risk
+        Apply when the PR is genuinely ready for a human maintainer. Require ALL of:
+        - Not a draft; nothing in title/description signals WIP or "not ready"
+        - Description links a related issue (e.g. "Closes #123", "Fixes #456", or a github.com/.../issues/ URL)
+        - readability: good applies (clear what/why/how-tested; ≤10 files OR large diff explained)
+        - All critical CodeRabbit review comments are addressed (author replied or code changed;
+          no open blocking/critical findings left unresolved)
+        Do not apply on first open. Remove this label if new critical CodeRabbit comments appear
+        or readability drops below good.
 
-    - label: "complexity: medium"
+    - label: "readability: good"
       instructions: |
-        Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
-        Use complexity: medium when the change spans multiple concerns or needs careful validation:
-        - New feature or non-trivial refactor with clear boundaries but real logic to verify
-        - Touches 2+ related areas (e.g. agent node + prompt, API + frontend, tool wiring + tests)
-        - Non-breaking changes to agent graph nodes, MCP/tool wiring, LLM prompts, or API contracts
-        - Dependency, CI, or config changes that affect how the system runs or is built
-        - Requires checking edge cases, test coverage, and interactions between changed parts
-        - A small diff can still be medium complexity if the behavioral surface area is non-obvious
+        Apply exactly one readability label. Use good when a maintainer can grasp the goal in
+        one read: a plain-language sentence up front (what problem this fixes or what it
+        enables), then what/why/how-tested without decoding jargon. The PR is easy to scan:
+        at most 10 changed files, OR more files with a brief explanation of why the diff is large.
+        Title should be short and goal-oriented, not a stack of internal feature names.
 
-    - label: "complexity: high"
+    - label: "readability: fair"
       instructions: |
-        Apply exactly one complexity label per PR. Judge by scope and conceptual risk, not diff size.
-        Use complexity: high when the change is broad, risky, or hard to validate:
-        - Architectural refactors, new subsystems, or changes to core agent loop / supervisor orchestration
-        - Security, auth, sandboxing, policy/guardrails, or multi-tenant context handling
-        - Breaking API/schema changes, migrations, concurrency, or distributed-system behavior
-        - Wide blast radius across subsystems even if individual edits look small
-        - Touches deployment, Docker, release pipelines, or critical production paths
-        - When in doubt between medium and high for security- or data-integrity-related changes, choose high
+        Use fair when there is useful detail but the goal is not obvious on first read: summary
+        exists but is thin (missing testing or motivation), OR 11–25 files changed without much
+        context, OR the author buried the goal under technical terms without a plain opener.
+
+    - label: "readability: poor"
+      instructions: |
+        Apply when a maintainer would struggle to review without asking the author first.
+        Prefer poor over fair when ANY of these hold:
+        - Description is empty, a one-liner ("fix", "updates", "WIP"), or default template
+          with unchecked boxes and no added context
+        - Title or description is jargon-heavy, overly long, or stacks many internal terms
+          (flags, class names, subsystem codenames) without a plain-language goal sentence
+          a non-author can parse in ~10 seconds — e.g. a long title listing three unrelated
+          fixes with no "this PR stops X / enables Y" opener
+        - After reading title + description, it is still unclear what user-visible or runtime
+          problem is being solved (lots of words but no clear goal)
+        - Missing two or more of: what changed, why, how it was tested (or explicit "not tested"
+          with reason)
+        - More than 25 files changed with no explanation of scope, grouping, or rollout order
+        - More than ~400 net changed lines (adds+deletes) with no walkthrough of the main hunks
+        - Unrelated concerns bundled (e.g. feature + refactor + formatting + deps) with no
+          sectioned breakdown in the description
+        - Large mechanical diff (lockfiles, generated output, mass renames) dominating the PR
+          without calling that out upfront
+        - Touches 3+ top-level areas (e.g. agent-graph, server, frontend, infra, knowledge)
+          with no map of which part to review first
+        - Title/description disagree with the diff (title says "docs" but code changes dominate,
+          or "fix" but only new features)
+        - Breaking, security, auth, migration, or config changes present in the diff but not
+          mentioned in the description
+        - No linked issue for a non-trivial change (roughly >5 files or non-obvious behavior)
+        Use fair instead of poor only when one dimension is weak but the goal is stated plainly
+        in the first sentence (e.g. "Fixes login timeout" plus light testing notes).
 
   auto_review:
     enabled: true
