@@ -49,13 +49,15 @@ def run_new_flow(user_task: str) -> str:
     return "success"
 
 
-async def check_sse_availability(url: str, timeout: int = 5) -> bool:
+async def check_sse_availability(url: str, timeout: int = 1) -> bool:
     """
     Asynchronously check if the SSE endpoint is available by pinging it.
 
     Args:
         url: The SSE URL to check
-        timeout: Request timeout in seconds
+        timeout: Request timeout in seconds (default lowered from 5 s to 1 s;
+                 the SSE server either responds in < 100 ms or is down —
+                 waiting 5 s on startup only delayed cold-start for no gain)
 
     Returns:
         bool: True if SSE endpoint is available, False otherwise

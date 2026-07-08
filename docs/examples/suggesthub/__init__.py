@@ -1,0 +1,1 @@
+"""SuggestHub CUGA prototype example."""

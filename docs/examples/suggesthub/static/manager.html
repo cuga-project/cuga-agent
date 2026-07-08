@@ -1,0 +1,114 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBM SuggestHub Manager</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body
+    class="manager-page"
+    hx-on::after-swap="window.suggestHubSync && window.suggestHubSync()"
+    hx-on::after-settle="window.suggestHubSync && window.suggestHubSync()"
+  >
+    <header class="compact-topbar">
+      <nav aria-label="Primary" class="nav">
+        <a class="brand" href="/" aria-label="IBM SuggestHub home">
+          <span class="ibm-mark">IBM</span>
+          <span>SuggestHub</span>
+        </a>
+        <div class="nav-links">
+          <a href="/">Public Hub</a>
+          <a href="/manager" aria-current="page">Manager</a>
+          <a href="/#story">Story</a>
+        </div>
+      </nav>
+      <div class="page-title">
+        <p class="eyebrow">Manager Dashboard</p>
+        <h1>Prioritize signal and respond publicly.</h1>
+        <p>Manager controls are gated by an IBM email for this prototype until IBM ID login is enforced.</p>
+      </div>
+    </header>
+
+    <main>
+      <section class="band manager-band">
+        <form id="managerGate" class="panel gate-panel">
+          <div>
+            <h2>Manager access</h2>
+            <p class="muted">Enter an @ibm.com email to view status counts, draft responses, and post public updates.</p>
+          </div>
+          <label for="managerEmail">IBM email</label>
+          <div class="gate-row">
+            <input id="managerEmail" name="manager_email" type="email" placeholder="manager@ibm.com" autocomplete="email" required />
+            <button type="submit">View dashboard</button>
+          </div>
+          <p id="managerGateError" class="error" aria-live="polite"></p>
+        </form>
+
+        <div id="managerDashboard" class="manager-grid" hidden>
+          <div class="panel">
+            <div class="panel-head">
+              <h3>Status summary</h3>
+              <select
+                id="managerLocation"
+                name="location"
+                aria-label="Manager location"
+                hx-get="/partials/manager/summary"
+                hx-target="#statusSummary"
+                hx-swap="innerHTML"
+                hx-trigger="change"
+                hx-include="#managerEmail"
+                disabled
+              >
+                <option value="">All locations</option>
+                <option>SVL</option>
+                <option>Austin</option>
+                <option>NYC</option>
+              </select>
+            </div>
+            <div id="statusSummary" class="status-grid">
+              <div class="locked">Manager dashboard locked.</div>
+            </div>
+          </div>
+
+          <form id="statusForm" class="panel" hx-post="/partials/manager/status" hx-target="#managerNotice" hx-swap="innerHTML">
+            <h3>Post manager update</h3>
+            <input type="hidden" name="manager_email" data-manager-email />
+            <label for="managerSuggestion">Suggestion ID</label>
+            <input id="managerSuggestion" name="suggestion_id" type="number" min="1" required disabled />
+            <label for="managerStatus">Status</label>
+            <select id="managerStatus" name="status" disabled>
+              <option>Under Review</option>
+              <option>In Progress</option>
+              <option>Resolved</option>
+              <option>Declined</option>
+            </select>
+            <div id="managerResponseWrap">
+              <label for="managerResponse">Public response</label>
+              <textarea id="managerResponse" name="response" rows="4" required disabled></textarea>
+            </div>
+            <input type="hidden" name="manager_name" value="Demo Manager" />
+            <div class="button-row">
+              <button
+                type="button"
+                class="secondary"
+                hx-post="/partials/manager/draft-response"
+                hx-include="#managerSuggestion, #managerStatus, [data-manager-email]"
+                hx-target="#managerResponseWrap"
+                hx-swap="innerHTML"
+                disabled
+              >
+                Draft with Bob
+              </button>
+              <button type="submit" disabled>Post update</button>
+            </div>
+            <div id="managerNotice" aria-live="polite"></div>
+          </form>
+        </div>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

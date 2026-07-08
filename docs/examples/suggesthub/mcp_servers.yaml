@@ -1,0 +1,16 @@
+mcpServers:
+  suggesthub:
+    command: uv
+    args: ["run", "--no-sync", "python", "-m", "docs.examples.suggesthub.mcp_server"]
+    cwd: "."
+    transport: stdio
+    description: IBM SuggestHub backend tools for Bob intake, duplicate detection, suggestion publishing, voting, and manager status updates.
+    include:
+      - find_similar_suggestions
+      - create_draft_from_employee_issue
+      - save_suggestion_draft
+      - publish_suggestion
+      - upvote_suggestion
+      - get_trending_suggestions
+      - draft_manager_response
+      - update_suggestion_status

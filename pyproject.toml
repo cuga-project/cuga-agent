@@ -63,6 +63,7 @@ dependencies = [
     "toolguard>=0.2.17",
     "cuga-oak-health; python_version>='3.12'",
     "aiosmtpd",
+    "opensandbox>=0.1.7",
 ]
 
 [project.optional-dependencies]

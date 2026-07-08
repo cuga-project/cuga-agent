@@ -821,6 +821,7 @@ def validate_service(service: str):
         "demo_knowledge",
         "demo_supervisor",
         "travel_agent",
+        "suggesthub",
         "manager",
         "registry",
         "appworld",
@@ -858,7 +859,7 @@ def _resolve_apps(
 def start(
     service: str = typer.Argument(
         ...,
-        help="Service to start: demo, demo_skills, demo_knowledge, demo_crm, demo_docs, demo_health, demo_supervisor, manager, registry, or appworld",
+        help="Service to start: demo, demo_skills, demo_knowledge, demo_crm, demo_docs, demo_health, demo_supervisor, suggesthub, manager, registry, or appworld",
     ),
     host: str = typer.Option(
         "127.0.0.1",
@@ -1110,6 +1111,7 @@ def start(
       - demo_supervisor: Same as demo_crm but with CugaSupervisor multi-agent coordination enabled
       - demo_docs: Starts registry + demo with only IBM Docs MCP (search, summarize, ask questions on pages)
       - demo_health: Starts cuga-oak-health OpenAPI, registry, and demo (insurance member APIs + OAK playbooks; add --filesystem for workspace tools)
+      - suggesthub: Starts Cuga chat with Bob SuggestHub tools plus the companion hub/dashboard UI
       - manager: Manage-config mode: registry uses managed MCP YAML, policy filesync off, demo on 7860
       - registry: Starts only the registry service directly (uvicorn on port 8001)
       - appworld: Starts AppWorld environment and API servers (environment on port 8000, api on port 9000)
@@ -1134,6 +1136,7 @@ def start(
       cuga start demo_docs  # registry + demo + IBM Docs MCP only
       cuga start demo_health  # oak health OpenAPI + registry + demo
       cuga start demo_health --filesystem  # also enable workspace filesystem tools
+      cuga start suggesthub  # Cuga chat for Bob + SuggestHub companion UI
       cuga start manager --oak-health  # add insurance APIs to manager preset
       cuga start manager --cuga-workspace /path/to/workspace  # custom workspace + policy
       cuga start demo --sandbox           # with remote sandbox
@@ -1822,6 +1825,190 @@ def start(
             raise typer.Exit(1)
         return
 
+    elif service == "suggesthub":
+        try:
+            _cli_dir = Path(__file__).resolve().parent
+            suggesthub_root = _cli_dir.joinpath("..", "..", "..", "docs", "examples", "suggesthub").resolve()
+            repo_root = suggesthub_root.parents[2]
+            mcp_config_path = suggesthub_root / "mcp_servers.yaml"
+
+            if not mcp_config_path.exists():
+                logger.error(f"SuggestHub MCP config not found: {mcp_config_path}")
+                raise typer.Exit(1)
+
+            os.environ["CUGA_MANAGER_MODE"] = "true"
+            os.environ["DYNACONF_POLICY__FILESYSTEM_SYNC"] = "false"
+            os.environ["DYNACONF_EVOLVE__ENABLED"] = "false"  # no Evolve server in suggesthub mode; skips ~3s SSE probe per turn
+            os.environ["MCP_SERVERS_FILE"] = str(mcp_config_path)
+            os.environ["PYTHONPATH"] = os.path.pathsep.join(
+                [
+                    str(repo_root),
+                    os.path.abspath(os.path.join(PACKAGE_ROOT, "..")),
+                    os.environ.get("PYTHONPATH", ""),
+                ]
+            ).strip(os.path.pathsep)
+            os.environ["CUGA_AGENT_NAME"] = "Bob SuggestHub Agent"
+            os.environ["CUGA_AGENT_DESCRIPTION"] = (
+                "IBM SuggestHub intake agent that deduplicates and publishes workplace improvement suggestions"
+            )
+
+            from cuga.backend.server.config_store import reset_config_db, save_config, save_draft
+            import asyncio
+
+            ensure_managed_mcp_file_exists(get_managed_mcp_path())
+            logger.info("Resetting config db for SuggestHub...")
+            reset_config_db()
+
+            llm_api_key_ref = ""
+            try:
+                from cuga.backend.secrets.seed import resolve_llm_api_key_ref
+
+                llm_api_key_ref = resolve_llm_api_key_ref()
+            except Exception:
+                pass
+
+            llm_cfg = {
+                "model": os.environ.get("MODEL_NAME", ""),
+                "temperature": 0.1,
+                "max_tokens": int(os.environ.get("SUGGESTHUB_MAX_TOKENS", "2000")),
+            }
+            if llm_api_key_ref:
+                llm_cfg["api_key"] = llm_api_key_ref
+
+            suggesthub_tools = [
+                {
+                    "name": "suggesthub",
+                    "type": "mcp",
+                    "transport": "stdio",
+                    "command": "uv",
+                    "args": ["run", "--no-sync", "python", "-m", "docs.examples.suggesthub.mcp_server"],
+                    "cwd": str(repo_root),
+                    "description": (
+                        "IBM SuggestHub backend tools for Bob intake, duplicate detection, "
+                        "suggestion publishing, voting, and manager status updates."
+                    ),
+                    "include": [
+                        "find_similar_suggestions",
+                        "create_draft_from_employee_issue",
+                        "save_suggestion_draft",
+                        "publish_suggestion",
+                        "upvote_suggestion",
+                        "get_trending_suggestions",
+                        "draft_manager_response",
+                        "update_suggestion_status",
+                    ],
+                }
+            ]
+
+            special_instructions = """You are Bob, the IBM SuggestHub intake agent.
+
+Your job is to turn vague employee frustration into actionable workplace improvement suggestions.
+
+Workflow:
+1. Ask at most 2-3 targeted clarification questions when location, impact, or issue detail is missing.
+2. Always check for duplicates with find_similar_suggestions before creating a new draft.
+3. If a close match exists, show the existing suggestion and ask whether the employee wants to upvote it or create a distinct suggestion.
+4. Only publish after explicit employee confirmation.
+5. Use create_draft_from_employee_issue or save_suggestion_draft to create structured drafts.
+6. Use publish_suggestion only after confirmation.
+7. Categorize into exactly one of: Facilities, IT, Wellness, Food & Beverage, Safety, Culture, Other.
+8. Keep responses concise, concrete, and employee-facing.
+
+The companion SuggestHub page shows the public hub, manager dashboard, and resolved story from the same backend you update."""
+
+            suggesthub_config = {
+                "agent": {
+                    "name": "Bob SuggestHub Agent",
+                    "description": "IBM SuggestHub intake agent for workplace improvement ideas",
+                },
+                "tools": suggesthub_tools,
+                "special_instructions": special_instructions,
+                "homescreen": {
+                    "isOn": True,
+                    "greeting": "Tell Bob what IBM should improve. I will check for duplicates, structure the idea, and publish only after you confirm.",
+                    "starters": [
+                        "The standing desks on floor 3 are always broken.",
+                        "The floor 4 area in SVL building G is too noisy to focus.",
+                        "Guest Wi-Fi keeps dropping during customer workshops.",
+                    ],
+                },
+                "llm": llm_cfg,
+            }
+
+            async def _save_suggesthub_config():
+                await save_draft(suggesthub_config, "cuga-default")
+                await save_config(suggesthub_config, "cuga-default")
+
+            asyncio.run(_save_suggesthub_config())
+
+            app_mgr = _make_app_manager()
+            companion_port = 8095
+            logger.info("Checking for existing processes on required ports...")
+            kill_processes_by_port([app_mgr.registry_port, settings.server_ports.demo, companion_port])
+
+            os.environ["CUGA_HOST"] = host
+            if sandbox:
+                logger.info("Starting SuggestHub with remote sandbox mode enabled")
+                os.environ["DYNACONF_FEATURES__LOCAL_SANDBOX"] = "false"
+
+            registry_process = app_mgr.start_registry(host)
+            if registry_process is None or registry_process.poll() is not None:
+                logger.error("Registry service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            demo_process = app_mgr.start_demo(host, sandbox=sandbox)
+            if demo_process is None or demo_process.poll() is not None:
+                logger.error("Demo service failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+
+            companion_process = run_direct_service(
+                "suggesthub",
+                [
+                    sys.executable,
+                    "-m",
+                    "uvicorn",
+                    "docs.examples.suggesthub.app.main:app",
+                    "--host",
+                    "127.0.0.1",
+                    "--port",
+                    str(companion_port),
+                ],
+                env_vars={"PYTHONPATH": os.environ["PYTHONPATH"]},
+            )
+            if companion_process is None or companion_process.poll() is not None:
+                logger.error("SuggestHub companion UI failed to start. Exiting.")
+                stop_direct_processes()
+                raise typer.Exit(1)
+            wait_for_server(companion_port, "SuggestHub companion UI")
+
+            if direct_processes:
+                table = Table(show_header=False, box=None, padding=(0, 1))
+                table.add_column("Service", style="bold white")
+                table.add_column("URL", style="cyan")
+                table.add_row("Cuga Chat:", f"http://localhost:{settings.server_ports.demo}")
+                table.add_row("SuggestHub Companion:", f"http://localhost:{companion_port}")
+                table.add_row("Registry:", f"http://localhost:{app_mgr.registry_port}")
+
+                console.print()
+                console.print(
+                    Panel(
+                        table,
+                        title="[bold yellow]SuggestHub is running. Press Ctrl+C to stop[/bold yellow]",
+                        border_style="cyan",
+                        padding=(1, 2),
+                        expand=False,
+                    )
+                )
+                wait_for_direct_processes()
+
+        except Exception as e:
+            logger.error(f"Error starting SuggestHub: {e}")
+            stop_direct_processes()
+            raise typer.Exit(1)
+        return
+
     elif service == "registry":
         try:
             logger.info("🧹 Checking for existing processes on required ports...")
@@ -1883,9 +2070,12 @@ def manage_service(action: str, service: str):
     validate_service(service)
 
     if action == "stop":
-        if service in ("demo", "demo_skills", "manager", "travel_agent"):
+        if service in ("demo", "demo_skills", "manager", "travel_agent", "suggesthub"):
             stopped_any = False
-            for service_name in ["oak-health", "docs-mcp", "registry", "demo"]:
+            service_names = ["oak-health", "docs-mcp", "registry", "demo"]
+            if service == "suggesthub":
+                service_names.append("suggesthub")
+            for service_name in service_names:
                 if service_name in direct_processes:
                     process = direct_processes[service_name]
                     if process and process.poll() is None:
@@ -1894,7 +2084,13 @@ def manage_service(action: str, service: str):
                         stopped_any = True
                     del direct_processes[service_name]
             if not stopped_any:
-                service_label = "Travel Agent" if service == "travel_agent" else "Demo/manager"
+                service_label = (
+                    "Travel Agent"
+                    if service == "travel_agent"
+                    else "SuggestHub"
+                    if service == "suggesthub"
+                    else "Demo/manager"
+                )
                 logger.info(f"{service_label} services are not running")
         elif service in ("demo_crm", "demo_supervisor"):
             # Stop all CRM/supervisor demo services
@@ -1987,7 +2183,7 @@ def manage_service(action: str, service: str):
 def stop(
     service: str = typer.Argument(
         ...,
-        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, registry, or appworld",
+        help="Service to stop: demo, demo_crm, demo_docs, demo_health, demo_knowledge, demo_supervisor, travel_agent, suggesthub, registry, or appworld",
     ),
 ):
     """
@@ -2002,6 +2198,7 @@ def stop(
       - demo_knowledge: Stops registry and demo
       - demo_supervisor: Same as demo_crm
       - travel_agent: Stops Travel Agent demo services (registry, demo)
+      - suggesthub: Stops SuggestHub services (registry, Cuga chat demo, companion UI)
       - registry: Stops only the registry service (direct process)
       - appworld: Stops both AppWorld environment and API servers (direct processes)
     Examples:
@@ -2010,6 +2207,7 @@ def stop(
       cuga stop demo_knowledge   # Stop knowledge demo services
       cuga stop demo_supervisor  # Stop all supervisor demo services
       cuga stop travel_agent     # Stop Travel Agent demo services
+      cuga stop suggesthub       # Stop SuggestHub demo services
       cuga stop registry         # Stop only the registry service
       cuga stop appworld         # Stop AppWorld servers
     """
@@ -2045,7 +2243,7 @@ def viz():
 def status(
     service: str = typer.Argument(
         "all",
-        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, travel_agent, registry, appworld, or all",
+        help="Service to check status: demo, demo_crm, demo_docs, demo_health, demo_supervisor, travel_agent, suggesthub, registry, appworld, or all",
     ),
 ):
     """
@@ -2059,6 +2257,7 @@ def status(
       - demo_health: Shows oak-health API, registry, and demo
       - demo_supervisor: Same as demo_crm
       - travel_agent: Shows status of Travel Agent demo services (registry, demo)
+      - suggesthub: Shows status of SuggestHub services (registry, Cuga chat demo, companion UI)
       - registry: Shows status of registry service only (direct process)
       - appworld: Shows status of both AppWorld environment and API servers (direct processes)
       - all: Shows status of all services (default)
@@ -2068,11 +2267,15 @@ def status(
       cuga status demo         # Show status of demo services (registry + demo)
       cuga status demo_crm     # Show status of CRM demo services
       cuga status travel_agent # Show status of Travel Agent demo services
+      cuga status suggesthub   # Show status of SuggestHub demo services
       cuga status registry     # Show status of registry only
       cuga status appworld     # Show status of AppWorld servers
     """
-    if service in ("demo", "demo_skills", "manager", "travel_agent"):
-        for service_name in ["registry", "demo"]:
+    if service in ("demo", "demo_skills", "manager", "travel_agent", "suggesthub"):
+        service_names = ["registry", "demo"]
+        if service == "suggesthub":
+            service_names.append("suggesthub")
+        for service_name in service_names:
             if service_name in direct_processes:
                 process = direct_processes[service_name]
                 if process.poll() is None:
@@ -2083,6 +2286,8 @@ def status(
                 logger.info(f"{service_name.capitalize()} service: Not running")
         if service == "travel_agent":
             logger.info("Travel Agent uses registry + demo services")
+        if service == "suggesthub":
+            logger.info("SuggestHub uses registry + Cuga demo chat + companion UI services")
         return
 
     elif service == "demo_docs":

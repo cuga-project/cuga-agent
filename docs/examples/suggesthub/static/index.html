@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>IBM SuggestHub</title>
+    <script src="https://unpkg.com/htmx.org@2.0.4"></script>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body
+    hx-on::after-swap="window.suggestHubSync && window.suggestHubSync()"
+    hx-on::after-settle="window.suggestHubSync && window.suggestHubSync()"
+  >
+    <header class="topbar">
+      <nav aria-label="Primary" class="nav">
+        <a class="brand" href="#top" aria-label="IBM SuggestHub home">
+          <span class="ibm-mark">IBM</span>
+          <span>SuggestHub</span>
+        </a>
+        <div class="nav-links">
+          <a href="#hub">Public Hub</a>
+          <a href="/manager">Manager</a>
+          <a href="#story">Story</a>
+        </div>
+      </nav>
+      <div id="top" class="hero-copy">
+        <p class="eyebrow">Production-shaped workplace feedback</p>
+        <h1>Ideas that get seen, grouped, and closed.</h1>
+        <p>
+          Talk to Bob in Cuga chat. This companion hub updates from the same SuggestHub backend
+          as Bob creates drafts, publishes suggestions, and closes the loop.
+        </p>
+        <a class="hero-action" href="http://127.0.0.1:7860" target="_blank" rel="noreferrer">Open Cuga chat</a>
+      </div>
+    </header>
+
+    <main>
+      <section class="band workflow-band" aria-labelledby="workflow-title">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Demo flow</p>
+            <h2 id="workflow-title">Cuga chat is the intake surface.</h2>
+          </div>
+          <form hx-post="/partials/demo/reset" hx-target="#companionNotice" hx-swap="innerHTML">
+            <button type="submit" class="secondary">Reset demo</button>
+          </form>
+        </div>
+        <div id="companionNotice" aria-live="polite"></div>
+        <div class="flow-grid">
+          <article class="panel flow-step">
+            <span>1</span>
+            <h3>Employee talks to Bob</h3>
+            <p>Use Cuga's built-in chat for clarification, duplicate checks, and draft confirmation.</p>
+          </article>
+          <article class="panel flow-step">
+            <span>2</span>
+            <h3>Bob calls SuggestHub tools</h3>
+            <p>The MCP tools update the shared SQLite backend for suggestions, votes, and statuses.</p>
+          </article>
+          <article class="panel flow-step">
+            <span>3</span>
+            <h3>Hub refreshes from backend</h3>
+            <p>The public feed, manager view, and story page read the latest state from the same database.</p>
+          </article>
+        </div>
+      </section>
+
+      <section id="hub" class="band">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Public Hub</p>
+            <h2>Browse, filter, and vote.</h2>
+          </div>
+          <form
+            id="filtersForm"
+            class="filters"
+            hx-get="/partials/suggestions"
+            hx-target="#suggestions"
+            hx-swap="innerHTML"
+            hx-trigger="change"
+          >
+            <input type="hidden" name="sort" value="trending" />
+            <select id="locationFilter" name="location" aria-label="Location filter">
+              <option value="">All locations</option>
+              <option>SVL</option>
+              <option>Austin</option>
+              <option>NYC</option>
+            </select>
+            <select id="categoryFilter" name="category" aria-label="Category filter">
+              <option value="">All categories</option>
+              <option>Facilities</option>
+              <option>IT</option>
+              <option>Wellness</option>
+              <option>Food & Beverage</option>
+              <option>Safety</option>
+              <option>Culture</option>
+              <option>Other</option>
+            </select>
+            <select id="statusFilter" name="status" aria-label="Status filter">
+              <option value="">All statuses</option>
+              <option>New</option>
+              <option>Under Review</option>
+              <option>In Progress</option>
+              <option>Resolved</option>
+              <option>Declined</option>
+            </select>
+          </form>
+        </div>
+        <div
+          id="suggestions"
+          class="cards"
+          hx-get="/partials/suggestions?sort=trending"
+          hx-trigger="load, every 5s"
+          hx-swap="innerHTML"
+        ></div>
+      </section>
+
+      <section id="story" class="band story-band">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Success Story</p>
+            <h2>Closed loops build trust.</h2>
+          </div>
+        </div>
+        <article
+          id="storyCard"
+          class="story"
+          hx-get="/partials/story/resolved"
+          hx-trigger="load, every 10s"
+          hx-swap="innerHTML"
+        ></article>
+      </section>
+    </main>
+
+    <script src="/static/app.js"></script>
+  </body>
+</html>

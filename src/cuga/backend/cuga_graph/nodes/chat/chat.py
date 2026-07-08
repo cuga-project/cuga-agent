@@ -89,7 +89,7 @@ class ChatNode(BaseNode):
         state: AgentState,
         agent: ChatAgent,
         initial_response: BaseMessage,
-        max_round_trips: int = 4,
+        max_round_trips: int = 2,
     ) -> BaseMessage:
         response = initial_response
         round_trips = 0

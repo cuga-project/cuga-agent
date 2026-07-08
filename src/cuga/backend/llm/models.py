@@ -1104,9 +1104,9 @@ def create_llm_from_config(llm_cfg: dict):  # BaseChatModel return type removed 
         llm_cfg = {}
     mgr = LLMManager()
     try:
-        max_tokens = settings.agent.code.model.get("max_tokens", 16000)
+        max_tokens = llm_cfg.get("max_tokens") or settings.agent.code.model.get("max_tokens", 16000)
     except Exception:
-        max_tokens = 16000
+        max_tokens = llm_cfg.get("max_tokens") or 16000
     if not isinstance(max_tokens, int):
         max_tokens = 16000
 

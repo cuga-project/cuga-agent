@@ -3561,9 +3561,11 @@ async def get_workspace_tree(
                 tree = await fetch_sandbox_workspace_tree(tid)
             except Exception as e:
                 logger.warning(f"Sandbox workspace tree failed: {e}")
+                # Fall back to host filesystem tree.  An empty list is valid
+                # (no files written yet); only re-raise if the sandbox module
+                # itself is not installed — in that case treat it as a
+                # configuration issue rather than a per-request 503 storm.
                 tree = fetch_host_workspace_tree(tid)
-                if not tree:
-                    raise HTTPException(status_code=503, detail="Sandbox workspace unavailable") from e
             return JSONResponse({"tree": tree})
 
         tree = fetch_host_workspace_tree(tid)
