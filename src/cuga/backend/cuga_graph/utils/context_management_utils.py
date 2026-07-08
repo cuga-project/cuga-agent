@@ -7,12 +7,62 @@ Helper functions for managing message context and summarization across different
 import json
 from typing import Any, List, Optional
 
-from langchain_core.messages import BaseMessage
+from langchain_core.messages import AIMessage, BaseMessage, HumanMessage
 from loguru import logger
 
 from cuga.backend.cuga_graph.state.agent_state import AgentState
 from cuga.backend.cuga_graph.utils.token_counter import resolve_model_identifier
 from cuga.backend.activity_tracker.tracker import ActivityTracker, Step
+
+
+def truncate_text_for_context(text: str, max_chars: int, *, label: str = "content") -> str:
+    """Trim long prompt sections so downstream LLM calls stay within context."""
+    trimmed = (text or "").strip()
+    if max_chars <= 0 or len(trimmed) <= max_chars:
+        return trimmed
+    return f"{trimmed[:max_chars]}...\n\n[{label} trimmed to {max_chars} chars]"
+
+
+def messages_to_history_text(messages: List[BaseMessage]) -> str:
+    """Format chat messages as a plain-text history block."""
+    parts: list[str] = []
+    for msg in messages:
+        if isinstance(msg, HumanMessage):
+            parts.append(f"User: {msg.content}")
+        elif isinstance(msg, AIMessage):
+            parts.append(f"Assistant: {msg.content}")
+        else:
+            parts.append(f"{type(msg).__name__}: {getattr(msg, 'content', str(msg))}")
+    return "\n".join(parts) if parts else "No previous conversation history"
+
+
+async def prepare_reflection_context(
+    chat_messages: List[BaseMessage],
+    coder_agent_output: str,
+    model: Any,
+    *,
+    max_output_chars: int,
+    max_history_chars: int,
+    tracker: Optional[ActivityTracker] = None,
+) -> tuple[str, str]:
+    """Summarize chat history and trim execution output for reflection prompts."""
+    summarized = await apply_context_summarization(
+        list(chat_messages),
+        model,
+        tracker=tracker,
+        message_list_name="chat_messages",
+    )
+    history = truncate_text_for_context(
+        messages_to_history_text(summarized),
+        max_history_chars,
+        label="Agent history",
+    )
+    output = truncate_text_for_context(
+        coder_agent_output,
+        max_output_chars,
+        label="Execution output",
+    )
+    return history, output
 
 
 async def apply_context_summarization(
